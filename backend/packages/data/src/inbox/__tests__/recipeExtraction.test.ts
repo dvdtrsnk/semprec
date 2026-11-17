@@ -28,8 +28,8 @@ import { allowLoopbackOutboundForTests } from "../../testSupport/mcpContractServ
 import { proposeRecipe, type RecipeProposalPorts } from "../recipeExtraction.js";
 import type { ProposalComputationInput } from "../inboxTickSnapshot.js";
 
-// Issue gh-1974: the recipe proposal writer. Everything runs on the runtime role (`semprec_data`, no BYPASSRLS) in a
-// tenant of its own; a second tenant shows what the writer cannot reach.
+// The recipe proposal writer, on the runtime role (`semprec_data`, no BYPASSRLS) in a tenant of its own; a second
+// tenant shows what the writer cannot reach.
 const SEEDING_HOOK_TIMEOUT_MS = 90_000;
 
 const PAGE_URL = "https://recipes.example.com/goulash";
@@ -77,10 +77,8 @@ function inTenant<T>(tenant: string, fn: (client: PoolClient) => Promise<T>): Pr
   return runInTenant(tenant, () => withTransaction(dataPool, fn));
 }
 
-/** Opens bytes as the composition root does, from the one root the tests write to. */
 const openBlob = (storageKey: string) => Promise.resolve(storage.readStream(storageKey));
 
-/** The ports of the writer over `gateway` and `fetch`; the photo of a page is stored under `storageDir`. */
 function portsFor(
   gateway: RecipeProposalPorts["gateway"],
   fetch?: RecipeProposalPorts["fetch"],
@@ -92,7 +90,6 @@ function portsFor(
 const propose = (ports: RecipeProposalPorts, input: ProposalComputationInput, tenant = tenantId) =>
   runInTenant(tenant, () => proposeRecipe(ports, input));
 
-/** The text of the one message of a gateway call that sends text only. */
 function messageText(content: unknown): string {
   if (typeof content !== "string") throw new Error("Expected a text message");
   return content;
@@ -252,7 +249,6 @@ describe("proposeRecipe (issue gh-1974)", () => {
   });
 
   describe("the photo of a page", () => {
-    /** The blob the proposal's `photo` names, read in the tenant: its type and whether the other tenant sees it. */
     async function storedPhoto(photo: unknown): Promise<{ mimeType: string; visibleToOtherTenant: boolean }> {
       const { blobId } = z.object({ blobId: z.string() }).parse(photo);
       const blob = await inTenant(tenantId, (client) => getBlob(client, blobId));
@@ -452,7 +448,6 @@ describe("proposeRecipe (issue gh-1974)", () => {
         sourceUrl: PAGE_URL,
         photo: { blobId: fixture.attachmentBlobIds[0] },
       });
-      // The link answered, so the photo was not read.
       expect(gateway.calls).toHaveLength(1);
     });
 
@@ -504,7 +499,6 @@ describe("proposeRecipe (issue gh-1974)", () => {
       // The same input in the scope of the other tenant: row-level security hides the attachment.
       expect(await propose(portsFor(gateway), fixture.input, otherTenantId)).toBeNull();
       expect(gateway.calls).toEqual([]);
-      // And in its own tenant the photo is read.
       expect(await propose(portsFor(gateway), fixture.input)).not.toBeNull();
     });
   });

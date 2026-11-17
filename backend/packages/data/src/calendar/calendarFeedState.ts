@@ -1,31 +1,21 @@
-// The store of `calendar_feed_state` (issue gh-1960): what the subscription sweep
-// (`calendarSubscriptionSweep.ts`) keeps per subscription calendar between two runs. The sweep is the only writer of a
-// row's contents; `calendarFeedStatePurgeHook` (registered in `domainWriteHooks.ts` and run by `runItemPurgeHooks` in
-// the purge transaction, docs/adr/2026-11-10-item-purge-domain-hooks.md) only deletes the row with its calendar item.
+// Store of `calendar_feed_state`, kept per subscription calendar between sweep runs. The sweep is the only writer
+// of a row's contents; `calendarFeedStatePurgeHook` only deletes the row with its calendar item.
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 
-/**
- * The validators of the last feed a consumer took over, as the server sent them (`null` when it sent none), and the
- * hash of the address that feed was requested from (`feedUrlHash`): validators belong to one address, so they are sent
- * only to the address they came from.
- */
+/** Validators belong to one address (`feedUrlHash`), so they are sent only to the address they came from. */
 export interface CalendarFeedValidators {
   etag: string | null;
   lastModified: string | null;
   feedUrlHash: string;
 }
 
-/** The hash `calendar_feed_state.feed_url_hash` holds for a feed address: SHA-256, lower-case hex. */
+/** SHA-256, lower-case hex. */
 export function feedUrlHash(url: string): string {
   return createHash("sha256").update(url, "utf8").digest("hex");
 }
 
-/**
- * Records a request that ended well (a feed the consumer took over, a 304, or a feed no consumer is registered for):
- * the time, the HTTP `status` and no error code. The validators are written only when `validators` is given; without
- * it the stored ones (and the address they belong to) stay as they are.
- */
+/** Without `validators`, the stored validators (and their address) stay as they are. */
 export async function recordCalendarFeedFetched(
   client: PoolClient,
   calendarItemId: string,
@@ -52,10 +42,7 @@ export async function recordCalendarFeedFetched(
   );
 }
 
-/**
- * Records a request that failed: the time, the HTTP `status` when the server answered (else `null`) and the short
- * `errorCode`. The stored validators are never touched, and nothing fetched earlier is.
- */
+/** The stored validators are never touched. */
 export async function recordCalendarFeedFailure(
   client: PoolClient,
   calendarItemId: string,
@@ -71,10 +58,7 @@ export async function recordCalendarFeedFailure(
   );
 }
 
-/**
- * Deletes the row of `calendarItemId`, in the caller's transaction, and returns how many rows that was. Zero is a
- * legitimate outcome: a calendar that was never requested, or a purged item that is no calendar, has none.
- */
+/** Zero is legitimate: a never-requested calendar, or a purged non-calendar item, has no row. */
 export async function deleteCalendarFeedState(client: PoolClient, calendarItemId: string): Promise<number> {
   const removed = await client.query(
     "DELETE FROM calendar_feed_state WHERE tenant_id = app_tenant_default() AND calendar_item_id = $1",

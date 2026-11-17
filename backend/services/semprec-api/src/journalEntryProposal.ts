@@ -5,13 +5,16 @@ import type { ProposalComputationResult, ProposalWorkspaceGroup } from "@semprec
 const logger = createLogger("journal-entry-proposal");
 
 /**
- * The instruction added to the system prompt of an item whose type has the `journal` processing method (issue
- * gh-1982). The model writes only the entry; the server supplies the Journal database as the target.
+ * Added to the system prompt for an item type with the `journal` processing method. The model
+ * writes only the entry; the server supplies the Journal database as the target.
  */
 export const JOURNAL_ENTRY_INSTRUCTION =
   "For a journal-method type, write one entry for a day of the person's Journal. Return 'markdown', the entry's nonempty Markdown body without page blocks or page links. Return 'date' (YYYY-MM-DD) only when the item names a day other than its own date; leave it out otherwise. Return 'projectId' or 'areaId' only when the item clearly belongs to one of the projects or areas of the workspace context, taking the id from that list; never invent one. Do not return a target or a properties object.";
 
-/** The model's answer for a journal entry, validated before it leaves this module (`content` is `unknown` at the gateway boundary). Keys outside it are ignored. */
+/**
+ * Validated before it leaves this module (`content` is `unknown` at the gateway boundary). Other
+ * keys are ignored.
+ */
 const journalEntryAnswerSchema = z.object({
   date: z.string().min(1).optional(),
   markdown: z.string(),
@@ -21,7 +24,9 @@ const journalEntryAnswerSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
 });
 
-/** The same shape as `journalEntryAnswerSchema`, as the Draft 2020-12 JSON Schema the gateway forwards to the provider. */
+/**
+ * `journalEntryAnswerSchema` as the Draft 2020-12 JSON Schema the gateway forwards to the provider.
+ */
 export const JOURNAL_ENTRY_RESPONSE_SCHEMA = {
   type: "object",
   properties: {
@@ -36,7 +41,6 @@ export const JOURNAL_ENTRY_RESPONSE_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-/** The ids the workspace context lists for `moduleId`. */
 function listedIds(workspace: ProposalWorkspaceGroup[], moduleId: ProposalWorkspaceGroup["moduleId"]): Set<string> {
   return new Set(
     workspace.filter((group) => group.moduleId === moduleId).flatMap((group) => group.items.map((item) => item.id)),
@@ -44,10 +48,9 @@ function listedIds(workspace: ProposalWorkspaceGroup[], moduleId: ProposalWorksp
 }
 
 /**
- * Turns the model's answer for a journal entry into the computation result: `properties` are `{markdown, date?,
- * areaId?, projectId?}` and no `target`. An area or project the workspace context did not list is dropped, as the
- * relation targets of a database proposal are (`filterModelReferences`), so the envelope never carries an id the model
- * took from nowhere. An answer that does not match the schema throws.
+ * `properties` are `{markdown, date?, areaId?, projectId?}` with no `target`. An area or project
+ * the workspace context did not list is dropped, so the envelope never carries an id the model made
+ * up. A non-matching answer throws.
  */
 export function parseJournalEntryAnswer(
   content: unknown,

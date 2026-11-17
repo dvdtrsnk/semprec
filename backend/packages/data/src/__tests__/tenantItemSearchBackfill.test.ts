@@ -86,8 +86,7 @@ async function removeIndex(itemIds: string[]): Promise<void> {
   );
 }
 async function rejectIndexWrites(onlyMarked = false): Promise<void> {
-  // Fault injection is database-only; no production API can make an index upsert fail on demand.
-  // The interpolated fragment is one of two closed SQL constants, never fixture content.
+  // No production API makes an index upsert fail; the fragment is one of two closed SQL constants.
   const whenClause = onlyMarked ? "WHEN (NEW.search_vector @@ plainto_tsquery('czech', 'rejectChunk'))" : "";
   await admin.query(`CREATE FUNCTION reject_item_search_test() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN RAISE EXCEPTION 'test index failure'; END $$;
@@ -278,7 +277,7 @@ describe("item search create/update hooks", () => {
       const item = await task();
       await link(item.databaseId, "project", item.id, project.id);
       expect(await has(item.id, "Billing")).toBe(false);
-      // Edge fan-out is deferred to #1652; the next item update runs the indexing hook.
+      // The next item update runs the indexing hook.
       await cp.updateItem({ databaseId: item.databaseId, itemId: item.id, propertiesPatch: { name: "Invoice" } });
       expect(await has(item.id, "Invoice Billing Finance")).toBe(true);
     });
@@ -499,7 +498,7 @@ describe("item search create/update hooks", () => {
           });
         }
         if (descriptor.key === "events") {
-          // The identity of a materialized occurrence (issue gh-1843): written only by the calendar module.
+          // The identity of a materialized occurrence, written only by the calendar module.
           expect(props.rows.find((property) => property.key === "seriesId")).toEqual({
             key: "seriesId",
             type: "text",
@@ -515,10 +514,9 @@ describe("item search create/update hooks", () => {
           if (descriptor.key === "tasks" && property.key === "seriesId") {
             continue;
           }
-          // An event's seriesId is the system-owned identity of a materialized occurrence (issue gh-1843), not searchable
-          // text (asserted below); its occurrenceDate is a date property and is not selected here.
+          // An event's seriesId is the system-owned occurrence identity, not searchable text (asserted below).
           if (descriptor.key === "events" && property.key === "seriesId") continue;
-          // An event's iCalendar UID is a system identifier (issue #1599), not searchable text (asserted below).
+          // An event's iCalendar UID is a system identifier, not searchable text (asserted below).
           if (descriptor.key === "events" && property.key === "icalUid") continue;
           expect(descriptor.searchFields).toContain(property.key);
         }
@@ -585,7 +583,7 @@ describe("tenant item search backfill task", () => {
          JOIN graphile_worker._private_job_queues q ON q.id = j.job_queue_id WHERE t.identifier = $1 ORDER BY j.key`,
         [taskName],
       );
-      // Graphile Worker 0.17.3: queue name is only exposed by its private queue table.
+      // The queue name is only exposed by graphile-worker's private queue table.
       expect(jobs.rows).toHaveLength(2);
       expect(new Set(jobs.rows.map((row) => row.key)).size).toBe(2);
       expect(jobs.rows.every((row) => row.queue_name === `item-search-index:${tenant}`)).toBe(true);
@@ -658,8 +656,7 @@ describe("tenant item search backfill task", () => {
         let appearing: IndexRow | undefined;
         await overlapBackfill(item.databaseId, true, finish, async (client) => {
           await indexItem(client, item.id);
-          // An intentionally different document makes overwriting the winning row observable
-          // independently of timestamps; the public item API cannot supply an arbitrary vector.
+          // A different document makes overwriting the winning row observable; the item API cannot supply an arbitrary vector.
           await reindexItemSearch(client, {
             itemId: item.id,
             databaseId: item.databaseId,
@@ -716,8 +713,7 @@ describe("tenant item search backfill task", () => {
       foreignId = item.id;
       foreignDb = database.id;
     });
-    // Issue #1652: the title property queued the other tenant's own backfill of its collection. Run it
-    // before simulating an unindexed item, so only this tenant's jobs run below.
+    // The title property queued the other tenant's own backfill; run it first so only this tenant's jobs run below.
     await runQueuedBackfill();
     await runInTenant(other, () => removeIndex([foreignId]));
     await runInTenant(tenant, async () => {

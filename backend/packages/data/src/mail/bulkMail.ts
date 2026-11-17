@@ -1,4 +1,4 @@
-/** The raw header values the bulk-mail detector looks at; `null`/`undefined` means the header was absent. */
+/** `null`/`undefined` means the header was absent. */
 export interface BulkMailHeaders {
   listUnsubscribe?: string | null;
   listId?: string | null;
@@ -14,9 +14,8 @@ const BULK_PRECEDENCE_VALUES = new Set(["bulk", "list", "junk"]);
 const AUTOMATIC_SENDER_LOCAL_PART = /^(no-?reply|do-?not-?reply|mailer-daemon|notifications?)$/i;
 
 /**
- * True when a message looks like bulk or automatic mail (newsletter, notification, auto-reply) rather
- * than mail from a person. Header values arrive from the outside world, so every input is treated as
- * untrusted: a missing or non-string value counts as absent, and nothing here throws.
+ * True for bulk or automatic mail (newsletter, notification, auto-reply). Headers are untrusted:
+ * a non-string value counts as absent and nothing here throws.
  */
 export function detectBulkMail(input: DetectBulkMailInput): boolean {
   if (typeof input.listUnsubscribe === "string" || typeof input.listId === "string") return true;

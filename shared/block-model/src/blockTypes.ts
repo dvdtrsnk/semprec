@@ -1,8 +1,8 @@
 /**
- * The closed registry of block type keys and their field rules, from
- * `docs/adr/2026-10-28-block-model-for-page-documents.md`. The keys are stored in
- * `sys:flavour`; labels are UI copy and live outside the stored model. Every type carries `text`; a `page` block
- * carries its title there as plain text (`docs/adr/2026-10-29-subpages-are-items-of-a-hidden-pages-database.md`).
+ * The closed registry of block type keys and their field rules
+ * (`docs/adr/2026-10-28-block-model-for-page-documents.md`). Keys are stored in `sys:flavour`; labels
+ * are UI copy outside the stored model. Every type carries `text`; a `page` block carries its title
+ * there as plain text.
  */
 export const BLOCK_TYPES = ["text", "h1", "h2", "h3", "bullet", "number", "todo", "quote", "page"] as const;
 

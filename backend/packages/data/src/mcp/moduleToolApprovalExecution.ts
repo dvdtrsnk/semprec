@@ -15,9 +15,8 @@ import {
 import { logger } from "./logger.js";
 
 /**
- * The tool as the requesting run can use it now, or `undefined` when it cannot: no registry is
- * configured, the run or its project is gone, or the tool is not offered to the run any more (its
- * module is inactive, its capability is no longer granted, or the manifest no longer declares it).
+ * `undefined` when no registry is configured, the run or project is gone, or the tool is no longer offered
+ * (inactive module, revoked capability, or dropped from the manifest).
  */
 async function findModuleTool(
   pool: Pool,
@@ -35,16 +34,12 @@ async function findModuleTool(
 }
 
 /**
- * What becomes of one claimed module-tool request (issue #1791). The caller holds the execution
- * claim, so no other delivery gets here for this request. In order:
- * 1. The tool is looked up again through `ModuleRegistry` for the requesting run; a tool that is not
- *    offered any more is a `toolUnavailable` error outcome and the handler does not run.
- * 2. The tool's snapshot is read again and compared with the hash stored when the request was
- *    created; a different hash (also a snapshot that appeared or disappeared) is a `sourceChanged`
- *    error outcome and the handler does not run. A snapshot that cannot be read is a `callFailed`
- *    error outcome and the handler does not run.
- * 3. Otherwise the handler runs once with the stored arguments. Its own error result, and anything
- *    it throws, are a `callFailed` error outcome; the throw is logged, and its message is not stored.
+ * The caller holds the execution claim. In order:
+ * 1. A tool no longer offered is `toolUnavailable`; the handler does not run.
+ * 2. A snapshot hash that differs from the stored one (or appeared/disappeared) is `sourceChanged`; an
+ *    unreadable snapshot is `callFailed`. The handler does not run.
+ * 3. Otherwise the handler runs once. Its error result or throw is `callFailed`; a throw is logged but its message
+ *    is not stored.
  */
 async function moduleToolOutcome(
   pool: Pool,
@@ -98,11 +93,8 @@ async function moduleToolOutcome(
 }
 
 /**
- * Settles one module-tool request that `claimApprovalRequestExecution` just claimed (issue #1791):
- * works out its outcome (`moduleToolOutcome`), then, in one transaction, records it guarded on the
- * request still being `queued`, posts the outcome message into the requesting thread and announces
- * the change. An outcome that finds the request already settled by another path is discarded and
- * logged, like the MCP outcome in `handleApprovalRequestExecuteTask`.
+ * Records the outcome `queued`-guarded, posts the outcome message and announces, in one transaction. An outcome
+ * for an already-settled request is discarded and logged.
  */
 export async function executeClaimedModuleToolApproval(
   pool: Pool,

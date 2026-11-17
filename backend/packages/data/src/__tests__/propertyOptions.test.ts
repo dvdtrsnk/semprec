@@ -21,10 +21,7 @@ import {
 } from "../testSupport/testDb.js";
 import type { PropertyRow } from "../types.js";
 
-/**
- * The Health records `tags` options a seeded tenant starts with, in stored order and exactly as stored: the seed gives
- * four of the six a color (issue #1705) and none a label.
- */
+/** As stored by the seed: four of the six have a color, none a label. */
 const SEEDED_TAGS: { key: string; color?: string }[] = [
   { key: "bloodTests", color: "#FF9500" },
   { key: "medication", color: "#AF52DE" },
@@ -46,7 +43,6 @@ function seed(tenantId: string): Promise<unknown> {
   return runInTenant(tenantId, () => seedSystem(runtime, createViewTypeRegistry()));
 }
 
-/** A property of the tenant's Health records, a schema-locked system database: `tags` is a multi_select, `status` a select. */
 async function healthProperty(tenantId: string, key: "tags" | "status" | "subject"): Promise<PropertyRow> {
   return runInTenant(tenantId, async () => {
     const database = await withTransaction(runtime, (client) =>
@@ -60,7 +56,6 @@ async function healthProperty(tenantId: string, key: "tags" | "status" | "subjec
   });
 }
 
-/** A select property of a database the tenant created itself, so no catalog names its options. */
 async function ownSelect(
   config: Record<string, unknown> = {},
   extra: { locked?: boolean; type?: "select" | "multi_select" } = {},
@@ -80,10 +75,7 @@ async function ownSelect(
 
 const storedRow = z.object({ version: z.string(), config: z.record(z.string(), z.unknown()) });
 
-/**
- * The property row as its tenant reads it on the runtime role. `version` is the row version (`xmin`): it changes with
- * every write to the row, including one that stores equal values.
- */
+/** `version` is `xmin`: it changes with every write, even one storing equal values. */
 async function stored(tenantId: string, propertyId: string): Promise<z.infer<typeof storedRow>> {
   return runInTenant(tenantId, async () => {
     const { rows } = await runtime.query<Record<string, unknown>>(
@@ -96,12 +88,10 @@ async function stored(tenantId: string, propertyId: string): Promise<z.infer<typ
 
 const storedOptionList = z.array(z.looseObject({ key: z.string() }));
 
-/** The stored options of a property, each checked to carry a key. */
 async function storedOptions(tenantId: string, propertyId: string): Promise<z.infer<typeof storedOptionList>> {
   return storedOptionList.parse((await stored(tenantId, propertyId)).config.options);
 }
 
-/** The search backfill jobs queued for one database (issue #1652), read through Graphile Worker's public jobs view. */
 async function backfillJobs(databaseId: string): Promise<string[]> {
   const { rows } = await admin.query<{ key: string | null; task_identifier: string }>(
     "SELECT key, task_identifier FROM graphile_worker.jobs ORDER BY id",
@@ -116,10 +106,7 @@ async function allJobKeys(): Promise<(string | null)[]> {
   return rows.map((job) => job.key);
 }
 
-/**
- * Runs `refused`, which must reject, and checks that the property row was not written, no job was queued and no
- * invalidation was sent.
- */
+/** `refused` must reject, leaving the row unwritten, no job queued and no invalidation sent. */
 async function expectNoEffect(
   tenantId: string,
   propertyId: string,
@@ -135,7 +122,7 @@ async function expectNoEffect(
   expect(invalidation).not.toHaveBeenCalled();
 }
 
-/** Resolves once `count` sessions wait for the row lock of the option write's `SELECT ... FOR UPDATE`; throws after about ten seconds. */
+/** Resolves once `count` sessions wait on the option write's `SELECT ... FOR UPDATE`; throws after ~10 s. */
 async function waitForOptionWritersBlocked(count: number): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const { rows } = await admin.query<{ waiting: number }>(
@@ -149,10 +136,7 @@ async function waitForOptionWritersBlocked(count: number): Promise<void> {
   throw new Error(`Fewer than ${count} option writers reached the property row lock`);
 }
 
-/**
- * Starts `writers` while another session holds the property's row lock, waits until every one of them is blocked on
- * it, then releases the lock: the writers were all in flight at once, each before its read of the options.
- */
+/** Holds the property's row lock until every writer is blocked on it, so all are in flight before reading the options. */
 async function runBlockedTogether<T>(
   propertyId: string,
   writers: (() => Promise<T>)[],
@@ -290,7 +274,6 @@ describe("select options on schema-locked databases (issue #1699)", () => {
 
       expect((await add("Bylinky")).key).toBe("bylinky");
       expect((await add("Bylinky!")).key).toBe("bylinky2");
-      // `bylinky3` is stored already, so the next free suffix is 4.
       expect((await add("Bylinky?")).key).toBe("bylinky4");
       expect((await add("!!!")).key).toBe("option");
       expect((await add("???")).key).toBe("option2");
@@ -450,7 +433,7 @@ describe("select options on schema-locked databases (issue #1699)", () => {
 
     it("refuses to extend a stored options array that the option validation does not accept", async () => {
       const property = await ownSelect({ options: [{ key: "one" }] });
-      // Raw SQL as the owner: the choke point refuses to write an option without a key, which only a legacy row holds.
+      // Raw SQL: the choke point refuses an option without a key, which only a legacy row holds.
       const corrupted = await admin.query("UPDATE properties SET config = $3::jsonb WHERE tenant_id = $1 AND id = $2", [
         first,
         property.id,
@@ -477,7 +460,6 @@ describe("select options on schema-locked databases (issue #1699)", () => {
 
       expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
       const options = await storedOptions(first, tags.id);
-      // The seeded options come first; the two new ones follow in whichever order their transactions ran.
       expect(options.slice(0, SEEDED_TAGS.length)).toEqual(SEEDED_TAGS);
       expect(options.slice(SEEDED_TAGS.length).sort((a, b) => a.key.localeCompare(b.key))).toEqual([
         { key: "bylinky", label: "Bylinky" },
@@ -778,7 +760,6 @@ describe("select options on schema-locked databases (issue #1699)", () => {
       expect(await allJobKeys()).toEqual(jobsBefore);
       expect(invalidation).not.toHaveBeenCalled();
 
-      // The same writes on the tenant's own property succeed, and stay in that tenant.
       const added = await inSecond(() => chokePoint.addPropertyOption(secondTags.id, { label: "Bylinky" }));
       const updated = await inSecond(() =>
         chokePoint.updatePropertyOption(secondTags.id, "medication", { label: "Pills", color: "#000000" }, "en"),

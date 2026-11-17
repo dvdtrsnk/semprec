@@ -21,18 +21,9 @@ const defaultPushBadgeSenders: PushBadgeSenders = {
 };
 
 /**
- * The `pushBadgeRefresh` job's handler (issue #1891): computes the badge of `userId` when it runs
- * (`computeBadgeForUser`) and sends it, as a badge-only push, to every active APNs registration of that user.
- * Web Push registrations are not sent to. `userId` must be the user of the job's own tenant (the tenant of its
- * envelope); for any other user the job computes and sends nothing. It writes no `push_deliveries` row: a badge
- * update is not a delivery of a notification, and the ledger has one row per notification and registration.
- *
- * Every registration is tried. A registration the provider reports dead (`permanent-failure`) is revoked, as the
- * fan-out job revokes it. `not-configured` neither revokes nor retries, because the gap is the server's and a
- * retry would meet it again; it is logged once per job. A `transient-failure` is thrown after the other
- * registrations were tried, so the queue runs the job again, up to its attempts; the retry computes the badge
- * again and sends it to every remaining registration, which is harmless because a badge update sets a value.
- * A payload that is not a user id fails the job.
+ * APNs only. Writes no `push_deliveries` row: a badge update is not a notification delivery.
+ * Failure handling mirrors the fanout job; resending on retry is harmless because a badge sets a
+ * value.
  */
 export async function handlePushBadgeRefreshTask(
   pool: Pool,
@@ -41,8 +32,7 @@ export async function handlePushBadgeRefreshTask(
 ): Promise<void> {
   const input = pushBadgeRefreshPayloadSchema.parse(payload);
   const work = await withTransaction(pool, async (client) => {
-    // `push_subscriptions` is not row-level secured, so the job's tenant is applied here: a user other than the
-    // tenant's own is treated like a missing one.
+    // `push_subscriptions` has no RLS, so the job's tenant is enforced here.
     if ((await getTenantUserId(client)) !== input.userId) return null;
     const registrations = await listPushSubscriptionsForUser(client, input.userId);
     const apnsRegistrations = registrations.filter(

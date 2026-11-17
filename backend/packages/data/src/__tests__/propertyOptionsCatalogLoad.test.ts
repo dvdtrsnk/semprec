@@ -6,10 +6,7 @@ import * as registryLoader from "../manifest/fullModuleRegistry.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-/**
- * The option writes of issue #1699 read the module catalogs through a resolver that `propertyOps.ts` builds once per
- * process. Its load has this file to itself, because a built resolver stays for the rest of a test file.
- */
+/** The option writes' catalog resolver is built once per process, so its load needs a test file of its own. */
 describe("the catalog load of the select option writes (issue #1699)", () => {
   let admin: Pool;
   let runtime: Pool;

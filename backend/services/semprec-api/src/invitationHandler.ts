@@ -8,9 +8,9 @@ import { createClientIpThrottle, type ClientIpThrottle, type ThrottleReservation
 import { logger } from "./logger.js";
 
 export interface InvitationRequestListenerOptions {
-  /** Read the throttle key from the last `X-Forwarded-For` hop (see `clientIpFromRequest`). */
+  /** Read the throttle key from the last `X-Forwarded-For` hop. */
   trustProxy: boolean;
-  /** Per-client-address throttle; defaults to one fresh limiter per listener. */
+  /** Defaults to one fresh limiter per listener. */
   clientIpThrottle?: ClientIpThrottle;
 }
 
@@ -26,8 +26,8 @@ function errorName(err: unknown): string {
 }
 
 /**
- * The body's `token` and `password`, both non-empty strings, and its optional `displayName`, which
- * `acceptInvitation` validates before any lookup; anything else is a 400 naming the field.
+ * `acceptInvitation` validates `displayName` before any lookup; anything else is a 400 naming the
+ * field.
  */
 function parseAcceptBody(raw: unknown): { token: string; password: string; displayName: unknown } {
   if (!isRecord(raw)) throw new ValidationError("Request body must be a JSON object");
@@ -42,15 +42,12 @@ function parseAcceptBody(raw: unknown): { token: string; password: string; displ
 }
 
 /**
- * Handles `POST /api/invitations/accept` (issue #1087), the one way to create an account besides
- * `POST /api/setup`. There is no session yet, so the single-use invitation token is the credential:
- * an unusable token gets the same 404 whatever the reason (`acceptInvitation`), and the route never
- * reveals which one applied.
+ * The one way besides `POST /api/setup` to create an account. With no session, the single-use token
+ * is the credential: an unusable token gets the same 404 whatever the reason.
  *
- * Per client address, under the `invitationAccept` limit of `clientIpThrottle.ts` (the limiter type
- * `authHandler.ts` also uses for login and password reset): a request over the limit is answered 429
- * before its body is read. In-flight requests hold reservations; completed unusable tokens remain
- * counted, while validation failures, oversized bodies, successes and unexpected failures release them.
+ * Throttled per client address under `invitationAccept`; over the limit answers 429 before the body
+ * is read. Completed unusable tokens stay counted; validation failures, oversized bodies, successes
+ * and unexpected failures release their reservation.
  */
 export function createInvitationRequestListener(pool: Pool, options: InvitationRequestListenerOptions) {
   const clientIpThrottle = options.clientIpThrottle ?? createClientIpThrottle();
@@ -61,8 +58,8 @@ export function createInvitationRequestListener(pool: Pool, options: InvitationR
     try {
       if (req.method === "POST" && url.pathname === ACCEPT_PATH) {
         const ip = clientIpFromRequest(req, { trustProxy: options.trustProxy });
-        // Check and count in one synchronous step, so concurrent requests from one address cannot all pass
-        // the check before any is counted; the reservation is released for an outcome that must not count.
+        // Check and count in one synchronous step, so concurrent requests cannot all pass before
+        // any is counted.
         const acquisition = clientIpThrottle.tryAcquire("invitationAccept", ip);
         if (!acquisition.granted) {
           sendJson(
@@ -97,7 +94,7 @@ export function createInvitationRequestListener(pool: Pool, options: InvitationR
         sendJson(res, err.status, toPublicErrorBody(err));
         return;
       }
-      // The error's name only: an error's message can carry user content, such as an address or a token.
+      // The error's name only: its message can carry user content, such as an address or a token.
       logger.error(
         { errorName: errorName(err), method: req.method, path: url.pathname },
         "Unexpected error handling request",
@@ -107,8 +104,8 @@ export function createInvitationRequestListener(pool: Pool, options: InvitationR
   }
 
   /**
-   * Same rationale as `setupHandler.ts`: a synchronous boundary confines a rejection that escapes the
-   * try/catch to a 500 for that one request, instead of an unhandled rejection that ends the process.
+   * Confines an escaped rejection to a 500 for this request instead of an unhandled rejection
+   * ending the process.
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {

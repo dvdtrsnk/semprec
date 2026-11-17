@@ -32,7 +32,6 @@ async function newThread(): Promise<string> {
   return inTenant(() => withTransaction(runtime, async (client) => (await createMailThread(client)).id));
 }
 
-/** A live Emails item with a `mail_drafts` row, written the way the draft store writes it. */
 async function newDraft(
   threadId: string,
   options: { createdBy?: "user" | "agent"; sourceEmailItemId?: string | null } = {},

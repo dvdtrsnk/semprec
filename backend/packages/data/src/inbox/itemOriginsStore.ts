@@ -5,7 +5,6 @@ import type { ItemRow } from "../types.js";
 
 export type CaptureChannel = "inbox" | "transcript";
 
-/** How the capture time of a stored origin is known. */
 export type CaptureTimeBasis = "inboxCapture" | "unknown";
 
 const CAPTURE_CHANNELS: readonly string[] = ["inbox", "transcript"];
@@ -19,7 +18,7 @@ function isCaptureTimeBasis(value: string): value is CaptureTimeBasis {
   return CAPTURE_TIME_BASES.includes(value);
 }
 
-/** Where a confirmed proposal's created items came from; shared by every item one confirm creates. */
+/** Shared by every item one confirm creates. */
 export interface ItemOriginSource {
   proposalId: string;
   inboxItemId: string | null;
@@ -29,10 +28,7 @@ export interface ItemOriginSource {
   captureChannel: CaptureChannel;
 }
 
-/**
- * Records the origin of each item a confirm created, in the confirm's own transaction. A row that
- * already exists for an item is left untouched, so a replayed write never changes or duplicates it.
- */
+/** An existing row is left untouched, so a replayed write never changes or duplicates it. */
 export async function insertItemOrigins(
   client: PoolClient,
   itemIds: string[],
@@ -55,15 +51,14 @@ export async function insertItemOrigins(
   );
 }
 
-/** Removes the origin row of a permanently deleted item; no row is a legitimate outcome (the item was not created by a proposal). */
+/** No row is a legitimate outcome: the item was not created by a proposal. */
 export async function deleteItemOrigin(client: PoolClient, itemId: string): Promise<void> {
   await client.query("DELETE FROM item_origins WHERE item_id = $1", [itemId]);
 }
 
 /**
- * Removes the origin rows of `itemIds` that belong to the proposal `proposalId`, in the caller's transaction, and
- * returns how many it removed. An item with no row of that proposal is skipped: the undo of a confirmed card
- * (issue #1943) names every item it trashes, and a card that wrote no origin row (a `mailThread` card) has none.
+ * Items with no row of that proposal are skipped: the undo of a confirmed card names every item it trashes, and some
+ * cards (`mailThread`) write no origin rows.
  */
 export async function deleteItemOriginsOfProposal(
   client: PoolClient,
@@ -78,25 +73,23 @@ export async function deleteItemOriginsOfProposal(
   return rowCount ?? 0;
 }
 
-/** An item the same confirm created, as the origin read lists it. */
 export interface OriginSibling {
   itemId: string;
-  /** The item's `title` property value, or its id when its database declares none or the value is empty. */
+  /** Falls back to the item id when there is no title value. */
   label: string;
 }
 
-/** The origin of one item as `GET /api/items/:id/origin` answers it. */
 export interface ItemOrigin {
   proposalId: string;
-  /** Null for a transcript card, and for a row whose source Inbox item was never recorded. */
+  /** Null for a transcript card and when the source was never recorded. */
   inboxItemId: string | null;
-  /** Null when no capture time is recorded, always so for the basis `unknown`. */
+  /** Always null for the basis `unknown`. */
   capturedAt: string | null;
   captureTimeBasis: CaptureTimeBasis;
   captureChannel: CaptureChannel;
-  /** The `text` of the live source Inbox item; null for a transcript origin, and when the Inbox item is gone, trashed or has no text. */
+  /** Null for a transcript origin and when the Inbox item is gone, trashed or has no text. */
   sourceText: string | null;
-  /** The other live items of the same proposal, oldest first (ties by id): one entry per other item the same confirm created. The read sets no cap; the Inbox tick keeps at most `MAX_PROPOSAL_OPERATIONS` steps and the envelope schema sets none. */
+  /** Oldest first, ties by id; uncapped. */
   siblings: OriginSibling[];
 }
 
@@ -108,13 +101,11 @@ interface OriginDbRow {
   capture_channel: string;
 }
 
-/** Orders ISO timestamps and UUIDs, both ASCII, without a locale. */
 function compareAscii(left: string, right: string): number {
   if (left === right) return 0;
   return left < right ? -1 : 1;
 }
 
-/** The title-property value of `item`, read through its database's properties (cached per database in `titleKeys`); the item id when there is none. */
 async function labelOf(client: PoolClient, titleKeys: Map<string, string | null>, item: ItemRow): Promise<string> {
   if (!titleKeys.has(item.databaseId)) {
     const title = (await listPropertiesByDatabase(client, item.databaseId)).find(({ type }) => type === "title");
@@ -126,10 +117,8 @@ async function labelOf(client: PoolClient, titleKeys: Map<string, string | null>
 }
 
 /**
- * The origin of the live item `itemId` in the caller's tenant, or `null` when there is none to show: the item does not
- * exist in this tenant, is in the Trash, or was not created by a confirmed proposal (it has no `item_origins` row, as
- * one made by hand or by an agent). Callers cannot tell those apart, so an id of another tenant answers as an unknown one.
- * Reads only, in the caller's transaction and tenant scope.
+ * `null` for a missing, trashed or not-proposal-created item; callers cannot tell those apart, so another tenant's id
+ * answers as unknown. Read-only.
  */
 export async function readItemOrigin(client: PoolClient, itemId: string): Promise<ItemOrigin | null> {
   const [item] = await itemsStore.getItemsByIds(client, [itemId]);

@@ -1,8 +1,5 @@
-// The `calendarSendInvitationReply` task (issue gh-1953): after the user answered an incoming invitation, it sends the
-// iMIP `METHOD:REPLY` message to the organizer from the mailbox that received the invitation. The respond route
+// Sends the iMIP `METHOD:REPLY` to the organizer from the mailbox that received the invitation. The respond route
 // queues it in the answer's own transaction, so a rolled-back answer sends nothing.
-// Constrained by: docs/adr/2026-11-12-module-queue-tasks-read-their-composition-root-dependencies-from-a-binding.md,
-// docs/adr/2026-09-10-side-effects-follow-the-commit.md
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { enqueueJob } from "@semprec/queue";
@@ -31,13 +28,11 @@ import { getCatalogs, noAttachmentStorage } from "./eventInvitationJob.js";
 import { buildItipReply, type ItipReplyPartstat } from "./icalendarWriter.js";
 import { logger } from "./logger.js";
 
-/** The queue name of the task, as `calendarModuleManifest.ts` declares it. */
 export const CALENDAR_SEND_INVITATION_REPLY_TASK = "calendarSendInvitationReply";
 
-/** The answers that are replied to; `acknowledged` (a notice of a shared calendar) and `pending` are not. */
+/** `acknowledged` (a notice of a shared calendar) and `pending` are not replied to. */
 const REPLY_RESPONSES = ["accepted", "tentative", "declined"] as const;
 
-/** The payload of the task: the invitation, the answer and the moment it was stored on the invitation. */
 export const calendarSendInvitationReplyPayloadSchema = z
   .object({
     invitationId: z.uuid(),
@@ -55,10 +50,8 @@ const PARTSTATS: Readonly<Record<InvitationReplyPayload["response"], ItipReplyPa
 };
 
 /**
- * Queues the reply to one answer in the caller's open transaction, so the job exists only when that transaction
- * commits. The job key names the invitation and the moment of the answer: a repeat of the same answer collapses onto
- * the queued job, and a changed answer, which has its own `respondedAt`, gets a job of its own. The payload is
- * validated before it is queued; an input that does not fit it throws and rolls the caller back.
+ * Queued in the caller's transaction, so the job exists only if it commits. The job key includes `respondedAt`:
+ * a repeat of the same answer collapses onto the queued job, a changed answer gets its own.
  */
 export async function enqueueInvitationReply(client: PoolClient, input: InvitationReplyPayload): Promise<void> {
   const payload = calendarSendInvitationReplyPayloadSchema.parse(input);
@@ -67,7 +60,6 @@ export async function enqueueInvitationReply(client: PoolClient, input: Invitati
   });
 }
 
-/** The stored fields of an invitation that a reply is made from. */
 const storedInvitationSchema = z.object({
   uid: z.string().min(1),
   sequence: z.number().nullish(),
@@ -79,7 +71,6 @@ const storedInvitationSchema = z.object({
   respondedAt: z.string().nullish(),
 });
 
-/** What the task needs from the composition root that runs it. */
 export interface InvitationReplyDelivery {
   pool: Pool;
   transports: MailTransportFactory;
@@ -87,11 +78,7 @@ export interface InvitationReplyDelivery {
 
 let delivery: InvitationReplyDelivery | null = null;
 
-/**
- * Binds the dependencies the task handler uses to the process (`null` unbinds). The API queue runtime binds them
- * before it starts its runner, because a module task handler is an export of the manifest module and receives only
- * its payload.
- */
+/** A module task handler receives only its payload, so the queue runtime binds its dependencies here first. */
 export function setInvitationReplyDelivery(next: InvitationReplyDelivery | null): void {
   delivery = next;
 }
@@ -108,9 +95,9 @@ type EndReason =
   | "recipientRejected";
 
 interface ReplyPlan {
-  /** The address the message is sent from: the first address of the receiving mailbox. */
+  /** The first address of the receiving mailbox. */
   mailboxAddress: string;
-  /** The address the invitation was delivered to; the `ATTENDEE` of the reply. */
+  /** The address the invitation was delivered to. */
   attendeeEmail: string;
   organizerEmail: string;
   syncMode: SyncMode;
@@ -120,7 +107,7 @@ interface ReplyPlan {
 
 type Planned = { kind: "send"; mailboxId: string; plan: ReplyPlan } | { kind: "end"; reason: EndReason };
 
-/** Logs why a job ended without sending, by reason code and id; the addresses and the title stay out of the log. */
+/** Addresses and the title stay out of the log. */
 function endWithoutSending(payload: InvitationReplyPayload, reason: EndReason): void {
   const fields = { reason, invitationId: payload.invitationId, response: payload.response };
   // A superseded answer is the normal outcome of changing an answer twice, not a fault.
@@ -128,7 +115,6 @@ function endWithoutSending(payload: InvitationReplyPayload, reason: EndReason): 
   else logger.warn(fields, "An invitation reply was not sent");
 }
 
-/** The first item on the other end of the edges `itemId` holds on its relation `key`; `null` when it has none. */
 async function firstRelatedId(
   client: PoolClient,
   databaseId: string,
@@ -144,13 +130,8 @@ async function firstRelatedId(
 }
 
 /**
- * Reads, in one short transaction and before any network call, everything the reply is made of. It ends the job when
- * the invitation is missing or trashed or does not read, when its `respondedAt` is no longer the payload's (the
- * answer was changed again, and that answer has its own job), when it has no organizer address, and when the mailbox
- * it was received by is missing, trashed or has no address.
- *
- * The attendee is the address the invitation's source email was delivered to (`mail_message_meta`), else the
- * mailbox's first address.
+ * Runs in a short transaction before any network call. A `respondedAt` that differs from the payload's means the
+ * answer changed again and that answer has its own job.
  */
 async function planReply(client: PoolClient, payload: InvitationReplyPayload): Promise<Planned> {
   const invitations = await getDatabaseByModuleId(client, INVITATIONS_MODULE_ID);
@@ -196,7 +177,6 @@ async function planReply(client: PoolClient, payload: InvitationReplyPayload): P
   };
 }
 
-/** The subject and the plain-text body of the reply in the tenant user's language; the title stands in `{title}`. */
 async function renderReplyText(
   response: InvitationReplyPayload["response"],
   locale: string,
@@ -219,20 +199,9 @@ async function renderReplyText(
 }
 
 /**
- * Sends the reply to one answer.
- *
- * - Ends without sending, logging a reason code: an invitation that is missing, trashed or unreadable, an answer
- *   that was changed since the job was queued, an invitation with no organizer address, a mailbox that is missing,
- *   trashed or has no address, a message the builders refuse, a transport factory that refuses the mailbox as
- *   `validation_failed` or as `MailTransportUnavailableError` (no OAuth client for the provider, no stored SMTP
- *   credential, a sync mode without a transport), and an organizer address the server refused.
- * - Rethrows every other failure of the factory, of the MIME build and of the transport, so the queue retries with
- *   backoff. A retry sends the same message once more with the same UID and SEQUENCE, which an iTIP client reads as
- *   the same answer.
- *
- * The job runs in the tenant scope of its envelope; the transaction that reads is separate from the send and no
- * transaction is open while the message is built or sent. A failure that outlasts the retries leaves the answer as
- * it is recorded.
+ * Permanent failures end the job with a reason code; every other failure is rethrown so the queue retries. A retry
+ * resends with the same UID and SEQUENCE, which an iTIP client reads as the same answer. No transaction is open
+ * while the message is built or sent.
  */
 export async function sendInvitationReply(
   deps: InvitationReplyDelivery,
@@ -296,11 +265,7 @@ export async function sendInvitationReply(
   }
 }
 
-/**
- * The handler the calendar manifest names for the `calendarSendInvitationReply` task. It runs `sendInvitationReply`
- * with the dependencies bound by `setInvitationReplyDelivery`; with none bound it throws, and the queue retries the
- * job until a runtime that bound them runs it.
- */
+/** Throws while nothing is bound, so the queue retries until a runtime that bound the delivery runs it. */
 export async function handleCalendarSendInvitationReply(payload: unknown): Promise<void> {
   const parsed = calendarSendInvitationReplyPayloadSchema.parse(payload);
   if (delivery === null) throw new Error("No invitation reply delivery is configured for this composition root");

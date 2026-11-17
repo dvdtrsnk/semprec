@@ -1,10 +1,9 @@
-// The Events properties an invitation stands for (issues gh-1944 and gh-2007). The answer to an invitation writes them
-// into a new Event, and an organizer's update compares them with what the Event holds, so both read the same mapping.
+// The Events properties an invitation stands for. Answering an invitation writes them into a new Event and an
+// organizer's update compares them with the Event, so both share this mapping.
 import { z } from "zod";
 import { instantToWallClock } from "../calendarTime.js";
 import type { ItemRow } from "../types.js";
 
-/** The stored fields an Event is made from. `startsAt` and `endsAt` are ISO UTC instants, as the ingest stores them. */
 const eventSourceSchema = z.object({
   title: z.string().nullish(),
   place: z.string().nullish(),
@@ -20,16 +19,9 @@ function readInstant(invitationId: string, field: string, value: string): Date {
 }
 
 /**
- * The Events properties of an invitation: its title (as `name`) and place, `type` `meeting`, and its times as wall
- * clock in `timeZone`, the tenant's zone. An all-day invitation has no `timeFrom`, its `date` is the first day and
- * `endDate` the last day when that is another day; the ingest stores both days as midnight UTC. A timed one takes `date`
- * and `timeFrom` from its start and, when it has an end, `timeTo` from it, with `endDate` when the end is on another
- * day. Without an end, or with an end that is the start's own minute, the Events pre-write transform supplies `timeTo`.
- * A title or place the invitation does not carry is a key left out.
- *
- * Pure: it reads `invitation.properties` only, so the properties an organizer's update is about to store can be mapped
- * the same way as the stored ones. An invitation with no `startsAt` text throws a plain `Error` naming the invitation,
- * and one whose `startsAt` or `endsAt` is no instant throws a plain `Error` naming the invitation and the field.
+ * Times become wall clock in `timeZone` (the tenant's zone); all-day days are stored as midnight UTC. Without an
+ * end the Events pre-write transform supplies `timeTo`. Pure over `invitation.properties`, so an organizer's
+ * not-yet-stored update maps the same way.
  */
 export function invitationEventFields(
   invitation: Pick<ItemRow, "id" | "properties">,
@@ -51,9 +43,8 @@ export function invitationEventFields(
     times.timeFrom = from.time;
     if (end !== null) {
       const to = instantToWallClock(end, timeZone);
-      // An end that reads as the start's own minute (a zero-length meeting, which several calendar clients send) is
-      // no end: `timeTo` equal to `timeFrom` would be refused, so the Events default end applies. An end before the
-      // start is a malformed invitation and stays refused by the Events rules.
+      // A zero-length meeting (several clients send them) counts as no end, since `timeTo` equal to `timeFrom`
+      // would be refused. An end before the start stays refused by the Events rules.
       const zeroLength = end.getTime() >= start.getTime() && to.date === from.date && to.time === from.time;
       if (!zeroLength) {
         times.timeTo = to.time;

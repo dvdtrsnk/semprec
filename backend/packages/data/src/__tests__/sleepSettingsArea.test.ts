@@ -13,7 +13,6 @@ import { AREAS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { sleepNightsGet } from "../sleep/sleepRouteHandlers.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// Each test builds one or two tenants with their couple of dozen system databases.
 const SEEDING_TEST_TIMEOUT_MS = 90_000;
 
 const USER = { writerKind: "user" } as const;
@@ -72,7 +71,6 @@ interface AreaRelationRow {
   edge_count: number;
 }
 
-/** The `area` property of `sleepSettings` with its relation definition and edge count, as the runtime role sees them. */
 function areaRelation(t: TenantFixture): Promise<AreaRelationRow[]> {
   return inTenant(t.tenantId, async (client) => {
     const { rows } = await client.query<AreaRelationRow>(
@@ -89,7 +87,6 @@ function areaRelation(t: TenantFixture): Promise<AreaRelationRow[]> {
   });
 }
 
-/** How many properties `sleepSettings` has under any key `area`, with or without a relation definition. */
 async function areaPropertyCount(t: TenantFixture): Promise<number> {
   return inTenant(t.tenantId, async (client) => {
     const { rows } = await client.query<{ count: number }>(
@@ -100,7 +97,6 @@ async function areaPropertyCount(t: TenantFixture): Promise<number> {
   });
 }
 
-/** The relation as a tenant-independent value: what the seed must produce. */
 function expectedRelation(t: TenantFixture) {
   return {
     name: null,
@@ -131,7 +127,7 @@ function relationValue(row: AreaRelationRow) {
   };
 }
 
-/** Removes the `area` property and its definition, leaving the state of a tenant seeded before issue gh-1833. */
+/** The state of a tenant seeded before the `area` relation existed. */
 async function removeAreaRelation(t: TenantFixture): Promise<void> {
   await inTenant(t.tenantId, async (client) => {
     // Raw SQL: the settings schema is locked, so no production path deletes a property of it.
@@ -171,7 +167,6 @@ async function connect(t: TenantFixture, targetItemId: string) {
   );
 }
 
-/** The ids the settings item's `area` property points at, read through the choke point. */
 async function areaTargets(t: TenantFixture): Promise<string[]> {
   const relationPropertyId = await areaPropertyId(t);
   const edges = await runInTenant(t.tenantId, () =>
@@ -182,7 +177,6 @@ async function areaTargets(t: TenantFixture): Promise<string[]> {
 
 const nightsBody = z.object({ areaId: z.string().nullable(), planCount: z.number() }).passthrough();
 
-/** `areaId` of `GET /api/sleep/nights`, parsed from what JSON carries. */
 async function nightsAreaId(tenantId: string): Promise<string | null> {
   const result = await runInTenant(tenantId, () => sleepNightsGet(dataPool)({ req: { url: NIGHTS_URL } }));
   expect(result.status).toBe(200);

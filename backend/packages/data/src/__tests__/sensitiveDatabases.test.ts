@@ -26,7 +26,6 @@ function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): 
   return runInTenant(tenantId, () => withTransaction(dataPool, fn));
 }
 
-/** The keys of the tenant's sensitive databases and how many databases it has, read through the runtime role. */
 async function sensitiveState(tenantId: string): Promise<{ sensitiveKeys: string[]; databaseCount: number }> {
   const databases = await inTenant(tenantId, (client) => databasesStore.listAllDatabases(client));
   return {
@@ -70,7 +69,6 @@ describe("sensitive databases (issue #1808)", () => {
 
       const state = await sensitiveState(tenantId);
       expect(state.sensitiveKeys).toEqual(EXPECTED_SENSITIVE_KEYS);
-      // The other databases exist and are not sensitive.
       expect(state.databaseCount).toBeGreaterThan(EXPECTED_SENSITIVE_KEYS.length);
     },
     SEEDING_TEST_TIMEOUT_MS,
@@ -131,7 +129,7 @@ describe("sensitive databases (issue #1808)", () => {
   it("lets an insert of the previous release, which omits the column, create a database that is not sensitive", async () => {
     const tenantId = await createTestTenant(adminPool);
 
-    // Raw SQL: the statement of the previous release, which does not name the column.
+    // Raw SQL: the previous release's statement, which does not name the column.
     const inserted = await withTenantTransaction(adminPool, tenantId, async (client) => {
       const result = await client.query<{ sensitive: boolean }>(
         "INSERT INTO databases (name) VALUES ('Previous release') RETURNING sensitive",

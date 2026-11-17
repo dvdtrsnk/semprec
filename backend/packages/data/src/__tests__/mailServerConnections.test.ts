@@ -37,12 +37,9 @@ interface TestCertificate {
 
 interface FakeServer {
   readonly port: number;
-  /** TCP connections accepted, before any TLS handshake. */
   readonly connections: () => number;
-  /** TLS handshakes that completed. */
   readonly secureConnections: () => number;
   readonly closedConnections: () => number;
-  /** Server names the clients sent in SNI, in order. */
   readonly serverNames: string[];
   close(): Promise<void>;
 }
@@ -106,7 +103,7 @@ function makeCertificate(commonName: string): TestCertificate {
   }
 }
 
-/** Makes `tls.connect` trust `certificate` for the connections of this test, so only the name check can refuse. */
+/** Makes `tls.connect` trust `certificate` for this test's connections, so only the name check can refuse. */
 function trustCertificate(certificate: TestCertificate): void {
   const connect = tls.connect;
   vi.spyOn(tls, "connect").mockImplementation(((options: tls.ConnectionOptions, listener?: () => void) =>
@@ -126,7 +123,7 @@ function trackSocket(sockets: Set<Socket>, socket: Socket): void {
   socket.on("error", () => undefined);
 }
 
-/** A loopback server that runs `session` for each connection. With `certificate` it speaks TLS and runs `session` after the handshake. */
+/** A loopback server that runs `session` per connection; with `certificate` it speaks TLS first. */
 async function startFakeServer(session: (socket: Socket) => void, certificate?: TestCertificate): Promise<FakeServer> {
   const sockets = new Set<Socket>();
   const serverNames: string[] = [];
@@ -181,7 +178,6 @@ async function startFakeServer(session: (socket: Socket) => void, certificate?: 
   return fake;
 }
 
-/** A loopback port with nothing listening on it, so a connection to it is refused. */
 async function closedPort(): Promise<number> {
   const server = createNetServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
@@ -190,7 +186,6 @@ async function closedPort(): Promise<number> {
   return port;
 }
 
-/** A minimal IMAP4rev1 server: greets, answers CAPABILITY, and accepts LOGIN only with `password`. */
 function imapSession(password: string, commands: string[] = [], holdLogin = false): (socket: Socket) => void {
   return (socket) => {
     socket.write("* OK fake IMAP server ready\r\n");
@@ -1304,9 +1299,8 @@ describe("openImapConnection (issue #1478)", () => {
 });
 
 /**
- * imapflow 1.7.6 stores the idle options it was constructed with as the client's own `maxIdleTime` and
- * `socketTimeout` fields, and its typings declare neither. This is the only observable effect of those
- * options on the client, so the tests read it here; `package.json` declares `^1.7.6` for imapflow.
+ * imapflow 1.7.6 stores the idle options as the client's own `maxIdleTime` and `socketTimeout` fields,
+ * undeclared in its typings. They are the only observable effect of those options, so the tests read them.
  */
 function imapflowField(client: ImapFlow, field: "maxIdleTime" | "socketTimeout"): unknown {
   return Reflect.get(client, field);

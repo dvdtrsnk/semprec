@@ -58,7 +58,7 @@ const GMAIL_SEND_AS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/settin
 const GRAPH_ME_URL = "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName,proxyAddresses";
 const REDIRECT_URI = "https://app.example.test/api/mail/oauth/callback";
 
-/** Values that must never leave the server: every test that reads a response, a log or an export looks for them. */
+/** Values that must never leave the server: every test reading a response, log or export looks for them. */
 const SECRETS = {
   code: "SENTINEL-AUTHORIZATION-CODE",
   accessToken: "SENTINEL-ACCESS-TOKEN",
@@ -77,14 +77,12 @@ interface ProviderCall {
   url: string;
   method: string;
   authorization: string | null;
-  /** The form body of a token request; null for the `GET`s. */
   form: URLSearchParams | null;
   signal: AbortSignal | null;
 }
 
 type ProviderRoute = (call: ProviderCall) => Response | Promise<Response>;
 
-/** A provider that answers each known URL from `routes` and records every request it received. */
 function fakeProvider(routes: Record<string, ProviderRoute>): { fetchImpl: typeof fetch; calls: ProviderCall[] } {
   const calls: ProviderCall[] = [];
   const fetchImpl: typeof fetch = async (input, init) => {
@@ -116,7 +114,6 @@ const tokens = (): Response =>
     token_type: "Bearer",
   });
 
-/** Google's three endpoints for one account; `overrides` replaces single answers. */
 function googleRoutes(overrides: Record<string, ProviderRoute> = {}): Record<string, ProviderRoute> {
   return {
     [GOOGLE_TOKEN_URL]: tokens,
@@ -149,7 +146,6 @@ let admin: Pool;
 let runtime: Pool;
 let caller: Caller;
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -159,7 +155,6 @@ async function newUser(tenantId: string): Promise<string> {
   return user.id;
 }
 
-/** A second tenant with its own system databases and user. */
 async function otherTenantCaller(): Promise<Caller> {
   const tenantId = await createTestTenant(admin);
   await provisionTenant(runtime, tenantId);
@@ -169,7 +164,6 @@ async function otherTenantCaller(): Promise<Caller> {
 const startBody = z.object({ authorizeUrl: z.string() }).strict();
 const completeBody = z.object({ mailboxId: z.uuid() }).strict();
 
-/** Calls the start route as `who`, the way the adapter does: inside the session's tenant. */
 async function start(
   provider: unknown,
   who: Caller = caller,
@@ -189,7 +183,6 @@ function stateOf(authorizeUrl: URL): string {
   return state;
 }
 
-/** Calls the complete route as `who` against `provider`, with only the members a deployment configures. */
 function complete(
   body: unknown,
   provider: { fetchImpl: typeof fetch },
@@ -200,7 +193,6 @@ function complete(
   return runInTenant(who.tenantId, () => handler({ identity: { user: { id: who.userId } }, body }));
 }
 
-/** The rejection of `promise`, failing when it resolves or rejects with something that is no `Error`. */
 async function caught(promise: Promise<unknown>): Promise<Error> {
   try {
     await promise;
@@ -218,7 +210,6 @@ interface StateRow {
   used_at: Date | null;
 }
 
-/** The row of `state`, read as the superuser so a row of any tenant is found. */
 async function stateRow(state: string): Promise<StateRow | undefined> {
   const { rows } = await admin.query<StateRow>(
     "SELECT user_id, provider, mailbox_item_id, used_at FROM mail_oauth_states WHERE state_hash = $1",
@@ -247,8 +238,8 @@ interface Connected {
 const NOTHING: Connected = { mailboxes: [], credentials: [], syncStates: [], jobs: [] };
 
 /**
- * Everything a connect writes, as `tenantId` sees it. The queue belongs to no tenant, so `jobs` is
- * every queued account sync, read as the superuser through graphile-worker's public `jobs` view.
+ * Everything a connect writes, as `tenantId` sees it. The queue belongs to no tenant, so `jobs` is every
+ * queued account sync, read as the superuser through graphile-worker's public `jobs` view.
  */
 async function connected(tenantId: string = caller.tenantId): Promise<Connected> {
   const rows = await inTenant(tenantId, async (client) => {
@@ -288,7 +279,6 @@ function storedRefreshToken(tenantId: string, mailboxId: string): Promise<string
   );
 }
 
-/** Every argument of every log call the data layer's two loggers received, as text. */
 function captureLogs(): () => string {
   const spies = [mailLogger, dbLogger].flatMap((target) =>
     (["trace", "debug", "info", "warn", "error", "fatal"] as const).map((level) => vi.spyOn(target, level)),
@@ -300,7 +290,6 @@ function expectNoSecret(text: string, secrets: readonly string[]): void {
   expect(secrets.filter((secret) => text.includes(secret))).toEqual([]);
 }
 
-/** The decompressed entries of the tenant's export archive, built by the production export job. */
 async function exportEntries(who: Caller): Promise<Array<{ name: string; content: Buffer }>> {
   const root = await mkdtemp(join(tmpdir(), "semprec-mail-oauth-export-"));
   try {
@@ -677,7 +666,7 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
   it("lets one of two sign-ins that write the same address at once create the mailbox, and answers the other 409 naming it", async () => {
     const states = [stateOf(await start("gmail")), stateOf(await start("gmail"))];
     // Each request holds its last provider answer until both have asked for it, so the two write
-    // transactions start together; whichever commits first, the assertions below hold.
+    // transactions start together.
     let waiting = 0;
     let releaseBoth: () => void = () => undefined;
     const bothWaiting = new Promise<void>((resolve) => {
@@ -760,7 +749,6 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
 
     it("refuses an expired state", async () => {
       const state = stateOf(await start("gmail"));
-      // Only the clock expires a state, so the test moves the expiry into the past itself.
       const moved = await admin.query(
         "UPDATE mail_oauth_states SET expires_at = now() - interval '1 second' WHERE state_hash = $1",
         [createHash("sha256").update(state, "utf8").digest("hex")],
@@ -1039,7 +1027,6 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
     expect(provider.calls[1]?.signal?.aborted).toBe(false);
     const deadline = armed[0]?.[0];
     if (deadline === undefined) throw new Error("the lookup armed no deadline");
-    // Runs the deadline now instead of waiting 15 seconds for it.
     deadline();
     const error = await outcome;
 
@@ -1117,26 +1104,19 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
   });
 });
 
-/** The refresh token an existing mailbox holds before it is reauthorized; it must never leave the server either. */
 const OLD_REFRESH_TOKEN = "SENTINEL-OLD-REFRESH-TOKEN";
-/** The account Google's fixture answers for (`googleRoutes`), as the store records it. */
 const GOOGLE_ACCOUNT = "connect.user@gmail.com";
 
 interface ExistingMailbox {
-  /** The item's `provider` property; `null` leaves it unset. */
   provider?: string | null;
-  /** The recorded provider account address; `null` records none. */
   address?: string | null;
-  /** `false` leaves the mailbox without a sync state row, as before its first discovery pass. */
   syncState?: boolean;
-  /** `false` leaves the mailbox without a stored credential. */
   credential?: boolean;
 }
 
 /**
- * A mailbox as an earlier connect left it, written by the store functions the connect flow uses,
- * holding `OLD_REFRESH_TOKEN`. No sync is queued for it, so a job a test finds was queued by the
- * route under test.
+ * A mailbox as an earlier connect left it, holding `OLD_REFRESH_TOKEN`. No sync is queued for it, so a
+ * job a test finds was queued by the route under test.
  */
 function existingMailbox(tenantId: string, options: ExistingMailbox = {}): Promise<string> {
   const { provider = "gmail", address = GOOGLE_ACCOUNT, syncState = true, credential = true } = options;
@@ -1164,13 +1144,11 @@ function existingMailbox(tenantId: string, options: ExistingMailbox = {}): Promi
   });
 }
 
-/** The password an IMAP mailbox signs in with; a refused reauthorization must leave it in place. */
 const IMAP_PASSWORD = "SENTINEL-IMAP-APP-PASSWORD";
 
 /**
- * A mailbox that syncs over IMAP and signs in with a password: sync mode `imap`, as a discovery pass
- * seeds it for the provider `generic`, an `app_password` credential and no provider account address,
- * which only the OAuth flows record.
+ * An IMAP mailbox with a password: sync mode `imap` (as discovery seeds for provider `generic`), an
+ * `app_password` credential and no provider account address, which only the OAuth flows record.
  */
 function passwordMailbox(tenantId: string): Promise<string> {
   return inTenant(tenantId, async (client) => {
@@ -1185,7 +1163,6 @@ function passwordMailbox(tenantId: string): Promise<string> {
   });
 }
 
-/** Changes the mailbox's `provider` the way its user can: through the generic item write, as owner `user`. */
 function relabel(tenantId: string, mailboxId: string, provider: string): Promise<void> {
   return inTenant(tenantId, async (client) => {
     const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
@@ -1197,7 +1174,6 @@ function relabel(tenantId: string, mailboxId: string, provider: string): Promise
   });
 }
 
-/** The type of the one credential `mailboxId` holds, or `null` when it holds none. */
 async function storedCredentialType(tenantId: string, mailboxId: string): Promise<string | null> {
   const { credentials } = await connected(tenantId);
   return credentials.find((credential) => credential.item_id === mailboxId)?.credential_type ?? null;
@@ -1213,11 +1189,9 @@ interface StoredMailbox {
     graph_delta_link: string | null;
   } | null;
   syncStatus: unknown;
-  /** Every queued account sync, as `connected` reads them. */
   jobs: string[];
 }
 
-/** What a reauthorization may change about `mailboxId`, as committed: read on other connections. */
 async function storedMailbox(tenantId: string, mailboxId: string): Promise<StoredMailbox> {
   const rows = await inTenant(tenantId, async (client) => {
     const syncState = await client.query<NonNullable<StoredMailbox["syncState"]>>(
@@ -1238,7 +1212,6 @@ async function storedMailbox(tenantId: string, mailboxId: string): Promise<Store
   };
 }
 
-/** Calls the reauthorize route as `who`, the way the adapter does: inside the session's tenant. */
 function reauthorizeResult(
   mailboxId: string,
   who: Caller = caller,
@@ -1250,14 +1223,12 @@ function reauthorizeResult(
   );
 }
 
-/** Starts a reauthorization of `mailboxId` as `who` and returns the provider URL the route answered. */
 async function reauthorize(mailboxId: string, who: Caller = caller): Promise<URL> {
   const result = await reauthorizeResult(mailboxId, who);
   expect(result.status).toBe(200);
   return new URL(startBody.parse(result.body).authorizeUrl);
 }
 
-/** A live-sync control that records each restart it is asked for and then runs `onRestart`. */
 function liveSyncSpy(onRestart?: () => Promise<void>): {
   control: NonNullable<MailOauthRouteDependencies["mailLiveSync"]>;
   restarted: string[];
@@ -1274,7 +1245,6 @@ function liveSyncSpy(onRestart?: () => Promise<void>): {
   };
 }
 
-/** Calls the complete route as `who` with the live-sync control a reauthorization needs. */
 function completeReauthorization(
   state: string,
   provider: { fetchImpl: typeof fetch },
@@ -1292,7 +1262,6 @@ function completeReauthorization(
   );
 }
 
-/** Google answering for the account `address` with the refresh token `refreshToken`. */
 function googleAccount(address: string, refreshToken: string = SECRETS.refreshToken): Record<string, ProviderRoute> {
   return googleRoutes({
     [GOOGLE_TOKEN_URL]: () =>
@@ -1734,7 +1703,6 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
     it("refuses a Gmail mailbox relabelled outlook when a Microsoft account of its address signs in, and keeps its Google token", async () => {
       const mailboxId = await existingMailbox(caller.tenantId);
       await relabel(caller.tenantId, mailboxId, "outlook");
-      // As above: the reauthorize route refuses this mailbox with 400.
       const { state } = await inTenant(caller.tenantId, (client) =>
         createMailOauthState(client, { userId: caller.userId, provider: "outlook", mailboxItemId: mailboxId }),
       );
@@ -1822,7 +1790,6 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
         await blocker.query("COMMIT");
         error = await outcome;
       } finally {
-        // A no-op after the commit; it ends the transaction when a step above failed.
         await blocker.query("ROLLBACK");
         blocker.release();
       }
@@ -1870,7 +1837,6 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
       await blocker.query("COMMIT");
       outcomes = [...(await settledFirst), ...(await settledSecond)];
     } finally {
-      // A no-op after the commit; it ends the transaction when a step above failed.
       await blocker.query("ROLLBACK");
       blocker.release();
     }
@@ -1929,7 +1895,6 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
     const state = stateOf(await reauthorize(mailboxId));
     const provider = fakeProvider(googleRoutes());
 
-    // `complete` mounts the route with the OAuth client and the outbound fetch only.
     const error = await caught(complete({ state, code: SECRETS.code }, provider));
 
     expect(error).not.toBeInstanceOf(ChokePointError);
@@ -1976,7 +1941,6 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
   });
 
   describe("with the live-sync root hosting Gmail watch lifecycles", () => {
-    /** A watch transport that records the credential every `users.watch` registration presented. */
     function recordingTransport(): { transport: GmailWatchTransport; registered: string[] } {
       const registered: string[] = [];
       return {
@@ -1992,7 +1956,10 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
       };
     }
 
-    /** The root as `semprec-api` composes it for Gmail: the watch lifecycle reads the stored credential in `start()`. */
+    /**
+     * The root as `semprec-api` composes it for Gmail: the watch lifecycle reads the stored credential in
+     * `start()`.
+     */
     function gmailWatchRoot(transport: GmailWatchTransport) {
       const startErrors: string[] = [];
       const watch = createGmailWatchLifecycleFactory(runtime, transport, {
@@ -2011,7 +1978,6 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
           return address;
         },
       });
-      // Counts every lifecycle the root creates, so "exactly one hosted" is what the counters say.
       const lifecycles: Array<{ starts: number; stops: number }> = [];
       const factory: MailLiveSyncLifecycleFactory = (account) => {
         const lifecycle = watch(account);

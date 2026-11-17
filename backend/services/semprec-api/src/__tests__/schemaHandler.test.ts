@@ -72,7 +72,6 @@ const sortSpec = z.union([
   z.strictObject({ system: z.enum(["createdAt", "updatedAt"]), direction: z.enum(["asc", "desc"]) }),
 ]);
 
-/** The view-hint fields of `/api/schema` (issues #1647, #1995), parsed rather than cast. */
 const viewHintsBody = z.object({
   databases: z.array(
     z.object({
@@ -202,7 +201,6 @@ describe("createSchemaRequestListener (issue #147)", () => {
         expect(tasks?.properties.find((property) => property.key === "flagged")?.name).toBe(
           tenant.locale === "cs" ? "Označeno" : "Flagged",
         );
-        // Issue #2009: the seed no longer creates the Tasks `persistent` property.
         expect(tasks?.properties.map((property) => property.key)).not.toContain("persistent");
       }
     } catch (error) {
@@ -305,8 +303,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
       const [malformed, untouched] = tenants;
       if (!malformed || !untouched) throw new Error("Expected two tenants");
       await runInTenant(malformed.id, async () => {
-        // Synthetic historical config: property.create/patch validate presets, so a malformed stored shape (a legacy
-        // row or a direct write) can only be produced in SQL.
+        // property.create/patch validate presets, so a malformed stored shape can only be produced in SQL.
         const write = async (databaseKey: string, config: Record<string, unknown>) =>
           (
             await runtime.query(
@@ -361,7 +358,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
     const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
     if (!database) throw new Error("Projects missing");
     const cp = createChokePoint(pool);
-    // In a tenant scope, as a request is: a Projects status update queues value-link propagation (issue gh-1869).
+    // In a tenant scope, as a request is: a Projects status update queues value-link propagation.
     await runInTenant(getTenantZeroId(), async () => {
       const item = await cp.createItem({
         databaseId: database.id,
@@ -393,7 +390,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
       type: "select",
       config: { options: [{ key: "one" }] },
     });
-    // The production property API refuses this synthetic legacy shape.
+    // The production property API refuses this shape.
     const changed = await pool.query("UPDATE properties SET config = $2::jsonb WHERE id = $1", [
       legacy.id,
       JSON.stringify({ options: [{ key: "one", color: "red" }] }),
@@ -702,7 +699,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
           }),
         ),
       });
-      /** The `tags` options of `GET /api/schema` as `{ key }` or `{ key, color }`: an option without a color has no `color` field. */
+      /** An option without a color has no `color` field. */
       const tagColors = async (headers: { Authorization: string }) => {
         const response = await fetch(`${base}/api/schema`, { headers });
         expect(response.status).toBe(200);
@@ -845,7 +842,6 @@ describe("createSchemaRequestListener (issue #147)", () => {
         },
       ],
     });
-    // Every other database, system or not, carries no areaFilter key at all.
     expect(body.databases.length).toBeGreaterThan(filtered.length);
     for (const db of body.databases.filter((candidate) => !filtered.includes(candidate))) {
       expect(Object.hasOwn(db, "areaFilter"), db.key ?? "").toBe(false);
@@ -854,8 +850,8 @@ describe("createSchemaRequestListener (issue #147)", () => {
 
   it("fails with a bare 500 and publishes no template when a declared property is missing from the tenant's schema (issue #1597)", async () => {
     const headers = await authHeader("en");
-    // Raw SQL: no API renames a locked system property. This is the drifted tenant schema (a manifest
-    // declaring a property the tenant does not have) that the compile check before publishing exists for.
+    // Raw SQL: no API renames a locked system property. This is the drifted tenant schema the pre-publish compile
+    // check exists for.
     const renamed = await pool.query(
       `UPDATE properties SET key = 'formerArea'
         WHERE key = 'area' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'companies' AND system)`,
@@ -1178,7 +1174,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
           .items.map((item) => item.id)
           .sort();
       };
-      // The seeded system-module projects are no user's projects, so the collection leaves them out too.
+      // The seeded system-module projects are no user's projects.
       const seeded = (await query(undefined)).filter((id) => !created.includes(id));
       expect(seeded.length).toBeGreaterThan(0);
       expect(await query(collectionFilter)).toEqual([active, longTerm, done, archived, noStatus].sort());

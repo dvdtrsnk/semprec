@@ -63,7 +63,6 @@ async function queuedSyncs() {
   return rows;
 }
 
-/** Issue #659: the mail flag-sync write moves from a direct `chokePoint/itemWrites.ts` import to `mailMessageFlagsItemUpdateHook`, run through the choke point's per-process registry. */
 describe("mailMessageFlagsItemUpdateHook, run through the choke point's registry (issue #659)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();

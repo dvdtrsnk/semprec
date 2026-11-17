@@ -4,7 +4,7 @@ import type { Pool } from "pg";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { getTenantZeroId, getTestPool, resetDatabase, withTenantTransaction } from "../testSupport/testDb.js";
 
-/** Issue #1069, the contract step of the per-tenant credential encryption: the schema admits only the tenant scheme. */
+/** The schema admits only the tenant credential scheme. */
 const CONSTRAINT = "external_credentials_scheme_tenant_only";
 
 let adminPool: Pool;
@@ -37,7 +37,7 @@ describe("external_credentials scheme constraint (issue #1069)", () => {
       storeCredential(client, { itemId, credentialType: "api_key", plaintext: "kept" }),
     );
 
-    // Raw SQL: since #1060 no writer produces a master row, so only SQL can attempt one.
+    // Raw SQL: no writer produces a master row, so only SQL can attempt one.
     const master = await errorOf(
       adminPool.query(
         `INSERT INTO external_credentials (tenant_id, item_id, credential_type, ciphertext, nonce, key_version, scheme)

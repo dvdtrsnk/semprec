@@ -24,38 +24,30 @@ export interface ResolvedModuleAgentTool {
   name: string;
   argumentSchema: Record<string, unknown>;
   acceptsArguments: (args: unknown) => boolean;
-  /** `true` for a tool declared with `requiresApproval`; its caller must defer the call instead of invoking it. */
+  /** The caller must defer the call instead of invoking it. */
   requiresApproval: boolean;
-  /** The declared risk class of the tool; `unclassified` when the manifest declares none. */
+  /** `unclassified` when the manifest declares none. */
   riskClass: RiskClass;
   /**
-   * The SHA-256 of the canonical JSON of what the tool's `snapshotExport` returns for `args`, read
-   * now; `null` when the tool declares no `snapshotExport`. Throws `ValidationError` for arguments
-   * the tool does not accept, and whatever the snapshot export throws.
+   * SHA-256 of the canonical JSON of the tool's `snapshotExport` for `args`; `null` without one. Throws
+   * `ValidationError` for unaccepted arguments.
    */
   snapshotOf: (args: unknown) => Promise<string | null>;
   /**
-   * `sensitive` is true when the handler marked its answer as content of a sensitive record (issue #1999); the caller
-   * that stores the tool result keeps it redacted, as for a generic-operation answer (issue #1827).
-   * `approvalRequestId` is the id of an approval request the handler itself filed (issue gh-1949, `mail.draft.send`); the
-   * caller that stores the tool result writes it into the result's details like the id of a deferred call's request.
+   * `sensitive`: the answer is content of a sensitive record and must be stored redacted. `approvalRequestId`: an
+   * approval request the handler itself filed (e.g. `mail.draft.send`), recorded in the stored result's details.
    */
   invoke: (args: unknown) => Promise<{ result: string; error: boolean; sensitive?: true; approvalRequestId?: string }>;
 }
 
 /**
- * The module agent tools `runId` (a run of `projectItemId`) may use. A tool declared with
- * `requiresApproval` is returned only with `options.includeApprovalGated`: a caller that does not
- * ask (the MCP endpoint) never sees it, so it cannot run the handler without an approval.
+ * The module agent tools a run of `projectItemId` may use.
  *
- * `effectiveCapabilities` is the upper bound of the caller: a capability of the project is used only when the set holds
- * it, core or a module's own. A session passes none or its own set; the MCP endpoint passes the capabilities its run
- * credential lists, core ids and the module capability ids the mint action accepted (issue gh-1956), so a credential
- * that does not list `mail.draft` never gets the tools of that capability, whatever its project holds.
- *
- * `options.mcpExposure` is set by the MCP endpoint for the caller of a run credential: a tool whose capability is a
- * module's own is then returned only when its manifest declares `mcp`. The endpoint passes `includeApprovalGated`
- * too (issue gh-1957): it files the approval request of a gated tool on a call instead of running the handler.
+ * - `requiresApproval` tools are returned only with `includeApprovalGated`, so a caller that does not ask cannot run
+ *   one without approval.
+ * - `effectiveCapabilities` bounds the project's capabilities (the MCP endpoint passes those its run credential
+ *   lists), so a credential without `mail.draft` never gets that capability's tools.
+ * - `mcpExposure` (MCP endpoint): a module-owned capability's tool is returned only when its manifest declares `mcp`.
  */
 export async function resolveModuleAgentToolsForRun(
   pool: Pool,
@@ -128,7 +120,7 @@ export async function resolveModuleAgentToolsForRun(
   });
 }
 
-/** The answer of a module tool handler, checked for the shape every handler promises (`result`, `error`). */
+/** Checks the shape every handler promises (`result`, `error`). */
 function toolResultOf(result: unknown): {
   result: string;
   error: boolean;
@@ -149,14 +141,10 @@ function toolResultOf(result: unknown): {
 export type ResolvedHumanModuleAgentTool = Pick<ResolvedModuleAgentTool, "name" | "argumentSchema" | "invoke">;
 
 /**
- * The module agent tools a human `/mcp` session may use as `userId` (issue gh-1956): the tools of the active modules
- * whose manifest declares `mcp`, each bound to the handler its `humanHandlerExport` builds with `dependencies`, the
- * container the composition root hands the module's custom routes. A session has no run and no project, so no
- * project grant applies: a tool is offered when its module is active, which is when its capability is registered.
- * The call runs as the user and needs no approval (docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md); a
- * tool that is not declared with `mcp` is never returned. A tool declared with `requiresApproval` and `mcp` (the
- * calendar write tools, issue gh-1957) is returned: the approval request is what an agent's proposal waits on, and a
- * session has no run to file one for, so its human handler runs as the user like the mail send.
+ * The tools a human `/mcp` session may use as `userId`: active modules' tools that declare `mcp`, bound to their
+ * `humanHandlerExport` built with `dependencies` (the container the module's custom routes get). No run or project,
+ * so no grant applies; calls run as the user without approval, including `requiresApproval` tools, since there is
+ * no run to file an approval for.
  */
 export async function resolveModuleAgentToolsForUser(
   pool: Pool,

@@ -11,29 +11,24 @@ import { assertProposalVersion, incompatibleStatusError } from "./proposalPrecon
 import { envelopeAllowsRestore } from "./proposalReferenceInvalidation.js";
 import { undoConfirmedProposalWithClient, type KeptItem } from "./undoConfirmedProposal.js";
 
-/**
- * The user's return of a decided card to the stack (issues #1937 and #1943), split out of `proposalActions.ts` to keep that file
- * under the ESLint line cap; `proposalActions.ts` re-exports `reopenProposalWithClient`, `ReopenProposalInput` and `ReopenProposalResult`, so
- * callers import them from there. The shared helpers this module takes from `proposalActions.ts` (`lockLiveProposal`)
- * are used only inside functions, so the import cycle does not matter at module load.
- */
+// Returns a decided card to the stack; re-exported from `proposalActions.ts`. `lockLiveProposal` is used only inside
+// functions, so the import cycle is harmless at module load.
 
 export interface ReopenProposalInput {
-  /** The card's `updatedAt` as the client read it; a different current value refuses the reopen of a `rejected` or `confirmed` card with a `ConflictError`. */
+  /** A value other than the card's `updatedAt` refuses reopening a `rejected` or `confirmed` card (`ConflictError`). */
   ifVersion?: string;
 }
 
-/** What a reopen answers: the card, and the items the undo of a confirmation left in place (always empty for any other reopen). */
+/** The card, and the items an undone confirmation left in place (empty for other reopens). */
 export interface ReopenProposalResult {
   item: ItemRow;
   keptItems: KeptItem[];
 }
 
 /**
- * True when the card keeps the `sourceDeleted` reason it had before it was discarded and that Inbox item is still
- * deleted. Discarding a card writes the status and the history only, so a card that was final-invalid (issue #1482) when
- * the user rejected it still holds its reason, and the stored envelope says nothing about the source. A source that came
- * back while the card was locked is no longer a reason: nothing marked the card then, because the tick skips a locked card.
+ * True when the card still holds the `sourceDeleted` reason it had when discarded and that Inbox item is still
+ * deleted. Discarding writes only status and history; a source restored while the card was locked never cleared the
+ * reason, because the tick skips locked cards.
  */
 async function holdsLiveSourceDeletion(client: PoolClient, proposal: ItemRow): Promise<boolean> {
   const reason = invalidReasonSchema.safeParse(proposal.properties.invalidReason);
@@ -43,33 +38,12 @@ async function holdsLiveSourceDeletion(client: PoolClient, proposal: ItemRow): P
 }
 
 /**
- * `POST /api/proposals/:id/reopen` (issues #1937 and #1943): returns a card the user decided on to the stack, so the undo of
- * a decision gives back the card with the values it had. Runs in the caller's transaction under the card's row lock.
- *
- * - A `proposed` card is returned unchanged, whatever `ifVersion` says, so a repeated call succeeds and writes nothing.
- * - A `rejected` card keeps its stored `proposal`, `aiProposal`, `userOverrides`, `userEditedKeys` and earlier
- *   history (`docs/adr/2026-11-14-a-rejected-proposal-reopens-without-recomputation.md`). Its stored `proposal` is
- *   validated as the tick validates a computed envelope (`envelopeAllowsRestore`) and the card becomes `proposed` when
- *   it passes, `invalid` when it does not. Nothing is recomputed. One history entry of kind `reopened` is appended
- *   and the Journal inbox recompute is enqueued. The `invalidReason` the card still holds from before its discard is
- *   cleared, because the envelope check decides the status again, with one exception: a `sourceDeleted` reason whose
- *   Inbox item is still deleted (`holdsLiveSourceDeletion`) is kept and the card stays `invalid`, as it was before the
- *   discard; the envelope check cannot see the source, and the tick brings the card back when the source is restored.
- *   This is the one transition out of `rejected`: `LOCKED_PROPOSAL_STATUSES` is not changed, so the tick and revise
- *   keep treating a `rejected` card as locked, and only this action writes the status back.
- * - A `confirmed` card has the writes of its confirmation reversed first (`undoConfirmedProposalWithClient`, following
- *   `docs/adr/2026-10-25-undoing-a-confirmed-proposal-reverses-its-recorded-writes.md`), in this transaction. It then
- *   becomes `proposed` with the envelope it was confirmed with, and its `resultItemId`, `resultLabel` and `results` are
- *   cleared. The options the confirmation created stay in the schema, so a stored `newOptions` entry that an option now
- *   has by its label is replaced by that option's key (`adoptCreatedNewOptions`, issue gh-1994) in the `proposal`, the
- *   `aiProposal` and the `userOverrides`, and the card can be confirmed again. The Files item that received a moved Inbox attachment cannot be reversed and is returned in `keptItems`.
- *   An item changed since the confirmation is a 409 `version_conflict` that names it, and nothing is written.
- * - Any other status (`computing`, `computeFailed`, `needsClarification`, `invalid`) is a 400 `validation_failed` on
- *   field `status` with `details.currentStatus`.
- *
- * `ifVersion` follows the check order of issue #1852: the status is judged first (so a stale version on a card that
- * cannot be reopened answers the 400 of the status), then the version (a 409 `version_conflict` with the card as
- * `details.current`), then the write. `actingUserId` addresses the realtime invalidations of the writes.
+ * `POST /api/proposals/:id/reopen`: returns a decided card to the stack under its row lock. `proposed` is returned
+ * unchanged. `rejected` keeps its values and is not recomputed: it becomes `proposed` when its stored `proposal`
+ * passes `envelopeAllowsRestore`, else `invalid`, keeping a `sourceDeleted` reason whose source is still deleted;
+ * this is the only transition out of `rejected`. `confirmed` first reverses its writes
+ * (`undoConfirmedProposalWithClient`) and adopts the options it created; a moved attachment's Files item is returned
+ * in `keptItems`. Other statuses are a 400 on `status`, judged before `ifVersion` (409).
  */
 export async function reopenProposalWithClient(
   client: PoolClient,
@@ -91,7 +65,7 @@ export async function reopenProposalWithClient(
   let updated: ItemRow;
   if (status === "confirmed") {
     keptItems = await undoConfirmedProposalWithClient(client, proposal, actingUserId);
-    // The undo leaves the options the confirmation created (issue gh-1994): the card uses them by key from now on.
+    // The undo leaves the options the confirmation created: the card uses them by key from now on.
     const adopted = await adoptCreatedNewOptions(client, proposal.properties);
     updated = await updateItemWithClient(
       client,

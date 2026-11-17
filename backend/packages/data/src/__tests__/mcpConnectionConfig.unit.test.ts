@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assertValidMcpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 
-/** A stdio config with one env entry, so each case only varies the name under test. */
 function stdioWithEnvName(name: string) {
   return { transport: "stdio", command: "my-server", env: { [name]: "value" } };
 }

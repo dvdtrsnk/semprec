@@ -15,11 +15,8 @@ import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 
 /**
- * Enumerates every system database, property, option, view type, and agent tool key from
- * the actual seeded state (issue #146) and fails when a key is missing from either locale
- * of its owning module's catalog — the "moving Czech labels without semantic changes and
- * adding complete English labels" acceptance criterion, checked mechanically rather than
- * by manual review of each catalog file.
+ * Enumerates every system database, property, option, view type and agent tool key from the seeded state and
+ * fails when either locale of its owning module's catalog lacks it.
  */
 function manifestPath(fileName: string): string {
   return new URL(`../${fileName}`, import.meta.url).href;
@@ -51,7 +48,6 @@ const MANIFEST_PATHS = [
   manifestPath("sleep/sleepModuleManifest.js"),
 ];
 
-/** The non-built-in view types this issue covers, each owned by a different manifest than "views". */
 const NON_BUILTIN_VIEW_TYPE_OWNERS: Record<string, string> = {
   [TEMPORAL_SWITCHER_VIEW_TYPE]: "systemDatabases",
   [LIBRARY_GRID_VIEW_TYPE]: "library",
@@ -88,8 +84,7 @@ describe("system i18n catalog coverage (issue #146)", () => {
     viewTypeRegistry = createViewTypeRegistry();
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
-    // The hidden Pages database the docs module declares is created on first use, not by the seed; create it the way
-    // production does so its properties are covered like every other declared database's.
+    // The docs module's hidden Pages database is created on first use, not by the seed; create it as production does.
     await runInTenant(getTenantZeroId(), () => withTransaction(pool, (client) => ensurePagesDatabase(client)));
 
     registry = new ModuleRegistry(() => new Set(ALL_MODULE_IDS));

@@ -9,7 +9,6 @@ import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import type { ItemRow } from "../types.js";
 
-/** The ids of the three Inbox databases a page-content proposal is made through. */
 export interface PageProposalDatabases {
   inboxId: string;
   typesId: string;
@@ -17,10 +16,9 @@ export interface PageProposalDatabases {
 }
 
 /**
- * Creates a `pageContent` proposal card for `target` through the production path: an active `pageContent` Inbox type,
- * an Inbox item of that type and one tick whose computation answers `{ target, properties }`, so the card holds the
- * validated envelope exactly as the tick stores it. `properties` is the v2 `{ markdown, placement, heading? }` shape.
- * The caller supplies the pool and the tenant scope, and confirms the card through the production confirm.
+ * A `pageContent` proposal card for `target` via the production path (Inbox type, item, one tick answering
+ * `{ target, properties }`), so the card holds the envelope exactly as the tick stores it. `properties` is
+ * `{ markdown, placement, heading? }`. The caller supplies pool and tenant scope.
  */
 export async function createMarkdownPageContentProposal(
   pool: Pool,
@@ -32,10 +30,9 @@ export async function createMarkdownPageContentProposal(
 }
 
 /**
- * Creates a `journalEntry` proposal card through the production path: an active `journal` Inbox type, an Inbox item of
- * that type and one tick whose computation answers `{ properties }`, so the server supplies the Journal database as
- * the target and the item's date as the default `date` (issue gh-1982). The caller supplies the pool and the tenant
- * scope, and confirms the card through the production confirm.
+ * A `journalEntry` proposal card via the production path; the tick answers `{ properties }` only, so the server
+ * supplies the Journal database as target and the item's date as default `date`. The caller supplies pool and
+ * tenant scope.
  */
 export async function createJournalEntryProposal(
   pool: Pool,

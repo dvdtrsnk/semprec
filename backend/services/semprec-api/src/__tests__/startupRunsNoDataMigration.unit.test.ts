@@ -5,28 +5,25 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * No service starts by running a data migration, a cutover or a backfill. The only deploy-time steps are the SQL
- * migrations and the queue schema, and both run in the deploy CLI (`db/runMigrationsCli.ts`) as the migrating
- * role. A service start runs outside any tenant scope, so under the production default of strict scope a data step
- * there would stop the process before it listens.
+ * No service starts by running a data migration, cutover or backfill: deploy-time steps run in the deploy CLI
+ * (`db/runMigrationsCli.ts`) as the migrating role. A service start runs outside any tenant scope, so under strict
+ * scope a data step there would stop the process before it listens.
  *
- * `ensureQueueSchema` and `grantQueueSchemaPrivileges` are deliberately not matched: they are idempotent schema
- * steps, each enters its own `runAsSystem("queue-schema", ...)`, and every queue runtime calls them at start.
+ * `ensureQueueSchema` and `grantQueueSchemaPrivileges` are not matched: idempotent schema steps, each in its own
+ * `runAsSystem("queue-schema", ...)`, which every queue runtime calls at start.
  */
 
 const DATA_MIGRATION_IDENTIFIER = /\brun[A-Za-z]*(Migration|Migrations|Cutover[A-Za-z]*|Backfill[A-Za-z]*)\b/;
 
 const servicesDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
-/** The first identifier of `text` that names a data migration, cutover or backfill runner, if any. */
 function findDataMigration(text: string): string | undefined {
   return DATA_MIGRATION_IDENTIFIER.exec(text)?.[0];
 }
 
 /**
- * The production `.ts` files under `<services>/*\/src`: not under an `__tests__` directory and not named
- * `*.test.ts`. The walk stays inside those directories, and a symbolic link is neither followed nor read
- * (`Dirent` reports a link as neither a directory nor a file), so only regular files are read.
+ * Production `.ts` files under `<services>/*\/src`, excluding `__tests__` and `*.test.ts`. Symbolic links are
+ * neither followed nor read (`Dirent` reports them as neither directory nor file).
  */
 function productionSourceFiles(services: string): string[] {
   const files: string[] = [];
@@ -46,7 +43,7 @@ function productionSourceFiles(services: string): string[] {
       try {
         walk(source);
       } catch (error) {
-        // A service without a `src` directory has nothing to scan; any other failure is a real one.
+        // A service without `src` has nothing to scan; any other failure is real.
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
       }
     }
@@ -54,7 +51,6 @@ function productionSourceFiles(services: string): string[] {
   return files.sort();
 }
 
-/** Every file of `services` that names a data migration, as `<file relative to services>: <identifier>`. */
 function offenders(services: string): string[] {
   const found: string[] = [];
   for (const file of productionSourceFiles(services)) {
@@ -92,8 +88,7 @@ describe("a service start runs no data migration", () => {
       write("semprec-a/src/queueRuntime.ts", "await runExampleSplitMigration(pool);\n");
       write("semprec-a/src/nested/deep.ts", "await runExampleCutoverMigration(pool);\n");
       write("semprec-a/src/clean.ts", "await ensureQueueSchema(pool);\n");
-      // Everything below is outside the scan: a test directory, a test file, another extension, a directory
-      // outside `src`, and a symbolic link to a file that would match.
+      // Everything below is outside the scan.
       write("semprec-a/src/__tests__/helper.ts", "await runExampleSplitMigration(pool);\n");
       write("semprec-a/src/queueRuntime.test.ts", "await runExampleSplitMigration(pool);\n");
       write("semprec-a/src/notes.md", "runExampleSplitMigration\n");

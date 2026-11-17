@@ -46,9 +46,9 @@ interface FakeProvider {
 }
 
 /**
- * Fake token endpoint recording every refresh token presented to it. `rotate` returns the token issued
- * in exchange (undefined = no rotation). With `valid` set, a presented token is single use and any
- * other token is rejected with `rejectStatus`.
+ * Fake token endpoint recording every refresh token presented. `rotate` returns the token issued in
+ * exchange (undefined = no rotation). With `valid` set, a token is single use and any other is rejected
+ * with `rejectStatus`.
  */
 function fakeProvider(options: {
   rotate?: (presented: string) => string | undefined;

@@ -2,15 +2,9 @@ import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@
 import { NumberFilterConfigSchema } from "@semprec/shared";
 import type { PropertyRow, PropertyType, RelationDefinitionRow } from "../types.js";
 
-/** The two locales `resolveCatalogLabel` resolves against (issue #236's scope note). */
 export type ManifestLocale = "cs" | "en";
 
-/**
- * Narrows an untrusted `users.locale` DB value (plain `string` at the type level, not a `cs|en`
- * union — see `auth/types.ts`) to `ManifestLocale`, the same way every locale-aware projection
- * (issue #147) does before calling `resolveCatalogLabel`. Shared by `schemaHandler.ts` and
- * `driftCheck.ts` so both narrow an arbitrary stored locale identically.
- */
+/** Narrows an untrusted stored locale; shared so every projection narrows identically. */
 export function toManifestLocale(locale: string): ManifestLocale {
   return locale === "cs" ? "cs" : "en";
 }
@@ -21,10 +15,7 @@ export interface ResolvedOption {
   color?: string;
 }
 
-/**
- * Typed projection of a property's stored config (issue #1360), not a dump of the stored object.
- * Select and multi_select options stay in `ResolvedProperty.options`, never here.
- */
+/** Typed projection, not a dump of the stored config. Select options live in `ResolvedProperty.options`. */
 export interface ResolvedPropertyConfig {
   default?: unknown;
   /** relation only; present together with `cardinality` when the relation definition is readable. */
@@ -32,9 +23,9 @@ export interface ResolvedPropertyConfig {
   cardinality?: RelationDefinitionRow["cardinality"];
   /** date only; `false` when the stored config has no value. */
   includeTime?: boolean;
-  /** number only (issue #1622): the valid stored presets, labels localized; absent when none is valid. */
+  /** number only: valid stored presets, labels localized; absent when none is valid. */
   filterPresets?: ResolvedFilterPreset[];
-  /** number only (issue #1622): the valid stored empty preset, label localized. */
+  /** number only. */
   emptyPreset?: { label: string; matchZero: boolean };
 }
 
@@ -47,13 +38,12 @@ export interface ResolvedFilterPreset {
 export interface ResolvedProperty {
   id: string;
   type: PropertyType;
-  /** Whether a filter can be built on this property (issue #1360). */
   filterable: boolean;
   key: string;
   name: string;
   owner: PropertyRow["owner"];
   locked: boolean;
-  /** Resolved select/multi_select option labels (issue #147) — absent for every other property type. */
+  /** select/multi_select only. */
   options?: ResolvedOption[];
   config: ResolvedPropertyConfig;
 }
@@ -67,14 +57,9 @@ export interface CatalogResolver {
 const SYSTEM_DATABASES_MODULE_ID = "systemDatabases";
 
 /**
- * Builds the dbKey -> catalogs lookup shared by every locale-aware projection (issue #147),
- * so `generatePermissionManifest` and the `/api/schema` projection resolve labels identically
- * instead of each carrying its own copy of this logic (and its own chance to drift or
- * reintroduce the unchecked-cast bug fixed here once, in `resolveProperty` below).
- *
- * A database's `owner_module_id` column stores the database *key* (e.g. "tasks"), not the
- * `ModuleManifest.id` that actually owns its i18n catalog (e.g. "systemDatabases") — this
- * resolves key -> owning module id once and caches each module's catalogs for reuse.
+ * Shared so the permission manifest and `/api/schema` resolve labels identically.
+ * `owner_module_id` stores the database key (e.g. "tasks"), not the module id that owns the
+ * catalog (e.g. "systemDatabases"), so this maps key -> module once and caches catalogs.
  */
 export async function createCatalogResolver(moduleRegistry: ModuleRegistry | undefined): Promise<CatalogResolver> {
   if (!moduleRegistry) {
@@ -111,12 +96,8 @@ function rawKeyFallback(override: string | null, key: string | null, id: string)
 }
 
 /**
- * Runtime guard for a select/multi_select property's `config.options`, which is stored as
- * `unknown` (via `PropertyRow.config: Record<string, unknown>`). Write-side validation
- * (`assertValidSelectOptions` in `propertiesStore.ts`) ensures conformance for options written
- * through the choke point, but this is a read-side DB row boundary — a legacy or directly
- * written row lacking a valid string `key` must be dropped here rather than resolved into a
- * catalog lookup key like `...option.undefined`.
+ * Read-side DB boundary: a directly written option without a string `key` is dropped rather than
+ * resolved into a lookup key like `...option.undefined`.
  */
 function filterValidOptions(rawOptions: unknown[]): { key: string; label?: string; color?: unknown }[] {
   return rawOptions.filter((o): o is { key: string; label?: string; color?: unknown } => {
@@ -139,11 +120,7 @@ export function resolveDatabaseName(
     : rawKeyFallback(dbName, dbKey, dbId);
 }
 
-/**
- * The search-field placeholder of a collection: the requested locale, then English, then `null`
- * (never the raw key). `dbKey` is the entry's database key, or `null` for a user-created
- * database, which reads the generic `collection.custom.searchPlaceholder` entry of `catalogs`.
- */
+/** Falls back to English, then `null` (never the raw key). A `null` `dbKey` reads the generic entry. */
 export function resolveDatabaseSearchPlaceholder(
   dbKey: string | null,
   catalogs: ModuleCatalogs | undefined,
@@ -154,11 +131,7 @@ export function resolveDatabaseSearchPlaceholder(
   return catalogs[locale][catalogKey] ?? catalogs.en[catalogKey] ?? null;
 }
 
-/**
- * `resolveDatabaseSearchPlaceholder` for a database row: a keyed database reads its owning
- * module's catalog, a user-created one (no key, not a system database) the system databases
- * module's generic entry. A keyless system database has no entry and resolves to `null`.
- */
+/** A keyless system database has no entry and resolves to `null`. */
 export async function resolveDatabasePlaceholderForRow(
   catalogResolver: CatalogResolver,
   database: { key: string | null; system: boolean },
@@ -178,10 +151,7 @@ const DEFAULT_TYPES: readonly PropertyType[] = ["select", "multi_select", "check
 const filterPresetSchema = NumberFilterConfigSchema.shape.filterPresets.element;
 const emptyPresetSchema = NumberFilterConfigSchema.shape.emptyPreset.unwrap();
 
-/**
- * A preset's display label (issue #1622): its literal `label`, else `labelKey` resolved against the owning module's
- * catalog for `locale` like an option label, else the `labelKey` text itself.
- */
+/** Literal `label`, else `labelKey` resolved, else the `labelKey` text itself. */
 function presetLabel(
   preset: { labelKey: string; label?: string },
   catalogs: ModuleCatalogs | undefined,
@@ -192,10 +162,7 @@ function presetLabel(
     : (preset.label ?? preset.labelKey);
 }
 
-/**
- * The number-filter presets of a stored `number` config, validated entry by entry at this DB-row boundary: a stored
- * preset that fails the shape (legacy or written directly) is dropped rather than failing the whole projection.
- */
+/** Validated per entry at this DB boundary: a malformed preset is dropped, not fatal. */
 function resolveNumberFilter(
   config: Record<string, unknown>,
   catalogs: ModuleCatalogs | undefined,
@@ -236,11 +203,7 @@ function resolveConfig(
   return config;
 }
 
-/**
- * The labels the catalogs give one option of a property (issue #1699): its Czech entry and its English entry, each
- * only when the catalog has one. Empty when no catalogs are given and for an option the catalogs do not name, such
- * as one added at runtime.
- */
+/** Only the locales whose catalog names the option; empty for runtime-added options. */
 export function catalogOptionLabels(
   catalogs: ModuleCatalogs | undefined,
   dbKey: string | null,
@@ -267,7 +230,7 @@ export function resolveProperty(
   const resolved: ResolvedProperty = {
     id: p.id,
     type: p.type,
-    // A number is filterable only through presets (issue #1360), and only valid stored presets count (issue #1622).
+    // A number is filterable only through valid stored presets.
     filterable: p.type === "number" ? config.filterPresets !== undefined : ALWAYS_FILTERABLE_TYPES.includes(p.type),
     key: p.key,
     name: propName,

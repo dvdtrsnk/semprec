@@ -46,7 +46,6 @@ const KAREL = { name: "Karel", address: "karel@example.test" };
 
 interface Fixture {
   mailboxId: string;
-  /** A mailbox of the tenant that has no address and no Drafts folder. */
   addresslessMailboxId: string;
   draftsFolderId: string;
   inboxId: string;
@@ -107,7 +106,6 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
     return { db, emailProperties, folderProperties, property };
   }
 
-  /** A mailbox of the tenant in scope with the address and the alias, a Drafts folder and an Inbox. */
   async function setup(): Promise<Fixture> {
     const { db, folderProperties, property } = await schema();
     return withTransaction(runtime, async (client) => {
@@ -144,7 +142,6 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
     });
   }
 
-  /** Ingests a received message into the Inbox of `f.mailboxId` as the sync worker does and returns its Emails item id. */
   async function receive(f: Fixture, options: ReceiveOptions = {}): Promise<string> {
     const { db, emailProperties, property } = await schema();
     const input: IngestEmailMessageInput = {
@@ -182,7 +179,6 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
     identity: { user: { id: USER_ID, locale } },
   });
 
-  /** The create route as the composition root mounts it, with the upload limit. */
   function createDraft(body: unknown, locale = "en", inTenant = tenant) {
     return runInTenant(inTenant, () =>
       createMailDraftCreateRouteHandler(runtime, { maxFileSizeBytes: UPLOAD_LIMIT_BYTES })(ctx(body, locale)),
@@ -216,7 +212,6 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
     return rows[0]?.n ?? -1;
   }
 
-  /** The Files items an email holds through `Emails.attachments`, trashed ones included. */
   async function attachmentEdgesOf(emailItemId: string): Promise<{ fileId: string; blobId: string; name: string }[]> {
     const { rows } = await runtime.query<{ file_id: string; blob_id: string; name: string }>(
       `SELECT f.id::text AS file_id, f.properties->'file'->>'blobId' AS blob_id, f.properties->>'name' AS name
@@ -231,7 +226,7 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
     return rows.map((row) => ({ fileId: row.file_id, blobId: row.blob_id, name: row.name }));
   }
 
-  /** The date a quote shows, derived with Luxon like the code and the system timezone of the tenant. */
+  /** The date a quote shows, derived with Luxon and the tenant's system timezone, as the code does. */
   async function shown(date: Date, locale: "en" | "cs"): Promise<string> {
     const zone = await getSystemTimezone(runtime);
     return DateTime.fromJSDate(date, { zone })
@@ -239,7 +234,6 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
       .toLocaleString({ dateStyle: "long", timeStyle: "short" });
   }
 
-  /** Stores `timezone` as the System settings timezone of the tenant, as the settings writer validates it with Luxon. */
   async function setTenantTimezone(timezone: string): Promise<void> {
     await admin.query(
       `UPDATE items SET properties = properties || jsonb_build_object('timezone', $2::text)
@@ -610,7 +604,7 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
       await runInTenant(tenant, async () => {
         const f = await setup();
         const source = await receive(f, { envelope: { to: [] }, bodyText: "Hi", date: SOURCE_DATE });
-        // The Emails item of a message that was synced before the envelope was stored has a sender and no envelope sender.
+        // A message synced before the envelope was stored has a sender and no envelope sender.
         await admin.query(
           'UPDATE items SET properties = properties || \'{"sender": "Old Sender <old@example.test>"}\'::jsonb WHERE id = $1',
           [source],

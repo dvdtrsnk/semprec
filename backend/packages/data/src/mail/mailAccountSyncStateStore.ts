@@ -7,17 +7,7 @@ import type { PoolClient } from "pg";
 export const SYNC_MODES = ["imap", "gmail_api", "graph_api"] as const;
 export type SyncMode = (typeof SYNC_MODES)[number];
 
-/**
- * A Mailbox's `provider` property (seedEmailModule.ts: gmail/outlook/icloud/generic) maps to
- * its default `sync_mode` — Gmail -> its native history-based API, Outlook -> its native
- * delta-based API, iCloud/generic -> plain IMAP (issue #26: "the original plan... turned out
- * to be the worse choice specifically where it matters most" for Gmail/Outlook). This is only
- * the pure mapping the issue's design describes. The OAuth connect flow of issue gh-1686
- * (`mail/mailOauthRouteHandlers.ts`) calls it when it creates the sync state of a new mailbox;
- * `ensureMailAccountSyncState` below takes an explicit `syncMode`, same as every adapter's
- * reconcile entry point does. `setSyncMode` remains the one path that changes an *existing*
- * account's mode (the issue's "manually switchable" escape hatch).
- */
+/** Gmail and Outlook default to their native APIs, everything else to IMAP. Only `setSyncMode` changes an existing account's mode. */
 export function defaultSyncModeForProvider(provider: string): SyncMode {
   switch (provider) {
     case "gmail":
@@ -52,7 +42,6 @@ export interface MailAccountSyncStateRow {
   lastFailureKind: MailSyncFailureKind | null;
 }
 
-/** The raw `mail_account_sync_state` row shape this module reads back from Postgres. */
 type MailAccountSyncStateDbRow = {
   item_id: string;
   sync_mode: string;
@@ -102,7 +91,7 @@ export interface EnsureMailAccountSyncStateInput {
   syncMode: SyncMode;
 }
 
-/** Idempotent: creates the row on first sync, otherwise a no-op — `syncMode` on an existing row is changed only via `setSyncMode` (an explicit user switch), never silently overwritten here. */
+/** Idempotent; never overwrites an existing row's `syncMode`. */
 export async function ensureMailAccountSyncState(
   client: Queryable,
   input: EnsureMailAccountSyncStateInput,
@@ -120,24 +109,16 @@ export async function ensureMailAccountSyncState(
 
 export interface EnsureMailAccountSyncStateOfLiveMailboxInput {
   itemId: string;
-  /** The tenant's Mailboxes database, which holds the item `itemId`. */
   mailboxesDatabaseId: string;
   syncMode: SyncMode;
 }
 
 /**
- * Live-sync discovery's seeding of a mailbox's sync state (issue sp-1272c2b9): returns the row of the
- * account as it is when it has one, with no lock and no write. Otherwise it takes a share lock on the
- * account's live Mailboxes item with `FOR SHARE SKIP LOCKED` and only then runs
- * `ensureMailAccountSyncState`; the lock is held until the caller's transaction ends. It returns `null`,
- * having written nothing, when that lock finds no row: the item is in the trash, gone, or row-locked by
- * another transaction (a removal in flight holds it `FOR UPDATE`). Under READ COMMITTED a removal that
- * committed before the statement started leaves no live row to lock, so a removed mailbox gets no row
- * back.
- *
- * It never waits for a lock, which is why it uses `SKIP LOCKED`: discovery drops an account whose
- * seeding failed from the pass, and the pool's statement timeout would cancel a wait behind a removal
- * that waits behind a sync pass (docs/adr/2026-11-15-live-sync-discovery-seeds-a-sync-state-only-under-a-non-waiting-share-lock-on-the-live-mailbox.md).
+ * Returns an existing row without locking. Otherwise seeds the row only under a `FOR SHARE SKIP
+ * LOCKED` lock on the live Mailboxes item (held to transaction end), returning `null` with no
+ * write if the item is trashed, gone, or locked by an in-flight removal. It never waits: a wait
+ * behind a removal queued behind a sync pass would hit the statement timeout (see
+ * docs/architecture/domain-mail-and-inbox.md#live-sync-root-and-hosted-lifecycles).
  */
 export async function ensureMailAccountSyncStateOfLiveMailbox(
   client: Queryable,
@@ -176,7 +157,7 @@ export async function lockMailAccountSyncState(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** Deletes the sync state of mailbox `itemId` (issue gh-1690); returns whether a row existed. A mailbox that never connected has none. */
+/** Returns whether a row existed; a never-connected mailbox has none. */
 export async function deleteMailAccountSyncState(client: Queryable, itemId: string): Promise<boolean> {
   const result = await client.query("DELETE FROM mail_account_sync_state WHERE item_id = $1", [itemId]);
   return (result.rowCount ?? 0) > 0;
@@ -186,7 +167,7 @@ export async function setSyncMode(client: Queryable, itemId: string, syncMode: S
   await client.query(`UPDATE mail_account_sync_state SET sync_mode = $2 WHERE item_id = $1`, [itemId, syncMode]);
 }
 
-/** Clears `gmail_history_id` back to NULL — the reaction to a `history.list` 404 (issue #26: "history older than what the API retains"), forcing the next sync to run a full resync of All Mail. */
+/** After a `history.list` 404: clears the cursor so the next sync does a full resync. */
 export async function invalidateGmailHistory(client: Queryable, itemId: string, reason: string): Promise<void> {
   await client.query(`UPDATE mail_account_sync_state SET gmail_history_id = NULL, last_error = $2 WHERE item_id = $1`, [
     itemId,
@@ -216,24 +197,14 @@ export async function recordGmailActivity(client: Queryable, input: RecordGmailA
 export interface RecordGmailWatchRegistrationInput {
   historyId: string;
   expiresAt: Date;
-  /** The already-normalized address of the Google account the watch was registered for — what `route_gmail_address` matches a Pub/Sub notification against. */
+  /** Normalized; the key `route_gmail_address` matches notifications against. */
   emailAddress: string;
 }
 
 /**
- * Owned by the watch-renewal lifecycle (gmailWatchLifecycle.ts, issue #197) — `gmail_watch_expires_at`
- * unconditionally, but `gmail_history_id` only via `COALESCE`: the issue's "persist history/expiry"
- * requirement is satisfied by seeding the cursor from `users.watch`'s own response the first time
- * an account has none (skipping `reconcileGmailAccount`'s otherwise-unavoidable full
- * `listAllMessageIds()` resync on first sync), while a *later* renewal's freshly-returned
- * `historyId` is silently ignored once a cursor already exists — overwriting it there would let a
- * renewal race ahead of whatever the reconcile pass (`recordGmailActivity`/`invalidateGmailHistory`,
- * issue #26 — the only other writer of this column) has actually observed, skipping any change
- * that arrived in the gap between the two. `gmail_watch_email_address` is replaced on every
- * registration: it is the routing key for the shared Pub/Sub subscription. That one column has a
- * second writer: the OAuth connect flow stores it once, when it creates the mailbox
- * (`recordGmailWatchEmailAddress` below), and this lifecycle owns it from then on
- * (docs/adr/2026-11-10-mailbox-oauth-connect-consumes-its-state-before-the-provider-call.md).
+ * `gmail_history_id` is only seeded via `COALESCE` when absent: overwriting an existing cursor
+ * could skip changes the reconcile pass has not yet observed. The routing address is replaced on
+ * every registration; the OAuth connect flow sets it once beforehand.
  */
 export async function recordGmailWatchRegistration(
   client: Queryable,
@@ -252,14 +223,7 @@ export async function recordGmailWatchRegistration(
 
 const PROVIDER_ACCOUNT_ADDRESS_INDEX = "mail_account_sync_state_tenant_provider_address_uq";
 
-/**
- * Another mailbox of the same tenant already records this provider account address (issue #1454).
- * The OAuth connect flow (issue gh-1686, `mail/mailOauthRouteHandlers.ts`) answers
- * it as 409 with that mailbox's id. The password connect flow (issue gh-1736,
- * `mail/mailboxPasswordRouteHandlers.ts`) answers it as 409 without one, and raises it itself for an
- * address that a mailbox's address list holds. A reauthorization (issue gh-1742) of a mailbox that
- * records no address answers it as 400 `mail_reauth_wrong_account`.
- */
+/** Another mailbox of the same tenant already records this provider account address. */
 export class ProviderAccountAlreadyConnectedError extends ChokePointError {
   constructor() {
     super(
@@ -283,12 +247,9 @@ function isProviderAccountAddressConflict(error: unknown): boolean {
 }
 
 /**
- * Records the provider-verified account address of a mailbox, normalized with `normalizeEmailAddress`
- * (issue #1454). The row must already exist (`ensureMailAccountSyncState`). A second mailbox of the
- * same tenant that records the same address, in any letter case, fails with
- * `ProviderAccountAlreadyConnectedError`; the refused UPDATE changes nothing on that row. Postgres
- * aborts the whole caller transaction on that conflict, so the caller must roll it back rather than
- * run further statements in it. Any other error propagates unchanged.
+ * The row must exist. A duplicate address in the tenant (any case) throws
+ * `ProviderAccountAlreadyConnectedError`; Postgres has then aborted the transaction, so the caller
+ * must roll back.
  */
 export async function recordProviderAccountAddress(client: Queryable, itemId: string, address: string): Promise<void> {
   const normalized = normalizeEmailAddress(address);
@@ -307,7 +268,6 @@ export async function recordProviderAccountAddress(client: Queryable, itemId: st
   }
 }
 
-/** The provider account address recorded for a mailbox, or null when none is recorded yet (or no sync state row exists). */
 export async function getProviderAccountAddress(client: Queryable, itemId: string): Promise<string | null> {
   const { rows } = await client.query<{ provider_account_address: string | null }>(
     `SELECT provider_account_address FROM mail_account_sync_state WHERE item_id = $1`,
@@ -316,11 +276,7 @@ export async function getProviderAccountAddress(client: Queryable, itemId: strin
   return rows[0]?.provider_account_address ?? null;
 }
 
-/**
- * The mailbox of the caller's tenant whose sync state records `address` as its provider account
- * address, compared after `normalizeEmailAddress`, or null when no mailbox visible in that tenant
- * records it (issue gh-1686: the connect flow names the mailbox a refused duplicate collides with).
- */
+/** Within the caller's tenant, compared after normalization. */
 export async function findMailboxByProviderAccountAddress(client: Queryable, address: string): Promise<string | null> {
   const { rows } = await client.query<{ item_id: string }>(
     `SELECT item_id FROM mail_account_sync_state WHERE provider_account_address = $1`,
@@ -330,15 +286,10 @@ export async function findMailboxByProviderAccountAddress(client: Queryable, add
 }
 
 /**
- * Stores the Google account address a `gmail_api` mailbox was connected with (issue gh-1686),
- * normalized with `normalizeEmailAddress`, in the column `route_gmail_address` matches a Pub/Sub
- * notification against. The row must already exist (`ensureMailAccountSyncState`). A later watch
- * registration (`recordGmailWatchRegistration`) replaces the value.
- *
- * The OAuth connect flow is the only caller, and `address` is the one the provider reported for the
- * account whose credential the mailbox stores, never an alias or a value from a request: the router
- * function sends that account's notifications to every mailbox that carries it
- * (docs/adr/2026-11-10-mailbox-oauth-connect-consumes-its-state-before-the-provider-call.md).
+ * Stores the routing address for Pub/Sub notifications; the row must exist. `address` must be the
+ * provider-reported account address, never an alias or request value, since every mailbox carrying
+ * it receives that account's notifications (see
+ * docs/architecture/domain-mail-and-inbox.md#oauth-connect-and-reauthorization).
  */
 export async function recordGmailWatchEmailAddress(client: Queryable, itemId: string, address: string): Promise<void> {
   const normalized = normalizeEmailAddress(address);
@@ -360,11 +311,9 @@ export interface GmailRouteTarget {
 }
 
 /**
- * Maps the address a Gmail Pub/Sub notification names to every `(tenant, mailbox)` watching it,
- * through the `semprec_router`-owned `route_gmail_address` function, which reads past row-level
- * security (docs/adr/2026-10-07-cross-tenant-router-functions.md). Only gmail_api mailboxes whose
- * watch was registered for that address match. Returns ids only; the caller enters each tenant
- * before touching the mailbox. An empty array means nobody watches the address.
+ * Uses the `semprec_router`-owned function that reads past RLS (see
+ * docs/architecture/tenancy-and-security.md#cross-tenant-router-functions). Returns ids only; the
+ * caller enters each tenant before touching the mailbox.
  */
 export async function routeGmailAddress(client: Queryable, emailAddress: string): Promise<GmailRouteTarget[]> {
   const { rows } = await client.query<{ tenant_id: unknown; mailbox_item_id: unknown }>(
@@ -383,26 +332,14 @@ export async function routeGmailAddress(client: Queryable, emailAddress: string)
   });
 }
 
-/**
- * Whether other mailboxes depend on the Google account of a `gmail_api` mailbox, as the sync state
- * rows record it: `sole` when no other mailbox records the account, `shared` when one does, and
- * `unknown` when the mailbox's own row records no account.
- */
+/** `unknown` when the mailbox's own row records no account. */
 export type GmailAccountUse = "sole" | "shared" | "unknown";
 
 /**
- * Answers whether mailbox `itemId` is the only one that records its Google account (issue gh-2030:
- * the removal's cleanup stops a watch and revokes a grant only then, because both act on the whole
- * account). The account is the one the mailbox's `gmail_watch_email_address` names, which the OAuth
- * connect flow and every watch registration record from the provider's own answer. Another mailbox
- * records it when `route_gmail_address` returns a row for that address other than `itemId`: any
- * `gmail_api` mailbox of any tenant, read past row-level security
- * (docs/adr/2026-10-07-cross-tenant-router-functions.md), a mailbox in the trash that kept its sync
- * state row included.
- *
- * One statement reads the caller's own row under row-level security and reduces the router
- * function's rows to a boolean, so no id of another tenant's mailbox leaves the database. A mailbox
- * without a sync state row, or whose row records no address, answers `unknown`.
+ * Removal stops the watch and revokes the grant only for a `sole` account, as both act on the
+ * whole account. Other mailboxes of any tenant (trashed ones included) are found via the router
+ * function past RLS, reduced to a boolean in one statement so no other tenant's ids leave the
+ * database.
  */
 export async function getGmailAccountUse(client: Queryable, itemId: string): Promise<GmailAccountUse> {
   const { rows } = await client.query<{ recorded: boolean; shared: boolean }>(
@@ -420,7 +357,7 @@ export async function getGmailAccountUse(client: Queryable, itemId: string): Pro
   return own.shared ? "shared" : "sole";
 }
 
-/** The reaction to a Graph `deltaLink` 410 Gone / `resyncRequired` — analogous to `invalidateGmailHistory`, clearing `graph_delta_link` back to NULL so the next sync runs a full resync instead of resuming from a stale token. */
+/** After a delta 410 / `resyncRequired`: clears the link so the next sync does a full resync. */
 export async function invalidateGraphDeltaLink(client: Queryable, itemId: string, reason: string): Promise<void> {
   await client.query(`UPDATE mail_account_sync_state SET graph_delta_link = NULL, last_error = $2 WHERE item_id = $1`, [
     itemId,
@@ -456,10 +393,7 @@ export async function recordGraphActivity(client: Queryable, input: RecordGraphA
   );
 }
 
-/**
- * The in-tenant re-read of the webhook receiver's account lookup (graphWebhookNotifications.ts, issue #198): once `routeGraphSubscription` has named the owning tenant and the caller
- * entered it, this maps the `subscriptionId` back to the account under row-level security, or `null` when the row is not visible in that tenant.
- */
+/** The in-tenant re-read under RLS after `routeGraphSubscription`. */
 export async function getMailAccountSyncStateByGraphSubscriptionId(
   client: Queryable,
   subscriptionId: string,
@@ -472,9 +406,9 @@ export async function getMailAccountSyncStateByGraphSubscriptionId(
 }
 
 /**
- * Resolves a Graph `subscriptionId` to its owning tenant through the `semprec_router`-owned
- * `route_graph_subscription` function, which reads past row-level security (docs/adr/2026-10-07-cross-tenant-router-functions.md).
- * Returns `null` for an id no tenant registered. Only the tenant id leaves the function; the caller enters that tenant and re-reads the row with `getMailAccountSyncStateByGraphSubscriptionId`.
+ * Uses the `semprec_router`-owned function that reads past RLS (see
+ * docs/architecture/tenancy-and-security.md#cross-tenant-router-functions). Only the tenant id
+ * leaves it; the caller enters that tenant and re-reads the row.
  */
 export async function routeGraphSubscription(client: Queryable, subscriptionId: string): Promise<string | null> {
   const { rows } = await client.query<{ tenant_id: string | null }>(
@@ -490,14 +424,7 @@ export interface RecordGraphSubscriptionRegistrationInput {
   clientState: string;
 }
 
-/**
- * Owned by the subscription lifecycle (graphWebhookLifecycle.ts, issue #198) — a fresh
- * registration replaces `graph_subscription_id`/`graph_client_state` outright (unlike
- * `recordGmailWatchRegistration`'s `COALESCE`-guarded history cursor, there is nothing here a
- * concurrent reconcile pass could have advanced past): the id and secret this row held before
- * belonged to whatever subscription Graph just replaced, and the webhook receiver must start
- * validating notifications against the new pair immediately, not the stale one.
- */
+/** Replaces id and secret outright: the webhook must validate against the new pair immediately. */
 export async function recordGraphSubscriptionRegistration(
   client: Queryable,
   itemId: string,
@@ -512,7 +439,6 @@ export async function recordGraphSubscriptionRegistration(
   requireAffectedRows(result, `graph subscription registration for item ${itemId}`);
 }
 
-/** The renewal-only counterpart to `recordGraphSubscriptionRegistration` above — extends the expiry of the already-persisted subscription id/clientState pair without disturbing either. */
 export async function recordGraphSubscriptionRenewal(
   client: Queryable,
   itemId: string,
@@ -541,13 +467,7 @@ export async function recordImapActivity(client: Queryable, input: RecordImapAct
   );
 }
 
-/**
- * Also pushes `next_expected_activity_at` out by a fixed backoff (not left as-is): the
- * periodic sweep (mailSyncJob.ts) re-enqueues any account whose `next_expected_activity_at`
- * is due, so leaving it unchanged on a persistent failure (bad credentials, revoked token)
- * would make the sweep hammer the same broken account every cycle instead of settling into a
- * bounded retry cadence.
- */
+/** Also pushes `next_expected_activity_at` out so the sweep does not hammer a broken account. */
 export async function recordSyncError(
   client: Queryable,
   itemId: string,
@@ -562,19 +482,14 @@ export async function recordSyncError(
      RETURNING failing_since`,
     [itemId, error, failureKind],
   );
-  // Zero rows is a valid outcome: the state row was removed while the pass ran. Otherwise returns the
-  // start of the failure streak, kept from an earlier failure.
+  // Zero rows: the state row was removed while the pass ran.
   if (!result.rowCount) return null;
   return result.rows[0]?.failing_since ?? null;
 }
 
 /**
- * The connection-limit-specific analogue of `recordSyncError` above: same columns, but the
- * caller (mailSyncJob.ts) supplies a provider-aware delay instead of the fixed 15 minutes,
- * since a provider capping simultaneous connections needs longer to clear than an ordinary
- * transient failure. Also relied on to *not* be a generic error: `mailSyncJob.ts` returns
- * instead of rethrowing after calling this, so the next attempt comes only from the sweep
- * reading `next_expected_activity_at` below, not also from graphile-worker's own retry.
+ * Like `recordSyncError` with a provider-aware delay. The caller returns instead of rethrowing, so
+ * the retry comes only from the sweep, not also from graphile-worker.
  */
 export async function recordConnectionLimitBackoff(
   client: Queryable,
@@ -605,7 +520,6 @@ export async function classifyUnclassifiedMailSyncErrors(client: Queryable): Pro
     AND state.last_error IS NOT NULL AND state.last_activity_at IS NULL AND state.last_failure_kind IS NULL`);
 }
 
-/** Accounts due for another sync pass — consumed by the periodic sweep job, not the observability check (issue #39), which reads the same column but only to alert. */
 export async function listAccountsDueForSync(client: Queryable): Promise<MailAccountSyncStateRow[]> {
   const { rows } = await client.query<MailAccountSyncStateDbRow>(
     `SELECT ${COLUMNS} FROM mail_account_sync_state WHERE next_expected_activity_at IS NULL OR next_expected_activity_at <= now()`,
@@ -613,13 +527,7 @@ export async function listAccountsDueForSync(client: Queryable): Promise<MailAcc
   return rows.map(mapRow);
 }
 
-/**
- * Every mailbox's sync state, regardless of due-ness — the observability check (issue #169)
- * evaluates `next_expected_activity_at < now()` and `last_error` as one uniform `mail_sync_stalled`
- * predicate per mailbox, so it needs every account, not just the ones the periodic sweep above
- * would currently re-enqueue (e.g. a connection-limit backoff pushes `next_expected_activity_at`
- * into the future while `last_error` stays set — that account is not "due" but is still failing).
- */
+/** For the stall check: an account in backoff is not due but may still be failing. */
 export async function listAllMailAccountSyncStates(client: Queryable): Promise<MailAccountSyncStateRow[]> {
   const { rows } = await client.query<MailAccountSyncStateDbRow>(`SELECT ${COLUMNS} FROM mail_account_sync_state`);
   return rows.map(mapRow);

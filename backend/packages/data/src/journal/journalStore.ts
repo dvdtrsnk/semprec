@@ -25,30 +25,18 @@ export {
   type JournalPeriodType,
 } from "./journalPeriods.js";
 
-/** The reservation a Journal period's entry is found by: one `idempotency_keys` row per Journal database, type and period. */
+/** One `idempotency_keys` row per Journal database, type and period. */
 function journalPeriodReservationKey(journalDatabaseId: string, type: string, period: string): string {
   return `journal:${journalDatabaseId}:${type}:${period}`;
 }
 
 /**
- * Lazily creates the Journal item for a given period on first write (issue #24, point 10):
- * Journal has no manual "+ New" — an item for a date is created implicitly, whether from the
- * user or from automated processing. Mirrors docs/docsStore.ts's `getOrCreateDoc`.
+ * Journal has no manual "+ New": the period item is created implicitly on first write. `allowedSystemKeys`
+ * relaxes the ownership check for exactly `name`/`type`/`period` on this one owning process.
  *
- * `name`/`type`/`period` are all `owner: 'system'`, so this calls `createItemWithClient` with
- * `allowedSystemKeys: ['name', 'type', 'period']` — this function is Journal's declared owning
- * process for exactly those fields, the one narrow, per-key, code-defined exception the
- * choke-point grants (see chokePoint.ts's `AssertWritablePropertiesOptions`). The write still
- * goes through the same single write path as every other item creation (idempotency handling,
- * onItemEvent heartbeat triggering), it just has the ownership check relaxed for these three
- * keys, on this one trusted caller — not a blanket bypass for any system-owned field anywhere.
- *
- * Concurrency-safe via a deterministic per-period idempotency key, not a DB constraint: two
- * concurrent first-writes for the same period both attempt the same key, and `insertItem`'s
- * existing reservation-table mechanism (see chokePoint/itemsStore.ts) resolves the race to a
- * single winning item without ever raising a Postgres error that would abort the caller's
- * transaction. A period item that was later trashed or purged is not reused: the next write for
- * that period is handed a fresh item, and its idempotency key now points at that new one.
+ * Concurrent first writes share a deterministic per-period idempotency key, so the reservation table resolves the
+ * race to one item without raising a Postgres error that would abort the caller's transaction. A trashed or
+ * purged period item is not reused; the key is repointed at the fresh one.
  */
 export async function getOrCreateJournalItem(
   client: PoolClient,
@@ -57,8 +45,7 @@ export async function getOrCreateJournalItem(
   referenceDate: Date,
   timezone: string,
 ): Promise<ItemRow> {
-  // Without this, an unrecognized zone would silently make `computeJournalPeriodKey`'s
-  // `toISODate()` return null, and `period` would become the string "null".
+  // An unrecognized zone would otherwise turn `period` into the string "null".
   assertValidTimezone(timezone);
   const reference = DateTime.fromJSDate(referenceDate, { zone: timezone });
   const period = computeJournalPeriodKey(type, reference);
@@ -74,7 +61,6 @@ export async function getOrCreateJournalItem(
   );
 }
 
-/** Creates or reuses the period item and its page within the caller's transaction. */
 export async function ensureJournalPeriodDoc(
   client: PoolClient,
   type: JournalPeriodType,
@@ -91,26 +77,13 @@ export async function ensureJournalPeriodDoc(
 }
 
 /**
- * Points the period reservation of a restored Journal entry at it (issue #1666), inside the restore's transaction, or
- * refuses the restore when the period already has another live entry.
+ * Inside the restore's transaction: points the period reservation at the restored entry, or refuses with a 409
+ * (`details.liveItemId`) when the period already has another live entry.
  *
- * 1. The reservation row `journal:<journalDatabaseId>:<type>:<period>` is taken first: inserted for `itemId` when it
- *    is missing, otherwise row-locked by the same statement (`ON CONFLICT ... DO UPDATE` that changes nothing), so a
- *    reservation that `getOrCreateJournalItem` releases and re-creates concurrently is waited for rather than missed.
- * 2. Holding it, a plain read looks for another live entry of the database with the same `type` and `period`. Every
- *    cooperating writer of a period entry, `getOrCreateJournalItem` and this function, takes the reservation inside
- *    the transaction that makes the entry live and before that transaction commits. The restore itself clears
- *    `deleted_at` before this hook takes the reservation; what the reservation serializes is the live-peer decision and
- *    the commit: an entry another cooperating writer made live and committed before this lock was taken is visible
- *    here, and one whose transaction takes the reservation after it waits for this transaction to end. A live peer
- *    throws `ConflictError` (409) naming it in `details.liveItemId`; the caller's restore rolls back, and so does the
- *    reservation insert.
- * 3. Otherwise the reservation is pointed at `itemId`, so the next `getOrCreateJournalItem` for the period returns it.
- *
- * No peer item row is locked: two restores of entries of one period each already hold their own restored row, and
- * waiting for the other's would close a cycle. The serialization holds only between writers that take the
- * reservation; an entry made live by any other path is not covered. See
- * docs/adr/2026-11-08-journal-restore-serializes-on-its-period-reservation.md.
+ * The reservation row is taken first (inserted, or row-locked by a no-op `ON CONFLICT DO UPDATE`); every
+ * cooperating writer of a period entry takes it before committing, so the live-peer check under it cannot miss a
+ * concurrent one. No peer item row is locked: two restores of one period each hold their own row, and waiting for
+ * the other's would close a cycle. Entries made live by paths that skip the reservation are not covered.
  */
 export async function repointJournalPeriodReservation(
   client: PoolClient,
@@ -132,11 +105,7 @@ export async function repointJournalPeriodReservation(
   await pointJournalPeriodReservation(client, key, input.journalDatabaseId, input.itemId);
 }
 
-/**
- * Takes the reservation row `key` for the rest of the transaction: inserts it for `itemId` when it is missing,
- * otherwise waits for and row-locks the current row without changing a value. A row that belongs to another database
- * is a `ConflictError`.
- */
+/** Inserts the reservation for `itemId`, or row-locks the existing row without changing it. */
 async function takeJournalPeriodReservation(
   client: PoolClient,
   key: string,
@@ -154,7 +123,6 @@ async function takeJournalPeriodReservation(
   }
 }
 
-/** Points the reservation row `key`, which the transaction already holds, at `itemId`. */
 async function pointJournalPeriodReservation(
   client: PoolClient,
   key: string,
@@ -169,26 +137,18 @@ async function pointJournalPeriodReservation(
   requireAffectedRows(pointed, "journal period reservation");
 }
 
-/** The live entries of one Journal period, the entry created first leading (ties by id), cut to the first two. */
+/** Oldest first (ties by id), at most two. */
 const OLDEST_LIVE_PERIOD_ENTRIES_SQL = `SELECT id FROM items
      WHERE database_id = $1 AND deleted_at IS NULL AND properties->>'type' = $2 AND properties->>'period' = $3
      ORDER BY created_at, id LIMIT 2`;
-/** The same read, row-locking what it returns. Both statements are constants; the period is bound as parameters. */
 const OLDEST_LIVE_PERIOD_ENTRIES_FOR_UPDATE_SQL = `${OLDEST_LIVE_PERIOD_ENTRIES_SQL} FOR UPDATE`;
 
-/** The two entries one merge of a duplicated Journal period works on. */
 export interface JournalDuplicatePair {
-  /** The live entry of the period that was created first. */
   survivorId: string;
-  /** The live entry of the period that was created next. */
   duplicateId: string;
 }
 
-/**
- * The two live entries of a Journal period that a merge would work on, read without locking or writing anything, or
- * `null` when the period has fewer than two (issue #2017: the approval request of a merge names them). It reads what
- * `lockJournalDuplicatePair` reads first, so the answer can be stale by the time a merge locks the pair.
- */
+/** Unlocked read for the merge approval request; may be stale by the time a merge locks the pair. */
 export async function findJournalDuplicatePair(
   client: PoolClient,
   input: { journalDatabaseId: string; type: JournalPeriodType; period: string },
@@ -203,21 +163,11 @@ export async function findJournalDuplicatePair(
 }
 
 /**
- * Finds the two live entries of a Journal period that were created first and holds them for a merge (issue #1726),
- * or returns `null` when the period has fewer than two.
+ * Holds the two oldest live entries of a period for a merge, or returns `null` with fewer than two.
  *
- * 1. A plain read looks for them. With fewer than two, nothing is locked and nothing is written.
- * 2. The period reservation is taken with the statement `repointJournalPeriodReservation` uses, inserted for the older
- *    entry of step 1 when it is missing. A transaction that takes the reservation later (`getOrCreateJournalItem`, a
- *    restore of an entry of the period, another merge) waits for this one to end.
- * 3. Holding it, the read of step 1 runs again with `FOR UPDATE`. The rows it returns are live entries of the period as
- *    committed at that moment, and they stay row-locked. With fewer than two (another transaction trashed or merged
- *    one in between) the result is `null`; the reservation keeps the entry it pointed at, or the entry step 2 inserted
- *    it for.
- * 4. The reservation is pointed at the older entry, so the next `getOrCreateJournalItem` for the period returns it
- *    once the newer one is in the Trash.
- *
- * See docs/adr/2026-11-10-journal-duplicate-merge-locks-the-reservation-before-both-entries.md.
+ * Lock order: the period reservation first (so `getOrCreateJournalItem`, restores and other merges wait), then the
+ * entries re-read `FOR UPDATE`, since another transaction may have trashed or merged one meanwhile. The
+ * reservation is then pointed at the survivor, so the next `getOrCreateJournalItem` returns it.
  */
 export async function lockJournalDuplicatePair(
   client: PoolClient,

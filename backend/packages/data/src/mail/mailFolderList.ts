@@ -11,10 +11,8 @@ import { mailThreadCopyCtes } from "./mailThreadListQuery.js";
 import { mailThreadPredicates } from "./mailThreadPredicates.js";
 
 /**
- * The special purposes whose folders the list puts first, in this order (issue gh-1689). Such a
- * folder is named by the catalog entry `mail.folder.<specialPurpose>` instead of the name the provider
- * gave it. Every other folder follows, by its own name. A folder whose `specialPurpose` is `all` is
- * not listed at all.
+ * System folders come first in this order and are named by the catalog entry `mail.folder.<specialPurpose>`; other
+ * folders follow by name. The `all` folder is not listed.
  */
 const SYSTEM_FOLDER_ORDER = ["inbox", "sent", "drafts", "archive", "junk", "trash"] as const;
 
@@ -30,13 +28,9 @@ const folderRow = z.object({
 type MailFolder = z.infer<typeof folderRow>;
 
 /**
- * Every listed folder of the mailbox `$1` with both counts, in one statement. `mailbox_folders` are
- * the non-deleted Folders related to the mailbox through `Folders.mailbox`, without the `all` folder.
- * `unreadCount` counts threads over the thread list's own `copies` and `copy_stats`
- * (`mailThreadCopyCtes`, with `$2` null: the list mode) with the list's `unread` predicate and its
- * `inFolder` predicate for the folder row (`inFolderRow`), so it equals the number of threads
- * `GET /api/mail/threads?folderId=<id>&unread=true` returns. `totalCount` counts the non-deleted
- * Emails items linked to the folder, drafts included.
+ * Every listed folder of mailbox `$1` with both counts. `unreadCount` uses the thread list's own CTEs and predicates
+ * (`$2` null: list mode), so it equals what `GET /api/mail/threads?folderId=<id>&unread=true` returns. `totalCount`
+ * counts live Emails items in the folder, drafts included.
  */
 const MAIL_FOLDER_LIST_SQL = `
 WITH ${mailThreadCopyCtes(2)}, mailbox_folders AS (
@@ -74,9 +68,8 @@ LEFT JOIN folder_messages m ON m.folder_id = mf.id
 `;
 
 /**
- * The listed folders of a mailbox of the caller's tenant, unordered and under their stored names, or
- * `null` when the mailbox is unknown, deleted or another tenant's (row-level security hides it), or
- * the tenant has no Mailboxes database. Each of those answers the same way.
+ * Unordered folders under their stored names, or `null` for an unknown, deleted or foreign mailbox (RLS hides it) or
+ * a tenant without a Mailboxes database, all answered alike.
  */
 async function readMailboxFolders(client: PoolClient, mailboxItemId: string): Promise<MailFolder[] | null> {
   const mailboxesDatabase = await getDatabaseByModuleId(client, MAILBOXES_MODULE_ID);
@@ -92,11 +85,7 @@ function systemFolderRank(specialPurpose: string): number {
   return rank === -1 ? SYSTEM_FOLDER_ORDER.length : rank;
 }
 
-/**
- * Names the system folders in `locale` and puts the list in the sidebar's order: the system folders
- * in `SYSTEM_FOLDER_ORDER`, then every other folder by its name as `locale` collates it. Ties, such
- * as two folders of one name, are ordered by id, so the order never depends on the provider's.
- */
+/** Ties (two folders of one name) are ordered by id, so the order never depends on the provider's. */
 function presentFolders(folders: MailFolder[], catalogs: ModuleCatalogs, locale: ManifestLocale): MailFolder[] {
   const collator = new Intl.Collator(locale);
   return folders
@@ -120,18 +109,15 @@ interface MailFolderListRouteContext {
   identity: { user: { locale: string } };
 }
 
-/** `items.id` is a uuid: a malformed id names no mailbox, so it gets the same 404 as an unknown one. */
+/** A malformed id names no mailbox, so it gets the same 404 as an unknown one. */
 const mailboxIdSchema = z.uuid();
 
 /**
- * `GET /api/mail/mailboxes/:id/folders` (issue gh-1689): the mailbox's folders with their unread
- * thread count and message count, the system folders named in Czech or English by the caller's
- * `users.locale` (`toManifestLocale`). The mailbox lookup and the counts read one snapshot. Both run
- * in the caller's tenant scope, so a foreign mailbox answers exactly like an unknown one: the same
- * `not_found` body.
+ * `GET /api/mail/mailboxes/:id/folders`: folders with unread thread and message counts, system folders named in the
+ * caller's locale. Lookup and counts read one snapshot in the tenant scope, so a foreign mailbox answers like an
+ * unknown one.
  *
- * The mail module's catalogs are loaded by the first request of this handler that finds its mailbox
- * and are kept. A failed load is forgotten, so the next such request tries again.
+ * The module catalogs are loaded once and kept; a failed load is forgotten so the next request retries.
  */
 export function createMailFolderListRouteHandler(pool: Pool) {
   let catalogsPromise: Promise<ModuleCatalogs> | undefined;

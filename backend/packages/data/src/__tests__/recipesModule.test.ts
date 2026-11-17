@@ -25,7 +25,7 @@ const SEEDING_TEST_TIMEOUT_MS = 90_000;
 let adminPool: Pool;
 let dataPool: Pool;
 
-/** What issue #1707 seeds, without ids: the database, its properties in order, its views and its owning project. */
+/** The seeded shape without ids: the database, its properties in order, its views and owning project. */
 const EXPECTED_SHAPE = {
   database: {
     key: "recipes",
@@ -35,7 +35,6 @@ const EXPECTED_SHAPE = {
     ownerModuleId: "recipes",
     archivedAt: null,
   },
-  // In the order the store lists them: by key, because the seed sets no position.
   properties: [
     {
       key: "category",
@@ -71,7 +70,6 @@ const EXPECTED_SHAPE = {
       },
     },
     { key: "servings", name: null, type: "number", owner: "user", ownerProcess: null, locked: false, config: {} },
-    // Issue gh-1974.
     { key: "sourceUrl", name: null, type: "url", owner: "user", ownerProcess: null, locked: false, config: {} },
   ],
   views: [
@@ -92,7 +90,6 @@ const EXPECTED_SHAPE = {
   },
 };
 
-/** The guidance document the Recipes seed text converts to. */
 const RECIPES_GUIDANCE_MARKDOWN =
   "## Purpose\ncatalog the user's recipes; the ingredients and the method are written on each recipe's page.\n\n" +
   "## Allowed\ncreate or update a Recipes item (name/category/prepMinutes/servings/favorite/photo) via the generic item endpoints.\n\n" +
@@ -103,7 +100,6 @@ function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): 
   return runInTenant(tenantId, () => withTransaction(dataPool, fn));
 }
 
-/** The recipes database of `tenantId` as the runtime role sees it in that tenant's scope, or `null` without one. */
 async function recipesShape(tenantId: string) {
   return inTenant(tenantId, async (client) => {
     const database = await databasesStore.getDatabaseByModuleId(client, RECIPES_MODULE_ID);
@@ -155,7 +151,6 @@ async function seededTenant(status: "active" | "suspended" = "active"): Promise<
   return tenantId;
 }
 
-/** Gives `tenantId` its account, through the store account creation writes with, and returns the user id. */
 async function createAccount(tenantId: string): Promise<string> {
   const user = await createUser(adminPool, {
     tenantId,
@@ -166,10 +161,7 @@ async function createAccount(tenantId: string): Promise<string> {
   return user.id;
 }
 
-/**
- * The guidance rows and the drift heartbeats of the Recipes project of `tenantId`, as the runtime role sees
- * them in that tenant's scope.
- */
+/** In the tenant's own scope on the runtime role. */
 async function recipesGuidance(tenantId: string) {
   return inTenant(tenantId, async (client) => {
     const recipes = await databasesStore.getDatabaseByModuleId(client, RECIPES_MODULE_ID);
@@ -186,10 +178,7 @@ async function recipesGuidance(tenantId: string) {
   });
 }
 
-/**
- * Every guidance row and every drift heartbeat of `tenantId`, with its row version, on the admin pool filtered
- * by the tenant.
- */
+/** On the admin pool filtered by tenant, with row versions. */
 async function guidanceRows(tenantId: string) {
   const read = async (sql: string) => (await adminPool.query<{ version: string; row: unknown }>(sql, [tenantId])).rows;
   return {

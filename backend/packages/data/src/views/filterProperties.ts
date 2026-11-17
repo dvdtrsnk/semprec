@@ -7,11 +7,9 @@ import { sortKeyCast } from "./sortCompiler.js";
 import type { FilterProperties } from "./filterCompiler.js";
 
 /**
- * Resolves filter metadata in at most three batched queries: the database's relation
- * definitions, then its targets' relation properties and definitions, one level deep, and the
- * source databases of its rollups. Every relation property carries the database it reaches
- * (`targetDatabaseId`, also on the second hop of a path) and every rollup the database it aggregates
- * (`sourceDatabaseId`), which is what the compiler checks an agent's closed databases against.
+ * At most three batched queries (relation definitions, one level of target relations, rollup sources). Relation
+ * properties carry `targetDatabaseId` (also on a path's second hop) and rollups `sourceDatabaseId`, which the
+ * compiler checks against an agent's closed databases.
  */
 export async function buildFilterProperties(client: PoolClient, properties: PropertyRow[]): Promise<FilterProperties> {
   const relationProperties = properties.filter((property) => property.type === "relation");

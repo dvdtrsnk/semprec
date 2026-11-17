@@ -60,14 +60,13 @@ const mcpError = z.object({
   error: z.object({ code: z.number(), message: z.string(), data: z.record(z.string(), z.unknown()) }).strict(),
 });
 
-/** A refusal as REST exposes it: the HTTP status and the error body's `code` and `details`; the body has no message. */
+/** The body has no message. */
 interface RestRefusal {
   status: number;
   code: string;
   details: Record<string, unknown>;
 }
 
-/** A refusal as the agent gateway exposes it: the `ValidationError` it throws. */
 interface GatewayRefusal {
   code: string;
   status: number;
@@ -75,7 +74,7 @@ interface GatewayRefusal {
   details: Record<string, unknown>;
 }
 
-/** A refusal as MCP exposes it: a JSON-RPC error's code, message and `data`. It carries no category string. */
+/** It carries no category string. */
 interface McpRefusal {
   rpcCode: number;
   message: string;
@@ -85,7 +84,7 @@ interface McpRefusal {
 const TRANSPORTS = ["rest", "gateway", "mcp"] as const;
 type Transport = (typeof TRANSPORTS)[number];
 
-/** The values issue gh-1802 refuses on Health records: a label, the field named and the values of the write. */
+/** A label, the field named and the values of the write, on Health records. */
 const REFUSALS: Array<[string, string, Record<string, unknown>]> = [
   ["tags neznamy", "tags", { tags: ["neznamy"] }],
   ["tags medication and neznamy", "tags", { tags: ["medication", "neznamy"] }],
@@ -112,7 +111,7 @@ async function recordsNamed(name: string): Promise<number> {
   return rows[0]?.count ?? -1;
 }
 
-/** A record written by the system writer, the way mail and transcription ingest write their own values. */
+/** The way mail and transcription ingest write their own values. */
 async function createAsSystem(properties: Record<string, unknown>) {
   return runInTenant(getTenantZeroId(), () =>
     createChokePoint(pool).createItem({ databaseId: healthId, properties: { name: "Ingested", ...properties } }),
@@ -157,9 +156,8 @@ describe("Health records select values are judged alike through REST, the agent 
     const projectItemId = await createTestProjectItem(pool);
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "file a health record" });
     agentActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-    // Health records is a sensitive database, so the data layer closes it to an agent's project until the user grants
-    // write access (issue gh-1810). The user-only admin store is not exported from `@semprec/data`, so the fixture
-    // stores the decision with the statement of `setAgentDatabaseGrant`.
+    // Health records is sensitive, so an agent's project needs the user's write grant. The user-only admin store is
+    // not exported from `@semprec/data`, so the fixture uses the statement of `setAgentDatabaseGrant`.
     const grant = await pool.query(
       `INSERT INTO agent_database_grants (project_item_id, database_id, access)
          SELECT $1, id, 'write' FROM databases WHERE id = $2`,
@@ -234,16 +232,15 @@ describe("Health records select values are judged alike through REST, the agent 
     };
   }
 
-  /** MCP carries a `ValidationError` as JSON-RPC `-32602` (invalid params): its message, and its details as `data`. */
+  /** MCP carries a `ValidationError` as JSON-RPC `-32602` with its details as `data`. */
   async function mcpRefusal(name: string, args: unknown): Promise<McpRefusal> {
     const parsed = mcpError.parse(await mcpCall(name, args));
     return { rpcCode: parsed.error.code, message: parsed.error.message, data: parsed.error.data };
   }
 
   /**
-   * Every exposed part of the three refusals: REST and the gateway carry the same category and status, MCP the
-   * gateway's message, and all three the same details naming `field`. MCP's category is not exposed, so it is not
-   * compared. The message names the unknown value when `unknownValue` is given.
+   * REST and the gateway carry the same category and status, MCP the gateway's message, and all three the same
+   * details; MCP's category is not compared. The message names `unknownValue` when given.
    */
   function expectSameRefusal(
     refusals: { rest: RestRefusal; gateway: GatewayRefusal; mcp: McpRefusal },
@@ -280,7 +277,7 @@ describe("Health records select values are judged alike through REST, the agent 
     return mcpItem(await mcpCall("semprec.item.create", input));
   }
 
-  /** The item a write path answers a patch with; REST must answer 200. */
+  /** REST must answer 200. */
   async function patchVia(
     path: Transport,
     item: { id: string; updatedAt: string },

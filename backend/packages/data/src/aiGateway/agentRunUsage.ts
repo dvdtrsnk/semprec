@@ -1,46 +1,36 @@
 import type { Queryable } from "../db/pool.js";
 import { getModelDisplayCatalogs, resolveModelDisplayName } from "./modelDisplayNames.js";
 
-/** What one model cost a run (issue #1822). Every number covers the run's calls of the model that did not fail. */
+/** What one model cost a run, over the run's calls of that model that did not fail. */
 export interface AgentRunModelUsage {
   provider: string;
   model: string;
-  /** Localized model family name; the raw model id when the family is not recognized. */
   displayName: string;
   callCount: number;
-  /** The sum of the calls' input tokens; 0 when none of them has a token count, as while every call is reserved. */
+  /** 0 when no call has a token count yet (e.g. every call still reserved). */
   inputTokens: number;
-  /** The sum of the calls' output tokens; 0 like `inputTokens`. */
   outputTokens: number;
-  /** The sum of the calls' audio seconds; `null` when none of them carries audio seconds. */
+  /** `null` when no call carries audio seconds. */
   audioSeconds: number | null;
-  /** The sum of the calls' `cost_usd`; a reserved call counts at its estimate. */
+  /** A reserved call counts at its estimate. */
   costUsd: number;
 }
 
-/** The AI spend of one agent run (issue #1822). */
 export interface AgentRunUsage {
-  /** The sum of `cost_usd` over the run's calls that did not fail; a reserved call counts at its estimate. */
   totalCostUsd: number;
-  /** True when a call of the run is still `reserved`, so the cost includes an estimate. */
+  /** True when a call is still `reserved`, so the cost includes an estimate. */
   estimated: boolean;
-  /** One entry per (provider, model), ordered by cost descending, then by model and provider. */
+  /** Ordered by cost descending, then model, then provider. */
   perModel: AgentRunModelUsage[];
 }
 
 /**
- * Aggregates the `ai_gateway_calls` rows of the run `runId` that did not fail, per (provider, model)
- * (issue #1822). Only calls recorded with that run's id count: the calls of runs it delegated to are
- * not included. `locale` is the caller's `users.locale`, in which the model names are written. A run
- * without such calls returns no entry, a total of 0 and `estimated: false`; so does a run of another
- * tenant, whose calls row-level security hides.
+ * Non-failed `ai_gateway_calls` of `runId` per (provider, model). Calls of delegated runs are not
+ * included; another tenant's run yields nothing because RLS hides its calls.
  *
- * With `sempMessageId` (issue #1889) only the calls attributed to that Semp message count
- * (`ai_gateway_calls.semp_message_id`, issue #1744): the spend of one reply of a conversation run. A call counts
- * when it carries the run's id, or when it carries no run id and the message belongs to the run
- * (`semp_messages.agent_run_id`): the speech-to-text rows of a spoken question are attributed to the reply before
- * its run exists (issue #2020), so they reach the run through the message. A message of another run counts nothing,
- * and neither does a call that names another run. Without `sempMessageId` only calls that carry the run's id count.
+ * With `sempMessageId`, only that message's calls count (one reply of a conversation run). A call
+ * without a run id still counts when the message belongs to the run: speech-to-text rows of a
+ * spoken question are attributed to the reply before its run exists.
  */
 export async function getAgentRunUsage(
   client: Queryable,
@@ -48,8 +38,7 @@ export async function getAgentRunUsage(
   locale: string,
   sempMessageId?: string,
 ): Promise<AgentRunUsage> {
-  // Sums of integer and numeric columns arrive as strings; the total is summed in Postgres so that
-  // it is the exact decimal sum of the model costs.
+  // The total is summed in Postgres so it is the exact decimal sum of the model costs.
   const { rows } = await client.query<{
     provider: string;
     model: string;

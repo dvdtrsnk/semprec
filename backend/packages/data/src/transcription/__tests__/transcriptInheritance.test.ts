@@ -35,7 +35,6 @@ let cp: ChokePoint;
 
 type DatabaseKey = "companies" | "events" | "people" | "processingProposals" | "projects" | "transcripts";
 
-/** The database and relation property ids of one seeded tenant. */
 interface Schema {
   db: Record<DatabaseKey, string>;
   eventProject: string;
@@ -47,7 +46,6 @@ interface Schema {
   transcriptPeople: string;
 }
 
-/** One tenant's people, companies and projects, and the Event "client meeting" with its transcript. */
 interface World {
   tenant: string;
   schema: Schema;
@@ -99,7 +97,6 @@ async function seedTenant(): Promise<{ tenant: string; schema: Schema }> {
   });
 }
 
-/** Runs `fn` in the tenant, as every request and job of that tenant does. */
 function inTenant<T>(world: Pick<World, "tenant">, fn: () => Promise<T>): Promise<T> {
   return runInTenant(world.tenant, fn);
 }
@@ -108,7 +105,6 @@ async function item(scope: Pick<World, "tenant">, databaseId: string, properties
   return (await inTenant(scope, () => cp.createItem({ databaseId, properties }))).id;
 }
 
-/** A Transcripts row as the transcription process creates it, with the recording time as its `date`. */
 async function createTranscript(scope: Pick<World, "tenant" | "schema">, name: string): Promise<string> {
   const created = await inTenant(scope, () =>
     withTransaction(pool, (client) =>
@@ -143,9 +139,8 @@ function unlink(
 }
 
 /**
- * The Event "client meeting" of the project Web for client (company Novak Web s.r.o.) with the
- * organizer (the tenant's own person), Alice and Bob as participants, and a transcript that has no
- * Event, project, company or people yet.
+ * The Event "client meeting" of project Web for client (company Novak Web s.r.o.) with the organizer
+ * (the tenant's own person), Alice and Bob, and a transcript with no Event, project, company or people.
  */
 async function buildWorld(): Promise<World> {
   const { tenant, schema } = await seedTenant();
@@ -167,16 +162,11 @@ async function buildWorld(): Promise<World> {
   return { tenant, schema, me, alice, bob, novak, siko, web, bathroom, event, transcript };
 }
 
-/** The items a transcript's relation points to, sorted. */
 async function related(world: World, relationPropertyId: string, transcriptId = world.transcript): Promise<string[]> {
   const edges = await inTenant(world, () => cp.listItemRelations(transcriptId, relationPropertyId));
   return (edges ?? []).map((edge) => edge.targetItemId).sort();
 }
 
-/**
- * The items the relation of `relationPropertyId` stores an edge to for `itemId`, sorted, read through the runtime
- * role inside the tenant. Unlike `related` it includes an item that is in the Trash.
- */
 async function storedEdges(world: World, relationPropertyId: string, itemId = world.transcript): Promise<string[]> {
   return inTenant(world, async () => {
     const { rows } = await pool.query<{ other: string }>(
@@ -208,7 +198,6 @@ interface LinkRow {
   state: string;
 }
 
-/** The stored link rows of a transcript, read through the runtime role inside the tenant. */
 async function linkRows(world: World, transcriptId = world.transcript): Promise<LinkRow[]> {
   return inTenant(world, async () => {
     const { rows } = await pool.query<LinkRow>(
@@ -226,9 +215,8 @@ const ALL_LINKS_ON: LinkRow[] = [
 ];
 
 /**
- * Runs the queued value-link propagation jobs through the registered worker task until none is left.
- * One `runOnce` pass does not empty a tenant's lane, so the passes repeat; a queue that never empties
- * fails the test instead of letting an assertion about an unchanged value pass by accident.
+ * One `runOnce` pass does not empty a tenant's lane, so passes repeat; a queue that never empties
+ * fails the test instead of letting an "unchanged value" assertion pass by accident.
  */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
@@ -245,7 +233,6 @@ async function runPropagation(): Promise<void> {
   throw new Error("Propagation queue did not drain");
 }
 
-/** Replaces the single edge of a one-valued relation, as a user changing the value does. */
 async function replace(
   world: World,
   relationPropertyId: string,
@@ -261,9 +248,8 @@ async function replace(
 const sorted = (ids: string[]): string[] => [...ids].sort();
 
 /**
- * Removes the relation whose inverse side is the Transcripts property `propertyId`, both properties and the
- * definition: the schema of a tenant before the cutover that adds the pair has run. Raw SQL on the admin pool,
- * because no API removes a property of a system database. The relation must hold no edge.
+ * Removes the relation pair whose inverse side is `propertyId`. Raw SQL on the admin pool, because no API
+ * removes a property of a system database. The relation must hold no edge.
  */
 async function removeRelationPair(propertyId: string): Promise<void> {
   const definition = await admin.query<{ other: string }>(
@@ -277,7 +263,6 @@ async function removeRelationPair(propertyId: string): Promise<void> {
   expect(removed.rowCount).toBe(2);
 }
 
-/** Records the invalidations `fn` publishes; the hook is cleared again afterwards. */
 async function capturingInvalidations(fn: () => Promise<unknown>): Promise<InvalidationEvent[]> {
   const events: InvalidationEvent[] = [];
   setInvalidationHook((event) => events.push(event));
@@ -292,14 +277,12 @@ async function capturingInvalidations(fn: () => Promise<unknown>): Promise<Inval
 const itemUpdatesOf = (events: InvalidationEvent[], itemId: string): InvalidationEvent[] =>
   events.filter((event) => event.scope === "item" && event.op === "update" && event.itemId === itemId);
 
-/** Chooses, changes or clears the tenant's own person as `PUT /api/auth/self-person` does. */
 function setOwnPerson(world: World, personId: string | null): Promise<void> {
   return inTenant(world, () =>
     withTransaction(pool, (client) => setSelfPersonId(client, personId, USER, ACTING_USER_ID)),
   );
 }
 
-/** The System settings row and its `selfPerson` relation property, for a write through the generic relation endpoint. */
 async function ownPersonRelation(world: World): Promise<{ relationPropertyId: string; callerItemId: string }> {
   return inTenant(world, async () => {
     const settings = (await cp.listDatabases()).find((database) => database.ownerModuleId === "systemSettings");
@@ -311,7 +294,6 @@ async function ownPersonRelation(world: World): Promise<{ relationPropertyId: st
   });
 }
 
-/** How many propagation jobs are queued, for any tenant. */
 async function queuedPropagationJobs(): Promise<number> {
   const { rows } = await admin.query<{ count: string }>(
     "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE task_identifier = $1",
@@ -320,19 +302,13 @@ async function queuedPropagationJobs(): Promise<number> {
   return Number(rows[0]?.count);
 }
 
-/**
- * Runs the propagation jobs the fixture's own writes queued (every Events `people` or `project` edge queues one),
- * so that a later `runPropagation` runs only what the step under test queued.
- */
+/** Runs the fixture's own queued jobs, so a later `runPropagation` runs only what the step under test queued. */
 async function settleFixture(): Promise<void> {
   await runPropagation();
   expect(await queuedPropagationJobs()).toBe(0);
 }
 
-/**
- * Runs `work` in a tenant transaction that stays open until `release` is called. `ready` resolves with the
- * transaction's backend pid once `work` is done, and rejects if the transaction ends before that.
- */
+/** `ready` resolves with the backend pid once `work` is done, and rejects if the transaction ends before that. */
 function holdTransaction(world: World, work: (client: PoolClient) => Promise<unknown>) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -360,7 +336,6 @@ function holdTransaction(world: World, work: (client: PoolClient) => Promise<unk
   return { ready, release, done };
 }
 
-/** Waits until some backend is blocked by a lock the backend `holderPid` holds. */
 async function expectBlockedBy(holderPid: number): Promise<void> {
   await vi.waitFor(
     async () => {
@@ -375,10 +350,6 @@ async function expectBlockedBy(holderPid: number): Promise<void> {
   );
 }
 
-/**
- * Holds `first` open in its own transaction, starts `second` and requires it to wait for a lock of the first,
- * then lets both finish. A failure of either, or `second` not waiting, fails the caller.
- */
 async function runSecondBehindFirst(
   world: World,
   first: (client: PoolClient) => Promise<unknown>,
@@ -487,7 +458,6 @@ describe("a transcript inherits its project, company and people from its Event (
       [
         "a Semp relation.put",
         async (world) => {
-          // What the generic operation gateway runs for `relation.put` under an agent writer.
           await inTenant(world, () =>
             withTransaction(pool, (client) =>
               createRelationWithClient(
@@ -569,7 +539,6 @@ describe("a transcript inherits its project, company and people from its Event (
             undefined,
             USER,
           );
-          // Before the commit, on the writer's own connection: the three links and their values exist.
           const links = await client.query<LinkRow>(
             "SELECT property_key, rule_key, state FROM value_links WHERE item_id = $1 ORDER BY property_key",
             [world.transcript],
@@ -599,7 +568,6 @@ describe("a transcript inherits its project, company and people from its Event (
       await link(world, world.schema.transcriptEvent, world.transcript, world.event);
 
       await replace(world, world.schema.eventProject, world.event, world.web, world.bathroom);
-      // The source edge change only queues the propagation; the transcript is unchanged until the job runs.
       expect((await values(world)).project).toEqual([world.web]);
       await runPropagation();
 
@@ -639,7 +607,6 @@ describe("a transcript inherits its project, company and people from its Event (
       await runPropagation();
       expect(await storedEdges(world, world.schema.transcriptProject)).toEqual([]);
       expect(await storedEdges(world, world.schema.transcriptCompany)).toEqual([]);
-      // The project still follows the Event; the company link went with the project edge it followed.
       expect(await linkRows(world)).toEqual([
         { property_key: "people", rule_key: "transcriptPeopleFromEvent", state: "on" },
         { property_key: "project", rule_key: "transcriptProjectFromEvent", state: "on" },
@@ -750,7 +717,6 @@ describe("a transcript inherits its project, company and people from its Event (
       await runPropagation();
       expect((await values(world)).project).toEqual([world.bathroom]);
       expect((await linksOf(world)).project?.valueKind).toBe("inheritedBroken");
-      // The same propagation run still reaches the people, whose link the user did not touch.
       expect((await values(world)).people).toEqual(sorted([world.alice, world.bob, carol]));
     });
 
@@ -769,7 +735,6 @@ describe("a transcript inherits its project, company and people from its Event (
       await replace(world, world.schema.eventProject, world.event, world.web, world.bathroom);
       await runPropagation();
       expect((await values(world)).people).toEqual(sorted([world.alice, world.bob, carol]));
-      // The same propagation run still reaches the project, whose link Semp did not touch.
       expect((await values(world)).project).toEqual([world.bathroom]);
     });
   });
@@ -930,7 +895,7 @@ describe("a transcript inherits its project, company and people from its Event (
 
   it("keeps a project chosen on the recording card when an Event with another project is linked, and fills the empty people", async () => {
     const world = await buildWorld();
-    // The create step of the transcription worker writes the recording's project as a system writer (issue #1696).
+    // The worker's create step writes the recording's project as a system writer.
     await inTenant(world, () =>
       withTransaction(pool, (client) =>
         createRelationWithClient(client, {
@@ -972,7 +937,6 @@ describe("a transcript inherits its project, company and people from its Event (
       const world = await buildWorld();
       await trash(world, world.schema.db.projects, world.web);
       await trash(world, world.schema.db.people, world.bob);
-      // The Trash kept the Event's edges to both.
       expect(await storedEdges(world, world.schema.eventPeople, world.event)).toEqual(
         sorted([world.me, world.alice, world.bob]),
       );
@@ -986,7 +950,6 @@ describe("a transcript inherits its project, company and people from its Event (
 
       expect(outcome).toBe("linked");
       expect(await related(world, world.schema.transcriptEvent)).toEqual([world.event]);
-      // Stored edges, not only the live ones a read returns.
       expect(await storedEdges(world, world.schema.transcriptProject)).toEqual([]);
       expect(await storedEdges(world, world.schema.transcriptCompany)).toEqual([]);
       expect(await storedEdges(world, world.schema.transcriptPeople)).toEqual([world.alice]);
@@ -1001,7 +964,6 @@ describe("a transcript inherits its project, company and people from its Event (
       const world = await buildWorld();
       await trash(world, world.schema.db.companies, world.siko);
 
-      // The write the create step of the transcription worker makes for the recording's project (issue #1696).
       await inTenant(world, () =>
         withTransaction(pool, (client) =>
           createRelationWithClient(client, {
@@ -1031,7 +993,7 @@ describe("a transcript inherits its project, company and people from its Event (
       await link(world, world.schema.eventPeople, world.event, carol);
       await runPropagation();
 
-      // Stored edges, not only the live ones a read returns: Bob's edge is gone and Dave's was never written.
+      // Stored edges: Bob's edge is gone and Dave's was never written.
       expect(await storedEdges(world, world.schema.transcriptPeople)).toEqual(sorted([world.alice, carol]));
       expect((await linksOf(world)).people?.valueKind).toBe("inherited");
     });
@@ -1052,10 +1014,6 @@ describe("a transcript inherits its project, company and people from its Event (
   });
 
   describe("when the Event goes", () => {
-    /**
-     * After the release: later changes of the old sources reach a second transcript that is linked to the
-     * Event now, and do not reach the released one, which has no link row.
-     */
     async function expectValuesStayOwn(world: World): Promise<void> {
       const following = await createTranscript(world, "Following recording");
       await link(world, world.schema.transcriptEvent, following, world.event);
@@ -1113,7 +1071,6 @@ describe("a transcript inherits its project, company and people from its Event (
         cp.restoreItem(world.schema.db.events, world.event, ACTING_USER_ID, USER),
       );
       expect(restored?.deletedAt).toBeNull();
-      // The edge to the restored Event is still there; no link came back with it.
       expect(await related(world, world.schema.transcriptEvent)).toEqual([world.event]);
       expect(await linkRows(world)).toEqual([]);
       await expectValuesStayOwn(world);
@@ -1145,7 +1102,6 @@ describe("a transcript inherits its project, company and people from its Event (
         "people",
         "project",
       ]);
-      // Each released transcript is announced to the acting user; the other Event's transcript is not.
       for (const transcriptId of [world.transcript, second]) {
         const announced = itemUpdatesOf(events, transcriptId);
         expect(announced.length).toBeGreaterThan(0);
@@ -1309,7 +1265,6 @@ describe("a transcript inherits its project, company and people from its Event (
       // The broken link went with the first Event, so the empty people are an empty own value again.
       expect((await values(world)).people).toEqual([carol]);
       expect(await sourceItemIds(world, "people")).toEqual([otherEvent]);
-      // The project and the company the first Event gave stay as own values.
       expect(await values(world)).toMatchObject({ project: [world.web], company: [world.novak] });
     });
 
@@ -1520,7 +1475,7 @@ describe("a transcript inherits its project, company and people from its Event (
       const world = await buildWorld();
       const twin = await item(world, world.schema.db.people, { name: "Alice Novak" });
       const nameless = await item(world, world.schema.db.people, { name: "Historical" });
-      // A row without a title is a historical state the item writer no longer produces: raw SQL on the admin pool.
+      // The item writer never produces a row without a title: raw SQL on the admin pool.
       const stripped = await admin.query("UPDATE items SET properties = properties - 'name' WHERE id = $1", [nameless]);
       expect(stripped.rowCount).toBe(1);
       for (const person of [twin, nameless]) await link(world, world.schema.eventPeople, world.event, person);
@@ -1547,7 +1502,6 @@ describe("a transcript inherits its project, company and people from its Event (
 
   it("creates no value while an Event card is only validated, and inherits when the card is confirmed", async () => {
     const world = await buildWorld();
-    // A transcript outside every Event's time window gets a card instead of an edge.
     const transcript = await inTenant(world, () =>
       withTransaction(pool, (client) =>
         createItemWithClient(
@@ -1609,7 +1563,6 @@ describe("a transcript inherits its project, company and people from its Event (
     expect(await linkRows(a)).toEqual([]);
     expect(await linkRows(b)).toEqual(ALL_LINKS_ON);
     expect(await values(b)).toEqual({ project: [b.web], company: [b.novak], people: sorted([b.alice, b.bob]) });
-    // Tenant A sees neither tenant B's transcript nor its links, and cannot end them.
     expect(await linkRows({ ...a, transcript: b.transcript })).toEqual([]);
     await expect(
       inTenant(a, () =>

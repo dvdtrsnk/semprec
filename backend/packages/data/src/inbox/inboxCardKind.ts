@@ -14,10 +14,8 @@ import type { UnknownKindProposalEnvelope } from "./proposalEnvelope.js";
 import { transcriptCardRole } from "./proposalActions.js";
 
 /**
- * The canonical kind of an Inbox card, derived on read and stored nowhere. The whole union is
- * declared up front; `mcp` (#1973) and the primary step of a multi-step proposal (#1492) are produced by those
- * issues, not by this function yet. `journal` is the card of a `journalEntry` envelope (#1982) or of page content on
- * a Journal day, and `recording` the card of a `transcription` envelope (#1978).
+ * Derived on read and stored nowhere. `mcp` and the multi-step primary kind are declared but not produced here yet.
+ * `journal` is a `journalEntry` envelope or page content on a Journal day; `recording` is a `transcription` envelope.
  */
 export type InboxCardKind =
   | "task"
@@ -40,21 +38,17 @@ export type InboxCardKind =
 
 export interface InboxCardKinds {
   cardKind: InboxCardKind;
-  /** The kind of the target the card writes or edits. */
   baseKind: InboxCardKind;
 }
 
 export interface InboxCardKindInput {
-  /** The Processing proposals card's `kind`. */
   kind: "inbox" | "transcript" | "mailThread";
-  /** The stored proposal status, or the compute state (`computing`, `computeFailed`) of a card being computed. */
+  /** The stored proposal status, or a compute state (`computing`, `computeFailed`). */
   status: string;
-  /** The stored envelope, or `null` when none was computed. */
   envelope: ProposalEnvelope | UnknownKindProposalEnvelope | null;
   /**
-   * `databases.owner_module_id` of the envelope's target: the target database of a `database`
-   * envelope, or the database owning the target page of a `pageContent` envelope (the Journal
-   * module for a day's Journal page). `null` when unknown.
+   * `databases.owner_module_id` of the target database, or of the database owning the target page of a
+   * `pageContent` envelope. `null` when unknown.
    */
   ownerModuleId: string | null;
 }
@@ -72,7 +66,6 @@ const KIND_BY_OWNER_MODULE: Readonly<Record<string, InboxCardKind>> = {
 
 const CLARIFY: InboxCardKinds = { cardKind: "clarify", baseKind: "clarify" };
 
-/** The kinds of a pending approval request. */
 export function deriveApprovalCardKind(): InboxCardKinds {
   return { cardKind: "approval", baseKind: "approval" };
 }
@@ -82,7 +75,7 @@ function deriveFromEnvelope(
   envelope: ProposalEnvelope | UnknownKindProposalEnvelope,
 ): InboxCardKinds {
   if ("unknownKind" in envelope) return { cardKind: "clarify", baseKind: "page" };
-  // A thread task card (issue gh-2034) proposes a task and nothing else: any other envelope is not one it can hold.
+  // A thread task card only ever proposes a task.
   if (input.kind === "mailThread") {
     return envelope.entityKind === "database" && input.ownerModuleId === TASKS_MODULE_ID
       ? { cardKind: "task", baseKind: "task" }
@@ -120,13 +113,11 @@ function deriveFromEnvelope(
   }
 }
 
-/** Pure: derives a card's `cardKind` and `baseKind` from already-loaded data and never reads storage. */
 export function deriveInboxCardKind(input: InboxCardKindInput): InboxCardKinds {
   const { status, envelope } = input;
   if (status === "needsClarification") return CLARIFY;
   if (status === "invalid") {
     return { cardKind: "invalid", baseKind: envelope ? deriveFromEnvelope(input, envelope).baseKind : "invalid" };
   }
-  // `computing`, `computeFailed` and every other status resolve the same way from the envelope.
   return envelope ? deriveFromEnvelope(input, envelope) : CLARIFY;
 }

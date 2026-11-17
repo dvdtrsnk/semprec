@@ -16,10 +16,8 @@ import { runInTenant } from "@semprec/shared";
 import { logger } from "./logger.js";
 
 /**
- * Wires the data layer's in-process invalidation hooks (`realtimeHook.ts`) to real
- * Postgres NOTIFY publishing. Call once at process startup, in whichever process owns
- * the write path (the choke-point / doc store's pool) — a later issue may split reads
- * and writes across processes, at which point this call moves with the writer.
+ * Wires the data layer's in-process invalidation hooks to Postgres NOTIFY. Call once at startup in the process that
+ * owns the write path.
  */
 export function wireRealtimeHooks(pool: Pool): void {
   const agentRunPublishTails = new Map<string, { promise: Promise<void> }>();
@@ -44,8 +42,8 @@ export function wireRealtimeHooks(pool: Pool): void {
       logger.error({ err }, "Failed to publish invalidation realtime message");
     });
   });
-  // The awaited counterpart for a caller that acts on the outcome (the AI gateway's window ledger): it gets
-  // the failure instead of the log line above, and logs it itself.
+  // Awaited counterpart for a caller that acts on the outcome (the AI gateway's window ledger); it gets the failure and
+  // logs it itself.
   setInvalidationPublisher((event) => publishRealtimeMessage(pool, { type: "invalidation", ...event }));
   setDocUpdateHook((event) => {
     publishRealtimeMessage(pool, { type: "doc_update", ...event }).catch((err: unknown) => {

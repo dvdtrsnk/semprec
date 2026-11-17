@@ -10,34 +10,26 @@ import { beginTenantDeletion } from "./deleteAccount.js";
 import { logger } from "./logger.js";
 import { orderTablesForPurge, type TableForeignKey } from "./tenantPurgeOrder.js";
 
-/**
- * The sweep that erases a `deleting` tenant (issue #1055). Why it deletes outside the choke point,
- * bytes before rows, and per-tenant try-locks: `docs/adr/2026-10-18-tenant-purge-erases-outside-the-choke-point.md`.
- */
+/** Erases `deleting` tenants outside the choke point: bytes before rows, under per-tenant try-locks. */
 
 /** Rows deleted per statement and blobs read per page. */
 const ROW_CHUNK = 1000;
 const BLOB_PAGE = 500;
 
-/** How long dropping an `items` partition may wait for its `ACCESS EXCLUSIVE` lock before the tenant is retried next run. */
+/** Wait for an `items` partition's `ACCESS EXCLUSIVE` lock before the tenant is retried next run. */
 const PARTITION_LOCK_TIMEOUT = "5s";
 
-/**
- * How long finalisation may wait for the `LOCK TABLE` on graphile-worker's job table, or for a row lock
- * in its queue table, before the run fails and the next sweep retries.
- */
+/** Wait for the job table `LOCK TABLE` or a queue row lock during finalisation before the run fails. */
 const QUEUE_LOCK_TIMEOUT = "2s";
 
-/** Matches the tenant's lane queues: the `:<tenantId>` suffix of `tenantLane` (a colon and a 36 character UUID). */
+/** `:<tenantId>` suffix of `tenantLane`: a colon and a 36-character UUID. */
 const TENANT_QUEUE_SUFFIX_LENGTH = 37;
 
-/** The two blob roots a tenant's bytes can live under. */
 export interface TenantPurgeDirs {
   files: string;
   mailAttachments: string;
 }
 
-/** The part of graphile-worker's `JobHelpers` the purge reads. */
 export interface TenantPurgeHelpers {
   abortSignal?: AbortSignal;
 }
@@ -121,11 +113,7 @@ async function purgeQueuedJobs(ctx: PurgeContext): Promise<number> {
   }
 }
 
-/**
- * Deletes the tenant's blob and export bytes. A blob's bytes can sit in either root (uploads and
- * mail attachments share content-hash deduplication), so each key is removed from both; the
- * removal is idempotent. Any failure throws, so the tenant is not finalised with bytes left behind.
- */
+/** Each key is removed from both roots (content-hash dedup spans them). Any failure throws before finalising. */
 async function readBlobPage(ctx: PurgeContext, afterId: string | null): Promise<BlobPageRow[]> {
   const { rows } = await ctx.pool.query<BlobPageRow>(
     `SELECT id, storage_key FROM blobs
@@ -165,19 +153,14 @@ async function purgeBytes(ctx: PurgeContext): Promise<number> {
   return removed;
 }
 
-/**
- * Removes `<root>/<tenantId>` under both roots. Runs in the bytes step and again once the rows are
- * gone, so bytes a writer already running at deletion time stored after the bytes step are erased too.
- */
+/** Repeated after the rows are gone, catching bytes an in-flight writer stored after the bytes step. */
 async function removeTenantDirectories(ctx: PurgeContext): Promise<void> {
   for (const root of ctx.roots) await rm(join(root, ctx.tenantId), { recursive: true, force: true });
 }
 
 /**
- * Drops the `items` partition of each of the tenant's databases, one transaction each
- * (`set_config(…, true)` is `SET LOCAL`). Runs as its own step and again right before `items`
- * is deleted, so a database a writer already running at deletion time created after the first
- * pass loses its partition too.
+ * One transaction per partition (`set_config(…, true)` is `SET LOCAL`). Repeated right before `items` is
+ * deleted, catching databases an in-flight writer created meanwhile.
  */
 async function purgePartitions(ctx: PurgeContext): Promise<number> {
   const { rows } = await ctx.pool.query<{ id: string }>("SELECT id FROM databases WHERE tenant_id = $1 ORDER BY id", [
@@ -193,7 +176,6 @@ async function purgePartitions(ctx: PurgeContext): Promise<number> {
   return rows.length;
 }
 
-/** Deletes the tenant's rows of `table` in chunks of `ROW_CHUNK`, one transaction per chunk. */
 async function deleteInChunks(ctx: PurgeContext, table: string): Promise<number> {
   const quoted = escapeIdentifier(table);
   let deleted = 0;
@@ -221,13 +203,9 @@ async function deleteInOneStatement(ctx: PurgeContext, table: string): Promise<n
 }
 
 /**
- * Deletes `agent_run_mcp_credentials` (global, references `agent_runs`) and then every tenant table,
- * children before parents. `items` and any other partitioned table cannot use the `ctid` chunking
- * (a `ctid` is only unique within one partition), so they are deleted by predicate: the partitions
- * are dropped again just before `items` (which precedes `databases`, its parent) and the statement
- * must affect nothing. Rows it does find come from a database created after that second pass: they
- * are deleted (committed) and the tenant fails before `databases` is reached, so the retry still
- * finds that database and drops its partition.
+ * Children before parents. Partitioned tables cannot use `ctid` chunking, so they are deleted by predicate
+ * after the partitions are dropped again; rows found there mean a new database, and the tenant fails before
+ * `databases` so the retry still drops its partition.
  */
 async function purgeRows(ctx: PurgeContext): Promise<number> {
   const { tables, foreignKeys } = await readCatalog(ctx.pool);
@@ -277,19 +255,13 @@ async function assertNothingRemains(client: PoolClient, tenantId: string, tables
 }
 
 /**
- * Erases the tenant's idle lane queues (`<lane>:<tenantId>`) from graphile-worker's queue table, the
- * last statements of the finalisation transaction. `add_job` takes no lock on a queue row and
- * `_private_jobs.job_queue_id` has no foreign key, so without the table lock a job that a
- * still-open transaction enqueued into the lane is invisible to the `NOT EXISTS` and would be left
- * pointing at a deleted queue, which no worker selects. The lock waits for such a transaction (or
- * times out, which fails the run) and is held until the commit that follows.
- * A queue that a running job holds, or that still holds a job, is kept and fails the run, naming
- * only the table. See `docs/adr/2026-11-15-tenant-purge-erases-the-tenants-queue-rows.md`.
+ * `add_job` takes no queue row lock and `job_queue_id` has no FK, so without the table lock a job from a
+ * still-open transaction would be left pointing at a deleted queue. A queue still in use fails the run.
  */
 async function eraseIdleQueues(client: PoolClient, tenantId: string): Promise<void> {
   await client.query("SELECT set_config('lock_timeout', $1, true)", [QUEUE_LOCK_TIMEOUT]);
   await client.query("LOCK TABLE graphile_worker._private_jobs IN SHARE ROW EXCLUSIVE MODE");
-  // Zero rows is valid: a tenant that never enqueued into a lane has no queue, and a held queue is kept and caught below.
+  // Zero rows is valid: a tenant may never have enqueued into a lane; a held queue is caught below.
   const erased = await client.query(
     `DELETE FROM graphile_worker._private_job_queues AS q
       WHERE right(q.queue_name, $2::int) = ':' || $1::text
@@ -310,11 +282,7 @@ async function eraseIdleQueues(client: PoolClient, tenantId: string): Promise<vo
   }
 }
 
-/**
- * Finalises the purge in one transaction: asserts nothing tenant-owned remains, erases the
- * tenant's identity rows, records the tombstone, deletes the `tenants` row and then erases the
- * tenant's idle queue rows.
- */
+/** One transaction: assert nothing remains, erase identity rows, tombstone, delete the tenant, erase idle queues. */
 async function finalise(ctx: PurgeContext): Promise<void> {
   const { tables } = await readCatalog(ctx.pool);
   await withTransaction(ctx.pool, async (client) => {
@@ -329,7 +297,7 @@ async function finalise(ctx: PurgeContext): Promise<void> {
     );
     for (const user of users) {
       const email = normalizeEmail(user.email);
-      // Zero rows is valid for each of these: a user may have no sessions, tokens, attempts or invites.
+      // Zero rows is valid: a user may have no sessions, tokens, attempts or invites.
       const pushSubscriptions = await client.query("DELETE FROM push_subscriptions WHERE user_id = $1", [user.id]);
       const sessions = await client.query("DELETE FROM sessions WHERE user_id = $1", [user.id]);
       const resetTokens = await client.query("DELETE FROM password_reset_tokens WHERE user_id = $1", [user.id]);
@@ -367,7 +335,7 @@ async function finalise(ctx: PurgeContext): Promise<void> {
   });
 }
 
-/** Runs every purge step for one tenant, in order; each is idempotent and resumable after a crash. */
+/** Each step is idempotent and resumable after a crash. */
 async function purgeTenant(ctx: PurgeContext): Promise<void> {
   const { tenantId } = ctx;
   await runInTenant(tenantId, async () => {
@@ -384,20 +352,15 @@ async function purgeTenant(ctx: PurgeContext): Promise<void> {
   logger.info({ tenantId }, "tenant_purge_completed");
 }
 
-/**
- * Runs `purgeTenant` while holding the tenant's session-level advisory lock on a dedicated
- * connection. Returns `false` without purging when another run holds the lock, or when the tenant
- * is no longer `deleting` once the lock is held (a run that held it finished first).
- */
+/** Under the tenant's session-level advisory lock; `false` when locked elsewhere or no longer `deleting`. */
 async function purgeUnderLock(
   pool: Pool,
   dirs: TenantPurgeDirs,
   tenantId: string,
   signal: AbortSignal | undefined,
 ): Promise<boolean> {
-  // A dedicated connection, not `withTransaction`: the advisory lock is session-level and must stay
-  // held across the many transactions `purgeTenant` commits. The `finally` below unlocks and
-  // releases it on every path (this is the write-safety baseline's leaked-connect entry for this file).
+  // A dedicated connection, not `withTransaction`: the session-level lock must span the many transactions
+  // `purgeTenant` commits. The `finally` unlocks and releases on every path.
   const client = await pool.connect();
   let releaseError: Error | undefined;
   let locked = false;
@@ -433,11 +396,8 @@ async function purgeUnderLock(
 }
 
 /**
- * The `tenantPurge` task: erases every `deleting` tenant, oldest request first. A tenant whose
- * lock another run holds is skipped. One tenant's failure does not skip the others: failures are
- * logged by class name only (an error message can echo tenant content), collected, and rethrown
- * together as an `AggregateError` after the loop. When `helpers.abortSignal` aborts, the run stops
- * between chunks and returns normally; the next minute's run resumes.
+ * Oldest request first; locked tenants are skipped. Failures are logged by class only (messages can carry
+ * tenant content) and rethrown as one `AggregateError`. On abort it stops between chunks and returns.
  */
 export async function handleTenantPurgeTask(
   pool: Pool,
@@ -465,7 +425,6 @@ export async function handleTenantPurgeTask(
   });
 }
 
-/** What `replayTenantDeletions` did with the ids it was given. */
 export interface TenantDeletionReplayResult {
   marked: string[];
   alreadyDeleting: string[];
@@ -475,7 +434,7 @@ export interface TenantDeletionReplayResult {
 
 type ReplayOutcome = "marked" | "alreadyDeleting" | "absent" | "lastAdmin" | "unexpectedStatus";
 
-/** Decides and, for an `active` or `suspended` tenant, starts the deletion of one tenant; runs in the tenant's scope. */
+/** Decides, and for an `active`/`suspended` tenant starts, one tenant's deletion in its scope. */
 async function replayOneTenant(pool: Pool, tenantId: string): Promise<ReplayOutcome> {
   return withTransaction(pool, async (client): Promise<ReplayOutcome> => {
     // Same order as the account-deletion routes: the membership lock first, then the tenant row.
@@ -488,9 +447,8 @@ async function replayOneTenant(pool: Pool, tenantId: string): Promise<ReplayOutc
     if (status === "deleting") return "alreadyDeleting";
     if (status !== "active" && status !== "suspended") return "unexpectedStatus";
 
-    // Only an admin of an active tenant counts towards the guard, as in deleteAccount.
-    // `users_tenant_id_key` allows one user per tenant, so excluding that one user is
-    // the same as excluding the whole tenant.
+    // Only an admin of an active tenant counts towards the guard. `users_tenant_id_key` allows one user per
+    // tenant, so excluding that user excludes the tenant.
     if (status === "active") {
       const { rows: admins } = await client.query<{ id: string }>(
         "SELECT id FROM users WHERE tenant_id = $1 AND role = 'admin' ORDER BY id",
@@ -511,18 +469,9 @@ async function replayOneTenant(pool: Pool, tenantId: string): Promise<ReplayOutc
 }
 
 /**
- * Re-applies deletions recorded in a backup ledger to a restored database (issue #1078): every
- * `active` or `suspended` tenant in `tenantIds` goes through `beginTenantDeletion`, one transaction
- * per tenant, and the purge sweep then erases it. A tenant that is already `deleting` or absent is
- * reported and left alone; the last active admin's tenant and a tenant in another status (e.g.
- * `provisioning`) are `refused` and left unchanged. Any other failure propagates, so a replay that
- * could not finish never reports success: the loop stops there on purpose, the tenants already
- * marked stay marked, and running the replay again skips them as `alreadyDeleting`.
- *
- * Tenants are handled in the order given, and each one sees the admins left by the ones before it.
- * If every active admin's tenant was deleted before the backup, the last of them in the ledger is
- * refused as `lastAdmin` although its deletion was recorded: a `lastAdmin` refusal means a recorded
- * deletion was not applied and needs an operator's decision.
+ * Re-applies a backup ledger's deletions to a restored database, one transaction per tenant, in order.
+ * `deleting`/absent tenants are left alone; the last active admin's tenant and other statuses are `refused`.
+ * Other failures stop the loop; a rerun skips marked tenants. A `lastAdmin` refusal needs an operator.
  */
 export async function replayTenantDeletions(
   pool: Pool,

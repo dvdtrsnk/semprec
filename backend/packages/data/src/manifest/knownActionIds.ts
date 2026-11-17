@@ -29,11 +29,8 @@ import { TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js
 import { JOURNAL_WEEKLY_CLEANUP_ACTION_ID } from "../journal/journalWeeklyCleanupKeys.js";
 
 /**
- * A temporary stand-in for the full module registry (issue #29, same caveat as
- * `ActionRegistry` in scheduler/actions.ts): every `*_ACTION_ID` constant this codebase
- * currently defines, gathered so `moduleRegistry.checkDrift` (issue #112) has a real
- * default to diff live `project_heartbeats.action_id` values against. Once #29 lands, this
- * list should come from the registry itself instead of being hand-maintained here.
+ * Hand-maintained list of every `*_ACTION_ID`, the default `moduleRegistry.checkDrift` diffs live
+ * `project_heartbeats.action_id` values against. Should eventually come from the registry.
  */
 export const KNOWN_HEARTBEAT_ACTION_IDS: ReadonlySet<string> = new Set([
   CORE_AGENT_RUN_ACTION_ID,
@@ -54,12 +51,7 @@ export const KNOWN_HEARTBEAT_ACTION_IDS: ReadonlySet<string> = new Set([
   CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID,
 ]);
 
-/**
- * Same hand-maintained stand-in as `KNOWN_HEARTBEAT_ACTION_IDS` above, until the module registry
- * (issue #29) owns it: every `properties.owner_process` value the seeds and migrations write for a
- * system-owned property, so `moduleRegistry.checkDrift` has a real default to diff live
- * `owner_process` values against, including the ten-database Tasks and Transcripts owners.
- */
+/** Hand-maintained like the list above: every `owner_process` the seeds write for system-owned properties. */
 export const KNOWN_OWNER_PROCESS_IDS: ReadonlySet<string> = new Set([
   CALENDAR_MODULE_ID,
   EMAILS_MODULE_ID,
@@ -70,6 +62,6 @@ export const KNOWN_OWNER_PROCESS_IDS: ReadonlySet<string> = new Set([
   TASKS_MODULE_ID,
   PROJECTS_OWNER_PROCESS,
   JOURNAL_EVENT_LINKS_OWNER_PROCESS,
-  // Issue #1660: People's derived `lastContact`, written only by people/lastContact.ts's recompute.
+  // People's derived `lastContact`, written only by people/lastContact.ts's recompute.
   PEOPLE_MODULE_ID,
 ]);

@@ -2,12 +2,10 @@ import { ImapFlow, type AppendResponseObject } from "imapflow";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 
-/** The deadline `ImapFlowMailClient.appendMessage` waits for the server to answer APPEND (imapFlowClient.ts). */
 const APPEND_TIMEOUT_MS = 60_000;
 
 const raw = Buffer.from("From: me@mail.test\r\nMessage-ID: <one@mail.test>\r\n\r\nhi bob\r\n", "utf8");
 
-/** An `ImapFlowMailClient` over a stub connection whose `append` records its arguments and answers as `append` does. */
 function clientWith(append: () => Promise<AppendResponseObject | false>) {
   const calls: unknown[][] = [];
   const connection = new ImapFlow({

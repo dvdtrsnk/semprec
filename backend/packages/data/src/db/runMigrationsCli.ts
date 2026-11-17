@@ -15,9 +15,8 @@ const pool = createPool(connectionString, { statementTimeoutMs: 0 });
 try {
   await runAsSystem("deploy migrations", async () => {
     await runMigrations(pool);
-    // Issue #243: graphile-worker's own schema doesn't exist until ensureQueueSchema creates it, so
-    // semprec_side's grants on it can't live in the SQL migrations above — this CLI is the real-deploy
-    // invocation point, matching testSupport/globalSetup.ts's test-time call to the same two functions.
+    // graphile-worker's schema exists only after ensureQueueSchema, so semprec_side's grants on it cannot
+    // live in the SQL migrations; testSupport/globalSetup.ts makes the same two calls for tests.
     await ensureQueueSchema(pool);
     await grantQueueSchemaPrivileges(pool);
   });

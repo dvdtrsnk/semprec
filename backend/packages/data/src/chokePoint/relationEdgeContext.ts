@@ -1,9 +1,6 @@
-// Owns loading a relation edge's context (the caller-side relation property and its relation
-// definition) and the guards every relation-edge mutation runs against it: side normalization,
-// system-owner writability and the archived-database check on both sides. Nothing that performs
-// a write, and no relation-property creation or destructive-operation projection logic, belongs here.
-// Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md,
-// docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+// Loads a relation edge's context (caller-side property and its definition) and the guards every
+// edge mutation runs against it: side normalization, system-owner writability and the
+// archived-database check on both sides. Nothing here writes.
 import type { PoolClient } from "pg";
 import { ForbiddenError, ValidationError } from "../errors.js";
 import type { PropertyRow, RelationDefinitionRow } from "../types.js";
@@ -12,7 +9,7 @@ import * as relationsStore from "./relationsStore.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { assertValueLinkHandoff, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
 
-/** Shared by every relation-edge mutation: both the caller's own database and the edge's target database must be unarchived, since an edge write touches an item on each side. */
+/** An edge write touches an item on each side, so both databases must be unarchived. */
 export async function assertRelationDatabasesNotArchived(
   client: PoolClient,
   context: RelationEdgeContext,
@@ -21,7 +18,7 @@ export async function assertRelationDatabasesNotArchived(
   await assertDatabaseNotArchived(client, context.targetDatabaseId);
 }
 
-/** Proves the caller's process identity for a protected system relation write — see `assertRelationSideCreatable` in `relationPropertyOps.ts` and `assertRelationPropertyWritable` below in this file. Never accepted on the public facade. */
+/** Proves the caller's process identity for a protected system relation write. Never accepted on the public facade. */
 export interface SystemRelationWriteContext {
   ownerProcess: string;
 }
@@ -33,12 +30,9 @@ export interface RelationEdgeContext {
 }
 
 /**
- * Loads the relation property named by an edge input and normalizes it against its relation
- * definition. `relationPropertyId` always identifies the caller's own side of the definition;
- * its `config.relationDefinitionId`/`config.targetDatabaseId` are the only source of truth for
- * which definition and target database an edge call resolves against — a property whose config
- * lacks either is a data inconsistency (a relation property is never usable before
- * `createRelationPropertyWithClient` fills in both), not a case to infer around.
+ * `relationPropertyId` is always the caller's own side; its `config.relationDefinitionId` and
+ * `config.targetDatabaseId` are the only source of truth, and a property lacking either is a data
+ * inconsistency, not a case to infer around.
  */
 export async function loadRelationEdgeContext(
   client: PoolClient,
@@ -78,11 +72,9 @@ export function normalizeRelationSides(
 }
 
 /**
- * Authorizes an edge write against the exact property named by `relationPropertyId` — a
- * paired definition's two sides may have different owners, and only the side the caller
- * named governs this particular call. A public caller (no context) is rejected outright when
- * that side is `owner: 'system'`; a protected system caller is rejected unless its
- * `context.ownerProcess` matches the property's declared `owner_process` exactly.
+ * Authorizes against the exact property named, since the two sides may have different owners. A
+ * public caller is rejected for an `owner: 'system'` side; a system caller unless
+ * `context.ownerProcess` matches the property's `owner_process` exactly.
  */
 export function assertRelationPropertyWritable(
   property: PropertyRow,
@@ -99,9 +91,8 @@ export function assertRelationPropertyWritable(
 }
 
 /**
- * The handoff check for the `valueLinks` process: it may write a user-owned relation property only
- * while an `on` link exists for the caller item and that property key. Any other property or
- * caller is unaffected; `owner: 'system'` properties keep the check above.
+ * The `valueLinks` process may write a user-owned relation property only while an `on` link exists
+ * for the caller item and that key. Other properties and callers are unaffected.
  */
 export async function assertRelationValueLinkHandoff(
   client: PoolClient,

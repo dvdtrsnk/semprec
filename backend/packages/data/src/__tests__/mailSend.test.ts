@@ -237,7 +237,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       expect(meta?.messageId).toBe(result.messageId);
       expect(result.threadId).toBe(meta?.threadId);
       expect(result.sentAt).toBeInstanceOf(Date);
-      // A plain Emails draft has no `mail_drafts` row, and sending it does not write one (issue gh-1896).
+      // A plain Emails draft has no `mail_drafts` row, and sending it does not write one.
       const { rows: draftRows } = await pool.query("SELECT 1 FROM mail_drafts WHERE email_item_id = $1", [draft.id]);
       expect(draftRows).toHaveLength(0);
 
@@ -259,8 +259,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       );
       expect(draftRelation).toHaveLength(0);
 
-      // A retried/duplicated call for the same already-sent draft (client retry after a
-      // timeout, a double-click) must not submit the message a second time.
+      // A retried or duplicated call for an already-sent draft must not submit the message again.
       const secondSmtp = recordingTransport();
       await expect(
         sendDraftEmail(
@@ -324,8 +323,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       code: "version_conflict",
     });
 
-    // The claim (mail_message_meta insert) is what arbitrates the race, before either call
-    // reaches SMTP — so at most one of the two clients should ever have sent anything.
+    // The claim (mail_message_meta insert) arbitrates the race before either call reaches SMTP, so at most
+    // one client sends.
     expect(smtpA.sent.length + smtpB.sent.length).toBe(1);
   });
 
@@ -366,7 +365,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       ),
     ).rejects.toThrow(/SMTP server rejected/);
 
-    // The failed attempt's claim must not persist — the draft is neither "sent" nor stuck.
+    // The failed attempt's claim must not persist: the draft is neither "sent" nor stuck.
     expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
     const { rows: draftRelation } = await pool.query(
       `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
@@ -826,7 +825,6 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       return draft.id;
     }
 
-    /** Sends one draft and returns the sync mode the factory was asked for. */
     async function sendAndRecordMode(): Promise<string[]> {
       const requested: string[] = [];
       const smtp = recordingTransport();
@@ -1376,7 +1374,6 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       await runtimePool.end();
     });
 
-    /** A Person whose `emails` property and `person_email_index` rows both list the given addresses. */
     async function personOwning(name: string, addresses: string[]): Promise<string> {
       const peopleId = await databaseIdFor("people");
       const person = await chokePoint.createItem({
@@ -1387,7 +1384,6 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       return person.id;
     }
 
-    /** Creates a draft with the given subject and returns its Emails item id, without sending it. */
     async function newDraftWithSubject(subject: string): Promise<string> {
       const draftsId = await draftsFolderId();
       const draft = await withTransaction(pool, (client) =>
@@ -1404,7 +1400,6 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       return draft.id;
     }
 
-    /** Drafts and sends one message from the mailbox, returning its Emails item id. */
     async function sendMail(options: { to: string[]; cc?: string[]; subject?: string }): Promise<string> {
       const subject = options.subject ?? "Hello";
       const draftId = await newDraftWithSubject(subject);
@@ -1426,7 +1421,6 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       return draftId;
     }
 
-    /** The Person item ids joined to an Emails item through one people relation, sorted. */
     async function linkedPersonIds(
       emailItemId: string,
       propertyKey: "senderPeople" | "recipientsPeople",
@@ -1583,8 +1577,8 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       async () => {
         const peopleId = await databaseIdFor("people");
         const bob = await personOwning("Bob", ["bob@example.com"]);
-        // The address index still maps bob@example.com to Bob after he is soft-deleted, so the link
-        // is attempted against a deleted endpoint and refused by the choke point.
+        // The address index still maps bob@example.com to Bob after his soft delete, so the link is attempted
+        // against a deleted endpoint and refused by the choke point.
         await chokePoint.softDeleteItem(peopleId, bob);
         const draftId = await newDraftWithSubject("Draft subject");
 

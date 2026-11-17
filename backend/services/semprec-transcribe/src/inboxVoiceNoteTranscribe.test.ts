@@ -50,10 +50,8 @@ import { createInboxAttachmentMetadataTask } from "./inboxAttachmentMetadata.js"
 import { createInboxVoiceNoteTranscribeTask, MAX_VOICE_NOTE_BYTES } from "./inboxVoiceNoteTranscribe.js";
 import { generateImageFixture, generateM4aFixture } from "./__tests__/fixtures/mediaFixtures.js";
 
-// Issue gh-1980: the voice note transcription job of an Inbox item. The attachments are made as a capture makes them and
-// their metadata is computed by the real metadata job (real `ffprobe` over real M4A files), which queues the job under
-// test; the gateway is a fake that records its requests, and the database is the runtime role pool with a second tenant.
-// The default HTTP client is proven against a local server.
+// The real metadata job (real ffprobe) queues the job under test; the gateway is a recording fake, on the
+// runtime role pool with a second tenant. The default HTTP client is proven against a local server.
 
 /** A local-filesystem storage that remembers which keys were read. */
 class ObservedStorage extends LocalFsBlobStorageWriter {
@@ -183,10 +181,7 @@ async function attachAudio(
   });
 }
 
-/**
- * Attaches a blob of `bytes` with the metadata already recorded, without the metadata job, so a test can state a size
- * the file does not have. Raw `createBlob` is the fixture: the upload path would record the real size.
- */
+/** Raw `createBlob`, so a test can state a size the file does not have. */
 async function attachRecorded(
   tenant: string,
   itemId: string,
@@ -234,7 +229,6 @@ async function propertiesOf(tenant: string, itemId: string): Promise<Record<stri
   );
 }
 
-/** The whole stored row, to compare before and after a run that must change nothing. */
 async function itemRow(tenant: string, itemId: string): Promise<string> {
   return runInTenant(tenant, () =>
     withTenantTransaction(runtimePool, tenant, async (client) => {

@@ -45,7 +45,6 @@ const EXPECTED_PROPERTIES: ReadonlyArray<readonly [string, string, unknown]> = [
   ["uid", "text", {}],
 ];
 
-/** The four relations as `[key, target database key]`, in key order. */
 const EXPECTED_RELATIONS: ReadonlyArray<readonly [string, string]> = [
   ["event", "events"],
   ["mailbox", "mailboxes"],
@@ -128,10 +127,7 @@ async function relationsOf(databaseId: string) {
   return relationRows.parse(rows);
 }
 
-/**
- * The calendar module's writer of an invitation row (issue gh-1929 will be the producer): the system writer
- * allowed to write the properties it owns. A row no public path can create is the state the tests need.
- */
+/** The calendar module's system writer of an invitation row, a row no public path can create. */
 async function createInvitation(tenantId: string, properties: Record<string, unknown> = {}) {
   const database = await requireDatabase(tenantId, INVITATIONS_MODULE_ID);
   const row = await runInTenant(tenantId, () =>

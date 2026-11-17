@@ -10,30 +10,17 @@ import { publishProjectAgentInvalidation } from "../projectAgent/projectAgentInv
 import { rowToGrant, type ProjectMcpGrant, type ProjectMcpGrantRow } from "./mcpProjectGrantsStore.js";
 
 /**
- * The user-only mutations issue #124's acceptance criteria carve out from
- * `mcp_tool_registrations`/`project_mcp_grants`: granting/revoking a project's access to a
- * tool, and setting a tool's `risk_class`/`requires_approval`/`display_label`. These are the only human
- * writers of those columns. A tool sync is the other writer of `risk_class`/`requires_approval`: it derives a default
- * from the server's annotations (`upsertClassifiedMcpToolRegistration`) only for a registration whose
- * `classification_source` is `annotation`, and the risk class and approval mutations here set it to `manual`, which
- * ends that for good
- * ([[2026-11-14-mcp-tool-classification-is-owned-by-the-annotation-sync-until-a-person-sets-it]]). `display_label`
- * has one other writer: `mcpToolLabelSuggestion.ts` fills a label only where there is none, and never overwrites one
- * (docs/adr/2026-11-14-mcp-tool-label-suggestions-fill-only-empty-display-labels.md).
+ * The human writers of grants and of a tool's `risk_class`/`requires_approval`/`display_label`. The tool sync also
+ * derives risk class and approval from annotations, but only while `classification_source` is `annotation`; the
+ * mutations here set it to `manual` for good. Label suggestions fill only an empty `display_label`. See
+ * docs/architecture/agents-approvals-and-ai.md#capabilities-and-mcp-grants.
  *
- * This module is intentionally **not** re-exported from this package's `index.ts`. Every other
- * function these mutations depend on (the reads, the exported `upsertMcpToolRegistration`, which never writes
- * `risk_class` or `requires_approval`) is exported there and safe for any `@semprec/data` consumer — including
- * `agent-runtime`, which already depends on this package — to import. These three are not, and neither is the
- * classifying upsert of the sync: per the issue's
- * "agents, including proposal confirmation, have no write path to grants" criterion, only
- * an authenticated human-facing route handler should ever call them, and it must do so via this
- * file's relative path from inside `@semprec/data`, never through the package's public export
- * surface. Keeping them off that surface is what makes them mechanically unreachable from
- * `agent-runtime` rather than merely documented as off-limits.
+ * Not re-exported from `index.ts` (nor is the sync's classifying upsert): agents, including proposal confirmation,
+ * must have no write path to grants, and keeping these off the public surface makes them mechanically unreachable
+ * from `agent-runtime`. Only route handlers inside `@semprec/data` import them by relative path.
  */
 
-/** User-only mutation: sets a tool's risk classification and marks the registration's classification as `manual`, so no sync rewrites it. */
+/** Marks the classification `manual`, so no sync rewrites it. */
 export async function setMcpToolRiskClass(
   client: Queryable,
   id: string,
@@ -48,7 +35,7 @@ export async function setMcpToolRiskClass(
   return rowToRegistration(row);
 }
 
-/** User-only mutation: toggles whether invoking this tool requires approval and marks the registration's classification as `manual`, so no sync rewrites it. */
+/** Marks the classification `manual`, so no sync rewrites it. */
 export async function setMcpToolRequiresApproval(
   client: Queryable,
   id: string,
@@ -88,7 +75,7 @@ function validateDisplayLabel(label: unknown): McpToolDisplayLabel {
   return validated;
 }
 
-/** User-only mutation: sets (or, with `null`, clears) a tool's localized display label. */
+/** `null` clears the label. */
 export async function setMcpToolDisplayLabel(
   client: Queryable,
   id: string,
@@ -110,10 +97,7 @@ export interface SetProjectMcpGrantInput {
   granted: boolean;
 }
 
-/**
- * User-only mutation: grants or revokes a project's ability to invoke one registered tool, and
- * announces the change of the project's agent setup once the write has committed.
- */
+/** Announces the project's agent setup change after commit. */
 export async function setProjectMcpGrant(client: Queryable, input: SetProjectMcpGrantInput): Promise<ProjectMcpGrant> {
   const { rows } = await client.query<ProjectMcpGrantRow>(
     // FK checks bypass RLS. Resolve and lock the registration through RLS in this same

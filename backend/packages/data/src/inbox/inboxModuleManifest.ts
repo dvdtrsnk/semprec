@@ -33,51 +33,23 @@ export {
 } from "./inboxRouteHandlers.js";
 
 /**
- * Retrofit manifest (module-contract issue #227) for the Inbox pipeline (issues #101-#106):
- * Inbox, Inbox item types, and Processing proposals (the three databases are seeded through the generic
- * databases/properties mechanism, like the ten hardcoded databases) and the `journal-inbox`
- * view type (`views/journalInboxViewType.ts`). `semprec.tick` (`inboxTickAction.ts`) is this
- * module's own `onItemEvent` heartbeat action (create/update/delete on Inbox), so it is
- * declared here; the recompute job it can enqueue (`journalInboxRecompute`,
- * `CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE`) is core-registered, not module-declared, the
- * same reason the docs manifest (#226) excludes its cron tasks — so this manifest declares
- * no `taskNames`. `onItemEvent` itself is a core-defined heartbeat rule kind, not a new one
- * this module contributes, so it is not declared under `heartbeatRuleKinds` either.
- * `proposal`, `status` and `history` are system-owned, so a generic item update cannot write them: confirm, reject and
- * revise go through the proposal actions (`proposalActions.ts`) and their routes. The two agent tools are limited to the
- * card of the calling run's own item thread: `inbox.proposal.get` reads it, and `inbox.proposal.revise` (issue #1906)
- * replaces its envelope through the revise path. A revision keeps the card a proposal, and nothing is created in a
- * target database before the user confirms, so the tool needs no approval.
+ * Declares the Inbox, Inbox item types and Processing proposals databases, the `journal-inbox` view type and the
+ * `semprec.tick` `onItemEvent` heartbeat action. The `journalInboxRecompute` job is core-registered, so no
+ * `taskNames` are declared; `onItemEvent` is a core rule kind, so no `heartbeatRuleKinds` either.
  *
- * Ownership handoff for Processing proposals
- * (`docs/adr/2026-09-23-speaker-mappings-are-edges-proposed-on-transcript-cards.md`, superseding
- * `docs/adr/2026-09-23-processing-proposals-card-creation-owned-per-kind.md`): each card `kind`
- * has exactly one producer process that creates its cards — `inbox` by `semprec.tick`,
- * `transcript` by `semprec-transcribe`, from its match step (`transcription/transcriptEventMatch.ts`)
- * and its speaker suggestion step (`transcription/transcriptSpeakerSuggestion.ts`). `mailThread` cards (source
- * relation `sourceThread`, issue gh-2034, `docs/adr/2026-11-14-a-mail-thread-card-proposes-one-task-of-a-thread-and-is-confirmed-as-a-user-write.md`)
- * by the mail module, from its agent tool `mail.thread.proposeTask` (issue gh-2035, `mail/threadTaskProposals.ts`,
- * `docs/adr/2026-11-14-mail-thread-cards-are-produced-by-the-mail-module-when-semp-proposes-a-task.md`).
- * Everything after creation (confirm/reject/revise) stays with this module's proposal actions, with two additions.
- * First (`docs/adr/2026-11-14-transcript-cards-are-recomputed-by-their-producer-on-instruction.md`): when a user's
- * instruction is recorded on a `transcript` card, `semprec-transcribe` also rewrites that card's `aiProposal`,
- * `aiVersion`, `proposal` and `history` (and the `userOverrides`, `userEditedKeys` and `status` that follow) in its
- * `transcriptCardRecompute` task, under the card's row lock, and never a card that is `confirmed`, `rejected` or of
- * another kind. Second
- * (`docs/adr/2026-11-14-speaker-suggestions-are-asked-again-when-the-event-or-its-participants-change.md`): when a
- * transcript's Event or the Event's participants change, `semprec-transcribe` refreshes, in its
- * `transcriptSpeakerSuggestion` task and in the pipeline's speaker step (`refreshClarificationCard` of
- * `proposeSpeakerMappings`), the `context`, `proposal`, `aiProposal`, `aiVersion`, `status` and `history` of a speaker
- * card that is still `needsClarification` and has no user entry in its history, under the card's `NOWAIT` row lock; a
- * card of any other status, or one the user touched, is never rewritten. The production sites above are unchanged:
- * the recompute task creates no card, and the suggestion task creates the cards of the speaker suggestion step.
+ * `proposal`, `status` and `history` are system-owned: confirm, reject and revise go through `proposalActions.ts`. The
+ * agent tools are limited to the run's own item-thread card and keep it a proposal, so they need no approval.
  *
- * Recording cards (issue gh-1978, `docs/adr/2026-11-14-inbox-recording-cards-confirm-into-recording-intake.md`): an
- * `inbox` card whose envelope is `transcription` proposes transcribing an audio attachment of the card's Inbox item.
- * `semprec.tick` is still its only producer, from the attachment and without a model call. Its confirm runs in
- * `semprec-api` (`confirmProposalWithClient`): it writes the recording request (`recordRecordingIntake`), moves the
- * attachment into Files and enqueues the transcription. `semprec-transcribe` still creates every `transcript` card and
- * every Transcripts row, from that request.
+ * Each card `kind` has exactly one producer: `inbox` (including `transcription` recording cards) by `semprec.tick`,
+ * `transcript` by `semprec-transcribe`, `mailThread` by the mail module (`mail/threadTaskProposals.ts`). Everything
+ * after creation stays with this module's proposal actions, with two exceptions owned by `semprec-transcribe`:
+ * - `transcriptCardRecompute` rewrites a `transcript` card after a user instruction, under the card's row lock, never a
+ *   `confirmed`/`rejected` card or another kind;
+ * - speaker suggestion refresh rewrites a `needsClarification` speaker card the user never touched, under a `NOWAIT`
+ *   row lock, when the transcript's Event or its participants change.
+ *
+ * A recording card's confirm runs in `semprec-api`: it records the recording intake, moves the attachment into Files
+ * and enqueues the transcription; `semprec-transcribe` then creates the `transcript` card and Transcripts row.
  */
 export const manifest: ModuleManifest = {
   id: "inboxPipeline",
@@ -122,9 +94,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/proposals/:id/confirm",
       handlerExport: "createConfirmProposalRouteHandler",
-      // A cross-destination write (item creation/patch plus, for an MCP server proposal, a
-      // stored credential) committed in one transaction with the proposal's own status
-      // transition — issue #239's "cross-database write in one transaction" justification.
+      // Destination writes (plus a stored credential for an MCP server proposal) commit with the status transition.
       justification: "transactional-semantics",
     },
     {
@@ -132,8 +102,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/proposals/:id/reject",
       handlerExport: "createRejectProposalRouteHandler",
-      // A status transition, its history entry and the Journal recompute committed in one
-      // transaction, which the generic item update cannot express (`status` is system-owned).
+      // `status` is system-owned, so the generic item update cannot express this.
       justification: "transactional-semantics",
     },
     {
@@ -141,11 +110,8 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/proposals/:id/reopen",
       handlerExport: "createReopenProposalRouteHandler",
-      // The proposal's lock, the validation of its stored envelope, the status transition back out of the locked
-      // `rejected` status, its history entry and the Journal recompute commit in one transaction. A `confirmed` card is
-      // reopened in the same transaction: the reversal of its recorded writes across several databases (items to the
-      // Trash, edges, page blocks), the removal of the credential stored for a created MCP server and the `keptItems`
-      // it answers with. A generic item update cannot express either (`status` is system-owned).
+      // Reopening a `confirmed` card reverses its recorded writes across several databases (items to Trash, edges,
+      // page blocks, a created MCP server's credential) in the same transaction as the status transition.
       justification: "transactional-semantics",
     },
     {
@@ -153,8 +119,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/proposals/:id/revise",
       handlerExport: "createReviseProposalRouteHandler",
-      // The replacement envelope is validated against live destination state, and the lock check and the
-      // status transition commit with it in one transaction.
+      // Validated against live destination state, committed with the lock check and status transition.
       justification: "transactional-semantics",
     },
     {
@@ -162,9 +127,7 @@ export const manifest: ModuleManifest = {
       method: "PATCH",
       path: "/api/proposals/:id/values",
       handlerExport: "createUpdateProposalValuesRouteHandler",
-      // The proposal's lock, the merge into its user overrides and the history entry commit in one
-      // transaction, which a generic item update cannot express (it refuses the system-owned
-      // `proposal`, `status` and `history` of a Processing proposal).
+      // The generic item update refuses the system-owned `proposal`, `status` and `history`.
       justification: "transactional-semantics",
     },
     {
@@ -172,9 +135,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/proposals/:id/reset-overrides",
       handlerExport: "createResetProposalOverridesRouteHandler",
-      // The proposal's lock, the restore of the assistant's envelope with the cleared manual values and the history
-      // entry commit in one transaction, which a generic item update cannot express (it refuses the system-owned
-      // `proposal`, `status` and `history` of a Processing proposal).
+      // The generic item update refuses the system-owned `proposal`, `status` and `history`.
       justification: "transactional-semantics",
     },
     {
@@ -182,8 +143,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/proposals/:id/recompute",
       handlerExport: "createRecomputeProposalRouteHandler",
-      // The card's `computing` status, its history entry and the trigger of the tick commit in one transaction, which a
-      // generic item update cannot express (`status` is system-owned and the tick is queued in the same transaction).
+      // The tick is queued in the same transaction as the `computing` status.
       justification: "transactional-semantics",
     },
     {
@@ -191,8 +151,6 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/proposals/:id/options",
       handlerExport: "createProposalOptionsRouteHandler",
-      // The picker of one field of a card, merging a source database, the card's own envelope and the edge counts of its
-      // relation in one fixed order — shaped for exactly one consumer, the card editor, not a generic query.
       justification: "single-consumer-read",
     },
     {
@@ -200,8 +158,6 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/items/:id/origin",
       handlerExport: "createItemOriginRouteHandler",
-      // Joins `item_origins`, the sibling items of the same card and the source Inbox item for one consumer, the item
-      // detail screen — not a read the generic item surface can express.
       justification: "single-consumer-read",
     },
     {
@@ -209,8 +165,7 @@ export const manifest: ModuleManifest = {
       method: "PUT",
       path: "/api/inbox/items/:id/type",
       handlerExport: "createChangeInboxItemTypeRouteHandler",
-      // The replacement of the `type` edge, the clearing of the card's manual values, its `computing` status and the
-      // trigger of the tick commit in one transaction, which no generic edge write can express.
+      // Edge replacement, cleared manual values, `computing` status and the tick trigger commit together.
       justification: "transactional-semantics",
     },
     {
@@ -218,8 +173,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/inbox/items",
       handlerExport: "createCaptureInboxItemRouteHandler",
-      // The item, its `type` edge and its attachments commit together, which the generic create cannot express: it
-      // knows nothing of the edge or the attachments, so a client would need several requests with no common transaction.
+      // Item, `type` edge and attachments commit together, which the generic create cannot express.
       justification: "transactional-semantics",
     },
     {
@@ -227,8 +181,6 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/inbox-types",
       handlerExport: "createInboxTypesRouteHandler",
-      // Shaped for exactly one consumer, the capture UI's type picker — not a generic
-      // list-items-in-a-database query.
       justification: "single-consumer-read",
     },
     {
@@ -236,8 +188,6 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/inbox/cards",
       handlerExport: "createInboxCardsRouteHandler",
-      // The Inbox stack merges two sources (cards and pending approvals) in one fixed order — not a
-      // generic list-items-in-a-database query.
       justification: "single-consumer-read",
     },
     {
@@ -245,14 +195,10 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/inbox/cards/count",
       handlerExport: "createInboxCardsCountRouteHandler",
-      // The number of open Inbox cards for the header, the badge and the new-chat shortcut — not a
-      // generic count of items in a database.
       justification: "single-consumer-read",
     },
   ],
-  // The MCP server card's editor (`docs/adr/2026-10-25-server-driven-inbox-editor-schema.md`).
-  // This Inbox manifest carries it until an MCP module manifest exists. Declaring it changes no
-  // behaviour: nothing evaluates `required`, `when` or `timeHiddenWhen` until #1928 and #1934.
+  // The MCP server card's editor, carried here until an MCP module manifest exists.
   editorSchemas: {
     mcp: {
       groups: [

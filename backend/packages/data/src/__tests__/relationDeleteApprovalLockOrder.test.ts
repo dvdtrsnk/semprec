@@ -23,16 +23,11 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { handleLinkPropagation } from "../valueLinks/linkPropagation.js";
 
-// The replay of an approved agent relation operation against the propagation job of a link rule, with a third
-// transaction holding the rule's target item row (the transcript). The replay's steps are the production calls of
-// `replayApprovedGenericOperation` in one `withTransaction`: the destructive projection check, then the write of the
-// operation. The check of a `relation.delete` locks the edge's endpoint rows without waiting before it reserves the
-// value links, so the replay is refused as busy instead of holding the `project` link while it waits for the row
-// (docs/adr/2026-11-15-the-approval-check-of-a-relation-delete-locks-the-edges-endpoint-rows-before-it-reserves-its-value-links.md).
-// Every call runs on a pool of the runtime role `semprec_data` with an `application_name` of its own, so
-// `pg_blocking_pids` tells the participants apart.
+// The replay of an approved agent relation operation races a link rule's propagation job while a third
+// transaction holds the transcript row. The `relation.delete` check locks the edge's endpoint rows NOWAIT
+// before reserving value links, so the replay is refused as busy instead of holding the `project` link while
+// it waits. Each participant has its own `application_name` so `pg_blocking_pids` tells them apart.
 
-/** An agent without a run credential: its writes need no approval, so the replay's write just runs. */
 const AGENT: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: "00000000-0000-4000-8000-000000000003" };
 const USER: WriterIdentity = { writerKind: "user" };
 const RECORDING_START = "2024-03-01T12:00:00.000Z";
@@ -73,11 +68,7 @@ function inTenant<T>(world: Pick<World, "tenant">, fn: () => Promise<T>): Promis
   return runInTenant(world.tenant, fn);
 }
 
-/**
- * One tenant with an Event in the project "Web for client" (company Novak) and a transcript linked to it, built
- * through the choke point as a user does: the link rules copy the Event's project into the transcript and record an
- * `on` value link for it.
- */
+/** Built through the choke point: the link rules copy the Event's project into the transcript with an `on` value link. */
 async function buildWorld(): Promise<World> {
   const tenant = await createTestTenant(admin);
   const scope = { tenant };
@@ -149,7 +140,6 @@ async function buildWorld(): Promise<World> {
   };
 }
 
-/** The Event's project is replaced, which queues the propagation job the schedules run the handler for. */
 async function changeEventProject(world: World): Promise<void> {
   await inTenant(world, async () => {
     const edge = { relationPropertyId: world.eventProject, callerItemId: world.event };
@@ -168,7 +158,6 @@ interface TranscriptState {
   links: Record<string, LinkState>;
 }
 
-/** The transcript's project edges and value link rows, read through the runtime role in the tenant. */
 async function transcriptState(world: World): Promise<TranscriptState> {
   return inTenant(world, async () => {
     const edges = (await fixture.cp.listItemRelations(world.transcript, world.transcriptProject)) ?? [];
@@ -216,10 +205,7 @@ function start(world: World, step: Step): Running {
   return { participant: step.participant, outcome, settled: () => done };
 }
 
-/**
- * Waits until the call has either ended or one of its participant's backends waits for a lock. Returns the
- * participants whose backends block it, by `application_name`, or `null` when the call ended without waiting.
- */
+/** Returns the blocking participants by `application_name`, or `null` when the call ended without waiting. */
 async function blockersOrEnd(running: Running): Promise<string[] | null> {
   let blockers: string[] | null = null;
   await vi.waitFor(
@@ -244,7 +230,6 @@ async function blockersOrEnd(running: Running): Promise<string[] | null> {
   return blockers;
 }
 
-/** Locks the transcript's row in a transaction of the holder that stays open until `release` is called. */
 function holdTranscript(world: World) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -272,16 +257,11 @@ function holdTranscript(world: World) {
 }
 
 interface ScheduleResult {
-  /** What blocked each call when it was started, in the order the calls were started; `null` for a call that ended at once. */
   blockedBy: Array<string[] | null>;
-  /** How each call ended, in the same order. */
   outcomes: Outcome[];
 }
 
-/**
- * Starts the steps one after the other while a third transaction holds the transcript's row, each only after the
- * one before it waits for a lock or has ended, then releases the row and lets every call end.
- */
+/** Starts each step only after the previous one waits or ended, while the transcript row is held; then releases it. */
 async function behindHeldTranscript(world: World, steps: Step[]): Promise<ScheduleResult> {
   const hold = holdTranscript(world);
   const running: Running[] = [];
@@ -301,7 +281,6 @@ async function behindHeldTranscript(world: World, steps: Step[]): Promise<Schedu
   return { blockedBy, outcomes: await Promise.all(running.map((call) => call.outcome)) };
 }
 
-/** The `valueLinksPropagate` handler for the job a change of the Event's project queues. */
 function propagateEventProject(world: World): Step {
   return {
     participant: propagation,
@@ -309,10 +288,7 @@ function propagateEventProject(world: World): Step {
   };
 }
 
-/**
- * The replay of an approved agent operation: in one transaction the destructive projection check and then the write
- * of the operation, as `replayApprovedGenericOperation` runs them.
- */
+/** The destructive projection check, then the write, in one transaction as `replayApprovedGenericOperation` runs them. */
 function replayOf(
   world: World,
   operation: "relation.delete" | "relation.put" | "relation.set",

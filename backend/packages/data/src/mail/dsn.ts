@@ -1,9 +1,6 @@
 /**
- * RFC 3462/3464 delivery-status-notification detection: a top-level `Content-Type:
- * multipart/report; report-type=delivery-status` is the standard signal an MTA sends for a
- * bounce/DSN — distinct from an ordinary human reply, which threading.ts would otherwise
- * thread and treat identically (mail/ingest.ts still threads it via References/In-Reply-To,
- * it just also tags it `messageKind: 'dsn'` so a later rendering layer can tell them apart).
+ * RFC 3462/3464 bounce detection (`multipart/report; report-type=delivery-status`). Ingest still
+ * threads a DSN normally but tags it `messageKind: 'dsn'`.
  */
 export function isDeliveryStatusReport(
   mimeType: string | undefined | null,
@@ -14,7 +11,6 @@ export function isDeliveryStatusReport(
   return (reportType ?? "").trim().replace(/^"|"$/g, "").toLowerCase() === "delivery-status";
 }
 
-/** Splits a raw `Content-Type: multipart/report; report-type=delivery-status` header value into its type and parameters. */
 export function parseContentTypeHeader(
   value: string | undefined | null,
 ): { type: string; params: Record<string, string> } | null {

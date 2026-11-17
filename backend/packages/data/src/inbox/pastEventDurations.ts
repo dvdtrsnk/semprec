@@ -1,10 +1,8 @@
 import type { Queryable } from "../db/pool.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
-/** At most this many events are listed for one person. */
 const EVENTS_PER_PERSON = 5;
 
-/** One earlier event of a person: its id, its length in minutes and the day it started. */
 export interface PastEventDuration {
   eventId: string;
   minutes: number;
@@ -19,12 +17,9 @@ interface PastEventDurationRow {
 }
 
 /**
- * Per `personIds`, the five most recent live Events linked to the person through `Events.people` whose length is
- * known (issue gh-1993), newest first by `date`, read with one statement for all people. An Event counts only when it
- * is on one day and has both times: it has no `endDate`, a `timeFrom` and a `timeTo` that are `HH:MM` (`24:00` allowed
- * for `timeTo`), and its length is positive. An Event with an `endDate`, a missing or unreadable time, an all-day Event,
- * a length of zero or less and an Event in the Trash are skipped. A person with no such Event has no entry. The read
- * writes nothing and is confined to the caller's tenant by row-level security.
+ * Per person, the five most recent live single-day Events (`Events.people`) with a positive length from `HH:MM`
+ * `timeFrom`/`timeTo` (`24:00` allowed for `timeTo`) and no `endDate`, newest first, in one statement. People with no
+ * such Event have no entry.
  */
 export async function readPastEventDurations(
   client: Queryable,

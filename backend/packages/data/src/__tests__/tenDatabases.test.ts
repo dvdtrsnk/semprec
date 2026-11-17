@@ -56,7 +56,7 @@ describe("ten hardcoded databases (issue #24)", () => {
       const { rows } = await pool.query("SELECT system, schema_locked FROM databases WHERE id = $1", [databaseId]);
       expect(rows[0]).toEqual({ system: true, schema_locked: true });
 
-      // Tasks also holds the Today system view (issue #1798), which is not a default view.
+      // Tasks also holds the Today system view, which is not a default view.
       const { rows: allViewRows } = await pool.query(
         "SELECT type, created_by, is_default, config->>'systemKey' AS system_key FROM views WHERE database_id = $1",
         [databaseId],
@@ -101,8 +101,7 @@ describe("ten hardcoded databases (issue #24)", () => {
       [projectsId],
     );
     expect(propRows).toHaveLength(1);
-    // Projects.company is the source of the fileCompaniesFromProjects link rule (issue #1653), whose propagation is
-    // queued in the writer's tenant, so the write runs in the tenant scope every production write has.
+    // Projects.company sources a link rule whose propagation is queued in the writer's tenant, so this needs a tenant scope.
     await runInTenant(getTenantZeroId(), () =>
       chokePoint.createRelation({
         relationPropertyId: propRows[0].id,
@@ -111,7 +110,6 @@ describe("ten hardcoded databases (issue #24)", () => {
       }),
     );
 
-    // the inverse ("Companies -> Projects") side exists too and is queryable from the company's item
     const { rows: inverseProp } = await pool.query(
       "SELECT id FROM properties WHERE database_id = $1 AND key = 'projects'",
       [companiesId],
@@ -141,7 +139,6 @@ describe("ten hardcoded databases (issue #24)", () => {
     const nowDeletable = await chokePoint.softDeleteItem(projectsId, systemProject.id);
     expect(nowDeletable?.deletedAt).not.toBeNull();
 
-    // an ordinary (non-system) project is unaffected
     const ordinary = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Side project" } });
     const deleted = await chokePoint.softDeleteItem(projectsId, ordinary.id);
     expect(deleted?.deletedAt).not.toBeNull();
@@ -196,8 +193,7 @@ describe("ten hardcoded databases (issue #24)", () => {
       "SELECT id FROM properties WHERE database_id = $1 AND key = 'project'",
       [tasksId],
     );
-    // Tasks.project is the source of the fileProjectsFromTasks link rule (issue #1702), whose propagation is queued
-    // in the writer's tenant, so the write runs in the tenant scope every production write has.
+    // Tasks.project sources a link rule whose propagation is queued in the writer's tenant, so this needs a tenant scope.
     await runInTenant(getTenantZeroId(), () =>
       chokePoint.createRelation({
         relationPropertyId: propRows[0].id,
@@ -224,12 +220,10 @@ describe("ten hardcoded databases (issue #24)", () => {
     const completed = await chokePoint.getItem(tasksId, task.id);
     expect(completed?.properties.status).toBe("done");
 
-    // the new instance carries forward the Project relation
     const newEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, next!.id));
     expect(newEdges).toHaveLength(1);
     expect([newEdges[0]!.itemA, newEdges[0]!.itemB]).toContain(project.id);
 
-    // completing a task with no recurrence is a no-op
     const plain = await chokePoint.createItem({
       databaseId: tasksId,
       properties: { name: "One-off", status: "notDone" },
@@ -243,8 +237,7 @@ describe("ten hardcoded databases (issue #24)", () => {
     const plainAfter = await chokePoint.getItem(tasksId, plain.id);
     expect(plainAfter?.properties.status).toBe("notDone");
 
-    // re-advancing the already-completed original instance is also a no-op: its series already has
-    // the occurrence for the next date (issue #1670)
+    // Re-advancing the completed original is a no-op: its series already has the next occurrence.
     const reAdvanceOriginal = await advanceTaskRecurrence(pool, {
       databaseId: tasksId,
       itemId: task.id,
@@ -266,8 +259,7 @@ describe("ten hardcoded databases (issue #24)", () => {
       "SELECT id FROM properties WHERE database_id = $1 AND key = 'project'",
       [tasksId],
     );
-    // Tasks.project is the source of the fileProjectsFromTasks link rule (issue #1702), whose propagation is queued
-    // in the writer's tenant, so the write runs in the tenant scope every production write has.
+    // Tasks.project sources a link rule whose propagation is queued in the writer's tenant, so this needs a tenant scope.
     await runInTenant(getTenantZeroId(), () =>
       chokePoint.createRelation({
         relationPropertyId: propRows[0].id,
@@ -307,9 +299,7 @@ describe("ten hardcoded databases (issue #24)", () => {
       "SELECT id FROM properties WHERE database_id = $1 AND key = 'actionItems'",
       [eventsId],
     );
-    // The edge gives the task the Event's project, a write of Tasks.project: the source of the
-    // fileProjectsFromTasks link rule (issue #1702), whose propagation is queued in the writer's tenant, so the
-    // write runs in the tenant scope every production write has.
+    // The edge writes Tasks.project, which sources a link rule queued in the writer's tenant, so this needs a tenant scope.
     await runInTenant(getTenantZeroId(), () =>
       chokePoint.createRelation({
         relationPropertyId: actionItemsProp[0].id,
@@ -327,7 +317,6 @@ describe("ten hardcoded databases (issue #24)", () => {
     const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
     expect(next).not.toBeNull();
 
-    // the event keeps its action-item link to the completed instance and gains none to the next one
     const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, event.id));
     const linkedItemIds = edges.flatMap((e) => [e.itemA, e.itemB]);
     expect(linkedItemIds).toContain(task.id);

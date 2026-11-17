@@ -1,9 +1,8 @@
 import type { ApprovalRequest } from "./approvalRequestsStore.js";
 
 /**
- * Closed set of reasons the outcome write of an MCP or module-tool request records next to its text
- * in `execution_result_jsonb` (see `recordApprovalRequestOutcome` / `settleStaleApprovalRequestClaim`).
- * `sourceChanged` is a module-tool request whose source differed from its snapshot (issue #1791).
+ * Recorded next to the outcome text in `execution_result_jsonb`. `sourceChanged`: a module tool's source differed
+ * from its snapshot.
  */
 export const APPROVAL_OUTCOME_KINDS = ["toolUnavailable", "callFailed", "staleClaim", "sourceChanged"] as const;
 export type ApprovalOutcomeKind = (typeof APPROVAL_OUTCOME_KINDS)[number];
@@ -35,11 +34,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Names, as a stable translation key, why an approved request was not carried out. `null` unless
- * the request ended in `conflict`. Reads only the discriminators of `execution_result_jsonb` (the
- * generic operation's `details.reason`, the MCP `outcomeKind`) and never copies any text or value
- * out of it. Rows written before `outcomeKind` existed, and any shape not recognised, map to
- * `approval.conflict.other`.
+ * Reads only the discriminators (`details.reason`, `outcomeKind`) and never copies text or values out. Older rows
+ * and unknown shapes map to `approval.conflict.other`.
  */
 export function approvalConflictReason(
   executionStatus: ApprovalRequest["executionStatus"],

@@ -3,21 +3,13 @@ import * as decoding from "lib0/decoding";
 import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync.js";
 
-/**
- * Marks a `Y.applyUpdate` call as originating from the server, not a local edit — `ydoc`'s own
- * `update` listener uses this to avoid echoing a just-applied remote update straight back to the
- * server it came from.
- */
+/** Origin of a remote `Y.applyUpdate`, so the `update` listener does not echo it back to the server. */
 const REMOTE_ORIGIN = Symbol("realtime-client:doc-session:remote-update");
 
 /**
- * One document's client-side half of the y-protocols/sync handshake (issue #164's Task): fed raw
- * binary payloads already stripped of their `WS /api/sync` docId frame prefix by the caller
- * (`syncClient.ts`), and drives `send` with whatever y-protocols/sync response that payload calls
- * for. Reopening the same `docId` after a reconnect — the caller re-sends `doc:open`, the server
- * replies with a fresh SyncStep1 exactly as it does on a first open — re-runs this same handshake
- * from scratch, so a dropped connection's missing updates are recovered the same way a first
- * connection's are, without any separate "resume" code path.
+ * One document's client half of the y-protocols/sync handshake, fed binary payloads with the docId
+ * prefix already stripped by `syncClient.ts`. Reopening after a reconnect re-runs the full
+ * handshake, which also recovers updates missed while disconnected; there is no separate resume path.
  */
 export interface DocSession {
   readonly docId: string;
@@ -25,18 +17,15 @@ export interface DocSession {
   /** Feeds one binary y-protocols/sync payload for this session's own `docId`. */
   handlePayload(payload: Uint8Array): void;
   /**
-   * Detaches this session's `ydoc` "update" listener. Required before a retained `ydoc` (one the
-   * caller passed in and keeps editing through) is reused in a later `createDocSession` call —
-   * otherwise the old listener stays registered and every local edit is sent to the server twice.
+   * Detaches the `ydoc` update listener. Required before a retained `ydoc` is reused in another
+   * `createDocSession`, or every local edit is sent twice.
    */
   dispose(): void;
 }
 
 /**
- * `send` transports one y-protocols/sync payload for `docId` back over `WS /api/sync`'s binary
- * channel — `syncClient.ts` owns prefixing it with the 16-byte docId frame and the socket itself.
- * `ydoc` defaults to a fresh, empty document; passing an existing one lets a caller keep editing
- * through a reconnect that replaces the underlying session transport.
+ * `send` carries one sync payload back over `WS /api/sync` (`syncClient.ts` adds the 16-byte docId
+ * prefix). Passing an existing `ydoc` lets a caller keep editing across a reconnect.
  */
 export function createDocSession(
   docId: string,
@@ -64,8 +53,7 @@ export function createDocSession(
         decoder = decoding.createDecoder(payload);
         messageType = decoding.readVarUint(decoder);
       } catch (err) {
-        // Malformed payload from this connection's own server — dropped rather than crashing
-        // the whole sync client over one document's corrupted frame.
+        // A malformed frame is dropped rather than crashing the whole sync client.
         console.warn(`docSession(${docId}): malformed binary frame header, dropping`, err);
         return;
       }
@@ -79,11 +67,8 @@ export function createDocSession(
             console.warn(`docSession(${docId}): malformed SyncStep1 state vector, dropping`, err);
             return;
           }
-          // Mirrors the server's own handshake (`docSync.ts`): reply with whatever this
-          // client has that the server's state vector shows it's missing (SyncStep2), and
-          // separately ask for the server's own content via this client's own SyncStep1 — the
-          // "reconnect after offline edits exchanges only the necessary Yjs diff" contract,
-          // now run identically whether this is the first open or a resume after reconnect.
+          // Mirrors the server's handshake (`docSync.ts`): reply with what the server's state vector lacks (SyncStep2)
+          // and ask for the server's content with our own SyncStep1, on first open and on resume alike.
           const step2Encoder = encoding.createEncoder();
           syncProtocol.writeSyncStep2(step2Encoder, ydoc, remoteStateVector);
           send(encoding.toUint8Array(step2Encoder));
@@ -102,9 +87,7 @@ export function createDocSession(
             console.warn(`docSession(${docId}): malformed sync update payload, dropping`, err);
             return;
           }
-          // Yjs update application is idempotent, so content this session already has from a
-          // prior connection is a no-op rather than a duplicate — "no duplicated or missing
-          // information" holds even though reopening always re-runs the full handshake.
+          // Yjs update application is idempotent, so content already held from a prior connection is a no-op.
           Y.applyUpdate(ydoc, update, REMOTE_ORIGIN);
           return;
         }

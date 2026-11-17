@@ -69,7 +69,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     await pool?.end();
   });
 
-  /** A transcript as the create step leaves it (issue #1830): without a `name` unless `properties` gives one. */
   async function createTranscript(properties: Record<string, unknown> = { date: RECORDING_START }): Promise<string> {
     const item = await withTransaction(pool, (client) =>
       createItemWithClient(
@@ -91,7 +90,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     return item.id;
   }
 
-  /** The stored `date` and `timeFrom` of an Event. */
   async function storedStart(eventId: string): Promise<{ date: unknown; timeFrom: unknown }> {
     const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
       "SELECT properties FROM items WHERE database_id = $1 AND id = $2",
@@ -102,11 +100,9 @@ describe("matchTranscriptToEvent (issue #247)", () => {
   }
 
   /**
-   * An Event whose stored time values are exactly `stored`. Raw SQL on a valid Event the choke point
-   * created: every write path normalizes or refuses values such as a malformed date, a non-time, a
-   * `24:00` start, an end before the start or a start without an end (the Events time rules of issues
-   * #1598 and #1663), so only a row written before those rules can hold them; the matcher must still
-   * read them defensively.
+   * Raw SQL on a valid Event: every write path normalizes or refuses values such as a malformed date,
+   * a `24:00` start, an end before the start or a start without an end, so only an old row can hold
+   * them; the matcher must still read them defensively.
    */
   async function createRawEvent(type: string, stored: Record<string, unknown>): Promise<string> {
     const eventId = await createEvent(type, "2024-01-01");
@@ -128,7 +124,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     return withTransaction(pool, (client) => matchTranscriptToEvent(client, { transcriptId, durationSeconds }));
   }
 
-  /** The Event ids linked to `transcriptId` through the Transcripts <-> Events relation. */
   async function linkedEventIds(transcriptId: string): Promise<string[]> {
     const { rows } = await pool.query<{ other: string }>(
       `SELECT CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS other
@@ -139,7 +134,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     return rows.map((row) => row.other);
   }
 
-  /** Every Processing proposal card whose `sourceTranscript` points at `transcriptId`. */
   async function cardsFor(transcriptId: string) {
     const { rows } = await pool.query<{ id: string; properties: Record<string, unknown> }>(
       `SELECT i.id, i.properties FROM items i
@@ -158,7 +152,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     return Number(rows[0]?.count);
   }
 
-  /** The `inboxCards` invalidations `fn` publishes after its transaction committed (issue #1811). */
   async function capturingInboxCards(fn: () => Promise<unknown>): Promise<InboxCardsInvalidationEvent[]> {
     const events: InboxCardsInvalidationEvent[] = [];
     setInboxCardsInvalidationHook((event) => events.push(event));
@@ -289,7 +282,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
           name: "standup at 2024-03-01",
           date: "2024-03-01",
           timeFrom: "13:10",
-          // The choke point gave the Event the default one-hour length.
           timeTo: "14:10",
           endDate: null,
           projectId: null,
@@ -650,7 +642,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
 
     expect(await match(transcriptId)).toBe("linked");
     expect(await linkedEventIds(transcriptId)).toEqual([eventId]);
-    // The rerun converges, as for every other match.
     expect(await match(transcriptId)).toBe("alreadyLinked");
     expect(await linkedEventIds(transcriptId)).toEqual([eventId]);
     expect(await proposalCount()).toBe(0);
@@ -722,7 +713,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     });
   });
 
-  /** A user of tenant zero, whose `locale` renders the proposed meeting's name. */
   async function createUserWithLocale(locale: string): Promise<void> {
     await pool.query("INSERT INTO users (email, password_hash, locale, tenant_id) VALUES ($1, 'unused', $2, $3)", [
       `${locale}@example.com`,
@@ -731,7 +721,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     ]);
   }
 
-  /** The `properties` of the new-meeting proposal the match step wrote for a recording. */
   async function proposedMeeting(startsAt: string, durationSeconds: number): Promise<unknown> {
     const transcriptId = await createTranscript({ date: startsAt });
     expect(await match(transcriptId, durationSeconds)).toBe("suggested");
@@ -800,7 +789,6 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     actionItems: [],
   };
 
-  /** The name of the new-meeting proposal for a transcript with `properties` and, when given, stored `meetingNotes`. */
   async function proposedName(properties: Record<string, unknown>, notes?: Record<string, unknown>): Promise<unknown> {
     const transcriptId = await createTranscript({ date: RECORDING_START, ...properties });
     if (notes) {
@@ -879,7 +867,6 @@ describe("matchTranscriptToEvent per tenant, through the runtime role (issue #15
     });
   }
 
-  /** A seeded tenant in `zone` with one transcript at the recording start and one Event at `timeFrom`. */
   async function tenantWithRecording(zone: string, timeFrom: string) {
     const tenantId = await createTestTenant(adminPool);
     await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
@@ -921,7 +908,6 @@ describe("matchTranscriptToEvent per tenant, through the runtime role (issue #15
     );
   }
 
-  /** Every `[transcript, event]` edge of the Transcripts <-> Events relation the tenant can see. */
   async function edges(tenantId: string): Promise<Array<[string, string]>> {
     return runInTenant(tenantId, async () => {
       const { rows } = await dataPool.query<{ item_a: string; item_b: string }>(
@@ -1027,7 +1013,7 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
     );
   }
 
-  /** The recording 13:00-14:00 Prague time (12:00Z, an hour long) with the computed values steps 1, 4 and 5 store. */
+  /** 13:00-14:00 Prague time (12:00Z, an hour long), with the computed values the pipeline stores. */
   async function createRecording(
     computed: Record<string, unknown> = {},
     name: string | null = "Planning call",
@@ -1051,7 +1037,6 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
     });
   }
 
-  /** Two Events overlapping the recording: a meeting of project Apollo with two participants, and a bare standup. */
   async function createCandidates() {
     const meetingId = await createIn("events", {
       name: "Sprint planning",
@@ -1088,7 +1073,6 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
       matchTranscriptToEvent(client, { transcriptId, durationSeconds: DURATION_SECONDS }),
     );
 
-  /** Matches the recording, then creates the card in the same transaction, as the transcription step does. */
   async function createCard(transcriptId: string, recommendation: EventRecommendation | null) {
     return withTransaction(dataPool, async (client) => {
       const matched = await matchTranscriptToEvent(client, { transcriptId, durationSeconds: DURATION_SECONDS });
@@ -1317,7 +1301,6 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
             },
           },
         });
-        // The candidates and the reason live only in `context`.
         expect(Object.keys(card?.properties ?? {})).not.toEqual(expect.arrayContaining(["candidates"]));
         expect(card?.properties).not.toHaveProperty("candidates");
         expect(card?.properties).not.toHaveProperty("reason");
@@ -1720,7 +1703,6 @@ describe("the explicit no-event decision of a recording request, through the run
     return rows[0].id;
   }
 
-  /** A Files item with the recording request the intake writes for it: the default decision `'none'`. */
   async function createRecordingFile(withRequest = true, eventId: string | null = null): Promise<string> {
     return withTransaction(dataPool, async (client) => {
       const file = await createItemWithClient(client, {
@@ -1732,7 +1714,6 @@ describe("the explicit no-event decision of a recording request, through the run
     });
   }
 
-  /** A transcript the way the create step leaves it: its `link` names the Files item, and steps 1, 4 and 5 stored their values. */
   async function createTranscriptOf(fileItemId: string | null): Promise<string> {
     const transcriptsId = await databaseId("transcripts");
     return withTransaction(dataPool, async (client) => {
@@ -1905,7 +1886,6 @@ describe("the explicit no-event decision of a recording request, through the run
       const eventId = await createOverlappingEvent("Sprint planning");
       const fileId = await createRecordingFile(true, eventId);
       const transcriptId = await createTranscriptOf(fileId);
-      // The edge the confirm of a chosen Event writes (#1574, #1644).
       await withTransaction(dataPool, async (client) =>
         createRelationWithClient(client, {
           relationPropertyId: await relationPropertyId("transcripts", "event"),
@@ -1926,7 +1906,7 @@ describe("the explicit no-event decision of a recording request, through the run
   it("is not affected by a stored value other than noEvent", async () => {
     await runInTenant(tenant, async () => {
       const fileId = await createRecordingFile();
-      // No writer of another value exists; this scoped fixture creates the stored shape the match must not honor.
+      // No writer of another value exists; this fixture creates the stored shape the match must not honor.
       const updated = await dataPool.query(
         "UPDATE recording_requests SET event_decision = 'someFutureValue' WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
         [fileId],

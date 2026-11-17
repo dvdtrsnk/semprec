@@ -31,7 +31,6 @@ async function definitionRows(propertyId: string) {
   return rows;
 }
 
-/** A new mail thread and its Threads item, through the production thread writer. */
 async function newThread(subject: string): Promise<{ threadId: string; itemId: string }> {
   return runInTenant(tenant, () =>
     withTransaction(runtime, async (client) => {

@@ -16,7 +16,6 @@ import {
 
 let pool: Pool;
 
-/** In-memory root: only `readStream` is exercised by the builder. */
 class MemoryRoot implements BlobStorageWriter {
   readonly bytesByKey = new Map<string, Buffer>();
 

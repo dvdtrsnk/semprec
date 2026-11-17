@@ -5,12 +5,9 @@ export interface TableForeignKey {
 }
 
 /**
- * Orders `tables` so every table comes before the tables it references: deleting in this order never
- * removes a parent while a child row still points at it. A foreign key to a table outside `tables`
- * is ignored, and so is a self-reference (such a table is deleted in one statement, see
- * `tenantPurgeJob.ts`). Any other cycle cannot be ordered and throws naming every table left
- * unordered: the tables on the cycle and the parents that wait on them.
- * Ties break alphabetically, so the order is deterministic.
+ * Orders `tables` children first, so deleting in order never removes a parent a child still references.
+ * Foreign keys to tables outside the set and self-references are ignored (such a table is deleted in one
+ * statement). Any other cycle throws naming every unordered table. Ties break alphabetically.
  */
 export function orderTablesForPurge(tables: readonly string[], foreignKeys: readonly TableForeignKey[]): string[] {
   const known = new Set(tables);

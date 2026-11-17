@@ -1,8 +1,5 @@
-// Issue gh-1936: what is specific to an `agentRun` Semp message ref that carries a `messageId`. The ref schema and the
-// stored `context` are issues #1369 and #1682's. A ref with a `messageId` names one answer of a chat run: one
-// assistant message of the thread the run holds. This module decides whether such a ref is valid and reads the answer
-// the model is given for it; a ref without `messageId` keeps the whole-run validation and reading of the callers.
-// Nothing here writes or logs.
+// An `agentRun` message ref with a `messageId` names one answer of a chat run: an assistant message of the run's
+// thread. A ref without `messageId` keeps the callers' whole-run validation and reading. Nothing here writes or logs.
 import type { PoolClient } from "pg";
 import type { AgentRunRow } from "../agentRuns/agentRunsStore.js";
 import { parseStoredSempReplySteps } from "./sempStoredSteps.js";
@@ -18,15 +15,12 @@ export interface SempRunAnswerRef {
 const ANSWER_TEXT_MAX_CHARS = 8000;
 /** The steps of the answer's stored summary its context holds; a longer list is cut and flagged. */
 const ANSWER_STEPS_MAX = 100;
-/** The characters of the label: the question, or the run's task when the answer replies to no user message. */
 const ANSWER_LABEL_MAX_CHARS = 120;
 
 /**
- * Whether each of `refs` names an answer of its run, in the order given, read with one statement. An answer is an
- * assistant message of the thread of the run that was produced by that run (`agent_run_id`). A message that does not
- * exist, one of another tenant (row-level security shows only the caller's rows), a user or system message, a message
- * of another thread or of another run, and a run with no thread are all `false`, so the caller cannot tell them apart.
- * Whether the run itself exists follows from the same join: a missing run has no answer.
+ * One statement for all refs. An answer is an assistant message of the run's thread produced by that run. Every
+ * failure (missing, other tenant via RLS, wrong role, thread or run, threadless run) is `false`, so the caller
+ * cannot tell them apart.
  */
 export async function validateRunAnswerRefs(client: PoolClient, refs: readonly SempRunAnswerRef[]): Promise<boolean[]> {
   if (refs.length === 0) return [];
@@ -56,10 +50,8 @@ interface AnswerRow {
 }
 
 /**
- * The context of one answer of `run`: the question it replies to (the text of the user message, or the `system_key`
- * of the system message), the result (the answer's text) and the steps summary stored on the assistant message, not
- * the rest of the run's conversation. `null` when the message is not an answer of the run any more, which is the
- * same test `validateRunAnswerRefs` applies, so the answer of a ref that was valid when it was sent can disappear.
+ * The question, the answer text and the stored steps summary, not the rest of the run's conversation. `null`
+ * under the same test as `validateRunAnswerRefs`, so an answer valid when sent can disappear later.
  */
 export async function readRunAnswerContext(
   client: PoolClient,

@@ -548,8 +548,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       problems: fakeProblems(),
       manifest: fakeManifest(),
       gateway: fakeGateway(() => {
-        // Simulates a concurrent guidance rewrite landing while the (non-transactional)
-        // gateway call is in flight.
+        // A concurrent guidance rewrite while the gateway call is in flight.
         guidance.row = baseGuidanceRow({ updatedAt: "2026-01-02T00:00:00.000Z" });
         return [CONTRADICTION_A];
       }),
@@ -580,8 +579,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       problems: fakeProblems(),
       manifest,
       gateway: fakeGateway(() => {
-        // A concurrent permission mutation (e.g. a heartbeat/capability change) while the
-        // gateway call is in flight — the guidance row itself is untouched.
+        // A concurrent permission change while the gateway call is in flight; the guidance row is untouched.
         manifest.value = "manifest-v2";
         return [CONTRADICTION_A];
       }),

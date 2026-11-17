@@ -38,7 +38,6 @@ let other: string;
 
 const setup = (tenantId: string): Promise<World> => setupMailAttachmentWorld(runtime, tenantId);
 
-/** Runs the queued value-link propagation jobs until none is left. */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
   const handler = createCoreTaskList(runtime, createActionRegistry())[taskName];
@@ -50,7 +49,6 @@ async function runPropagation(): Promise<void> {
   throw new Error("Propagation queue did not drain");
 }
 
-/** The job keys of the value-link propagation jobs that are queued. */
 async function queuedPropagationJobKeys(): Promise<string[]> {
   const { rows } = await admin.query<{ key: string | null }>(
     "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -59,14 +57,12 @@ async function queuedPropagationJobKeys(): Promise<string[]> {
   return rows.map((row) => row.key ?? "");
 }
 
-/** Merges thread `fromThreadId` into `toThreadId` as the threading writer does, in one transaction of the tenant. */
 function merge(world: World, fromThreadId: string, toThreadId: string): Promise<void> {
   return runInTenant(world.tenantId, () =>
     withTransaction(runtime, (client: PoolClient) => reassignThread(client, fromThreadId, toThreadId)),
   );
 }
 
-/** The value-link entry of a file that follows the project of thread item `itemId`. */
 const followsProjectOf = (itemId: string) => ({
   valueKind: "inherited",
   sources: [{ kind: "item", itemId, databaseKey: "threads", propertyKey: "project", title: expect.any(String) }],
@@ -237,7 +233,6 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
 
     it("writes nothing for a message without attachments and does not read the Threads.attachments property", async () => {
       const world = await setup(tenant);
-      // A tenant without the relation still ingests a message that brings no file.
       await runInTenant(tenant, async () => {
         await runtime.query("DELETE FROM relation_definitions WHERE property_id_a = $1", [
           world.properties.threadAttachments,
@@ -593,8 +588,8 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
 
       await merge(world, loser.threadId, winner.threadId);
 
-      // The value merge of gh-1869 queues the jobs of every rule that follows `Threads.project` of the winner, so the
-      // queue holds other jobs too; the job of the attachment rule for the winner is among them.
+      // The value merge queues the jobs of every rule that follows `Threads.project` of the winner, so the queue holds
+      // other jobs too; the job of the attachment rule for the winner is among them.
       expect(await queuedPropagationJobKeys()).toContain(
         `valueLinksPropagate:${tenant}:${THREAD_ATTACHMENT_PROJECT_RULE_KEY}:${winner.itemId}:1`,
       );
@@ -610,8 +605,8 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
 
       await merge(world, loser.threadId, winner.threadId);
 
-      // The value merge of gh-1869 queues the jobs of the rules that follow `Threads.project` whatever the
-      // attachments are, so the queue is not asserted here.
+      // The value merge queues the jobs of the rules that follow `Threads.project` whatever the attachments are, so the
+      // queue is not asserted here.
       expect((await world.linksOf(winnerFile)).projects).toEqual(followsProjectOf(winner.itemId));
     });
 
@@ -655,7 +650,6 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
       expect(await a.related(a.properties.filesProjects, fileA)).toEqual([projectA]);
       expect(await b.related(b.properties.filesProjects, fileB)).toEqual([]);
       expect((await b.linksOf(fileB)).projects).toEqual(followsProjectOf(threadB.itemId));
-      // B cannot see A's thread edge, A's file or A's link.
       expect(await b.related(b.properties.threadAttachments, threadA.itemId)).toEqual([]);
       expect(await b.linksOf(fileA)).toEqual({});
       const sourcesSeenByB = await runInTenant(other, () =>
@@ -663,7 +657,6 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
       );
       expect(sourcesSeenByB.rows.map((row) => row.source_item_id)).toEqual([threadB.itemId]);
 
-      // A merge in A does not touch B's links.
       const secondA = await a.receive("<second@example.test>", { attachments: ["a2.pdf"] });
       await merge(a, secondA.threadId, threadA.threadId);
       await runPropagation();

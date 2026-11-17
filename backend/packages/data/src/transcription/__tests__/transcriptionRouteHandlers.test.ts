@@ -17,7 +17,6 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Issue #180's `POST /api/transcriptions` handler, exercised directly (same pattern as `inboxRouteHandlers.test.ts`). */
 describe("createCreateTranscriptionRouteHandler (issue #180)", () => {
   let filesId: string;
 

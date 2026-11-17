@@ -55,10 +55,8 @@ import {
 } from "../testSupport/testDb.js";
 import { stubDnsLookup, type DnsLookupStub } from "../testSupport/dnsLookupStub.js";
 
-// The fake SMTP server speaks implicit TLS on loopback, and its certificate is made with the openssl CLI at
-// test time, so nothing sensitive is committed. The client trusts it by wrapping `tls.connect` for one test.
-// The stored settings accept only the standard ports, so the transport is built directly with a loopback
-// endpoint; the factory's own reads are tested against the database below.
+// The fake SMTP server speaks implicit TLS on loopback with a certificate made by openssl at test time, trusted
+// by wrapping `tls.connect`. Stored settings accept only standard ports, so the transport is built directly.
 
 interface TestCertificate {
   readonly key: string;
@@ -106,7 +104,6 @@ function makeCertificate(commonName: string): TestCertificate {
   }
 }
 
-/** Makes `tls.connect` trust the test certificate for the connections of this test. */
 function trustMailCertificate(): void {
   const connect = tls.connect;
   vi.spyOn(tls, "connect").mockImplementation(((options: tls.ConnectionOptions, listener?: () => void) =>
@@ -116,16 +113,13 @@ function trustMailCertificate(): void {
 interface AcceptedMessage {
   from: string;
   recipients: string[];
-  /** The message as the server received it, with the dot-stuffing removed. */
   data: string;
 }
 
 interface FakeSmtpOptions {
   /** The only password the server accepts for `username`; any other gets 535. */
   acceptedPassword?: string;
-  /** Recipients the server refuses on RCPT TO. */
   refuseRecipients?: readonly string[];
-  /** The reply to a refused recipient. */
   recipientRefusal?: string;
   /** Refuses the sender on MAIL FROM with a 550. */
   refuseSender?: boolean;
@@ -139,7 +133,6 @@ interface FakeSmtp {
   readonly connections: () => number;
   /** Connections the client has closed, or that the server has seen end. */
   readonly closedConnections: () => number;
-  /** Messages the server accepted with DATA, in order. */
   readonly accepted: AcceptedMessage[];
   close(): Promise<void>;
 }
@@ -162,7 +155,6 @@ function addressIn(line: string): string {
   return line.slice(line.indexOf("<") + 1, line.indexOf(">"));
 }
 
-/** One SMTP conversation: AUTH PLAIN, MAIL FROM, RCPT TO, DATA, RSET and QUIT, with the refusals the options name. */
 function smtpSession(socket: Socket, options: FakeSmtpOptions, accepted: AcceptedMessage[]): void {
   const expectedPassword = options.acceptedPassword ?? password;
   const refused = new Set(options.refuseRecipients ?? []);
@@ -286,7 +278,6 @@ async function startFakeSmtp(options: FakeSmtpOptions = {}): Promise<FakeSmtp> {
   return fake;
 }
 
-/** A loopback port with nothing listening on it, so a connection to it is refused. */
 async function closedPort(): Promise<number> {
   const server = createNetServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
@@ -388,7 +379,6 @@ describe("createSmtpMailTransport (issue #1634): raw submission over SMTP", () =
     );
 
     expect(error).toBeInstanceOf(MailRecipientRejectedError);
-    // The server took the message for bob, so it was sent to him: this is the documented partial outcome.
     expect(server.accepted).toHaveLength(1);
     expect(server.accepted[0]?.recipients).toEqual(["bob@mail.test"]);
   });
@@ -482,7 +472,7 @@ describe("createSmtpMailTransport (issue #1634): raw submission over SMTP", () =
   });
 
   it("ends a send that is still connecting when close() is called, and the send rejects as unreachable", async () => {
-    // The name never resolves, so the socket is still connecting when close() runs. Nothing is connected to.
+    // The name never resolves, so the socket is still connecting when close() runs.
     let lookups = 0;
     const original = dns.lookup;
     Object.defineProperty(dns, "lookup", {
@@ -899,8 +889,7 @@ describe("createMailTransportFactory (issue #1634)", () => {
   });
 
   it("refuses a sync mode that names no transport, before reading anything", async () => {
-    // Every SYNC_MODES value now has a transport, so this value is outside the union, the way a stored row that
-    // the store's type does not describe would reach the factory.
+    // A value outside the SyncMode union, as a stored row the store's type does not describe would reach the factory.
     const unnamedMode = "unsupported_mode" as unknown as SyncMode;
     const error = await rejectionOf(createMailTransportFactory(pool).forMailbox(mailboxId, unnamedMode));
     expect(error).toBeInstanceOf(MailTransportUnavailableError);
@@ -939,7 +928,6 @@ describe("createMailTransportFactory (issue #1634)", () => {
   });
 });
 
-/** A reconcile method the Sent-copy path never calls; it fails if it is called. */
 async function notCalled(): Promise<never> {
   throw new Error("the Sent-copy path calls no reconcile method");
 }
@@ -967,7 +955,7 @@ interface RecordingImap {
   readonly open: ImapConnectionOpener;
 }
 
-/** The IMAP opener of one test. It records each connection it opens, and each append and close into `events`. `appendError` makes every append fail. */
+/** Records each connection, append and close into `events`; `appendError` makes every append fail. */
 function recordingImap(events: string[], appendError?: Error): RecordingImap {
   const appends: AppendRecord[] = [];
   const opened: MailServerConnectionSettings[] = [];
@@ -990,7 +978,6 @@ function recordingImap(events: string[], appendError?: Error): RecordingImap {
   return { appends, opened, open };
 }
 
-/** The SMTP opener of one test: the production transporter, with its close recorded into `events`. */
 function recordingSmtp(events: string[]): SmtpTransporterOpener {
   return (settings, credential) => {
     const transporter = createSmtpTransporter(settings, credential);
@@ -1004,7 +991,6 @@ function recordingSmtp(events: string[]): SmtpTransporterOpener {
   };
 }
 
-/** A connection limiter that records the account and limit each task runs under, then runs the task at once. */
 function recordingLimiter(events: string[]): ImapConnectionLimiter {
   return {
     run<T>(accountId: string, limit: number, task: () => Promise<T>): Promise<T> {
@@ -1014,7 +1000,7 @@ function recordingLimiter(events: string[]): ImapConnectionLimiter {
   };
 }
 
-/** Makes the Folder item that `reconcileImapAccount` creates for a mailbox's Sent folder, so the Sent-copy path finds it. */
+/** The Sent Folder item `reconcileImapAccount` creates, so the Sent-copy path finds it. */
 async function addSentFolder(pool: Pool, mailboxItemId: string, providerId: string): Promise<void> {
   await withTransaction(pool, async (client) => {
     const moduleIds = await resolveMailModuleIds(client);
@@ -1032,10 +1018,7 @@ async function addSentFolder(pool: Pool, mailboxItemId: string, providerId: stri
   });
 }
 
-/**
- * Creates a Mailboxes item the way production does, with the given user properties. `addresses` is system-owned,
- * so it goes through the sanctioned writer in the same transaction.
- */
+/** `addresses` is system-owned, so it goes through the sanctioned writer in the same transaction. */
 async function createMailbox(
   pool: Pool,
   { addresses, ...properties }: { addresses: string } & Record<string, unknown>,

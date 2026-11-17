@@ -9,9 +9,8 @@ import { transitionTenantStatus, type TenantStatus } from "./tenantsStore.js";
 import { publishTenantDeactivated } from "./tenantStatusSignal.js";
 
 /**
- * Admin-plane reads and the audit log. Everything here touches global tables only (`users`,
- * `tenants`, `sessions`, `admin_audit_log`), never a tenant's rows, and runs in system scope
- * (docs/adr/2026-10-17-admin-role-without-content-access.md).
+ * Admin-plane reads and the audit log. Touches only global tables (`users`, `tenants`, `sessions`,
+ * `admin_audit_log`), never a tenant's rows, in system scope.
  */
 
 const USER_ROLES: readonly UserRole[] = ["admin", "member"];
@@ -23,7 +22,7 @@ export interface AdminAccountSummary {
   role: UserRole;
   status: TenantStatus;
   createdAt: string;
-  /** The newest `sessions.last_seen_at` of the user; `null` for a user who never had a session. */
+  /** `null` for a user who never had a session. */
   lastSeenAt: string | null;
 }
 
@@ -53,9 +52,7 @@ function toAccountSummary(row: AdminAccountRow): AdminAccountSummary {
   };
 }
 
-/**
- * Every account, oldest first. Each account's status is that of the tenant its `users.tenant_id` names.
- */
+/** Oldest first; each status is that of the account's tenant. */
 export async function listAccounts(client: Queryable): Promise<AdminAccountSummary[]> {
   const { rows } = await client.query<AdminAccountRow>(
     `${ACCOUNT_SELECT} ${ACCOUNT_GROUP} ORDER BY u.created_at, u.id`,
@@ -70,7 +67,6 @@ export async function getAccountSummary(client: Queryable, userId: string): Prom
   return toAccountSummary(row);
 }
 
-/** The actions the admin routes record; each sibling issue of the multi-tenant accounts batch writes one or more. */
 export const ADMIN_AUDIT_ACTIONS = [
   "tenantAiBudgetSet",
   "inviteCreated",
@@ -91,9 +87,9 @@ export interface AdminActionInput {
 }
 
 /**
- * Appends one `admin_audit_log` row on the caller's client, so the row commits or rolls back with
- * the mutation it records. `details` holds ids and scalars only: never tenant content and never an
- * email address. `action` is re-checked at runtime because callers may hold a widened string.
+ * On the caller's client, so the row commits with the mutation it records. `details` holds ids and
+ * scalars only, never tenant content or email addresses. `action` is re-checked at runtime because
+ * callers may hold a widened string.
  */
 export async function recordAdminAction(client: PoolClient, input: AdminActionInput): Promise<void> {
   const action = assertKnownValue(ADMIN_AUDIT_ACTIONS, input.action, "admin audit action");
@@ -103,7 +99,6 @@ export async function recordAdminAction(client: PoolClient, input: AdminActionIn
   );
 }
 
-/** Raised when a mutation would leave the deployment without an active admin. */
 export class LastAdminError extends ChokePointError {
   constructor() {
     super(409, "last_admin", "At least one active admin must remain");
@@ -112,18 +107,14 @@ export class LastAdminError extends ChokePointError {
 }
 
 /**
- * Serializes every admin-membership mutation for the rest of the caller's transaction. Take it
- * before reading the target row, so the guard's count cannot go stale against a concurrent
- * mutation (docs/adr/2026-10-17-admin-membership-and-tenant-status-writes.md).
+ * Serializes admin-membership mutations for the rest of the transaction. Take it before reading the
+ * target row so the guard's count cannot go stale.
  */
 export async function lockAdminMembership(client: PoolClient): Promise<void> {
   await client.query("SELECT pg_advisory_xact_lock(hashtext('semprec_admin_membership'))");
 }
 
-/**
- * Throws `LastAdminError` when no admin other than `userId` belongs to an `active` tenant. Only
- * meaningful while holding `lockAdminMembership`.
- */
+/** Throws `LastAdminError` when no other admin belongs to an `active` tenant; only meaningful under `lockAdminMembership`. */
 export async function assertAnotherActiveAdminRemains(client: PoolClient, userId: string): Promise<void> {
   const { rows } = await client.query<{ remaining: string }>(
     `SELECT count(*) AS remaining
@@ -144,7 +135,6 @@ interface LockedTarget {
   tenantId: string;
   role: UserRole;
   status: TenantStatus;
-  /** Whether the guard applies: the target currently counts as an active admin. */
   isActiveAdmin: boolean;
 }
 
@@ -167,10 +157,8 @@ async function lockTarget(client: PoolClient, targetUserId: string): Promise<Loc
 }
 
 /**
- * Suspends the account's tenant (`active` → `suspended`), publishes the tenant deactivation signal,
- * revokes the user's sessions and push registrations, and records `accountSuspended`, all in the
- * caller's transaction. Refuses with
- * `LastAdminError` when the target is the last active admin.
+ * Suspends the account's tenant, publishes the deactivation signal, revokes sessions and push
+ * registrations and records `accountSuspended`, in the caller's transaction. Refuses the last active admin.
  */
 export async function suspendAccount(client: PoolClient, input: AccountMutationInput): Promise<AdminAccountSummary> {
   const target = await lockTarget(client, input.targetUserId);
@@ -187,7 +175,7 @@ export async function suspendAccount(client: PoolClient, input: AccountMutationI
   return getAccountSummary(client, input.targetUserId);
 }
 
-/** Moves the account's tenant `suspended` → `active` and records `accountReactivated`. Sessions stay revoked. */
+/** `suspended` → `active` and records `accountReactivated`; sessions stay revoked. */
 export async function reactivateAccount(client: PoolClient, input: AccountMutationInput): Promise<AdminAccountSummary> {
   const target = await lockTarget(client, input.targetUserId);
   await transitionTenantStatus(client, target.tenantId, ["suspended"], "active");
@@ -200,9 +188,8 @@ export async function reactivateAccount(client: PoolClient, input: AccountMutati
 }
 
 /**
- * Sets the account's role. An unchanged role returns the account without an audit row; demoting
- * an active admin applies the last-admin guard; otherwise records `accountRoleChanged` with
- * `{ from, to }`.
+ * An unchanged role returns without an audit row; demoting an active admin applies the last-admin guard;
+ * otherwise records `accountRoleChanged` with `{ from, to }`.
  */
 export async function changeAccountRole(
   client: PoolClient,

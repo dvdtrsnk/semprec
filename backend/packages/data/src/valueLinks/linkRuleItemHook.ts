@@ -21,9 +21,8 @@ export async function linkRuleItemHook(context: ItemUpdateHookContext): Promise<
 }
 
 /**
- * A created item brings its properties to the resolver rules that declare them as inputs for an item that appears
- * (`onAppear`), as an update of them would: a company created with a `web` can be the company of threads that were
- * ingested before it existed.
+ * A created item feeds `onAppear` resolver inputs as an update would: a company created with a `web` can be the
+ * company of threads ingested before it existed.
  */
 export const linkRuleItemCreateHook: ItemCreateHook = async (context) => {
   const databaseKey = context.database.key;
@@ -39,7 +38,7 @@ export const linkRuleItemCreateHook: ItemCreateHook = async (context) => {
   );
 };
 
-/** A restored item appears again for the resolver rules: its properties count again from now on. */
+/** A restored item's properties count again for the resolver rules. */
 export const linkRuleItemRestoreHook: ItemRestoreHook = async (context) => {
   const databaseKey = context.database.key;
   if (!databaseKey) return;

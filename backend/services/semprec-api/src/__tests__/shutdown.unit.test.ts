@@ -10,7 +10,7 @@ interface CapturedLine {
   msg: string;
 }
 
-/** Fakes for every dependency `createGracefulShutdown` takes, each appending its step to one shared `calls` log. */
+/** Each fake appends its step to one shared `calls` log. */
 function createFakes(
   options: {
     mailLiveSyncStop?: () => Promise<void>;

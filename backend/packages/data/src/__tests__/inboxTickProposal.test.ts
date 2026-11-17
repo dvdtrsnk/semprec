@@ -79,7 +79,6 @@ function isOwnedPgClosure(
   return error instanceof Error && error.constructor === Error && !("code" in error) && error.message === message;
 }
 
-/** Owns only this overlap's runtime clients, gates and operations. */
 function ownOverlap(
   runtime: Pool,
   cancel: () => void,
@@ -244,7 +243,6 @@ function combineOverlapFailure(body: { error: unknown } | undefined, cleanup: un
 }
 
 function rethrowOverlap(error: unknown): never {
-  // Preserve even non-Error thrown identities from the tested operation.
   throw error;
 }
 
@@ -276,9 +274,8 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 /**
- * The version 2 fingerprint (issue #1606) written out by hand: canonical JSON with the keys in code-point
- * order and the attachment hashes sorted, and `transcribedText` empty. The test does not reuse the
- * production function it checks.
+ * The version 2 fingerprint written out by hand: canonical JSON with keys in code-point order, attachment
+ * hashes sorted and `transcribedText` empty. The test does not reuse the production function it checks.
  */
 function fingerprintV2Of(input: {
   typeId: string;
@@ -309,8 +306,8 @@ async function findProposalForItem(tickPool: Pool, proposalsId: string, itemId: 
   return withTransaction(tickPool, async (client) => {
     const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
     const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty!.id);
-    // Every edge, not `edges[0]`: the same scan production's `findExistingProposal` does, so a
-    // soft-deleted proposal still linked to the item is skipped here as it is there.
+    // Every edge, not `edges[0]`: as production's `findExistingProposal` does, a soft-deleted proposal still
+    // linked to the item is skipped.
     const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
     for (const edge of edges) {
       const proposal = await itemsStore.getItemById(client, proposalsId, relationsStore.otherSide(edge, itemId));
@@ -1622,8 +1619,8 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     }
 
     /**
-     * Creates a blob whose content hash is derived from `label` and attaches it to the Inbox item. It is a PDF: a tick
-     * waits for an image whose metadata job has not run (issue gh-1970), and these tests are about the fingerprint.
+     * Creates a blob whose content hash derives from `label` and attaches it to the Inbox item. It is a PDF:
+     * a tick waits for an image whose metadata job has not run.
      */
     async function attachNewBlob(itemId: string, label: string) {
       const contentHash = createHash("sha256").update(label).digest("hex");
@@ -1644,7 +1641,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       await deleteInboxAttachment(pool, attachment.attachmentId);
     }
 
-    /** Sets the stored fingerprint of a proposal, for a value the tick does not write. */
     async function setProposalFingerprint(proposalId: string, fingerprint: string) {
       await withTransaction(pool, (client) =>
         itemsStore.updateItemProperties(client, {
@@ -1895,8 +1891,8 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const original = await findProposalForItem(pool, proposalsId, item.id);
     await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, original!.id));
 
-    // The relation edge to the now-deleted proposal is still there, so this must not throw
-    // NotFoundError from trying to update a deleted item — it must fall through and create.
+    // The edge to the deleted proposal remains, so the tick must not try to update the deleted item; it
+    // creates a new one.
     await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk (retry)" } }));
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
@@ -1905,9 +1901,8 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     const stillDeleted = await itemsStore.getItemById(pool, proposalsId, original!.id);
     expect(stillDeleted!.deletedAt).not.toBeNull();
 
-    // Now two `sourceInbox` edges exist for this item: one to the soft-deleted original, one
-    // to the live replacement. A further tick must find the live one regardless of which edge
-    // comes back first from the relation lookup — reviving it rather than creating a third row.
+    // Two `sourceInbox` edges now exist: one to the soft-deleted original, one to the live replacement. A
+    // further tick must find the live one whichever edge comes back first, not create a third row.
     await withTransaction(pool, (client) =>
       itemsStore.updateItemProperties(client, {
         databaseId: inboxId,
@@ -1953,7 +1948,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       return { type, item };
     }
 
-    /** Every Processing proposals row as stored, so a test can prove a card was not written. */
     async function storedCards() {
       const { rows } = await pool.query<{ id: string; properties: Record<string, unknown>; updated_at: Date }>(
         "SELECT id, properties, updated_at FROM items WHERE database_id = $1 ORDER BY id",
@@ -2447,8 +2441,8 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
   });
 
-  // Restoring a source returns its `sourceDeleted` card (issue #1604). Each test trashes and restores with the
-  // store calls, so the tick runs explicitly here; the heartbeat that runs it is covered in inboxTick.test.ts.
+  // Restoring a source returns its `sourceDeleted` card. The tick runs explicitly here; the heartbeat that
+  // runs it is covered in inboxTick.test.ts.
   async function trashSource(itemId: string): Promise<void> {
     await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
   }
@@ -2674,7 +2668,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       propertiesStore.getPropertyByKey(client, projectsId, "tasks"),
     );
     if (!property) throw new Error("Missing Projects.tasks relation");
-    // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation (issue #1702).
+    // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation.
     await runInTenant(getTenantZeroId(), () =>
       api.createRelation({ relationPropertyId: property.id, callerItemId: other.id, targetItemId: task.id }),
     );
@@ -3048,9 +3042,9 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
   }
 
   /**
-   * Wraps `pool` so that `beforeLock` runs, and commits on its own connection, right before the
-   * tick's first `SELECT ... FOR UPDATE` on `cardId` — the gap between the tick's unlocked
-   * snapshot of the card and its locked re-check, on paths that call no `computeProposal`.
+   * Wraps `pool` so that `beforeLock` runs and commits on its own connection right before the tick's first
+   * `SELECT ... FOR UPDATE` on `cardId`: the gap between the tick's unlocked snapshot and its locked
+   * re-check, on paths that call no `computeProposal`.
    */
   function poolRunningBeforeCardLock(cardId: string, beforeLock: () => Promise<void>): Pool {
     let fired = false;
@@ -3307,9 +3301,8 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
   it("holds no transaction and no pooled connection during the computeProposal call", async () => {
     const { item } = await createTypedItem("Buy milk");
 
-    // A dedicated single-connection pool: if the tick still held its transaction's one
-    // connection open across `computeProposal`, this query — issued from inside the fake
-    // while it runs — would have no connection to acquire and would never resolve.
+    // A dedicated single-connection pool: if the tick held its connection across `computeProposal`, this
+    // query, issued from inside the fake, could never acquire one.
     const tickPool = getTestPool({ max: 1 });
     try {
       const handler = createSemprecTickAction(tickPool, async (input) => {
@@ -4121,9 +4114,9 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         );
         if (!property) throw new Error("Missing Inbox type property");
         const runtime = await createRuntimeRolePool(pool, "semprec_data");
-        // Since issue #1718 a type edge write queues the day's recompute under the key the tick's read phase
-        // enqueues too, and since issue gh-1969 so do adding and removing an attachment, so a tick that starts
-        // after any of these writers waits for it there, before it calls the model.
+        // A type edge write and adding or removing an attachment queue the day's recompute under the key the
+        // tick's read phase enqueues too, so a tick that starts after any of these writers waits for it there,
+        // before it calls the model.
         const modelTypeIds: Array<string | null> = [];
         let postModel = false;
         let tickPid: number | undefined;
@@ -4601,10 +4594,9 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
   it("a proposal created by a second tick while the first is still in computeProposal is revised, not duplicated (issue #792 review fix)", async () => {
     const { item } = await createTypedItem("Buy milk");
 
-    // Neither tick sees the other's proposal in its read snapshot: A's snapshot read happens
-    // before B runs to completion inside A's computeProposal, and B's own snapshot read happens
-    // while A hasn't written anything yet. So both reach `writeTickResult` believing
-    // `snapshot.existingProposal` is null — the exact race `raceProposal` exists to catch.
+    // Neither tick sees the other's proposal in its snapshot: A's read precedes B's full run inside A's
+    // computeProposal, and B reads before A writes. Both reach `writeTickResult` with a null
+    // `snapshot.existingProposal`, the race `raceProposal` catches.
     const handlerA = createSemprecTickAction(pool, async () => {
       const handlerB = createSemprecTickAction(pool, async () => ({ properties: { name: "Buy milk (from B)" } }));
       await handlerB(
@@ -4653,7 +4645,6 @@ describe("semprec.tick records a failed proposal computation on the card (issue 
     };
   });
 
-  /** A typed Inbox item (a 'database' type targeting `tasks`) with the text `Buy milk`. */
   async function createTypedItem(): Promise<{ itemId: string; typeId: string }> {
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {
@@ -4686,7 +4677,6 @@ describe("semprec.tick records a failed proposal computation on the card (issue 
     });
   }
 
-  /** A computation that fails with the gateway's own error for `reason`. */
   function failingWith(reason: AiGatewayFailureReason): ComputeSemprecProposalFn {
     return async () => {
       throw new AiGatewayFailedError(reason);
@@ -5666,7 +5656,7 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         propertiesStore.getPropertyByKey(client, tasksDb, "project"),
       );
       if (!property) throw new Error("Missing Tasks.project");
-      // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation (issue #1702).
+      // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation.
       await runInTenant(getTenantZeroId(), () =>
         withTransaction(pool, (client) =>
           createRelationWithClient(client, {
@@ -5685,7 +5675,7 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         "tasks",
       );
       await validate(envelope);
-      // In a tenant scope, as a request is: a Projects status update queues value-link propagation (issue gh-1869).
+      // In a tenant scope, as a request is: a Projects status update queues value-link propagation.
       await runInTenant(getTenantZeroId(), () =>
         withTransaction(pool, (client) =>
           updateItemWithClient(client, {
@@ -5713,7 +5703,7 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         propertiesStore.getPropertyByKey(client, projectsDb, "tasks"),
       );
       if (!property) throw new Error("Missing Projects.tasks");
-      // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation (issue #1702).
+      // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation.
       await runInTenant(getTenantZeroId(), () =>
         withTransaction(pool, (client) =>
           createRelationWithClient(client, {
@@ -5992,7 +5982,7 @@ describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
     await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
     const created = await findProposalForItem(pool, proposalsId, item.id);
 
-    // A card written before aiProposal and aiVersion existed: no current writer can produce that state.
+    // A card without aiProposal and aiVersion: no current writer can produce that state.
     await pool.query("UPDATE items SET properties = properties - 'aiProposal' - 'aiVersion' WHERE id = $1", [
       created!.id,
     ]);
@@ -6214,7 +6204,6 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
   const config = () => ({ processingProposalsDatabaseId: proposalsId });
   const RECOMPUTE_MESSAGE = "Revised the proposal after the source item changed.";
 
-  /** A typed Task item whose first tick stored a `proposed` card; the card is returned as the tick wrote it. */
   async function seedCard() {
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {
@@ -6248,7 +6237,6 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
     return card;
   }
 
-  /** A manual `PATCH values` of the card, through the production function; answers the updated card. */
   async function editValues(cardId: string, values: Record<string, unknown>) {
     const { item } = await withTransaction(pool, (client) =>
       updateProposalValuesWithClient(client, config(), cardId, { set: { primary: values } }),
@@ -6375,8 +6363,8 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
     const { item, card } = await seedCard();
     await editValues(card.id, { name: "My own title" });
     await editText(item.id, "Buy milk and eggs");
-    // The tick and the confirm enqueue the source's Journal-day recompute under one job key, so a confirm issued
-    // from inside the tick would wait on the tick's own transaction; the source leaves its Journal day first.
+    // The tick and the confirm share a Journal-day recompute job key, so the source leaves its Journal day
+    // first (see above).
     await withTransaction(pool, async (client) => {
       const journalDayProperty = await propertiesStore.getPropertyByKey(client, inboxId, "journalDay");
       const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, journalDayProperty!.id);
@@ -6428,7 +6416,7 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
 
   it("an older result is also discarded when the card had no aiVersion, which counts as 0", async () => {
     const { item, card } = await seedCard();
-    // A card written before aiVersion existed: no current writer can produce that state.
+    // A card without aiVersion: no current writer can produce that state.
     await pool.query("UPDATE items SET properties = properties - 'aiVersion' WHERE id = $1", [card.id]);
     await editText(item.id, "Buy milk and eggs");
 
@@ -6454,7 +6442,7 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
 
     let movedVersion: string | undefined;
     await runTick(pool, databaseIds, item.id, async () => {
-      // The fingerprint alone moves, as a failed computation clears it (issue #1485); aiVersion stays.
+      // The fingerprint alone moves, as a failed computation clears it; aiVersion stays.
       const moved = await withTransaction(pool, (client) =>
         itemsStore.updateItemProperties(client, {
           databaseId: proposalsId,
@@ -6572,7 +6560,6 @@ describe("semprec.tick computes a card that was sent back as computing, whatever
     };
   });
 
-  /** A typed Task item whose first tick stored a `proposed` card, which its fingerprint covers. */
   async function seedCard() {
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {
@@ -6979,7 +6966,6 @@ describe("Markdown page proposal validation", () => {
                     ? { markdown: "Hello", placement: { afterHeading: foreignFixture.id } }
                     : { markdown: "Hello", placement: "end" };
           let calls = 0;
-          // This is a synthetic computed result passed to the real tick owner, not a model-success claim.
           const tick = createSemprecTickAction(runtime, async () => {
             calls++;
             return { target, properties };
@@ -7068,7 +7054,6 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
     projectsId = await databaseIdFor("projects");
   });
 
-  /** An Inbox item of a type with the given method, dated `date`. */
   async function typedItem(
     method: "journal" | "pageContent" | "database",
     date = "2026-10-16",
@@ -7099,7 +7084,6 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
       .id;
   }
 
-  /** Ticks `itemId` with a computation that answers `properties` (and `extra`), and returns the card and the input. */
   async function tickJournal(
     itemId: string,
     properties: Record<string, unknown>,
@@ -7387,7 +7371,6 @@ describe("an operation marked primary stands for an existing record (issue gh-19
 
   const existingCompany = { op: "update" as const, alias: "co", primary: true as const };
 
-  /** An Inbox item of a database type that targets `targetDatabase`. */
   async function typedItem(targetDatabase: "companies" | "people"): Promise<string> {
     const type = await withTransaction(pool, (client) =>
       createInboxTypeWithClient(client, {

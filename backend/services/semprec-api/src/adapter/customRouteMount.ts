@@ -12,99 +12,78 @@ import type { ClientIpThrottle } from "../clientIpThrottle.js";
 import { mountRoutes, type RouteDefinition } from "./routeTable.js";
 import type { AdapterHandler } from "./adapterRoute.js";
 
-/** One provider's OAuth client: the id and secret the composition root read from the environment. */
 export interface CustomRouteOAuthClient {
   clientId: string;
   clientSecret: string;
 }
 
-/** OAuth settings for the connect routes (issue #1686). Every member is absent when the composition root did not configure it. */
+/** Every member is absent when the composition root did not configure it. */
 export interface CustomRouteOAuthConfig {
   gmail?: CustomRouteOAuthClient;
   msGraph?: CustomRouteOAuthClient;
-  /** The base URL a provider redirects back to: the composition root's `APP_BASE_URL`. */
+  /** The composition root's `APP_BASE_URL`. */
   redirectBaseUrl?: string;
 }
 
-/** The mail server clients the password and send routes use (issues #1736 and #1896). */
 export interface MailServerClients {
   /**
-   * Verifies the login in the password connect route (issue gh-1736, `mail/mailboxPasswordRouteHandlers.ts`):
-   * resolves with the IMAP and SMTP endpoints that accepted the login, and rejects when none did. Runs
-   * before any mailbox is stored. `serve.ts` sets it to `verifyMailCredentials`. A mount without it fails
-   * each request of that route with a configuration error.
+   * Resolves with the IMAP and SMTP endpoints that accepted the login, and rejects when none did.
+   * Runs before any mailbox is stored. A mount without it fails each request of the password
+   * connect route with a configuration error.
    */
   verifyPassword?: (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
   /**
-   * The transports and attachment storage `sendDraftEmail` takes (mail/send.ts), read by the draft send route (issue
-   * gh-1896). `createDispatcher` builds them from `oauth`, `outboundHttp` and its blob storage when the caller's
+   * `createDispatcher` builds them from `oauth`, `outboundHttp` and its blob storage when the
    * container carries none.
    */
   send?: MailSendAdapterFactory;
 }
 
-/** The per-mailbox control of the mail live-sync root that the mailbox routes call (issues #1686, #1690 and #1742). */
 export interface MailLiveSyncControl {
   startMailbox(tenantId: string, mailboxItemId: string): Promise<void>;
   stopMailbox(tenantId: string, mailboxItemId: string): Promise<void>;
-  /** Replaces the mailbox's hosted lifecycle (`MailLiveSyncRoot.restartAccount`); a reauthorization calls it after its commit. */
+  /** A reauthorization calls it after its commit. */
   restartAccount(mailboxItemId: string): Promise<void>;
 }
 
 /**
- * What the composition root (`serve.ts`) hands every module custom route beyond its database pool.
- * Every member is optional: the root sets only what it configured. A route reads its member through
- * `requireCustomRouteDependency` when it runs, so a route that does not use a member never notices
- * that it is absent.
+ * Every member is optional. A route reads its member through `requireCustomRouteDependency` when it
+ * runs, so a route that does not use a member never notices it is absent.
  */
 export interface CustomRouteDependencies {
   heartbeatRuleKinds?: () => Promise<HeartbeatRuleKindRegistry>;
   oauth?: CustomRouteOAuthConfig;
   mailServerClients?: MailServerClients;
   mailLiveSync?: MailLiveSyncControl;
-  /** Replaces the global `fetch` for outbound calls to providers. */
   outboundHttp?: typeof fetch;
-  /**
-   * The HTTP client of `semprec-ai-gateway` that a route calls for a model answer (issue gh-1900: the task name of
-   * `POST /api/mail/threads/:threadId/tasks`). `serve.ts` sets it. A mount without it fails each request of such a
-   * route with a configuration error.
-   */
+  /** A mount without it fails each request of a route that needs it with a configuration error. */
   aiGateway?: AiGatewayClientPort;
   /**
-   * The in-process limiter in which the password connect route counts the login verifications of each user
-   * (issue gh-1750, action `mailboxCredentialVerification` of `clientIpThrottle.ts`). `createDispatcher`
-   * creates one for its own lifetime when the caller's container carries none. A mount without it fails
-   * each request of that route with a configuration error.
+   * Counts each user's login verifications in the password connect route. `createDispatcher`
+   * creates one when the container carries none.
    */
   throttle?: ClientIpThrottle;
   /**
-   * `MAX_FILE_SIZE_MB` in bytes (issue gh-1895): the limit of the attachments of a draft in a mailbox that has no
-   * provider limit, the one `POST /api/files` enforces for an upload. `createDispatcher` sets it from its
-   * `maxFileSizeBytes` option.
+   * `MAX_FILE_SIZE_MB` in bytes: the draft attachment limit of a mailbox with no provider limit,
+   * the one `POST /api/files` enforces.
    */
   maxFileSizeBytes?: number;
 }
 
 /**
- * The shape every module custom route's `handlerExport` (issue #239's manifest field) must
- * resolve to: a factory the mount calls once at startup with the `pool` and the composition root's
- * dependency container, getting back the actual per-request `AdapterHandler` — the same `createX(pool)`
- * shape every other handler in this service already uses, plus the container for the routes that
- * need one. Factories that ignore the container declare only `pool`. `ModuleRegistry` resolves
- * `handlerExport` to `unknown` (it has no reason to know this service's HTTP types); this is the one
- * place that value is cast back to this shape.
+ * What every module custom route's `handlerExport` must resolve to: a factory the mount calls once
+ * at startup, returning the per-request `AdapterHandler`. `ModuleRegistry` resolves `handlerExport`
+ * to `unknown`; this is the one place that value is cast back to this shape.
  */
 export type CustomRouteHandlerFactory = (pool: Pool, dependencies: CustomRouteDependencies) => AdapterHandler;
 
-/** The empty container: what a caller mounts when no route it mounts needs a member. */
 export function createCustomRouteDependencies(): CustomRouteDependencies {
   return {};
 }
 
 /**
- * Thrown when a route runs without a member the composition root did not configure. It is a plain
- * error, not a `ChokePointError`: the adapter logs it and answers a generic 500, so no domain status
- * is invented for a deployment that is missing configuration.
+ * A plain error, not a `ChokePointError`: the adapter logs it and answers a generic 500, so no
+ * domain status is invented for missing deployment configuration.
  */
 export class CustomRouteConfigurationError extends Error {
   constructor(message: string) {
@@ -114,9 +93,8 @@ export class CustomRouteConfigurationError extends Error {
 }
 
 /**
- * Returns one member of the container, or throws `CustomRouteConfigurationError` naming it when the
- * composition root did not configure it. Call it inside the handler, once per request: a call made
- * while the factory runs would fail the whole mount at startup, for a route that may never be called.
+ * Call it inside the handler, once per request: a call while the factory runs would fail the whole
+ * mount at startup, for a route that may never be called.
  */
 export function requireCustomRouteDependency<K extends keyof CustomRouteDependencies>(
   dependencies: CustomRouteDependencies,
@@ -132,9 +110,9 @@ function unconfiguredDependency(member: keyof CustomRouteDependencies): never {
 }
 
 /**
- * Resolves every active module's custom route (issue #239) into the `routeTable.ts` compiler
- * shared by every route family this adapter mounts — a custom route gets no private auth, error,
- * or path-matching logic of its own. Each factory receives the same `dependencies` object.
+ * Custom routes compile into the same `routeTable.ts` table as every other route family, with no
+ * auth, error or path-matching logic of their own. Each factory receives the same `dependencies`
+ * object.
  */
 export function mountCustomRoutes(
   pool: Pool,

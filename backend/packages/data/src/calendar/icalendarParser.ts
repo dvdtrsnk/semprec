@@ -1,44 +1,32 @@
-// A small parser for the iCalendar (RFC 5545) subset that an iMIP invitation needs (issue gh-1929): line unfolding,
-// BEGIN/END nesting, parameters, quoted values and text unescaping, with no dependency. It is a pure function over
-// text that arrived by mail, so it is bounded (input size, number of VEVENTs, nesting depth) and never throws on
-// its input: a text it cannot use is reported as a rejection with a reason code.
+// A dependency-free parser for the iCalendar (RFC 5545) subset an iMIP invitation needs. Its input arrived by
+// mail, so it is bounded (size, VEVENT count, nesting depth) and never throws on it: unusable text is a rejection.
 import { DateTime, IANAZone } from "luxon";
 
-/** The largest input the parser reads, in bytes; a larger text is rejected as a whole. */
 export const ICALENDAR_MAX_BYTES = 256 * 1024;
 
-/** The most VEVENT blocks one input may hold; more are rejected as a whole. */
 export const ICALENDAR_MAX_EVENTS = 10;
 
 /** The deepest BEGIN/END nesting accepted (VCALENDAR > VEVENT > VALARM is three). */
 const MAX_NESTING_DEPTH = 8;
 
 export interface ICalendarAddress {
-  /** The address without its `mailto:` prefix. */
   address: string;
-  /** The `CN` parameter, or `null` when absent or empty. */
   name: string | null;
 }
 
 export interface ICalendarAttendee extends ICalendarAddress {
-  /** The `PARTSTAT` parameter in upper case, or `null` when absent. */
   partStat: string | null;
 }
 
 export interface ICalendarEvent {
   uid: string;
-  /** The `SEQUENCE`, `0` when the event has none. */
   sequence: number;
   summary: string | null;
   location: string | null;
   /** `true` when `DTSTART` has the value type `DATE`; then both times are at 00:00 UTC. */
   allDay: boolean;
-  /** An ISO UTC instant: the start, or for an all-day event the first day at 00:00 UTC. */
   startsAt: string;
-  /**
-   * An ISO UTC instant: the end, or for an all-day event the last day inclusive (`DTEND` minus one day) at 00:00 UTC.
-   * `null` when there is no `DTEND`, and for an all-day event of a single day.
-   */
+  /** For an all-day event the last day inclusive (`DTEND` minus one day); `null` for a single all-day day. */
   endsAt: string | null;
   /** The IANA zone of `DTSTART`: its `TZID`, `UTC` for a UTC time or a date, the fallback zone otherwise. */
   timeZone: string;
@@ -55,7 +43,6 @@ export type ICalendarRejection = "tooLarge" | "tooManyEvents" | "malformed";
 export type ICalendarParseResult =
   | {
       ok: true;
-      /** The calendar `METHOD` in upper case, or `null` when the calendar has none. */
       method: string | null;
       events: ICalendarEvent[];
     }
@@ -72,7 +59,6 @@ interface ContentLine {
   value: string;
 }
 
-/** A VEVENT as its lines named it, before the values are checked. */
 interface RawEvent {
   uid?: ContentLine;
   sequence?: ContentLine;
@@ -88,7 +74,6 @@ interface RawEvent {
 
 const NAME_PATTERN = /^[A-Za-z0-9-]+$/;
 
-/** Splits `text` at the characters `separator` that stand outside double quotes. */
 function splitOutsideQuotes(text: string, separator: string, limit = Number.POSITIVE_INFINITY): string[] {
   const parts: string[] = [];
   let start = 0;
@@ -109,7 +94,6 @@ function unquote(value: string): string {
   return value.length >= 2 && value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
 }
 
-/** `NAME;PARAM=value:value`, or `null` for a line that is not a content line. */
 function parseContentLine(line: string): ContentLine | null {
   const [head, value] = splitOutsideQuotes(line, ":", 2);
   if (head === undefined || value === undefined) return null;
@@ -126,7 +110,7 @@ function parseContentLine(line: string): ContentLine | null {
   return { name: name.toUpperCase(), params, value };
 }
 
-/** Unescapes an iCalendar TEXT value (`\n`, `\,`, `\;`, `\\`); an empty result is `null`. */
+/** An empty unescaped TEXT value is `null`. */
 function textValue(line: ContentLine | undefined): string | null {
   if (!line) return null;
   const text = line.value.replace(/\\([\\;,nN])/g, (_match, char: string) =>
@@ -135,7 +119,6 @@ function textValue(line: ContentLine | undefined): string | null {
   return text.trim() === "" ? null : text;
 }
 
-/** The address of an ORGANIZER or ATTENDEE line, or `null` when its value is not a mail address. */
 function addressOf(line: ContentLine): ICalendarAddress | null {
   const address = line.value.trim().replace(/^mailto:/i, "");
   if (!/^[^\s@]+@[^\s@]+$/.test(address)) return null;
@@ -155,7 +138,6 @@ const UTC_TIME_PATTERN = /^\d{8}T\d{6}Z$/;
 const LOCAL_TIME_PATTERN = /^\d{8}T\d{6}$/;
 const LOCAL_FORMAT = "yyyyLLdd'T'HHmmss";
 
-/** The DTSTART or DTEND of `line`, or `null` when its value is not a date or a date-time. */
 function parseTime(line: ContentLine, fallbackTimeZone: string): ParsedTime | null {
   const value = line.value.trim();
   if (line.params.get("VALUE")?.toUpperCase() === "DATE" || DATE_PATTERN.test(value)) {
@@ -178,7 +160,6 @@ function parseTime(line: ContentLine, fallbackTimeZone: string): ParsedTime | nu
 
 const SEQUENCE_PATTERN = /^\d{1,9}$/;
 
-/** The event, or `null` when it lacks a UID or a usable DTSTART, or holds a value that is not valid. */
 function finishEvent(raw: RawEvent, options: ParseICalendarOptions): ICalendarEvent | null {
   const uid = raw.uid?.value.trim() ?? "";
   if (uid === "") return null;
@@ -232,20 +213,9 @@ function finishEvent(raw: RawEvent, options: ParseICalendarOptions): ICalendarEv
 }
 
 /**
- * Parses the iCalendar text of an iMIP message: the calendar `METHOD` and, per `VEVENT` directly inside the
- * `VCALENDAR`, its `UID`, `SEQUENCE`, `SUMMARY`, `LOCATION`, start and end, `ORGANIZER`, `ATTENDEE` lines and whether it
- * has an `RRULE` or a `RECURRENCE-ID`. Properties of a nested component (a `VALARM`, a `VTIMEZONE`) are not the
- * event's. Never throws on `text`:
- *
- * - input over `ICALENDAR_MAX_BYTES` is rejected as `tooLarge` and more than `ICALENDAR_MAX_EVENTS` VEVENT blocks as
- *   `tooManyEvents`, in both cases as a whole;
- * - input that is not one balanced `VCALENDAR`, a line that is not a content line, or an event without a `UID` or a
- *   readable `DTSTART`, or with a `SEQUENCE`, `DTEND` or `DTSTART` it cannot read, is rejected as `malformed`.
- *
- * A time is an ISO UTC instant. A time with `Z` or a date is in `UTC`; a time with a `TZID` that luxon accepts as an
- * IANA zone is read in it; a floating time, and a time whose `TZID` is not an IANA zone, is read in
- * `options.fallbackTimeZone` (the second sets `timeZoneFallback`, so the caller can log it). `options.fallbackTimeZone`
- * must be a valid IANA zone.
+ * Only `VEVENT`s directly inside the one `VCALENDAR` count; properties of nested components (`VALARM`,
+ * `VTIMEZONE`) are not the event's. Any unreadable line or required value rejects the whole input as `malformed`.
+ * Floating times and unknown `TZID`s are read in `options.fallbackTimeZone`, which must be a valid IANA zone.
  */
 export function parseICalendar(text: string, options: ParseICalendarOptions): ICalendarParseResult {
   // A character takes at least one byte, so a text longer than the limit in characters is over it in bytes.

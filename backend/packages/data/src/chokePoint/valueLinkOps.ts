@@ -32,10 +32,9 @@ function conflict(): never {
 }
 
 /**
- * The live item sources of a link and the values they hold now. A source whose property the source's database does not
- * have cannot say what it holds, and reading it as an empty value would let a relink delete the target's whole value, so
- * it is a conflict: nothing is computed from it. A link made for a value that no rule computes (the people of a task made
- * from a mail thread, `mailThreadTaskPeople`) names such a source property, so it cannot be relinked.
+ * The live item sources of a link and the values they hold now. A source whose database lacks the
+ * source property is a conflict: reading it as empty would let a relink delete the target's whole
+ * value. Such links (e.g. `mailThreadTaskPeople`) therefore cannot be relinked.
  */
 async function sourceValues(client: PoolClient, linkId: string): Promise<{ live: number; values: unknown[] }> {
   const sources = await valueLinksStore.listValueLinkSourcesByLinkIds(client, [linkId]);
@@ -60,7 +59,7 @@ async function sourceValues(client: PoolClient, linkId: string): Promise<{ live:
       const related = (await relationsStore.listRelationsForItem(client, definition.id, item.id)).map((edge) =>
         relationsStore.otherSide(edge, item.id),
       );
-      // The Trash keeps an item's edges. A related item in the Trash is not taken over, as in the propagation.
+      // The Trash keeps an item's edges; a trashed related item is not taken over, as in propagation.
       const liveIds = new Set((await itemsStore.getItemsByIds(client, related)).map((entry) => entry.id));
       next = related.filter((id) => liveIds.has(id));
     } else {
@@ -74,10 +73,8 @@ async function sourceValues(client: PoolClient, linkId: string): Promise<{ live:
 }
 
 /**
- * The source values a relink takes over, without the items the `valueFilter` of the link's rule
- * leaves out (issue #1697), so a relink gives the same values as that rule's propagation. A link
- * whose rule is not loaded, or declares no filter, keeps every value. A filter that cannot be
- * resolved in the tenant's schema is a conflict: nothing is copied unfiltered.
+ * Applies the link rule's `valueFilter` so a relink yields the same values as the rule's propagation.
+ * An unloaded rule or one without a filter keeps every value; an unresolvable filter is a conflict.
  */
 async function withoutOmittedValues(client: PoolClient, ruleKey: string, values: unknown[]): Promise<unknown[]> {
   const rule = (await loadLinkRules()).find((entry) => entry.key === ruleKey);
@@ -88,10 +85,7 @@ async function withoutOmittedValues(client: PoolClient, ruleKey: string, values:
   return values.filter((value) => !omitted.includes(value));
 }
 
-/**
- * Relinks a link of a resolver rule through its resolver and returns `true`. A link of a rule that is not a
- * resolver rule returns `false` and is left to the caller. A resolver with no value for the item is a conflict.
- */
+/** Returns `false` for a link whose rule is not a resolver rule. A resolver with no value is a conflict. */
 async function relinkedByResolver(client: PoolClient, link: valueLinksStore.ValueLinkRow): Promise<boolean> {
   const rule = (await loadResolverLinkRules()).find((entry) => entry.key === link.ruleKey);
   if (!rule) return false;
@@ -120,16 +114,13 @@ function announce(
 export type ValueLinkWriter = "user" | "agent" | (WriterIdentity & { writerKind: "user" | "agent" });
 
 /**
- * Unlinks or relinks within the caller's managed transaction. An unlink by an agent under a run that
- * would end an active link asks for approval first (issue #1758), which rolls the transaction back; the
- * approved replay (`approvedRequestId`) ends the link with `broken_by` agent. An unlink of a link that
- * is already broken stays the idempotent no-op it always was.
+ * Unlinks or relinks within the caller's transaction. An agent unlink under a run that would end an
+ * active link asks for approval first (rolling back); the approved replay ends it with `broken_by`
+ * agent. Unlinking an already broken link is an idempotent no-op. A relink is `value_link_conflict`
+ * when a live source's property does not exist.
  *
- * A relink is refused with `value_link_conflict` when a live source's property does not exist (`sourceValues`).
- *
- * An agent writer that carries a project (`agentProjectItemId`, issue #1810) needs `write` access to the
- * item's database, checked before anything about the link is read, so a refusal tells it nothing about the
- * link and a relink's own item and relation writes (which run as the value-links process) stay inside that grant.
+ * An agent with a project needs `write` on the item's database, checked before the link is read so a
+ * refusal discloses nothing and the relink's own writes (as the value-links process) stay in that grant.
  */
 export async function changeValueLinkWithClient(
   client: PoolClient,
@@ -179,9 +170,8 @@ export async function changeValueLinkWithClient(
         relationsStore.otherSide(edge, item.id),
       );
       await valueLinksStore.reactivateValueLink(client, link.id);
-      // Marked as `valueLinks` writes for the link rule hook, like a propagated value: an edge removed here
-      // is a replaced inherited value, so a link that follows it through that edge moves with it. Hop 0 keeps
-      // the budget of an ordinary root write.
+      // Marked as `valueLinks` writes for the link rule hook: an edge removed here is a replaced inherited
+      // value, so a link following it moves with it. Hop 0 keeps an ordinary root write's budget.
       await withPropagationHop(client, 0, async () => {
         for (const id of current.filter((id) => !desired.includes(id)))
           await deleteRelationWithClient(

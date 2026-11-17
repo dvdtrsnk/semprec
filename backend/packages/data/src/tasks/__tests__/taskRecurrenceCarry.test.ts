@@ -52,7 +52,6 @@ async function link(
   );
 }
 
-/** Every edge of `itemId` as `<counterpart> <metadata>`, sorted, together with the Tasks-side property key. */
 async function edgesOf(itemId: string): Promise<string[]> {
   return runInTenant(tenant, () =>
     withTransaction(pool, async (client) => {

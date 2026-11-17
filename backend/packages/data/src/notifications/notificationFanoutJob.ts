@@ -39,14 +39,7 @@ export function notificationFanoutJobKey(notificationId: string): string {
   return `notification-fanout:${notificationId}`;
 }
 
-/**
- * Enqueues the `notificationFanout` job (issue #151's Task: "one graphile-worker fanout job for
- * each committed notification using a notification-level jobKey"). `writeNotification` is the
- * only caller — its own dedup on `(sourceTable, sourceId, kind, transitionInstance)` decides
- * whether a notification is genuinely new, and this is only invoked when it is, but the
- * `jobKey` derived from the notification's own id makes a duplicate enqueue collapse onto the
- * same job either way.
- */
+/** The notification-level `jobKey` collapses a duplicate enqueue onto the same job. */
 export async function enqueueNotificationFanout(client: PoolClient, notificationId: string): Promise<void> {
   await enqueueJob(
     client,
@@ -57,11 +50,8 @@ export async function enqueueNotificationFanout(client: PoolClient, notification
 }
 
 /**
- * Enqueues the `notificationFanout` job that sends a held notification's push at `wakeAt` (issue #1794).
- * The key ends with the wake time as a UTC ISO string. A repeated hold until the same wake time
- * therefore collapses onto the job queued for it, which keeps its run time, and a later wake time gets
- * a job of its own. When the job with that key is the one running, graphile-worker adds a new job
- * with the same key instead.
+ * Keyed by wake time: a repeated hold until the same time collapses, a later one gets its own job.
+ * If the keyed job is the one running, graphile-worker adds a new job with the same key.
  */
 async function enqueueDeferredNotificationFanout(
   client: PoolClient,
@@ -81,11 +71,7 @@ async function enqueueDeferredNotificationFanout(
   );
 }
 
-/**
- * The wake time until which the push of this notification is held, or `null` to send it now
- * (issue #1794). A failure to read or resolve the tenant's sleep data also answers `null`, so it
- * cannot keep a push back; it is logged with the notification id and the error's name.
- */
+/** `null` sends now. A failed sleep-data read also answers `null`, so it can never hold a push back. */
 async function sleepMuteUntilOrNull(pool: Pool, notificationId: string, now: Date): Promise<Date | null> {
   try {
     return await withTransaction(pool, (client) => findSleepMuteUntil(client, now));
@@ -104,13 +90,8 @@ const defaultPushSenders: PushSenders = {
 };
 
 /**
- * Whether a notification of this policy is pushed to its user under these preferences, and at which
- * APNs interruption level (issue #1443). `null` means no push and no delivery rows. Approvals follow
- * their category switch and are `time-sensitive`. Invitations and reminders follow their switches and
- * are `active`. Problems follow `problemsLevel` by severity: `critical` passes only critical, `all`
- * passes critical and warning, `off` passes nothing. The summary switch only sets the level, so with
- * it on a critical problem is `time-sensitive` and a warning is `passive`; with it off both are
- * `active`. `info` never reaches a push because its policy has `push: false`.
+ * The APNs interruption level, or `null` for no push and no delivery rows. For problems, the
+ * summary switch only changes the level, never whether the push is sent.
  */
 export function pushInterruptionLevelFor(
   policy: NotificationKindPolicy,
@@ -142,13 +123,12 @@ function problemsLevelIncludes(level: NotificationProblemsLevel, severity: Notif
   }
 }
 
-/** The severities a `semp_problem` notification may carry in its payload: a Semp problem is never `info`. */
+/** A Semp problem is never `info`. */
 const PAYLOAD_PROBLEM_SEVERITIES = ["critical", "warning"] as const;
 
 /**
- * The fixed policy this notification is pushed under. A `semp_problem` has no fixed severity: its
- * `payload.severity` is the stored problem's severity, written by `raiseProblem` (issue #1466). A
- * payload without a known severity is a broken write, so the job throws rather than guess.
+ * A `semp_problem` takes its severity from `payload.severity`; a missing or unknown one is a broken
+ * write, so the job throws rather than guess.
  */
 function policyForNotification(notification: NotificationRow): NotificationKindPolicy {
   const policy = policyForKind(notification.kind);
@@ -166,20 +146,13 @@ function policyForNotification(notification: NotificationRow): NotificationKindP
   };
 }
 
-/** The APNs category the app registers the Approve, Reject and Open actions of an approval push against. */
+/** Must match the category the app registers its Approve/Reject/Open actions under. */
 const APPROVAL_PUSH_CATEGORY = "APPROVAL_REQUEST";
 
-/** The APNs category the app registers the Accept, Maybe and Decline actions of a calendar invitation push against. */
+/** Must match the category the app registers its Accept/Maybe/Decline actions under. */
 const CALENDAR_INVITATION_PUSH_CATEGORY = "CALENDAR_INVITATION";
 
-/**
- * The APNs-only fields of this notification's push: for an approval notification the action category and the id
- * of the request, which is the notification's `source_id` (issue #1831); for a calendar invitation notification
- * the action category and the id of the invitation item, also its `source_id`, as `invitation_id` (issue
- * gh-1954). Any other notification, an `approval_pending` one whose source is not an approval request and a
- * `calendar_invitation` one whose source is not an item, gets none. Only ids go on the wire: the body of the push
- * is the one rendered at write time (issue #1773).
- */
+/** Only ids go on the wire; the visible body is the one rendered at write time. */
 function apnsFieldsFor(notification: NotificationRow): NotificationApnsFields | undefined {
   if (notification.kind === "approval_pending" && notification.sourceTable === "approval_requests") {
     return { category: APPROVAL_PUSH_CATEGORY, approvalRequestId: notification.sourceId };
@@ -194,48 +167,21 @@ export interface HandleNotificationFanoutInput {
   notificationId: string;
 }
 
-/** What the handler takes from outside: the push senders and, for tests, a clock. */
 export interface NotificationFanoutDependencies extends PushSenders {
-  /** The clock of the sleep-window check (issue #1794). Production passes none and gets the real time. */
+  /** Clock seam for the sleep-window check. */
   now?: () => Date;
 }
 
 /**
- * The `notificationFanout` job's handler (issue #151): loads every active registration for the
- * notification's user and dispatches each through its channel's adapter. Before any registration is
- * loaded, the user's preferences (the stored row, or the defaults without one) and the kind's policy
- * decide whether this notification is pushed at all (issue #1443, `pushInterruptionLevelFor`). When
- * it is not, the job returns without claiming delivery rows; the notification row itself stays, so
- * the in-app list still shows it. Preferences are read when the job runs, so a change made after the
- * notification was enqueued is honored.
+ * Preferences are read when the job runs, so later changes are honored; a filtered notification
+ * stays in the in-app list. Non-approval pushes inside the sleep window are re-enqueued for the
+ * wake time, which re-checks (a wake time moved earlier does not send earlier).
  *
- * A notification that passes the preference filter and is not of category `approvals` is then
- * checked against the user's sleep window (issue #1794, `findSleepMuteUntil`). Inside the window
- * the job enqueues the same task for the wake time and returns without loading registrations,
- * claiming delivery rows or sending; the notification row is untouched. The job that runs at the
- * wake time makes the same check, so a wake time moved later in the meantime holds the push once
- * more, and a wake time moved earlier does not send it earlier. A failed check does not hold.
- * That job is a second job for the same notification; the decision record
- * `2026-11-12-a-push-inside-the-sleep-window-is-held-by-a-deferred-fan-out-job` names the case in
- * which it can run at the same time as the first one.
- *
- * The payload of every registration carries the user's badge (issue #1891, `computeBadgeForUser`), computed
- * once per job after the checks above, so a held or filtered notification costs no badge query.
- *
- * `push_deliveries` is the durable per-(notification, registration) dedup key the issue's
- * Task requires: `claimPushDeliveryTargets` claims a row per active registration exactly once (`ON
- * CONFLICT DO NOTHING` on every retry), and only a delivery that is still neither delivered nor
- * permanently failed is ever dispatched — so a redelivered/retried queue job can never send the
- * same (notification, registration) pair twice.
- *
- * A transient failure on any registration is collected and, after every other pending
- * registration has still been attempted, rethrown so graphile-worker retries the whole job. A
- * permanent one (provider 404/410/BadDeviceToken) invalidates just that registration via #150's
- * `revokePushSubscriptionByProviderInvalidation` and is never retried. A `not-configured` result
- * (issue #703, the server having no usable credentials for the channel at all) also marks the
- * delivery permanently failed, but never revokes the registration — the gap is the server's, not
- * a verdict on this device/subscription — and logs one warning per job and channel instead of
- * letting the job retry ten times against a channel that will never become configured mid-retry.
+ * `push_deliveries` is the durable per-(notification, registration) dedup key, so a retried job
+ * never sends a pair twice. Transient failures are collected and rethrown after every pending
+ * registration was attempted. A permanent failure revokes that registration. `not-configured` is
+ * the server's gap, not the device's: it fails the delivery permanently without revoking, and logs
+ * once per channel instead of retrying a channel that cannot become configured mid-retry.
  */
 export async function handleNotificationFanoutTask(
   pool: Pool,
@@ -275,8 +221,7 @@ export async function handleNotificationFanoutTask(
   const statuses = await withTransaction(pool, (client) => getPushDeliveryStatuses(client, notification.id));
   const statusByRegistrationId = new Map(statuses.map((status) => [status.pushSubscriptionId, status]));
 
-  // One badge per job, computed when the push is about to go out: every registration of the user gets the same
-  // number, and a retry of the job computes it again (issue #1891).
+  // Computed after the filters so a held or filtered notification costs no badge query.
   const badge = await withTransaction(pool, (client) => computeBadgeForUser(client, notification.userId));
   const apns = apnsFieldsFor(notification);
   const payload: NotificationPushPayload = {

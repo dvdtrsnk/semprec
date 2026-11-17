@@ -8,26 +8,20 @@ import type { CalendarTimelineEntry, CalendarTimelineItem } from "./timelineSour
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
-/** The days one call of `readCalendarTimeline` covers. */
 const WINDOW_DAYS = 31;
-/** The days one request scans, the day it starts on included. */
 const SCAN_HORIZON_DAYS = 366;
-/** An agenda ends this many years from its `from`. */
 const AGENDA_YEARS = 5;
-/** The longest `cursor` value that is decoded. */
 const MAX_CURSOR_LENGTH = 1024;
 
 /** The first and the last day `isCalendarDate` accepts. */
 const FIRST_CALENDAR_DAY = "0000-01-01";
 const LAST_CALENDAR_DAY = "9999-12-31";
 
-/** `1` for an agenda that goes forward, to later days, and `-1` for one that goes backward. */
 type AgendaStep = 1 | -1;
 
-/** A decoded cursor: a day, `|`, and the id of an item or nothing. */
 const CURSOR_SHAPE = /^(\d{4}-\d{2}-\d{2})\|(.*)$/s;
 
-/** A `nextCursor`: the page after it continues after the item `id` among the items of `day`, or with the whole `day` when `id` is `null`. */
+/** The page after this cursor continues after item `id` of `day`, or with the whole `day` when `id` is `null`. */
 function encodeCursor(day: string, id: string | null): string {
   return Buffer.from(`${day}|${id ?? ""}`).toString("base64url");
 }
@@ -36,7 +30,7 @@ function invalidCursor(): ValidationError {
   return new ValidationError("'cursor' must be a nextCursor of this agenda", { field: "cursor" });
 }
 
-/** Decodes a `nextCursor`. A value of another shape, or one whose day is no calendar date, is refused on `cursor`. */
+/** A value of another shape, or one whose day is no calendar date, is refused on `cursor`. */
 function decodeCursor(raw: string): { day: string; id: string | null } {
   const match =
     raw.length <= MAX_CURSOR_LENGTH && /^[A-Za-z0-9_-]+$/.test(raw)
@@ -48,10 +42,7 @@ function decodeCursor(raw: string): { day: string; id: string | null } {
   return { day, id: id === "" ? null : id };
 }
 
-/**
- * A stored Event or Task. The agenda lists only those: a birthday, a holiday and a sleep night are derived
- * entries of the timeline, and the agenda defines its day, span, order and cursor for stored items alone.
- */
+/** Birthdays, holidays and sleep nights are derived timeline entries; the agenda pages stored items only. */
 function isStoredItem(entry: CalendarTimelineEntry): entry is CalendarTimelineItem {
   return entry.kind === "event" || entry.kind === "task";
 }
@@ -60,15 +51,11 @@ function utcDay(day: string): DateTime {
   return DateTime.fromISO(day, { zone: "utc" });
 }
 
-/** The number of days between two calendar dates, whichever is the earlier one. */
 function daysApart(a: string, b: string): number {
   return Math.abs(utcDay(a).diff(utcDay(b), "days").days);
 }
 
-/**
- * How many days after `from`, in the direction of travel, its agenda ends: five years on, or on the first or
- * last calendar date when that comes sooner.
- */
+/** Five years on, or the first/last calendar date when that comes sooner. */
 function agendaLength(from: string, step: AgendaStep): number {
   const start = utcDay(from);
   const fiveYears = Math.abs(start.plus({ years: step * AGENDA_YEARS }).diff(start, "days").days);
@@ -79,11 +66,8 @@ interface AgendaPageInput {
   from: string;
   step: AgendaStep;
   limit: number;
-  /** The day the page starts on, in days from `from` in the direction of travel. */
   startOffset: number;
-  /** The item of the start day the page continues after; `null` for a page that starts with the whole day. */
   afterId: string | null;
-  /** `agendaLength` of this agenda. */
   lastOffset: number;
 }
 
@@ -93,23 +77,14 @@ interface AgendaPage {
 }
 
 /**
- * One page of the agenda that starts on `from` (issue #1762), read through `readCalendarTimeline` in windows
- * of 31 days. It holds stored Events and Tasks only; the derived entries of the timeline (birthdays, holidays
- * and sleep nights) are left out of every page and of the cursor.
+ * One agenda page of stored Events and Tasks, read through `readCalendarTimeline` in 31-day windows.
  *
- * Every item is shown on one day. Going forward that is its `date`, or `from` when it began before `from`;
- * going backward it is its last day (an Event's `endDate`, else `date`), or `from` when it ends after `from`.
- * The days follow each other in the direction of travel, and the items of one day keep the order the
- * timeline returns them in. A day without an item takes no place.
+ * Each item is shown on one day: going forward its `date` (or `from` when it began earlier), going backward its
+ * last day (or `from` when it ends later). Items of one day keep the timeline's order.
  *
- * The page starts on the day `startOffset` and holds at most `limit` items. With an `afterId` it continues
- * after that item among the items of the start day; when the item is not among them, it starts on the next
- * day in the direction of travel. The scan stops when the page is full, after 366 days, or at the end of the
- * agenda (`lastOffset`), whichever comes first.
- *
- * `nextCursor` is `null` when the scan reached the end of the agenda and the page holds everything found up
- * to it. Else it names the last item of a full page, and for a page that is not full the day after the last
- * scanned one. The caller passes a `startOffset` from 0 to `lastOffset`.
+ * With `afterId` the page continues after that item of the start day, or on the next day when it is not there.
+ * The scan stops when the page is full, after 366 days, or at `lastOffset`. `nextCursor` is `null` only when
+ * the scan reached the end of the agenda.
  */
 async function readAgendaPage(client: PoolClient, input: AgendaPageInput): Promise<AgendaPage> {
   const { from, step, limit, startOffset, afterId, lastOffset } = input;
@@ -134,14 +109,13 @@ async function readAgendaPage(client: PoolClient, input: AgendaPageInput): Promi
     const first = dayAt(step === 1 ? offset : windowEnd);
     const last = dayAt(step === 1 ? windowEnd : offset);
     const timeline = await readCalendarTimeline(client, { from: first, to: last, shape: "full" });
-    // An item that lasts several days is in every window it touches; it is kept in the window of its one day.
+    // A multi-day item is in every window it touches; keep it only in the window of its one day.
     let shown = timeline.items
       .filter(isStoredItem)
       .map((item) => ({ item, day: shownOn(item) }))
       .filter(({ day }) => day >= first && day <= last)
       .sort((a, b) => step * (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
     if (afterId !== null) {
-      // Only the first window holds the start day, which comes first in it; a later window is left as it is.
       const index = shown.findIndex(({ item, day }) => day === startDay && item.id === afterId);
       shown = index === -1 ? shown.filter(({ day }) => day !== startDay) : shown.slice(index + 1);
     }
@@ -160,18 +134,13 @@ async function readAgendaPage(client: PoolClient, input: AgendaPageInput): Promi
   return { items, nextCursor: encodeCursor(dayAt(horizonOffset + 1), null) };
 }
 
-/** The request context of `GET /api/calendar/agenda`: its query string is read from the request URL. */
 interface CalendarAgendaRouteRequestContext {
   req: { url?: string };
 }
 
 /**
- * `GET /api/calendar/agenda?from=YYYY-MM-DD&direction=forward|backward[&limit=1..200][&cursor=...]` (issue
- * #1762): `{ items, nextCursor }` of `readAgendaPage` for the caller's tenant, the stored Events and Tasks in
- * the full shape of the calendar timeline (its derived entries are not agenda items). `from` is a calendar
- * date, `direction` is `forward` or `backward`, `limit` is a whole number from 1 to 200 (50 when it is absent)
- * and `cursor` is absent or has the shape of a `nextCursor` with a day between `from` and the end of the
- * agenda in that direction. Anything else is a 400 `validation_failed` naming the parameter.
+ * `GET /api/calendar/agenda?from=YYYY-MM-DD&direction=forward|backward[&limit=1..200][&cursor=...]`:
+ * `{ items, nextCursor }` for the caller's tenant. An invalid parameter is a 400 `validation_failed` naming it.
  */
 export function createCalendarAgendaRouteHandler(pool: Pool) {
   return async (ctx: CalendarAgendaRouteRequestContext): Promise<{ status: number; body: AgendaPage }> => {

@@ -80,13 +80,10 @@ export { createAreaOverviewRouteHandler } from "../areas/areaOverviewRouteHandle
 
 const AREA_VALUE = { areaValue: true } as const;
 
-/** Items with their own `area` relation pointing at the area (issue #1597). */
+/** Items whose own `area` relation points at the area. */
 const OWN_AREA_FILTER: AreaFilterTemplate = { type: "relation_contains", property: "area", value: AREA_VALUE };
 
-/**
- * Items whose project is in the area, and, when they have no live project, items whose own area is it
- * (issue #1597). `projectKey` is the database's relation to Projects.
- */
+/** Items whose project is in the area or, without a live project, whose own area is it. */
 function projectOrOwnAreaFilter(projectKey: string): AreaFilterTemplate {
   return {
     type: "or",
@@ -99,7 +96,7 @@ function projectOrOwnAreaFilter(projectKey: string): AreaFilterTemplate {
 
 type QuickFilters = NonNullable<ModuleDatabaseDescriptor["quickFilters"]>;
 
-/** `in <property> [values]` — a select or multi-select key among `values` (issue #1647). */
+/** `in <property> [values]` for a select or multi-select key. */
 function inValues(property: string, values: string[]): Record<string, unknown> {
   return { type: "in", property, value: values };
 }
@@ -112,7 +109,7 @@ function chipsWithAll(database: string, chips: [key: string, filter: Record<stri
   ];
 }
 
-/** A relative-date chip on Events `date`, evaluated in the tenant zone at query time (issue #1522). */
+/** Relative-date chip on Events `date`, evaluated in the tenant zone at query time. */
 function eventsDateChip(key: string, preset: string): QuickFilters[number] {
   return {
     key,
@@ -121,10 +118,7 @@ function eventsDateChip(key: string, preset: string): QuickFilters[number] {
   };
 }
 
-/**
- * The user's own projects: system-module projects carry `systemActive` (true, or false once deactivated)
- * and user projects have no such key (issue #1647).
- */
+/** System-module projects carry `systemActive` (true or false); user projects have no such key. */
 const USER_PROJECTS_FILTER = { type: "is_empty", property: "systemActive" };
 
 const PROJECTS_QUICK_FILTERS: QuickFilters = [
@@ -139,11 +133,7 @@ const PROJECTS_QUICK_FILTERS: QuickFilters = [
   { key: "all", labelKey: "quickFilter.projects.all" },
 ];
 
-/**
- * The one project picker's default (issue #1647): user projects that are neither done nor archived. `in`
- * compiles to `= ANY(...)`, which is NULL for a project without a status, so such a project is kept by its
- * own `is_empty` branch. A read hint only: a done project stays a valid relation target.
- */
+/** User projects neither done nor archived; `is_empty` keeps status-less ones (`in` is NULL for them). A read hint only. */
 const PROJECTS_PICKER_FILTER = {
   type: "and",
   nodes: [
@@ -170,18 +160,8 @@ const EVENTS_QUICK_FILTERS: QuickFilters = [
 const DATE_ASCENDING = { property: "date", direction: "asc" } as const;
 
 /**
- * Retrofit manifest (module-contract issue #226) for the ten hardcoded system databases
- * (issue #24): the schema's `task_recurrence` and `blobs` tables (backing
- * Tasks recurrence and generic blob storage) plus `seedTenDatabases.ts`, which actually
- * creates the ten databases below. Each `databases[].key` reuses the database's existing
- * `owner_module_id` (`tenDatabaseKeys.ts`) and `.name` reuses its existing display name
- * (`seedTenDatabases.ts`), so this manifest is a pure structural description of what already
- * exists — loading it creates nothing and changes no stored data. `temporal-switcher` is
- * declared here, not in the views module's manifest, because it is Journal-specific
- * (`temporalSwitcherViewType.ts`), not part of the generic views mechanism. Journal's
- * `defaultViewType` below (module-contract issue #115) is what `seedTenDatabasesInTransaction`
- * reads through `ModuleRegistry.getDatabases()` instead of a hardcoded `moduleId === JOURNAL_MODULE_ID`
- * branch — every other database here defaults to `"table"` by leaving the field unset.
+ * Describes the ten hardcoded databases `seedTenDatabases.ts` creates (plus `task_recurrence` and `blobs`);
+ * loading it creates nothing. Journal's `defaultViewType` is read by the seed; others default to `"table"`.
  */
 export const manifest: ModuleManifest = {
   id: "systemDatabases",
@@ -293,7 +273,7 @@ export const manifest: ModuleManifest = {
       switcherOrder: 7,
       areaFilter: projectOrOwnAreaFilter("projects"),
       quickFilters: chipsWithAll("files", [
-        // "Recent" is the last 30 days as everywhere: `last30`, D-30 through today inclusive (issue #1522).
+        // "Recent" is `last30` (D-30 through today inclusive), as everywhere.
         ["recent", { type: "date_relative", property: "date", preset: "last30" }],
         ["pdf", inValues("type", ["pdf"])],
         ["images", inValues("type", ["jpg"])],
@@ -386,29 +366,23 @@ export const manifest: ModuleManifest = {
     JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
   ],
   linkRules: [
-    // A file's companies are the union of its projects' companies (issue #1653).
+    // A file's companies are the union of its projects' companies.
     {
       key: "fileCompaniesFromProjects",
       source: { databaseKey: PROJECTS_MODULE_ID, propertyKey: "company" },
       target: { databaseKey: FILES_MODULE_ID, propertyKey: "companies" },
       via: { databaseKey: FILES_MODULE_ID, relationKey: "projects" },
     },
-    // A file attached to an Event takes over that Event's project (issue #1756); its company then follows from that
-    // project through `fileCompaniesFromProjects`. Ownership handoff: `Files.projects` stays `owner: user`, and the
-    // `valueLinks` process writes it only while the file's value link for that property is `on`. Nothing is
-    // backfilled. Removing the attachment ends the file's company link (`blobs/eventAttachmentLinkRelease.ts`). See
-    // docs/adr/2026-11-15-an-event-attachments-company-link-ends-with-the-attachment.md.
+    // A file attached to an Event takes over its project (company follows); written by `valueLinks` only while the
+    // value link is `on`. Removing the attachment ends the company link (`blobs/eventAttachmentLinkRelease.ts`).
     {
       key: "fileProjectsFromEvents",
       source: { databaseKey: EVENTS_MODULE_ID, propertyKey: "project" },
       target: { databaseKey: FILES_MODULE_ID, propertyKey: "projects" },
       via: { databaseKey: FILES_MODULE_ID, relationKey: "events" },
     },
-    // A transcript takes over its Event's project and participants, and its company from its project
-    // (issue #1697). Ownership handoff: `Transcripts.project`, `Transcripts.company` and `Transcripts.people`
-    // stay `owner: user`, and the `valueLinks` process writes them only while the item's value link for that
-    // property is `on`. See
-    // docs/adr/2026-11-10-transcript-values-are-inherited-by-link-rules-whichever-process-writes-the-edge.md.
+    // A transcript takes over its Event's project and participants and its project's company. These stay
+    // `owner: user`; `valueLinks` writes them only while the item's value link for the property is `on`.
     {
       key: "transcriptProjectFromEvent",
       source: { databaseKey: EVENTS_MODULE_ID, propertyKey: "project" },
@@ -429,12 +403,8 @@ export const manifest: ModuleManifest = {
       target: { databaseKey: TRANSCRIPTS_MODULE_ID, propertyKey: "company" },
       via: { databaseKey: TRANSCRIPTS_MODULE_ID, relationKey: "project" },
     },
-    // A task that came from an Event's action item takes over that Event's project and participants
-    // (issue #1724). Ownership handoff: `Tasks.project` (the inverse of `Projects.tasks`) and `Tasks.people` stay
-    // `owner: user`, and the `valueLinks` process writes them only while the item's value link for that property
-    // is `on`. The removal of the `sourceEvents` edge detaches the Event from both links, whatever their state
-    // (`tasks/taskSourceEventLinkDetach.ts`). See
-    // docs/adr/2026-11-11-action-item-tasks-inherit-project-and-people-by-link-rules.md.
+    // A task from an Event's action item takes over its project and participants via `valueLinks` while linked;
+    // removing `sourceEvents` detaches both (`tasks/taskSourceEventLinkDetach.ts`).
     {
       key: "taskProjectFromEvent",
       source: { databaseKey: EVENTS_MODULE_ID, propertyKey: "project" },
@@ -449,11 +419,7 @@ export const manifest: ModuleManifest = {
       via: { databaseKey: TASKS_MODULE_ID, relationKey: "sourceEvents" },
       valueFilter: { omit: { databaseKey: SYSTEM_SETTINGS_MODULE_ID, propertyKey: "selfPerson" } },
     },
-    // A file attached to a task takes over that task's project (issue #1702). Ownership handoff:
-    // `Files.projects` stays `owner: user`, and the `valueLinks` process writes it only while the file's value
-    // link for that property is `on`. A file attached to two tasks holds the projects of both; a file that
-    // already has a project of its own when it is attached keeps it and gets no link. Nothing is backfilled. See
-    // docs/adr/2026-11-15-a-files-projects-follow-its-tasks-by-a-link-rule.md.
+    // A file attached to a task takes over its project via `valueLinks` while linked; a file with its own project keeps it.
     {
       key: "fileProjectsFromTasks",
       source: { databaseKey: TASKS_MODULE_ID, propertyKey: "project" },
@@ -481,8 +447,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/projects/:id/agent-guidance/drift",
       handlerExport: "createProjectGuidanceDriftReadRouteHandler",
-      // Serves the AGENT page's drift cards: the project's active findings together with the
-      // guidance version they are resolved against, which no generic item read returns.
+      // The AGENT page's drift cards: active findings with the guidance version they resolve against.
       justification: "single-consumer-read",
     },
     {
@@ -497,7 +462,7 @@ export const manifest: ModuleManifest = {
       method: "PUT",
       path: "/api/tasks/:id/recurrence",
       handlerExport: "createTaskRecurrenceSetRouteHandler",
-      // The task's series row and its series properties change together under the task and series locks (issue #1665).
+      // The series row and the task's series properties change together under the task and series locks.
       justification: "transactional-semantics",
     },
     {
@@ -505,7 +470,7 @@ export const manifest: ModuleManifest = {
       method: "DELETE",
       path: "/api/tasks/:id/recurrence",
       handlerExport: "createTaskRecurrenceClearRouteHandler",
-      // Deactivating the series and clearing the task's series properties commit together (issue #1665).
+      // Deactivating the series and clearing the task's series properties commit together.
       justification: "transactional-semantics",
     },
     {
@@ -513,7 +478,7 @@ export const manifest: ModuleManifest = {
       method: "PATCH",
       path: "/api/tasks/series/:seriesId",
       handlerExport: "createTaskSeriesPatchRouteHandler",
-      // The series template and its open occurrences change together under the occurrence and series locks (issue #1667).
+      // The series template and its open occurrences change together under the occurrence and series locks.
       justification: "transactional-semantics",
     },
     {
@@ -521,7 +486,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/tasks/series/:seriesId/occurrences/:date",
       handlerExport: "createTaskOccurrenceMaterializeRouteHandler",
-      // Finding or creating the occurrence's item and writing it commit together under the item and series locks (issue #1720).
+      // Finding or creating the occurrence's item and writing it commit together under the item and series locks.
       justification: "transactional-semantics",
     },
     {
@@ -529,8 +494,8 @@ export const manifest: ModuleManifest = {
       method: "PUT",
       path: "/api/tasks/:id/host-events/:eventId",
       handlerExport: "createTaskHostEventPutRouteHandler",
-      // Writes a system-owned edge with metadata the server fills (`addedAt`), which the generic relation
-      // endpoint refuses for this relation and cannot fill (issue #1764).
+      // Writes a system-owned edge with server-filled metadata (`addedAt`), which the generic relation endpoint
+      // refuses and cannot fill.
       justification: "transactional-semantics",
     },
     {
@@ -538,7 +503,7 @@ export const manifest: ModuleManifest = {
       method: "DELETE",
       path: "/api/tasks/:id/host-events/:eventId",
       handlerExport: "createTaskHostEventRemoveRouteHandler",
-      // Removes a system-owned edge, which the generic relation endpoint refuses for this relation (issue #1764).
+      // Removes a system-owned edge, which the generic relation endpoint refuses.
       justification: "transactional-semantics",
     },
     {
@@ -546,8 +511,7 @@ export const manifest: ModuleManifest = {
       method: "DELETE",
       path: "/api/tasks/:id/host-events",
       handlerExport: "createTaskHostEventsClearRouteHandler",
-      // Every host event edge of the task is removed and the task's new date and time are written in one
-      // transaction, which the generic endpoints cannot express (issue #1764).
+      // Removes every host event edge and writes the task's new date and time in one transaction.
       justification: "transactional-semantics",
     },
     {
@@ -569,8 +533,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/transcriptions",
       handlerExport: "createCreateTranscriptionRouteHandler",
-      // The existing-job check and the enqueue must commit together (issue #180's dedup
-      // guarantee), a shape the generic item-write endpoint can't express.
+      // The existing-job check and the enqueue must commit together (dedup).
       justification: "transactional-semantics",
     },
     {
@@ -578,8 +541,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/transcriptions/:id/rerun",
       handlerExport: "createRerunTranscriptionRouteHandler",
-      // The `locked` check and the enqueue must commit together (issue #186: a locked row is never
-      // rerun), and the route writes no item, so the generic item-write endpoint can't express it.
+      // The `locked` check and the enqueue commit together (a locked row is never rerun); no item is written.
       justification: "transactional-semantics",
     },
     {
@@ -587,8 +549,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/transcripts",
       handlerExport: "createTranscriptListRouteHandler",
-      // Shaped for exactly one consumer, the recordings lists: one statement joins each transcript with
-      // its event, pairing card, open speaker cards and automation state, which the generic query cannot.
+      // The recordings lists: joins each transcript with its event, pairing card, open speaker cards and
+      // automation state in one statement.
       justification: "single-consumer-read",
     },
     {
@@ -603,8 +565,7 @@ export const manifest: ModuleManifest = {
       method: "DELETE",
       path: "/api/transcripts/:id",
       handlerExport: "createTranscriptDeleteRouteHandler",
-      // The transcript, its source Files item and its open cards change together in one
-      // transaction (issue #1642), a shape the generic item delete cannot express.
+      // The transcript, its source Files item and its open cards change together in one transaction.
       justification: "transactional-semantics",
     },
     {
@@ -612,9 +573,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/transcripts/:id/speakers",
       handlerExport: "createTranscriptSpeakersRouteHandler",
-      // Shaped for exactly one consumer, a transcript's speaker labels: it joins the transcript's
-      // computed segment keys with its `speakers` edge metadata and the mapped People's names,
-      // which no generic item read returns together.
+      // A transcript's speaker labels: computed segment keys joined with `speakers` edge metadata and People names.
       justification: "single-consumer-read",
     },
     {
@@ -622,8 +581,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/transcript-summaries",
       handlerExport: "createTranscriptSummariesRouteHandler",
-      // Shaped for exactly one consumer, the journal's day: one statement counts the transcripts of
-      // each of the day's events, which the transcript list answers for one event per request.
+      // The journal day: counts the transcripts of each of the day's events in one statement.
       justification: "single-consumer-read",
     },
     {
@@ -631,8 +589,8 @@ export const manifest: ModuleManifest = {
       method: "PUT",
       path: "/api/transcripts/:id/action-items/:actionItemId/state",
       handlerExport: "createTranscriptActionItemStateRouteHandler",
-      // The existence check of the action item, the owner lookup and the state write commit together
-      // under the transcript's row lock (issue #1754); the state is no item property.
+      // Action-item check, owner lookup and state write commit together under the transcript's row lock; the
+      // state is no item property.
       justification: "transactional-semantics",
     },
     {
@@ -640,9 +598,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/events/:id/people",
       handlerExport: "createListEventPeopleRouteHandler",
-      // Shaped for exactly one consumer, an Event's participant list (issue #1757): it joins the Event's
-      // `people` edges and their metadata with each person's name, relationship and addresses, which no
-      // generic item read returns together.
+      // An Event's participant list: `people` edges and metadata joined with each person's name, relationship
+      // and addresses.
       justification: "single-consumer-read",
     },
     {
@@ -650,8 +607,8 @@ export const manifest: ModuleManifest = {
       method: "PUT",
       path: "/api/events/:id/people",
       handlerExport: "createReplaceEventPeopleRouteHandler",
-      // The diff of the participant edges and the invitation jobs it queues commit together under the Event's
-      // row lock, and the invitations are written with the system writer kind (issue #1790).
+      // The participant-edge diff and the invitation jobs commit together under the Event's row lock; the
+      // invitations use the system writer kind.
       justification: "transactional-semantics",
     },
     {
@@ -659,8 +616,8 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/events/:id/people/:personId/invite",
       handlerExport: "createInviteEventPersonRouteHandler",
-      // The pending invitation on the person's edge, the organizer edge when it is missing and the `REQUEST`
-      // job commit together under the Event's row lock (issue #1790).
+      // The pending invitation, the missing organizer edge and the `REQUEST` job commit together under the
+      // Event's row lock.
       justification: "transactional-semantics",
     },
     {
@@ -668,8 +625,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/events/:id/tasks",
       handlerExport: "createEventTasksRouteHandler",
-      // Shaped for exactly one consumer, an Event's task rows (issue #1801): the tasks that sit in the Event, each with
-      // its state in relation to this Event, and the open and total counts, which no generic read returns.
+      // An Event's task rows: each task's state relative to the Event plus open and total counts.
       justification: "single-consumer-read",
     },
     {
@@ -677,7 +633,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/calendar/items/:id/duplicate",
       handlerExport: "createDuplicateCalendarItemRouteHandler",
-      // The copy and its edges commit together under the source's row lock, with the request's idempotency key (issue gh-1796).
+      // The copy and its edges commit together under the source's row lock, with the request's idempotency key.
       justification: "transactional-semantics",
     },
     {
@@ -685,7 +641,8 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/events/series/:seriesId/occurrences/:date",
       handlerExport: "createMaterializeEventOccurrenceRouteHandler",
-      // The existence check, the copy of the series Event and its edges commit together under the occurrence's advisory lock (issue gh-1843).
+      // The existence check, the copy of the series Event and its edges commit together under the occurrence's
+      // advisory lock.
       justification: "transactional-semantics",
     },
     {
@@ -693,9 +650,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/areas/:id/overview",
       handlerExport: "createAreaOverviewRouteHandler",
-      // Shaped for exactly one consumer, the head of an area's page (issue #1760): the area's project and
-      // task counts and its upcoming tasks and events, reached through the area's projects and read in one
-      // transaction, which no generic query returns together.
+      // The head of an area's page: project and task counts and upcoming tasks and events, read in one transaction.
       justification: "single-consumer-read",
     },
     {
@@ -703,8 +658,8 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/transcripts/:id/action-items/:actionItemId/task",
       handlerExport: "createTranscriptActionItemTaskRouteHandler",
-      // The check for a live task of the action item, the task with its `sourceEvents` edge and the
-      // `added` state commit together under the transcript's row lock (issue #1767).
+      // The live-task check, the task with its `sourceEvents` edge and the `added` state commit together under
+      // the transcript's row lock.
       justification: "transactional-semantics",
     },
     {
@@ -712,8 +667,7 @@ export const manifest: ModuleManifest = {
       method: "DELETE",
       path: "/api/transcripts/:id/action-items/:actionItemId/task",
       handlerExport: "createTranscriptActionItemTaskRemoveRouteHandler",
-      // The task's move to the Trash and the removal of the `added` state commit together under the
-      // transcript's row lock (issue #1767).
+      // Trashing the task and removing the `added` state commit together under the transcript's row lock.
       justification: "transactional-semantics",
     },
     {
@@ -721,9 +675,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/events/:id/transcript-action-items",
       handlerExport: "createEventTranscriptActionItemsRouteHandler",
-      // Shaped for exactly one consumer, the task proposals of an Event (issue #1767): it joins the
-      // rendered action items of every transcript of the Event with their states and the tenant's own
-      // person, which no generic item read returns.
+      // An Event's task proposals: every transcript's rendered action items with their states and the tenant's
+      // own person.
       justification: "single-consumer-read",
     },
     {
@@ -731,8 +684,8 @@ export const manifest: ModuleManifest = {
       method: "PUT",
       path: "/api/transcripts/:id/speakers/:speaker",
       handlerExport: "createTranscriptSpeakerAssignRouteHandler",
-      // The removal of the key's old edge, the new edge, the Event participant edge and the settling of
-      // the speaker's card commit together under the transcript's row lock (issue #1770).
+      // Removing the key's old edge, the new edge, the Event participant edge and settling the speaker's card
+      // commit together under the transcript's row lock.
       justification: "transactional-semantics",
     },
     {
@@ -740,9 +693,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/transcripts/:id/speaker-candidates",
       handlerExport: "createTranscriptSpeakerCandidatesRouteHandler",
-      // Shaped for exactly one consumer, the speaker picker (issue #1770): it joins the participants of the
-      // transcript's Event with their invitation state, the speaker each is mapped to and the tenant's own
-      // person, which no generic item read returns.
+      // The speaker picker: the Event's participants with invitation state, mapped speaker and the tenant's own person.
       justification: "single-consumer-read",
     },
     {
@@ -750,11 +701,9 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/calendar/reminders",
       handlerExport: "createRemindersFeedRouteHandler",
-      // Shaped for exactly one consumer, the phone's local scheduler (issue gh-1858): it answers what fires in the next
-      // hours by computing each Event's and Task's fire time with its calendar's `notify`, which no generic query returns.
+      // The phone's local scheduler: what fires in the next hours, from each Event's and Task's calendar `notify`.
       justification: "single-consumer-read",
     },
   ],
-  // The Inbox card editors of the system databases (issue #1825), declared in `systemDatabasesEditorSchemas.ts`.
   editorSchemas: SYSTEM_DATABASES_EDITOR_SCHEMAS,
 };

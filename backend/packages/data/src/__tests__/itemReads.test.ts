@@ -86,16 +86,15 @@ describe("choke-point itemReads", () => {
       const midDb = await chokePoint.createInlineDatabase({ name: "Mid", parentItemId: rootItem.id });
       const midItem = await chokePoint.createItem({ databaseId: midDb.id, properties: {} });
 
-      // Only reachable via corrupted data, not through the choke-point's own API — closes the
-      // loop root -> mid -> root, which `getItemPath`'s while loop must not spin on forever.
+      // Only reachable via corrupted data: closes the loop root -> mid -> root, which `getItemPath` must not
+      // spin on.
       await pool.query("UPDATE databases SET parent_item_id = $1 WHERE id = $2", [midItem.id, rootDb.id]);
 
       const path = await chokePoint.getItemPath(rootItem.id);
       expect(path.length).toBeGreaterThan(0);
       expect(path.length).toBeLessThanOrEqual(3);
-      // Load-bearing for `itemsHandler.ts`'s GET route, which derives the requested item from
-      // `path.at(-1)` rather than a separate lookup: the chain must still end with the item that
-      // was actually asked for, even when the cycle guard cuts the walk short.
+      // `itemsHandler.ts` derives the requested item from `path.at(-1)`, so the chain must still end with the
+      // requested item when the cycle guard cuts the walk short.
       expect(path.at(-1)?.id).toBe(rootItem.id);
     });
   });

@@ -9,18 +9,9 @@ const AGENT_GUIDANCE_DRIFT_HEARTBEAT_NAME = "Detect agent guidance drift";
 const AGENT_GUIDANCE_DRIFT_RULE = { kind: "dailyTime", at: "04:30" } as const;
 
 /**
- * Concrete `PoolClient` implementation of `@semprec/shared`'s `GuidanceHeartbeatStore`
- * (issue #85), replacing #214's no-op placeholder. Persists the exact canonical fields the issue
- * specifies on every project's `core.agentGuidanceDrift` heartbeat, relying on the
- * partial unique index `project_heartbeats_guidance_drift_unique` — `(project_item_id, action_id)
- * WHERE action_id = 'core.agentGuidanceDrift'` — to make this upsert race-safe against concurrent
- * installs or repeated guidance writes for the same project.
- *
- * `next_fire_at` is only recomputed when it would actually change: freshly computing it from
- * "now" against the fixed `dailyTime` rule is naturally idempotent (it keeps returning the same
- * upcoming occurrence until that occurrence passes), so the `CASE` below only replaces the stored
- * value when the row's `rule`/`enabled` no longer match the canonical target or the freshly
- * computed occurrence actually differs from what's stored — never just because this ran again.
+ * The upsert is race-safe through the partial unique index `project_heartbeats_guidance_drift_unique`. Recomputing
+ * `next_fire_at` from now is idempotent for the fixed `dailyTime` rule, and the `CASE` replaces it only when the rule,
+ * `enabled` or the computed occurrence actually differ.
  */
 export const guidanceDriftHeartbeatStore: GuidanceHeartbeatStore<PoolClient> = {
   async disableDriftHeartbeat(tx, projectItemId) {

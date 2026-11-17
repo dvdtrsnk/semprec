@@ -16,35 +16,28 @@ import {
 } from "./proposalEnvelope.js";
 import { SINGLE_STEP_REF } from "./proposalOverrides.js";
 
-/**
- * The select options a `database` proposal creates when its card is confirmed (issue gh-1994,
- * docs/adr/2026-11-15-a-database-proposal-may-create-select-options-when-it-is-confirmed.md). The envelope lists them
- * in `newOptions`, and a value of `properties` names one by its label as `{ newOption: "<label>" }` in the place of an
- * option key. The validation here is the one the Inbox tick, a revise and the confirm all run through
- * `assertValidProposalEnvelope`; the creation is the confirm's.
- */
+// Select options a `database` proposal creates on confirm: listed in `newOptions` and named by a property value as
+// `{ newOption: "<label>" }` in place of an option key. Validation runs in tick, revise and confirm via
+// `assertValidProposalEnvelope`; only the confirm creates.
 
 type PropertiesByKey = ReadonlyMap<string, PropertyRow>;
 
-/** A new option of an envelope as the add of the option checks it: the property it joins, its trimmed label, its color in upper case. */
 interface ParsedNewOption {
   property: PropertyRow;
   label: string;
   color?: string;
 }
 
-/** The label and the color of an option as `property.option.add` accepts them: 1 to 60 characters a `jsonb` value can hold, `#RRGGBB`. */
 const newOptionInputSchema = PropertyOptionAddInputSchema.pick({ label: true, color: true });
 
 const newOptionValueSchema = z.strictObject({ newOption: z.string() });
 
-/** The trimmed label a `{ newOption: "<label>" }` value names; `null` for any other value. */
 function newOptionLabelOf(value: unknown): string | null {
   const parsed = newOptionValueSchema.safeParse(value);
   return parsed.success ? parsed.data.newOption.trim() : null;
 }
 
-/** Refuses `newOptions` on an envelope that cannot carry it: only a single-step `database` envelope creates the one item whose values name the options. */
+/** Only a single-step `database` envelope may carry `newOptions`. */
 export function assertValidEnvelopeNewOptionsPlacement(envelope: ProposalEnvelope): void {
   if (envelope.newOptions === undefined) return;
   if (envelope.entityKind !== "database") {
@@ -57,7 +50,6 @@ export function assertValidEnvelopeNewOptionsPlacement(envelope: ProposalEnvelop
   }
 }
 
-/** At most `MAX_PROPOSAL_NEW_OPTIONS` options, each on a select or multi_select property of the target with a valid label and color, none twice. */
 function parseNewOptions(options: readonly ProposalNewOption[], propertiesByKey: PropertiesByKey): ParsedNewOption[] {
   if (options.length > MAX_PROPOSAL_NEW_OPTIONS) {
     throw new ValidationError(`A proposal creates at most ${MAX_PROPOSAL_NEW_OPTIONS} new options`, {
@@ -96,7 +88,7 @@ function parseNewOptions(options: readonly ProposalNewOption[], propertiesByKey:
   });
 }
 
-/** The declared option a `{ newOption }` value of `propertyKey` names, by its trimmed label; a value that names none is refused on the property. */
+/** Resolves a `{ newOption }` value to its listed option by trimmed label; an unlisted one is refused on the property. */
 function newOptionLookup(options: readonly ParsedNewOption[]): (propertyKey: string, label: string) => ParsedNewOption {
   return (propertyKey, label) => {
     const option = options.find((candidate) => candidate.property.key === propertyKey && candidate.label === label);
@@ -113,10 +105,8 @@ function newOptionLookup(options: readonly ParsedNewOption[]): (propertyKey: str
 }
 
 /**
- * `properties` with each `{ newOption }` value of a select or multi_select property replaced by what `replace` returns
- * for its property key and label: a select value becomes that key (or `null`), a multi_select element becomes that key
- * (or is dropped when it is `null`). Every other value is returned as it is, so a map without a `{ newOption }` value
- * comes back equal.
+ * `properties` with each select/multi_select `{ newOption }` value replaced by `replace(key, label)`; a multi_select
+ * element replaced by `null` is dropped. Other values are returned as they are.
  */
 async function rewriteNewOptionValues(
   properties: Record<string, unknown>,
@@ -148,16 +138,11 @@ async function rewriteNewOptionValues(
 }
 
 /**
- * What a single-step `database` envelope's `newOptions` and `{ newOption }` values must satisfy (issue gh-1994), checked
- * without a write: at most `MAX_PROPOSAL_NEW_OPTIONS` options, each on a select or multi_select property of the target,
- * with a label of 1 to 60 characters and, when given, a `#RRGGBB` color, none listed twice, every `{ newOption }` value
- * naming a listed option, and no option that a value names whose label another option of the property already has
- * (`OptionLabelExistsError`, whose `details.key` is the existing option, so the proposal can use it). A listed option
- * that no value names is not checked for its label: the confirm ignores it, so a card whose value was changed to the
- * existing option (after a person added it, or after the card was reopened) can be confirmed with the list unchanged.
- * The properties are read as the target's row holds them, without a lock; the confirm creates the option on the locked
- * row and refuses a label added since. Returns the envelope's `properties` with each `{ newOption }` value taken out
- * (a select value as `null`), which is what the check of the option keys reads.
+ * Validates `newOptions` and `{ newOption }` values without writing: limits, select/multi_select properties, labels,
+ * colors, no duplicates, every value naming a listed option, and no named option whose label already exists on the
+ * property (`OptionLabelExistsError` with `details.key`, so the proposal can use it). Unnamed listed options are not
+ * label-checked: confirm ignores them, so a card switched to the existing option stays confirmable. Reads unlocked;
+ * the confirm re-checks on the locked row. Returns `properties` with `{ newOption }` values removed (select as `null`).
  */
 export async function assertValidEnvelopeNewOptions(
   envelope: ProposalEnvelope,
@@ -180,12 +165,10 @@ export async function assertValidEnvelopeNewOptions(
   return properties;
 }
 
-/** What a `{ newOption }` value of `propertyKey` with `label` is called when the options are compared: the property key and the trimmed label. */
 function newOptionIdentity(propertyKey: string, label: string): string {
   return JSON.stringify([propertyKey, label.trim()]);
 }
 
-/** The identity of every `{ newOption }` value in `properties`, a select value or an element of a multi_select array, whatever the property's type. */
 function namedNewOptionIdentities(properties: Record<string, unknown>): Set<string> {
   const identities = new Set<string>();
   for (const [key, value] of Object.entries(properties)) {
@@ -198,14 +181,9 @@ function namedNewOptionIdentities(properties: Record<string, unknown>): Set<stri
 }
 
 /**
- * `next`, the envelope a revise of a card writes, with the new options of the card's previous assistant envelope
- * carried over (issue gh-1994), as `carryPageSections` carries the page sections. A revise replaces the whole envelope
- * with one the caller composed from properties alone, and a revised `properties` that still holds a `{ newOption }`
- * value would be refused for naming an option `newOptions` does not list. Carried are the previous options that a
- * value of `next.properties` still names, and only when the revision keeps the destination: `next` lists none of its
- * own and both envelopes are single-step `database` envelopes with the same `target`. `previous` is the stored
- * envelope as read from the card (`aiProposal`, else `proposal`); one that is absent or does not parse carries
- * nothing. The inputs are not changed.
+ * `next` (a revise's envelope, composed from properties alone) with the previous assistant envelope's new options
+ * still named by its values carried over; otherwise those values would be refused. Only when the revision keeps the
+ * destination: `next` lists none of its own and both are single-step `database` envelopes with the same `target`.
  */
 export function carryNewOptions(previous: unknown, next: ProposalEnvelope): ProposalEnvelope {
   if (next.newOptions !== undefined || next.entityKind !== "database" || next.operations !== undefined) return next;
@@ -220,7 +198,7 @@ export function carryNewOptions(previous: unknown, next: ProposalEnvelope): Prop
   return carried.length === 0 ? next : { ...next, newOptions: carried };
 }
 
-/** The key of the option of its property that each listed new option of `envelope` now matches by label, by `newOptionIdentity`. */
+/** The existing option key each listed new option of `envelope` now matches by label, keyed by `newOptionIdentity`. */
 async function existingKeysOfNewOptions(client: PoolClient, envelope: ProposalEnvelope): Promise<Map<string, string>> {
   const found = new Map<string, string>();
   if (envelope.entityKind !== "database" || envelope.operations !== undefined || !envelope.newOptions?.length) {
@@ -245,7 +223,7 @@ async function existingKeysOfNewOptions(client: PoolClient, envelope: ProposalEn
   return found;
 }
 
-/** `properties` with each `{ newOption }` value whose identity is in `keys` replaced by that key; a multi_select element that becomes a key it already holds is dropped. */
+/** Replaces `{ newOption }` values whose identity is in `keys` by that key; a duplicate multi_select element is dropped. */
 function adoptKeysInValues(
   properties: Record<string, unknown>,
   keys: ReadonlyMap<string, string>,
@@ -281,14 +259,10 @@ function adoptKeysInEnvelope(envelope: ProposalEnvelope, keys: ReadonlyMap<strin
 }
 
 /**
- * The stored fields of a card that returns to `proposed` when its confirmation is undone (issue gh-1994): the
- * `proposal`, the assistant's `aiProposal` and the manual values `userOverrides`, rewritten so that every listed new
- * option an option of the property now has by its label (the one the undone confirm created, which the undo leaves in
- * the schema) is used by its key: each `{ newOption }` value becomes that key and the option leaves `newOptions`, which
- * is dropped when it is then empty. The card can then be confirmed again, because the envelope no longer asks to create
- * an option that exists, and the item it creates carries the same key. Only the fields that change are returned, so a
- * card without a listed option that now exists yields `{}`. The same rewrite is applied to the three fields, by the
- * keys each envelope's own list matches, so `userEditedKeys` stays what it was.
+ * For a card returning to `proposed` on undo: rewrites `proposal`, `aiProposal` and `userOverrides` so each listed new
+ * option that now exists by label (the undone confirm created it and undo keeps it) is used by key and leaves
+ * `newOptions` (dropped when empty). The card can then be confirmed again with the same key. Returns only changed
+ * fields; each envelope uses its own list, so `userEditedKeys` stays valid.
  */
 export async function adoptCreatedNewOptions(
   client: PoolClient,
@@ -323,15 +297,10 @@ export async function adoptCreatedNewOptions(
 }
 
 /**
- * Adds `option` to its property in `client`'s transaction through the store function behind `property.option.add`
- * (`propertiesStore.addPropertyOption`: the row lock, the label and limit rules, the key) and sends the schema
- * invalidation of the property's database after the commit, as that operation does
- * (docs/adr/2026-11-10-select-options-change-on-a-schema-locked-database.md, section 6). Resolves to the key the
- * option got. Two things differ from the operation, for the reasons in
- * docs/adr/2026-11-15-a-database-proposal-may-create-select-options-when-it-is-confirmed.md: it queues no search
- * reindex of the database, because no item holds the new option and the confirm writes the item that does after the
- * option, in this transaction; and it does not call `chokePoint/propertyOps.ts`, which opens its own transaction and
- * which `inbox/` cannot import without the import cycle `no-choke-point-rollup-cycle` forbids.
+ * Adds `option` through `propertiesStore.addPropertyOption` (row lock, label/limit rules, key) and sends the schema
+ * invalidation after commit, like `property.option.add`. Unlike that operation it queues no search reindex (no item
+ * holds the option yet; the confirm writes it next in this transaction), and it bypasses `chokePoint/propertyOps.ts`,
+ * which opens its own transaction and would create the import cycle `no-choke-point-rollup-cycle` forbids.
  */
 async function addOption(
   client: PoolClient,
@@ -351,12 +320,9 @@ async function addOption(
 }
 
 /**
- * Creates, in the confirm's transaction on `client` and before the item is written, the options that the values of
- * `properties` name as `{ newOption }`, and returns `properties` with each replaced by the key the option got
- * (issue gh-1994). Each listed option is created once, at its first use, through `addOption`, so the
- * rules and the row lock are those of `property.option.add`; an option that no value names is not created, which
- * is how a person who changed the value on the card leaves it out. A failure here or in the item write after it rolls
- * the options back with the confirm. An envelope without `newOptions` comes back unchanged.
+ * In the confirm transaction, before the item write, creates each option a `{ newOption }` value names (once, at first
+ * use) and returns `properties` with those values replaced by the new keys. A listed option no value names is not
+ * created. A later failure rolls the options back with the confirm.
  */
 export async function createEnvelopeNewOptions(
   client: PoolClient,

@@ -23,7 +23,6 @@ let dataPool: Pool;
 let chokePoint: ChokePoint;
 let tenantId: string;
 
-/** Creates one item in `databaseId` and trashes it, both through the choke point. */
 async function trashItem(databaseId: string, properties: Record<string, unknown>): Promise<void> {
   await runInTenant(tenantId, async () => {
     const item = await chokePoint.createItem({ databaseId, properties }, undefined, undefined, { writerKind: "user" });
@@ -31,7 +30,6 @@ async function trashItem(databaseId: string, properties: Record<string, unknown>
   });
 }
 
-/** Answers the list as the adapter calls the route. */
 function list(): Promise<{ status: number; body: unknown }> {
   return runInTenant(tenantId, () =>
     createTrashItemsRouteHandler(dataPool)({
@@ -41,7 +39,6 @@ function list(): Promise<{ status: number; body: unknown }> {
   );
 }
 
-/** Which database names the response carries, in the order of its rows. */
 function databaseNames(body: unknown): string[] {
   if (typeof body !== "object" || body === null || !("items" in body) || !Array.isArray(body.items)) {
     throw new Error("The body has no items");
@@ -54,7 +51,6 @@ function databaseNames(body: unknown): string[] {
   });
 }
 
-/** `GET /api/trash/items` must load the module catalogs only for a system database, and must not keep a failed load. */
 describe("GET /api/trash/items catalog loading (issue gh-1851)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
@@ -80,7 +76,7 @@ describe("GET /api/trash/items catalog loading (issue gh-1851)", () => {
       async () => (await chokePoint.createDatabase({ name: "Movies" })).id,
     );
     await trashItem(databaseId, {});
-    // The choke point writes above may load the registry themselves; only the route's own loads are counted.
+    // The choke point writes above may load the registry themselves; only the route's own loads count.
     loadFullModuleRegistry.mockClear();
 
     const result = await list();

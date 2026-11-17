@@ -22,12 +22,9 @@ import {
 import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 
 /**
- * Load tests (module-contract issue #227) proving each retrofit manifest for the library,
- * mail sync/mailbox, and Inbox pipeline modules actually loads through
- * `ModuleRegistry.loadModule()` and passes its load-time structural validation — never that
- * a `ModuleManifest` object merely type-checks. Each module is loaded into its own registry
- * so a failure in one never masks or is masked by another; the three together also prove
- * none of the three collide with each other on module id/name/database key/worker name.
+ * Each retrofit manifest (library, mail sync/mailbox, Inbox pipeline) loads through
+ * `ModuleRegistry.loadModule()` and passes load-time validation, each in its own registry; together they
+ * prove no collision on module id/name/database key/worker name.
  */
 function manifestPath(fileName: string): string {
   return new URL(`../${fileName}`, import.meta.url).href;
@@ -40,8 +37,8 @@ const INBOX_PATH = manifestPath("inbox/inboxModuleManifest.js");
 const alwaysActive: () => ReadonlySet<string> = () => new Set(["library", "mailSync", "inboxPipeline"]);
 
 describe("library/mail/inbox module manifests (module-contract issue #227)", () => {
-  // Warms the three manifests' cold module-graph imports once, so no test's cost depends on order or `-t` filtering
-  // (#1237): ~1 s idle; a subset of the 7 graphs measured at up to 10.7 s at load ~25 together, so 30 s is ~3x margin.
+  // Warms the three manifests' cold module-graph imports once, so no test's cost depends on order or `-t`
+  // filtering: ~1 s idle, up to 10.7 s measured under load, so 30 s is ~3x margin.
   beforeAll(async () => {
     await Promise.all([LIBRARY_PATH, MAIL_PATH, INBOX_PATH].map((path) => import(path)));
   }, 30_000);
@@ -146,8 +143,8 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
       MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
       MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
     ]);
-    // The module tasks of the mail module are the thread project triage (issue gh-1872) and the thread task people job
-    // (issue gh-1923); the sync and sweep jobs are core's.
+    // The mail module's tasks are the thread project triage and the thread task people job; the sync and
+    // sweep jobs are core's.
     expect(await registry.getTasks()).toEqual([
       {
         moduleId: "mailSync",

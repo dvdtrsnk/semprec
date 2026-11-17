@@ -1,14 +1,11 @@
-// What a mail draft holds as attachments (issue gh-1895): the list the draft's view shows, the Emails items that
-// hold a Files item through `Emails.attachments`, and the soft delete of a discarded draft's own files. Read by
-// `draft.ts` (the view and the discard) and by `mailDraftAttachments.ts` (attach and detach); it imports neither,
-// so the two can import it. It writes only through the choke point's item delete.
+// Draft attachment queries and the discard-time file delete. Imports neither draft.ts nor
+// mailDraftAttachments.ts so both can import it.
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 
-/** One file attached to a draft, as the draft's view lists it. */
 export interface DraftAttachment {
   fileItemId: string;
   blobId: string;
@@ -23,12 +20,7 @@ const attachmentRow = z.object({
   byteSize: z.string().regex(/^[0-9]{1,15}$/),
 });
 
-/**
- * The live Files items attached to the Emails item `$1` through `Emails.attachments`, with the blob each holds
- * (`$2` is the Emails database, `$3` the Files database). The edge is read from the Emails side of its definition,
- * and a Files item whose blob is unknown is not listed: an attachment is only ever created over a stored blob.
- * Fixed SQL; the parameters are ids.
- */
+/** `$1` Emails item, `$2` Emails database, `$3` Files database. Files without a known blob are not listed. */
 const DRAFT_ATTACHMENTS_SQL = `
 SELECT f.id AS "fileItemId", b.id AS "blobId", f.properties->>'name' AS filename, b.byte_size::text AS "byteSize"
 FROM properties p
@@ -41,7 +33,6 @@ JOIN blobs b ON b.tenant_id = p.tenant_id AND b.id::text = f.properties->'file'-
 WHERE p.tenant_id = app_tenant_default() AND p.database_id = $2::uuid AND p.key = 'attachments'
 ORDER BY f.created_at, f.id`;
 
-/** The files attached to draft `draftItemId`, oldest first. */
 export async function listDraftAttachments(
   client: PoolClient,
   ids: { emailsDatabaseId: string; filesDatabaseId: string },
@@ -63,10 +54,7 @@ export async function listDraftAttachments(
   });
 }
 
-/**
- * The Emails items that hold the Files item `fileItemId` through `Emails.attachments`, trashed ones included: a
- * trashed email keeps its edge, and the relation allows a Files item one email only. Fixed SQL.
- */
+/** Trashed emails included: a trashed email keeps its edge, and a file belongs to one email only. */
 const ATTACHMENT_OWNERS_SQL = `
 SELECT (CASE WHEN rd.property_id_a = p.id THEN r.item_a ELSE r.item_b END)::text AS "emailItemId"
 FROM properties p
@@ -75,7 +63,6 @@ JOIN item_relations r ON r.tenant_id = p.tenant_id AND r.relation_definition_id 
   AND (CASE WHEN rd.property_id_a = p.id THEN r.item_b ELSE r.item_a END) = $1::uuid
 WHERE p.tenant_id = app_tenant_default() AND p.database_id = $2::uuid AND p.key = 'attachments'`;
 
-/** The ids of the Emails items the file is attached to, which are none for a file that is attached nowhere. */
 export async function listAttachmentOwners(
   client: PoolClient,
   emailsDatabaseId: string,
@@ -85,21 +72,14 @@ export async function listAttachmentOwners(
   return rows.map((row) => row.emailItemId);
 }
 
-/**
- * Which of the files in `$2` have a relation edge to an item other than `$1`: an email, a project, a task or
- * anything else. Fixed SQL; the parameters are ids.
- */
+/** Files in `$2` with a relation edge to any item other than `$1`. */
 const FILES_RELATED_ELSEWHERE_SQL = `
 SELECT DISTINCT x.id::text AS "fileItemId"
 FROM unnest($2::uuid[]) AS x(id)
 JOIN item_relations r ON r.tenant_id = app_tenant_default()
   AND ((r.item_a = x.id AND r.item_b <> $1::uuid) OR (r.item_b = x.id AND r.item_a <> $1::uuid))`;
 
-/**
- * Which of the files in `$2` were created before the Emails item `$1`: a file that existed before the draft was not
- * uploaded for it, and neither is a copy, which `attachFileToDraft` makes after the draft exists. Fixed SQL; the
- * parameters are ids.
- */
+/** Files in `$2` created before draft `$1`, so not uploaded or copied for it. */
 const FILES_OLDER_THAN_DRAFT_SQL = `
 SELECT x.id::text AS "fileItemId"
 FROM unnest($2::uuid[]) AS x(id)
@@ -114,13 +94,9 @@ export interface DiscardedDraftFilesContext {
 }
 
 /**
- * Soft-deletes the files attached to the draft that belong to it alone, in the caller's transaction: a file
- * the user uploaded for the draft, or a file `attachFileToDraft` created over another message's blob. Both are
- * created after the draft, so a file created before it is one the user already had, and is kept. So is a file that
- * has a relation edge to any item other than the draft, an email, a project or anything else. Files that are not attached to the draft are not listed and are never touched. Each delete goes through the choke point
- * (`itemDeleteWithClient`). Returns the ids it deleted. The draft's own edges are not removed; the draft is trashed
- * by the caller. Decided in
- * docs/adr/2026-11-14-a-mail-draft-attaches-copies-of-held-files-and-trashes-the-files-that-are-its-own.md.
+ * Soft-deletes, in the caller's transaction, the draft's attached files that are its own: created
+ * after the draft and related to no other item. Older or otherwise-related files are kept. Returns
+ * the deleted ids; the caller trashes the draft (see docs/architecture/domain-mail-and-inbox.md#drafts).
  */
 export async function deleteFilesOfDiscardedDraft(
   client: PoolClient,

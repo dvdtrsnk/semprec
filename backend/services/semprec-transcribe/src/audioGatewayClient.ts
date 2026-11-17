@@ -1,16 +1,11 @@
 /**
- * `semprec-transcribe`'s own client for `semprec-ai-gateway`'s `POST /internal/diarize` and
- * `POST /internal/transcribe` (issue #182), mirroring `packages/ai-gateway-client`'s
- * `createHttpAiGatewayClient` — a plain loopback `fetch` with a timeout and a capped response
- * read, kept local to this service since these two routes have no other caller yet. This is the
- * only path from `semprec-transcribe` to an AI provider, per
- * `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`: it never imports a provider SDK
- * or holds a provider API key itself.
+ * Loopback client for the gateway's `/internal/diarize` and `/internal/transcribe`, local to this
+ * service because those routes have no other caller. No provider SDK or key lives here.
  */
 
 import { currentTenantScope } from "@semprec/shared";
 
-/** Carries the caller's own tenant scope across the loopback hop; the gateway validates it and enters that tenant. */
+/** The gateway validates it and enters that tenant. */
 const TENANT_ID_HEADER = "x-semprec-tenant-id";
 
 export interface DiarizationTurn {
@@ -69,14 +64,13 @@ export class AudioGatewayBudgetExceededError extends AudioGatewayCallError {
 }
 
 export interface HttpAudioGatewayClientConfig {
-  /** The port `semprec-ai-gateway` listens on; the client always addresses it over loopback. */
   port: number;
   /** Compared by the gateway against its own `AI_GATEWAY_INTERNAL_TOKEN`. */
   token: string;
 }
 
 const REQUEST_TIMEOUT_MS = 10 * 60_000;
-/** Well above the largest legitimate JSON response (a full transcript's segments); guards against a malformed or adversarial body. */
+/** Well above a full transcript's segments; guards against an adversarial body. */
 const MAX_RESPONSE_BODY_BYTES = 20 * 1024 * 1024;
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -169,10 +163,7 @@ async function post(config: HttpAudioGatewayClientConfig, path: string, body: un
   return readJsonBodyWithSizeCap(res);
 }
 
-/**
- * Whether a non-2xx response is the gateway's budget rejection, as `audioHandler.ts` sends it. A
- * body that can't be read or parsed is just not one: the caller reports the plain HTTP status.
- */
+/** An unreadable body is not a budget rejection; the caller reports the plain HTTP status. */
 async function isBudgetRejection(res: Response): Promise<boolean> {
   if (res.status !== 403) return false;
   let body: unknown;
@@ -185,7 +176,6 @@ async function isBudgetRejection(res: Response): Promise<boolean> {
   return isObject(body) && body.code === "budget_exceeded";
 }
 
-/** The production `AudioGatewayClient`: a loopback HTTP call to `semprec-ai-gateway`'s audio routes. */
 export function createHttpAudioGatewayClient(config: HttpAudioGatewayClientConfig): AudioGatewayClient {
   return {
     async diarize(request: DiarizeRequest): Promise<DiarizationTurn[]> {

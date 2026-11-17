@@ -12,25 +12,20 @@ import {
   type RetainedOverrides,
 } from "./proposalOverrides.js";
 
-/**
- * What a revise does with the user's manual values (issue #1924). Split out of `proposalActions.ts` (issue #1892's
- * `userOverrides`, `userEditedKeys`) to keep that file under the ESLint line cap; this module imports neither
- * `proposalActions.ts` nor the tick's writers.
- */
+// What a revise does with the user's manual values. Imports neither `proposalActions.ts` nor the tick's writers.
 
-/** What a revise needs of the assistant's previous envelope. A stored envelope that is malformed has no destination, and a revise may replace it. */
+/** A malformed stored envelope has no destination, and a revise may replace it. */
 const previousDestinationSchema = z.object({ entityKind: z.string(), target: z.string() });
 
-/** The values of a card that a revise keeps, and the effective envelope they make with the revised assistant envelope. */
 export interface RetainedRevisionValues extends RetainedOverrides {
-  /** The new assistant envelope with the kept values laid over it: what `proposal` holds after the revise. */
+  /** What `proposal` holds after the revise: the new assistant envelope with the kept values laid over it. */
   effective: ProposalEnvelope;
 }
 
 /**
- * Decides which of the card's manual values survive replacing its assistant envelope by `envelope`
- * (`retainOverridesForEnvelope`) and composes the effective envelope from them. The caller validates the effective
- * envelope when `userEditedKeys` is not empty, so a kept value is what confirm writes.
+ * Which manual values survive replacing the assistant envelope with `envelope`, and the effective envelope they make.
+ * The caller validates the effective envelope when `userEditedKeys` is not empty, so a kept value is what confirm
+ * writes.
  */
 export async function retainValuesForRevise(
   client: PoolClient,
@@ -48,7 +43,6 @@ export async function retainValuesForRevise(
         ? RECORDING_PROPERTY_KEYS
         : Object.keys(envelope.properties),
   );
-  // `proposal` stays the effective envelope: the values that stay are laid over the new assistant envelope.
   return { ...retained, effective: composeEffectiveEnvelope(envelope, retained.userOverrides) };
 }
 

@@ -31,7 +31,7 @@ export async function validateSempMessageRefs(
       valid.add(entry.index);
     }
   }
-  // A trace names a live Tasks item of this tenant; unlike a plain item ref a trashed item does not qualify.
+  // Unlike a plain item ref, a trashed Tasks item does not qualify as a trace.
   const traces = refs.flatMap((ref, index) => (ref.kind === "taskTrace" ? [{ ...ref, index }] : []));
   if (traces.length) {
     const { rows } = await client.query<{ ordinal: number }>(
@@ -47,9 +47,8 @@ export async function validateSempMessageRefs(
       valid.add(entry.index);
     }
   }
-  // An occurrence names a series of this tenant whose current owner item is live: soft deletion keeps the recurrence
-  // row until the purge, so the owner is checked. The id is any string on the wire, but `series_id` is a uuid column, so
-  // a string of another shape names no series and is never sent to the cast; a foreign series is simply not visible.
+  // Soft deletion keeps the recurrence row until purge, so the owner item's liveness is checked. `series_id` is a
+  // uuid column, so a non-uuid string is never cast and names no series.
   const occurrences = refs.flatMap((ref, index) =>
     ref.kind === "taskOccurrence" && SERIES_ID_SHAPE.test(ref.seriesId) ? [{ id: ref.seriesId, index }] : [],
   );
@@ -66,8 +65,7 @@ export async function validateSempMessageRefs(
       valid.add(entry.index);
     }
   }
-  // A segment ref names a transcript and a range `transcript.segment.get` could read (issue #1834); the kind's
-  // validator decides each ref over one statement that reads the segments of every transcript named.
+  // One statement reads the segments of every named transcript.
   const segments = refs.flatMap((ref, index) => (ref.kind === "transcriptSegment" ? [{ ref, index }] : []));
   if (segments.length) {
     const accepted = await validateTranscriptSegmentRefs(
@@ -95,7 +93,7 @@ export async function validateSempMessageRefs(
       }
     }
   }
-  // A thread ref names a thread of this tenant, directly or through the alias of a merge; the id is stored as given.
+  // Directly or through a merge alias; the id is stored as given.
   const threads = refs.flatMap((ref, index) => (ref.kind === "mailThread" ? [{ id: ref.threadId, index }] : []));
   if (threads.length) {
     const current = await resolveMailThreadRefIds(
@@ -108,7 +106,6 @@ export async function validateSempMessageRefs(
   const attachments = refs.flatMap((ref, index) =>
     ref.kind === "mailAttachment" ? [{ id: ref.attachmentId, index }] : [],
   );
-  // A run ref without `messageId` names the whole run; one with it names an answer of the run (issue gh-1936).
   const runs = refs.flatMap((ref, index) =>
     ref.kind === "agentRun" && ref.messageId === undefined ? [{ id: ref.agentRunId, index }] : [],
   );

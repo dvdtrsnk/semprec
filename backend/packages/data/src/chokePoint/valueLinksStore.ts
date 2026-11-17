@@ -1,7 +1,6 @@
-// Owns SQL for `value_links` and `value_link_sources` (issue #1403). A link records that the whole
-// value of one property on one item was taken over from other items; no row means the value is the
-// user's own. Both tables are tenant tables: every statement here runs under the caller's tenant
-// scope and never names `tenant_id`, so the column default stamps it and RLS filters it.
+// SQL for `value_links` and `value_link_sources`. A link records that the whole value of one property
+// on one item was taken over from other items; no row means the value is the user's own. Statements
+// never name `tenant_id`: the column default stamps it and RLS filters it.
 import type { PoolClient } from "pg";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
@@ -27,7 +26,6 @@ export type ValueLinkSourceRow =
   | { id: string; linkId: string; kind: "item"; sourceItemId: string; sourcePropertyKey: string }
   | { id: string; linkId: string; kind: "senderDomain"; domain: string; sourcePropertyKey: string };
 
-/** One source of a link to insert; `id` and `linkId` are assigned by the insert. */
 export type ValueLinkSourceInput =
   | { kind: "item"; sourceItemId: string; sourcePropertyKey: string }
   | { kind: "senderDomain"; domain: string; sourcePropertyKey: string };
@@ -93,10 +91,7 @@ function mapValueLinkSourceRow(row: ValueLinkSourceDbRow): ValueLinkSourceRow {
   return { id: row.id, linkId: row.link_id, kind, domain: row.domain!, sourcePropertyKey: row.source_property_key };
 }
 
-/**
- * Inserts a link and its sources. Run it inside the caller's transaction so a failed source leaves
- * no link behind. Used by fixtures today and by link creation (#1593) later.
- */
+/** Inserts a link and its sources; run inside the caller's transaction so a failed source leaves no link. */
 export async function insertValueLink(
   client: PoolClient,
   input: InsertValueLinkInput,
@@ -134,7 +129,6 @@ export async function insertValueLink(
   return { link, sources };
 }
 
-/** Every link of the given items, in one query. */
 export async function listValueLinksByItemIds(client: PoolClient, itemIds: string[]): Promise<ValueLinkRow[]> {
   if (itemIds.length === 0) return [];
   const { rows } = await client.query<ValueLinkDbRow>(
@@ -144,7 +138,7 @@ export async function listValueLinksByItemIds(client: PoolClient, itemIds: strin
   return rows.map(mapValueLinkRow);
 }
 
-/** Every source of the given links, in one query, in a stable order. */
+/** In a stable order. */
 export async function listValueLinkSourcesByLinkIds(
   client: PoolClient,
   linkIds: string[],
@@ -159,9 +153,8 @@ export async function listValueLinkSourcesByLinkIds(
 }
 
 /**
- * Ends the links of the given item and keys that are still `on`, in one statement. A missing row
- * and an already broken row are untouched, so the first writer to end a link stays recorded.
- * Returns the property keys whose state changed.
+ * Ends the given links that are still `on`. Missing and already broken rows are untouched, so the
+ * first writer to end a link stays recorded. Returns the property keys whose state changed.
  */
 export async function breakOnValueLinks(
   client: PoolClient,
@@ -193,9 +186,8 @@ export async function lockOnValueLink(
 }
 
 /**
- * The `on` links of the given item properties, share-locked so that a concurrent unlink, source
- * change or break waits (or, with `nowait`, fails with SQLSTATE 55P03) until the caller's
- * transaction ends. Ordered by link id, so two callers lock in the same order.
+ * Share-locks the `on` links so a concurrent unlink, source change or break waits (or, with `nowait`,
+ * fails with 55P03) until the caller's transaction ends. Ordered by link id so callers lock alike.
  */
 export async function lockOnValueLinksOfProperties(
   client: PoolClient,
@@ -214,7 +206,6 @@ export async function lockOnValueLinksOfProperties(
   return rows.map(mapValueLinkRow);
 }
 
-/** The `on` links that take over a value from the given property of the given item, in a stable order. */
 export async function listOnValueLinksFollowing(
   client: PoolClient,
   sourceItemId: string,
@@ -233,11 +224,7 @@ export async function listOnValueLinksFollowing(
   return rows.map(mapValueLinkRow);
 }
 
-/**
- * The links, in any state, that have an item source naming `sourceItemId`: the places that take over a value from the
- * item (issue #1856). One row per link, so a link with two sources that name the item is listed once. In
- * `(item_id, property_key)` order.
- */
+/** Links in any state with an item source naming `sourceItemId`, once per link, in `(item_id, property_key)` order. */
 export async function listValueLinksBySourceItem(client: PoolClient, sourceItemId: string): Promise<ValueLinkRow[]> {
   const { rows } = await client.query<ValueLinkDbRow>(
     `SELECT l.id, l.item_id, l.property_key, l.rule_key, l.state, l.broken_by, l.broken_at
@@ -252,7 +239,6 @@ export async function listValueLinksBySourceItem(client: PoolClient, sourceItemI
   return rows.map(mapValueLinkRow);
 }
 
-/** Locks a specific link, including a broken one, for a change to its sources. */
 export async function lockValueLink(
   client: PoolClient,
   itemId: string,
@@ -265,7 +251,6 @@ export async function lockValueLink(
   return rows[0] ? mapValueLinkRow(rows[0]) : null;
 }
 
-/** Reactivates the caller-locked link in the caller's transaction. */
 export async function reactivateValueLink(client: PoolClient, linkId: string): Promise<void> {
   const result = await client.query(
     `UPDATE value_links SET state = 'on', broken_by = NULL, broken_at = NULL, updated_at = now()
@@ -275,7 +260,6 @@ export async function reactivateValueLink(client: PoolClient, linkId: string): P
   requireAffectedRows(result, "value link reactivation");
 }
 
-/** Pages active links whose source and rule match, ordered by stable link id. */
 export async function pageValueLinksForSource(
   client: PoolClient,
   input: { ruleKey: string; sourceItemId: string; afterId: string | null; limit: number },
@@ -291,7 +275,6 @@ export async function pageValueLinksForSource(
   return rows.map(mapValueLinkRow);
 }
 
-/** The distinct item sources of the `on` links of one rule, in id order. */
 export async function listOnValueLinkSourceItemIds(client: PoolClient, ruleKey: string): Promise<string[]> {
   const { rows } = await client.query<{ source_item_id: string }>(
     `SELECT DISTINCT s.source_item_id
@@ -303,7 +286,6 @@ export async function listOnValueLinkSourceItemIds(client: PoolClient, ruleKey: 
   return rows.map((row) => row.source_item_id);
 }
 
-/** Adds one item source, idempotently, to a caller-locked link. */
 export async function addValueLinkItemSource(
   client: PoolClient,
   linkId: string,
@@ -319,7 +301,6 @@ export async function addValueLinkItemSource(
   return result.rowCount === 1;
 }
 
-/** Removes an item source from a caller-locked link and reports whether it existed. */
 export async function removeValueLinkItemSource(
   client: PoolClient,
   linkId: string,
@@ -334,11 +315,10 @@ export async function removeValueLinkItemSource(
 }
 
 /**
- * Moves every item source naming `fromItemId` onto `toItemId`, in the caller's transaction (issue #1673: the next
- * instance of a recurring task takes over the sources its predecessor held). Each affected link is locked first,
- * in id order. A source whose link already names `toItemId` for the same property key is removed instead of
- * duplicated. Link states and values are not changed. With `ruleKey`, only the links of that rule are affected. Returns
- * how many sources were moved or merged.
+ * Moves every item source naming `fromItemId` onto `toItemId` (a recurring task's next instance takes
+ * over its predecessor's sources). Locks each affected link first, in id order. A source whose link
+ * already names `toItemId` for the same key is removed instead of duplicated. States and values are
+ * unchanged. With `ruleKey`, only that rule's links. Returns how many sources were moved or merged.
  */
 export async function moveValueLinkItemSources(
   client: PoolClient,
@@ -370,11 +350,7 @@ export async function moveValueLinkItemSources(
   return (merged.rowCount ?? 0) + (moved.rowCount ?? 0);
 }
 
-/**
- * Makes the sources of a caller-locked link exactly `sources` (a module resolver's answer): a stored source that is
- * not in the list is deleted, a listed source that is not stored is inserted, and one that is both stays. Reports
- * whether any source was deleted or inserted.
- */
+/** Makes a caller-locked link's sources exactly `sources`; reports whether anything was deleted or inserted. */
 export async function replaceValueLinkSources(
   client: PoolClient,
   linkId: string,
@@ -411,7 +387,6 @@ export async function replaceValueLinkSources(
   return obsolete.length > 0 || missing.length > 0;
 }
 
-/** Deletes the link of one item property, its sources with it, and reports whether the item had one. */
 export async function deleteValueLinkOfProperty(
   client: PoolClient,
   itemId: string,
@@ -425,9 +400,8 @@ export async function deleteValueLinkOfProperty(
 }
 
 /**
- * Moves the link of `propertyKey` from item `fromItemId` to item `toItemId` (a thread merge, issue gh-1869), keeping its
- * id, state and sources, and reports whether `fromItemId` had one. The caller has deleted the link `toItemId` has
- * for that property, which the unique key of `(item_id, property_key)` would refuse to keep.
+ * Moves a property's link to another item (a thread merge), keeping its id, state and sources. The
+ * caller must already have deleted `toItemId`'s link for that key (unique `(item_id, property_key)`).
  */
 export async function moveValueLinkToItem(
   client: PoolClient,
@@ -441,7 +415,6 @@ export async function moveValueLinkToItem(
   return moved.rowCount === 1;
 }
 
-/** Deletes a caller-locked link after its last source is removed. */
 export async function deleteEmptyValueLink(client: PoolClient, linkId: string): Promise<boolean> {
   const result = await client.query(
     `DELETE FROM value_links l WHERE l.tenant_id = app_tenant_default() AND l.id = $1 AND NOT EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id)`,
@@ -451,10 +424,9 @@ export async function deleteEmptyValueLink(client: PoolClient, linkId: string): 
 }
 
 /**
- * Locks, in item id order and in one statement, the rows of the items of the database owned by module
- * `ownerModuleId` that have a value link with an item source naming `sourceItemId`, in the caller's
- * transaction. A caller that detaches those links calls it before it takes the first link, so it holds
- * the rows the propagation job takes before the links.
+ * Locks, in item id order, the rows of the `ownerModuleId` database's items that have a link sourced
+ * from `sourceItemId`. Call before taking the first link, so rows are held before links as the
+ * propagation job does.
  */
 export async function lockItemRowsOfLinksSourcedFromItem(
   client: PoolClient,
@@ -475,11 +447,9 @@ export async function lockItemRowsOfLinksSourcedFromItem(
 }
 
 /**
- * Removes every item source naming `sourceItemId` (issue #1656), in the caller's transaction. Each
- * affected link is locked first, in the order of its item id, the position of its rule in `ruleKeyOrder`
- * and its link id. A link whose rule is not in `ruleKeyOrder`, or any link when it is empty, sorts after
- * the others of its item and by link id. The returned array keeps the order of the locks. Link states
- * and the inheriting items' values are not changed. Returns each affected link with its item.
+ * Removes every item source naming `sourceItemId`. Locks each affected link first, ordered by item id,
+ * its rule's position in `ruleKeyOrder` (unlisted rules last) and link id; the result keeps that
+ * order. States and inheriting values are unchanged.
  */
 export async function deleteValueLinkSourcesBySourceItem(
   client: PoolClient,
@@ -505,7 +475,7 @@ export async function deleteValueLinkSourcesBySourceItem(
   return rows.map((row) => ({ linkId: row.id, itemId: row.item_id }));
 }
 
-/** Deletes those caller-locked links among `linkIds` that have no source left; returns their items' ids. */
+/** Returns the item ids of the deleted links. */
 export async function deleteValueLinksWithoutSources(client: PoolClient, linkIds: string[]): Promise<string[]> {
   if (linkIds.length === 0) return [];
   const deleted = await client.query<{ item_id: string }>(
@@ -515,12 +485,11 @@ export async function deleteValueLinksWithoutSources(client: PoolClient, linkIds
      RETURNING l.item_id`,
     [linkIds],
   );
-  // Zero rows is a valid outcome: every link still has another source.
   if ((deleted.rowCount ?? 0) === 0) return [];
   return deleted.rows.map((row) => row.item_id);
 }
 
-/** Deletes every link of `itemId` (a purged item's own links); their sources go with them by cascade. Returns how many. */
+/** A purged item's own links; sources go by cascade. Returns how many. */
 export async function deleteValueLinksByItemId(client: PoolClient, itemId: string): Promise<number> {
   const result = await client.query("DELETE FROM value_links WHERE tenant_id = app_tenant_default() AND item_id = $1", [
     itemId,

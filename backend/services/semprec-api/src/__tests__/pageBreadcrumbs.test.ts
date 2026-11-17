@@ -46,7 +46,6 @@ async function post(path: string, body: unknown): Promise<Response> {
   });
 }
 
-/** A project-like host with a title property named `name`, in tenant A. */
 async function titledHost(title: string): Promise<string> {
   return runInTenant(harness.tenantA, async () => {
     const chokePoint = createChokePoint(harness.runtime);
@@ -93,7 +92,6 @@ describe("breadcrumbs of subpages (issue #2014)", () => {
     ]);
     expect(trail?.map((crumb) => crumb.databaseKey)).toEqual([null, "pages", "pages"]);
     expect(trail?.every((crumb) => crumb.journal === undefined)).toBe(true);
-    // The one-level case and the item path of the REST item read agree with it.
     expect((await breadcrumbsOf(checklist.pageItemId))?.map((crumb) => crumb.title)).toEqual([
       "Release project",
       "Release checklist",
@@ -127,8 +125,7 @@ describe("breadcrumbs of subpages (issue #2014)", () => {
     const project = await titledHost("Cycle host");
     const first = await subpage(project, "First");
     const second = await subpage(first.pageItemId, "Second");
-    // The API never reparents a page, so a cycle cannot be built through it; this superuser write stands in for
-    // corrupted data, the case the walk must survive.
+    // The API never reparents a page, so this superuser write stands in for corrupted data the walk must survive.
     await harness.admin.query(
       `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
       [first.pageItemId, second.pageItemId],
@@ -148,7 +145,7 @@ describe("breadcrumbs of subpages (issue #2014)", () => {
       [head.pageItemId],
     );
     const databaseId = pagesDatabase.rows[0]?.database_id;
-    // A 1200-page chain would take 1200 API calls; one superuser statement builds it. Page n's parent is page n - 1.
+    // One superuser statement instead of 1200 API calls; page n's parent is page n - 1.
     const chain = await harness.admin.query<{ id: string; label: string }>(
       `WITH chain AS (SELECT n, gen_random_uuid() AS id FROM generate_series(1, 1200) AS n),
             linked AS (SELECT c.n, c.id, COALESCE(p.id::text, $2::text) AS parent FROM chain c LEFT JOIN chain p ON p.n = c.n - 1)
@@ -198,7 +195,7 @@ describe("breadcrumbs of subpages (issue #2014)", () => {
     const trail = await breadcrumbsOf(notes.pageItemId);
 
     expect(trail).toHaveLength(3);
-    // The page's own document is read for its summary; no statement names an ancestor's document or item.
+    // No statement names an ancestor's document or item.
     for (const statement of statements) {
       for (const ancestor of [...ancestorDocs, project, checklist.pageItemId])
         expect(statement).not.toContain(ancestor);
@@ -220,8 +217,7 @@ describe("breadcrumbs of subpages (issue #2014)", () => {
 });
 
 describe("mirrored titles reach breadcrumbs and the trash (issue #1715)", () => {
-  // `createApiActionRegistry` reads the internal AI gateway token to build the guidance action; the value is a placeholder
-  // and no gateway is called (the same setup `actionRegistryComposition.test.ts` uses).
+  // `createApiActionRegistry` needs the internal AI gateway token; the placeholder value calls no gateway.
   const originalToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
   beforeAll(async () => {
     process.env.AI_GATEWAY_INTERNAL_TOKEN = "test-internal-token";
@@ -239,8 +235,8 @@ describe("mirrored titles reach breadcrumbs and the trash (issue #1715)", () => 
   });
 
   it("reads the retitled page in its breadcrumbs and in the trash list once the mirror job has run", async () => {
-    // Edits are written 60 seconds in the past, so their 10-second debounce has elapsed when the queue is drained.
-    // Only `Date` is faked; the database clock and Graphile Worker's polling are untouched.
+    // Edits are written 60 s in the past so their 10 s debounce has elapsed. Only `Date` is faked; the database clock
+    // and Graphile Worker's polling are untouched.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() - 60_000);
     const project = await titledHost("Mirror host");
@@ -288,7 +284,7 @@ describe("mirrored titles reach breadcrumbs and the trash (issue #1715)", () => 
     const project = await titledHost("Orphan host");
     const trashedParent = await subpage(project, "Under a trashed parent");
     const missingParent = await subpage(project, "Under a missing parent");
-    // The API never reparents a page; this superuser write stands in for a parent that is gone.
+    // The API never reparents a page; this stands in for a parent that is gone.
     await harness.admin.query(
       `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
       [missingParent.pageItemId, randomUUID()],
@@ -298,8 +294,7 @@ describe("mirrored titles reach breadcrumbs and the trash (issue #1715)", () => 
       headers: harness.headersA,
     });
     expect(trashed.status).toBe(200);
-    // The project's trash took its subpage with it (issue #1763). Restored on its own, the page is live below the
-    // trashed project.
+    // The project's trash took its subpage with it; restored on its own, the page is live below the trashed project.
     const restored = await fetch(`${harness.baseUrl}/api/items/${trashedParent.pageItemId}/restore`, {
       method: "POST",
       headers: harness.headersA,

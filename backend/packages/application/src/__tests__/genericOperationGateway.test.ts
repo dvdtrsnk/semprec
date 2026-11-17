@@ -91,7 +91,7 @@ async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
-/** A real Projects item id (not just a random UUID) — required by `assertAuthenticatedAgentIdentity`, which `viewDeleteWithClient` enforces but the other four destructive `*WithClient` mutations do not. */
+/** A real Projects item id: `viewDeleteWithClient` enforces `assertAuthenticatedAgentIdentity`, the other destructive mutations do not. */
 async function createRealAgentProjectItemId(): Promise<string> {
   const projectsDatabase = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
   const chokePointHandle = createChokePoint(pool);
@@ -99,7 +99,7 @@ async function createRealAgentProjectItemId(): Promise<string> {
   return item.id;
 }
 
-/** Runs `gateway.invoke` for a destructive operation, extracts the queued `approvalRequestId`, and approves it — the shared setup every replay-parity test needs before it can call `replayApprovedGenericOperation`. */
+/** Invokes a destructive operation, extracts the queued `approvalRequestId` and approves it. */
 async function approveDestructive(
   operation: GenericOperationName,
   actor: AuthenticatedActor,
@@ -168,7 +168,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         insertValueLink(client, { itemId: caller.id, propertyKey: "target", ruleKey: "test", sources: [] }),
       );
       const projectItemId = randomUUID();
-      // No public chat-thread creator exists on this tip.
+      // No public chat-thread creator exists.
       const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
       const run = await createAgentRun(pool, {
         projectItemId,
@@ -222,7 +222,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           first.id,
         ]);
         const pending = await getApprovalRequest(pool, requestId);
-        // The active link on the replaced relation makes this a `breaksLink` request (issue #1758).
+        // The active link on the replaced relation makes this a `breaksLink` request.
         expect(pending?.description).toMatchObject({
           key: "approval.breaksLink",
           params: { propertyName: "Target" },
@@ -455,7 +455,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
             type: "rollup",
             config: { relationPropertyKey: "target", aggregation: "count" },
           });
-          // No production chat-thread creator exists on this tip.
+          // No production chat-thread creator exists.
           const thread = await withTransaction(pool, (client) =>
             client.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id"),
           );
@@ -1959,7 +1959,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         const input = { relationPropertyId: property.id, callerItemId: caller.id };
         const original = await chokePoint.setRelation({ ...input, targetItemId: first.id });
         if (!original) throw new Error("Expected initial edge");
-        // No production chat-thread creator exists on this tip.
+        // No production chat-thread creator exists.
         const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
         const projectItemId = randomUUID();
         const run = await createAgentRun(pool, {
@@ -2502,10 +2502,8 @@ describe("createGenericOperationGateway (issue #220)", () => {
         requestId = (err as ApprovalRequiredError).details.approvalRequestId;
       }
 
-      // `replayApprovedGenericOperation` itself now rejects a row that isn't `approved` +
-      // `queued` (issue #89's locked-execution protocol), so these direct-call tests must
-      // decide the request first, same as the worker-path tests below — just without also
-      // running the queue job, since they call the executor themselves.
+      // The executor rejects a row that isn't `approved` + `queued`, so these direct-call tests decide the request
+      // first, without running the queue job.
       await inTenantZero(() =>
         withTransaction(pool, (client) =>
           decideAndEnqueueApprovalRequest(client, {
@@ -2546,8 +2544,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(outcome.result).toContain("owner_violation");
       expect(await chokePoint.findItem(item.id)).not.toBeNull();
 
-      // A drifted-provenance rejection is a terminal conflict, not a rollback that leaves the
-      // row `queued` forever for graphile to retry against a request that can never revalidate.
+      // A drifted-provenance rejection is a terminal conflict, not a rollback that leaves the row `queued` forever.
       const persisted = await getApprovalRequest(pool, requestId);
       expect(persisted!.executionStatus).toBe("conflict");
       expect(persisted!.executedAt).not.toBeNull();
@@ -2556,9 +2553,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
     it("rejects a request whose stored canonicalInput no longer satisfies the operation's current schema, without executing", async () => {
       const { requestId, item } = await createPendingDelete();
-      // Simulates schema drift between queue time and replay time (e.g. a deploy landed
-      // in between): the snapshot was valid when parseInput produced it, but a corrupted
-      // or now-incompatible stored payload must fail cleanly, not crash inside the binding.
+      // Simulates a stored payload that no longer parses: it must fail cleanly, not crash inside the binding.
       await pool.query(
         `UPDATE approval_requests SET payload = jsonb_set(payload, '{canonicalInput}', '{}'::jsonb) WHERE id = $1`,
         [requestId],
@@ -2581,9 +2576,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
     it("terminalizes as conflict, without executing, when the resource changed after approval (snapshot hash mismatch)", async () => {
       const { requestId, item } = await createPendingDelete();
 
-      // Something else legitimately mutated the item between approval and execution — the
-      // resource's current shape (`item_delete`'s snapshot is hashed off `updatedAt`) no longer
-      // matches the sha256 snapshotted at approval time.
+      // `item_delete`'s snapshot hashes `updatedAt`, so this change makes it differ from the approved one.
       await pool.query(`UPDATE items SET updated_at = now() WHERE id = $1`, [item.id]);
       const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
         payload: GenericOperationApprovalRequestPayload;
@@ -2608,10 +2601,8 @@ describe("createGenericOperationGateway (issue #220)", () => {
     it("terminalizes as conflict with a populated currentResource for a non-not-found domain failure (database archived after approval)", async () => {
       const { requestId, item } = await createPendingDelete();
 
-      // The item itself is untouched (so the snapshot hash still matches), but its database was
-      // archived after approval — `computeDestructiveResourceProjection` rejects this as
-      // `database_archived`, which lands in `replayApprovedGenericOperation`'s `catch (err)`
-      // branch rather than the snapshot-hash-mismatch branch tested above.
+      // The snapshot hash still matches, but the archived database makes the projection reject with
+      // `database_archived`: the revalidation-error branch rather than the hash-mismatch one.
       await pool.query(`UPDATE databases SET archived_at = now() WHERE id = $1`, [item.databaseId]);
       const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
         payload: GenericOperationApprovalRequestPayload;
@@ -2641,8 +2632,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       };
       const second = await replayApprovedGenericOperation(pool, reloaded);
 
-      // `second.result` round-tripped through jsonb, so Postgres may reorder its keys — compare
-      // parsed content, not the raw JSON string, to avoid a spurious key-order mismatch.
+      // `second.result` round-tripped through jsonb, which may reorder keys, so compare parsed content.
       expect(second.error).toBe(first.error);
       expect(JSON.parse(second.result)).toEqual(JSON.parse(first.result));
     });
@@ -2657,8 +2647,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const first = await replayApprovedGenericOperation(pool, request);
       expect(first.error).toBe(true);
 
-      // Fix the provenance drift that caused the first conflict — a redelivered job must still
-      // see the row as terminal and must not re-run the check, let alone the mutation.
+      // With the drift fixed, a redelivered job must still see the row as terminal and re-run nothing.
       await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [
         request.payload.actor.agentProjectItemId,
         run.id,
@@ -2703,9 +2692,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
       const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
 
-      // The run's own persisted provenance drifted from what `actor` claims — the same drift
-      // `replayApprovedGenericOperation` catches at execution time, now caught before a request
-      // is ever queued for a human to approve.
+      // The run's persisted provenance drifted from what `actor` claims, caught before a request is queued.
       await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [randomUUID(), run.id]);
 
       try {
@@ -3730,9 +3717,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
   });
 
   describe("handleApprovalRequestExecuteTask (worker path, issue #220)", () => {
-    // `createCoreTaskList`'s later positional parameters (library metadata fetcher, mail
-    // adapters, ...) are irrelevant to this task and default sensibly on their own; only the
-    // trailing `genericOperationApprovalReplay` slot needs a real value here.
+    // Only the trailing `genericOperationApprovalReplay` parameter of `createCoreTaskList` matters here.
     function taskListWithReplay(genericOperationApprovalReplay: typeof replayApprovedGenericOperation | undefined) {
       return createCoreTaskList(
         pool,
@@ -3830,7 +3815,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const database = await chokePoint.createDatabase({ name: "Announcement DB" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
       const projectItemId = randomUUID();
-      // No public writer creates a chat thread on this tip.
+      // No public writer creates a chat thread.
       const threadId = withThread ? await withTransaction(pool, (client) => createSempChatThread(client)) : null;
       const run = await createAgentRun(pool, {
         projectItemId,
@@ -4027,7 +4012,7 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
       {
         user_id: userB.id,
         kind: "approval_pending",
-        // The run has no thread and a person started it, which is a chat source (issue #1787).
+        // The run has no thread and a person started it, which is a chat source.
         link_href: `?page=semp-chats&tab=semp&approvalRequestId=${approvalRequestId}`,
         tenant_id: tenantB,
       },

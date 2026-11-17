@@ -2,7 +2,7 @@ import type { ModuleManifest } from "@semprec/module-registry";
 import type { JobHelpers } from "graphile-worker";
 import { createItemWithClient } from "@semprec/data";
 
-/** The other half of the e2e cross-module scenario — see alphaModule.ts's header comment. */
+/** The other half of the e2e cross-module scenario (see alphaModule.ts). */
 export const manifest: ModuleManifest = {
   id: "e2e-beta",
   version: "1.0.0",
@@ -41,7 +41,7 @@ export const relayPayloadSchema = {
   },
 };
 
-/** Records the linked item alpha's task relayed to it via the choke point — proof the cross-module hop actually landed. */
+/** Records the item alpha's task relayed, proving the cross-module hop landed. */
 export async function handleRelay(payload: RelayPayload, helpers: JobHelpers): Promise<void> {
   await helpers.withPgClient((client) =>
     createItemWithClient(client, {

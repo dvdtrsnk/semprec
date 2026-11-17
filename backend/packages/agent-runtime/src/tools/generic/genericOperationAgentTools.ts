@@ -22,26 +22,24 @@ import { createGenericOperationGateway, type GenericOperationGateway } from "@se
 import { logger } from "../../logger.js";
 import type { ToolResultChange } from "../../toolEventPayload.js";
 
-/** Shaped like a pi-agent-core `tool_result` payload — the same local approximation `heartbeatAgentTools.ts`'s `HeartbeatAgentToolResult` uses. */
+/** Shaped like a pi-agent-core `tool_result` payload. */
 export interface GenericOperationAgentToolResult {
   error: boolean;
   result: string;
-  /** The approval request this call created, when it was deferred to a human. */
   approvalRequestId?: string;
-  /** The `ChokePointError.code` of a call that failed with a choke point error; absent for every other outcome. */
+  /** Set only for a failure with a `ChokePointError`. */
   errorCode?: string;
   /** Per-property changes of a successful `item.patch`. */
   changes?: ToolResultChange[];
-  /** The id of the item a successful `item.create` created; the run history keeps it when it redacts the result text of a sensitive database. */
+  /** Kept by the run history when it redacts a sensitive database's result text. */
   createdItemId?: string;
   /**
-   * Set (issue #1827) when a content-bearing operation answered with content of a sensitive database: the
-   * run history stores such a result redacted (`sensitiveToolResult.ts`). The result itself is unchanged.
+   * Set when a content-bearing operation answered with content of a sensitive database: the run history stores the
+   * result redacted (`sensitiveToolResult.ts`).
    */
   sensitive?: true;
 }
 
-/** Longest string a `changes` entry stores for a `before` or `after` value. */
 export const TOOL_CHANGE_VALUE_MAX_LENGTH = 200;
 
 function boundValue(value: unknown): unknown {
@@ -57,7 +55,7 @@ function boundValue(value: unknown): unknown {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Whether `value` can be the id of an item: an answer id that is no uuid names no stored item, so it cannot be linked to one. */
+/** An answer id that is no uuid names no stored item. */
 function isItemId(value: unknown): value is string {
   return typeof value === "string" && UUID_RE.test(value);
 }
@@ -67,10 +65,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Builds `changes` for a successful `item.patch` from the operation's own `previous` values (read
- * inside its write transaction) and the call's `properties`. A `longText` property keeps only its
- * key; a key without a reported previous value has no `before`. Missing write-time classification
- * leaves a key without values.
+ * `changes` for a successful `item.patch`, from the operation's `previous` values (read in its write transaction) and
+ * the call's `properties`. A `longText` property keeps only its key; a key without a previous value has no `before`.
  */
 function buildPatchChanges(output: unknown, args: unknown): ToolResultChange[] | undefined {
   if (!isRecord(output) || !isRecord(args) || !isRecord(args.properties)) return undefined;
@@ -89,12 +85,11 @@ function buildPatchChanges(output: unknown, args: unknown): ToolResultChange[] |
   });
 }
 
-/** The id of the item an operation answered with, when its answer is an item. */
 function answeredItemId(output: unknown): string | undefined {
   return isRecord(output) && typeof output.id === "string" ? output.id : undefined;
 }
 
-/** The operations whose answer carries item content (issue #1827); every other operation answers with structure or ids. */
+/** The operations whose answer carries item content; the others answer with structure or ids. */
 const CONTENT_BEARING_OPERATIONS: ReadonlySet<GenericOperationName> = new Set<GenericOperationName>([
   "item.get",
   "item.create",
@@ -106,8 +101,8 @@ const CONTENT_BEARING_OPERATIONS: ReadonlySet<GenericOperationName> = new Set<Ge
 ]);
 
 /**
- * The databases whose content an answer carries, and the ids of the items whose content it carries (an item the
- * answer returned and every relation target it expanded); `unresolved` when some content cannot be tied to a database.
+ * Databases and item ids whose content an answer carries (answered items and expanded relation targets); `unresolved`
+ * when some content cannot be tied to a database.
  */
 interface AnswerDatabases {
   ids: Set<string>;
@@ -115,7 +110,7 @@ interface AnswerDatabases {
   unresolved: boolean;
 }
 
-/** The target database of each relation property of one database, by property key (`undefined` when the config names none). */
+/** By property key; `undefined` when the config names no target. */
 async function relationTargetDatabases(
   chokePoint: ChokePoint,
   databaseId: string,
@@ -130,12 +125,10 @@ async function relationTargetDatabases(
 }
 
 /**
- * The databases whose content an answer carries (issue #1827): the database of each item it answered with
- * (the item itself, or every item of a page), the database of each relation target expanded inside such an
- * item (`include.relations`; a target the agent may not read is only `{ id, hidden: true }` and carries no
- * content), and the target database of each relation property projected on such a target, whose targets come
- * as reduced entries without a database id (their ids are collected as item ids). Content that names no database, or a projected relation property
- * of no known target database, is `unresolved`.
+ * The databases whose content an answer carries: each answered item's database, each expanded relation target's
+ * database (a hidden target `{ id, hidden: true }` carries no content), and the target database of each relation
+ * projected on such a target, whose reduced entries carry no database id (their ids are collected instead). Anything
+ * not tied to a known database is `unresolved`.
  */
 async function answerDatabases(chokePoint: ChokePoint, output: unknown): Promise<AnswerDatabases> {
   const answer: AnswerDatabases = { ids: new Set(), itemIds: new Set(), unresolved: false };
@@ -173,10 +166,6 @@ async function answerDatabases(chokePoint: ChokePoint, output: unknown): Promise
   return answer;
 }
 
-/**
- * Adds the target database of every relation property of `databaseId` that `properties` carries an entry with content
- * for, and the id of each such entry.
- */
 async function addProjectedRelationDatabases(
   chokePoint: ChokePoint,
   databaseId: string,
@@ -194,15 +183,14 @@ async function addProjectedRelationDatabases(
     const targetDatabaseId = relationTargets.get(key);
     if (targetDatabaseId === undefined) answer.unresolved = true;
     else answer.ids.add(targetDatabaseId);
-    // The reduced entries carry the title of an item that may inherit sensitivity (issue #1999), so their ids are
-    // looked up as the ids of an expanded target are; a hidden entry carries no content.
+    // Reduced entries carry titles of items that may inherit sensitivity, so their ids are collected too.
     for (const entry of Array.isArray(entries) ? entries : []) {
       if (isRecord(entry) && entry.hidden !== true && isItemId(entry.id)) answer.itemIds.add(entry.id);
     }
   }
 }
 
-/** The database a `database.query` or `view.query` asked about; a curated view belongs to none. */
+/** A curated view belongs to no database. */
 async function queriedDatabaseId(
   chokePoint: ChokePoint,
   operation: GenericOperationName,
@@ -217,14 +205,10 @@ async function queriedDatabaseId(
 }
 
 /**
- * Whether the answer of a successful call is content of a sensitive database (issue #1827): the
- * operation is content-bearing and a database it answered with, queried or expanded through
- * `include.relations` (`answerDatabases`) has `sensitive = true`. It is also sensitive when an item it carries
- * inherits sensitivity (issue #1999): an item of the Files, Transcripts or Inbox database that is linked to a
- * sensitive database, as `sensitiveSourceDatabaseIdsByItem` reads it, whatever access the project holds there.
- * The flag is read through the choke point when the call has answered, in the caller's tenant scope. A
- * database id that resolves to no database, or content that names no database, counts as sensitive, so
- * the answer is never stored in full on a doubt.
+ * Whether a successful answer is sensitive: the operation is content-bearing and a database it answered with, queried
+ * or expanded has `sensitive = true`, or an item it carries inherits sensitivity (a Files, Transcripts or Inbox item
+ * linked to a sensitive database), regardless of the project's access there. An unresolvable database counts as
+ * sensitive, so a doubtful answer is never stored in full.
  */
 async function isSensitiveAnswer(
   chokePoint: ChokePoint,
@@ -248,9 +232,8 @@ async function isSensitiveAnswer(
 }
 
 /**
- * `isSensitiveAnswer` for a call that already succeeded: when the flag cannot be read, the call is not
- * reported as failed (an `item.patch` has committed) and the answer is treated as sensitive. The log
- * line names the operation, the run and the error class, never the answer.
+ * For a call that already succeeded (an `item.patch` has committed): when the flag cannot be read, the answer is
+ * treated as sensitive rather than the call failed. The log names the operation, run and error class, never the answer.
  */
 async function markSensitiveAnswer(
   chokePoint: ChokePoint,
@@ -274,7 +257,9 @@ async function markSensitiveAnswer(
 export type GenericOperationAgentTool = (
   currentRunId: string,
   args: unknown,
-  /** `reason`: the agent's reason for an approval-gated call, removed from `args` by the caller; reaches the approval request only. `toolCallId`: the model-runtime tool call, stored on a created approval request. */
+  /**
+   * `reason` is removed from `args` by the caller and reaches only the approval request; `toolCallId` is stored on it.
+   */
   options?: { reason?: string; toolCallId?: string },
 ) => Promise<GenericOperationAgentToolResult>;
 
@@ -284,11 +269,8 @@ interface AgentContext {
 }
 
 /**
- * Resolves the calling agent's actor identity and granted capabilities strictly from the
- * persisted `agent_run` row for `currentRunId` — never from tool arguments, mirroring
- * `heartbeatAgentTools.ts`'s `resolveCallingProjectItemId` discipline. A run that doesn't exist,
- * or carries no project context, resolves to `null`; every caller below turns that into
- * `owner_violation` before any capability or approval check runs.
+ * Resolves actor and capabilities strictly from the persisted `agent_run` row, never from tool arguments. A missing run
+ * or one without project context resolves to `null`, which callers turn into `owner_violation` before any check.
  */
 async function resolveAgentContext(
   pool: Pool,
@@ -312,9 +294,8 @@ async function resolveAgentContext(
 }
 
 /**
- * Mirrors `mcpInvokeTool.ts`'s `pendingApprovalResult`: the *tool call itself* is reported as
- * successful (`error: false`) so the agent turn and run complete normally, even though the
- * underlying operation was deferred to a human decision instead of executed.
+ * The tool call itself succeeds (`error: false`) so the turn completes normally, though the operation was deferred to a
+ * human.
  */
 function pendingApprovalResult(
   err: ApprovalRequiredError,
@@ -365,23 +346,15 @@ function createTool(
 }
 
 /**
- * One AgentTool per generic operation (issue #220), named verbatim after the operation
- * (`GENERIC_OPERATION_NAMES`) — MCP's own composition root (`services/semprec-api/src/mcp`)
- * prefixes the same names `semprec.` for its own catalog, both dispatching through
- * `createGenericOperationGateway(pool, resolver)` so there is exactly one path into the 44-operation
- * catalog's business logic for this process, alongside REST's own separate
- * `dispatchGenericOperation` (#219) over the same neutral `GenericApplicationPort` (#219's ADR:
- * "one instance per injected Pool" — this composition root's own instance, not REST's).
+ * One AgentTool per generic operation, named after the operation (MCP prefixes the same names `semprec.`). Both
+ * dispatch through `createGenericOperationGateway(pool, resolver)`, the single path into the catalog's business logic
+ * in this process.
  *
- * A REST-only operation (`REST_ONLY_OPERATION_NAMES`, issue #1699) gets a tool object here like
- * every other name, but the gateway lists it for no run and refuses every call to it as an unknown
- * operation; the assistant will propose a new select option on an Inbox proposal instead (#1994).
+ * A REST-only operation (`REST_ONLY_OPERATION_NAMES`) gets a tool here too, but the gateway lists it for no run and
+ * refuses calls to it as unknown.
  *
- * `services/semprec-agents` (issue #91, not yet built) is the eventual composition root that
- * decides, per run, which of these to even expose to a model — `listGrantedGenericOperationAgentTools`
- * below is that discovery counterpart. Every tool here re-checks the grant on every call
- * regardless of whether the caller filtered its catalog first, so a stale or wrongly-filtered
- * catalog can never itself become a bypass.
+ * `listGrantedGenericOperationAgentTools` is the discovery counterpart. Every tool re-checks the grant on each call, so
+ * a stale or wrongly filtered catalog can never become a bypass.
  */
 export function createGenericOperationAgentTools(
   pool: Pool,
@@ -397,11 +370,7 @@ export function createGenericOperationAgentTools(
   return tools;
 }
 
-/**
- * The operation names visible to `currentRunId` right now: absent, not present-but-forbidden,
- * for an operation whose capability isn't granted to the run's project. Resolves the same
- * persisted-run actor context `createGenericOperationAgentTools`'s tools re-check on every call.
- */
+/** Operations whose capability is not granted are absent, not listed as forbidden. */
 export async function listGrantedGenericOperationAgentTools(
   pool: Pool,
   moduleRegistry: ModuleRegistry | undefined,

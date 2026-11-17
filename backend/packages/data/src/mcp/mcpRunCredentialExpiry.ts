@@ -4,25 +4,16 @@ import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { insertAndNotifyAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
 
-/** The raw row the sweep selects: one lapsed credential and the still-`running` run it authenticated. */
 type ExpiredMcpRunCredentialDbRow = { agent_run_id: string; expires_at: Date };
 
 /**
- * The `mcpRunCredentialExpirySweep` cron task (issue #643): closes every `triggered_by='mcp'` run
- * whose run-credential has passed its `expires_at` while the run is still `running`. The credential
- * already stops authenticating on its own at that point (`getActiveMcpRunCredentialByTokenHash`);
- * this sweep gives the run its terminal state. There is no revocation path, so expiry is that run's
- * only end — it closes as `done`, not `error`, and so writes no `agent_run_error` notification.
+ * Gives a still-`running` MCP run its terminal state once its credential expired (the credential already stopped
+ * authenticating). Expiry is the run's only end, so it closes as `done` and writes no `agent_run_error`.
  *
- * `FOR UPDATE OF r SKIP LOCKED` lets an overlapping tick skip a run another sweep is already
- * closing instead of waiting on it; the expired credential row itself is left in place as the
- * audit trail of which run its token authenticated.
- *
- * Runs once per active tenant, each in its own transaction inside that tenant's scope, so only that
- * tenant's runs are selected and the `run_status` event is written in the run's own tenant. The
- * credentials table is global; row-level security on `agent_runs` narrows the join. Returns the
- * finished run ids of all tenants; when any tenant fails, rejects after every tenant was attempted
- * (see `forEachActiveTenant`), with the other tenants' runs already committed.
+ * `SKIP LOCKED` lets an overlapping tick skip a run another sweep is closing. The expired credential row stays as
+ * the audit trail. Runs per tenant in its own transaction so the `run_status` event lands in the run's tenant; RLS
+ * on `agent_runs` narrows the join over the global credentials table. Rejects after every tenant was attempted when
+ * any failed, with the others already committed.
  */
 export async function handleMcpRunCredentialExpirySweepTask(pool: Pool): Promise<{ finishedRunIds: string[] }> {
   const finishedRunIds: string[] = [];

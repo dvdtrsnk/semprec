@@ -5,29 +5,25 @@ import type { ViewItemRow } from "../types.js";
 import { visibleDatabaseIds } from "./itemsStore.js";
 import { inheritedSensitivityDeniedSql } from "../agentGrants/agentDatabaseAccess.js";
 
-/** The raw `view_items` row shape this module reads back from Postgres. */
 type ViewItemDbRow = { view_id: string; item_id: string; position: number };
 
 function mapViewItemRow(row: ViewItemDbRow): ViewItemRow {
   return { viewId: row.view_id, itemId: row.item_id, position: row.position };
 }
 
-/**
- * The databases a read of a curated view's members may come from: every visible database but the excluded ones
- * (the ones an agent's project may not read, issue #1810).
- */
+/** Every visible database but the excluded ones. */
 async function readableDatabaseIds(client: PoolClient, excluded: ReadonlySet<string> | undefined): Promise<string[]> {
   const databaseIds = await visibleDatabaseIds(client);
   return excluded === undefined || excluded.size === 0 ? databaseIds : databaseIds.filter((id) => !excluded.has(id));
 }
 
-/** What a curated view's reads leave out: the members an agent's project may not read (issues #1810 and #1999). */
+/** The members of a curated view an agent's project may not read. */
 interface ViewMemberExclusions {
-  /** The members whose item (live or trashed) lies in one of these databases. */
+  /** Members whose item (live or trashed) lies in one of these databases. */
   excludeDatabaseIds?: ReadonlySet<string>;
   /**
-   * The Projects item of an agent's run: the members that are linked to a sensitive database it may not read, when the
-   * member belongs to a database that inherits sensitivity (`inheritedSensitivityDeniedSql`).
+   * An agent run's Projects item: drops members of a sensitivity-inheriting database
+   * (`inheritedSensitivityDeniedSql`) that are linked to a sensitive database it may not read.
    */
   excludeInheritedSensitiveFor?: string;
 }
@@ -39,7 +35,7 @@ function hasExclusions(exclusions: ViewMemberExclusions): boolean {
   );
 }
 
-/** The condition that drops the members `excludeInheritedSensitiveFor` names, for the member item aliased `i`; `params` is extended. */
+/** For the member item aliased `i`; extends `params`. */
 function inheritedMemberCondition(exclusions: ViewMemberExclusions, params: unknown[]): string[] {
   if (exclusions.excludeInheritedSensitiveFor === undefined) return [];
   return [
@@ -47,11 +43,7 @@ function inheritedMemberCondition(exclusions: ViewMemberExclusions, params: unkn
   ];
 }
 
-/**
- * The members of a view in position order. `excludeDatabaseIds`, when given and not empty, keeps only the members
- * whose item (live or trashed) lies in another database, and `excludeInheritedSensitiveFor` drops the linked items
- * of a database that inherits sensitivity, so the members an agent may not read are not in the list.
- */
+/** The members of a view in position order, without the members `exclusions` names. */
 export async function listViewItems(
   client: PoolClient,
   viewId: string,
@@ -76,10 +68,7 @@ export async function listViewItems(
   return rows.map(mapViewItemRow);
 }
 
-/**
- * The number of live (non-trashed) members of a curated view, counted over the same join `listLiveViewItemsAfter` pages,
- * without the members the exclusions name.
- */
+/** Counted over the same join `listLiveViewItemsAfter` pages. */
 export async function countLiveViewItems(
   client: PoolClient,
   viewId: string,
@@ -97,13 +86,9 @@ export async function countLiveViewItems(
 }
 
 /**
- * `listViewItems` filtered to live (non-trashed) members and paged by `position` — used to
- * page a curated view's default listing, where a page must fill with `limit` live items
- * rather than come back short whenever memberships happen to point at trashed items. The
- * join also binds the caller's visible database ids (`visibleDatabaseIds`), so the planner
- * prunes `items` to those partitions instead of scanning every tenant's partition. The exclusions drop the
- * members of those databases, and the linked items of a database that inherits sensitivity, from the join, so a page
- * fills with readable members and its end is the end of the readable ones (issues #1810 and #1999).
+ * Live members paged by `position`, so a page fills with `limit` live items instead of coming back
+ * short for memberships of trashed items. Binding `visibleDatabaseIds` lets the planner prune `items`
+ * partitions. Exclusions apply in the join, so a page fills with readable members only.
  */
 export async function listLiveViewItemsAfter(
   client: PoolClient,
@@ -130,11 +115,8 @@ export async function listLiveViewItemsAfter(
 }
 
 /**
- * Adding an already-present item is a move, not a duplicate insert: it delegates to
- * `reorderViewItem`, whose position-shifting logic is what keeps `position` values
- * unique. A brand-new member inserted at an explicit position likewise shifts every
- * row at or after it up by one first, so it can never land on (or collide with) an
- * existing position.
+ * Adding an already-present item is a move (delegates to `reorderViewItem`). A new member at an
+ * explicit position first shifts every row at or after it, so positions stay unique.
  */
 export async function addViewItem(
   client: PoolClient,
@@ -142,10 +124,8 @@ export async function addViewItem(
   itemId: string,
   position?: number,
 ): Promise<ViewItemRow> {
-  // Serializes concurrent addViewItem calls on the same view: without this, two calls
-  // for different items can both read the same MAX(position) (or both match the same
-  // `position >= $2` shift) and race to the same position, tying it — there is no
-  // UNIQUE (view_id, position) constraint to catch that at the DB level.
+  // Serializes concurrent adds on this view: there is no UNIQUE (view_id, position), so two adds could
+  // otherwise read the same MAX(position) and tie.
   await client.query(`SELECT id FROM views WHERE id = $1 FOR UPDATE`, [viewId]);
 
   const { rows: existingRows } = await client.query<{ position: number }>(
@@ -179,16 +159,15 @@ export async function addViewItem(
   return mapViewItemRow(requireSingleRow(rows, "view_items row"));
 }
 
-/** Returns whether a row was actually removed, so the choke-point can distinguish a real removal from a no-op on a non-member `itemId`. */
+/** Whether a row was removed, so a non-member `itemId` is distinguishable from a real removal. */
 export async function removeViewItem(client: PoolClient, viewId: string, itemId: string): Promise<boolean> {
   const result = await client.query(`DELETE FROM view_items WHERE view_id = $1 AND item_id = $2`, [viewId, itemId]);
   return result.rowCount !== null && result.rowCount > 0;
 }
 
 /**
- * Moves `itemId` to `position`, shifting every row strictly between its old and new
- * position by one — a bare `UPDATE ... SET position = $N` would leave two rows tied on
- * the same position, making `ORDER BY position` non-deterministic between them.
+ * Shifts every row between the old and new position by one; a bare `SET position` would tie two rows
+ * and make `ORDER BY position` non-deterministic.
  */
 export async function reorderViewItem(
   client: PoolClient,
@@ -196,10 +175,7 @@ export async function reorderViewItem(
   itemId: string,
   position: number,
 ): Promise<ViewItemRow> {
-  // Serializes concurrent reorderViewItem calls on the same view: without this, two calls
-  // for different items can both read the same `position` shift window and race to the
-  // same position, tying it — there is no UNIQUE (view_id, position) constraint to catch
-  // that at the DB level.
+  // Serializes concurrent reorders on this view; no UNIQUE (view_id, position) catches a tie.
   await client.query(`SELECT id FROM views WHERE id = $1 FOR UPDATE`, [viewId]);
 
   const { rows: currentRows } = await client.query<{ position: number }>(

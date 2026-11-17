@@ -19,18 +19,15 @@ import { logger } from "./logger.js";
 type Converter = (value: unknown) => { ok: true; value: unknown } | { ok: false };
 
 /**
- * `YYYY-MM-DD`, or that date followed by `THH:mm`, optionally `:ss[.sss]`, and — whenever a time
- * component is present — a required `Z` or `±HH:mm` offset. A time without an explicit offset is
- * parsed as local time by `Date.parse`, which would silently produce a wrong UTC timestamp on a
- * non-UTC server, so it is rejected here rather than accepted. Anything else (`"March 5"`, a Unix
- * timestamp string) is also rejected even though `Date.parse` would accept it.
+ * A date, optionally with a time; a time requires a `Z` or `±HH:mm` offset because `Date.parse` would read it as
+ * server-local time. Other formats `Date.parse` accepts are rejected too.
  */
 const ISO_8601_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2}))?$/;
 
 /** The exact `toISOString()` shape the `text -> date` converter produces. */
 const CONVERTED_DATE_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-/** A fixed, small set of conversion functions per type pair — deliberately not exhaustive. */
+/** Deliberately a small, non-exhaustive set per type pair. */
 const CONVERTERS: Partial<Record<PropertyType, Partial<Record<PropertyType, Converter>>>> = {
   text: {
     number: (value) => {
@@ -56,12 +53,7 @@ export function isConversionSupported(from: PropertyType, to: PropertyType): boo
   return from === to || Boolean(CONVERTERS[from]?.[to]);
 }
 
-/**
- * The pure conversion step `runPropertyTypeMigrationJob` applies to each value, exposed
- * standalone so its per-type-pair behavior (what converts, what's left empty) can be unit
- * tested without a database. `from === to` always passes the value through unchanged,
- * matching the no-op retype `runPropertyTypeMigrationJob` allows.
- */
+/** Exported for unit tests. `from === to` passes the value through. */
 export function convertPropertyValue(
   from: PropertyType,
   to: PropertyType,
@@ -73,19 +65,9 @@ export function convertPropertyValue(
 }
 
 /**
- * True when `value` is already in the JS shape a converter targeting `type` would
- * produce. Used to make the migration idempotent under graphile-worker retries: a
- * retry replays the whole job from the start (cursor null), so rows already
- * converted by an earlier, partially-failed attempt must be recognized and left
- * alone — re-running the converter on an already-converted value fails its input
- * check and silently deletes the property instead. Only covers the target types
- * CONVERTERS can actually produce (number, text, date); anything else returns
- * false so it falls through to the normal conversion path.
- *
- * `date` only recognizes the exact `toISOString()` shape the converter itself produces
- * (`CONVERTED_DATE_SHAPE`), not any string — the original source text a `text -> date` retype
- * has not converted yet is also a string, and treating it as already-converted would skip it
- * forever instead of converting or dropping it.
+ * Makes the job idempotent under retries: a retry restarts from the first row, and re-running a converter on an
+ * already-converted value would fail its input check and delete the value. `date` matches only the converter's
+ * exact output shape, because unconverted source text is also a string.
  */
 function isAlreadyTargetType(type: PropertyType, value: unknown): boolean {
   switch (type) {
@@ -125,12 +107,9 @@ export async function enqueuePropertyTypeMigration(
 }
 
 /**
- * Eagerly, once, immediately converts every item's value for this property to its new
- * type. An unconvertible value is left empty (not overwritten with an error); the
- * database ends up `done` (no failures) or `partial` (some rows left empty). That verdict
- * comes from the property's durable `migration_dropped_values` flag, so a retried or
- * overlapping run — which necessarily skips the rows an earlier run already dropped —
- * settles on the same `partial` instead of reporting a clean `done`.
+ * Converts every item's value to the new type; an unconvertible value is removed. Ends `done` or `partial`, judged
+ * from the durable `migration_dropped_values` flag so a retry (which skips already-dropped rows) still settles
+ * `partial`.
  */
 export async function runPropertyTypeMigrationJob(
   pool: Pool,
@@ -152,12 +131,8 @@ export async function runPropertyTypeMigrationJob(
   const pageSize = 500;
 
   for (;;) {
-    // One batch, one transaction: lockItemBatch's FOR UPDATE holds every row in the page
-    // locked until this commits, so a choke-point write racing the same rows either waits
-    // or (skipLocked here is false) is waited on — it cannot land between this batch's read
-    // and its jsonb_set and get silently overwritten. The drop mark and the properties - key
-    // delete land in the same transaction too, so a crash between them rolls back instead of
-    // leaving a row marked dropped with the key still present.
+    // One batch per transaction: `FOR UPDATE` holds the page so a racing choke-point write cannot land between the
+    // read and the write. The drop mark and the key removal commit together.
     const rows: Array<{ id: string; properties: Record<string, unknown> }> = await withTransaction(
       pool,
       async (client: PoolClient) => {
@@ -172,14 +147,12 @@ export async function runPropertyTypeMigrationJob(
           if (!(property.key in row.properties)) continue;
           const oldValue = row.properties[property.key];
           if (needsConversion && isAlreadyTargetType(property.type, oldValue)) {
-            // Already converted by an earlier attempt at this same migration (see
-            // isAlreadyTargetType) — leave it exactly as-is instead of re-converting.
+            // Converted by an earlier attempt.
             continue;
           }
           const converted = convertPropertyValue(fromType, property.type, oldValue);
           if (converted.ok) {
-            // updated_at DOES advance here, unlike a `computed` write — this changes the
-            // value a client sees under `properties`, so a stale ifVersion must conflict.
+            // Advances updated_at (unlike a `computed` write), so a stale ifVersion conflicts.
             await migrateItemPropertyWithClient(client, {
               databaseId: property.databaseId,
               itemId: row.id,
@@ -187,9 +160,7 @@ export async function runPropertyTypeMigrationJob(
               change: { kind: "set", value: converted.value },
             });
           } else {
-            // Marked before the value is discarded, not after: once the key is gone from
-            // `properties` every later pass skips the row, so a crash between the two
-            // statements must leave the migration looking failed rather than clean.
+            // Mark before removing: once the key is gone later passes skip the row, so the mark must not be lost.
             await markPropertyMigrationDroppedValues(client, propertyId);
             await migrateItemPropertyWithClient(client, {
               databaseId: property.databaseId,
@@ -221,13 +192,8 @@ export async function runPropertyTypeMigrationJob(
 }
 
 /**
- * `isFinalAttempt` is graphile-worker's `helpers.job.attempts >= helpers.job.max_attempts` at
- * the moment this task runs — true exactly on the last try `maxAttempts: 3` allows. On that
- * try's failure, the job as a whole gives up and nothing will run this property's migration
- * again, so the status this leaves behind must be terminal: dropping the values already read
- * (an in-progress run has no half-converted value worth keeping) and settling from that durable
- * flag, same as a clean run's own settle step, rather than leaving `migration_status = 'running'`
- * forever. A non-final attempt leaves `'running'` as-is — graphile-worker will retry the job.
+ * On the final attempt's failure nothing will retry, so the status is settled terminally (values marked dropped,
+ * then settled) instead of staying `running` forever. Earlier attempts leave `running` for the retry.
  */
 export async function handlePropertyTypeMigrationTask(
   pool: Pool,
@@ -244,8 +210,7 @@ export async function handlePropertyTypeMigrationTask(
           await settlePropertyMigrationStatus(client, payload.propertyId);
         });
       } catch (settleErr) {
-        // The original failure (`err`) is what must reach the caller/graphile-worker — a
-        // failure here settling the terminal status must not replace it, only be visible.
+        // Never let the settle failure replace the original error.
         logger.error(
           { err: settleErr, propertyId: payload.propertyId },
           "handlePropertyTypeMigrationTask: failed to settle terminal status",

@@ -1,8 +1,5 @@
-// Validates `mcpServers.connectionConfig` on every item write that reaches the choke point (REST,
-// /mcp, AgentTools, the proposal confirm path), inside the write's own transaction, and confines
-// a `stdio` config to a human writer in an admin's tenant.
-// Registered through ../domainWriteHooks.ts — see docs/adr/2026-10-09-item-create-domain-hooks.md.
-// Constrained by: docs/adr/2026-10-16-stdio-mcp-confined-to-admin-tenants.md
+// Validates `mcpServers.connectionConfig` on every item write through the choke point, inside the write's
+// transaction, and confines a `stdio` config to a human writer in an admin's tenant.
 import type { PoolClient } from "pg";
 import type { ItemCreateHookContext, ItemUpdateHookContext } from "../chokePoint/hooks.js";
 import { ValidationError } from "../errors.js";
@@ -37,12 +34,7 @@ export async function mcpServerItemCreateHook({
   await assertWrittenConfigStorable(client, database.ownerModuleId, properties, humanWriterUserId);
 }
 
-/**
- * Validates a written `connectionConfig` like the create hook, and announces a server switched on or off: a patch
- * of an item of the MCP servers database that names `active` publishes one `mcpServers` invalidation for the
- * tenant, once the write's transaction has committed. A patch without `active`, and any other database, publish
- * nothing.
- */
+/** A patch naming `active` on an MCP servers item publishes one `mcpServers` invalidation after commit. */
 export async function mcpServerItemUpdateHook({
   client,
   database,

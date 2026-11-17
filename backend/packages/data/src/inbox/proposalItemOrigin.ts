@@ -9,17 +9,13 @@ import type { ItemRow } from "../types.js";
 import type { ItemOriginSource } from "./itemOriginsStore.js";
 import type { ProposalActionConfig } from "./proposalActions.js";
 
-/** The id of the relation property `key` of `databaseId`, or a 404 when the database has no such property. */
 export async function requireRelationPropertyId(client: PoolClient, databaseId: string, key: string): Promise<string> {
   const property = await propertiesStore.getPropertyByKey(client, databaseId, key);
   if (!property) throw new NotFoundError(`Property '${key}' not found on database ${databaseId}`);
   return property.id;
 }
 
-/**
- * The moment an Inbox item was captured: its `date` and `time` (the user's meant moment, stored
- * verbatim) read in the system timezone, or null when either is missing or unparseable.
- */
+/** An Inbox item's capture moment from its verbatim `date` and `time` in `timezone`, or null when unusable. */
 export function inboxCaptureInstant(inboxItem: ItemRow, timezone: string): string | null {
   const { date, time } = inboxItem.properties;
   if (typeof date !== "string" || typeof time !== "string") return null;
@@ -27,10 +23,7 @@ export function inboxCaptureInstant(inboxItem: ItemRow, timezone: string): strin
   return captured.isValid ? captured.toUTC().toISO() : null;
 }
 
-/**
- * Where the items a confirm creates came from. Only a valid Inbox capture date and time supplies
- * a known timestamp; transcript cards and missing or invalid capture times remain unknown.
- */
+/** Where confirmed items came from: only a valid Inbox capture date and time gives a known timestamp. */
 export async function resolveItemOriginSource(
   client: PoolClient,
   config: ProposalActionConfig,

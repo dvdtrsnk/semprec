@@ -30,7 +30,6 @@ async function get(headers: Record<string, string> | undefined, query: string): 
   return { status: response.status, text: await response.text() };
 }
 
-/** A Task titled `title` in `tenantId`, written through the choke point; returns its id. */
 async function createTask(tenantId: string, title: string): Promise<string> {
   return runInTenant(tenantId, async () => {
     const tasks = await withTransaction(harness.runtime, (client) => getDatabaseByModuleId(client, "tasks"));

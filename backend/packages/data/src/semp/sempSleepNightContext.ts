@@ -7,33 +7,22 @@ import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID
 import { loadSleepNights, type SleepNightsResponse } from "../sleep/sleepRouteHandlers.js";
 import type { SempRefContext } from "./sempRefReadContext.js";
 
-// The context of a `sleepNight` message ref (issue #1853;
-// docs/adr/2026-11-13-a-sleep-night-ref-opens-the-sleep-data-for-one-turn.md): the resolved night of the ref, read from
-// the three sleep databases, which are sensitive and so closed to an agent without a grant.
+// The context of a `sleepNight` message ref: the resolved night, read from the three sleep databases, which are
+// sensitive and so closed to an agent without a grant.
 
-/** The note rendered for a night that has neither a plan nor an exception that overrides a field. */
 export const NO_SLEEP_PLANNED_NOTE = "no sleep planned for this night";
 
-/** Who the night is read for. */
 export interface SleepNightAccess {
-  /**
-   * The Projects item of the agent the context is built for, or undefined when none is known. Its grants on the sleep
-   * databases (issue #1810) let the night be read.
-   */
+  /** The agent's Projects item, whose grants on the sleep databases let the night be read. */
   agentProjectItemId: string | undefined;
   /**
-   * True when the ref belongs to the message of the turn that is starting. `openTurnReadAllowances`
-   * (`semprec-agents`) opens the one-run read access of that turn (issue #1849) for the settings, the plans and the
-   * exception of the ref's night, and the run row it is keyed by does not exist yet when the prompt is built, so the
-   * prompt reads the night on that fact instead of on the rows. False for a ref of an earlier message.
+   * True when the ref belongs to the message of the starting turn. That turn's one-run read allowance opens the
+   * night's rows, but the run row it is keyed by does not exist yet when the prompt is built, so the prompt relies
+   * on this flag instead.
    */
   attachedThisTurn: boolean;
 }
 
-/**
- * The ids of the sleep databases that resolving a night reads, or null when the tenant lacks one of them (no sleep
- * module).
- */
 async function sleepDatabaseIds(client: PoolClient): Promise<string[] | null> {
   const ids: string[] = [];
   for (const moduleId of [SLEEP_SETTINGS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_NIGHTS_MODULE_ID]) {
@@ -44,10 +33,7 @@ async function sleepDatabaseIds(client: PoolClient): Promise<string[] | null> {
   return ids;
 }
 
-/**
- * Refuses with a `ForbiddenError` unless the night may be read: the turn attached it, or the agent's project may read
- * all three sleep databases (an explicit grant, since they are sensitive). The refusal names no content.
- */
+/** The turn attached the night, or the agent has grants on all three databases. The refusal names no content. */
 async function assertSleepNightReadable(
   client: PoolClient,
   databaseIds: readonly string[],
@@ -66,7 +52,7 @@ async function assertSleepNightReadable(
   }
 }
 
-/** The live night item of `night` that the resolver uses: with two, the later by id, as `resolveSleepNights` does. */
+/** With two live night items, the later by id, as `resolveSleepNights` does. */
 async function exceptionItemId(client: PoolClient, nightsDatabaseId: string, night: string): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM items
@@ -78,13 +64,11 @@ async function exceptionItemId(client: PoolClient, nightsDatabaseId: string, nig
 }
 
 /**
- * The resolved `night` for the tenant of `client`: its plan name, bedtime, wake time, alarm, whether it differs from the
- * plan, its duration, the bedtime-reminder time and the item ids of its plan and its exception. The label is the night
- * itself, so no content of the sleep databases is kept in a stored label.
+ * The resolved `night`. The label is the night itself, so no sleep content is kept in a stored label.
  *
- * `client` must be in a REPEATABLE READ transaction, like `loadSleepNights`, so that the settings, the plans and the
- * exception describe one state; any other level throws an `Error`. Throws a `ForbiddenError` when `access` does not
- * allow the read, and returns null when the tenant has no sleep module or no sleep settings item.
+ * `client` must be in a REPEATABLE READ transaction so settings, plans and exception describe one state; any
+ * other level throws. Throws `ForbiddenError` when `access` denies the read; returns null without a sleep module
+ * or settings item.
  */
 export async function readSleepNightContext(
   client: PoolClient,
@@ -131,10 +115,8 @@ export async function readSleepNightContext(
 }
 
 /**
- * The ids of the items that reading the given nights needs: every live settings item, every live plan and the live
- * night items of those nights, for the tenant of `client`. This is what the one-run read access of a turn that
- * attaches a `sleepNight` ref opens (`semprec-agents`, issue #1849). The nights come from the persisted refs of the
- * message, never from a tool argument.
+ * The item ids the one-run read allowance of a turn attaching `sleepNight` refs opens: live settings, live plans
+ * and those nights' live items. The nights come from the message's persisted refs, never from a tool argument.
  */
 export async function listSleepNightReadItemIds(client: Queryable, nights: readonly string[]): Promise<string[]> {
   if (nights.length === 0) return [];

@@ -51,8 +51,8 @@ interface RecordedHookRun {
   queueAffinity?: ActionQueueAffinity;
 }
 
-// Hooks cannot be unregistered; these recorders are emptied before each test. They are registered after the domain
-// hooks, so they see every row a nested trash or restore of the page hooks reaches.
+// Hooks cannot be unregistered: emptied before each test, registered after the domain hooks so they see
+// every row a nested trash or restore reaches.
 const deleteRuns: RecordedHookRun[] = [];
 const restoreRuns: RecordedHookRun[] = [];
 registerItemDeleteHook(async ({ item, rootItemId, writerKind, agentRunId, actingUserId }) => {
@@ -88,7 +88,6 @@ function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant):
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
-/** A plain item of a database of its own: the host whose notes hold the subpages under test. */
 async function createHost(tenantId = tenant): Promise<string> {
   return runInTenant(tenantId, async () => {
     const database = await chokePoint.createDatabase({ name: `Hosts ${randomUUID()}` });
@@ -122,7 +121,6 @@ interface TrashOptions {
   via?: ChokePoint;
 }
 
-/** Trashes an item the way the application service does: resolve its database, then the choke point's cascade. */
 async function trash(itemId: string, options: TrashOptions = {}): Promise<ItemRow | null> {
   const via = options.via ?? chokePoint;
   return runInTenant(tenant, async () => {
@@ -141,7 +139,6 @@ async function restore(itemId: string, options: TrashOptions = {}): Promise<Item
   });
 }
 
-/** Whether each item is live, in the order given; a missing row fails the test. */
 async function liveStates(...itemIds: string[]): Promise<boolean[]> {
   return runInTenant(tenant, async () => {
     const states: boolean[] = [];
@@ -154,7 +151,7 @@ async function liveStates(...itemIds: string[]): Promise<boolean[]> {
   });
 }
 
-/** `deleted_at` of an item as Postgres renders it, with its full precision; `null` for a live item. */
+/** `deleted_at` as Postgres renders it, at full precision. */
 async function deletedAtExact(itemId: string): Promise<string | null> {
   const { rows } = await inTenant((client) =>
     client.query<{ deleted_at: string | null }>(`SELECT deleted_at::text AS deleted_at FROM items WHERE id = $1`, [
@@ -185,7 +182,6 @@ async function docIdOf(itemId: string): Promise<string> {
   return doc.id;
 }
 
-/** The stored blocks of an item's page in document order, and its `trashedPages` map. */
 async function readDocument(itemId: string): Promise<DocumentView> {
   const docId = await docIdOf(itemId);
   return inTenant(async (client) => {
@@ -210,13 +206,11 @@ async function readDocument(itemId: string): Promise<DocumentView> {
   });
 }
 
-/** An edit of an item's page as an editor makes it over the sync socket, outside the page operations. */
 async function editDocument(itemId: string, edit: (doc: Y.Doc) => void): Promise<void> {
   const docId = await docIdOf(itemId);
   await runInTenant(tenant, () => mutateDoc(runtime, docId, "user", edit));
 }
 
-/** The authors of the stored updates of an item's page, oldest first. */
 async function updateAuthors(itemId: string): Promise<string[]> {
   const docId = await docIdOf(itemId);
   const { rows } = await inTenant((client) =>
@@ -225,7 +219,6 @@ async function updateAuthors(itemId: string): Promise<string[]> {
   return rows.map((row) => row.created_by);
 }
 
-/** A host whose notes hold the text blocks `first` and `second`, with the ids of both. */
 async function hostWithTwoBlocks(): Promise<{ host: string; first: string; second: string }> {
   const host = await createHost();
   await runInTenant(tenant, () => writePageTextBlocks(runtime, host, ["first", "second"]));
@@ -234,10 +227,7 @@ async function hostWithTwoBlocks(): Promise<{ host: string; first: string; secon
   return { host, first, second };
 }
 
-/**
- * Two subpages of `parentItemId`. `lower` is the one with the lower item id, which a trash of the parent reaches first.
- * Canonical UUID strings compare like the `uuid` values Postgres orders by.
- */
+/** `lower` has the lower item id, which a trash of the parent reaches first (canonical UUID text orders like `uuid`). */
 async function twoSubpagesOf(parentItemId: string): Promise<{ lower: Subpage; higher: Subpage }> {
   const a = await createSubpage(parentItemId, "Subpage A");
   const b = await createSubpage(parentItemId, "Subpage B");
@@ -245,7 +235,6 @@ async function twoSubpagesOf(parentItemId: string): Promise<{ lower: Subpage; hi
   return { lower, higher };
 }
 
-/** How long a test waits for a step of a concurrent scenario before it fails instead of hanging. */
 const WAIT_MS = 15_000;
 
 function withinWait<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -256,18 +245,16 @@ function withinWait<T>(promise: Promise<T>, label: string): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** Rejects as soon as `write` settles: a write that should still be in flight has finished, or it failed. */
 function settledEarly(write: Promise<unknown>, label: string): Promise<never> {
   return write.then((): never => {
     throw new Error(`${label} finished before it was expected to`);
   });
 }
 
-/** Makes every later stored update of `itemId`'s page fail inside the database. */
+/** Makes every later stored update of `itemId`'s page fail. */
 async function failDocumentWritesOf(itemId: string): Promise<void> {
   const docId = await docIdOf(itemId);
-  // Fault injection inside the document write itself: no production input makes the append fail. The document id
-  // reaches the trigger through a scratch table, not interpolated into its body.
+  // No production input makes the append fail; the id reaches the trigger through a scratch table.
   await admin.query("CREATE TABLE fail_page_trash_test_docs (doc_id uuid PRIMARY KEY)");
   await admin.query("INSERT INTO fail_page_trash_test_docs (doc_id) VALUES ($1)", [docId]);
   await admin.query("GRANT SELECT ON fail_page_trash_test_docs TO PUBLIC");
@@ -407,7 +394,6 @@ describe("page trash and restore hooks (issue #1723)", () => {
     async ({ nested }) => {
       const host = await createHost();
       const root = await createSubpage(host, "Release checklist");
-      // The page whose two subpages are under test: the trashed page itself, or its only subpage.
       const parent = nested ? await createSubpage(root.pageItemId, "Chapter") : root;
       const { lower, higher } = await twoSubpagesOf(parent.pageItemId);
       const pagesDatabaseId = (await runInTenant(tenant, () => chokePoint.findItem(higher.pageItemId)))?.databaseId;
@@ -457,7 +443,7 @@ describe("page trash and restore hooks (issue #1723)", () => {
           settledEarly(started, "The trash of the page"),
         ]);
         release();
-        // A wait cycle between the two ends with PostgreSQL aborting one of them (40P01, deadlock detected).
+        // The wait cycle ends with PostgreSQL aborting one of them (40P01).
         await withinWait(Promise.all([subpageTrash, started]), "The end of both trashes");
       } finally {
         release();
@@ -579,7 +565,6 @@ describe("page trash and restore hooks (issue #1723)", () => {
 
     await trash(parent.pageItemId, { writer });
 
-    // Each page was created by one `user` update; the trash appended one update to each parent document.
     expect(await updateAuthors(host)).toEqual(["user", author]);
     expect(await updateAuthors(parent.pageItemId)).toEqual(["user", author]);
 
@@ -761,7 +746,7 @@ describe("page trash and restore hooks (issue #1723)", () => {
       expect(purged.purgedItemIds).toEqual([host]);
     });
     expect(await inTenant((client) => getDocByItemId(client, host))).toBeNull();
-    // The host's trash took the page with it (issue #1763), and the purge of the host left the page in the Trash.
+    // The host's trash took the page with it, and the purge of the host left the page in the Trash.
     expect(await liveStates(page.pageItemId)).toEqual([false]);
 
     expect(await restore(page.pageItemId)).toMatchObject({ id: page.pageItemId, deletedAt: null });
@@ -783,8 +768,8 @@ describe("page trash and restore hooks (issue #1723)", () => {
         "user",
       ),
     );
-    // Page operations refuse a parent with a canvas document, so this page is written through the choke point as the
-    // `pages` owner; it stands for a parent whose document is not a page.
+    // Page operations refuse a parent with a canvas document, so this page is written through the choke point
+    // as the `pages` owner.
     const page = await inTenant(async (client) => {
       const pagesDatabase = await ensurePagesDatabase(client);
       return createItemWithClient(
@@ -806,7 +791,7 @@ describe("page trash and restore hooks (issue #1723)", () => {
   it("trashes and restores a page whose stored parentItemId is not an item id without touching a document", async () => {
     const host = await createHost();
     const page = await createSubpage(host, "Detached");
-    // No operation reparents a page; this superuser write stands in for corrupted data the hooks must survive.
+    // Superuser write standing in for corrupted data.
     await admin.query(
       `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
       [page.pageItemId, "not-an-item-id"],
@@ -825,7 +810,7 @@ describe("page trash and restore hooks (issue #1723)", () => {
     const host = await createHost();
     const page = await createSubpage(host, "Release checklist");
     await trash(page.pageItemId);
-    // The choke point stores a title as text; this superuser write stands in for corrupted data.
+    // Superuser write standing in for corrupted data.
     await admin.query(`UPDATE items SET properties = jsonb_set(properties, '{title}', '42'::jsonb) WHERE id = $1`, [
       page.pageItemId,
     ]);
@@ -888,9 +873,7 @@ describe("collectSubpageTree (issue #1723)", () => {
 
     const pages = await tree(root.pageItemId);
 
-    // Breadth first: both direct subpages (in id order) before the nested page.
     expect(pages).toEqual([...[a.pageItemId, b.pageItemId].sort(), nested.pageItemId]);
-    // Below the host it also counts the root page itself.
     expect(new Set(await tree(host))).toEqual(
       new Set([root.pageItemId, a.pageItemId, b.pageItemId, nested.pageItemId]),
     );
@@ -925,8 +908,7 @@ describe("collectSubpageTree (issue #1723)", () => {
     const host = await createHost();
     const first = await createSubpage(host, "First");
     const second = await createSubpage(first.pageItemId, "Second");
-    // The API never reparents a page, so a cycle cannot be built through it; this superuser write stands in for
-    // corrupted data the walk must survive.
+    // Superuser write: the API never reparents a page, so a cycle only comes from corrupted data.
     await admin.query(
       `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
       [first.pageItemId, second.pageItemId],

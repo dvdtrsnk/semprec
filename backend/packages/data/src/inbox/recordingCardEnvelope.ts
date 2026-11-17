@@ -2,19 +2,15 @@ import { z } from "zod";
 import { ValidationError } from "../errors.js";
 import type { InboxAttachmentSource } from "./inboxAttachmentsStore.js";
 
-// The envelope and the context of the card that proposes transcribing an audio attachment of an Inbox item
-// (issue gh-1978). The card is an `inbox` card; its envelope kind is `transcription`, its `target` the id of the
-// attachment row. The producer is `recordingCardProducer.ts`, the validation `recordingCardValidation.ts` and the
-// confirm `recordingCardConfirm.ts`; the decision is in
-// docs/adr/2026-11-14-inbox-recording-cards-confirm-into-recording-intake.md.
+// The envelope and context of the `inbox` card that proposes transcribing an audio attachment: kind `transcription`,
+// `target` the attachment row id.
 
-/** The `entityKind` of a recording card's envelope. */
 export const RECORDING_ENTITY_KIND = "transcription";
 
-/** The largest speaker count a card may hold: the top of the `integer` columns of `recording_requests` that store it. */
+/** The top of the `recording_requests` `integer` columns that store it. */
 export const MAX_RECORDING_SPEAKERS = 2_147_483_647;
 
-/** The keys a recording card's envelope `properties` may hold; the values a user may edit on the card. */
+/** The values a user may edit on the card. */
 export const RECORDING_PROPERTY_KEYS: readonly string[] = [
   "name",
   "language",
@@ -26,13 +22,10 @@ export const RECORDING_PROPERTY_KEYS: readonly string[] = [
 ];
 
 /**
- * A recording card's envelope `properties`: a non-empty `name`, and the optional parameters of the recording. A
- * parameter the user cleared is `null`, which means the same as an absent one. `language` is an ISO 639-1 code,
- * `numSpeakersExact` an integer from 1 and `numSpeakersMin` an integer from 2, both at most `MAX_RECORDING_SPEAKERS`
- * (the width of the columns that store them), and at most one of the two holds a value. `noEvent` is the user's explicit
- * choice that the recording belongs to no Event (issue gh-1986): `true` is the choice, `false`, `null` and an absent
- * property mean that nothing was chosen, and `true` next to an `eventId` is refused. The recording time and the duration are not properties: they come from the attachment's metadata, so a
- * client-supplied `recordedAt` or `durationSeconds` is an unknown key.
+ * A non-empty `name` plus optional parameters; `null` equals absent. `language` is ISO 639-1; `numSpeakersExact` (from
+ * 1) and `numSpeakersMin` (from 2) are mutually exclusive and capped by the storing column. `noEvent: true` is an
+ * explicit no-Event choice and is refused next to an `eventId`. Recording time and duration come from the attachment
+ * metadata, so `recordedAt`/`durationSeconds` are unknown keys.
  */
 const recordingPropertiesSchema = z
   .strictObject({
@@ -56,7 +49,6 @@ const recordingPropertiesSchema = z
     path: ["noEvent"],
   });
 
-/** The validated parameters of a recording card, each optional one `null` when it is not set. */
 export interface RecordingCardProperties {
   name: string;
   language: string | null;
@@ -64,14 +56,11 @@ export interface RecordingCardProperties {
   numSpeakersMin: number | null;
   eventId: string | null;
   projectId: string | null;
-  /** True only when the user chose that the recording belongs to no Event; false for everything else. */
+  /** True only when the user chose that the recording belongs to no Event. */
   noEvent: boolean;
 }
 
-/**
- * Parses a recording card envelope's `properties`. An unknown key (`recordedAt` and `durationSeconds` included), a
- * missing or blank `name` and a value out of its domain are a `ValidationError` naming the field.
- */
+/** Parses the `properties`; unknown keys, a blank `name` and out-of-domain values are a `ValidationError` on the field. */
 export function parseRecordingCardProperties(properties: Record<string, unknown>): RecordingCardProperties {
   const parsed = recordingPropertiesSchema.safeParse(properties);
   if (!parsed.success) {
@@ -95,11 +84,8 @@ export function parseRecordingCardProperties(properties: Record<string, unknown>
 }
 
 /**
- * The `context` of a recording card (the card-state property of issue gh-1451, role `recording`). Only the producer
- * writes it and clients read it. `candidates` are the Events the card suggests (empty when the recording day is
- * unknown or no Event fits), `recording` is what the attachment's metadata knows before the transcription:
- * `durationSeconds` and `recordedAt` are omitted when the metadata has none, and `source` is where the attachment came
- * from.
+ * A recording card's `context`, written only by the producer. `candidates` are suggested Events (empty when the day is
+ * unknown); `recording` is what the attachment metadata knows (`durationSeconds`/`recordedAt` omitted when absent).
  */
 export const recordingCardContextSchema = z.object({
   role: z.literal("recording"),

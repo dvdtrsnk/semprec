@@ -1,7 +1,7 @@
 export interface UserAgentDevice {
-  /** The browser family, or `Other` when none matches. */
+  /** `Other` when none matches. */
   deviceName: string;
-  /** The operating-system family, or `null` when none matches. */
+  /** `null` when none matches. */
   osVersion: string | null;
 }
 
@@ -22,7 +22,6 @@ const OPERATING_SYSTEMS: readonly (readonly [string, RegExp])[] = [
   ["Linux", /\bLinux\b/],
 ];
 
-/** Derives the web device name (browser family) and OS family from a `User-Agent` header value. */
 export function deviceFromUserAgent(userAgent: string | null | undefined): UserAgentDevice {
   const ua = userAgent ?? "";
   return {

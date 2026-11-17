@@ -18,7 +18,7 @@ export interface ReplayCommandInput {
   openPool?: (connectionString: string) => Pool;
 }
 
-/** Reads a regular file of at most `MAX_LEDGER_BYTES` through one handle, so the cap holds for what is actually read. */
+/** One handle for the type check and the read, so the size cap holds for what is actually read. */
 async function readLedgerFile(path: string): Promise<string> {
   // O_NONBLOCK so that opening a FIFO returns at once and is then refused by the type check below.
   const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -34,9 +34,8 @@ async function readLedgerFile(path: string): Promise<string> {
 }
 
 /**
- * The replay CLI's behaviour, returning its exit code: 0 when nothing was refused, 1 when a tenant
- * was refused or the replay failed, 2 for bad input (a missing `DATABASE_URL`, a wrong argument
- * count, an unusable or malformed ledger), in which case nothing is connected or written.
+ * Exit code: 0 when nothing was refused, 1 when a tenant was refused or the replay failed, 2 for bad
+ * input (missing `DATABASE_URL`, wrong argument count, unusable ledger), with nothing connected or written.
  */
 export async function runReplayCommand(input: ReplayCommandInput): Promise<number> {
   const { args, databaseUrl, stdout, stderr, openPool = createPool } = input;

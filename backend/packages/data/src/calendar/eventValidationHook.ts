@@ -4,7 +4,7 @@ import type { DatabaseRow } from "../types.js";
 import { ValidationError } from "../errors.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
-/** The Events keys the rules below judge; a change to any of them runs the cross-field rules (issue #1663). */
+/** A change to any of these keys runs the cross-field rules. */
 const RULE_KEYS = ["date", "endDate", "timeFrom", "timeTo"] as const;
 type RuleKey = (typeof RULE_KEYS)[number];
 
@@ -15,7 +15,7 @@ function isEventsDatabase(database: DatabaseRow): boolean {
   return database.system && database.ownerModuleId === EVENTS_MODULE_ID;
 }
 
-/** A calendar date `YYYY-MM-DD` that exists; the timeline read (issue #1717) judges stored and requested days by it. */
+/** A calendar date `YYYY-MM-DD` that exists. */
 export function isCalendarDate(value: unknown): value is string {
   return (
     typeof value === "string" && CALENDAR_DATE_PATTERN.test(value) && DateTime.fromISO(value, { zone: "utc" }).isValid
@@ -34,10 +34,8 @@ function isWallClockTime(value: unknown, allow2400: boolean): value is string {
 }
 
 /**
- * The format rule of one present key. `date` must be a calendar date `YYYY-MM-DD`: a date that still carries a
- * time is one the Events time transform (#1598) could not convert, so it is refused here. `endDate`, `timeFrom`
- * and `timeTo` may be `null` (no value); any other value must be a calendar date or an `HH:MM` time, and only
- * `timeTo` may be `24:00`.
+ * `date` must be a calendar date: one that still carries a time is one the Events time transform could not
+ * convert. The other keys may be `null`; only `timeTo` may be `24:00`.
  */
 function assertFormat(key: RuleKey, value: unknown): void {
   switch (key) {
@@ -65,10 +63,8 @@ function assertFormat(key: RuleKey, value: unknown): void {
 }
 
 /**
- * The rules between `date`, `endDate`, `timeFrom` and `timeTo` on the stored result of a write. A value that is
- * not readable (a legacy stored value the write did not name) counts as no value. With both times present, the
- * end (`endDate ?? date`, `timeTo`) must be later than the start (`date`, `timeFrom`); the zero-padded values
- * order like the clock, and `24:00` after every other time.
+ * Judges the stored result of a write; an unreadable stored value counts as no value. The zero-padded values
+ * compare like the clock, with `24:00` after every other time.
  */
 function assertCrossField(properties: Record<string, unknown>): void {
   const date = isCalendarDate(properties.date) ? properties.date : null;
@@ -95,10 +91,8 @@ function assertCrossField(properties: Record<string, unknown>): void {
 }
 
 /**
- * The Events create rules of issue #1663 on the properties an Event would be stored with: `date` is required,
- * every present rule key passes its format rule, then the cross-field rules. A rejection is a `ValidationError`
- * naming the field. Callers that check properties before the write (a proposal envelope, issue #1818) pass the
- * result of the Events time transform (`deriveEventTimeProperties`), as the create hook sees it.
+ * Callers that check properties before the write (a proposal envelope) must pass the result of the Events time
+ * transform (`deriveEventTimeProperties`), as the create hook sees it.
  */
 export function assertEventCreateRules(properties: Record<string, unknown>): void {
   if (!Object.hasOwn(properties, "date")) {
@@ -110,25 +104,16 @@ export function assertEventCreateRules(properties: Record<string, unknown>): voi
   assertCrossField(properties);
 }
 
-/**
- * The Events create rules of issue #1663, registered by `../domainWriteHooks.ts`. It runs after the insert in
- * the write's transaction, on the stored properties after the Events time transform (#1598) and the defaults:
- * `date` is required, every present rule key passes its format rule, then the cross-field rules. A rejection is
- * a `ValidationError` naming the field, which rolls the insert back; REST answers it as 400 `validation_failed`, and
- * the agent operations and MCP carry the same error and `details`.
- */
+/** Runs after the insert in the write's transaction, so a `ValidationError` rolls the insert back. */
 export const eventValidationItemCreateHook: ItemCreateHook = async ({ database, properties }) => {
   if (!isEventsDatabase(database)) return;
   assertEventCreateRules(properties);
 };
 
 /**
- * The Events update rules of issue #1663, registered by `../domainWriteHooks.ts`. It runs after the update in
- * the write's transaction. Only the rule keys present in the written patch (after the time transform) are
- * format-checked, and the cross-field rules run only when the patch names one of `date`, `endDate`, `timeFrom`
- * or `timeTo`; they judge the stored row, so a stored value the patch did not name is read, and an unreadable
- * one counts as no value. A write that names none of the four (a rename, say) passes unchecked, which keeps an
- * Event with a legacy `date` editable until its value is converted (#1797).
+ * Runs after the update in the write's transaction. Only patched rule keys are format-checked; the cross-field
+ * rules judge the stored row. A write that names none of the rule keys passes unchecked, which keeps an Event
+ * with an unconverted `date` editable.
  */
 export const eventValidationItemUpdateHook: ItemUpdateHook = async ({ database, item, propertiesPatch }) => {
   if (!isEventsDatabase(database)) return;

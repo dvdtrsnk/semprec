@@ -38,10 +38,7 @@ const calendarRow = z.object({
 
 let pool: Pool;
 
-/**
- * The trash and restore of a calendar (issue gh-1803) as a client meets them: the generic item routes of the
- * production dispatcher, with the hooks that `@semprec/data` registers on import.
- */
+/** Through the production dispatcher's generic item routes, with the hooks `@semprec/data` registers on import. */
 describe("the generic item routes trash and restore a calendar with its Events (issue gh-1803)", () => {
   let server: Server;
   let baseUrl: string;
@@ -58,7 +55,7 @@ describe("the generic item routes trash and restore a calendar with its Events (
       tenantId: getTenantZeroId(),
       locale: "en",
     });
-    // Seeded after the English-speaking user exists, so the calendars are named `Personal`, `Work` and so on.
+    // Seeded after the English-speaking user exists, so the calendars have English names.
     await seedSystem(pool, createViewTypeRegistry());
     const calendars = (await createChokePoint(pool).listDatabases()).find(
       (database) => database.ownerModuleId === "calendars",
@@ -107,14 +104,12 @@ describe("the generic item routes trash and restore a calendar with its Events (
     return { status: res.status, body: await res.json() };
   }
 
-  /** A refusal as REST exposes it: the HTTP status and the error body's `code` and `details`. */
   async function refusal(method: string, path: string) {
     const response = await request(method, path);
     const parsed = restError.parse(response.body);
     return { status: response.status, code: parsed.error.code, details: parsed.error.details };
   }
 
-  /** The live calendars as stored. */
   async function calendars() {
     return z.array(calendarRow).parse((await createChokePoint(pool).listItems(calendarsId, { limit: 50 })).items);
   }
@@ -125,12 +120,10 @@ describe("the generic item routes trash and restore a calendar with its Events (
     return row;
   }
 
-  /** The ids of the live Events as stored. */
   async function liveEventIds(): Promise<string[]> {
     return (await createChokePoint(pool).listItems(eventsId, { limit: 50 })).items.map((item) => item.id);
   }
 
-  /** Creates an Event in the default calendar through the generic route. */
   async function createEvent(name: string): Promise<string> {
     const created = await request("POST", `/api/databases/${eventsId}/items`, {
       properties: { name, date: "2026-11-16" },

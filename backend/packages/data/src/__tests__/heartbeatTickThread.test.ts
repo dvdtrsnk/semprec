@@ -235,7 +235,6 @@ describe("heartbeat runs in their tick thread", () => {
   it("leaves the run unfinished when the actual action cannot insert its success message", async () => {
     const hb = await makeHeartbeat(CORE_AGENT_RUN_ACTION_ID);
     const action = coreAgentRunAction(pool, async () => ({ result: "done" }));
-    // Inject a database failure at the message insertion boundary reached by the action.
     await withTransaction(pool, async (client) => {
       await client.query(
         "CREATE FUNCTION batch16_reject_tick_message() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected message failure'; END $$",

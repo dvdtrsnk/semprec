@@ -31,7 +31,7 @@ let pool: Pool;
 let tenantZero: string;
 let tenantB: string;
 
-/** Tenant B's minimal mail fixture: the four module databases, no `key` (global until #1001). */
+/** Tenant B's minimal mail fixture: the four module databases, no `key` (`databases.key` is global). */
 async function createMailDatabasesInTenantB(): Promise<void> {
   await runInTenant(tenantB, () =>
     withTransaction(pool, async (client) => {
@@ -52,7 +52,6 @@ async function moduleDatabaseId(tenantId: string, moduleId: string): Promise<str
   );
 }
 
-/** A mailbox item plus a due sync-state row (and a stored credential), created inside `tenantId`. */
 async function createDueMailbox(tenantId: string): Promise<string> {
   const mailboxesId = await moduleDatabaseId(tenantId, MAILBOXES_MODULE_ID);
   return runInTenant(tenantId, () =>
@@ -68,7 +67,6 @@ async function createDueMailbox(tenantId: string): Promise<string> {
   );
 }
 
-/** An Emails item that never got an `item_search_index` row. */
 async function createUnindexedEmail(tenantId: string): Promise<{ itemId: string; emailsId: string }> {
   const emailsId = await moduleDatabaseId(tenantId, EMAILS_MODULE_ID);
   const itemId = await runInTenant(tenantId, () =>

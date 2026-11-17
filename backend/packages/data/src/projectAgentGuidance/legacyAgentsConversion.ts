@@ -10,7 +10,7 @@ import { guidanceDriftHeartbeatStore } from "../guidanceDrift/guidanceDriftHeart
 import { logger } from "../tenancy/logger.js";
 import { projectAgentGuidanceVersionStore } from "../projectAgentGuidanceVersionStore.js";
 
-/** The legacy labels of the `agents` property text, each with the section it fills (issue #1449). */
+/** Labels of the legacy `agents` property text, each with the section it fills. */
 const LEGACY_MARKERS: ReadonlyArray<{ label: string; key: ProjectAgentGuidanceSectionKey }> = [
   { label: "Purpose", key: "purpose" },
   { label: "Allowed", key: "allowed" },
@@ -19,10 +19,8 @@ const LEGACY_MARKERS: ReadonlyArray<{ label: string; key: ProjectAgentGuidanceSe
 ];
 
 /**
- * Splits a legacy `agents` text into the four guidance sections. A line that starts with a label followed by a
- * colon (`Purpose:`, `Allowed:`, `Not allowed:`, `General instructions:`, matched case-sensitively, with an optional
- * space after the colon) opens its section, which runs until the next label. Lines before the first label, and a
- * text with no label at all, belong to General instructions. A repeated label appends to its section.
+ * A line starting with `Label:` (case-sensitive, optional space after the colon) opens that section until the next
+ * label. Text before the first label, or with no label, belongs to General instructions; a repeated label appends.
  */
 export function legacyAgentsTextToSections(text: string): ProjectAgentGuidanceSections {
   const lines: Record<ProjectAgentGuidanceSectionKey, string[]> = {
@@ -51,13 +49,9 @@ export function legacyAgentsTextToSections(text: string): ProjectAgentGuidanceSe
 }
 
 /**
- * Writes the guidance row of one project from its legacy `agents` text (issue #1449). The row is inserted only when
- * the project has none, so a repeated call, or one after the user edited the row, changes nothing. An inserted row
- * also gets its `core.agentGuidanceDrift` heartbeat in the same transaction.
- *
- * Resolves `true` when this call inserted the row. A text that converts to no section text writes nothing, and a
- * converted document above `MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES` is skipped with a warning that names the tenant
- * and the project id only, never the text. Both resolve `false`.
+ * Inserts a project's guidance row from its legacy `agents` text only when it has none (idempotent, never
+ * overwrites a user edit), plus its drift heartbeat in the same transaction. Resolves `true` when it inserted. Empty
+ * conversions write nothing; oversized ones are skipped with a warning naming only tenant and project, never text.
  */
 export async function seedProjectAgentGuidanceFromLegacyText(
   client: PoolClient,
@@ -74,7 +68,7 @@ export async function seedProjectAgentGuidanceFromLegacyText(
     return false;
   }
 
-  // The owner is set only on the first insert: `owner_user_id` never changes through this path (only `transfer` may).
+  // The owner is set only on first insert; only `transfer` may change it.
   await projectAgentGuidanceVersionStore.lock(client, input.projectItemId);
   const existing = await client.query<{ project_item_id: string }>(
     "SELECT project_item_id FROM project_agent_guidance WHERE project_item_id = $1 FOR UPDATE",

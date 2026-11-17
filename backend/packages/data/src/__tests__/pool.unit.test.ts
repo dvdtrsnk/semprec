@@ -659,9 +659,7 @@ describe("search-lane pre-commit flush (R1 D1)", () => {
   });
 
   interface FakeOptions {
-    /** Identifier rows the registration check sees; all three by default. */
     registered?: readonly string[];
-    /** A statement (matched by substring) that fails, and its error. */
     fail?: { match: string; error: unknown; call?: number };
   }
 
@@ -687,7 +685,6 @@ describe("search-lane pre-commit flush (R1 D1)", () => {
   const addJobCall = z.tuple([z.string(), z.tuple([z.string(), z.string()]).rest(z.unknown())]);
   const envelope = z.object({ payload: z.record(z.string(), z.unknown()) });
 
-  /** The statements in order: the SQL text, or the identifier, key and payload of each add_job. */
   function statements(query: ReturnType<typeof fakeClient>["query"]): unknown[] {
     return query.mock.calls.map((call) => {
       const [sql] = call;
@@ -785,8 +782,7 @@ describe("search-lane pre-commit flush (R1 D1)", () => {
 
   it("refuses a non-search task, another tenant's job and a key of another task, keeping the valid registration", async () => {
     const { pool, query } = fakeClient();
-    // Prepared in the other tenant's own scope before the target tenant's transaction opens: a tenant scope
-    // cannot enter another tenant, so a foreign job can only arrive as a handle prepared elsewhere.
+    // A tenant scope cannot enter another tenant, so a foreign job can only arrive as a handle prepared elsewhere.
     const foreign = runInTenant(OTHER, () => prepareJob(REINDEX, {}, { jobKey: "b" }));
     await runInTenant(TENANT, () =>
       withTransaction(pool, async (client) => {

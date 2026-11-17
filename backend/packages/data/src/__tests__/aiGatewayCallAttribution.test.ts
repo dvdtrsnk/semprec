@@ -21,7 +21,6 @@ import {
 } from "../testSupport/testDb.js";
 
 let adminPool: Pool;
-/** The runtime-role pool applies the ambient tenant scope as `app.tenant_id` and enforces RLS. */
 let pool: Pool;
 let tenantZero: string;
 
@@ -97,7 +96,7 @@ describe("reserveGatewayCall attribution guard", () => {
     expect(rows).toEqual([{ tenant_id: tenantZero }]);
   });
 
-  // Strict `app_tenant_default()` (#1067): no fallback to the sole tenant.
+  // Strict `app_tenant_default()`: no fallback to the sole tenant.
   it("refuses a reservation with no scope at all, even while tenant zero is the only tenant, writing no row", async () => {
     await expectRefused(reserveGatewayCall(pool, RESERVATION));
     expect(await rowCount()).toBe(0);

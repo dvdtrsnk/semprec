@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/tasks` path family. */
 export const TASKS_ROUTES: RouteMatrixEntry[] = [
   // prettier-ignore
   { name: "task recurrence set", method: "PUT", path: `/api/tasks/${EXAMPLE_ID}/recurrence`, surface: "api", public: false, tenancy: "tenant" },

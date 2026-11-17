@@ -20,9 +20,8 @@ import {
   withTenantTransaction,
 } from "../testSupport/testDb.js";
 
-// A seeded tenant has the settings item (prepReminder 30 minutes before bed), the weekdays plan (mon to fri, 23:00 to
-// 06:45, alarm) and the weekend plan (sat and sun, 00:00 to 08:30, no alarm), in Europe/Prague. 2026-10-16 is a
-// Friday, so the night belongs to the Saturday morning and the weekend plan.
+// Seeded plans in Europe/Prague: weekdays mon-fri 23:00-06:45 with alarm, weekend sat-sun 00:00-08:30 without;
+// prepReminder 30 minutes before bed. 2026-10-16 is a Friday, so its night uses the weekend plan.
 
 const USER = { writerKind: "user" } as const;
 const NIGHT = "2026-10-16";
@@ -32,7 +31,6 @@ interface SleepTenant {
   settingsDatabaseId: string;
   plansDatabaseId: string;
   nightsDatabaseId: string;
-  /** The Projects item of the Semprec project, the agent project of a Semp turn. */
   projectItemId: string;
   settingsItemId: string;
   weekdays: { id: string; name: string };
@@ -99,7 +97,6 @@ function trash(t: SleepTenant, databaseId: string, itemId: string): Promise<unkn
   return runInTenant(t.tenantId, () => createChokePoint(dataPool).softDeleteItem(databaseId, itemId, undefined, USER));
 }
 
-/** Gives the Semprec project the access on the three sleep databases of the tenant. */
 async function grantSleep(t: SleepTenant, access: "none" | "read" | "write", only?: readonly string[]): Promise<void> {
   const ids = only ?? [t.settingsDatabaseId, t.plansDatabaseId, t.nightsDatabaseId];
   await inTenant(t.tenantId, async (client) => {
@@ -109,13 +106,12 @@ async function grantSleep(t: SleepTenant, access: "none" | "read" | "write", onl
 }
 
 interface ReadOptions {
-  /** The agent project the night is read for; the default is the Semprec project, `null` is no project. */
+  /** Defaults to the Semprec project; `null` is no project. */
   project?: string | null;
   attachedThisTurn?: boolean;
   night?: string;
 }
 
-/** Reads the ref like the expander does: in a REPEATABLE READ transaction, with the options of one reader. */
 function readNight(t: SleepTenant, options: ReadOptions = {}): Promise<SempRefContext | null> {
   const ref: SempMessageRef = { kind: "sleepNight", night: options.night ?? NIGHT };
   const project = options.project === undefined ? t.projectItemId : options.project;
@@ -215,7 +211,7 @@ describe("a sleepNight reference read (issue #1853)", () => {
     });
 
     it("is unavailable (null) when the settings item is gone", async () => {
-      // The seeded settings item is protected from deletion by the choke point, so the fixture trashes it as the table owner.
+      // The choke point protects the seeded settings item from deletion, so the table owner trashes it.
       await withTenantTransaction(adminPool, tenant.tenantId, async (client) => {
         await client.query("UPDATE items SET deleted_at = now() WHERE id = $1", [tenant.settingsItemId]);
       });

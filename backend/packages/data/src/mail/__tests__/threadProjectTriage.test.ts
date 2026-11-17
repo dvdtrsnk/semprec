@@ -47,7 +47,6 @@ const noopStorage: BlobStorageWriter = {
   },
 };
 
-/** A tenant of the test with the ids its checks need. */
 interface World {
   tenant: string;
   databases: Record<string, string>;
@@ -140,7 +139,6 @@ async function buildWorld(): Promise<World> {
   });
 }
 
-/** One message through the sync writer, in the tenant's runtime-role transaction. */
 async function ingest(options: IngestOptions = {}, target = world): Promise<TestThread> {
   const messageId = options.messageId ?? `<${randomUUID()}@example.test>`;
   return inTenant(
@@ -180,7 +178,6 @@ async function ingest(options: IngestOptions = {}, target = world): Promise<Test
   );
 }
 
-/** A Projects item; `status` is the select value. */
 async function createProject(name: string, status: string, target = world): Promise<string> {
   const created = await inTenant(
     () =>
@@ -211,7 +208,6 @@ async function notificationCount(): Promise<number> {
   return rows[0]?.n ?? -1;
 }
 
-/** A gateway that answers `answer(input)` and records every call. */
 function gatewayAnswering(answer: (input: AiGatewayCompletionInput) => unknown) {
   const calls: AiGatewayCompletionInput[] = [];
   const client: AiGatewayClientPort = {
@@ -234,14 +230,12 @@ function failingGateway(reason: "timeout" | "http" | "budget_exceeded" | "invali
 const triage = (threadItemId: string, gateway: AiGatewayClientPort, target = world) =>
   inTenant(() => triageThreadProject({ pool: data, gateway }, threadItemId), target.tenant);
 
-/** The text of the one user message the gateway was given. */
 function promptOf(call: AiGatewayCompletionInput | undefined): string {
   const message = call?.messages[0];
   if (typeof message?.content !== "string") throw new Error("Expected a text message");
   return message.content;
 }
 
-/** Runs the queued value-link propagation jobs until none is left. */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
   const handler = createCoreTaskList(data, createActionRegistry())[taskName];
@@ -309,7 +303,7 @@ describe("the thread project triage task (issue gh-1872)", () => {
       expect(job?.key).toBe(`${MAIL_TRIAGE_THREAD_PROJECT_TASK}:${thread.threadItemId}`);
       expect(job?.queue_name).toBe(`mail-thread-project:${world.tenant}`);
       expect(job?.max_attempts).toBe(3);
-      // The wait lets the inheritance of gh-1869 run first.
+      // The wait lets the project inheritance run first.
       const delay = (job?.run_at.getTime() ?? 0) - before;
       expect(delay).toBeGreaterThanOrEqual(THREAD_PROJECT_TRIAGE_DELAY_MS - 1000);
       expect(delay).toBeLessThanOrEqual(THREAD_PROJECT_TRIAGE_DELAY_MS + 30_000);

@@ -3,11 +3,8 @@ import { runAfterCommit } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 
 /**
- * Announces that the agent setup of the project `projectItemId` changed (its guidance, a tool grant,
- * a user heartbeat or a guidance drift finding): one `projectAgent` invalidation for every socket of
- * the tenant. Call it in the transaction of the write that changed the setup. On a transaction client
- * it is announced once the transaction has committed and a rollback announces nothing; on a bare pool
- * the statement that made the change has already committed, so it is announced at once.
+ * Publishes one tenant-wide `projectAgent` invalidation for a change of the project's agent setup. Call it in the
+ * write's transaction: on a transaction client it fires after commit (nothing on rollback); on a bare pool at once.
  */
 export function publishProjectAgentInvalidation(client: Pool | PoolClient, projectItemId: string): void {
   const notify = () => notifyInvalidation({ scope: "projectAgent", projectItemId });

@@ -23,7 +23,6 @@ let dataPool: Pool;
 const USER = { writerKind: "user" } as const;
 const AGENT = { writerKind: "agent", onBehalfOfUserId: randomUUID() } as const;
 
-/** The scalar properties of a subscribed event, in key order, with the type and the config the seed gives them. */
 const EXPECTED_PROPERTIES = [
   ["allDay", "checkbox", {}],
   ["calendar", "relation", null],
@@ -211,7 +210,6 @@ describe("subscribedEvents system database (issue gh-1962)", () => {
   });
 
   describe("writes", () => {
-    /** A subscribed event row as the later feed import writes it. */
     const ROW = {
       uid: "event-1@example.com",
       title: "Quarterly review",
@@ -408,7 +406,6 @@ describe("subscribedEvents system database (issue gh-1962)", () => {
       });
     });
 
-    /** Edges of the definition of `relationPropertyId`, read through the runtime role in the caller's tenant scope. */
     async function countEdges(relationPropertyId: string): Promise<number> {
       const { rows } = await dataPool.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM item_relations r

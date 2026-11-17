@@ -373,12 +373,10 @@ export function runTranscriptionFixture(input: FixtureInput, adminPool: Pool, re
   return runFixture(input, adminPool, undefined, undefined, recordLifecycle);
 }
 
-/** Exercise the same overflow failure with the producer's lack of a test observation. */
 export function runFixtureOverflowWithoutObservation(input: FixtureInput, adminPool: Pool) {
   return runFixture(input, adminPool, "overflow");
 }
 
-/** Closed fault controls exercise the same runner, parser and ownership cleanup as the producer. */
 export async function runFixtureGuardControl(control: GuardControl, input: FixtureInput, adminPool: Pool) {
   const observation: GuardObservation = {
     pid: null,

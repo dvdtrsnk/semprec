@@ -21,14 +21,13 @@ const APP_BASE_URL = "https://app.example.test";
 const PASSWORD = "correct-horse-battery";
 const UNISSUED_TOKEN = "a-token-that-was-never-issued";
 const INVITEE = "novak@example.cz";
-// Each acceptance that succeeds builds the new tenant's system databases before it answers.
+// A successful acceptance builds the new tenant's system databases before it answers.
 const PROVISIONING_TEST_TIMEOUT_MS = 60_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The email in a `{ user }` answer, parsed from its body text; any other shape fails the test. */
 function userEmailOf(text: string): unknown {
   const parsed: unknown = JSON.parse(text);
   if (!isRecord(parsed) || !isRecord(parsed.user)) throw new Error(`expected a { user } body, got ${text}`);
@@ -72,7 +71,6 @@ describe("createInvitationRequestListener (issue #1087)", () => {
     await dataPool.end();
   });
 
-  /** Starts the listener on a loopback port and returns its base URL. */
   async function serve(
     options: InvitationRequestListenerOptions = { trustProxy: false },
     pool: Pool = dataPool,
@@ -85,7 +83,6 @@ describe("createInvitationRequestListener (issue #1087)", () => {
     return `http://127.0.0.1:${address.port}`;
   }
 
-  /** Creates a pending invitation through the production store; returns its id and raw token. */
   async function issue(email: string): Promise<{ id: string; token: string }> {
     const created: CreatedInvite = await runAsSystem("invitationHandlerTest", () =>
       withTransaction(dataPool, (client) =>
@@ -136,7 +133,7 @@ describe("createInvitationRequestListener (issue #1087)", () => {
   it("answers every unusable token with the same 404 body: unknown, expired, revoked and used", async () => {
     const baseUrl = await serve();
     const expired = await issue(INVITEE);
-    // No production writer ages an invitation, so the expiry is set by raw SQL on the superuser pool.
+    // No production writer ages an invitation.
     await adminPool.query("UPDATE invites SET expires_at = now() - interval '1 second' WHERE id = $1", [expired.id]);
     const revoked = await issue("revoked@example.cz");
     await runAsSystem("invitationHandlerTest", () =>
@@ -228,13 +225,11 @@ describe("createInvitationRequestListener (issue #1087)", () => {
       const first = { "X-Forwarded-For": "203.0.113.7" };
       const second = { "X-Forwarded-For": "198.51.100.9" };
 
-      // A validation failure does not count, so three of them do not exhaust the two-event budget.
+      // Validation failures do not count against the two-event budget.
       for (let i = 0; i < 3; i += 1) {
         expect((await post(baseUrl, "{}", first)).status).toBe(400);
       }
-      // A success does not count either.
       expect((await accept(baseUrl, (await issue(INVITEE)).token, PASSWORD, first)).status).toBe(200);
-      // Two unusable tokens count, and the next request from the address is over the limit.
       expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, first)).status).toBe(404);
       expect((await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, first)).status).toBe(404);
       const refused = await accept(baseUrl, UNISSUED_TOKEN, PASSWORD, first);
@@ -242,7 +237,6 @@ describe("createInvitationRequestListener (issue #1087)", () => {
       expect(Number(refused.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
       expect(await refused.json()).toEqual({ error: "Too many attempts; try again later", code: "rate_limited" });
 
-      // Another address is not affected by the first one's budget.
       expect((await accept(baseUrl, (await issue("other@example.cz")).token, PASSWORD, second)).status).toBe(200);
     },
     PROVISIONING_TEST_TIMEOUT_MS,

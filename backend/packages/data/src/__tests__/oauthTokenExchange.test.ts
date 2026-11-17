@@ -331,7 +331,6 @@ describe("exchangeAuthorizationCode", () => {
       expect(error).not.toBeInstanceOf(MailAdminConsentRequiredError);
       const rejected = error as MailAuthorizationCodeRejectedError;
       expect(rejected.grantRefused).toBe(true);
-      // The redaction is unchanged: the error code is blanked and the message does not name it.
       expect(rejected.providerError).toBeNull();
       expect(rejected.message).toBe("OAuth code exchange rejected the authorization code (status 400)");
       const secrets = Object.values({ ...SENTINELS, ...overrides }).filter((value) => value === "invalid_grant");

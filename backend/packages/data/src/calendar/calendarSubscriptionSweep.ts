@@ -1,11 +1,6 @@
-// The hourly download of the feeds of subscription calendars (issue gh-1960). The task `calendarSubscriptionSweep` runs
-// for every active tenant in turn (`forEachActiveTenant`, docs/adr/2026-10-06-system-work-fans-out-per-tenant.md),
-// requests the feed of each live subscription calendar once with the validators of the last feed a consumer took over
-// from that address, and hands a changed feed to the registered consumer. Turning a feed into Events is a consumer's
-// work (issue #2004); with none registered a downloaded feed is only recorded as fetched.
-// Constrained by: docs/adr/2026-10-16-connect-time-outbound-address-checks.md,
-// docs/adr/2026-09-27-ssrf-protection-for-stored-outbound-urls.md,
-// docs/adr/2026-09-28-chunked-transactions-for-large-background-sweeps.md
+// Hourly download of subscription calendar feeds, per active tenant. Each live subscription calendar's feed is
+// requested once with the validators of the last feed taken over from that address; a changed feed goes to the
+// registered consumer, or is only recorded as fetched when none is registered.
 import type { ReadableStreamDefaultReader, ReadableStreamReadResult } from "node:stream/web";
 import type { Pool, PoolClient } from "pg";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -23,7 +18,6 @@ import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { feedUrlHash, recordCalendarFeedFailure, recordCalendarFeedFetched } from "./calendarFeedState.js";
 import { logger } from "./logger.js";
 
-/** What a consumer gets of a changed feed: the calendar it belongs to, the feed text and the validators the server sent. */
 export interface CalendarFeedInput {
   calendarItemId: string;
   body: string;
@@ -32,30 +26,27 @@ export interface CalendarFeedInput {
 }
 
 /**
- * Takes over a changed feed inside the transaction `client`, which is scoped to the calendar's tenant. The validators
- * of the feed are stored in that same transaction after the consumer returned, so a consumer that throws leaves the
- * stored validators as they were and the next run requests the feed in full again.
+ * Runs in a transaction scoped to the calendar's tenant. Validators are stored in the same transaction after
+ * the consumer returns, so a throwing consumer leaves them unchanged and the next run requests the full feed.
  */
 export type CalendarFeedConsumer = (client: PoolClient, feed: CalendarFeedInput) => Promise<void>;
 
 let registeredConsumer: CalendarFeedConsumer | null = null;
 
 /**
- * Registers the consumer of downloaded feeds (issue #2004), or none with `null`. There is no consumer by default; the
- * sweep then records a downloaded feed as fetched and leaves the stored validators alone, so the feed is requested in
- * full again once a consumer exists.
+ * None by default; the sweep then leaves stored validators alone so the full feed is requested once a consumer
+ * exists.
  */
 export function registerCalendarFeedConsumer(consumer: CalendarFeedConsumer | null): void {
   registeredConsumer = consumer;
 }
 
-/** The limits of one run. The defaults are those the issue decides; a test passes smaller ones. */
+/** Tests pass smaller limits. */
 export interface CalendarFeedLimits {
-  /** The time one feed may take, connection and body included. */
+  /** Connection and body included. */
   requestTimeoutMs: number;
-  /** The most bytes of a feed body; a larger body aborts the download. */
+  /** A larger body aborts the download. */
   maxBodyBytes: number;
-  /** The most subscription calendars one tenant has requested in one run. */
   maxCalendarsPerTenant: number;
 }
 
@@ -65,7 +56,7 @@ export const CALENDAR_FEED_LIMITS: CalendarFeedLimits = {
   maxCalendarsPerTenant: 100,
 };
 
-/** The short codes a failed request is recorded with (`calendar_feed_state.last_error_code`). */
+/** Stored in `calendar_feed_state.last_error_code`. */
 export type CalendarFeedErrorCode =
   | "urlNotAllowed"
   | "addressRefused"
@@ -76,10 +67,7 @@ export type CalendarFeedErrorCode =
   | "networkError"
   | "consumerFailed";
 
-/**
- * A request that did not deliver a feed; `status` is the HTTP status when the server answered, and `cause` the class
- * name of the error behind a `networkError`, which the code alone does not tell apart (the log carries it).
- */
+/** `cause` is the class name behind a `networkError`, which the code alone does not tell apart. */
 class CalendarFeedDownloadError extends Error {
   constructor(
     readonly code: CalendarFeedErrorCode,
@@ -91,7 +79,7 @@ class CalendarFeedDownloadError extends Error {
   }
 }
 
-/** Raised around what the consumer threw, so a failure of the consumer is told apart from a failure of the store. */
+/** Tells a consumer failure apart from a store failure. */
 class CalendarFeedConsumerError extends Error {
   constructor(cause: unknown) {
     super("The calendar feed consumer failed", { cause });
@@ -99,10 +87,7 @@ class CalendarFeedConsumerError extends Error {
   }
 }
 
-/**
- * One subscription calendar due for a request: the address it was listed with, and the validators stored for that
- * address (none when the stored ones came from another address).
- */
+/** `validators` is empty when the stored ones came from another address. */
 interface FeedTarget {
   calendarItemId: string;
   url: string;
@@ -118,7 +103,7 @@ function errorName(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
 }
 
-/** The class names of `err` and its `cause` chain, outermost first (names only: a message can hold an address). */
+/** Names only: a message can hold an address. */
 function errorNameChain(err: unknown): string {
   const names: string[] = [];
   const seen = new Set<unknown>();
@@ -131,13 +116,11 @@ function errorNameChain(err: unknown): string {
   return names.join(" <- ");
 }
 
-/** The message of the error `undici` raises for a redirect response when the request was made with `redirect: "error"`. */
 const UNDICI_REDIRECT_REFUSAL = "unexpected redirect";
 
 /**
- * Whether `err` or an error in its `cause` chain is the redirect refusal of the outbound client (`createOutboundHttp`
- * requests with `redirect: "error"`, and `undici` has no typed error for it). The message must equal the refusal's
- * exactly: an error that merely mentions a redirect, a host name for one, is a network failure.
+ * `createOutboundHttp` requests with `redirect: "error"` and `undici` has no typed error for it. The message must
+ * match exactly: an error merely mentioning a redirect is a network failure.
  */
 function isRedirectRefusal(err: unknown): boolean {
   const seen = new Set<unknown>();
@@ -158,7 +141,6 @@ function classifyRequestFailure(err: unknown, timeout: AbortSignal): CalendarFee
   return new CalendarFeedDownloadError("networkError", null, errorNameChain(err));
 }
 
-/** Reads the body of `response` as text, aborting through `abort` as soon as it is larger than `maxBytes`. */
 async function readCappedBody(response: Response, maxBytes: number, abort: AbortController): Promise<string> {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maxBytes) {
@@ -184,10 +166,8 @@ async function readCappedBody(response: Response, maxBytes: number, abort: Abort
 }
 
 /**
- * One request for the feed of `target`: `If-None-Match` and `If-Modified-Since` from its stored validators, no
- * redirect followed (the client refuses it), the whole request under `limits.requestTimeoutMs` and the body under
- * `limits.maxBodyBytes`. 304 is `notModified` and 200 is `changed` with the body; any other status, a redirect, a
- * refused address, a timeout, an oversized body and any other network failure is a `CalendarFeedDownloadError`.
+ * No redirect followed; the whole request under `requestTimeoutMs` and the body under `maxBodyBytes`. 304 is
+ * `notModified`, 200 is `changed`; anything else is a `CalendarFeedDownloadError`.
  */
 async function requestFeed(http: OutboundHttp, target: FeedTarget, limits: CalendarFeedLimits): Promise<FeedAnswer> {
   const timeout = AbortSignal.timeout(limits.requestTimeoutMs);
@@ -209,16 +189,12 @@ async function requestFeed(http: OutboundHttp, target: FeedTarget, limits: Calen
   } catch (err) {
     throw classifyRequestFailure(err, timeout);
   } finally {
-    // Frees the connection on every path out, a body that was read to its end included; aborting a finished request is a no-op.
+    // Frees the connection on every exit; aborting a finished request is a no-op.
     abort.abort();
   }
 }
 
-/**
- * The live subscription calendars of the tenant in scope that have a feed address, the ones requested longest ago (or
- * never) first, at most `limit`, with the validators stored for each. The bounded list holds ids, addresses and
- * validators only.
- */
+/** Longest-ago (or never) requested first. The bounded list holds ids, addresses and validators only. */
 async function listFeedTargets(client: PoolClient, limit: number): Promise<FeedTarget[]> {
   const calendars = await getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
   if (!calendars) return [];
@@ -240,7 +216,7 @@ async function listFeedTargets(client: PoolClient, limit: number): Promise<FeedT
       LIMIT $2`,
     [calendars.id, limit],
   );
-  // Validators go only to the address they came from: after the address changed the feed is requested in full.
+  // Validators go only to the address they came from.
   return rows.map((row) => {
     const sameAddress = row.feed_url_hash === feedUrlHash(row.url);
     return {
@@ -253,12 +229,9 @@ async function listFeedTargets(client: PoolClient, limit: number): Promise<FeedT
 }
 
 /**
- * Runs `work` in a transaction of the tenant in scope that holds the calendar's row lock, and only while the calendar
- * is still a live subscription calendar whose address is the one `target` was requested from. The listing and the
- * request happened before this transaction, outside any lock, so the address can have been changed (or the calendar
- * trashed or purged) since; nothing is delivered or stored for a feed that no longer belongs to the calendar. The lock
- * holds the address for the rest of the transaction, since a change of it takes the same row lock. Returns whether
- * `work` ran.
+ * Runs `work` under the calendar's row lock, only while it is still a live subscription calendar with the
+ * address `target` was requested from. Listing and request happen outside any lock, so the address may have
+ * changed since; an address change takes the same row lock, so the lock holds it for the rest of the transaction.
  */
 async function whileFeedIsCurrent(
   pool: Pool,
@@ -286,13 +259,7 @@ async function whileFeedIsCurrent(
   return current;
 }
 
-/**
- * Hands a changed feed to the registered consumer and stores its validators with the address they came from, in one
- * transaction of the tenant in scope that holds the calendar's row lock (`whileFeedIsCurrent`). A consumer that throws
- * rolls the transaction back, so neither its writes nor the validators are stored, and the throw is reported as
- * `CalendarFeedConsumerError`. Without a consumer only the fetch is recorded. A calendar whose address changed since
- * the request gets neither the feed nor a state row for it.
- */
+/** A throwing consumer rolls back both its writes and the validators, reported as `CalendarFeedConsumerError`. */
 async function deliverFeed(
   pool: Pool,
   consumer: CalendarFeedConsumer | null,
@@ -322,11 +289,7 @@ async function deliverFeed(
   });
 }
 
-/**
- * Stores the failure of one calendar's request in a transaction of its own, after the failed work rolled back (and
- * nothing when the calendar's address changed meanwhile: the failure belongs to the old address). `causeName` is the
- * class chain of the error behind a `networkError`.
- */
+/** Own transaction, after the failed work rolled back; skipped when the address changed meanwhile. */
 async function recordFailure(
   pool: Pool,
   target: FeedTarget,
@@ -338,7 +301,7 @@ async function recordFailure(
     recordCalendarFeedFailure(client, target.calendarItemId, code, status),
   );
   if (!recorded) return;
-  // Ids, the code and error class names only: the feed and the address (its query string can hold a secret) stay out of the log.
+  // The feed and the address (its query string can hold a secret) stay out of the log.
   logger.warn(
     { calendarItemId: target.calendarItemId, errorCode: code, status, ...(causeName === null ? {} : { causeName }) },
     "Calendar feed request failed",
@@ -346,9 +309,8 @@ async function recordFailure(
 }
 
 /**
- * Requests one calendar's feed and settles its row. A failed request, a refused address and a failed consumer are
- * recorded (`recordFailure`) and end this calendar's work without an error. Whatever else throws (the store, the
- * database) is not an answer of this calendar and propagates.
+ * Download, address and consumer failures are recorded and end this calendar's work without an error; anything
+ * else (store, database) propagates.
  */
 async function syncFeed(
   pool: Pool,
@@ -370,7 +332,7 @@ async function syncFeed(
     return;
   }
   if (answer.kind === "notModified") {
-    // The stored validators stay: a 304 may carry none, and the feed the consumer has is still the current one.
+    // The stored validators stay: a 304 may carry none, and the consumer's feed is still current.
     await whileFeedIsCurrent(pool, target, (client) =>
       recordCalendarFeedFetched(client, target.calendarItemId, 304, null),
     );
@@ -389,27 +351,17 @@ async function syncFeed(
 }
 
 /**
- * The task `calendarSubscriptionSweep` (crontab, `CORE_CRONTAB` in worker.ts): for every active tenant, requests the
- * feed of each live subscription calendar with a feed address once (at most `limits.maxCalendarsPerTenant`, the ones
- * requested longest ago first) and hands a changed feed to the registered consumer.
+ * Task `calendarSubscriptionSweep` (crontab, `CORE_CRONTAB` in worker.ts).
  *
- * Each address is judged again by `isBaselineOutboundUrl` before it is requested, and a refused one is recorded as
- * `urlNotAllowed` and not requested. The client pins the address a name resolves to at connect time and refuses a
- * non-public one, so a host that resolves to an internal address is recorded as `addressRefused`. Only the process-wide
- * test policy of `allowLoopbackOutboundForTests` lets a local server be requested, and under it the baseline is skipped.
- * The calendars of a tenant are listed once, bounded by the cap, and each is then settled in transactions of its own,
- * none of which spans a request (a bounded list of ids replaces the chunked listing of the ADR, which the cap makes
- * unnecessary).
+ * Each address is re-judged by `isBaselineOutboundUrl` (refused: `urlNotAllowed`); the client pins the resolved
+ * address at connect time and refuses a non-public one (`addressRefused`). Only the test policy of
+ * `allowLoopbackOutboundForTests` allows a local server, and skips the baseline.
  *
- * The validators stored for a calendar are sent only to the address they came from (`calendar_feed_state.feed_url_hash`),
- * and every write after the request (the consumer's, the validators, a 304, a failure) runs under the calendar's row lock
- * and only while the calendar is still live with the address it was requested from (`whileFeedIsCurrent`), so an address
- * changed during the run neither receives the old address's feed nor keeps its validators.
+ * A tenant's calendars are listed once, bounded by the cap (instead of a chunked listing), and each is settled in
+ * its own transactions, none spanning a request.
  *
- * One calendar's failure does not stop the others: a failed download or consumer is recorded in `calendar_feed_state`
- * and is not an error of the task, since the next run requests the feed again. An error outside that (the database)
- * is collected per calendar and thrown once the tenant's calendars are done; `forEachActiveTenant` collects it per
- * tenant and the task fails after every tenant ran.
+ * A download or consumer failure is recorded and is not a task error. Other errors are collected per calendar and
+ * thrown after the tenant's calendars; `forEachActiveTenant` collects per tenant.
  */
 export async function handleCalendarSubscriptionSweepTask(
   pool: Pool,

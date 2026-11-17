@@ -2,10 +2,8 @@ import type { Queryable } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import { parseAgentDatabaseAccess, type AgentDatabaseAccess } from "./agentDatabaseGrantsStore.js";
 
-// The user-only writes of `agent_database_grants` (issue #1810), the counterpart of
-// `mcp/mcpGrantsAdminStore.ts`. This module is deliberately not exported from this package's
-// `index.ts`: `agent-runtime` depends on `@semprec/data`, so keeping the writes off the public surface is
-// what makes them unreachable from agent code. The routes that call them are issue #1841's, through `agentDatabaseGrantsForProject.ts`.
+// User-only writes of `agent_database_grants`. Deliberately not exported from `index.ts`: `agent-runtime` depends on
+// `@semprec/data`, so keeping them off the public surface keeps them unreachable from agent code.
 
 export interface SetAgentDatabaseGrantInput {
   projectItemId: string;
@@ -18,11 +16,8 @@ interface AgentDatabaseGrantAccessRow {
 }
 
 /**
- * Stores the user's decision for one project and database, replacing an earlier one. The statement
- * resolves the database through row-level security before it inserts, so another tenant's (or a missing)
- * database is a not-found (404) instead of the foreign-key violation the table's composite tenant foreign
- * key would raise for it. A revoke that updates an existing row waits
- * for every transaction that checked that row (`assertAgentDatabaseAccess` holds it `FOR SHARE`).
+ * Upserts the decision. The database is resolved through RLS first, so a foreign or missing database is a 404
+ * rather than a composite-FK violation. Updating a row waits for transactions that hold it `FOR SHARE`.
  */
 export async function setAgentDatabaseGrant(
   client: Queryable,
@@ -41,10 +36,7 @@ export async function setAgentDatabaseGrant(
   return parseAgentDatabaseAccess(row.access);
 }
 
-/**
- * Removes the user's decision, so the default of the database applies again. Returns whether a row
- * existed: removing a decision that was never made is not an error.
- */
+/** Returns whether a row existed; removing a never-made decision is not an error. */
 export async function removeAgentDatabaseGrant(
   client: Queryable,
   projectItemId: string,

@@ -47,7 +47,7 @@ import { createActionQueueAffinity } from "../../scheduler/actions.js";
 
 let pool: Pool;
 
-/** An invitation of the shape issue #1757 gives a participant edge; an internal write without a writer stores it as `system`. */
+/** An internal write without a writer stores it as `system`. */
 const ACCEPTED_INVITATION = {
   status: "accepted",
   email: "alice@example.com",
@@ -65,11 +65,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/**
- * The value of `work`, or the string `"still waiting"` when it has not settled after `milliseconds`. The limit
- * only ends a wait that would otherwise last as long as a lock is held; work that does not wait settles long
- * before it.
- */
+/** `"still waiting"` after `milliseconds`: the limit only ends a wait that would last as long as a lock is held. */
 async function settledWithin<T>(work: Promise<T>, milliseconds = 10_000): Promise<T | "still waiting"> {
   let timer: NodeJS.Timeout | undefined;
   const limit = new Promise<"still waiting">((resolve) => {
@@ -91,7 +87,6 @@ async function propertyIdFor(databaseId: string, key: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Issue #185: AI-suggested speaker mappings are transcript cards; only a confirm writes the user-owned mapping. */
 describe("Speaker mapping suggestions (issue #185)", () => {
   let transcriptsId: string;
   let peopleId: string;
@@ -111,8 +106,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     peopleId = await databaseIdFor("people");
     eventsId = await databaseIdFor("events");
     proposalsId = await databaseIdFor("processingProposals");
-    // An Events `people` edge is a link-rule source (issue #1697): its write queues a propagation job, which
-    // needs a tenant scope.
+    // An Events `people` edge is a link-rule source: its write queues a job, which needs a tenant scope.
     chokePoint = bindToTenantZero(createChokePoint(pool));
 
     transcriptId = await withTransaction(pool, async (client) => {
@@ -120,7 +114,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       await writeComputed(client, transcriptsId, item.id, "segments", SEGMENTS);
       return item.id;
     });
-    // An Event's create requires a date (issue #1663); the speaker suggestion reads only its participants.
+    // An Event's create requires a date; the speaker suggestion reads only its participants.
     eventId = await createItem(eventsId, "Sync", { date: "2026-10-16" });
     aliceId = await createParticipant("Alice");
     bobId = await createParticipant("Bob");
@@ -293,7 +287,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         callerItemId: eventId,
         targetItemId: bobId,
       });
-      // The participant edge hook (issue #1757) refuses this shape, so only an edge stored before it can hold it.
+      // The participant edge hook refuses this shape, so only an old stored edge can hold it.
       const legacy = await pool.query("UPDATE item_relations SET metadata = $2::jsonb WHERE id = $1", [
         bobEdge.id,
         JSON.stringify({ invitation: { status: "unknown" } }),
@@ -832,12 +826,10 @@ describe("Speaker mapping suggestions (issue #185)", () => {
                   "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion, starts_with(query, 'SELECT graphile_worker.add_job(') AS enqueue, position('FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE' IN query) > 0 AS \"eventLock\" FROM pg_stat_activity WHERE pid = $1::int",
                   [secondPid, firstPid],
                 );
-                // Confirm-first: the user write's participant INSERT waits on the confirm's uncommitted participant
-                // edge. The confirm's insert-only write takes no Event row lock in the participant edge hook
-                // (issue #1757), so the user write passes that hook's lock and is not held there.
-                // User-first: the confirm writes its speakers edge first, and that edge's People `lastContact`
-                // enqueue (issue #1660) waits on the user write's uncommitted job under the same person's key, before
-                // the confirm reaches its participant insert.
+                // Confirm-first: the user write's participant INSERT waits on the confirm's uncommitted edge; the
+                // confirm's insert-only write takes no Event row lock, so the user write is not held in the hook.
+                // User-first: the confirm's speakers edge enqueues People `lastContact`, which waits on the user
+                // write's uncommitted job under the same person's key, before the participant insert.
                 expect(blocked.rows[0]).toEqual(
                   order === "user-first"
                     ? { blocked: true, insertion: false, enqueue: true, eventLock: false }
@@ -921,10 +913,9 @@ describe("Speaker mapping suggestions (issue #185)", () => {
             confirming = withTransaction(runtime, (client) =>
               confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
             );
-            // The confirm's speakers edge queued Alice's `lastContact` recompute (issue #1660). Alice already takes
-            // part in the Event, so the update below queues the same job key. A confirm whose participant insert
-            // waited for the row lock here would hold that key while it waits, and the two would deadlock. Such a
-            // wait cannot end inside this callback, so it is given a limit.
+            // The confirm queued Alice's `lastContact` recompute; the update below queues the same job key. A
+            // confirm whose participant insert waited for this row lock would hold that key and deadlock, so the
+            // wait is given a limit.
             const confirmed = await settledWithin(confirming);
             const updated = await updateItemWithClient(
               update,
@@ -1093,7 +1084,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
 
       expect(confirmed.properties).toMatchObject({ status: "confirmed", resultItemId: aliceId, resultLabel: "Alice" });
       expect(await mappedPersonIds()).toEqual([null, aliceId]);
-      // Only the `speakers` relation: the transcript also holds Alice in `people`, inherited from its Event (issue #1697).
+      // Only the `speakers` relation: the transcript also holds Alice in `people`, inherited from its Event.
       const { rows } = await pool.query<{ metadata: unknown }>(
         `SELECT r.metadata FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
          WHERE $1 IN (r.item_a, r.item_b) AND $2 IN (r.item_a, r.item_b) AND d.property_id_a = $3`,
@@ -1172,7 +1163,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       expect(await mappedPersonIds()).toEqual([null, null]);
     });
   });
-  /** A card's stored `properties` and `updated_at`, read without the choke point. */
+  /** Read without the choke point. */
   async function cardRow(cardId: string) {
     const { rows } = await pool.query<{
       properties: Record<string, unknown>;
@@ -1198,7 +1189,6 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       .alternatives.map((alternative) => alternative.personId)
       .sort();
 
-  /** What the producer does for the cards of a transcript whose Event or participants changed (issue gh-1942). */
   describe("a clarification card is refreshed and no other card is rewritten (issue gh-1942)", () => {
     it("refreshes an untouched clarification card with the new alternatives and, when confident, a proposal", async () => {
       expect(await propose([])).toEqual(["SPEAKER_00", "SPEAKER_01"]);
@@ -1222,7 +1212,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         history: [expect.objectContaining({ author: "ai", kind: "recompute" })],
       });
       expect(alternativeIds(proposed)).toEqual([aliceId, bobId].sort());
-      // The refreshed proposal names the person, so the card is found when that person is archived or deleted (issue gh-1916).
+      // The refreshed proposal names the person, so the card is found when that person is archived or deleted.
       expect(proposed.referencedItemIds).toEqual([aliceId]);
       const stillUnsure = (await cardRow(unsure)).properties;
       expect(stillUnsure).toMatchObject({ status: "needsClarification", proposal: null, aiVersion: 1 });
@@ -1327,7 +1317,6 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     });
   });
 
-  /** The checkpoint helpers the suggestion step shares with the task (issue gh-1942). */
   describe("the checkpoint binding", () => {
     const context = (eventId: string | null, ids: string[]) => ({
       eventId,
@@ -1368,7 +1357,6 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     });
   });
 
-  /** The hook that asks the speakers again after an edge write (issue gh-1942). */
   describe("the changed-edge trigger", () => {
     async function jobKeys(): Promise<string[]> {
       const { rows } = await pool.query<{ key: string; queue_name: string | null; max_attempts: number }>(
@@ -1508,7 +1496,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     });
 
     describe("with the Event card of a recording", () => {
-      /** A transcript with a date that no Event overlaps, so the match step left a new-meeting card. */
+      /** No Event overlaps the date, so the match step left a new-meeting card. */
       async function eventCard(): Promise<{ cardId: string; cardTranscriptId: string }> {
         const cardTranscriptId = await withTransaction(pool, async (client) => {
           const item = await createItemWithClient(

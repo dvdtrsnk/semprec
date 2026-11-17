@@ -34,7 +34,7 @@ import type {
 let pool: Pool;
 let tenantZero: string;
 
-/** Everything the spies recorded as one string; an `Error` is expanded, which `JSON.stringify` alone drops. */
+/** An `Error` is expanded, which `JSON.stringify` alone drops. */
 function loggedText(...spies: MockInstance[]): string {
   return JSON.stringify(
     spies.map((spy) => spy.mock.calls),
@@ -99,7 +99,6 @@ function scriptedSession(...batches: AgentMessage[][]): {
   return { createAgentSession, callCount: () => call, tasks, initialStates };
 }
 
-/** Blocks inside its single turn until `release()` is called — for exercising the busy path. */
 function blockingSession(): { createAgentSession: CreateAgentSession; release: () => void } {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -579,8 +578,7 @@ describe("SempConversation", () => {
 
   it("pauses (not finishes) the conversation on TTL expiry: closes the wake run as done, and the next send opens a fresh one", async () => {
     const ttlMs = 60;
-    // Two batches from one factory: the second wake calls createAgentSession() again for a
-    // fresh AgentSession, consuming the next scripted batch.
+    // The second wake calls createAgentSession() again, consuming the next scripted batch.
     const { createAgentSession } = scriptedSession(
       [{ kind: "turn_start" }, { kind: "message", text: "first wake" }, { kind: "turn_end" }],
       [{ kind: "turn_start" }, { kind: "message", text: "second wake" }, { kind: "turn_end" }],
@@ -698,11 +696,8 @@ describe("SempConversation", () => {
 
     await sendInTenantZero(conversation, "one");
 
-    // Invoke the TTL handler's private pause() directly rather than waiting out a real TTL:
-    // pause() claims the entry as busy synchronously, before its first `await` (the invariant
-    // the high-severity review finding required), so by the time `send()` below runs — the
-    // very next synchronous statement — it already observes `busy` and is rejected instead of
-    // reusing a session whose run pause() is concurrently finishing as `done`.
+    // Call the private pause() directly: it claims the entry as busy synchronously, before its first `await`, so the
+    // very next `send()` observes `busy` and is rejected.
     const pausePromise = pauseTenant(conversation, tenantZero);
     const duringPause = await sendInTenantZero(conversation, "during pause");
     expect(duringPause).toEqual({ ok: false, error: SEMP_BUSY_ERROR_MESSAGE });
@@ -1068,7 +1063,7 @@ describe("SempConversation across tenants", () => {
     initialState: AgentSessionOptions["initialState"];
   }
 
-  /** Sessions record the tenant they were woken in and every task they receive; a task listed in `gates` blocks its turn until released. */
+  /** Sessions record their wake tenant and every task; a task listed in `gates` blocks its turn until released. */
   function recordingSessions(gates: Map<string, Promise<void>> = new Map()): {
     createAgentSession: CreateAgentSession;
     sessions: SessionRecord[];
@@ -1363,8 +1358,7 @@ describe("SempConversation across tenants", () => {
     });
 
     it("fires a thread's TTL timer inside the tenant context", async () => {
-      // The runtime role's row-level security hides the run outside a tenant scope, so a pause that
-      // ran without one could not close it as done.
+      // RLS hides the run outside a tenant scope, so a pause without one could not close it.
       const { createAgentSession } = recordingSessions();
       const conversation = conversationFor(createAgentSession, {}, TTL_MS);
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -1523,7 +1517,7 @@ describe("SempConversation across tenants", () => {
   });
 
   describe("dropTenant (issue #1042)", () => {
-    /** A TTL no other timer in these tests uses, so the conversation's own TTL timers can be told apart. */
+    /** A TTL no other timer here uses, so the conversation's own timers can be told apart. */
     const DROP_TTL_MS = 987_654;
 
     async function runRowsOf(tenantId: string): Promise<Array<{ id: string; status: string; result: string | null }>> {
@@ -1636,9 +1630,8 @@ describe("SempConversation across tenants", () => {
       });
 
       /**
-       * Makes every close of `tenantId`'s runs to one of `statuses` raise until the trigger is dropped.
-       * The trigger body is DDL, which takes no bind parameters, so Postgres builds it with
-       * `format('%L', …)` from the bound values and the statement it returns is then executed.
+       * Makes every close of `tenantId`'s runs to one of `statuses` raise. Trigger DDL takes no bind parameters, so
+       * Postgres builds it with `format('%L', …)` from bound values and executes the result.
        */
       async function failRunCloses(tenantId: string, statuses: Array<"done" | "error">): Promise<void> {
         const { rows } = await adminPool.query<{ ddl: string }>(
@@ -1692,8 +1685,7 @@ describe("SempConversation across tenants", () => {
       it("keeps an idle dropped entry when its close fails, rejects sends meanwhile, and retries the close", async () => {
         const { createAgentSession, sessions } = recordingSessions();
         const conversation = conversationFor(createAgentSession, {}, RETRY_TTL_MS);
-        // The TTL pause of "b one" can fire before `dropTenant`; failing its `done` close too keeps
-        // the run open on that interleaving, so the drop still finds it `running`.
+        // The pause of "b one" can fire before `dropTenant`; failing `done` too keeps the run `running` for the drop.
         await failRunCloses(tenantB, ["done", "error"]);
         await sendAs(tenantB, conversation, "b one");
         const errorSpy = vi.spyOn(logger, "error");
@@ -1701,7 +1693,7 @@ describe("SempConversation across tenants", () => {
         await conversation.dropTenant(tenantB);
 
         expect((await runRowsOf(tenantB)).map((r) => r.status)).toEqual(["running"]);
-        // Only the error's name is logged, never the Postgres error whose detail can carry the row.
+        // Only the error's name is logged; the Postgres error detail can carry the row.
         const dropLogs = errorSpy.mock.calls.filter(
           ([, msg]) => msg === "SempConversation: failed to close dropped run, will retry",
         );

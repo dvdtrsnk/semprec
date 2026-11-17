@@ -44,8 +44,8 @@ describe("declarative area filters (issue #1597)", () => {
   async function link(databaseKey: string, propertyKey: string, callerItemId: string, targetItemId: string) {
     const property = (await chokePoint.listProperties(ids[databaseKey]!)).find((p) => p.key === propertyKey);
     if (!property) throw new Error(`No property '${databaseKey}.${propertyKey}'`);
-    // An Events `project` edge is a link-rule source (issue #1697): its write queues a propagation job, which
-    // needs a tenant scope.
+    // An Events `project` edge is a link-rule source: its write queues a propagation job, which needs a
+    // tenant scope.
     await inTenantZero(() =>
       chokePoint.createRelation({ relationPropertyId: property.id, callerItemId, targetItemId }),
     );
@@ -105,7 +105,7 @@ describe("declarative area filters (issue #1597)", () => {
     await create("files", { name: "Unrelated.pdf" });
     await link("files", "projects", ofHealthProject, healthProject);
     await link("files", "area", ownHealth, health);
-    // Own area first: once a file has a live project its own area is derived and refuses a write (#1595).
+    // Own area first: once a file has a live project its own area is derived and refuses a write.
     await link("files", "area", otherProjectOwnHealth, health);
     await link("files", "projects", otherProjectOwnHealth, workProject);
     expect(await query("files", expandAreaFilter(template("files"), health))).toEqual(
@@ -260,7 +260,6 @@ describe("resolving the declared area filters against a tenant's schema (issue #
     );
   }
 
-  /** Row counts of the tables a resolution reads, in the tenant's own scope. */
   async function schemaCounts(tenantId: string) {
     return runInTenant(tenantId, async () => {
       const { rows } = await dataPool.query<{ databases: number; properties: number; items: number }>(

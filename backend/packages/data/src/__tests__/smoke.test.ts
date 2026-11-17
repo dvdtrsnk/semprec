@@ -41,31 +41,25 @@ describe("smoke: choke-point end to end", () => {
       "System settings",
       "Threads",
     ]);
-    // The ten hardcoded databases (issue #24) carry a stable key and a null name
-    // (issue #235) instead of a hardcoded English label.
+    // Hardcoded databases carry a stable key and a null name instead of an English label.
     expect(keyed).toEqual(
       [
         "areas",
         "books",
-        // The Calendars system database (issue #1600).
         "calendars",
         "companies",
         "events",
         "files",
         "healthRecords",
-        // The Invitations system database of the calendar module (issue gh-1901).
         "invitations",
         "journal",
         "movies",
         "people",
         "projects",
-        // The Recipes system database (issue #1707).
         "recipes",
-        // The three system databases of the sleep module (issue #1776).
         "sleepNights",
         "sleepPlans",
         "sleepSettings",
-        // The subscribed events system database of the calendar module (issue gh-1962).
         "subscribedEvents",
         "tasks",
         "transcripts",

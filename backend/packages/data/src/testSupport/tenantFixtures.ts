@@ -6,28 +6,22 @@ import type { UserRow } from "../auth/types.js";
 import { createPool, withTransaction } from "../db/pool.js";
 
 /**
- * Harness for tests that need more than one tenant.
+ * Harness for multi-tenant tests.
  *
- * Rules:
- * - Isolation assertions use a runtime-role pool (`createRuntimeRolePool`), never the superuser
- *   pool: superusers and table owners bypass row-level security, so such a test proves nothing.
- * - `app_tenant_default()` is strict (#1067), so a scope-less read under a runtime role sees
- *   nothing and a scope-less insert is refused by the RLS `WITH CHECK` (SQLSTATE 42501, which Postgres
- *   evaluates before the `NOT NULL` constraint, 23502), however many tenants exist. That is the
- *   intended fail-closed behaviour; every write to a tenant table therefore runs inside a tenant
- *   (`withTenantTransaction`) or names `tenant_id`. Only the superuser pool from `getTestPool`
- *   starts its connections in tenant zero.
- * - `resetDatabase` removes every tenant except tenant zero, which keeps its id for the whole run.
+ * - Isolation assertions use a runtime-role pool (`createRuntimeRolePool`): superusers and table owners bypass RLS.
+ * - `app_tenant_default()` is strict: a scope-less read under a runtime role sees nothing and a scope-less insert
+ *   fails the RLS `WITH CHECK` (42501, before `NOT NULL`'s 23502). Tenant-table writes run in
+ *   `withTenantTransaction` or name `tenant_id`. Only `getTestPool` starts connections in tenant zero.
+ * - `resetDatabase` removes every tenant except tenant zero, whose id is stable for the run.
  */
 
 type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
 type RuntimeRole = "semprec_data" | "semprec_side";
 
-// Generated once per module load; every `createRuntimeRolePool` call re-applies it because other
-// test files set their own password on the same roles.
+// Re-applied on every `createRuntimeRolePool` call because other test files set their own password on the roles.
 const RUNTIME_ROLE_PASSWORD = randomUUID();
 
-/** The id of the tenant the migrations created, exported by globalSetup. */
+/** Exported by globalSetup. */
 export function getTenantZeroId(): string {
   const id = process.env.TEST_TENANT_ZERO_ID;
   if (!id) {
@@ -39,9 +33,8 @@ export function getTenantZeroId(): string {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * The libpq `options` string that starts every connection of a pool in tenant zero
- * (`-c app.tenant_id=<id>`). The id is interpolated, so it is checked against the UUID shape first:
- * a value with a space or a backslash could otherwise smuggle another `-c` option into the string.
+ * `-c app.tenant_id=<id>` for a pool's connections. The id is checked against the UUID shape first, so it cannot
+ * smuggle another `-c` option in.
  */
 export function tenantZeroSessionOptions(): string {
   const id = getTenantZeroId();
@@ -51,21 +44,14 @@ export function tenantZeroSessionOptions(): string {
   return `-c app.tenant_id=${id}`;
 }
 
-/**
- * Runs `fn` inside tenant zero, for a test that calls a job producer without a scope of its own:
- * `registerTask` refuses a tenant task whose job envelope carries no tenant, so the jobs `fn`
- * enqueues must carry one.
- */
+/** For a test that calls a job producer without its own scope: `registerTask` refuses jobs without a tenant. */
 export function inTenantZero<T>(fn: () => Promise<T>): Promise<T> {
   return runInTenant(getTenantZeroId(), fn);
 }
 
 /**
- * Returns `target` with every method run inside tenant zero (`runInTenant`), for a test that drives
- * a job producer (the choke point, a store's write functions) without a scope of its own:
- * `registerTask` refuses a tenant task whose job envelope carries no tenant, so the jobs those
- * writes enqueue must carry one. A bound method called from inside another tenant's scope throws
- * `TenantScopeConflictError`, as `runInTenant` does.
+ * Proxies `target` so every method runs inside tenant zero, for the same reason as `inTenantZero`. Called from
+ * inside another tenant's scope it throws `TenantScopeConflictError`.
  */
 export function bindToTenantZero<T extends object>(target: T): T {
   return new Proxy(target, {
@@ -78,7 +64,6 @@ export function bindToTenantZero<T extends object>(target: T): T {
   });
 }
 
-/** Inserts a `tenants` row (status `active` unless given) and returns its id. */
 export async function createTestTenant(pool: Pool, options: { status?: TenantStatus } = {}): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("INSERT INTO tenants (status) VALUES ($1) RETURNING id", [
     options.status ?? "active",
@@ -91,10 +76,8 @@ export async function createTestTenant(pool: Pool, options: { status?: TenantSta
 }
 
 /**
- * Upserts `tenantId`'s `tenant_ai_budgets` row; an omitted cap is `NULL` (no per-tenant cap for
- * that window). Raw SQL on the admin pool because no production writer exists yet and the table
- * is global, so no tenant scope applies. `resetDatabase` empties the table, and a tenant without a
- * row is refused every gateway call.
+ * Upserts the tenant's AI budget; an omitted cap is `NULL` (no cap). Raw SQL on the admin pool: no production writer
+ * exists and the table is global. A tenant without a row is refused every gateway call.
  */
 export async function setTenantAiBudget(
   pool: Pool,
@@ -108,14 +91,13 @@ export async function setTenantAiBudget(
   );
 }
 
-/** A pool logged in as a runtime role through the production pool constructor. The caller ends it. */
+/** Uses the production pool constructor. The caller ends it. */
 export async function createRuntimeRolePool(adminPool: Pool, role: RuntimeRole): Promise<Pool> {
   const baseUrl = process.env.TEST_DATABASE_URL;
   if (!baseUrl) {
     throw new Error("TEST_DATABASE_URL is not set — is vitest.config.ts's globalSetup wired up?");
   }
-  // `role` is a closed union and the password a UUID, so neither can break out of the statement;
-  // ALTER ROLE accepts no bind parameters.
+  // `role` is a closed union and the password a UUID; ALTER ROLE accepts no bind parameters.
   await adminPool.query(`ALTER ROLE ${role} WITH PASSWORD '${RUNTIME_ROLE_PASSWORD}'`);
   const url = new URL(baseUrl);
   url.username = role;
@@ -123,7 +105,7 @@ export async function createRuntimeRolePool(adminPool: Pool, role: RuntimeRole):
   return createPool(url.toString());
 }
 
-/** Test-only stand-in for the tenant scope primitive: runs `fn` in a transaction scoped to `tenantId`. */
+/** Test-only stand-in for the tenant scope primitive. */
 export async function withTenantTransaction<T>(
   pool: Pool,
   tenantId: string,
@@ -136,9 +118,8 @@ export async function withTenantTransaction<T>(
 }
 
 /**
- * The tenant the next test account binds to: tenant zero while it has no user, otherwise a fresh
- * tenant (`createTestTenant`). `users.tenant_id` is unique and NOT NULL (#1067), so every test
- * account needs a tenant of its own; the first one becomes tenant zero's user.
+ * Tenant zero while it has no user, otherwise a fresh tenant: `users.tenant_id` is unique, so every test account
+ * needs its own tenant.
  */
 export async function tenantForNextTestUser(pool: Pool): Promise<string> {
   const { rows } = await pool.query<{ bound: boolean }>(
@@ -148,11 +129,7 @@ export async function tenantForNextTestUser(pool: Pool): Promise<string> {
   return (rows[0]?.bound ?? false) ? createTestTenant(pool) : getTenantZeroId();
 }
 
-/**
- * Creates a test account bound to `tenantForNextTestUser`, so only the first call creates tenant
- * zero's user (the recipient of tenant zero's events and the actor of its root runs); every later
- * call creates a fresh tenant (`createTestTenant`) and binds the account to it.
- */
+/** Only the first call creates tenant zero's user (recipient of its events, actor of its root runs). */
 export async function createTenantZeroUser(pool: Pool, email = `${randomUUID()}@example.com`): Promise<UserRow> {
   return createUser(pool, { email, passwordHash: "unused", tenantId: await tenantForNextTestUser(pool) });
 }

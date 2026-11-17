@@ -50,7 +50,6 @@ import { CORE_AGENT_RUN_ACTION_ID } from "../scheduler/actions.js";
 import { createSempChatThread, sendSempMessage } from "../sempThreads/sempThreadsStore.js";
 import type { SempReplyStep } from "../semp/sempReplySteps.js";
 
-/** The locale the reads of this file are made in; an item thread's title is written in it. */
 const LOCALE = "en";
 
 /** The source of a run that has no thread and whose root run a person started. */
@@ -95,7 +94,6 @@ async function chatThread(title?: string): Promise<string> {
   return threadId;
 }
 
-/** A heartbeat called `name` and its tick thread, both through their production writers. */
 async function tickThread(name: string) {
   const projectItemId = await createTestProjectItem(pool);
   return withTransaction(pool, async (client) => {
@@ -138,7 +136,6 @@ async function itemThread(properties: Record<string, unknown>) {
   });
 }
 
-/** `hops` delegated runs below `root`, each the parent of the next; returns the lowest one. */
 async function delegateBelow(root: AgentRunRow, hops: number): Promise<AgentRunRow> {
   let run = root;
   for (let hop = 0; hop < hops; hop += 1) {
@@ -612,13 +609,11 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
   });
 
   describe("source (issue #1766)", () => {
-    /** The sources the queue lists in `locale`, by request id. */
     async function listedSources(locale = LOCALE): Promise<Map<string, ApprovalRequestSource>> {
       const rows = await listApprovalRequestsQueue(pool, ownerId, locale);
       return new Map(rows.map((row) => [row.id, row.source]));
     }
 
-    /** The statements `listApprovalRequestsQueue` runs, read inside one transaction. */
     async function listedStatements(): Promise<string[]> {
       return withTransaction(pool, async (client) => {
         const query = vi.spyOn(client, "query");
@@ -855,7 +850,6 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
   });
 
   describe("getApprovalRequestSourceKind (issue #1787)", () => {
-    /** A run of the tick thread of a new heartbeat, below `parentRunId` when one is given. */
     async function tickRun(parentRunId?: string): Promise<AgentRunRow> {
       const tick = await tickThread("Sunday planning");
       return createAgentRun(pool, {
@@ -962,7 +956,6 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
   describe("paged list (issue #1785)", () => {
     type PageInput = Omit<ListApprovalRequestsPageInput, "ownerUserId">;
 
-    /** One page of the owner's list; `input` overrides the pending list, newest first, of every source. */
     function page(input: Partial<PageInput> = {}) {
       return withTransaction(pool, (client) =>
         listApprovalRequestsQueuePage(client, {
@@ -983,7 +976,6 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       return (await page(input)).rows.map((row) => row.id);
     }
 
-    /** The ids of every page of the list, read by following `nextCursor` until it is null. */
     async function drain(input: Partial<PageInput>): Promise<string[][]> {
       const pages: string[][] = [];
       let cursor: string | null = null;
@@ -1077,8 +1069,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       const broken = await requestOf(run);
       await decideApprovalRequest(pool, decided.id, "approved", ownerId);
       await decideApprovalRequest(pool, broken.id, "rejected", ownerId);
-      // Raw SQL: only the one-time cutover of issue #89 rejects a request without a decision time, and it
-      // does nothing on a database that it has already migrated, as this one is.
+      // Raw SQL: no production writer leaves a request without a decision time.
       await pool.query("UPDATE approval_requests SET decided_at = NULL WHERE id = $1", [broken.id]);
 
       expect(await pageIds({ status: "decided" })).toEqual([decided.id]);
@@ -1146,7 +1137,6 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       expect((await filtered(["mcp"])).map((row) => row.id).sort()).toEqual(idsOf(mcpIds));
       expect((await filtered(["mcp", "tick"])).map((row) => row.id).sort()).toEqual(idsOf([...mcpIds, ...tickIds]));
 
-      // The kind the query filters by is the kind each row shows.
       const all = (await page({ order: "asc" })).rows;
       expect(all).toHaveLength(chatIds.length + tickIds.length + mcpIds.length);
       for (const kind of ["chat", "tick", "mcp"] as const) {
@@ -1194,7 +1184,6 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       await requestOf(heartbeatRoot);
       await requestOf(await delegateBelow(heartbeatRoot, 1));
       await requestOf(await userRun());
-      // A decided request is in neither the list nor the count.
       await decideApprovalRequest(pool, (await requestOf(await userRun())).id, "approved", ownerId);
 
       const count = (sourceKinds: ApprovalRequestSourceKind[] | null) =>
@@ -1289,7 +1278,6 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       expect(await search("propertyDelete")).toEqual([]);
       expect(await search("propertyName")).toEqual([]);
 
-      // A text that folding leaves empty is no filter.
       expect(await search("\u0301")).toHaveLength(8);
 
       // An Inbox item in the trash gives its thread no text to match.
@@ -1334,7 +1322,6 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       }
       const first = await page({ limit: 2 });
       expect(first.nextCursor).toEqual(expect.any(String));
-      // A page that holds the last rows exactly has no cursor.
       expect((await page({ limit: 5 })).nextCursor).toBeNull();
       expect(await drain({ limit: 5 })).toHaveLength(1);
     });
@@ -1344,8 +1331,7 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       const first = await requestOf(run);
       const second = await requestOf(run);
       const third = await requestOf(run);
-      // Decided in an order that is neither the order in which the requests were made nor its reverse,
-      // so the pages below follow the decisions and no order by request time.
+      // Decided in neither request order nor its reverse, so the pages follow the decisions.
       for (const request of [second, third, first]) {
         await decideApprovalRequest(pool, request.id, "rejected", ownerId);
       }
@@ -1379,9 +1365,8 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
       const own = await requestOf(await userRun());
       const ownDecided = await requestOf(await userRun());
       await decideApprovalRequest(pool, ownDecided.id, "approved", ownerId);
-      // Another account's run lives in that account's own tenant: a run's actor must be its own
-      // tenant's user (agent_runs_actor_user_id_tenant_fkey, issue #1066). This pool bypasses row-level
-      // security, so only the owner condition of the query keeps these rows out.
+      // Another account's run lives in that account's own tenant. This pool bypasses row-level security, so
+      // only the owner condition of the query keeps these rows out.
       const foreignTenant = await createTestTenant(pool);
       const foreignUser = await createRawUser(pool, {
         email: `${randomUUID()}@example.com`,
@@ -1609,8 +1594,8 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
     });
 
     it("gives a missing request and a request of another user the same null, and still reads the caller's own", async () => {
-      // The other user lives in a tenant of its own (one user per tenant). This pool bypasses row-level
-      // security, so only the owner condition of the query keeps the foreign request out.
+      // The other user lives in a tenant of its own. This pool bypasses row-level security, so only the owner
+      // condition of the query keeps the foreign request out.
       const foreignTenant = await createTestTenant(pool);
       const otherUserId = (
         await createRawUser(pool, {

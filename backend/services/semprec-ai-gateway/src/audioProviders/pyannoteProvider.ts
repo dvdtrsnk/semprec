@@ -12,9 +12,7 @@ const PYANNOTE_API_URL = "https://api.pyannote.ai/v1";
 const PYANNOTE_DIARIZATION_MODEL = "pyannote-3";
 const MAX_RESPONSE_BODY_BYTES = 10 * 1024 * 1024;
 const POLL_INTERVAL_MS = 1_000;
-// Each attempt can take up to POLL_INTERVAL_MS + the 55s per-request HTTP timeout below, so this
-// bounds wall-clock time at roughly 300 * 56s ≈ 4.7h worst case, not 300s — a name like MAX_POLLS
-// alone would suggest the shorter figure.
+// Each attempt can take POLL_INTERVAL_MS plus the per-request timeout: about 4.7 h worst case.
 const MAX_POLL_ATTEMPTS = 300;
 
 type PyannoteJob = { jobId?: unknown; status?: unknown; output?: unknown };
@@ -63,8 +61,7 @@ function isPrivateOrReservedIp(hostname: string, family: 4 | 6): boolean {
   if (lower === "::1" || lower === "::" || lower.startsWith("fc") || lower.startsWith("fd")) {
     return true;
   }
-  // Link-local is the full fe80::/10 range (first hextet 0xfe80-0xfebf), not just the literal
-  // "fe80" prefix — fe90::, fea0::, febf:: etc are link-local too.
+  // The full fe80::/10 range (0xfe80-0xfebf), not just the literal "fe80" prefix.
   const firstGroup = lower.split(":", 1)[0];
   if (firstGroup && /^[0-9a-f]{1,4}$/.test(firstGroup)) {
     const groupVal = parseInt(firstGroup, 16);
@@ -82,12 +79,7 @@ function isPrivateOrReservedIp(hostname: string, family: 4 | 6): boolean {
   return false;
 }
 
-/**
- * The presigned PUT URL comes from pyannoteAI's own response, not from our code — if pyannoteAI
- * were compromised or its TLS connection MitM'd, a crafted response could redirect the upload to
- * an internal/loopback address. Rejects anything that isn't an https URL with a public-looking
- * host before it's ever fetched.
- */
+/** The presigned URL comes from pyannoteAI's response, so it must not be able to aim the upload at an internal address. */
 function assertPublicUploadUrl(uploadUrl: string): void {
   let parsed: URL;
   try {
@@ -102,8 +94,7 @@ function assertPublicUploadUrl(uploadUrl: string): void {
   if (hostname === "localhost" || hostname.endsWith(".internal") || hostname.endsWith(".local")) {
     throw new AudioProviderCallError("pyannoteAI presigned upload URL targets a disallowed host");
   }
-  // URL.hostname wraps IPv6 literals in brackets (e.g. "[::1]"); isIP rejects the brackets
-  // outright, which would otherwise skip the IPv6 branch below for every IPv6 literal.
+  // URL.hostname brackets IPv6 literals, which isIP would reject.
   const bareHostname = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   const family = isIP(bareHostname);
   if (family && isPrivateOrReservedIp(bareHostname, family as 4 | 6)) {
@@ -125,13 +116,9 @@ function requestSignal(callerSignal: AbortSignal | undefined): AbortSignal {
 }
 
 /**
- * pyannoteAI's `/diarize` endpoint fetches its input from a URL it controls, not from bytes
- * posted directly to it — this uploads `request.audio` to pyannoteAI's own presigned storage
- * first (its documented "media input" flow: `POST /media/input {url: "media://<key>"}` returns a
- * presigned PUT URL, then the bytes are PUT there) and hands `/diarize` the resulting `media://`
- * key. This sidesteps needing any publicly-fetchable URL of our own for the source audio — there
- * isn't one, since Semprec's blob storage requires an authenticated session — and it avoids
- * accepting a caller-supplied `audioUrl` that would otherwise need SSRF validation.
+ * `/diarize` fetches its input by URL, so the audio is uploaded to pyannoteAI's presigned storage
+ * first (`POST /media/input`, then PUT) and passed as a `media://` key. Our blob storage has no
+ * public URL, and no caller-supplied URL needs SSRF validation.
  */
 async function uploadMedia(headers: Record<string, string>, request: DiarizationRequest): Promise<string> {
   const mediaKey = `media://semprec-${randomUUID()}`;
@@ -203,8 +190,7 @@ export function createPyannoteDiarizationProvider(apiKey: string): DiarizationPr
       if (typeof jobId !== "string") throw new AudioProviderCallError("pyannoteAI did not return a job id");
 
       for (let poll = 0; poll < MAX_POLL_ATTEMPTS; poll += 1) {
-        // Checked on both sides of the sleep so a disconnect stops the loop within one poll
-        // interval instead of after up to MAX_POLL_ATTEMPTS attempts.
+        // Checked on both sides of the sleep so a disconnect stops within one poll interval.
         if (request.signal?.aborted) throw new AudioProviderCallError("pyannoteAI diarization aborted by the caller");
         await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         if (request.signal?.aborted) throw new AudioProviderCallError("pyannoteAI diarization aborted by the caller");

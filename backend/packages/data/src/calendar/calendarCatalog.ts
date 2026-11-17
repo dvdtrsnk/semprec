@@ -5,7 +5,7 @@ import { toManifestLocale } from "../manifest/catalogResolution.js";
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
-/** The calendar module's catalogs (`calendar/i18n`), loaded once per process; a failed load is not cached. */
+/** Loaded once per process; a failed load is not cached. */
 function getCatalogs(): Promise<ModuleCatalogs> {
   catalogsPromise ??= loadModuleCatalogs(import.meta.url).catch((error: unknown) => {
     catalogsPromise = undefined;
@@ -15,11 +15,9 @@ function getCatalogs(): Promise<ModuleCatalogs> {
 }
 
 /**
- * A lookup of the calendar module catalog (`calendar/i18n`) in the language of the tenant's user, Czech while
- * the tenant has no user and English for a locale the catalogs do not have. The tenant's user is read once, by
- * this call, whatever the number of entries looked up. A key missing from both catalogs resolves to the key
- * itself (`resolveCatalogLabel`). An entry is a template when it has `{placeholders}`; the caller fills them
- * through a replacer function so that user content is never read as a replacement pattern.
+ * Lookup in the language of the tenant's user (Czech without a user, English for an unknown locale). A missing
+ * key resolves to itself. Templates are filled by the caller through a replacer function so user content is
+ * never read as a replacement pattern.
  */
 export async function readCalendarCatalog(client: PoolClient): Promise<(key: string) => string> {
   const catalogs = await getCatalogs();

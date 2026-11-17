@@ -1,13 +1,8 @@
-// Owns the Inbox-origin stamp on item reads: one set-based lookup of `item_origins` per page. The
-// rows are written by the inbox domain (inbox/itemOriginsStore.ts); this module only reads them, so
-// the choke point never imports the inbox domain (chokepoint-knows-no-domain).
+// The Inbox-origin stamp on item reads. The rows are written by the inbox domain; this module only
+// reads them so the choke point never imports it.
 import type { PoolClient } from "pg";
 
-/**
- * Stamps `fromInbox` on a page of items from one set-based lookup: true exactly when the item has an
- * origin row captured through the Inbox. Rows are tenant-scoped by row-level security; an empty page
- * issues no query.
- */
+/** `fromInbox` is true exactly when the item has an origin row captured through the Inbox. An empty page issues no query. */
 export async function withFromInbox<T extends { id: string }>(
   client: PoolClient,
   items: T[],

@@ -68,7 +68,6 @@ interface SeededLibrary {
 }
 let library: SeededLibrary;
 
-/** The Books and Movies databases of the tenant `id`, seeded through the runtime role. */
 async function seedTenantLibrary(id: string): Promise<SeededLibrary> {
   return runInTenant(id, async () => {
     await seedSystem(runtime);
@@ -132,7 +131,6 @@ async function queuedJobs(itemId: string): Promise<number> {
   return rows[0]?.n ?? -1;
 }
 
-/** Every file under the blob root, as paths relative to it. */
 async function storedFiles(): Promise<string[]> {
   const entries = await readdir(storageRoot, { recursive: true, withFileTypes: true });
   return entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
@@ -144,7 +142,6 @@ function recordInvalidations(): InvalidationEvent[] {
   return events;
 }
 
-/** Runs the metadata job once for an item that already has an automation row, with a fetcher that returns `result`. */
 async function runJob(
   itemId: string,
   moduleId: "books" | "movies",
@@ -704,7 +701,6 @@ describe("library cover candidates (issue gh-1812)", () => {
       );
     }
 
-    /** A download that returns different bytes per URL and records the URLs it was asked for. */
     function recordingDownload(): { download: LibraryCoverDownload; urls: string[] } {
       const urls: string[] = [];
       const download: LibraryCoverDownload = async (url) => {
@@ -747,7 +743,6 @@ describe("library cover candidates (issue gh-1812)", () => {
           updatedAt: stored.updatedAt,
           userId,
         });
-        // The other candidates stay selectable.
         expect(await storedCandidates(itemId)).toHaveLength(3);
 
         await runJob(itemId, moduleId, {

@@ -30,11 +30,9 @@ import {
 import { createDispatcher } from "../app.js";
 
 /**
- * Issue gh-1896 through the production composition path: the real dispatcher mounts the send route of the mail module,
- * and when the caller's container carries no send adapters it builds the transports of the mailbox's provider from the
- * OAuth clients and the outbound `fetch` of that container, and reads attachment bytes from its blob storage. The data
- * package's `mailDraftSendRoute.test.ts` covers every branch of the operation; this file covers the wiring from the
- * HTTP request to the provider and the answers' statuses and bodies.
+ * Draft send through the production composition: without send adapters in the container, the real dispatcher builds
+ * the provider's transports from its OAuth clients and outbound `fetch` and reads attachments from its blob storage.
+ * Operation branches are covered by the data package's `mailDraftSendRoute.test.ts`.
  */
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -45,7 +43,6 @@ const moduleRegistry = await loadFullModuleRegistry();
 const blobStorage = new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-draft-send-${randomUUID()}`));
 const originalScopeMode = process.env.SEMPREC_TENANT_SCOPE;
 
-/** What Google was asked, and whether it still accepts the stored refresh token. */
 const google = { sends: [] as { threadId: string | undefined; raw: string }[], revoked: false };
 const outboundHttp = vi.fn<typeof fetch>(async (input, init) => {
   const target = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -89,7 +86,6 @@ async function request(
   return { status: res.status, body: isJson ? JSON.parse(text) : text };
 }
 
-/** A Gmail mailbox with a stored refresh token, a Drafts folder and a Sent folder, and a draft in it; answers the draft's id. */
 async function gmailDraft(draftBody: Record<string, unknown> = {}): Promise<{ draftId: string; mailboxId: string }> {
   const address = `${randomUUID()}@example.test`;
   const mailboxId = await runInTenant(tenantId, () =>

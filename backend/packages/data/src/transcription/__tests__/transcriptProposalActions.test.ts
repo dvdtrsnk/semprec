@@ -85,10 +85,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
     return item.id;
   }
 
-  /**
-   * An existing Event on the recording's day. Its create needs a `date` (issue #1663); with no type and no start it is
-   * never a match candidate, as the date-less Events of these scenarios were not.
-   */
+  /** On the recording's day; with no type and no start it is never a match candidate. */
   async function existingEvent(name: string): Promise<string> {
     const item = await withTransaction(pool, (client) =>
       createItemWithClient(client, { databaseId: eventsId, properties: { name, date: "2024-03-01" } }),
@@ -96,7 +93,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
     return item.id;
   }
 
-  /** A `kind = 'transcript'` card as the match step emits it: no Event in the window, so a create-Event proposal. */
+  /** As the match step emits it: no Event in the window, so a create-Event proposal. */
   async function createTranscriptCard(): Promise<{ transcriptId: string; cardId: string }> {
     const transcriptId = await createTranscript();
     await withTransaction(pool, (client) => matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 }));
@@ -115,10 +112,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
     );
   }
 
-  /**
-   * Confirms inside tenant zero: a confirmed Event with a project writes an Events `project` edge, a link-rule
-   * source (issue #1697), and that write queues a propagation job, which needs a tenant scope.
-   */
+  /** In tenant zero: an Events `project` edge is a link-rule source, so its write queues a job needing a tenant scope. */
   function confirm(cardId: string) {
     return inTenantZero(() =>
       withTransaction(pool, (client) =>
@@ -140,12 +134,12 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
     return { entityKind: "relation", target: eventId, properties: { propertyKey: "event" } };
   }
 
-  /** The create-Event envelope the match step proposes: the recording's date in the tenant zone, date-only. */
+  /** The recording's date in the tenant zone, date-only. */
   function createEvent(name = "Weekly sync"): ProposalEnvelope {
     return { entityKind: "database", target: eventsId, properties: { name, type: "meeting", date: "2024-03-01" } };
   }
 
-  /** The new-meeting envelope the match step proposes for the recording of these scenarios: named after the transcript, 13:00-14:00 Prague time. */
+  /** Named after the transcript, 13:00-14:00 Prague time. */
   function newMeeting(): ProposalEnvelope {
     return {
       entityKind: "database",
@@ -154,7 +148,6 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
     };
   }
 
-  /** Every Transcripts <-> Events edge, as `{ transcriptId, eventId }` pairs. */
   async function transcriptEventEdges(): Promise<Array<{ transcriptId: string; eventId: string }>> {
     const eventPropertyId = await propertyIdFor(transcriptsId, "event");
     const transcriptPropertyId = await propertyIdFor(eventsId, "transcript");
@@ -189,8 +182,8 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
   }
 
   /**
-   * Makes the card one written before `referencedItemIds` existed, so the trash of its project does not invalidate it (issue
-   * #1916) and the test reaches the confirm's own validation of its targets. No current writer produces that state.
+   * Clears `referencedItemIds` so trashing the project does not invalidate the card and the test reaches
+   * the confirm's own target validation. No current writer produces that state.
    */
   async function forgetReferencedItems(cardId: string): Promise<void> {
     await pool.query("UPDATE items SET properties = properties - 'referencedItemIds' WHERE id = $1", [cardId]);
@@ -276,8 +269,8 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       const peopleId = await databaseIdFor("people");
       const personId = await createItem(peopleId, "Alice");
       const eventId = await existingEvent("Meeting");
-      // In tenant zero: the Events `people` edge is a link-rule source (issue #1697), so its write queues a
-      // propagation job, which needs a tenant scope.
+      // In tenant zero: the Events `people` edge is a link-rule source, so its write queues a job needing a
+      // tenant scope.
       await inTenantZero(() =>
         withTransaction(pool, async (client) => {
           await writeComputed(client, transcriptsId, transcriptId, "segments", [
@@ -311,8 +304,8 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       );
       if (cards.rows.length !== 1 || !cards.rows[0]) throw new Error("Missing speaker proposal");
       const cardId = cards.rows[0].id;
-      // Only the `speakers` relation and link: linking the Event also gave the transcript the person in `people`,
-      // with links for `people` and `project` (issue #1697).
+      // Only the `speakers` relation and link: linking the Event also gave the transcript the person in
+      // `people`, with links for `people` and `project`.
       const speakersPropertyId = await propertyIdFor(transcriptsId, "speakers");
       const speakerEdges = () =>
         withTenantTransaction(pool, getTenantZeroId(), (client) =>
@@ -609,7 +602,6 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       return createItem(await databaseIdFor("people"), name);
     }
 
-    /** A recording of `MEETING_START` with the diarized `SPEAKERS`, matched to a new-meeting card. */
     async function createRecordedCard(): Promise<{ transcriptId: string; cardId: string }> {
       const transcript = await withTransaction(pool, async (client) => {
         const item = await createItemWithClient(
@@ -644,7 +636,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       return { transcriptId: transcript.id, cardId: rows[0].id };
     }
 
-    /** Maps `speaker` of the transcript to `personId`, as a confirmed speaker card would. */
+    /** As a confirmed speaker card would. */
     async function mapSpeaker(transcriptId: string, speaker: string, personId: string): Promise<void> {
       const relationPropertyId = await propertyIdFor(transcriptsId, "speakers");
       await inTenantZero(() =>
@@ -659,7 +651,6 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       );
     }
 
-    /** The people on the Events `people` edges of `eventId`, sorted by id. */
     async function participantIds(eventId: string): Promise<string[]> {
       const { rows } = await pool.query<{ other: string }>(
         `SELECT CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS other
@@ -671,7 +662,6 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       return rows.map((row) => row.other);
     }
 
-    /** Every Events `people` edge, whichever Event it belongs to. */
     async function participantEdgeCount(): Promise<number> {
       const { rows } = await pool.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
@@ -861,7 +851,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       }
     });
 
-    /** Polls `pg_stat_activity` until a statement of this database waits for a lock, so the overlap is not timed by a sleep. */
+    /** Polls `pg_stat_activity` so the overlap is not timed by a sleep. */
     async function waitUntilABackendWaitsForALock(): Promise<void> {
       for (let attempt = 0; attempt < 200; attempt += 1) {
         const { rows } = await pool.query(

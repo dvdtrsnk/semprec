@@ -142,7 +142,7 @@ describe("Files creation from standalone blobs", () => {
         properties: { name: "Existing", file: { blobId: uploaded.blob.id }, type: "jpg" },
         relations: [{ kind: "resolved", relationPropertyId: property.id, targetItemIds: [project.id] }],
       });
-      // Historical fixture: legacy MIME could have come from the upload header, before verified detection existed.
+      // Historical fixture: legacy MIME taken from the upload header.
       const changed = await runtime.query(
         "UPDATE blobs SET mime_type = $1, detected_mime_type = NULL WHERE tenant_id = $2 AND id = $3",
         ["image/png", owner, uploaded.blob.id],
@@ -177,8 +177,8 @@ describe("Files creation from standalone blobs", () => {
   });
 
   it("leaves an unknown detected type unset and preserves an explicit type", async () => {
-    // `POST /api/blobs` no longer stores bytes of an unknown type; the blobs that hold such bytes (an earlier upload,
-    // a mail attachment) are written here through the blob store, with the classification an upload recorded.
+    // `POST /api/blobs` refuses bytes of an unknown type; blobs holding such bytes (a mail attachment) are
+    // written here through the blob store, with the classification an upload records.
     const unknownBlob = await runInTenant(owner, () =>
       withTransaction(runtime, async (client) => {
         const blob = await findOrCreateBlob(client, {
@@ -215,7 +215,7 @@ describe("Files creation from standalone blobs", () => {
       const files = await db("files");
       const property = (await api.listProperties(files.id)).find((entry) => entry.key === "type");
       if (!property) throw new Error("Files type property missing");
-      // Model a historical schema whose locked select did not yet contain the PDF option.
+      // A locked select without the PDF option.
       const changed = await withTransaction(runtime, (client) =>
         client.query(
           "UPDATE properties SET config = jsonb_set(config, '{options}', $1::jsonb) WHERE tenant_id = $2 AND id = $3",

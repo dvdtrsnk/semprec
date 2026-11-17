@@ -14,20 +14,8 @@ import { logger } from "./logger.js";
 import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
 
 /**
- * Every `operation` `POST /internal/complete` accepts, mapped to whether the call is attributed to
- * a Projects item. #85's guidance-drift check always is; #183's transcript summary runs in
- * `semprec-transcribe` with no project in scope, so it sends `projectItemId: null` and its
- * `ai_gateway_calls` row carries none; #185's speaker-mapping suggestion and #1848's Event
- * recommendation (`transcript_event_match`) and gh-1940's recompute of a transcript card from a user instruction
- * (`transcript_card_recompute`) run in the same process, the same way; gh-1900's task
- * name for a mail thread (`mail_thread_task_name`) runs in `semprec-api` with no project in scope, and so does
- * gh-1872's project assignment of an unlinked mail thread (`mailThreadProject`, named as that issue's feature key:
- * unlike its neighbours it is camelCase) and gh-1941's decision whether a new mail message expects an answer
- * (`mailAnswerExpected`), made in `semprec-agents` with no project in scope; gh-1983's suggestion of the labels of
- * the tools an MCP server advertises (`mcp_tool_label`) has none either, since an MCP server is a system source,
- * and runs in `semprec-api` after a sync of the server's tools.
- * The route rejects any other operation outright rather than accepting an arbitrary string that
- * nothing yet knows how to interpret.
+ * Every accepted `operation`, mapped to whether the call is attributed to a Projects item (callers
+ * without a project in scope send `projectItemId: null`). Any other operation is rejected.
  */
 const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
   ["agent_guidance_drift", true],
@@ -48,16 +36,13 @@ const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * Output tokens reserved against the budget for every structured completion — the most the
- * provider can bill for. Mirrors `MAX_OUTPUT_TOKENS` in `structuredProviders/anthropicProvider.ts`.
- */
+/** The most the provider can bill for; mirrors `MAX_OUTPUT_TOKENS` in `structuredProviders/anthropicProvider.ts`. */
 const RESERVED_OUTPUT_TOKENS = 4096;
 
-/** Body cap for a request without an image: generously above the 64 KiB `responseSchema` bound alone allows for prompt/messages content. */
+/** Body cap without an image. */
 const MAX_BODY_BYTES = 1024 * 1024;
 
-/** Body cap for a request that contains an image. The stream is read up to this; a body without an image is then held to `MAX_BODY_BYTES`. */
+/** The stream is read up to this; a body without an image is then held to `MAX_BODY_BYTES`. */
 const MAX_BODY_BYTES_WITH_IMAGES = 8 * 1024 * 1024;
 
 const MAX_IMAGES_PER_REQUEST = 4;
@@ -74,13 +59,12 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 export interface CompleteHandlerOptions {
-  /** Compared against the caller's `Authorization: Bearer <token>` header. */
   internalToken: string;
   provider: StructuredCompletionProvider;
   model: string;
   pricePerMillionInputTokens: number;
   pricePerMillionOutputTokens: number;
-  /** Operator-wide safety caps (`AI_GLOBAL_*_CAP_USD`), checked on every reservation against all tenants' spend. */
+  /** Operator-wide caps across all tenants' spend. */
   globalCaps: GlobalAiCaps;
 }
 
@@ -108,10 +92,6 @@ class PayloadTooLargeError extends Error {
   }
 }
 
-/**
- * Reads up to the larger image-request cap; the caller applies the text-only cap with `bytes`
- * once it knows whether the body carries an image.
- */
 async function readJsonBody(req: IncomingMessage): Promise<{ value: unknown; bytes: number }> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -159,7 +139,6 @@ function isContentBlock(value: unknown): boolean {
   return false;
 }
 
-/** Number of image blocks in an array-form message; 0 for the string form. */
 function countImages(content: StructuredCompletionMessage["content"]): number {
   return typeof content === "string" ? 0 : content.filter((block) => block.type === "image").length;
 }
@@ -169,7 +148,6 @@ function contentTextLength(content: StructuredCompletionMessage["content"]): num
   return content.reduce((sum, block) => sum + (block.type === "text" ? block.text.length : 0), 0);
 }
 
-/** Whether an unvalidated body holds an image block in `messages`, so the larger size cap can apply to it. */
 function rawBodyHasImage(raw: unknown): boolean {
   if (!isObject(raw)) return false;
   const messages = raw.messages;
@@ -180,7 +158,7 @@ function rawBodyHasImage(raw: unknown): boolean {
   });
 }
 
-/** Constant-time so a network caller can't recover `AI_GATEWAY_INTERNAL_TOKEN` byte-by-byte from response timing. */
+/** Constant-time, so the token cannot be recovered from response timing. */
 function tokensMatch(provided: string, expected: string): boolean {
   const providedBuf = Buffer.from(provided);
   const expectedBuf = Buffer.from(expected);
@@ -193,11 +171,7 @@ function extractBearerToken(req: IncomingMessage): string {
   return header.slice("Bearer ".length);
 }
 
-/**
- * Issue #167: an `x-trace-id` the caller forwarded (`httpAiGatewayClient.ts`) continues that
- * caller's trace; an absent or malformed one (a direct call, or a caller with no trace set up)
- * gives `withTraceContext` nothing to key off, so it mints a fresh one for this request instead.
- */
+/** A forwarded `x-trace-id` continues the caller's trace; a missing or malformed one gets a fresh trace. */
 function extractTraceId(req: IncomingMessage): string | undefined {
   const header = req.headers["x-trace-id"];
   const value = Array.isArray(header) ? header[0] : header;
@@ -271,11 +245,8 @@ function validateBody(raw: unknown): CompleteRequestBody {
 }
 
 /**
- * Handles `POST /internal/complete` for issue #215 — the gateway's structured-completion route.
- * Authenticates the internal bearer token before parsing the body, strictly validates the
- * request, budget-checks and dispatches to the configured provider via `@semprec/ai-gateway`'s
- * `complete()` (so budget/audit accounting is identical to every other gateway call), and
- * validates the provider's response against the caller's own schema before answering.
+ * `POST /internal/complete`: authenticates before parsing, dispatches through `complete()` for
+ * budget/audit accounting, and validates the response against the caller's schema.
  */
 export function createCompleteRequestListener(pool: Pool, options: CompleteHandlerOptions) {
   function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -315,9 +286,8 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
           throw err;
         }
 
-        // #620: a rough upper bound (about 4 characters per token for the input, the full output
-        // cap) reserved against the budget before the call and replaced by the real cost on settle.
-        // Each image adds the provider's fixed ceiling on top of the text estimate.
+        // Rough upper bound (about 4 characters per token plus the output cap, plus a fixed ceiling
+        // per image), replaced by the real cost on settle.
         const imageCount = body.messages.reduce((sum, message) => sum + countImages(message.content), 0);
         const estimatedInputTokens =
           Math.ceil(
@@ -354,9 +324,8 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
               globalCaps: options.globalCaps,
             },
             async () => {
-              // A transport failure throws here, so `complete()` marks its reservation `failed` at
-              // cost 0 instead of settling it — #215's "no fabricated token/cost" for a call that
-              // never produced a response.
+              // A transport failure throws, so the reservation is `failed` at cost 0, never settled
+              // with a fabricated cost.
               const providerResult = await options.provider.complete({
                 model: options.model,
                 temperature: body.temperature,
@@ -366,9 +335,8 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
                 signal: abort.signal,
               });
 
-              // A schema-invalid response, unlike a transport failure, is still "a provider
-              // response" — the call happened and cost money, so the audit row below must still
-              // be written with its real usage. `valid` decides the client-facing status.
+              // A schema-invalid response still cost money, so it settles with real usage; `valid`
+              // only decides the client-facing status.
               const valid = validateResponse(providerResult.content);
               return {
                 content: providerResult.content,
@@ -396,8 +364,7 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
             return;
           }
           if (err instanceof ProviderCallError) {
-            // Standard failed-call observability event: a transport failure leaves only a `failed`
-            // ai_gateway_calls row with no usage (see the comment above), so this log carries the cause.
+            // The `failed` row has no usage, so this log carries the cause.
             logger.error({ err, provider: options.provider.id, model: options.model }, "Provider call failed");
             sendJson(res, 502, { error: "Provider call failed", code: "provider_failed" });
             return;
@@ -468,11 +435,7 @@ export function createCompleteRequestListener(pool: Pool, options: CompleteHandl
     }
   }
 
-  /**
-   * Same rationale as `semprec-api`'s handlers: keeping the boundary synchronous confines a
-   * rejection that escapes the try/catch above to a 500 for that one request instead of an
-   * unhandled rejection that takes the whole process down.
-   */
+  /** Synchronous boundary: an escaped rejection fails one request with a 500, not the process. */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the complete request listener");

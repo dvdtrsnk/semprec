@@ -41,15 +41,12 @@ interface Fixture {
   tasks: string;
   healthRecords: string;
   areas: string;
-  /** Property ids of `Tasks.healthRecords`, `HealthRecords.tasks` and `HealthRecords.area`. */
   tasksHealthRecords: string;
   recordsTasks: string;
   recordsArea: string;
-  /** The relation definition `Tasks.healthRecords` and `HealthRecords.tasks` share. */
   followUpDefinition: string;
 }
 
-/** The ids of the tenant's databases and relation properties this test reads, resolved as that tenant. */
 async function loadFixture(tenantId: string): Promise<Fixture> {
   return runInTenant(tenantId, () =>
     withTransaction(runtime, async (client) => {
@@ -87,7 +84,6 @@ async function loadFixture(tenantId: string): Promise<Fixture> {
 const RECORD = { name: "Blood pressure 150/95", tags: ["bloodPressure"] };
 const FOLLOW_UP = { name: "Check-up at the doctor", date: "2026-10-30" };
 
-/** What the computation answers for a health note with a follow-up check: the record, and a task linked to it. */
 const RECORD_WITH_FOLLOW_UP: ProposalComputationResult = {
   properties: RECORD,
   operations: [
@@ -128,9 +124,8 @@ describe("a health record and its follow-up task on confirm (issue #1836)", () =
   });
 
   /**
-   * A proposal card for a health note through the production path: an active Inbox type that targets Health
-   * records, an Inbox item of that type and one tick whose computation answers `result`, so the card holds the
-   * envelope exactly as the tick validated and stored it.
+   * A proposal card for a health note through the production path: an active Inbox type targeting Health
+   * records, an Inbox item of that type and one tick whose computation answers `result`.
    */
   async function createHealthCard(result: ProposalComputationResult): Promise<ItemRow> {
     return runInTenant(tenant, async () => {
@@ -180,10 +175,7 @@ describe("a health record and its follow-up task on confirm (issue #1836)", () =
     return envelope;
   }
 
-  /**
-   * Turns the card's follow-up step off. Before issue #1920 no production write sets a step's `enabled` flag, so
-   * the envelope is rewritten through the system-owned `proposal` write the tick itself uses.
-   */
+  /** Turns the card's follow-up step off through the system-owned `proposal` write the tick uses. */
   async function disableFollowUp(card: ItemRow): Promise<void> {
     const envelope = storedEnvelope(card);
     if (!envelope.operations) throw new Error("The card holds no steps");
@@ -219,13 +211,11 @@ describe("a health record and its follow-up task on confirm (issue #1836)", () =
     return id;
   }
 
-  /** The live items of one of the tenant's databases, read on a pooled connection of its own. */
   async function itemsOf(tenantId: string, databaseId: string): Promise<ItemRow[]> {
     const page = await runInTenant(tenantId, () => createChokePoint(runtime).queryDatabaseItems(databaseId, {}));
     return page.items;
   }
 
-  /** The ids an item is linked to through one of its relation properties. */
   async function linkedThrough(itemId: string, relationPropertyId: string): Promise<string[]> {
     const entries = await runInTenant(tenant, () =>
       createChokePoint(runtime).listItemRelations(itemId, relationPropertyId),
@@ -234,10 +224,7 @@ describe("a health record and its follow-up task on confirm (issue #1836)", () =
     return entries.map((entry) => entry.targetItemId);
   }
 
-  /**
-   * The committed state, read on pooled connections of its own and so never on a transaction the caller holds open:
-   * the number of health records, tasks and follow-up edges, and the card status.
-   */
+  /** The committed state, read on separate pooled connections so never on the caller's open transaction. */
   async function committedState(
     cardId: string,
   ): Promise<{ records: number; tasks: number; edges: number; status: unknown }> {
@@ -289,7 +276,6 @@ describe("a health record and its follow-up task on confirm (issue #1836)", () =
     expect(await linkedThrough(taskId, ids.tasksHealthRecords)).toEqual([recordId]);
     expect(await linkedThrough(recordId, ids.recordsArea)).toEqual([]);
 
-    // The other tenant received nothing.
     const foreign = await loadFixture(other);
     expect(await itemsOf(other, foreign.healthRecords)).toEqual([]);
     expect(await itemsOf(other, foreign.tasks)).toEqual([]);

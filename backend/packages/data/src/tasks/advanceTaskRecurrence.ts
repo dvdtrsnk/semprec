@@ -7,14 +7,9 @@ import { advanceTaskRecurrenceWithClient, type AdvanceTaskRecurrenceInput } from
 export type { AdvanceTaskRecurrenceInput };
 
 /**
- * Completes a recurring task occurrence and creates the next occurrence of its series
- * (`advanceTaskRecurrenceWithClient`, issues #1605 and #1670). Returns `null` (no-op) when the item
- * belongs to no active series, is not the occurrence the series row points at, or the next date
- * already has an occurrence.
- *
- * Opens its own transaction around `advanceTaskRecurrenceWithClient` plus the `done` write.
- * That `done` write re-enters the choke point's Tasks hook (`updateItemWithClient`), which
- * finds the series row already moved to the occurrence created here and creates nothing.
+ * Completes a recurring occurrence and creates the next one in its own transaction. Returns `null` when there is
+ * no active series, the item is not the current occurrence, or the next date already has one. The `done` write
+ * re-enters the Tasks hook, which finds the series already moved and creates nothing.
  */
 export async function advanceTaskRecurrence(pool: Pool, input: AdvanceTaskRecurrenceInput): Promise<ItemRow | null> {
   return withTransaction(pool, async (client) => {

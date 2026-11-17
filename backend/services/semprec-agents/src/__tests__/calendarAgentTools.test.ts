@@ -23,11 +23,7 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
 import * as piSession from "../piAgentSession.js";
 
-/**
- * The calendar write tools in an agent session (issue gh-1957): the session offers them to a run whose project owns the
- * calendar databases, a call files a `moduleTool` approval request and changes nothing, and the approved request runs
- * the handler once. The handlers themselves are tested in `packages/data` (`calendarAgentTools.test.ts`).
- */
+/** A call files a `moduleTool` approval request and changes nothing; the approved request runs the handler once. */
 
 const calendarManifestHref = new URL(
   "../../../../packages/data/src/calendar/calendarModuleManifest.js",

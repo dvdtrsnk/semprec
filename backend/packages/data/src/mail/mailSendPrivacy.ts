@@ -23,7 +23,7 @@ export function reportSendCleanupFailure(
   }
 }
 
-/** Releases a response reader after its bounded read, preserving both failure values until cleanup settles. */
+/** Preserves both failure values until cleanup settles. */
 export async function readSendBody(response: Response, limit: number): Promise<{ text: string; truncated: boolean }> {
   if (!response.body) return { text: "", truncated: false };
   const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();

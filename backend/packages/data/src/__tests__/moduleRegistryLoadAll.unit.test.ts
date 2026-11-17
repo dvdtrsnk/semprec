@@ -26,14 +26,7 @@ import { LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
 
-/**
- * The "load-all" structural test module-contract issue #115 requires: every retrofit manifest
- * authored across #226/#227 for the modules delivered by source issues #21-#28 loaded together
- * into one `ModuleRegistry`, proving the whole real set composes without id/name/database-key/
- * worker/heartbeat-rule-kind collisions — something `coreModuleManifests.test.ts` and
- * `libraryMailInboxModuleManifests.test.ts` each prove only within their own four/three-manifest
- * subset, never across all seven together.
- */
+/** Every module manifest loaded into one registry, proving the whole set composes without collisions. */
 const ALL_MODULE_IDS = [
   "schemaCore",
   "views",
@@ -71,8 +64,7 @@ async function loadAll(getActiveModuleIds: () => ReadonlySet<string>): Promise<M
 const alwaysActive: () => ReadonlySet<string> = () => new Set(ALL_MODULE_IDS);
 
 describe("all module manifests loaded together (module-contract issue #115)", () => {
-  // Warms all 7 manifests' cold module-graph imports once, so no test's cost depends on order or `-t` filtering
-  // (#1237): ~0.8 s idle, up to 10.7 s measured at load ~25; 30 s is ~3x margin.
+  // Warms the manifests' cold imports once so no test's cost depends on order or `-t` filtering.
   beforeAll(async () => {
     await Promise.all(MANIFEST_PATHS.map((path) => import(path)));
   }, 30_000);
@@ -154,9 +146,7 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
     expect(await registry.getViewTypes()).not.toContain(LIBRARY_GRID_VIEW_TYPE);
     expect(await registry.getMigrations()).not.toContainEqual(expect.objectContaining({ moduleId: "library" }));
 
-    // the module is still loaded (its identifiers stay claimed) — only its projected
-    // participation is excluded, matching `ModuleRegistry`'s "structural load vs. active
-    // participation" split.
+    // The module stays loaded (identifiers claimed); only its projected participation is excluded.
     expect(registry.listModuleIds()).toContain("library");
     expect(await registry.listActiveModuleIds()).not.toContain("library");
   });

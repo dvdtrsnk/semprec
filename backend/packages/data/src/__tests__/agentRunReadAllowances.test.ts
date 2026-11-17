@@ -23,7 +23,6 @@ import {
 } from "../testSupport/testDb.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
-// Seeding the system databases of one tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 120_000;
 const FORBIDDEN = { status: 403, code: "forbidden" };
 
@@ -57,7 +56,6 @@ async function createFixture(): Promise<Fixture> {
   return { tenantId, health };
 }
 
-/** A run of a fresh Projects item, as a run credential names it. */
 async function newRun(fixture: Fixture = main): Promise<{ runId: string; projectItemId: string }> {
   return inTenant(fixture, async () => {
     const projectItemId = await createTestProjectItem(dataPool);
@@ -188,7 +186,6 @@ describe("per-turn read allowances of an agent run (issue #1849)", () => {
       await allow(run.runId, [attached.id]);
       await read(attached.id);
       await expect(read(sibling.id)).rejects.toMatchObject(FORBIDDEN);
-      // The same check without the allowance in its input stays what #1810 made it.
       await expect(
         check({ projectItemId: run.projectItemId, databaseId: main.health.id, access: "read" }),
       ).rejects.toMatchObject(FORBIDDEN);

@@ -17,7 +17,6 @@ function inTenant<T>(fn: () => Promise<T>): Promise<T> {
   return runInTenant(tenant, fn);
 }
 
-/** Every stored Tasks row, deleted or not, with the version stamp the optimistic update checks. */
 async function storedTasks(): Promise<{ id: string; properties: Record<string, unknown>; updated_at: string }[]> {
   return inTenant(async () => {
     const { rows } = await pool.query<{ id: string; properties: Record<string, unknown>; updated_at: string }>(

@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/account` path family. */
 export const ACCOUNT_ROUTES: RouteMatrixEntry[] = [
   {
     name: "request account export",

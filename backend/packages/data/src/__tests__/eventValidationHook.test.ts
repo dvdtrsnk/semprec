@@ -19,7 +19,6 @@ let tasksId: string;
 
 const storedRow = z.object({ properties: z.record(z.string(), z.unknown()), updated_at: z.string() });
 
-/** The stored row of an Event, read in the tenant's own scope. */
 async function stored(itemId: string) {
   return runInTenant(tenant, async () => {
     const { rows } = await pool.query<Record<string, unknown>>(
@@ -48,7 +47,6 @@ function patch(itemId: string, propertiesPatch: Record<string, unknown>) {
   return runInTenant(tenant, () => cp.updateItem({ databaseId: eventsId, itemId, propertiesPatch }));
 }
 
-/** The `ValidationError` a write fails with, so a case can assert its field and that nothing else threw. */
 async function rejection(write: Promise<unknown>): Promise<ValidationError> {
   const error: unknown = await write.then(
     () => undefined,
@@ -204,8 +202,8 @@ describe("Events date and time validation at the choke point (issue #1663)", () 
     describe("an Event stored with a legacy date-time (synthetic: the time transform converts every new write)", () => {
       async function legacyEvent(properties: Record<string, unknown>): Promise<string> {
         const item = await create({ name: "Legacy", date: "2026-10-16" });
-        // Synthetic legacy state: the Events time transform converts a date-time on every write, so only a row
-        // stored before issue #1598 can hold one; the choke point cannot produce it.
+        // Synthetic legacy state: the Events time transform converts a date-time on every write, so the choke
+        // point cannot produce it.
         await runInTenant(tenant, () =>
           withTransaction(pool, async (client) => {
             const result = await client.query(

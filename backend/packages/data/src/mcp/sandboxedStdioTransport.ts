@@ -4,9 +4,8 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 /**
- * What the sandbox launcher (`deploy/bin/semprec-mcp-launch`) execs: exactly these three fields,
- * sent as the connection's first line. `env` is the server's whole environment on top of the
- * launcher's fixed base, so the caller must not put anything from its own `process.env` in it.
+ * Sent as the connection's first line. `env` is the server's whole environment over the launcher's fixed base, so
+ * nothing from the caller's `process.env` may go in it.
  */
 export interface SandboxedStdioServerParams {
   readonly command: string;
@@ -18,15 +17,13 @@ export interface SandboxedStdioServerParams {
 const CLOSE_GRACE_MS = 2_000;
 
 /**
- * Client transport for a `stdio` MCP server that runs under the sandbox launcher's socket
- * (issue #1070, `docs/adr/2026-10-17-stdio-mcp-servers-run-in-a-socket-activated-sandbox.md`)
- * instead of as a child of this process. The connection carries the same newline-delimited
- * JSON-RPC framing as the SDK's `StdioClientTransport`, after one header line naming the server.
+ * Client transport for a `stdio` server run under the sandbox launcher socket instead of as a child process
+ * (docs/architecture/delivery-and-operations.md#stdio-mcp-sandbox). Same newline-delimited JSON-RPC framing as the
+ * SDK's `StdioClientTransport`, after one header line naming the server.
  *
- * The header holds the decrypted credential, so `start()` takes it off the transport before
- * connecting and keeps only the encoded line, which it releases once handed to the socket or once
- * the connect fails: after `start()` settles, neither the transport nor any listener it registered
- * holds the header. The socket's own write queue holds the line's bytes until they are flushed.
+ * The header holds the decrypted credential, so `start()` takes it off the transport and keeps only the encoded
+ * line, released once handed to the socket or on connect failure. After `start()` settles nothing here holds it;
+ * only the socket's write queue holds the bytes until flushed.
  */
 export class SandboxedStdioClientTransport implements Transport {
   onclose?: () => void;
@@ -48,8 +45,8 @@ export class SandboxedStdioClientTransport implements Transport {
     if (this.socket !== undefined || this.header === undefined) {
       throw new Error("SandboxedStdioClientTransport already started");
     }
-    // Every listener below shares this function's closure context, and the socket keeps them alive
-    // for the connection's lifetime, so the header is held only in `line`, which is cleared below.
+    // The socket keeps every listener (and so this closure) alive for the connection's lifetime, so the header lives
+    // only in `line`, which is cleared below.
     let line: string | undefined = `${JSON.stringify(this.header)}\n`;
     this.header = undefined;
     const socket = net.createConnection(this.socketPath);
@@ -110,11 +107,7 @@ export class SandboxedStdioClientTransport implements Transport {
     });
   }
 
-  /**
-   * Ends the connection, which the launched server reads as EOF on its stdin, and waits up to
-   * `CLOSE_GRACE_MS` for the launcher to close its end before destroying the socket. Resolves once
-   * the socket is closed, so a caller never leaves one open behind it.
-   */
+  /** The server reads the end as EOF on stdin. Resolves only once the socket is closed. */
   async close(): Promise<void> {
     const socket = this.socket;
     if (socket !== undefined && !socket.closed) {

@@ -38,9 +38,8 @@ import { createRespondToInvitationRouteHandler } from "../invitationRouteHandler
 import { createInvitation } from "./invitationFixtures.js";
 
 /**
- * The three calendar write tools (issue gh-1957), on the runtime role pool and in tenants of their own. The handlers
- * run as `ResolvedModuleAgentTool.invoke`, the entry the approval executor and an agent session use, so the argument
- * schema of each tool is in the path. The routes the tools stand for run on the same pool for the expected payloads.
+ * The handlers run as `ResolvedModuleAgentTool.invoke`, the entry the approval executor and an agent session use,
+ * so the argument schema of each tool is in the path.
  */
 
 const RESPOND = "calendar.respondToInvitation";
@@ -51,7 +50,6 @@ const REPLY_TASK = "calendarSendInvitationReply";
 interface Tenant {
   id: string;
   userId: string;
-  /** The project that owns the calendar databases: the project of a run that holds `calendar.write`. */
   calendarProjectId: string;
   tasksId: string;
   eventsId: string;
@@ -66,7 +64,6 @@ let registry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
 let home: Tenant;
 let foreign: Tenant;
 
-/** What the write hooks saw of the writes the tools made, cleared before each test. */
 const seen = {
   eventCreates: [] as { writer: WriterIdentity; humanWriterUserId: string | undefined }[],
   eventTrashes: [] as { writerKind: WriterKind; agentRunId: string | undefined }[],
@@ -115,7 +112,6 @@ async function seededTenant(): Promise<Tenant> {
   });
 }
 
-/** The tools the run of `tenant` is offered, approval-gated ones included, as an agent session resolves them. */
 function toolsOf(
   tenant: Tenant,
   options: { includeApprovalGated?: boolean; projectItemId?: string; runId?: string } = {},
@@ -138,13 +134,11 @@ async function tool(tenant: Tenant, name: string): Promise<ResolvedModuleAgentTo
   return found;
 }
 
-/** Calls the tool of `tenant`'s run the way the approval executor does, inside the tenant. */
 async function call(tenant: Tenant, name: string, args: unknown) {
   const resolved = await tool(tenant, name);
   return runInTenant(tenant.id, () => resolved.invoke(args));
 }
 
-/** A refused call: the error result, parsed. A call that was not refused fails the test. */
 async function refused(tenant: Tenant, name: string, args: unknown) {
   const answer = await call(tenant, name, args);
   expect(answer.error).toBe(true);
@@ -176,7 +170,6 @@ async function task(tenant: Tenant, properties: Record<string, unknown> = {}): P
   return item.id;
 }
 
-/** An Event in `calendarId`, or in the default calendar when none is named. */
 async function event(tenant: Tenant, calendarId?: string): Promise<string> {
   const properties = { name: "Event", date: "2026-10-16" };
   if (calendarId === undefined) {
@@ -203,13 +196,11 @@ async function storedInvitation(id: string) {
   return z.object({ properties: z.record(z.string(), z.unknown()), updated_at: z.date() }).parse(rows[0]);
 }
 
-/** The Events written for invitations, trashed ones included. */
 async function eventCount(tenant: Tenant): Promise<number> {
   const { rows } = await admin.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tenant.eventsId]);
   return z.object({ n: z.number() }).parse(rows[0]).n;
 }
 
-/** The queued replies to organizers, by invitation: what would leave as email once the job runs. */
 async function queuedReplies(): Promise<number> {
   const { rows } = await admin.query("SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE task_identifier = $1", [
     REPLY_TASK,
@@ -217,7 +208,6 @@ async function queuedReplies(): Promise<number> {
   return z.object({ n: z.number() }).parse(rows[0]).n;
 }
 
-/** The route's own answer for the same answer to the same invitation: an answer equal to the stored one writes nothing. */
 function routeRespond(tenant: Tenant, invitationId: string, body: unknown) {
   return runInTenant(tenant.id, () =>
     createRespondToInvitationRouteHandler(runtime)({
@@ -240,7 +230,6 @@ async function hostEventIds(tenant: Tenant, taskId: string): Promise<string[]> {
   return hostEventsSchema.parse(body.body).hostEvents.map((entry) => entry.eventId);
 }
 
-/** What `agentSessionComposition` does for a gated call: file the `moduleTool` request. */
 async function requestCall(tenant: Tenant, name: string, args: Record<string, unknown>): Promise<ApprovalRequest> {
   const resolved = await tool(tenant, name);
   return runInTenant(tenant.id, async () =>
@@ -314,7 +303,7 @@ describe("calendar agent tools (issue gh-1957)", () => {
 
   describe("the declarations", () => {
     it("offers the three tools, each needing approval, to a run whose project owns the calendar databases", async () => {
-      // The read tool `calendar.timeline` (issue gh-1952) needs no approval and has its own tests.
+      // The read tool `calendar.timeline` needs no approval and has its own tests.
       const tools = (await toolsOf(home)).filter(
         (candidate) => candidate.name.startsWith("calendar.") && candidate.requiresApproval,
       );
@@ -327,7 +316,7 @@ describe("calendar agent tools (issue gh-1957)", () => {
 
     it("leaves them out for a caller that does not ask for approval-gated tools", async () => {
       const names = (await toolsOf(home, { includeApprovalGated: false })).map((candidate) => candidate.name);
-      // The read tool `calendar.timeline` (issue gh-1952) needs no approval, so it is offered to such a caller.
+      // The read tool `calendar.timeline` needs no approval, so it is offered to such a caller.
       expect(names.filter((name) => name.startsWith("calendar.") && name !== "calendar.timeline")).toEqual([]);
     });
 
@@ -381,7 +370,6 @@ describe("calendar agent tools (issue gh-1957)", () => {
 
       expect(answer.error).toBe(false);
       expect((await storedInvitation(id)).properties.status).toBe("accepted");
-      // The route answers the same answer again with the stored invitation and writes nothing.
       const { item } = await routeRespond(home, id, { response: "accepted" });
       expect(JSON.parse(answer.result)).toEqual(JSON.parse(JSON.stringify(item)));
       expect(await eventCount(home)).toBe(1);
@@ -498,7 +486,6 @@ describe("calendar agent tools (issue gh-1957)", () => {
 
       const removed = await call(home, REMOVE, { taskId, eventId });
       expect(removed.error).toBe(false);
-      // The route answers a remove of an event the task is not in with the current list: the same body.
       const routeBody = await runInTenant(home.id, () =>
         createTaskHostEventRemoveRouteHandler(runtime)({
           params: { id: taskId, eventId },

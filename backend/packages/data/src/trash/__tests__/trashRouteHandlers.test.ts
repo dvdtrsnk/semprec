@@ -20,7 +20,7 @@ let tenantId: string;
 
 const USER = { writerKind: "user" } as const;
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** The instant the handler reads as now; only `Date` is faked, so Postgres keeps its own clock. */
+/** Only `Date` is faked, so Postgres keeps its own clock. */
 const NOW = new Date("2026-06-15T10:00:00.000Z");
 
 const rowSchema = z
@@ -49,12 +49,10 @@ const bodySchema = z
   .strict();
 type Body = z.infer<typeof bodySchema>;
 
-/** The days before `NOW` as an ISO instant, the time of day unchanged. */
 function daysBeforeNow(days: number): string {
   return new Date(NOW.getTime() - days * DAY_MS).toISOString();
 }
 
-/** Calls the handler as the adapter does: inside the tenant's scope, with the request URL and the caller's locale. */
 async function list(query = "", options: { tenant?: string; locale?: string } = {}): Promise<Body> {
   const result = await runInTenant(options.tenant ?? tenantId, () =>
     createTrashItemsRouteHandler(dataPool)({
@@ -63,7 +61,7 @@ async function list(query = "", options: { tenant?: string; locale?: string } = 
     }),
   );
   expect(result.status).toBe(200);
-  // The body as JSON carries it, so a value JSON cannot represent would be noticed.
+  // Round-tripped through JSON, so a value JSON cannot represent would be noticed.
   return bodySchema.parse(JSON.parse(JSON.stringify(result.body)));
 }
 
@@ -85,9 +83,8 @@ async function createItem(databaseId: string, properties: Record<string, unknown
 }
 
 /**
- * Gives the trash epoch of `rootId` (the `deleted_at` its cascade stamped on `expectedRows` rows) the instant `at`.
- * Raw SQL on the superuser pool because the choke point stamps the transaction's `now()` and cannot trash an item at
- * a chosen instant; the statement keeps the rows of one epoch on one `deleted_at`, as the cascade leaves them.
+ * Raw SQL because the choke point stamps the transaction's `now()`; keeps one epoch's rows on one `deleted_at`, as
+ * the cascade leaves them.
  */
 async function setTrashEpoch(rootId: string, at: string, expectedRows: number): Promise<void> {
   const result = await adminPool.query(
@@ -98,7 +95,6 @@ async function setTrashEpoch(rootId: string, at: string, expectedRows: number): 
   expect(result.rowCount).toBe(expectedRows);
 }
 
-/** Soft-deletes `itemId` through the choke point, then moves its epoch to `at`. */
 async function trash(
   databaseId: string,
   itemId: string,
@@ -125,7 +121,6 @@ async function setZone(timezone: string): Promise<void> {
   });
 }
 
-/** A storage double whose only exercised method is `delete`; the purge never reads or writes bytes. */
 function fakeStorage(): BlobStorageWriter {
   return {
     writeStream: () => Promise.reject(new Error("not used by the purge")),
@@ -184,7 +179,6 @@ describe("GET /api/trash/items (issue gh-1851)", () => {
     expect(body.nextCursor).toBeNull();
     expect(ids(body)).not.toContain(inlineItemId);
     expect(ids(body)).not.toContain(liveItemId);
-    // A database is never a row of its own: every row is an item, and no row's id is a database's.
     expect(ids(body)).not.toContain(tasksDatabaseId);
     expect(ids(body)).not.toContain(projectsDatabaseId);
     expect(ids(body)).not.toContain(inlineDatabaseId);
@@ -231,7 +225,7 @@ describe("GET /api/trash/items (issue gh-1851)", () => {
     const earlierNoteId = await createItem(inlineDatabaseId, {});
     const togetherNoteId = await createItem(inlineDatabaseId, {});
     await trash(inlineDatabaseId, earlierNoteId, daysBeforeNow(2));
-    // The cascade skips the note that is already in the trash, so only the project and the other note share this epoch.
+    // The cascade skips the already-trashed note.
     await trash(projectsDatabaseId, projectId, daysBeforeNow(1), { expectedRows: 2 });
 
     const body = await list();
@@ -303,7 +297,6 @@ describe("GET /api/trash/items (issue gh-1851)", () => {
   describe("paging", () => {
     it("returns every row once across the pages, in order, with the same totalCount on each page, even with equal deleted_at", async () => {
       const databaseId = await createUserDatabase("Movies");
-      // Three items share one instant to the microsecond; two more differ from it by one microsecond.
       const instants = [
         "2026-06-14T10:00:00.123456Z",
         "2026-06-14T10:00:00.123456Z",
@@ -317,7 +310,7 @@ describe("GET /api/trash/items (issue gh-1851)", () => {
         await trash(databaseId, itemId, at);
         trashed.push({ id: itemId, at });
       }
-      // The list order: newest deletion first, then the id; a uuid's hex text sorts as Postgres sorts its bytes.
+      // A uuid's hex text sorts as Postgres sorts its bytes.
       const expected = [...trashed]
         .sort((left, right) => (left.at !== right.at ? (left.at < right.at ? 1 : -1) : left.id < right.id ? -1 : 1))
         .map((entry) => entry.id);
@@ -356,7 +349,7 @@ describe("GET /api/trash/items (issue gh-1851)", () => {
     it("pages 50 rows by default and up to 200 on request", async () => {
       const databaseId = await createUserDatabase("Movies");
       for (let index = 0; index < 51; index += 1) await createItem(databaseId, {});
-      // Raw SQL because 51 cascade transactions add nothing here: an item without children is left in exactly this state by a delete.
+      // Raw SQL: a delete leaves a childless item in exactly this state.
       const trashed = await adminPool.query(
         `UPDATE items SET deleted_at = $2::timestamptz WHERE database_id = $1 AND deleted_at IS NULL`,
         [databaseId, daysBeforeNow(3)],
@@ -382,10 +375,7 @@ describe("GET /api/trash/items (issue gh-1851)", () => {
     });
 
     const encode = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString("base64url");
-    /**
-     * A second base64url spelling of a valid cursor: the JSON is padded to a length that leaves spare bits in the
-     * last character, which is then set to a value that decodes to the same bytes.
-     */
+    /** Padded so the last base64url character has spare bits, set to a value decoding to the same bytes. */
     const nonCanonicalCursor = (): string => {
       let json = JSON.stringify({ at: "2026-06-14T10:00:00.123456Z", id: "11111111-1111-4111-8111-111111111111" });
       while (json.length % 3 !== 1) json += " ";
@@ -427,7 +417,7 @@ describe("GET /api/trash/items (issue gh-1851)", () => {
 
   describe("daysLeft", () => {
     it("counts calendar days in the tenant's zone, not hours", async () => {
-      // 29 days and 23 hours have passed, and the clock changed to summer time in between: the purge day is today.
+      // 29 days 23 hours later across the summer-time change: the purge day is today.
       vi.setSystemTime(new Date("2026-04-09T22:30:00.000Z"));
       const databaseId = await createUserDatabase("Movies");
       const itemId = await createItem(databaseId, {});
@@ -435,7 +425,6 @@ describe("GET /api/trash/items (issue gh-1851)", () => {
 
       expect((await list()).items[0]?.daysLeft).toBe(0);
 
-      // A day earlier, the day before the purge day still has one day left.
       vi.setSystemTime(new Date("2026-04-08T22:30:00.000Z"));
       expect((await list()).items[0]?.daysLeft).toBe(1);
     });
@@ -527,7 +516,6 @@ const databaseRowSchema = z
 const databasesBodySchema = z.object({ databases: z.array(databaseRowSchema), totalCount: z.number() }).strict();
 type DatabasesBody = z.infer<typeof databasesBodySchema>;
 
-/** Calls the handler as the adapter does, inside the tenant's scope; the route takes no parameters. */
 async function listDatabases(tenant = tenantId): Promise<DatabasesBody> {
   const result = await runInTenant(tenant, () => createTrashDatabasesRouteHandler(dataPool)());
   expect(result.status).toBe(200);
@@ -560,7 +548,6 @@ describe("GET /api/trash/databases (issue gh-1873)", () => {
     for (let count = 0; count < 4; count += 1) itemIds.push(await createItem(databaseId, {}));
     await runInTenant(tenantId, () => chokePoint.softDeleteItem(databaseId, itemIds[0] ?? ""));
     await runInTenant(tenantId, () => chokePoint.archiveDatabase(databaseId));
-    // A database archived before deadlines existed has none until the sweep sees it; the archive now stamps one.
     await adminPool.query("UPDATE databases SET purge_at = NULL WHERE id = $1", [databaseId]);
     const { rows } = await adminPool.query<{ archived_at: Date }>("SELECT archived_at FROM databases WHERE id = $1", [
       databaseId,
@@ -592,18 +579,16 @@ describe("GET /api/trash/databases (issue gh-1873)", () => {
         adminPool.query("UPDATE databases SET purge_at = $2::timestamptz WHERE id = $1", [databaseId, purgeAt]);
       const row = async () => (await listDatabases()).databases[0];
 
-      // 30 days after the fake now, at 20:00 UTC: the deadline's day is 30 days ahead in UTC.
       await setDeadline("2026-07-15T20:00:00.000Z");
       expect(await row()).toMatchObject({ purgeAt: "2026-07-15T20:00:00.000Z", daysLeft: 30 });
 
-      // The same instant is the next calendar day in Auckland (UTC+12), where it is also already evening.
+      // The same instant is the next calendar day in Auckland (UTC+12).
       await setZone("Pacific/Auckland");
       expect((await row())?.daysLeft).toBe(31);
       await setZone("UTC");
 
       await setDeadline("2026-06-15T23:00:00.000Z");
       expect((await row())?.daysLeft).toBe(0);
-      // A deadline that has passed, which the sweep has not carried out yet, never goes below 0.
       await setDeadline("2026-06-10T08:00:00.000Z");
       expect(await row()).toMatchObject({ purgeAt: "2026-06-10T08:00:00.000Z", daysLeft: 0 });
     } finally {
@@ -645,7 +630,7 @@ describe("GET /api/trash/databases (issue gh-1873)", () => {
 
   it("never lists a system database, not even one whose archived_at is set", async () => {
     const tasksDatabaseId = await moduleDatabaseId("tasks");
-    // The choke point refuses to archive a system database, so the state this test guards against needs raw SQL.
+    // The choke point refuses to archive a system database, so this state needs raw SQL.
     await adminPool.query("UPDATE databases SET archived_at = now() WHERE id = $1", [tasksDatabaseId]);
     const userId = await createUserDatabase("Old");
     await runInTenant(tenantId, () => chokePoint.archiveDatabase(userId));
@@ -665,7 +650,7 @@ describe("GET /api/trash/databases (issue gh-1873)", () => {
     await runInTenant(tenantId, () => chokePoint.archiveDatabase(firstId));
     await runInTenant(tenantId, () => chokePoint.archiveDatabase(thirdId));
     await runInTenant(tenantId, () => chokePoint.archiveDatabase(fourthId));
-    // The choke point stamps the transaction's now(), so two databases can only share an instant by raw SQL.
+    // The choke point stamps the transaction's now(), so a shared instant needs raw SQL.
     await adminPool.query("UPDATE databases SET archived_at = '2026-01-01T00:00:00Z' WHERE id = ANY($1::uuid[])", [
       [thirdId, fourthId],
     ]);
@@ -694,7 +679,6 @@ describe("GET /api/trash/databases (issue gh-1873)", () => {
   });
 
   it("returns at most 500 rows and the real number of archived databases as totalCount", async () => {
-    // 501 archived databases without a partition each: a state the API produces one slow create at a time.
     await adminPool.query(
       `INSERT INTO databases (name, tenant_id, archived_at)
        SELECT 'Bulk ' || n, $1::uuid, now() - make_interval(secs => n)

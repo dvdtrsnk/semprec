@@ -6,7 +6,6 @@ import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailI
 
 let pool: Pool;
 
-/** Runs `fn` in a transaction on the owner role that is always rolled back. */
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
   try {
@@ -118,12 +117,10 @@ describe("person_email_index is keyed per tenant", () => {
       const tenantId = await currentTenant(first);
       await scopeTo(first, tenantId);
       await scopeTo(second, tenantId);
-      // The first claim is uncommitted, so the second one reads nothing and its insert
-      // blocks on the first writer's row until that commits.
+      // The first claim is uncommitted, so the second insert blocks on its row until it commits.
       await reindexPersonEmails(first, p1, ["a@example.com"]);
       secondResult = reindexPersonEmails(second, p2, ["a@example.com"]);
-      // Mark the rejection as handled up front so a failure before the assertion below cannot
-      // surface as an unhandled rejection; the assertion still observes the original promise.
+      // Handled up front so an early failure cannot become an unhandled rejection.
       secondResult.catch(() => undefined);
       await new Promise((resolve) => setTimeout(resolve, 200));
       await first.query("COMMIT");
@@ -140,14 +137,13 @@ describe("person_email_index is keyed per tenant", () => {
         expect(rows).toEqual([{ item_id: p1 }]);
       });
     } finally {
-      // Roll the first connection back before settling the second: it holds the row lock the
-      // second insert may still be blocked on. Neither connection is released while a query is
-      // in flight, and a failure here must not replace the test's own error.
+      // Roll back the first connection before settling the second: it holds the row lock the second insert may
+      // wait on. A failure here must not replace the test's own error.
       const rollbackQuietly = async (client: typeof first): Promise<void> => {
         try {
           await client.query("ROLLBACK");
         } catch {
-          // The transaction is already committed or the connection is broken; release proceeds.
+          // Already committed or the connection is broken; release proceeds.
         }
       };
       await rollbackQuietly(first);

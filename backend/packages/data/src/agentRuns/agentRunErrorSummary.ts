@@ -7,11 +7,7 @@ import type { IncompleteReplyOutcome } from "./replyOutcome.js";
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
-/**
- * Lazily loaded once per process and reused: `agentRuns/i18n/{cs,en}.json` never changes at runtime.
- * A failed load is not kept, so the next call tries again. The step catalog (`agentStepCatalog.ts`)
- * reads the same files through it.
- */
+/** Loaded once per process; a failed load is not cached, so the next call retries. */
 export function getAgentRunCatalogs(): Promise<ModuleCatalogs> {
   catalogsPromise ??= loadModuleCatalogs(import.meta.url).catch((err: unknown) => {
     catalogsPromise = undefined;
@@ -21,10 +17,8 @@ export function getAgentRunCatalogs(): Promise<ModuleCatalogs> {
 }
 
 /**
- * The short reason a run failed with `errorCode`, in `locale` (a `users.locale`; any locale but `cs`
- * reads the English entry), as a bare phrase without a trailing period (issue #1824). The prefix
- * words around it ("failed - ") are the client's. This is the one place that turns a code into text:
- * nothing localized is ever stored, so a locale change applies to runs closed earlier too.
+ * A bare phrase without a trailing period; the surrounding words are the client's. Nothing localized is stored,
+ * so a locale change applies to earlier runs too.
  */
 export async function agentRunErrorSummary(errorCode: AgentRunErrorCode, locale: string): Promise<string> {
   const catalogs = await getAgentRunCatalogs();
@@ -37,13 +31,8 @@ export async function agentRunErrorSummary(errorCode: AgentRunErrorCode, locale:
 }
 
 /**
- * The short reason a run whose reply is incomplete (issue #1890) gives, in `locale`, as a bare phrase without a
- * trailing period: "{connector} unavailable", "connection timed out ({seconds} s)" or "tool {connector}
- * returned an error". The server's name stands in the nominative and is never declined; the seconds are the
- * stored `timeoutMs`, shown to a tenth of a second at most. A timeout that stored no `timeoutMs` has no
- * seconds to name and reads as a tool error. A reply that recorded no name (a failed step whose tool name
- * the step could not store) has no `{connector}` to fill, so it reads the `.unnamed` entry of its reason
- * ("tool unavailable", "a tool returned an error") instead of a placeholder glyph.
+ * A bare phrase without a trailing period. The server name is never declined. A timeout without `timeoutMs` reads
+ * as a tool error; a reply without a tool name reads the reason's `.unnamed` entry.
  */
 export async function agentRunIncompleteSummary(reply: IncompleteReplyOutcome, locale: string): Promise<string> {
   const catalogs = await getAgentRunCatalogs();
@@ -62,18 +51,14 @@ export async function agentRunIncompleteSummary(reply: IncompleteReplyOutcome, l
   });
 }
 
-/** The failure of a run as a client reads it (issue #1824). */
 export interface AgentRunErrorFields {
   errorCode: AgentRunErrorCode | null;
   errorSummary: string | null;
 }
 
 /**
- * `{ errorCode, errorSummary }` of `run` in `locale`: both `null` unless `run.status` is `error`.
- * A failed run whose code is `null` reads as `internal`, and a run closed with an error code keeps the
- * summary of that code. A run that finished as `done` whose reply is incomplete (`incompleteReply`, issue
- * #1890) has no code but the summary of the incomplete reply; the caller passes the reply only when the run's
- * display status reads `error` because of it.
+ * Both `null` unless `run.status` is `error`; a `null` code reads as `internal`. The caller passes
+ * `incompleteReply` only when the display status is `error` because of it.
  */
 export async function agentRunErrorFields(
   run: Pick<AgentRunRow, "status" | "errorCode">,

@@ -12,7 +12,6 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 let adminPool: Pool;
 let chokePoint: ChokePoint;
 
-/** Follows `nextCursor` to the end, returning the item ids of every page in order. */
 async function collectPages(
   page: (cursor: string | undefined) => Promise<QueryViewResult>,
 ): Promise<{ ids: string[]; pages: number }> {
@@ -39,7 +38,6 @@ async function makeDatabase(name: string): Promise<string> {
   return db.id;
 }
 
-/** Creates `count` items through the production create path inside ONE transaction, so all share `now()`. */
 async function createInOneTransaction(pool: Pool, databaseId: string, titles: string[]): Promise<string[]> {
   return withTransaction(pool, async (client) => {
     const ids: string[] = [];
@@ -71,18 +69,14 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
 
   it("sorts by system createdAt descending with the latest added item first and pages every item exactly once", async () => {
     const databaseId = await makeDatabase("Library");
-    // Seven items share one creation timestamp (one transaction); paging through them at two per page
-    // must still visit each exactly once, ordered by the title and id tie-breaks.
+    // Seven items share one creation timestamp; paging two at a time must visit each once, by title and id tie-breaks.
     const sameInstant = await createInOneTransaction(adminPool, databaseId, ["g", "e", "c", "a", "f", "d", "b"]);
-    // Two consecutive transactions may start within one millisecond, the precision the sort compares at.
-    // The batch is moved one minute into the past on the admin pool (no write path sets created_at) so
-    // that "added later" is a fact of the data rather than of the clock; the seven still share one value.
+    // Moved one minute back (no write path sets created_at) so "added later" is in the data, not the clock.
     const shifted = await adminPool.query(
       "UPDATE items SET created_at = created_at - interval '1 minute' WHERE database_id = $1 AND id = ANY($2::uuid[])",
       [databaseId, sameInstant],
     );
     expect(shifted.rowCount).toBe(sameInstant.length);
-    // Titled "z": a title order would put it last, so being first shows the creation order decided.
     const latest = await chokePoint.createItem({ databaseId, properties: { title: "z" } });
     const sort = [{ system: "createdAt", direction: "desc" }];
 
@@ -114,8 +108,7 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
     const first = await chokePoint.createItem({ databaseId, properties: { title: "a" } });
     const second = await chokePoint.createItem({ databaseId, properties: { title: "b" } });
     const third = await chokePoint.createItem({ databaseId, properties: { title: "c" } });
-    // The edit is a later transaction, so its millisecond is never earlier than the others'; on a tie the
-    // title "z" still sorts it last, so the expected order holds without depending on the clock.
+    // The edit's millisecond is never earlier; on a tie the title "z" still sorts it last.
     await chokePoint.updateItem({ databaseId, itemId: first.id, propertiesPatch: { title: "z" } });
     const sort = [{ system: "updatedAt", direction: "asc" }];
     const { ids, pages } = await collectPages((cursor) =>
@@ -128,7 +121,6 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
   it("keeps a collection's own createdAt property and the system createdAt column apart", async () => {
     const databaseId = await makeDatabase("Imports");
     await chokePoint.createProperty({ databaseId, key: "createdAt", name: "Created at", type: "number" });
-    // Created in this order, so the column order is a, b, c; the property order is the reverse.
     const a = await chokePoint.createItem({ databaseId, properties: { title: "a", createdAt: 3 } });
     const b = await chokePoint.createItem({ databaseId, properties: { title: "b", createdAt: 2 } });
     const c = await chokePoint.createItem({ databaseId, properties: { title: "c", createdAt: 1 } });
@@ -165,8 +157,8 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
     "orders %s at full precision within one millisecond, across pages of one item, in both directions",
     async (field) => {
       const databaseId = await makeDatabase(`Precision ${field}`);
-      // Pair A: the older instant has the later title. Pair B: equal titles, the older instant the larger id.
-      // A millisecond comparison would order each pair by its title or id tie-break, the wrong way round.
+      // Pair A: older instant, later title. Pair B: equal titles, older instant, larger id. A millisecond comparison
+      // would order each pair the wrong way round.
       const [aOld, aNew] = [
         await chokePoint.createItem({ databaseId, properties: { title: "z" } }),
         await chokePoint.createItem({ databaseId, properties: { title: "a" } }),
@@ -195,7 +187,6 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
         expect(ids, direction).toEqual(direction === "asc" ? ascending : [...ascending].reverse());
         expect(pages, direction).toBe(4);
       }
-      // The cursor carries the row's value at full precision.
       const page = await chokePoint.queryDatabaseItems(databaseId, {
         sort: [{ system: field, direction: "asc" }],
         limit: 1,
@@ -220,7 +211,6 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
     const databaseId = await makeDatabase("Cursors");
     const item = await chokePoint.createItem({ databaseId, properties: { title: "a" } });
     const sort = [{ system: "createdAt", direction: "desc" }];
-    // The title tie-break is part of the cursor tuple.
     const cursor = encodeCursor({ v: [value, "a"], id: item.id });
     await expectValidationError(chokePoint.queryDatabaseItems(databaseId, { sort, cursor }), "cursor");
   });

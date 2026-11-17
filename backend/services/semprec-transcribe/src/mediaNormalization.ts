@@ -10,27 +10,18 @@ import { z } from "zod";
 import type { BlobStorageWriter } from "@semprec/data";
 import { logger } from "./logger.js";
 
-/**
- * The only production code in the monorepo that shells out to `ffmpeg`/`ffprobe` — see
- * `docs/adr/2026-09-22-ffmpeg-confined-to-semprec-transcribe.md`.
- */
+/** The only production code in the monorepo that shells out to `ffmpeg`/`ffprobe`. */
 
-// A hung ffmpeg/ffprobe process (a corrupt or adversarial input) must not wedge the worker
-// forever (io-hardening: always a timeout on an external call).
+// A corrupt or adversarial input must not wedge the worker forever.
 const FFMPEG_TIMEOUT_MS = 5 * 60_000;
 const FFPROBE_TIMEOUT_MS = 30_000;
 
 /**
- * The most pixels (width times height) of a picture `ffprobe` or `ffmpeg` decodes from an upload, 100 million: far
- * above a phone photo (a phone sensor is at most about 200 MP), far below the decoded frame of a small, highly
- * compressed PNG that declares a huge canvas (a 15,000 x 15,000 RGBA canvas decodes to about 900 MB and fits in under
- * 1 MB). `ffprobe` decodes the first frame to learn a picture's size, so the cap is enforced where the decoder is
- * (`-max_pixels`): a larger picture is refused before any frame buffer is allocated, by every call that reads one,
- * and is a `MediaToolError` like any other file the tools cannot read.
+ * Pixel cap enforced in the decoder (`-max_pixels`), so a tiny PNG declaring a huge canvas is refused
+ * before any frame buffer is allocated. Far above any phone photo.
  */
 export const MAX_IMAGE_PIXELS = 100_000_000;
 
-/** Bytes `ffmpeg` produced and streamed into blob storage: where they are, how many, and their SHA-256. */
 export interface StoredMediaResult {
   storageKey: string;
   byteSize: number;
@@ -40,13 +31,13 @@ export interface StoredMediaResult {
 export type NormalizedAudioResult = StoredMediaResult;
 
 export interface MediaProbeResult {
-  /** `null` when the container's `format.duration` is absent, e.g. a streamed WebM/Matroska recording — see `probeNormalizedDuration`. */
+  /** `null` when absent, e.g. a streamed WebM/Matroska recording. */
   durationSeconds: number | null;
-  /** `null` when the source carries no usable `creation_time` container tag (see `parseCreationTime`) — the caller falls back to another timestamp. */
+  /** `null` when the source has no usable `creation_time` tag. */
   creationTime: string | null;
 }
 
-/** `ffmpeg` or `ffprobe` could not read or convert the media; `recordTranscriptionFailure` stores this class as `mediaUnreadable`. */
+/** Stored as `mediaUnreadable`. */
 export class MediaToolError extends Error {
   constructor(message: string) {
     super(message);
@@ -65,10 +56,7 @@ function describeExit(
   );
 }
 
-/**
- * Runs cleanup that must never replace the error — or the result — of the work it follows. A
- * failure only leaves an unreferenced file behind, so it is logged for manual removal instead.
- */
+/** Cleanup that must never replace the error or result it follows; a failure is only logged. */
 async function cleanUpLeftover(
   cleanup: () => Promise<void>,
   fields: Record<string, string>,
@@ -85,7 +73,6 @@ export function removeTempFile(path: string): Promise<void> {
   return cleanUpLeftover(() => rm(path, { force: true }), { path }, "Failed to remove a transcription temp file");
 }
 
-/** Deletes normalized audio that no `blobs` row references, e.g. a failed or superseded normalization's output. */
 export function discardStoredAudio(blobStorage: BlobStorageWriter, storageKey: string): Promise<void> {
   return cleanUpLeftover(
     () => blobStorage.delete(storageKey),
@@ -94,7 +81,6 @@ export function discardStoredAudio(blobStorage: BlobStorageWriter, storageKey: s
   );
 }
 
-/** Deletes a rendered image that no `blobs` row references, e.g. one the job produced and then did not record. */
 export function discardStoredImage(blobStorage: BlobStorageWriter, storageKey: string): Promise<void> {
   return cleanUpLeftover(
     () => blobStorage.delete(storageKey),
@@ -103,11 +89,7 @@ export function discardStoredImage(blobStorage: BlobStorageWriter, storageKey: s
   );
 }
 
-/**
- * Downloads the source blob to a local temp file so both `ffprobe` (which needs to seek for an
- * accurate duration on formats like mp4, whose moov atom is often at the end) and `ffmpeg`'s own
- * input read from a real seekable file rather than a one-shot pipe.
- */
+/** A seekable local file, since ffprobe must seek (mp4's moov atom is often at the end). */
 export async function downloadToTempFile(blobStorage: BlobStorageWriter, storageKey: string): Promise<string> {
   const path = join(tmpdir(), `semprec-transcribe-${randomUUID()}`);
   try {
@@ -122,8 +104,7 @@ export async function downloadToTempFile(blobStorage: BlobStorageWriter, storage
 
 const ffprobeOutputSchema = z.object({
   format: z.object({
-    // Absent, not "0" or "N/A", when the container's header carries no duration — most commonly a
-    // streamed WebM/Matroska recording such as browser `MediaRecorder` output.
+    // Absent when the header has no duration, e.g. browser `MediaRecorder` WebM.
     duration: z.string().optional(),
     tags: z.object({ creation_time: z.string().optional() }).partial().optional(),
   }),
@@ -132,12 +113,9 @@ const ffprobeOutputSchema = z.object({
 const creationTimeTagSchema = z.iso.datetime({ offset: true });
 
 /**
- * `creation_time` is free text from an uploaded file, bound for a `date` property that views cast
- * to `timestamptz`. Only an ISO 8601 timestamp with an explicit zone whose UTC instant falls in
- * years 1–9999 is kept — outside that range lies either year 0, which Postgres does not have, or
- * a year `toISOString()` writes in an expanded `+010000` form Postgres cannot parse. The value is
- * re-serialized in the canonical `toISOString()` form every other stored `date` uses; anything
- * else counts as no tag at all.
+ * `creation_time` is untrusted text bound for a `timestamptz`-cast `date`. Only a zoned ISO 8601
+ * instant in years 1-9999 is kept (Postgres has no year 0 and cannot parse `+010000`), re-serialized
+ * via `toISOString()`.
  */
 export function parseCreationTime(tag: string | undefined): string | null {
   if (tag === undefined || !creationTimeTagSchema.safeParse(tag).success) return null;
@@ -146,10 +124,7 @@ export function parseCreationTime(tag: string | undefined): string | null {
   return year >= 1 && year <= 9999 ? instant.toISOString() : null;
 }
 
-/**
- * Runs `ffprobe` with `args` and resolves to what it printed on stdout. Rejects with a `MediaToolError` when it exits
- * unsuccessfully, which a kill at `FFPROBE_TIMEOUT_MS` is too, and with the spawn error when it cannot start.
- */
+/** A non-zero exit, including the timeout kill, is a `MediaToolError`; a spawn failure is rethrown as is. */
 function runFfprobe(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("ffprobe", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -177,7 +152,6 @@ function runFfprobe(args: string[]): Promise<string> {
   });
 }
 
-/** Runs `ffprobe` on a local file and reads back its duration and (if present and valid) `creation_time` tag. */
 export async function probeMedia(inputPath: string): Promise<MediaProbeResult> {
   const stdout = await runFfprobe([
     "-v",
@@ -206,9 +180,8 @@ export async function probeMedia(inputPath: string): Promise<MediaProbeResult> {
 }
 
 export interface ImageProbeResult {
-  /** The picture's width as it is shown, that is after the orientation its file records is applied. */
+  /** After the file's orientation is applied. */
   width: number;
-  /** The picture's height as it is shown. */
   height: number;
 }
 
@@ -221,10 +194,8 @@ const ffprobeImageSchema = z.object({
 });
 
 /**
- * Runs `ffprobe` on a local image file (JPEG or PNG) and reads back its size as the picture is shown: the stored size,
- * swapped when the file's orientation turns it a quarter turn, which is how `renderImageJpeg` renders it as well. A file
- * `ffprobe` cannot read, one with no picture stream, one of more than `MAX_IMAGE_PIXELS` pixels (`ffprobe` reports it
- * with no size) and output it did not write in the expected shape are all a `MediaToolError`.
+ * The size as shown (swapped for a quarter-turn orientation, as `renderImageJpeg` renders it). An
+ * unreadable, pictureless or over-cap file is a `MediaToolError`.
  */
 export async function probeImage(inputPath: string): Promise<ImageProbeResult> {
   const stdout = await runFfprobe([
@@ -257,13 +228,7 @@ export async function probeImage(inputPath: string): Promise<ImageProbeResult> {
   return quarterTurn ? { width: stream.height, height: stream.width } : { width: stream.width, height: stream.height };
 }
 
-/**
- * Falls back to the normalized Ogg Opus output's own duration when the source container had none
- * (see `MediaProbeResult.durationSeconds`) — normalization always produces a format that carries
- * one, unlike some streamed source containers (e.g. WebM/Matroska from a browser `MediaRecorder`).
- * Downloads the already-uploaded output back to a temp file to probe it, since `probeMedia` needs
- * a seekable local file.
- */
+/** The normalized Ogg Opus output always carries a duration, unlike some streamed sources. */
 export async function probeNormalizedDuration(blobStorage: BlobStorageWriter, storageKey: string): Promise<number> {
   const path = await downloadToTempFile(blobStorage, storageKey);
   try {
@@ -276,12 +241,7 @@ export async function probeNormalizedDuration(blobStorage: BlobStorageWriter, st
   }
 }
 
-/**
- * Extracts `[startSeconds, startSeconds + durationSeconds)` of a local (already-normalized) audio
- * file as its own standalone Ogg Opus byte buffer, for step 3's per-chunk ASR calls. `-ss` before
- * `-i` seeks the input directly rather than decoding and discarding every sample before the chunk,
- * which matters once `startSeconds` is deep into a multi-hour recording.
- */
+/** `-ss` before `-i` seeks instead of decoding everything before the chunk. */
 export async function extractAudioChunkBytes(
   inputPath: string,
   startSeconds: number,
@@ -327,10 +287,7 @@ export async function extractAudioChunkBytes(
   return Buffer.concat(stdoutChunks);
 }
 
-/**
- * Normalizes a local input file to 16 kHz mono Opus (audio/ogg) at 16 kb/s — about 7 MB per hour
- * of audio — and streams the result into `blobStorage` under `storageKey`.
- */
+/** 16 kHz mono Opus at 16 kb/s, about 7 MB per hour. */
 export function normalizeAudio(
   inputPath: string,
   blobStorage: BlobStorageWriter,
@@ -345,11 +302,8 @@ export function normalizeAudio(
 }
 
 /**
- * Renders a player-friendly copy of a local input file — AAC in an MP4 container (audio/mp4),
- * mono, 64 kb/s — from the same decoded input as `normalizeAudio` and with the same `start_time`
- * handling, so both share one timeline and a segment's `startsAt` seeks to the same word in either.
- * The MP4 is fragmented because it is streamed to storage, where a plain MP4 would need a seekable
- * output to place its index.
+ * Mono AAC/MP4 on the same timeline as `normalizeAudio`, so a segment's `startsAt` seeks to the
+ * same word in either. Fragmented because a plain MP4 needs a seekable output for its index.
  */
 export function renderPlaybackAudio(
   inputPath: string,
@@ -364,13 +318,7 @@ export function renderPlaybackAudio(
   );
 }
 
-/**
- * Runs `ffmpeg -i inputPath -vn <outputArgs>` and streams its stdout straight into `blobStorage`
- * under `storageKey`, with no intermediate output file. `-vn` drops any video stream and keeps only
- * its audio. The audio timestamps are rebased to the first decoded sample for both outputs.
- * On failure, whatever already reached `storageKey`
- * is deleted before the error propagates.
- */
+/** Timestamps are rebased to the first decoded sample, so every audio output shares one timeline. */
 function encodeAudioToStorage(
   inputPath: string,
   outputArgs: string[],
@@ -388,12 +336,8 @@ function encodeAudioToStorage(
 const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
 
 /**
- * Renders a local image file (JPEG or PNG) as a JPEG whose long side is at most `longSidePixels` and streams it into
- * `blobStorage` under `storageKey`. A picture already within that size keeps its size, it is never enlarged, and the
- * aspect ratio is kept. The orientation the file records is applied, so the result is upright, as `probeImage` reports its
- * size. A picture of more than `MAX_IMAGE_PIXELS` pixels is not decoded: `ffmpeg` fails and that is a `MediaToolError`.
- * The output is checked before it is returned: it must be non-empty and begin with the JPEG signature, otherwise
- * it is deleted and a `MediaToolError` is thrown, as on any failure of `ffmpeg` or of the storage write.
+ * Downscales (never enlarges) to `longSidePixels`, upright as `probeImage` reports it. Output that
+ * is empty or lacks the JPEG signature is deleted and thrown as a `MediaToolError`.
  */
 export async function renderImageJpeg(
   inputPath: string,
@@ -437,11 +381,7 @@ export async function renderImageJpeg(
   return rendered;
 }
 
-/**
- * Runs `ffmpeg` with `args`, which must end in `pipe:1`, and streams its stdout into `blobStorage` under `storageKey`.
- * `ffmpeg` is killed after `FFMPEG_TIMEOUT_MS`. On any failure, whatever already reached `storageKey` is deleted
- * with `discard` before the error propagates.
- */
+/** `args` must end in `pipe:1`. On any failure, partial output is discarded before the error propagates. */
 async function streamFfmpegToStorage(
   args: string[],
   blobStorage: BlobStorageWriter,

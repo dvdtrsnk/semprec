@@ -20,8 +20,7 @@ describe("views.creator_project_item_id", () => {
 
   it("a view row without a creator project item stays creator_project_item_id = NULL and remains readable and adoptable", async () => {
     const db = await chokePoint.createDatabase({ name: "Tasks" });
-    // Simulates a pre-#87 'ai_agent' row: a raw insert that never names creator_project_item_id, the same
-    // shape application code written before the column existed would have produced.
+    // A raw insert that never names creator_project_item_id, like code written before the column existed.
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO views (database_id, type, name, config, is_default, owner_module_id, created_by)
        VALUES ($1, 'table', 'Legacy agent view', '{}'::jsonb, false, NULL, 'ai_agent')

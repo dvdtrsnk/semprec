@@ -24,8 +24,7 @@ import { findSleepMuteUntil } from "../sleep/sleepMuteWindow.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../systemSettings.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// Passthrough spies: every call reaches the real function unless a test makes one call fail, and a test can see
-// whether the fan-out job asked for the sleep window at all.
+// Passthrough spies: a test can fail one call or see whether the job asked for the sleep window.
 vi.mock("../sleep/sleepMuteWindow.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../sleep/sleepMuteWindow.js")>();
   return { ...actual, findSleepMuteUntil: vi.fn(actual.findSleepMuteUntil) };
@@ -35,15 +34,13 @@ vi.mock("@semprec/queue", async (importOriginal) => {
   return { ...actual, enqueueJob: vi.fn(actual.enqueueJob) };
 });
 
-// A seeded tenant has the default plans: wake days mon to fri from 23:00 to 06:45, sat and sun from 00:00 to 08:30,
-// with `enabled` and `muteSemp` true. Its time zone is Europe/Prague, which is at +02:00 on the dates below.
+// Default plans: mon-fri 23:00-06:45, sat-sun 00:00-08:30, `enabled` and `muteSemp` true; Europe/Prague at +02:00.
 
 /** Saturday 02:00: inside the night 2026-10-16, which the weekend plan runs from 00:00 to 08:30. */
 const AT_0200 = new Date("2026-10-17T02:00:00+02:00");
-/** The wake time of the night 2026-10-16. */
 const AT_0830 = new Date("2026-10-17T08:30:00+02:00");
 const AT_0900 = new Date("2026-10-17T09:00:00+02:00");
-/** Friday 23:45: after the wake time of the night 2026-10-15 and before the midnight bedtime of the night 2026-10-16. */
+/** After the wake time of night 2026-10-15 and before the midnight bedtime of night 2026-10-16. */
 const AT_2345 = new Date("2026-10-16T23:45:00+02:00");
 
 const USER = { writerKind: "user" } as const;
@@ -74,7 +71,6 @@ function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): 
   return runInTenant(tenantId, () => withTransaction(dataPool, fn));
 }
 
-/** A tenant with a user and one web push and one APNs registration, without any system database. */
 async function bareTenant(): Promise<SleepTenant> {
   const tenantId = await createTestTenant(adminPool);
   const user = await createUser(adminPool, {
@@ -104,7 +100,7 @@ async function bareTenant(): Promise<SleepTenant> {
   return { tenantId, userId: user.id, webPushId: webPush.id, apnsId: apns.id };
 }
 
-/** `bareTenant` seeded as a new tenant is, so it has the sleep module with its default settings and plans. */
+/** `bareTenant` seeded as a new tenant, so it has the sleep module's defaults. */
 async function sleepTenant(): Promise<SleepTenant> {
   const tenant = await bareTenant();
   await runInTenant(tenant.tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
@@ -117,7 +113,6 @@ async function sleepDatabaseId(tenant: SleepTenant, moduleId: string): Promise<s
   return database.id;
 }
 
-/** The live items of one sleep database, read through the choke point as the runtime role. */
 async function sleepItems(tenant: SleepTenant, moduleId: string) {
   const databaseId = await sleepDatabaseId(tenant, moduleId);
   return runInTenant(
@@ -144,7 +139,6 @@ async function patchSettings(tenant: SleepTenant, propertiesPatch: Record<string
   await patchSleepItem(tenant, SLEEP_SETTINGS_MODULE_ID, settings.id, propertiesPatch);
 }
 
-/** Writes one night exception as the user does and returns its id. */
 async function addNight(tenant: SleepTenant, properties: Record<string, unknown>): Promise<string> {
   const databaseId = await sleepDatabaseId(tenant, SLEEP_NIGHTS_MODULE_ID);
   const night = await runInTenant(tenant.tenantId, () =>
@@ -172,7 +166,7 @@ function muteUntil(tenant: SleepTenant, at: Date): Promise<Date | null> {
   return inTenant(tenant.tenantId, (client) => findSleepMuteUntil(client, at));
 }
 
-/** Writes one notification for the tenant's user and returns its id. The default is a critical Semp problem, which the default preferences push. */
+/** Defaults to a critical Semp problem, which the default preferences push. */
 function writePush(
   tenant: SleepTenant,
   kind: NotificationKind = "semp_problem",
@@ -198,7 +192,6 @@ function deliveredSenders() {
   };
 }
 
-/** Runs the fan-out job of `notificationId` in the tenant with the clock at `at`. */
 function fanOut(tenant: SleepTenant, notificationId: string, at: Date, senders: PushSenders): Promise<void> {
   return runInTenant(tenant.tenantId, () =>
     handleNotificationFanoutTask(dataPool, { notificationId }, { ...senders, now: () => at }),
@@ -206,9 +199,8 @@ function fanOut(tenant: SleepTenant, notificationId: string, at: Date, senders: 
 }
 
 /**
- * Drains the queue once with the fan-out handler as its only task, as a worker does: each job runs in the tenant
- * of its envelope. The n-th run reads `clock[n]`; a run beyond the list fails. Returns the key and run time of
- * each job that ran. A deferred job is due at once for the queue, because the dates of this file lie in the past.
+ * Drains once with the fan-out handler only; each job runs in its envelope's tenant and the n-th run reads
+ * `clock[n]`. Deferred jobs are due at once because this file's dates lie in the past.
  */
 async function drainFanoutQueue(clock: readonly Date[], senders: PushSenders) {
   const runs: { key: string | null; runAt: string }[] = [];
@@ -226,7 +218,6 @@ async function drainFanoutQueue(clock: readonly Date[], senders: PushSenders) {
   return runs;
 }
 
-/** Every queued `notificationFanout` job, read through graphile-worker's public `jobs` view, ordered by key. */
 async function fanoutJobs(): Promise<FanoutJob[]> {
   const { rows } = await adminPool.query<{ key: string | null; run_at: Date; max_attempts: number }>(
     "SELECT key, run_at, max_attempts FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -235,7 +226,6 @@ async function fanoutJobs(): Promise<FanoutJob[]> {
   return rows.map((row) => ({ key: row.key, runAt: row.run_at.toISOString(), maxAttempts: row.max_attempts }));
 }
 
-/** The queued jobs that hold the push of `notificationId` until a wake time, ordered by key. */
 async function deferredJobs(notificationId: string): Promise<FanoutJob[]> {
   const prefix = `notification-fanout-deferred:${notificationId}:`;
   return (await fanoutJobs()).filter((job) => job.key?.startsWith(prefix));
@@ -249,7 +239,6 @@ function deferredJob(notificationId: string, wakeAt: Date): FanoutJob {
   };
 }
 
-/** The `push_deliveries` rows of a notification as the runtime role sees them in the tenant, by registration id. */
 async function deliveries(tenant: SleepTenant, notificationId: string) {
   const { rows } = await inTenant(tenant.tenantId, (client) =>
     client.query<{ push_subscription_id: string; delivered: boolean }>(
@@ -283,7 +272,6 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await resetDatabase(adminPool);
-  // Back to the passthrough, without the calls and any unused failure of an earlier test.
   vi.mocked(findSleepMuteUntil).mockReset();
   vi.mocked(enqueueJob).mockReset();
 });
@@ -326,9 +314,7 @@ describe("findSleepMuteUntil (issue #1794)", () => {
     await addNight(tenant, { night: "2026-10-16", bedTime: "22:00" });
 
     expect(await muteUntil(tenant, new Date("2026-10-16T23:00:00+02:00"))).toEqual(AT_0830);
-    // Tonight alone, once last night is over.
     expect(await muteUntil(tenant, new Date("2026-10-16T23:30:00+02:00"))).toEqual(AT_0830);
-    // Last night alone, before tonight starts.
     expect(await muteUntil(tenant, new Date("2026-10-16T21:00:00+02:00"))).toEqual(
       new Date("2026-10-16T23:30:00+02:00"),
     );
@@ -377,7 +363,7 @@ describe("findSleepMuteUntil (issue #1794)", () => {
 
   it("is null for a tenant whose settings are on but which has neither a plans nor a nights database", async () => {
     const tenant = await bareTenant();
-    // Store functions, as the seed uses them: no production write creates the settings database alone.
+    // No production write creates the settings database alone, so the seed's store functions are used.
     await inTenant(tenant.tenantId, async (client) => {
       const database = await databasesStore.createDatabase(client, {
         name: null,
@@ -397,7 +383,7 @@ describe("findSleepMuteUntil (issue #1794)", () => {
   it("throws for a tenant with two settings items", async () => {
     const tenant = await sleepTenant();
     const databaseId = await sleepDatabaseId(tenant, SLEEP_SETTINGS_MODULE_ID);
-    // The store function, so the fixture stays possible once a write hook refuses a second settings item.
+    // The store function keeps this fixture possible once a write hook refuses a second settings item.
     await inTenant(tenant.tenantId, (client) =>
       itemsStore.insertItem(client, { databaseId, properties: { enabled: false, muteSemp: false } }),
     );
@@ -408,7 +394,7 @@ describe("findSleepMuteUntil (issue #1794)", () => {
   it("throws for a stored plan whose wake days are not a list", async () => {
     const tenant = await sleepTenant();
     const databaseId = await sleepDatabaseId(tenant, SLEEP_PLANS_MODULE_ID);
-    // The store function, so the fixture stays possible once a write hook validates plan values.
+    // The store function keeps this fixture possible once a write hook validates plan values.
     await inTenant(tenant.tenantId, (client) =>
       itemsStore.insertItem(client, {
         databaseId,
@@ -467,10 +453,8 @@ describe("notificationFanout job inside the sleep window (issue #1794)", () => {
       expect.objectContaining({ notificationId, interruptionLevel: "time-sensitive" }),
     );
     expect(await deliveries(tenant, notificationId)).toEqual(deliveredToBoth(tenant));
-    // No further hold was queued by the run that sent.
     expect(await deferredJobs(notificationId)).toEqual([deferredJob(notificationId, AT_0830)]);
 
-    // A second run after the wake time finds both deliveries settled.
     await fanOut(tenant, notificationId, AT_0900, senders);
     expect(senders.sendWebPush).toHaveBeenCalledTimes(1);
     expect(senders.sendApns).toHaveBeenCalledTimes(1);
@@ -603,7 +587,7 @@ describe("notificationFanout job inside the sleep window (issue #1794)", () => {
   it("sends at once when the sleep data cannot be resolved, and logs the notification id and the error's name only", async () => {
     const tenant = await sleepTenant();
     const databaseId = await sleepDatabaseId(tenant, SLEEP_NIGHTS_MODULE_ID);
-    // The store function, so the fixture stays possible once a write hook validates night values.
+    // The store function keeps this fixture possible once a write hook validates night values.
     await inTenant(tenant.tenantId, (client) =>
       itemsStore.insertItem(client, { databaseId, properties: { night: "2026-10-16", wakeTime: "25:99" } }),
     );
@@ -677,7 +661,6 @@ describe("notificationFanout job inside the sleep window (issue #1794)", () => {
     await fanOut(tenant, notificationId, new Date("2026-10-17T02:00:05+02:00"), senders);
 
     expect(await deferredJobs(notificationId)).toEqual([deferredJob(notificationId, AT_0830)]);
-    // The job written with the notification and the one deferred job.
     expect(await fanoutJobs()).toHaveLength(2);
     expect(senders.sendWebPush).not.toHaveBeenCalled();
     expect(senders.sendApns).not.toHaveBeenCalled();
@@ -709,8 +692,7 @@ describe("notificationFanout job inside the sleep window (issue #1794)", () => {
 
   it("reads the real time when no clock is passed", async () => {
     const tenant = await sleepTenant();
-    // One plan for every wake day from 12:00 to 23:59 of the next day: every instant lies in the window of the
-    // night named yesterday or today, whatever the time of this run.
+    // One plan per wake day from 12:00 to 23:59 next day, so any instant falls in a night window.
     const plans = await sleepItems(tenant, SLEEP_PLANS_MODULE_ID);
     const [everyDay, ...others] = plans;
     if (!everyDay) throw new Error("The seed left no sleep plan");

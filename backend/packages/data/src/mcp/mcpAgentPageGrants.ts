@@ -19,17 +19,9 @@ import {
 import type { ProjectMcpGrant } from "./mcpProjectGrantsStore.js";
 
 /**
- * The read model behind the "Tools" block on a project's AGENT page (issue #127): every
- * *active* `mcp_tool_registrations` row across the whole system — an MCP server is a
- * system-level resource, so this is not scoped to servers "belonging" to `projectItemId` —
- * joined with its server's identity and this project's grant (defaulting `granted: false`
- * when no `project_mcp_grants` row exists yet, same default the column itself carries).
- *
- * Unlike `mcpAgentTools.ts#getGrantedMcpAgentTools` (which also requires the server itself to
- * be `active`, because it decides real invocability), this listing deliberately does NOT
- * filter out tools whose server is inactive: the block needs to render those rows so a human
- * can see — and the client can label as transport-offline — a tool that is granted but
- * currently unreachable, rather than silently disappearing it.
+ * Every active registration system-wide (MCP servers are system-level), joined with its server and this project's
+ * grant (default `granted: false`). Unlike `getGrantedMcpAgentTools`, tools of an inactive server are kept so the
+ * block can show a granted but unreachable tool as offline instead of hiding it.
  */
 export interface McpToolGrantForProject {
   mcpToolRegistrationId: string;
@@ -41,7 +33,7 @@ export interface McpToolGrantForProject {
   riskClass: string;
   mcpServerItemId: string;
   mcpServerName: string;
-  /** Whether the owning `mcpServers` item is `active` — a `false` here is the transport-offline case. */
+  /** `false` is the transport-offline case. */
   mcpServerOnline: boolean;
   granted: boolean;
   /** `granted`, and the server item is active (`mcpServerOnline`); the listing only holds active registrations. */
@@ -50,9 +42,8 @@ export interface McpToolGrantForProject {
 }
 
 /**
- * `offline` when the server item is not active or its last recorded connection failed;
- * otherwise `connected` (a server never called included). Informational: a failed connection
- * of an active server does not make its granted tools non-effective.
+ * `offline` when the server item is inactive or its last connection failed; otherwise `connected` (also never
+ * called). Informational: a failed connection does not make granted tools non-effective.
  */
 export interface McpToolGrantServerState {
   state: "connected" | "offline";
@@ -75,10 +66,7 @@ interface McpToolGrantForProjectRow {
   last_error_reason: McpConnectionErrorReason | null;
 }
 
-/**
- * The one counting rule for "N of M enabled" (the project summary reuses it): `total` is the
- * number of rows (active registrations), `effective` those with `effective: true`.
- */
+/** The one counting rule for "N of M enabled", reused by the project summary. */
 export function countEffectiveMcpGrants(rows: ReadonlyArray<Pick<McpToolGrantForProject, "effective">>): {
   effective: number;
   total: number;
@@ -136,11 +124,8 @@ export async function listMcpToolGrantsForProject(
 }
 
 /**
- * The only path from an HTTP route handler to `mcpGrantsAdminStore.ts`'s user-only mutations
- * (see that file's header): this module lives inside `@semprec/data` and imports it by
- * relative path, then re-exports these two wrappers from the package's public `index.ts` —
- * the raw admin functions themselves stay off that surface, so `agent-runtime` still has no
- * importable path to them.
+ * The only route path to the `mcpGrantsAdminStore.ts` mutations: these wrappers are exported, the raw admin
+ * functions are not, so `agent-runtime` has no importable path to them.
  */
 export async function setProjectMcpGrantForAgentPage(
   client: PoolClient,
@@ -157,7 +142,7 @@ export interface ReclassifyMcpToolInput {
   displayLabel?: McpToolDisplayLabel | null;
 }
 
-/** Applies whichever of `riskClass`/`requiresApproval`/`displayLabel` the caller supplied; at least one is required. */
+/** At least one of `riskClass`/`requiresApproval`/`displayLabel` is required. */
 export async function reclassifyMcpTool(
   client: PoolClient,
   input: ReclassifyMcpToolInput,

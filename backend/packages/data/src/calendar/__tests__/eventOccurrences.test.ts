@@ -68,7 +68,6 @@ const WORKDAYS = [
   "2026-10-23",
 ];
 
-/** A tenant with one English-speaking user, so its seeded calendars are named `Personal`, `Work` and so on. */
 async function seededTenant(): Promise<{ tenantId: string; userId: string }> {
   const tenantId = await createTestTenant(admin);
   const user = await createUser(admin, {
@@ -78,7 +77,7 @@ async function seededTenant(): Promise<{ tenantId: string; userId: string }> {
     locale: "en",
   });
   await runInTenant(tenantId, () => seedSystem(runtime));
-  // The sleep nights of a seeded tenant have their own tests (issue #1806); these keep to Events.
+  // The sleep nights of a seeded tenant have their own tests; these keep to Events.
   await hideSleepInCalendar(runtime, tenantId);
   return { tenantId, userId: user.id };
 }
@@ -110,7 +109,6 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
     await admin.end();
   });
 
-  /** The ids and writes of the tenant in scope; every write of a test goes through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -150,15 +148,11 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
         params: { seriesId, date },
         identity: { user: { id: userId } },
       });
-    /** Moves the Event `itemId` with the user's own write, as an edit of one occurrence is made. */
     const patch = async (itemId: string, propertiesPatch: Record<string, unknown>) =>
       cp.updateItem({ databaseId: db("events"), itemId, propertiesPatch }, userId, userId, USER);
     const trash = (itemId: string) => cp.softDeleteItem(db("events"), itemId);
     const restore = (itemId: string) => cp.restoreItem(db("events"), itemId, userId, USER);
-    /**
-     * Overwrites stored properties with values the write rules refuse, so raw SQL is the only way to store them.
-     * Runs on the admin pool inside the tenant.
-     */
+    /** Raw SQL on the admin pool inside the tenant: the write rules refuse these values. */
     const storeRaw = (itemId: string, properties: Record<string, unknown>) =>
       withTenantTransaction(admin, tenant, async (client) => {
         const result = await client.query("UPDATE items SET properties = properties || $2::jsonb WHERE id = $1", [
@@ -171,7 +165,6 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
       withTransaction(runtime, (client) => readCalendarTimeline(client, { from, to, shape: "full" }));
     const readCompact = (from: string, to: string) =>
       withTransaction(runtime, (client) => readCalendarTimeline(client, { from, to, shape: "compact" }));
-    /** The Events of a range in the full shape: stored Events and occurrences, without the derived entries. */
     const events = async (from: string, to: string) =>
       (await read(from, to)).items.filter(
         (entry): entry is CalendarTimelineItem | CalendarEventOccurrence => entry.kind === "event",
@@ -217,7 +210,6 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
       await f.link("events", "project", series, project);
       await f.link("events", "people", series, ann);
 
-      // Every Event entry of the range is one of the ten occurrences: the series row is not one of them.
       const all = await f.events("2026-10-12", "2026-10-23");
       const entries = all.filter(isOccurrence);
       expect(all).toHaveLength(10);
@@ -331,7 +323,6 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
         null,
         null,
       ]);
-      // A trashed transcript is not shown, as for a stored Event.
       await f.cp.softDeleteItem(f.db("transcripts"), transcript);
       expect((await f.occurrences("2026-10-12", "2026-10-16")).find((entry) => entry.id === item.id)?.transcript).toBe(
         null,
@@ -539,7 +530,7 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
     runInTenant(tenant, async () => {
       const f = await setup();
       const unreadable = await f.eventIn("Work", STANDUP);
-      // The Events hooks refuse a value that is not a rule, so a stored one is written with SQL, as an old row would be.
+      // The Events hooks refuse a value that is not a rule, so a stored one is written with SQL.
       await f.storeRaw(unreadable, { recurrence: { kind: "sometimes" } });
 
       const entries = await f.events("2026-10-12", "2026-10-16");
@@ -556,7 +547,6 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
 
       const entries = await f.events("2026-10-12", "2026-10-16");
 
-      // Shown once, as a stored Event: the timeline and the materialization read the row alike.
       expect(entries.map((entry) => [entry.id, entry.date])).toEqual([[stored, "2026-10-12"]]);
       expect(entries.some(isOccurrence)).toBe(false);
       await expect(f.materialize(stored, "2026-10-13")).rejects.toBeInstanceOf(NotFoundError);
@@ -566,7 +556,7 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
     runInTenant(tenant, async () => {
       const f = await setup();
       const series = await f.eventIn("Work", STANDUP);
-      // The write rules refuse a time that is not a time, so a stored one is written with SQL, as an old row would be.
+      // The write rules refuse a time that is not a time, so a stored one is written with SQL.
       await f.storeRaw(series, { timeFrom: "99:99" });
       const warn = vi.spyOn(logger, "warn");
 
@@ -582,7 +572,7 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
   it("reads with a number of statements that does not depend on the number of series", () =>
     runInTenant(tenant, async () => {
       const f = await setup();
-      // One stored Event in the range, so the count includes the read of its attendance (issue gh-2008).
+      // One stored Event in the range, so the count includes the read of its attendance.
       await f.materialize(await f.eventIn("Work", STANDUP), "2026-10-14");
       const countStatements = (): Promise<number> =>
         withTransaction(runtime, async (client) => {

@@ -259,7 +259,6 @@ describe("projectAgentRunSteps tool steps (issue #1847)", () => {
 
     expect(step.title).toBe("Změna úkolu");
     expect(step.summary).toBe("Změněna 1 vlastnost");
-    // A value the call did not report is null, not absent.
     expect(step.change).toEqual({ property: "status", from: null, to: "done" });
   });
 

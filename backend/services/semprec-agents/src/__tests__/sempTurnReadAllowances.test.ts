@@ -244,7 +244,7 @@ describe("one-turn read allowances of a Semp turn (issue #1849)", () => {
       faux.setResponses([
         toolCall("item_get", { itemId: attached.id }, "read-attached"),
         (context) => {
-          // The health database is sensitive: the stored result is redacted (issue #1827), the live turn keeps the real one.
+          // Sensitive: the stored result is redacted, the live turn keeps the real one.
           liveReadText = liveToolResultText(context.messages, "read-attached");
           return toolCall("item_get", { itemId: sibling.id }, "read-sibling");
         },
@@ -397,9 +397,8 @@ describe("one-turn read allowances of a Semp turn (issue #1849)", () => {
 
   describe("when the rows cannot be removed", () => {
     /**
-     * Makes the delete of one item's allowance row fail until the returned function drops the trigger. The delete at the
-     * start of a turn matches no row, so only the end of the turn fails. The id embedded in the function body is a
-     * UUID that the check below has just matched against the UUID shape.
+     * Fails the delete of one item's allowance row until the trigger is dropped; only the turn's end
+     * deletes a row. The embedded id is checked against the UUID shape first.
      */
     async function failDeleteOf(itemId: string): Promise<() => Promise<void>> {
       if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(itemId)) throw new Error("Invalid fixture item UUID");
@@ -595,11 +594,7 @@ describe("one-turn read allowances of a Semp turn (issue #1849)", () => {
       }
     });
 
-    /**
-     * A dated task, the head of a repeating series, related through its `people` relation to a person. The People database
-     * ships open to every project, so the test marks it sensitive for its duration (`setPeopleSensitive`) to make the
-     * person's database one the Semprec project cannot read.
-     */
+    /** People ships open to every project, so the test marks it sensitive to make it unreadable to Semprec. */
     async function newTaskRelatedToPerson() {
       const chokePoint = createChokePoint(runtime);
       return inTenant(async () => {

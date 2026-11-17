@@ -1,4 +1,4 @@
-// Issue gh-1882: an agent's `item.delete` on a recurring task reports what the delete reaches in its approval, and an
+// An agent's `item.delete` on a recurring task reports what the delete reaches in its approval, and an
 // approval granted for one impact is not executed once the series changed.
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";

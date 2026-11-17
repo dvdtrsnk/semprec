@@ -25,11 +25,7 @@ const testMetadataResolver: CollectionMetadataResolver = {
   overviewHideable: () => false,
 };
 
-/**
- * semprec-agents hosts the choke point in-process, so its pool must authenticate as `semprec_data`
- * (docs/adr/2026-10-03-agents-worker-choke-point-access.md). Test-only role passwords are
- * generated at run time, like leastPrivilegeRoles.test.ts.
- */
+/** The in-process choke point requires `semprec_data`. Role passwords are generated at run time. */
 const TEST_ROLE_PASSWORD = randomUUID();
 
 let adminPool: Pool;
@@ -73,8 +69,8 @@ describe("semprec-agents database role", () => {
     // It must stay derived from a source limited to SQL-safe characters (randomUUID(): [0-9a-f-]).
     await adminPool.query(`ALTER ROLE semprec_data WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
     await adminPool.query(`ALTER ROLE semprec_side WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
-    // This suite checks grants, not isolation: like `getTestPool`'s, every connection starts in
-    // tenant zero, which strict `app_tenant_default()` (#1067) no longer falls back to.
+    // Checks grants, not isolation: every connection starts in tenant zero, since strict
+    // `app_tenant_default()` has no fallback.
     const inTenantZeroOptions = tenantZeroSessionOptions();
     dataPool = new Pool({ connectionString: roleConnectionString("semprec_data"), options: inTenantZeroOptions });
     sidePool = new Pool({ connectionString: roleConnectionString("semprec_side"), options: inTenantZeroOptions });

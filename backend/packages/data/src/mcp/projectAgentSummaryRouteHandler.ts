@@ -6,9 +6,8 @@ import { findLiveProject } from "../scheduler/heartbeatRunScope.js";
 import { getProjectAgentSummary } from "./projectAgentSummary.js";
 
 /**
- * The custom-route handler shape this file's export is cast to by `semprec-api`'s mount (issue #239), duck-typed
- * as in `projectHeartbeatsRoute.ts`. The adapter authenticates a session before a handler runs and runs the
- * handler inside the session's tenant.
+ * Duck-typed custom-route shape the API mount casts this export to. The adapter authenticates the session and runs
+ * the handler inside its tenant.
  */
 interface CustomRouteRequestContext {
   params: Record<string, string>;
@@ -19,10 +18,8 @@ type CustomRouteResult = { status: number; body: unknown };
 const projectIdSchema = z.uuid();
 
 /**
- * `GET /api/projects/:id/agent-summary` (issue gh-1935): the counts behind the project detail's "Semp in this
- * project" row and its attention dot (`getProjectAgentSummary`), shaped for that one consumer, so it is the
- * "single-consumer-read" justification. Read-only. A project id that is not a live Projects item of the caller's
- * tenant (another tenant's, trashed or unknown) answers 404 with one body; a value that is no UUID answers 400.
+ * Shaped for the project detail's "Semp in this project" row only. A project that is not a live Projects item of
+ * the caller's tenant answers 404 with one body; a non-UUID answers 400.
  */
 export function createProjectAgentSummaryRouteHandler(pool: Pool) {
   return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {

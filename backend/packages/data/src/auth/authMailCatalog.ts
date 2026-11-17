@@ -20,11 +20,7 @@ function getCatalogs(): Promise<ModuleCatalogs> {
   return catalogsPromise;
 }
 
-/**
- * Renders a transactional auth email in the recipient's language. `locale` is an untrusted stored
- * value: anything other than `cs` renders English. `escapeHtml` is applied to the URL in the html
- * template only; the text template receives the URL verbatim.
- */
+/** `locale` is untrusted: anything but `cs` renders English. The URL is escaped in the html part only. */
 export async function renderAuthMail(
   kind: AuthMailKind,
   locale: string,

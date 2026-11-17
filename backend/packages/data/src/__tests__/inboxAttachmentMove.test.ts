@@ -47,9 +47,8 @@ import { createCoreTaskList } from "../worker.js";
 import { transcriptionJobKey } from "../transcription/transcriptionJob.js";
 import type { ItemRow } from "../types.js";
 
-// Issue #1703: confirming a `fileFromAttachment` step moves an Inbox attachment into Files. These tests
-// run the real confirm path against the seeded database, through the runtime that owns the tables.
-// Every envelope has a Task as its primary step: a file step is never primary (see the ADR).
+// Confirming a `fileFromAttachment` step moves an Inbox attachment into Files, through the real confirm
+// path. Every envelope has a Task as its primary step: a file step is never primary.
 
 const dayRecomputeJobSchema = z.object({ payload: z.object({ journalDayItemId: z.string() }) });
 
@@ -63,7 +62,6 @@ let tasksId: string;
 let projectsId: string;
 let taskType: ItemRow;
 
-/** Owns only this overlap's runtime clients, gates and operations. */
 // pg 8.23.0 emits this plain, uncoded error on this owned-release path.
 function isOwnedPgClosure(error: unknown): boolean {
   return (
@@ -249,7 +247,6 @@ function combineOverlapFailure(body: { error: unknown } | undefined, cleanup: un
 }
 
 function rethrowOverlap(error: unknown): never {
-  // Preserve even non-Error thrown identities from the tested operation.
   throw error;
 }
 
@@ -278,7 +275,6 @@ async function jobExists(key: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-/** Polls until the specified competitor is blocked by the specified holder. */
 async function waitForBlockingPid(holderPid: number, competitorPid: number, queryPool: Pool = pool): Promise<void> {
   const deadline = Date.now() + 2000;
   while (Date.now() < deadline) {
@@ -463,7 +459,6 @@ async function newBlob(mimeType: string): Promise<string> {
   });
 }
 
-/** Appends an attachment naming `blobId` to an Inbox item and returns the new attachment's id. */
 async function attach(inboxItemId: string, blobId: string): Promise<string> {
   return withTransaction(pool, async (client) => {
     await insertInboxAttachments(client, inboxItemId, [{ blobId, source: "camera" }]);
@@ -484,7 +479,6 @@ async function plainInboxItem(text: string): Promise<string> {
   return item.id;
 }
 
-/** The Journal day item an Inbox item sits on. */
 async function journalDayIdOf(inboxItemId: string): Promise<string> {
   return withTransaction(pool, async (client) => {
     const property = await propertiesStore.getPropertyByKey(client, inboxId, "journalDay");
@@ -494,7 +488,7 @@ async function journalDayIdOf(inboxItemId: string): Promise<string> {
   });
 }
 
-/** The Journal days with a pending recompute job, read from the job payloads (issue gh-1969). */
+/** The Journal days with a pending recompute job, read from the job payloads. */
 async function pendingDayRecomputes(): Promise<string[]> {
   const payloads = await readJobPayloadsByIdentifier(pool, CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE);
   return payloads.flatMap((raw) => {
@@ -503,7 +497,6 @@ async function pendingDayRecomputes(): Promise<string[]> {
   });
 }
 
-/** Removes the pending recompute jobs, so only an enqueue made after this call is observed. */
 async function clearDayRecomputes(): Promise<void> {
   await pool.query(
     `DELETE FROM graphile_worker._private_jobs
@@ -512,7 +505,6 @@ async function clearDayRecomputes(): Promise<void> {
   );
 }
 
-/** A Task-typed Inbox item and the Processing proposal the tick computes for it. */
 async function inboxItemWithCard(text: string): Promise<{ inboxItemId: string; cardId: string }> {
   const item = await withTransaction(pool, (client) =>
     createInboxItemWithClient(client, {
@@ -541,7 +533,6 @@ async function cardOf(inboxItemId: string): Promise<string> {
   });
 }
 
-/** Stores a multi-step envelope on a card the way the tick would: a system-owned `proposal` property, targeting Tasks. */
 async function storeSteps(cardId: string, steps: ProposalStep[]): Promise<void> {
   const primary = steps.find((step) => step.role === "primary")!;
   await withTransaction(pool, (client) =>
@@ -592,7 +583,6 @@ async function cardStatus(cardId: string): Promise<unknown> {
   return rows[0]?.status;
 }
 
-/** Live Files items whose `file` names the blob. */
 async function filesItemsFor(blobId: string): Promise<Array<{ id: string; properties: Record<string, unknown> }>> {
   const { rows } = await pool.query<{ id: string; properties: Record<string, unknown> }>(
     `SELECT id, properties FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties -> 'file' ->> 'blobId' = $2`,
@@ -879,7 +869,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
   });
 
   it.each([
-    // The Files `type` select of a tenant seeded before #1410 has no `png` option.
+    // The Files `type` select of an older tenant has no `png` option.
     [
       "an option the select lacks",
       "UPDATE properties SET config = jsonb_set(config, '{options}', (SELECT coalesce(jsonb_agg(o), '[]'::jsonb) FROM jsonb_array_elements(config -> 'options') AS o WHERE o ->> 'key' <> 'png')) WHERE database_id = $1 AND key = 'type'",
@@ -893,7 +883,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
     ],
   ])("leaves out the type when the Files type select does not offer it: %s", async (_label, sql, mimeType) => {
     const { inboxItemId, cardId } = await inboxItemWithCard("Photo");
-    // A raw update, because no route can produce a Files `type` select in these shapes; it only changes Files options.
+    // A raw update, because no route can produce a Files `type` select in these shapes.
     await pool.query(sql, [filesId]);
     const blobId = await newBlob(mimeType);
     const attachmentId = await attach(inboxItemId, blobId);
@@ -909,7 +899,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const inboxItemId = await plainInboxItem("Receipt");
     const blobId = await newBlob("image/jpeg");
     const attachmentId = await attach(inboxItemId, blobId);
-    // A raw update inside the rolled-back transaction: the seed always creates the Files database, so this state is unreachable in a real tenant.
+    // A raw update inside the rolled-back transaction: the seed always creates the Files database.
     await expect(
       withTransaction(pool, async (client) => {
         await client.query("UPDATE databases SET owner_module_id = NULL WHERE id = $1", [filesId]);
@@ -1044,7 +1034,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
   });
 
   describe("the preview and the reduced copy of the moved attachment (issue gh-1965)", () => {
-    /** An attachment of a photo whose metadata job has run: two derived blobs, their bytes written under `directory`. */
+    /** An attachment of a photo whose metadata job has run: two derived blobs, written under `directory`. */
     async function photoWithDerivedImages(inboxItemId: string, directory: string) {
       const storage = new LocalFsBlobStorageWriter(directory);
       const keys = [

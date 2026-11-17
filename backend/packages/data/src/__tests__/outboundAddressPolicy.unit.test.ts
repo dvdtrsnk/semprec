@@ -98,7 +98,6 @@ describe("publicOnlyLookup (issue #1034)", () => {
       ],
       family: undefined,
     });
-    // One resolution per lookup: the socket is handed the result instead of resolving again.
     expect(stub.calls).toEqual(["public.test", "public.test"]);
   });
 

@@ -66,12 +66,10 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Lists the stack of `pool` in tenant zero for `userId`; the read runs in one managed transaction, as the route does. */
 function listCards(pool: Pool, userId: string, locale = "en"): Promise<InboxCardList> {
   return inTenantZero(() => withTransaction(pool, (client) => listInboxCards(client, { ownerUserId: userId, locale })));
 }
 
-/** The number of open Inbox cards of `userId` read through `pool` in tenant zero, in one managed transaction, as the route does. */
 function countCards(pool: Pool, userId: string): Promise<number> {
   return inTenantZero(() => withTransaction(pool, (client) => countOpenInboxCards(client, { ownerUserId: userId })));
 }
@@ -90,7 +88,6 @@ const TASK_COMPUTATION: ComputeSemprecProposalFn = async (input) => ({
   properties: { name: input.sourceItem.properties.text },
 });
 
-/** An Inbox item of the Task type and the Processing proposals card the tick makes for it. */
 async function proposedCard(
   text: string,
   options: {
@@ -117,10 +114,7 @@ async function proposedCard(
   });
 }
 
-/**
- * A transcript of a recording that overlaps an occurrence of a recurring Event that has no item yet, and the card the
- * match step makes for it: a link to the occurrence by its synthetic id (issue gh-1850).
- */
+/** The match step's card for a transcript overlapping a recurring Event's occurrence that has no item (synthetic id). */
 async function occurrenceCard(): Promise<{ transcriptId: string; cardId: string; occurrenceId: string }> {
   return inTenantZero(() =>
     withTransaction(adminPool, async (client) => {
@@ -157,11 +151,7 @@ async function occurrenceCard(): Promise<{ transcriptId: string; cardId: string;
   );
 }
 
-/**
- * `count` proposed cards with no source and no envelope, written through the choke point. The tick makes a card in
- * about half a second, too slow for the volume of the limit tests, which look at the number of cards and not at
- * what a card holds.
- */
+/** Cards written through the choke point: the tick takes about half a second per card, too slow for the limit tests. */
 async function bareProposedCards(count: number): Promise<void> {
   await inTenantZero(() =>
     withTransaction(adminPool, async (client) => {
@@ -176,7 +166,6 @@ async function bareProposedCards(count: number): Promise<void> {
   );
 }
 
-/** Soft-deletes the source Inbox item and runs the tick again, which makes the card `invalid` for a deleted source. */
 async function invalidateBySourceDeletion(itemId: string): Promise<void> {
   await inTenantZero(async () => {
     await withTransaction(adminPool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
@@ -189,10 +178,7 @@ async function invalidateBySourceDeletion(itemId: string): Promise<void> {
   });
 }
 
-/**
- * Sets a card's stored `status` directly. `computing` has no producer yet, and `needsClarification` is
- * produced only by the model's recognition, which the tick of these tests does not run.
- */
+/** `computing` has no producer and `needsClarification` comes only from model recognition, so both are set directly. */
 async function setCardStatus(cardId: string, status: string): Promise<void> {
   const { rows } = await adminPool.query<{ id: string }>(
     "UPDATE items SET properties = jsonb_set(properties, '{status}', $2::jsonb) WHERE id = $1 RETURNING id",
@@ -201,7 +187,6 @@ async function setCardStatus(cardId: string, status: string): Promise<void> {
   expect(rows).toHaveLength(1);
 }
 
-/** A pending approval request of a new run started by `triggeredBy`, a delegated run below it when `delegated`. */
 async function approvalFrom(
   triggeredBy: AgentRunRow["triggeredBy"],
   options: { delegated?: boolean } = {},
@@ -222,7 +207,6 @@ async function approvalFrom(
   });
 }
 
-/** A transcript and the card `matchTranscriptToEvent` makes for it, as the transcription pipeline does. */
 async function transcriptCard(name: string, date: string): Promise<{ transcriptId: string; cardId: string }> {
   return inTenantZero(() =>
     withTransaction(adminPool, async (client) => {
@@ -448,7 +432,6 @@ describe("listInboxCards (issue #1807)", () => {
       vi.useRealTimers();
     });
 
-    /** Asks for a new computation of the card through the production action, which stores `computing` with a new `updatedAt`. */
     function sendBack(cardId: string): Promise<ItemRow> {
       return inTenantZero(() =>
         withTransaction(adminPool, (client) =>
@@ -457,7 +440,6 @@ describe("listInboxCards (issue #1807)", () => {
       );
     }
 
-    /** What a card's row holds, as `GET /api/items/:id` would read it. */
     async function stored(cardId: string): Promise<{ updatedAt: string; properties: Record<string, unknown> }> {
       const card = await inTenantZero(() =>
         withTransaction(adminPool, (client) => itemsStore.getItemById(client, proposalsId, cardId)),
@@ -891,7 +873,7 @@ describe("listInboxCards (issue #1807)", () => {
   });
 
   describe("the reason of an invalid card (issue #2027)", () => {
-    /** Marks `cardId` invalid with a stored reason through the choke point, as the issue that writes target reasons will. */
+    /** Marks `cardId` invalid with a stored reason through the choke point. */
     async function invalidateWithReason(cardId: string, reason: Record<string, unknown>): Promise<void> {
       await inTenantZero(() =>
         withTransaction(adminPool, (client) =>
@@ -1012,7 +994,6 @@ describe("listInboxCards (issue #1807)", () => {
       await setCardStatus(failed.cardId, "computeFailed");
       const approval = await approvalFrom("heartbeat");
       const transcript = await transcriptCard("Standup", "2026-08-28T08:00:00.000Z");
-      // A stored reason does not make a card that is no longer invalid carry it.
       await adminPool.query(
         "UPDATE items SET properties = jsonb_set(properties, '{invalidReason}', $2::jsonb) WHERE id = $1",
         [

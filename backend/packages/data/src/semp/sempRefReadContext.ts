@@ -37,7 +37,6 @@ const segmentsSchema = z.array(
   z.object({ speaker: z.string(), text: z.string(), startsAt: z.number(), endsAt: z.number() }),
 );
 const RELATED_KEYS = new Set(["project", "projects", "company", "companies", "people", "sourceInbox", "proposals"]);
-/** A task's attachments are its `files` relation (issue #1771); other databases keep the common set. */
 const TASK_RELATED_KEYS = new Set([...RELATED_KEYS, "files"]);
 const MAX_RELATION_TARGETS = 200;
 
@@ -52,10 +51,8 @@ async function itemTitle(client: PoolClient, item: ItemRow): Promise<string> {
 }
 
 /**
- * The names of the items an item relates to through the given relation keys. A target in a database of
- * `unreadableDatabaseIds` (the databases the reading agent's project may not read, issue #1849), or a Files,
- * Transcripts or Inbox item linked to one of them (issue #1999), contributes its id under `hidden` as
- * `{ id, hidden: true }` and no name.
+ * Targets in `unreadableDatabaseIds`, or Files/Transcripts/Inbox items linked to one, appear as
+ * `{ id, hidden: true }` without a name.
  */
 async function relatedNames(
   client: PoolClient,
@@ -77,8 +74,6 @@ async function relatedNames(
       client,
       rows.slice(0, MAX_RELATION_TARGETS).map((edge) => (edge.item_a === item.id ? edge.item_b : edge.item_a)),
     );
-    // A Files, Transcripts or Inbox target linked to a sensitive database the project may not read is as hidden as an
-    // item of that database (issue #1999); with nothing unreadable the lookup does not query.
     const linkedToUnreadable = await itemIdsLinkedToDatabases(
       client,
       targets.map((target) => target.id),
@@ -180,10 +175,8 @@ async function blockDetails(client: PoolClient, itemId: string, blockId: string)
 const SERIES_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * A future occurrence of a repeating task (issue #1771): the series template, the day and the relations of the series'
- * current instance, which carries the series' project, people and attachments. A series the tenant does not hold
- * (deleted since the message was sent, or never there), one whose owner item is deleted, and one whose row has no template
- * are unavailable.
+ * A future occurrence of a repeating task: the series template, the day and the relations of the series' current
+ * instance. Unavailable when the series is gone, its owner item is deleted, or it has no template.
  */
 async function readTaskOccurrenceContext(
   client: PoolClient,
@@ -191,11 +184,11 @@ async function readTaskOccurrenceContext(
   occurrenceDate: string,
   unreadableDatabaseIds: ReadonlySet<string>,
 ): Promise<SempRefContext | null> {
-  // `series_id` is a uuid column: a string of any other shape names no series, and must not reach the cast.
+  // `series_id` is a uuid column: any other string names no series and must not reach the cast.
   if (!SERIES_ID_SHAPE.test(seriesId)) return null;
   const series = await getTaskRecurrenceBySeriesId(client, seriesId.toLowerCase());
   if (!series?.template) return null;
-  // Soft deletion keeps the recurrence row until the purge: a series whose current owner item is gone is unavailable.
+  // Soft deletion keeps the recurrence row until purge, so a series whose owner item is gone is unavailable.
   const [instance] = await getItemsByIds(client, [series.itemId]);
   if (!instance) return null;
   const template = publicTaskRecurrenceTemplate(series.template);
@@ -214,35 +207,26 @@ async function readTaskOccurrenceContext(
   };
 }
 
-/** Who the context is read for. */
 export interface SempRefReader {
-  /**
-   * The Projects item of the agent the context is built for (issue #1849). The names of relation targets that lie in a
-   * database this project may not read are left out and listed as `{ id, hidden: true }`. Without a reader every target
-   * is named.
-   */
+  /** Relation targets in databases this project may not read are listed as `{ id, hidden: true }`. */
   agentProjectItemId: string;
 }
 
-/** What the read knows about the turn that asks for it. */
 export interface SempRefReadOptions {
   /**
-   * True when the refs are those of the message of the turn that is starting. Only a `sleepNight` ref depends on it
-   * (issue #1853): its sleep databases are sensitive, so the night is read under the reader's database grants, or
-   * because the turn attached it. Every other kind is read because the user attached it, whatever the turn.
+   * Only `sleepNight` depends on it: its sensitive night is read under the reader's grants or because this turn
+   * attached it. Every other kind is read because the user attached it.
    */
   attachedThisTurn?: boolean;
 }
 
 /**
- * Composes existing tenant readers for exactly the reference carried by this turn. The referenced item itself is
- * read because the user attached it; the items it relates to are read only as far as `reader` may read them.
+ * Reads exactly the references carried by this turn. The referenced item is read because the user attached it;
+ * its related items only as far as `reader` may read them.
  *
- * A `sleepNight` ref is read in a REPEATABLE READ transaction (the caller opens it; any other level throws an `Error`)
- * and throws a `ForbiddenError` when neither a grant of `reader` nor `options.attachedThisTurn` allows it.
- *
- * An `agentRun` ref without `messageId` is read as the whole run; one with it is read as that answer alone (issue
- * gh-1936) and is `null` unless the message is an assistant message the run produced in its thread.
+ * `sleepNight` needs a REPEATABLE READ transaction from the caller and throws `ForbiddenError` without a grant or
+ * `attachedThisTurn`. An `agentRun` ref with `messageId` is read as that answer alone, `null` unless the run
+ * produced it in its thread.
  */
 export async function readSempRefContext(
   client: PoolClient,
@@ -265,7 +249,6 @@ export async function readSempRefContext(
   if (ref.kind === "agentRun") {
     const run = await getAgentRun(client, ref.agentRunId);
     if (!run) return null;
-    // A ref that names an answer (issue gh-1936) is read as that answer only, not as the run's whole session.
     if (ref.messageId !== undefined) return readRunAnswerContext(client, run, ref.messageId);
     const { rows } = await client.query<{ kind: string; payload: string; truncated: boolean }>(
       `SELECT kind, left(payload::text, 8000) AS payload, length(payload::text) > 8000 AS truncated
@@ -304,7 +287,7 @@ export async function readSempRefContext(
     };
   }
   if (ref.kind === "mailThread") {
-    // The agent is handed the thread the id leads to now, which `mail.thread.get` reads; a purged thread is unavailable.
+    // The agent gets the thread the id leads to now; a purged thread is unavailable.
     const [target] = await resolveMailThreadRefTargets(client, [ref.threadId]);
     if (!target) return null;
     return {
@@ -361,7 +344,7 @@ export async function readSempRefContext(
       blob: null,
     };
   }
-  // An Emails item that is an open or sent draft is handed over as the draft with the way to change it (issue gh-1948).
+  // An open or sent Emails draft is handed over as the draft with the way to change it.
   if (ref.kind === "item" && database.ownerModuleId === "emails") {
     const draft = await readMailDraftRefDetails(client, item);
     if (draft) return { label, state, details: draft, blob: null };

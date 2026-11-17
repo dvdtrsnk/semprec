@@ -170,14 +170,12 @@ describe("suggestMcpToolLabels (issue gh-1983)", () => {
     expect(await labelOf(other)).toBeNull();
   });
 
-  /** The names a call was asked about. */
   function namesAsked(input: AiGatewayCompletionInput): string[] {
     const content = input.messages[0]?.content;
     if (typeof content !== "string") throw new Error("expected a string user message");
     return requestSchema.parse(JSON.parse(content)).tools.map((tool) => tool.toolName);
   }
 
-  /** An answer that labels every tool the call asked about. */
   function labelEverything(input: AiGatewayCompletionInput): unknown {
     return { labels: namesAsked(input).map((toolName) => ({ toolName, cs: `${toolName} cs`, en: `${toolName} en` })) };
   }

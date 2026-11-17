@@ -16,20 +16,15 @@ import { parseUserOverrides } from "./proposalOverrides.js";
 import { assertProposalVersion } from "./proposalPreconditions.js";
 import { referencedItemIdsOf } from "./proposalReferences.js";
 
-/**
- * The user's return of a proposal card to the assistant's last proposal (issue #1912), split out of
- * `proposalActions.ts` to keep that file under the ESLint line cap; `proposalActions.ts` re-exports
- * `resetProposalOverridesWithClient` and `ResetProposalOverridesInput`, so callers import them from there. The shared
- * helpers this module takes from `proposalActions.ts` (`lockLiveProposal`, `assertValidEnvelopeForCard`,
- * `unsupportedEntityKindError`) are used only inside functions, so the import cycle does not matter at module load.
- */
+// Returns a card to the assistant's last proposal; re-exported from `proposalActions.ts`. The helpers it takes from
+// `proposalActions.ts` are used only inside functions, so the import cycle is harmless at module load.
 
 export interface ResetProposalOverridesInput {
-  /** The card's `updatedAt` as the client read it; a different current value refuses the reset with a `ConflictError`. */
+  /** A value other than the card's `updatedAt` refuses the reset with a `ConflictError`. */
   ifVersion?: string;
 }
 
-/** The stored `userEditedKeys` (a JSONB boundary): an absent or JSON null value is "no keys"; anything else malformed throws. */
+/** Parses stored `userEditedKeys` (a JSONB boundary): absent or JSON null is none; other malformed values throw. */
 function parseUserEditedKeys(value: unknown, proposalId: string): string[] {
   if (value === null || value === undefined) return [];
   const parsed = z.array(z.string()).safeParse(value);
@@ -38,24 +33,16 @@ function parseUserEditedKeys(value: unknown, proposalId: string): string[] {
 }
 
 /**
- * `POST /api/proposals/:id/reset-overrides` (issue #1912): discards every manual value of a card and shows what the
- * assistant last proposed. When `userOverrides` or `userEditedKeys` holds anything, one `updateItemWithClient` call
- * writes `userOverrides` `{}`, `userEditedKeys` `[]`, `proposal` as the assistant's last envelope
- * (`readAiProposal`: for a card whose type was refined, the envelope computed for the chosen type) with the
- * `referencedItemIds` of that envelope, a `reset` history entry that lists the keys the user had edited, and the status
- * `proposed`, with the `invalidReason` of a fixable `invalid` card cleared in the same write. The restored envelope is validated as confirm validates it
- * (`assertValidEnvelopeForCard`), so a card whose assistant envelope no longer fits its destination is refused with
- * the `ValidationError` of the field and keeps its manual values. Manual values also cover the relation lists and
- * step switches that issue #1920 stores in `userOverrides`, so those are cleared as well. When nothing is edited the
- * locked card is returned unchanged and nothing is written, history included.
+ * `POST /api/proposals/:id/reset-overrides`: discards every manual value (properties, relation lists, step switches)
+ * and restores the assistant's last envelope (`readAiProposal`) with its `referencedItemIds`, a `reset` history
+ * entry listing the edited keys, status `proposed` and a cleared fixable `invalidReason`, in one update. The restored
+ * envelope is validated as confirm validates it, so one that no longer fits is refused and the values stay. With
+ * nothing edited the card is returned unchanged.
  *
- * Runs in the caller's transaction under the proposal's row lock. Allowed in the statuses a values edit is allowed
- * in: `proposed`, `needsClarification` and a fixable `invalid`. A `confirmed` or `rejected` card, a final `invalid`
- * one (`sourceDeleted`, issue #1482) and a card in any other status are refused with a `ValidationError` before
- * anything else, even when nothing is edited. A `ConflictError` carrying the current card answers an `ifVersion` that
- * is no longer the card's `updatedAt`, also when nothing is edited. A card with manual values and no assistant
- * envelope to return to (a `needsClarification` card) is refused with a `ValidationError`, and one whose envelope
- * has an unknown `entityKind` with the `ConflictError` that confirm answers.
+ * Runs in the caller's transaction under the card's row lock. Allowed in `proposed`, `needsClarification` and fixable
+ * `invalid`; other statuses are refused first, then a stale `ifVersion` (`ConflictError`), both even with nothing
+ * edited. Manual values without an assistant envelope are a `ValidationError`; an unknown `entityKind` is confirm's
+ * `ConflictError`.
  */
 export async function resetProposalOverridesWithClient(
   client: PoolClient,

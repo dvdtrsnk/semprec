@@ -61,7 +61,7 @@ async function createMcpServerItem(connectionConfig: McpConnectionConfig, creden
   return item;
 }
 
-/** `vi.waitFor` guards against the handshake/cleanup being asynchronous relative to when `connect`/`close` resolves. */
+/** Handshake and cleanup can finish after `connect`/`close` resolves. */
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
   await vi.waitFor(
     () => {
@@ -71,7 +71,6 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
   );
 }
 
-/** Guards against a circular-reference throw so the assertion is about content, not about whether `JSON.stringify` itself survives. */
 function safeStringify(value: unknown): string {
   const seen = new WeakSet();
   try {
@@ -88,7 +87,6 @@ function safeStringify(value: unknown): string {
   }
 }
 
-/** A bare TCP listener on loopback that only counts the connections it accepts. */
 async function startConnectionCounter(): Promise<{ port: number; count(): number; stop(): Promise<void> }> {
   let connections = 0;
   const sockets = new Set<net.Socket>();
@@ -123,8 +121,7 @@ async function credentialAccessLogCount(itemId: string): Promise<string | undefi
 }
 
 describe("MCP connection factory (issue #231)", () => {
-  // The sse/http contract servers listen on loopback, which the default outbound policy refuses.
-  // The "default outbound policy" block below switches back for its own tests.
+  // The contract servers listen on loopback, which the default outbound policy refuses.
   let restoreOutboundPolicy: (() => void) | undefined;
   beforeAll(() => {
     restoreOutboundPolicy = allowLoopbackOutboundForTests();
@@ -142,8 +139,7 @@ describe("MCP connection factory (issue #231)", () => {
     mcpServersId = await databaseIdFor("mcpServers");
   });
 
-  // A `stdio` spawn needs an admin of tenant zero (issue #1033). Each test that expects a
-  // spawn creates that admin explicitly; the member test below leaves its user a member.
+  // A `stdio` spawn needs an admin of tenant zero; the member test below leaves its user a member.
   async function makeSoleTenantAdmin(): Promise<void> {
     const tenantId = getTenantZeroId();
     await createUser(pool, {
@@ -222,7 +218,6 @@ describe("MCP connection factory (issue #231)", () => {
     });
 
     it("refuses a member at spawn without starting a child or decrypting the credential", async () => {
-      // The sole tenant's user is a member (the column default), so `tenantAllowsStdio` is false.
       await createTenantZeroUser(pool);
       const contract = startStdioContractServer();
       const item = await createMcpServerItem(contract.connectionConfig, "sk-stdio-secret");
@@ -264,7 +259,7 @@ describe("MCP connection factory (issue #231)", () => {
             );
             const databaseId = requireSingleRow(databases, "tenant B MCP database").id;
             const contract = startStdioContractServer();
-            // A legacy stdio row can predate the write-time admin rule; insert through its store.
+            // A stdio row can predate the write-time admin rule; insert through its store.
             const item = await withTransaction(runtimePool, async (client) => {
               const stored = await itemsStore.insertItem(client, {
                 databaseId,
@@ -1010,7 +1005,6 @@ describe("MCP connection factory (issue #231)", () => {
         const handle = await connectMcpServer(pool, item);
         try {
           await expect(contract.triggerToolsListChanged()).resolves.toBeUndefined();
-          // The connection is unaffected: a normal request still round-trips afterward.
           await expect(handle.client.ping()).resolves.toEqual({});
         } finally {
           await handle.close();
@@ -1132,7 +1126,7 @@ describe("MCP connection factory (issue #231)", () => {
       it("refuses a legacy http://127.0.0.1 row before decrypting its credential or connecting", async () => {
         const contract = await startHttpContractServer();
         try {
-          // `insertItem` skips the write-time baseline, exactly like a row stored before issue #1029.
+          // `insertItem` skips the write-time baseline.
           const item = await createMcpServerItem(contract.connectionConfig, "sk-legacy-secret");
 
           const err = await connectMcpServer(pool, item).catch((e: unknown) => e);
@@ -1239,7 +1233,7 @@ describe("MCP connection factory (issue #231)", () => {
     });
 
     it("rejects a credential decryption failure before opening any connection", async () => {
-      // The `stdio` config is only the vehicle here: the spawn check needs an admin of the sole tenant (issue #1033).
+      // The spawn check needs an admin of the sole tenant.
       await makeSoleTenantAdmin();
       const item = await withTransaction(pool, (client) =>
         itemsStore.insertItem(client, {
@@ -1247,8 +1241,7 @@ describe("MCP connection factory (issue #231)", () => {
           properties: { name: "Corrupt ciphertext", connectionConfig: { transport: "stdio", command: "irrelevant" } },
         }),
       );
-      // Seal under the tenant key, then flip one ciphertext byte so the AEAD tag check fails
-      // deterministically. Raw SQL: a corrupted ciphertext is a state no writer produces.
+      // Seal, then flip one ciphertext byte so the AEAD tag check fails; no writer produces this state.
       await withTransaction(pool, (client) =>
         storeCredential(client, { itemId: item.id, credentialType: "api_key", plaintext: "sk-unreachable" }),
       );

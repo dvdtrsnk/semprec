@@ -135,7 +135,7 @@ async function seededTenant(): Promise<MailTenant> {
   });
 }
 
-/** Ingests one message into the Inbox the way the sync worker does and answers the Emails item. */
+/** Ingests one message into the Inbox as the sync worker does; returns the Emails item id. */
 async function receive(t: MailTenant, options: Receive = {}): Promise<string> {
   return inTenant(t, async () => {
     const cp = createChokePoint(runtime);
@@ -192,7 +192,7 @@ async function threadOf(t: MailTenant, emailItemId: string): Promise<ThreadRef> 
   return { threadId: row.thread_id, threadItemId: row.item_id, messageId: row.message_id };
 }
 
-/** A gateway that answers as `answer` says and keeps every input it was given. */
+/** Answers via `answer` and keeps every input. */
 function stubGateway(answer: (input: AiGatewayCompletionInput) => Promise<AiGatewayCompletionResult>): {
   gateway: AiGatewayClientPort;
   calls: AiGatewayCompletionInput[];
@@ -221,10 +221,7 @@ interface AgentCall {
 
 const draftViewSchema = z.looseObject({ id: z.uuid(), updatedAt: z.string() });
 
-/**
- * The agent of the tests: what a model that follows the task does. A task that names an open draft updates it with
- * `mail.draft.update`, a task that asks for a reply draft creates it with `mail.draft.create`, through the tool handlers.
- */
+/** A model that follows the task: updates a named open draft (`mail.draft.update`) or creates one (`mail.draft.create`). */
 function draftingAgent(calls: AgentCall[], drafts: z.infer<typeof draftViewSchema>[] = []): RunAgentFn {
   return async ({ agentRunId, task, projectItemId }) => {
     calls.push({ task, projectItemId });
@@ -249,7 +246,6 @@ function draftingAgent(calls: AgentCall[], drafts: z.infer<typeof draftViewSchem
   };
 }
 
-/** Fires the seeded `newEmail` heartbeat for `itemId` as the scheduler does for an item event. */
 function fire(t: MailTenant, itemId: string, gateway: AiGatewayClientPort | undefined, runAgent: RunAgentFn) {
   const action = coreAgentRunAction(runtime, runAgent, createNewEmailAgentRunDependencies(runtime, gateway));
   return inTenant(t, () =>
@@ -299,7 +295,6 @@ async function draftsOf(t: MailTenant): Promise<DraftRow[]> {
   return rows;
 }
 
-/** The person edits the draft in the compose window: the draft route with the version the person read. */
 async function userEdits(t: MailTenant, draft: z.infer<typeof draftViewSchema>): Promise<void> {
   const result = await inTenant(t, () =>
     createMailDraftUpdateRouteHandler(runtime)({
@@ -311,7 +306,6 @@ async function userEdits(t: MailTenant, draft: z.infer<typeof draftViewSchema>):
   expect(result.status).toBe(200);
 }
 
-/** Sets the thread's project through the choke point relation write, as a person does in the thread's detail. */
 async function setThreadProject(t: MailTenant, thread: ThreadRef, projectItemId: string): Promise<void> {
   await inTenant(t, async () => {
     const cp = createChokePoint(runtime);

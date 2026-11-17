@@ -59,11 +59,8 @@ async function tokenFor(email: string, role?: "admin" | "member", tenantId?: str
 }
 
 /**
- * A fixture handler standing in for a real generic-resource route (#155-158 mount those) —
- * exercises this adapter's shared auth, JSON body validation, and success/error serialization
- * without any business logic of its own. `title: "conflict"`/`"missing"`/`"throttled"` pick the
- * error fixtures this test drives through the real HTTP round trip; anything else is a successful
- * "echo" write.
+ * Exercises the adapter's auth, body validation and serialization without business logic. `title:
+ * "conflict"`/`"missing"`/`"throttled"` pick the error fixtures; anything else is an echo write.
  */
 const fixtureHandler: AdapterHandler = async ({ body }) => {
   const parsed = requireJsonObjectBody(body);
@@ -398,7 +395,7 @@ describe("adapter route (issue #238)", () => {
         await createChokePoint(pool).createItem({ databaseId: db.id, properties: {} });
       });
     }
-    // The handler's query runs on a runtime-role pool: the superuser pool bypasses row-level security.
+    // The superuser pool bypasses row-level security.
     const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
     const scopes: Array<TenantScope | undefined> = [];
     const counts: string[] = [];

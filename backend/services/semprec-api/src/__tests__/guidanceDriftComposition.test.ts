@@ -284,7 +284,7 @@ describe("guidance drift production composition", () => {
     report = true;
     await runInTenant(ownTenant, () => action({ projectItemId: fixture.project }));
     expect((await rows()).rows[0]?.status).toBe("active");
-    // The production event writer uses current time; model elapsed history with checked tenant-scoped fixture SQL.
+    // The production event writer uses the current time, so elapsed history is tenant-scoped fixture SQL.
     const aged = await runInTenant(ownTenant, () =>
       pool.query(
         "UPDATE agent_run_events SET at = now() - interval '15 days' WHERE agent_run_id = ANY($1::uuid[]) AND kind = 'tool_use'",
@@ -444,7 +444,7 @@ describe("guidance drift production composition", () => {
     ]);
     try {
       await runInTenant(ownTenant, async () => {
-        // Synthetic historical timestamp: the public guidance owner cannot set an observed revision directly.
+        // The public guidance owner cannot set an observed revision directly.
         expect(
           (
             await pool.query("UPDATE project_agent_guidance SET updated_at = $2 WHERE project_item_id = $1", [
@@ -745,7 +745,7 @@ describe("guidance drift production composition", () => {
     expect(final.findings).toHaveLength(1);
     expect(final.findings[0]?.id).toBe(first.findings[0]?.id);
     expect(final.findings[0]?.status).toBe("active");
-    // the returning finding is a new episode: the resolved problem stays resolved and a new one is active
+    // The returning finding is a new episode: the resolved problem stays resolved and a new one is active.
     expect(final.problems).toHaveLength(2);
     expect(final.problems[0]).toMatchObject({
       id: first.problems[0]?.id,
@@ -771,7 +771,7 @@ describe("guidance drift production composition", () => {
         };
       },
     };
-    // Fault injection: no production path deliberately fails between notification and problem writes.
+    // Fault injection: no production path fails between the notification and problem writes.
     await admin.query(`CREATE FUNCTION test_fail_guidance_problem() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'injected problem failure'; END $$`);
     try {

@@ -9,7 +9,6 @@ import { getSelfPersonId } from "../selfPerson.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { listTranscriptSpeakers } from "./transcriptionSpeakerEdges.js";
 
-/** An Events `people` edge written by `addSpeakersAsEventParticipants`. */
 export interface AddedParticipantEdge {
   edgeId: string;
   relationPropertyId: string;
@@ -18,21 +17,17 @@ export interface AddedParticipantEdge {
 }
 
 /**
- * Adds the people the transcript's `speakers` edges map at this moment to the Event's `people`, in the
- * caller's transaction (issue #1818). The tenant's own person (`getSelfPersonId`) is not added, an
- * unmapped speaker adds nobody, a person who already is a participant is left as they are, and a person
- * mapped to two speakers is added once. Nothing is ever removed. Returns the edges this call inserted,
- * in person id order. A failing edge write propagates and rolls the caller back.
+ * Adds the people the transcript's `speakers` edges map now to the Event's `people`, in the caller's
+ * transaction. The tenant's own person and existing participants are skipped; nothing is removed.
+ * Returns the inserted edges in person id order.
  *
- * The transcript's row is locked before the `speakers` edges are read, the lock every `speakers` edge
- * writer takes (`assertSpeakerEdgeWritable`). A manual assignment that holds it therefore commits before
- * this read, so its person is read here, or it waits for the caller's commit and finds the transcript's
- * `event` edge, which makes it add the person itself (docs/adr/2026-11-12-a-manual-speaker-assignment-settles-the-key-card-in-the-confirm-lock-order.md).
- * The caller holds the card's lock by then, so the order stays card, then transcript.
+ * The transcript row is locked before reading `speakers` edges, the lock every `speakers` writer
+ * takes: a manual assignment either commits before this read, or waits and then finds the `event`
+ * edge and adds the person itself. The caller already holds the card's lock, so the order stays card,
+ * then transcript.
  *
- * The people are written in id order. Each `people` edge queues the person's last-contact recompute under
- * a job key that a second transaction queuing the same key waits for, so two confirms that share people
- * must take those keys in one order or they can deadlock.
+ * People are written in id order because each edge queues a last-contact recompute under a job key a
+ * second transaction waits for; two confirms sharing people would otherwise deadlock.
  */
 export async function addSpeakersAsEventParticipants(
   client: PoolClient,

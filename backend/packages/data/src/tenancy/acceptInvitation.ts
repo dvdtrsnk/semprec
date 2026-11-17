@@ -17,11 +17,11 @@ export interface AcceptInvitationInput {
   /** The raw token from the invitation link's fragment. Only its hash is stored. */
   token: string;
   password: string;
-  /** Optional; validated by `normalizeDisplayName` before any lookup, so a refused name never consumes the invitation (issue #1513). */
+  /** Validated before any lookup, so a refused name never consumes the invitation. */
   displayName?: unknown;
 }
 
-/** Seeds a tenant's system databases and activates it. Production passes `provisionTenant`; a test may inject another. */
+/** Seeds a tenant's system databases and activates it; tests may inject another. */
 export type ProvisionTenant = (pool: Pool, tenantId: string) => Promise<unknown>;
 
 interface InviteRef {
@@ -35,7 +35,6 @@ function toPublicUser(user: UserRow): PublicUser {
   return publicUser;
 }
 
-/** True only for a Postgres unique violation (`23505`) of the named constraint. */
 function isUniqueViolation(err: unknown, constraint: string): boolean {
   return (
     typeof err === "object" &&
@@ -91,21 +90,18 @@ async function createInvitedUser(
 }
 
 /**
- * Accepts an admin-issued invitation (issue #1087), the only way to create an account after
- * `bootstrapFirstAccount`. One transaction creates the invited person's tenant in `provisioning`, binds
- * their `member` account to it and marks the invitation accepted. After it commits, `provision` seeds the
- * tenant's system databases and activates it, and then the system projects get their agent guidance rows
- * (issue #1449). A tenant that is not `active` cannot authenticate, so a failed `provision` leaves the
- * account unable to sign in until the next deploy's seed step provisions it.
+ * Accepts an admin-issued invitation, the only way to create an account after `bootstrapFirstAccount`.
+ * One transaction creates the tenant in `provisioning`, binds the `member` account to it and marks the
+ * invitation accepted. After commit, `provision` seeds and activates the tenant, then the system
+ * projects get their guidance rows. A failed `provision` leaves the account unable to sign in until the
+ * next deploy's seed step provisions it.
  *
- * Every unusable token (unknown, expired, revoked or already used) and an address that already has an
- * account answer the same `NotFoundError("Not found")` and write nothing. The tenant id is generated here,
- * never taken from the caller.
+ * Every unusable token and an address that already has an account answer the same
+ * `NotFoundError("Not found")` and write nothing. The tenant id is generated here, never taken from input.
  *
- * The first lookup is unlocked, so an unusable token is refused before the password is hashed. The decision
- * is the second lookup, `FOR UPDATE` inside the transaction: two acceptances of one token that both pass the
- * first lookup queue on that row, and the one that waits re-checks the conditions after the other commits,
- * finds the invitation accepted and is refused.
+ * The unlocked first lookup refuses bad tokens before the password is hashed; the decision is the second
+ * lookup, `FOR UPDATE` in the transaction, so of two concurrent acceptances the waiter re-checks and is
+ * refused.
  */
 export async function acceptInvitation(
   pool: Pool,
@@ -143,7 +139,7 @@ export async function acceptInvitation(
       logger.error({ tenantId: accepted.tenantId }, "invitation_provisioning_failed");
       throw err;
     }
-    // The system projects exist only once the tenant is provisioned, so their guidance is seeded after it (issue #1449).
+    // The system projects exist only once the tenant is provisioned.
     await seedAccountSystemProjectGuidance(pool, accepted.tenantId, accepted.user.id);
     return toPublicUser(accepted.user);
   });

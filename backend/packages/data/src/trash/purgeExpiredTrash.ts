@@ -8,33 +8,16 @@ import { RETENTION_DAYS } from "../trashRetention.js";
 import { logger } from "./logger.js";
 import { purgeExpiredArchivedDatabases } from "./purgeArchivedDatabases.js";
 
-/** How long a trashed item stays restorable before the purge sweep removes it. */
 export { RETENTION_DAYS };
 const CANDIDATE_PAGE_SIZE = 500;
 
 /**
- * The 30-day trash purge (issue #156) for the trash visible in the current scope: permanently
- * deletes every item whose `deleted_at` is older than `retentionDays`, together with its cascade subtree and every row that depends on it, one
- * root at a time through `chokePoint.purgeExpiredTrashSubtree` — its own transaction,
- * archived-database rejection, and eligibility re-check, so one oversized or
- * already-partially-purged subtree can't fail the whole sweep and a database archived after a
- * candidate was selected is never written to. Live items and trashed items younger than the cutoff
- * are never touched, whether they're a purge root or nested underneath one. The items of an archived
- * database are not candidates (`itemsStore.findItemsDeletedBefore`, issue gh-1878): the database is in the
- * trash itself and `purgeExpiredArchivedDatabases` deletes it with all of them. One archived between the
- * candidate read and its purge makes `purgeExpiredTrashSubtree` refuse with `database_archived`; that
- * refusal is skipped with a debug line, every other failure is logged as an error.
- *
- * Candidates are read in keyset pages of 500 (issue #675), so at most one page is held at a time;
- * the keyset advances from the last row of each page, so a candidate whose subtree failed is not
- * re-read by this run. A blob whose row a subtree call deleted has its bytes removed from each
- * distinct configured storage only after that call has resolved — its transaction has committed
- * by then. A storage failure is logged and does not prevent another root's cleanup. Only ids a
- * subtree call actually committed are counted. Returns the number of items permanently removed.
- *
- * Row-level security narrows every read and write to the scope the caller runs in, so call it inside
- * a tenant scope to purge that tenant's trash; `handleItemTrashPurgeSweepTask` does so once per
- * active tenant.
+ * Permanently deletes every item in scope trashed longer than `retentionDays`, with its cascade subtree, one root
+ * per `chokePoint.purgeExpiredTrashSubtree` transaction (which re-checks eligibility and refuses archived
+ * databases), so one bad subtree cannot fail the sweep. Items of archived databases are not candidates:
+ * `purgeExpiredArchivedDatabases` deletes them with the database. Candidates are read in keyset pages of 500, so a
+ * failed candidate is not re-read by this run. Blob bytes are removed only after the subtree commits; storage
+ * failures are logged. Must run in a tenant scope (RLS). Returns the number of items committed as removed.
  */
 export async function purgeExpiredTrash(
   pool: Pool,
@@ -57,8 +40,7 @@ export async function purgeExpiredTrash(
       try {
         result = await chokePoint.purgeExpiredTrashSubtree(candidate.id, cutoff);
       } catch (err) {
-        // A database archived after the candidate read refuses the purge; it is in the trash itself now and its items
-        // are deleted with it (issue gh-1878), so the item is skipped without an error.
+        // Archived after the candidate read: its items go with the database, so skip without an error.
         if (err instanceof ForbiddenError && err.code === "database_archived") {
           logger.debug({ itemId: candidate.id }, "Skipped a trashed item of a database that was archived meanwhile");
           continue;
@@ -91,12 +73,9 @@ export async function purgeExpiredTrash(
 }
 
 /**
- * The graphile-worker task handler wired into `createCoreTaskList` (`worker.ts`) and `CORE_CRONTAB`.
- * Runs, once per active tenant and inside that tenant's scope, the item purge `purgeExpiredTrash` and then the purge
- * of archived databases `purgeExpiredArchivedDatabases` (issue gh-1875). A failure of the first stage does not skip
- * the second: each failure is logged with the tenant id and the error's class, and the stages' failures are rethrown
- * together after both ran. A failure that escapes one tenant's pass fails only that tenant; `forEachActiveTenant`
- * rethrows the failures together after every tenant was attempted, so the job is retried.
+ * Per active tenant: `purgeExpiredTrash`, then `purgeExpiredArchivedDatabases`. A failure of the first stage does
+ * not skip the second; failures are logged and rethrown together after both ran, and per-tenant failures are
+ * rethrown after every tenant was attempted, so the job retries.
  */
 export async function handleItemTrashPurgeSweepTask(
   pool: Pool,

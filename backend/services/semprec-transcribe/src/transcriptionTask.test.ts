@@ -132,10 +132,9 @@ afterAll(() => {
 
 let pool: Pool;
 
-/** A job's first of three attempts: a failure in it is transient, so it is retried rather than recorded as permanent. */
 const FIRST_ATTEMPT = { job: { attempts: 1, max_attempts: 3 } };
 
-/** A fake `AudioGatewayClient` for steps 0/1's tests, which do not exercise diarization/ASR themselves but still run through them as later pipeline steps. Counts calls so resume tests can assert on them. */
+/** Counts calls so resume tests can assert on them. */
 class FakeAudioGatewayClient implements AudioGatewayClient {
   diarizeCalls: DiarizeRequest[] = [];
   transcribeCalls: TranscribeRequest[] = [];
@@ -157,18 +156,12 @@ class FakeAudioGatewayClient implements AudioGatewayClient {
   }
 }
 
-/**
- * A fake `AiGatewayClientPort` for steps 5, 6 and 7, a deterministic transport, not a model: answers
- * every meeting-notes request with fixed notes carrying `actionItems`, every Event-recommendation
- * request with `eventRecommendation`, every speaker-suggestion request with `speakerMappings`, and
- * counts calls.
- */
+/** Deterministic transport for steps 5-7: fixed answers per request kind, with call counts. */
 class FakeSummaryClient implements AiGatewayClientPort {
   calls: AiGatewayCompletionInput[] = [];
   failure: Error | null = null;
   speakerMappings: Array<{ speaker: string; personId: string | null; reason: string }> = [];
   actionItems: MeetingNotes["actionItems"] = [];
-  /** The answer to the Event-recommendation call (issue #1848). */
   eventRecommendation: { eventId: string | null; reason: string } = { eventId: null, reason: "Cannot tell." };
 
   async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
@@ -181,12 +174,10 @@ class FakeSummaryClient implements AiGatewayClientPort {
     return { content: { ...FAKE_NOTES, actionItems: this.actionItems }, usage: { inputTokens: 10, outputTokens: 5 } };
   }
 
-  /** The Event-recommendation calls, the paid step 6 requests. */
   eventMatchCalls(): AiGatewayCompletionInput[] {
     return this.calls.filter((call) => call.operation === "transcript_event_match");
   }
 
-  /** The meeting-notes calls, the paid step 5 requests. */
   notesCalls(): AiGatewayCompletionInput[] {
     return this.calls.filter((call) => call.operation === "transcript_summary");
   }
@@ -201,7 +192,7 @@ const FAKE_NOTES = {
 
 let summaryClient: FakeSummaryClient;
 
-/** `wireRealtimeHooks` installs every hook; undo all of them so no later test publishes through this file's pool. */
+/** Undo every realtime hook so no later test publishes through this file's pool. */
 function resetRealtimeHooks(): void {
   setInvalidationHook(() => {});
   setDocUpdateHook(() => {});
@@ -284,7 +275,7 @@ describe("transcription step 0", () => {
       status: "processing",
       link: `semprec://items/${file.id}`,
     });
-    // Issue #1830: the filename is not the transcript's name.
+    // The filename is not the transcript's name.
     expect(rows[0]?.properties).not.toHaveProperty("name");
     const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
     expect(source?.computed.create).toBe(rows[0]?.id);
@@ -520,12 +511,7 @@ describe("transcription step 0", () => {
   });
 });
 
-/**
- * Issue #1644: step 0 links the transcript to the Event its upload named. Two seeded tenants on a
- * `semprec_data` pool. An upload is the recordings route's composition: the shared Files upload with
- * `recordRecordingIntake` in its transaction. The jobs it enqueues are drained one lane at a time
- * with the tasks `createTranscribeQueueRuntime` registers, the fake gateways in place of HTTP.
- */
+/** Two seeded tenants; uploads use the recordings route's composition, jobs drain one lane at a time. */
 describe("transcription step 0: the upload's Event (issue #1644)", () => {
   let runtime: Pool;
   let tenant: string;
@@ -575,7 +561,6 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     await rm(tmpBlobDir, { recursive: true, force: true });
   });
 
-  /** Runs `fn` in one transaction of the runtime-role pool, inside `tenantId`. */
   function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
     return runInTenant(tenantId, () => withTransaction(runtime, fn));
   }
@@ -621,10 +606,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     return personId;
   }
 
-  /**
-   * Uploads a recording as `POST /api/recordings` does, naming `eventId` as its `X-Event-Id`; returns
-   * the Files item id. `bytes` defaults to the audio fixture; other bytes make another Files item.
-   */
+  /** Uploads as `POST /api/recordings` does with `X-Event-Id`; returns the Files item id. */
   function uploadRecording(tenantId: string, eventId: string | null, bytes: Buffer = audioFixture): Promise<string> {
     return runInTenant(tenantId, async () => {
       const filesDatabaseId = await withTransaction(runtime, (client) => requireDatabaseId(client, "files"));
@@ -645,7 +627,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     });
   }
 
-  /** Rejects when `promise` has not settled within five seconds, so a missed barrier fails instead of hanging. */
+  /** A missed barrier fails after five seconds instead of hanging. */
   async function bounded<T>(promise: Promise<T>): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -660,11 +642,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     }
   }
 
-  /**
-   * Starts step 0 for `fileItemId` on its own connection and holds its transaction open right after
-   * its row-locking read of `eventId` returned. Resolves with that transaction's backend pid;
-   * `commit` lets step 0 run on to its commit and waits for it.
-   */
+  /** Holds step 0's transaction open right after it locked `eventId`; `commit` lets it finish. */
   async function holdStepZeroAtEventLock(
     fileItemId: string,
     eventId: string,
@@ -753,7 +731,6 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     return rows[0]?.trashed;
   }
 
-  /** Drains the queued jobs of the fast create lane; the pipeline lane's jobs stay queued. */
   async function runCreateLane(): Promise<void> {
     await runOnce({
       pgPool: pool,
@@ -766,7 +743,6 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     });
   }
 
-  /** Drains the queued jobs of the pipeline lane, with the fake gateways in place of HTTP. */
   async function runPipelineLane(): Promise<void> {
     await runOnce({
       pgPool: pool,
@@ -779,7 +755,6 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     });
   }
 
-  /** The keys among `keys` that still have a queued job, read through graphile-worker's public `jobs` view. */
   async function queuedJobKeys(keys: string[]): Promise<string[]> {
     const { rows } = await pool.query<{ key: string }>(
       "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
@@ -788,12 +763,6 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     return rows.map((row) => row.key);
   }
 
-  /**
-   * What step 0 and the pipeline left for the recording, read inside `tenantId`: the transcripts
-   * created for the file with their status, the Events those transcripts are linked to, the
-   * tenant's pairing cards (every Processing proposal that is not a speaker card) and the statuses
-   * of its speaker cards.
-   */
   function readRecording(tenantId: string, fileItemId: string) {
     return inTenant(tenantId, async (client) => {
       const transcriptsDatabaseId = await requireDatabaseId(client, "transcripts");
@@ -824,10 +793,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     });
   }
 
-  /**
-   * How many relation edges of any kind end at `itemId`, read inside `tenantId`. A live Event has one from
-   * its create, to its calendar (issue #1761), so a test compares the count with the one it read before.
-   */
+  /** A live Event already has its calendar edge, so tests compare against an earlier count. */
   async function countEdgesOf(tenantId: string, itemId: string): Promise<number> {
     const { rows } = await inTenant(tenantId, (client) =>
       client.query<{ count: number }>(
@@ -1054,8 +1020,7 @@ describe("transcription step 0: the upload's Event (issue #1644)", () => {
     const eventId = await createEvent(tenant);
     const fileItemId = await uploadRecording(tenant, eventId);
     const reindexKey = `item-search-reindex:item:${eventId}`;
-    // The Event's create queued this job through its calendar edge (issue #1761). It is removed with
-    // graphile-worker's public remove_job, so the job found below is the one step 0's edge queued.
+    // The Event's calendar edge queued this job; removing it leaves only the one step 0's edge queued.
     await pool.query("SELECT graphile_worker.remove_job($1)", [reindexKey]);
     expect(await queuedJobKeys([reindexKey])).toEqual([]);
 
@@ -1122,7 +1087,6 @@ describe("transcription step 1 (prepare)", () => {
   let audioFixture: Buffer;
   let videoFixture: Buffer;
   let untaggedAudioFixture: Buffer;
-  /** Where step 1 stores normalized audio: under the tenant in scope (sole tenant zero here). */
   let transcriptionsPrefix: string;
 
   beforeAll(async () => {
@@ -1193,15 +1157,9 @@ describe("transcription step 1 (prepare)", () => {
   }
 
   /**
-   * `blobStorage`, except that `hook` runs as step 1 starts storing ffmpeg's output: after its read transaction,
-   * before its write transaction.
-   *
-   * The real write starts first and the hook runs beside it, like it does for a real storage writer that begins
-   * to read ffmpeg's stdout at once. A hook that ran before the first read would leave stdout unread for as long
-   * as the hook takes: once ffmpeg exits, Node drains an unread stdout and drops what it held, the stored audio is
-   * empty and step 1 fails on ffprobe with `mediaUnreadable` instead of reaching the write transaction the hook
-   * is there to interfere with. Under load the hook outlasts ffmpeg's run. The hook's failure is thrown after the
-   * write settled, so no write is still in flight when step 1 discards the audio.
+   * Runs `hook` beside the real write of ffmpeg's output, between step 1's two transactions. The write
+   * must start first: an unread stdout is dropped when ffmpeg exits, leaving empty audio. The hook's
+   * failure is thrown only after the write settled.
    */
   function storageWithMidNormalizationHook(hook: () => Promise<void>): BlobStorageWriter {
     return {
@@ -1297,8 +1255,7 @@ describe("transcription step 1 (prepare)", () => {
     const beforeReplay = await readSource(files.id, file.id);
     expect(beforeReplay?.computed.prepare).toBeDefined();
 
-    // Every blob byte on disk is gone: if step 1 ran ffmpeg/ffprobe again it would fail to read
-    // the (now-missing) source file, so a clean replay proves the checkpoint skip actually fired.
+    // The blobs are gone, so a clean replay proves step 1's checkpoint skip fired.
     await rm(tmpBlobDir, { recursive: true, force: true });
 
     await expect(task({ fileItemId: file.id }, FIRST_ATTEMPT)).resolves.toBeUndefined();
@@ -1712,8 +1669,7 @@ describe("transcription step 1 (prepare)", () => {
 
   it("keeps the checkpoint of a concurrent run that finished step 1 first and discards its own audio", async () => {
     const { files, file } = await createSourceFile("audio/mp4", audioFixture);
-    // A real blob, so the later diarize/ASR steps (which now run unconditionally after step 1) have
-    // something to download — simulating the concurrent run's own normalized output, not this run's.
+    // A real blob for diarize/ASR to download, standing in for the concurrent run's output.
     const concurrentStorageKey = `${transcriptionsPrefix}${randomUUID()}`;
     await blobStorage.writeStream(concurrentStorageKey, Readable.from(audioFixture));
     const concurrentBlob = await withTransaction(pool, (client) =>
@@ -1838,7 +1794,7 @@ describe("transcription step 1 (prepare)", () => {
       );
     });
 
-    // Issue #1582: a deleted transcript is a clean stop, not a failure.
+    // A deleted transcript is a clean stop, not a failure.
     await createTranscriptionTask(pool, storage, gatewayClient, summaryClient)({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     expect((await readSource(files.id, file.id))?.computed).not.toHaveProperty("prepare");
@@ -1896,11 +1852,7 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
     return withTransaction(pool, (client) => getItemById(client, filesId, fileId));
   }
 
-  /**
-   * Inflates step 1's checkpointed duration and clears steps 2/3's checkpoints, so a replay
-   * exercises multiple ASR chunk boundaries against the fixture's real (sub-second) audio without
-   * generating a 20+ minute fixture file: `ffmpeg -t` past the real file's end simply stops at EOF.
-   */
+  /** Fakes a long recording for chunking; `ffmpeg -t` past the real file's end stops at EOF. */
   async function inflateDurationAndResetLaterSteps(fileId: string, durationSeconds: number): Promise<void> {
     await pool.query(
       `UPDATE items
@@ -1925,7 +1877,7 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
         }),
       ),
     );
-    // The future confirmation writer is not in this batch; populate its bounded stored shape.
+    // No writer produces this shape yet; populate it directly.
     const fixture = await inTenantZero(() =>
       pool.query(
         "UPDATE recording_requests SET language = $2, num_speakers_exact = $3, num_speakers_min = $4 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
@@ -2124,10 +2076,7 @@ describe("transcription steps 2 and 3 (diarize, ASR)", () => {
 
     expect(await readQueuedJobAttempts(file.id)).toEqual([{ attempts: 0 }]);
 
-    // The recording already finalized once before duration/checkpoints were reset for this test
-    // (`inflateDurationAndResetLaterSteps` needs step 1's checkpoint), so `properties.status` still
-    // reads its prior "done" — only `item_automation`, re-opened by this attempt, shows the
-    // interruption left nothing failed.
+    // `status` still reads the earlier "done"; only `item_automation` shows nothing failed.
     const transcript = await readTranscriptStatus(file.id);
     const automation = await readAutomation(transcript.id);
     expect(automation.status).toBe("pending");
@@ -2292,7 +2241,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       summaryClient,
     )({ fileItemId: file.id }, FIRST_ATTEMPT);
     expect((await readTranscript(file.id)).computed).toEqual(transcript.computed);
-    // Issue #1695: the finished transcript has every notes field; no action items is [].
+    // Every notes field is present; no action items is [].
     expect(transcript.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
     expect(transcript.computed).not.toHaveProperty("summaryByInstruction");
     expect(transcript.properties.status).toBe("done");
@@ -2391,7 +2340,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     ).rejects.toMatchObject({ name: "TranscriptionQueueError" });
     const halfway = await readTranscript(file.id);
     expect(halfway.computed).not.toHaveProperty("meetingNotes");
-    // A summary only the pipeline before issue #1695 wrote; no current writer produces this key.
+    // A key no current writer produces.
     const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
     if (!transcripts) throw new Error("Transcripts database was not seeded");
     const legacy = { meetingSummary: "Summary written before structured notes." };
@@ -2457,12 +2406,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
   });
 
   /**
-   * Fault/transform injection (R1 P1, parent D5): strips `meetingNotes` from every write to exactly one
-   * transcript row, so the real pipeline reaches finalize without stored notes, which no production
-   * input can arrange. The id reaches the trigger's WHEN clause as a literal quoted by Postgres
-   * (`format('%L')` in a DO block, read from a session setting). Cleanup runs after `run` settled, on
-   * the same dedicated client; a failed cleanup discards that client and is reported with any primary
-   * failure.
+   * A trigger strips `meetingNotes` from writes to one transcript, so the pipeline reaches finalize
+   * without notes. A failed cleanup discards the client and is reported with any primary failure.
    */
   async function withMeetingNotesStripped(transcriptId: string, run: () => Promise<void>): Promise<void> {
     const client = await pool.connect();
@@ -2724,7 +2669,6 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     return rows[0]?.checkpoint;
   }
 
-  /** The `properties` of every Event-role transcript card (issue #1848). */
   async function readEventCards(): Promise<Array<Record<string, unknown>>> {
     const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
       `SELECT i.properties FROM items i JOIN databases d ON d.id = i.database_id
@@ -3220,7 +3164,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
     await task({ fileItemId: file.id }, FIRST_ATTEMPT);
     const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
-    // Issue gh-1942: the checkpoint says what the step asked for, the Event (none here) and the candidate people.
+    // The checkpoint records what was asked: the Event (none here) and the candidate people.
     expect(source?.computed.suggestSpeakers).toEqual({
       proposedSpeakers: expect.any(Array),
       eventId: null,
@@ -3254,8 +3198,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       if (!rows[0]) throw new Error("Events 'people' property was not seeded");
       return { person: created, peoplePropertyId: rows[0].id };
     });
-    // An Events `people` edge is a link-rule source (issue #1697): its write queues a propagation job, which
-    // needs a tenant scope.
+    // An Events `people` edge queues a link-rule propagation job, which needs a tenant scope.
     await inTenantZero(() =>
       createChokePoint(pool).createRelation({
         relationPropertyId: peoplePropertyId,
@@ -3537,8 +3480,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       const transcript = await readTranscript(file.id);
       const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
 
-      // Step 1 (date), prepare's durationSeconds (issue #1469), step 4 (segments, then language), step 5 (summary),
-      // finalize's finalizedAt (issue #1469) and step 8 (status done).
+      // date, durationSeconds, segments, language, summary, finalizedAt, status done.
       await vi.waitFor(() => {
         const updates = received.filter(
           (message) =>
@@ -3647,8 +3589,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       setNotificationCreatedHook((event) => {
         created.push(event.notificationId);
       });
-      // The permanent failure also raises the transcript's Semp problem (issue gh-1945), whose own `semp_problem`
-      // notification is announced too; this test is about the `automation_error` transition.
+      // The Semp problem's own notification is announced too; this test is about `automation_error`.
       const automationErrorEvents = async (): Promise<string[]> =>
         (
           await pool.query<{ id: string }>(
@@ -5541,12 +5482,7 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     });
 
     describe("rerun of a finished transcript without meeting notes (issue #1712)", () => {
-      /**
-       * Runs the pipeline to `done`, then removes `meetingNotes`, which a transcript finished before
-       * issue #1695 does not have. No production write removes the key, so the row is edited directly.
-       * Everything else is what today's pipeline leaves, the source's `suggestSpeakers` checkpoint and
-       * the speaker cards included; `finishWithoutNotesOrSpeakerProposals` removes those as well.
-       */
+      /** A `done` transcript without `meetingNotes`; no production write removes it, so the row is edited directly. */
       async function finishWithoutNotes(fileItemId: string) {
         await createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient)({ fileItemId }, FIRST_ATTEMPT);
         const finished = await readTranscript(fileItemId);
@@ -5559,11 +5495,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
       }
 
       /**
-       * `finishWithoutNotes`, then the shape an earlier pipeline left when step 7 had nobody to ask
-       * about (no linked Event, or none with a named participant): no `suggestSpeakers` checkpoint on
-       * the source and no speaker card. The cards leave through the Trash and its purge, so their
-       * idempotency keys are free again. No production write removes the checkpoint, so the source row
-       * is edited directly.
+       * `finishWithoutNotes` plus no `suggestSpeakers` checkpoint and no speaker card. Cards are purged
+       * through the Trash so their idempotency keys are free again.
        */
       async function finishWithoutNotesOrSpeakerProposals(fileItemId: string) {
         const transcript = await finishWithoutNotes(fileItemId);

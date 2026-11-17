@@ -2,26 +2,16 @@ import type { Pool, PoolClient } from "pg";
 import { runAsSystem } from "@semprec/shared";
 import { logger } from "./logger.js";
 
-/**
- * The cross-process tenant deactivation signal
- * (docs/adr/2026-10-17-tenant-deactivation-tears-down-in-process-state.md). Its payload is the
- * JSON text `{"tenantId":"<uuid>"}`, built by Postgres.
- */
+/** Cross-process tenant deactivation signal; payload `{"tenantId":"<uuid>"}`, built by Postgres. */
 export const TENANT_STATUS_CHANNEL = "semprec_tenant_status";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Base and cap for the LISTEN-connection reconnect backoff. */
+/** Reconnect backoff base and cap. */
 const RECONNECT_BASE_DELAY_MS = 200;
 const RECONNECT_MAX_DELAY_MS = 5_000;
 
-/**
- * Announces that `tenantId` left `active`, inside the caller's status-changing transaction. No
- * `runAfterCommit` is needed, unlike the realtime NOTIFYs: Postgres queues a NOTIFY issued inside a
- * transaction and delivers it only when that transaction commits, and discards it on rollback. A
- * listener therefore never sees the signal before the status change is visible, and a crash between
- * the commit and an after-commit callback cannot lose it.
- */
+/** In the caller's transaction: Postgres delivers a NOTIFY only on commit, so no `runAfterCommit` is needed. */
 export async function publishTenantDeactivated(client: PoolClient, tenantId: string): Promise<void> {
   await client.query("SELECT pg_notify($1, json_build_object('tenantId', $2::uuid)::text)", [
     TENANT_STATUS_CHANNEL,
@@ -30,11 +20,10 @@ export async function publishTenantDeactivated(client: PoolClient, tenantId: str
 }
 
 export interface TenantDeactivationListener {
-  /** Stops listening, releases the LISTEN client and waits for in-flight handler calls; no handler call starts afterwards. */
+  /** Stops, releases the LISTEN client and waits for in-flight handlers; no handler starts afterwards. */
   close(): Promise<void>;
 }
 
-/** Returns the tenant id of a `{ tenantId: <uuid> }` payload, or `null` for anything else. */
 function parseDeactivationPayload(payload: string): string | null {
   let parsed: unknown;
   try {
@@ -49,13 +38,12 @@ function parseDeactivationPayload(payload: string): string | null {
   return typeof tenantId === "string" && UUID_PATTERN.test(tenantId) ? tenantId.toLowerCase() : null;
 }
 
-/** The fields of a `pg` notification this module reads. */
 interface ListenNotification {
   channel: string;
   payload?: string;
 }
 
-/** A set-up client whose setup-time notifications are still held by `collect` in `buffered`. */
+/** A set-up client whose setup-time notifications are still buffered by `collect`. */
 interface Connected {
   next: PoolClient;
   collect: (msg: ListenNotification) => void;
@@ -68,16 +56,9 @@ function errorName(err: unknown): string {
 }
 
 /**
- * Listens on `TENANT_STATUS_CHANNEL` over one dedicated client and calls `onDeactivated` for every
- * tenant that leaves `active`. NOTIFY is not persisted, so on the first connect and on every
- * reconnect the listener also reads the tenants currently `suspended` or `deleting` and calls
- * `onDeactivated` for each: consumers must treat a repeated call for the same tenant as a no-op.
- *
- * Runs in a system scope for its whole lifetime; `onDeactivated` is called in that system scope and
- * re-enters a tenant explicitly when it needs one. A handler rejection is logged and the listener
- * keeps running. A payload that is not `{ tenantId: <uuid> }` is logged and dropped. After a
- * connection error it reconnects with capped exponential backoff (200 ms to 5 s). The initial
- * connect is not retried: its failure rejects this function.
+ * Calls `onDeactivated` for each tenant leaving `active`. NOTIFY is not persisted, so every (re)connect also
+ * replays the tenants now `suspended`/`deleting`: handlers must be idempotent. Reconnects with backoff (200 ms
+ * to 5 s); the initial connect is not retried.
  */
 export async function startTenantDeactivationListener(
   pool: Pool,
@@ -123,7 +104,7 @@ export async function startTenantDeactivationListener(
       }
     };
 
-    /** Releases the current client exactly once, destroying it so its LISTEN never returns to the pool. */
+    /** Exactly once, destroying the client so its LISTEN never returns to the pool. */
     function detach(): void {
       const current = client;
       if (!current) return;
@@ -133,23 +114,15 @@ export async function startTenantDeactivationListener(
       current.release(true);
     }
 
-    /** Logs an error raised while a client is still being set up; the failing query rejects `connect()` itself. */
+    /** The failing query itself rejects `connect()`; this only logs. */
     const onSetupError = (err: unknown): void => {
       logger.error({ errorName: errorName(err) }, "Tenant deactivation LISTEN connection failed during setup");
     };
 
-    /**
-     * Opens a client, runs `LISTEN`, then reads the non-active tenants on that same client. The
-     * resync runs after `LISTEN`, so a deactivation committed in between reaches the handler through
-     * one path or the other. A notification that arrives before `attach()` (for example one whose
-     * transaction committed after the resync took its snapshot) is buffered by a collector
-     * registered before `LISTEN`, and `attach()` replays it. Every failure removes the collector and
-     * releases the client before rethrowing.
-     */
+    /** `LISTEN` before the resync, with a collector buffering until `attach()`, so no deactivation is missed. */
     async function connect(): Promise<Connected> {
       const next = await pool.connect();
-      // Registered before the first query: a checked-out client with no 'error' listener crashes
-      // the process when its connection drops.
+      // Before the first query: a checked-out client without an 'error' listener crashes the process on drop.
       next.on("error", onSetupError);
       const buffered: ListenNotification[] = [];
       const collect = (msg: ListenNotification): void => {
@@ -171,10 +144,7 @@ export async function startTenantDeactivationListener(
       }
     }
 
-    /**
-     * Swaps the setup listeners for the live ones in one synchronous step, so no notification falls
-     * between them, then dispatches the resync's tenants and replays the buffered notifications.
-     */
+    /** Swaps setup listeners for live ones synchronously, so none is missed, then dispatches the resync and the buffer. */
     function attach({ next, collect, buffered, deactivated }: Connected): void {
       next.off("notification", collect);
       next.off("error", onSetupError);

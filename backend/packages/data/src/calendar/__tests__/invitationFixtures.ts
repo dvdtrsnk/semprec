@@ -37,9 +37,8 @@ export const SPRINT_REVIEW = {
 };
 
 /**
- * An invitation as the ingest of a message writes it (the calendar module's system keys), in the tenant in scope on
- * `pool`, linked to `suggestedCalendar` when one is named. The ingest is the only production writer of such a row; a
- * property whose override is `undefined` is left out. Returns the invitation's id.
+ * An invitation as the ingest of a message (its only production writer) writes it, linked to `suggestedCalendar`
+ * when one is named; a property whose override is `undefined` is left out.
  */
 export async function createInvitation(
   pool: Pool,

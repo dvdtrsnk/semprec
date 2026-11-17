@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { sendWebPushDismiss, sendWebPushNotification } from "../webPushAdapter.js";
 import type { NotificationPushPayload } from "../pushSenders.js";
 
-/** The source fields of a notification whose source has no durable identity (issue #1829), so no collapse key. */
+/** A source without durable identity, so no collapse key. */
 const NO_IDENTITY_SOURCE = {
   sourceTable: "project_heartbeats",
   sourceId: "heartbeat-1",

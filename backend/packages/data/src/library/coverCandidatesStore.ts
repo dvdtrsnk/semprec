@@ -4,10 +4,9 @@ import { requireAffectedRows } from "../db/pool.js";
 import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
 import { LIBRARY_AUTOMATION_SOURCES, type LibraryAutomationSource } from "./itemAutomationStore.js";
 
-/** The most candidates stored for one item; the `idx` column's CHECK allows the positions 0 to `MAX_COVER_CANDIDATES - 1`. */
+/** Must match the `idx` column's CHECK (0 to `MAX_COVER_CANDIDATES - 1`). */
 export const MAX_COVER_CANDIDATES = 3;
 
-/** One alternative match as the metadata job offers it for storing. */
 export interface CoverCandidateInput {
   source: LibraryAutomationSource;
   title: string;
@@ -15,7 +14,7 @@ export interface CoverCandidateInput {
   imageUrl: string;
 }
 
-/** One stored candidate; `index` is its position in the set, the one the select route takes. */
+/** `index` is the position the select route takes. */
 export interface CoverCandidate {
   index: number;
   source: LibraryAutomationSource;
@@ -24,7 +23,6 @@ export interface CoverCandidate {
   imageUrl: string;
 }
 
-/** The raw `library_cover_candidates` row shape this module reads back from Postgres. */
 type CoverCandidateDbRow = {
   idx: number;
   source: string;
@@ -46,11 +44,8 @@ function mapRow(row: CoverCandidateDbRow): CoverCandidate {
 }
 
 /**
- * Replaces the candidates of `itemId` with `candidates`, in the caller's transaction. An entry whose image URL does
- * not pass the stored-URL baseline (`isBaselineOutboundUrl`: https, no userinfo, no port, a DNS host) is dropped,
- * and so is every valid entry after the third. The kept entries get the positions 0, 1, 2 in order, so a set whose
- * first entry was dropped starts at 0 again. An empty or fully dropped input leaves the item with no candidates.
- * Returns the number of candidates stored.
+ * Entries failing the stored-URL baseline (`isBaselineOutboundUrl`) are dropped, then the first three are kept and
+ * renumbered from 0. Returns the number stored.
  */
 export async function replaceCoverCandidates(
   client: PoolClient,
@@ -72,7 +67,6 @@ export async function replaceCoverCandidates(
   return kept.length;
 }
 
-/** The stored candidates of `itemId` in position order; empty when the item has none. */
 export async function listCoverCandidates(client: PoolClient, itemId: string): Promise<CoverCandidate[]> {
   const { rows } = await client.query<CoverCandidateDbRow>(
     `SELECT ${COLUMNS} FROM library_cover_candidates WHERE item_id = $1 ORDER BY idx`,
@@ -81,7 +75,6 @@ export async function listCoverCandidates(client: PoolClient, itemId: string): P
   return rows.map(mapRow);
 }
 
-/** The candidate of `itemId` at position `index`, or `null` when the set has none there. */
 export async function getCoverCandidate(
   client: PoolClient,
   itemId: string,
@@ -94,10 +87,6 @@ export async function getCoverCandidate(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * Removes the candidates of `itemId` and returns how many rows it removed. Zero is a valid outcome: most items have
- * none, and a metadata run that found nothing replaces a set that may already be empty.
- */
 export async function deleteCoverCandidatesForItem(client: PoolClient, itemId: string): Promise<number> {
   const removed = await client.query("DELETE FROM library_cover_candidates WHERE item_id = $1", [itemId]);
   return removed.rowCount ?? 0;

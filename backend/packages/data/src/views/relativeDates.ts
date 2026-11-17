@@ -2,16 +2,13 @@ import { DateTime } from "luxon";
 import { today, weekBounds } from "../calendarTime.js";
 import type { DateRelativePreset } from "./filterTree.js";
 
-/**
- * What a `date_relative` condition needs from the caller: the tenant zone and the clock.
- * Resolving the bounds here, once per query, keeps the clock out of the compiled SQL.
- */
+/** Resolving bounds once per query keeps the clock out of the compiled SQL. */
 export interface FilterCompileContext {
   zone: string;
   now: Date;
 }
 
-/** Inclusive calendar-day bounds (`YYYY-MM-DD`); a missing side is unbounded. */
+/** Inclusive `YYYY-MM-DD` bounds; a missing side is unbounded. */
 export interface DayRange {
   from?: string;
   to?: string;
@@ -21,10 +18,7 @@ function shift(day: string, days: number): string {
   return DateTime.fromISO(day, { zone: "utc" }).plus({ days }).toISODate() as string;
 }
 
-/**
- * Resolves a preset to inclusive day bounds around D, today in the context's zone. For
- * `beforeNow` the range is the date-only rule (day < D); timestamps are compared as instants.
- */
+/** Around D, today in the context's zone. `beforeNow` is the date-only rule (day < D); timestamps compare as instants. */
 export function resolveDayRange(preset: DateRelativePreset, context: FilterCompileContext): DayRange {
   const d = today(context.zone, context.now);
   if (typeof preset === "object") {

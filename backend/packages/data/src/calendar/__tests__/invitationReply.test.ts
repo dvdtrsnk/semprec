@@ -34,11 +34,7 @@ import {
   type MailTenant,
 } from "./invitationMailFixtures.js";
 
-/**
- * The iMIP `REPLY` that follows an answer (issue gh-1953): the job the respond route queues in the answer's
- * transaction, and the message the job sends to the organizer. Everything runs on the runtime role pool, in tenants
- * of their own; the queue is the real one, and the transport records instead of sending.
- */
+/** The queue is the real one; the transport records instead of sending. */
 
 const TASK = CALENDAR_SEND_INVITATION_REPLY_TASK;
 /** The address of the mailbox of `setupMailAttachmentWorld`, which receives every invitation below. */
@@ -59,7 +55,6 @@ const jobSchema = z.object({
   runsLater: z.boolean(),
 });
 
-/** The queued jobs of the task, from the queue's public view, oldest first. */
 async function queuedJobs() {
   const { rows } = await admin.query<Record<string, unknown>>(
     `SELECT key, attempts, last_error AS "lastError", (run_at > now()) AS "runsLater"
@@ -91,7 +86,6 @@ async function onlyInvitation(of: World = world) {
   return found[0]!;
 }
 
-/** The invitation arrives (delivered to `deliveredTo` when given) and is ingested; returns its id. */
 async function receiveInvitation(
   options: { text?: string; deliveredTo?: string } = {},
   into: { world: World } = tenant,
@@ -108,13 +102,11 @@ async function receiveInvitation(
 
 const respond = (invitationId: string, response: string) => mail.respond(tenant, invitationId, response);
 
-/** Runs the queued jobs of the task once, through the module registry's task list as the API runtime hosts it. */
 async function runQueued(): Promise<void> {
   const taskList = await mergeModuleTaskListForAffinity({}, await loadFullModuleRegistry(), "api");
   await runOnce({ pgPool: admin }, { [TASK]: taskList[TASK]! });
 }
 
-/** Runs one payload through the task handler in the tenant's scope, as a retry of the job would. */
 const handle = (payload: unknown, tenantId: string = world.tenantId) =>
   runInTenant(tenantId, () => handleCalendarSendInvitationReply(payload));
 
@@ -122,7 +114,6 @@ function payloadOf(invitation: { id: string; properties: Record<string, unknown>
   return { invitationId: invitation.id, response, respondedAt: invitation.properties.respondedAt };
 }
 
-/** What a sent message says: its envelope, headers, the plain-text part and the lines of its calendar part. */
 async function readMessage(raw: Buffer) {
   const parsed = await simpleParser(raw);
   const calendar = parsed.attachments.find((attachment) => attachment.contentType === "text/calendar");
@@ -137,7 +128,6 @@ async function readMessage(raw: Buffer) {
   };
 }
 
-/** The `PARTSTAT` of the one `ATTENDEE` line of a message's calendar part. */
 function partstatOf(lines: string[]): string | undefined {
   return lines.find((line) => line.startsWith("ATTENDEE"))?.match(/PARTSTAT=([A-Z-]+)/)?.[1];
 }
@@ -146,7 +136,6 @@ async function sentMessages() {
   return Promise.all(transport.sent.map((message) => readMessage(message.raw)));
 }
 
-/** The `reason` of each logged call of a spied logger method. */
 function reasonsOf(spy: { mock: { calls: unknown[][] } }): unknown[] {
   return spy.mock.calls.map(([fields]) => z.object({ reason: z.string() }).parse(fields).reason);
 }
@@ -314,13 +303,11 @@ describe("the reply to an answered invitation (issue gh-1953)", () => {
       );
       expect(message?.lines.filter((line) => line.startsWith("ATTENDEE"))).toHaveLength(1);
       expect(message?.lines.some((line) => /^DTSTAMP:\d{8}T\d{6}Z$/.test(line))).toBe(true);
-      // The answer stays as recorded.
       expect((await onlyInvitation()).properties.status).toBe("accepted");
     });
 
     it("takes the first address of the mailbox as the attendee when the message names no delivered-to address", async () => {
       const id = await receiveInvitation();
-      // The mailbox keeps `PRIMARY` first and the address of the world's mailbox as an alias.
       await runInTenant(world.tenantId, () =>
         withTransaction(runtime, (client) =>
           writeMailboxAddresses(client, {
@@ -447,7 +434,6 @@ describe("the reply to an answered invitation (issue gh-1953)", () => {
 
       await runQueued();
 
-      // The mailbox of the world is a Gmail one, which sends through the Gmail API.
       expect(calls).toEqual([[world.inbox.mailboxId, "gmail_api"]]);
     });
   });
@@ -469,7 +455,6 @@ describe("the reply to an answered invitation (issue gh-1953)", () => {
       expect(transport.sent).toEqual([]);
       expect((await onlyInvitation()).properties.status).toBe("accepted");
 
-      // The queue runs the same job again once its backoff has passed; it finds a working transport and sends once.
       setInvitationReplyDelivery({ pool: runtime, transports: transportFor(transport) });
       await admin.query(
         `SELECT graphile_worker.reschedule_jobs(array_agg(id), run_at := now())

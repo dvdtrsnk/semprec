@@ -68,19 +68,17 @@ async function event(properties: Record<string, unknown>): Promise<string> {
 const updateTask = (taskId: string, propertiesPatch: Record<string, unknown>) =>
   runInTenant(tenant.id, () => cp.updateItem({ databaseId: tenant.tasksId, itemId: taskId, propertiesPatch }));
 
-/** Puts the task into the event through the route of issue #1764, which stamps the edge's `addedAt` from the clock. */
+/** Through the host-event route, which stamps `addedAt` from the clock. */
 const putInEvent = (taskId: string, eventId: string) =>
   runInTenant(tenant.id, () =>
     createTaskHostEventPutRouteHandler(pool)({ params: { id: taskId, eventId }, body: {}, identity }),
   );
 
-/** The Today views of the Tasks database of `owner`, found by their `systemKey` as a client finds them. */
 async function todayViews(owner: SeededTenant = tenant): Promise<ViewRow[]> {
   const views = await runInTenant(owner.id, () => cp.listViewsByDatabase(owner.tasksId));
   return views.filter((view) => view.config.systemKey === TASKS_TODAY_VIEW_KEY);
 }
 
-/** The ids the Today view lists at the current (faked) clock. */
 async function todayList(owner: SeededTenant = tenant): Promise<string[]> {
   const [view] = await todayViews(owner);
   if (!view) throw new Error("The Today view is missing");
@@ -92,7 +90,6 @@ function openCount(owner: SeededTenant = tenant, now?: Date): Promise<number> {
   return runInTenant(owner.id, () => withTransaction(pool, (client) => countTasksToday(client, now)));
 }
 
-/** All views of the tenant that carry any `systemKey`, as the unique index sees them. */
 async function systemKeyViewCount(owner: SeededTenant = tenant): Promise<number> {
   return runInTenant(owner.id, async () => {
     const { rows } = await pool.query<{ count: number }>(
@@ -232,7 +229,7 @@ describe("the Today list of the Tasks database (issue #1798)", () => {
   it("falls back to the effective day for a done task without a completedOn", async () => {
     const [dueToday, dueBefore] = [await task({ date: "2026-10-16" }), await task({ date: "2026-10-14" })];
     for (const id of [dueToday, dueBefore]) await updateTask(id, { status: "done" });
-    // Synthetic state: a task completed before issue #1544 stores no completedOn, and the Tasks transform always writes one.
+    // Synthetic state: a legacy completed task without completedOn, which the Tasks transform always writes now.
     await runInTenant(tenant.id, () =>
       pool.query("UPDATE items SET properties = properties - 'completedOn' WHERE id = ANY($1::uuid[])", [
         [dueToday, dueBefore],

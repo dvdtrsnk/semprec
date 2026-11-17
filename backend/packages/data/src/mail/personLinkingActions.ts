@@ -25,12 +25,8 @@ const personEmailReindexActionConfigSchema = z.object({ peopleDatabaseId: z.stri
 export type PersonEmailReindexActionConfig = z.infer<typeof personEmailReindexActionConfigSchema>;
 
 /**
- * Registered as an `onItemEvent` ('create' and 'update') heartbeat action on the People
- * database: keeps `person_email_index` in sync with each Person's `emails` property. Pure
- * deterministic index maintenance (project goal, issue #21: no AI/agent layer involved) —
- * a conflicting claim (an address already owned by a different Person) is silently skipped,
- * not surfaced as a heartbeat failure, since "another person already owns this address" is
- * an expected, benign outcome, not an error condition.
+ * `onItemEvent` action on People keeping `person_email_index` in sync. Deterministic index maintenance;
+ * a conflicting claim is an expected outcome and is skipped, not reported as a failure.
  */
 export function createPersonEmailReindexAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -68,7 +64,6 @@ const linkEmailToPeopleActionConfigSchema = z.object({
 export type LinkEmailToPeopleActionConfig = z.infer<typeof linkEmailToPeopleActionConfigSchema>;
 
 export interface LinkEmailEnvelopeToPeopleInput {
-  /** The Emails item the envelope belongs to; the edges are created on it. */
   itemId: string;
   envelope: MailEnvelope;
   emailsDatabaseId: string;
@@ -91,12 +86,9 @@ async function lockEmailForPeopleLink(client: PoolClient, databaseId: string, it
 }
 
 /**
- * Links one Emails item's `senderPeople` and `recipientsPeople` to the Persons that own the
- * envelope's addresses, inside the caller's transaction. Shared by the `mail.linkPeopleByEmail`
- * heartbeat action (for an arrived message) and `sendDraftEmail` (for a message Semprec sent, in
- * the transaction that finalizes it), and the historical linking job. An address no Person owns
- * leaves its relation unfilled. The locked message's existing edges are checked before writing;
- * an existing sender is retained, and already-linked recipients are skipped.
+ * Runs inside the caller's transaction (ingest heartbeat, `sendDraftEmail` finalization, historical
+ * linking job). Existing edges of the locked message are checked first: an existing sender is retained
+ * and already-linked recipients are skipped.
  */
 export async function linkEmailEnvelopeToPeople(
   client: PoolClient,
@@ -151,13 +143,8 @@ export async function linkEmailEnvelopeToPeople(
 }
 
 /**
- * Registered as an `onItemEvent` ('create') heartbeat action on the Emails database: reads
- * the just-ingested message's envelope (`mail_message_meta`, already committed in the same
- * transaction as the Emails item — see mail/ingest.ts) and links `senderPeople`/
- * `recipientsPeople` via a plain `person_email_index` lookup. An unmatched address (most
- * messages) simply leaves the relation unfilled — not an error, not a proposal for AI to
- * confirm (this is deterministic index lookup, out of Semprec's propose/confirm path
- * entirely, per the issue's explicit scope).
+ * `onItemEvent` ('create') action on Emails: links the envelope (committed with the item) through a plain
+ * index lookup. An unmatched address leaves the relation unfilled; this is not a propose/confirm path.
  */
 export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -181,6 +168,4 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
   };
 }
 
-// Issue gh-1941: the composition of the `newEmail` heartbeat's `core.agentRun`, exported with the mail module's other
-// heartbeat actions.
 export { createNewEmailAgentRunDependencies } from "./newEmailAgentRun.js";

@@ -120,9 +120,8 @@ interface RelationBody {
   metadata: Record<string, unknown>;
 }
 
-/** The `links` of an item read with `include=links`. */
 const linkedItemBody = z.object({ links: z.record(z.string(), z.unknown()) });
-/** One link entry whose sources are all items, as the `fileCompaniesFromProjects` rule leaves it. */
+/** Sources are all items, as the `fileCompaniesFromProjects` rule leaves it. */
 const itemLinkEntry = z
   .object({
     valueKind: z.string(),
@@ -141,11 +140,8 @@ const itemLinkEntry = z
     brokenAt: z.string().nullable(),
   })
   .strict();
-/** An error body as REST sends it: its code and details. */
 const httpError = z.object({ error: z.object({ code: z.string(), details: z.record(z.string(), z.unknown()) }) });
-/** The properties of an item body. */
 const itemProperties = z.object({ properties: z.record(z.string(), z.unknown()) });
-/** The targets of an item's relations, from the relation list route. */
 const relationTargets = z.object({
   relations: z.array(z.object({ propertyKey: z.string(), targetItemId: z.string() })),
 });
@@ -965,7 +961,7 @@ describe("item routes (issue #241)", () => {
     expect(changed.properties.color).toBe("#ff3b30");
     const clear = await patch({ color: null }, changed.updatedAt);
     expect(clear.status).toBe(200);
-    // Legacy values predate validation and cannot be written through the current API.
+    // Values that predate validation cannot be written through the current API.
     await pool.query("UPDATE items SET properties = jsonb_set(properties, '{color}', $1::jsonb) WHERE id = $2", [
       JSON.stringify("red"),
       fixture.item.id,
@@ -1170,7 +1166,7 @@ describe("item routes (issue #241)", () => {
       const unchanged = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(databases.types.id, typeItem.id));
       expect(unchanged?.properties).toMatchObject({ processingMethod: "database", targetDatabase: "tasks" });
     }
-    // Generic writes before validation could persist the now-disallowed journal target.
+    // Simulates a journal target persisted before validation disallowed it.
     await runInTenant(getTenantZeroId(), () =>
       withTransaction(pool, async (client) => {
         const result = await client.query<{ id: string }>(
@@ -1634,7 +1630,7 @@ describe("item routes (issue #241)", () => {
         const own = await listInboxAttachments(client, [source.id]);
         const other = await listInboxAttachments(client, [foreign.id]);
         if (!own[0] || !other[0]) throw new Error("Missing test attachments");
-        // A tick waits for an image whose metadata job has not run (issue gh-1970); these photos count as unreadable.
+        // A tick waits for an image whose metadata job has not run; these photos count as unreadable.
         for (const row of [own[0], other[0]])
           await recordInboxAttachmentMetadata(client, {
             attachmentId: row.attachmentId,
@@ -1774,7 +1770,7 @@ describe("item routes (issue #241)", () => {
         callerItemId: source.id,
         targetItemId: type.id,
       });
-      // The Files editor schema requires the file (issue #1928), so the card carries a blob that exists.
+      // The Files editor schema requires the file, so the card carries a blob that exists.
       const blob = await withTransaction(pool, (client) =>
         createBlob(client, { mimeType: "application/pdf", byteSize: 12, storageKey: `blobs/${randomUUID()}` }),
       );
@@ -2291,7 +2287,7 @@ describe("item routes (issue #241)", () => {
         databaseId: db.id,
         properties: { title: "Dune (2021)", year: 2021 },
         computed: item.computed,
-        // The creation time is the create's, unchanged by the patch (issue #1594).
+        // The patch leaves the creation time unchanged.
         createdAt: item.createdAt,
         updatedAt: expect.any(String),
         deletedAt: null,
@@ -2939,7 +2935,6 @@ describe("item routes (issue #241)", () => {
   });
 
   describe("count items (issue #1709)", () => {
-    /** The whole body of a successful count. */
     const countsBody = z
       .object({
         counts: z.array(
@@ -3142,7 +3137,6 @@ describe("item routes (issue #241)", () => {
   });
 
   describe("database facets (issue #1759)", () => {
-    /** The whole body of a successful facets read. */
     const facetsBody = z
       .object({
         facets: z.array(
@@ -3176,7 +3170,6 @@ describe("item routes (issue #241)", () => {
       });
     }
 
-    /** A session of a new user whose `users.locale` is `locale`. */
     async function authHeaderIn(locale: string): Promise<{ Authorization: string }> {
       const user = await createUser(pool, {
         tenantId: await tenantForNextTestUser(pool),
@@ -3194,7 +3187,6 @@ describe("item routes (issue #241)", () => {
       return database;
     }
 
-    /** A board with a text, a select that is not status-like and a checkbox, and four cards. */
     async function makeBoard() {
       const db = await chokePoint.createDatabase({ name: "Board" });
       await chokePoint.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "text" });
@@ -3244,7 +3236,7 @@ describe("item routes (issue #241)", () => {
       expect(res.status).toBe(200);
       expect(facetsBody.parse(await res.json())).toEqual({
         facets: [
-          // The urgent cards, whatever their stage: A (done) and B (to do).
+          // The urgent cards: A (done) and B (to do).
           {
             property: "stage",
             all: 2,
@@ -3255,7 +3247,6 @@ describe("item routes (issue #241)", () => {
               { value: null, count: 0 },
             ],
           },
-          // The done cards, urgent or not: A and C.
           {
             property: "urgent",
             all: 2,
@@ -3265,7 +3256,6 @@ describe("item routes (issue #241)", () => {
               { value: false, count: 1 },
             ],
           },
-          // Both conditions stay for the title: A alone.
           { property: "title", all: 1, open: 1, values: [{ value: "A", count: 1 }] },
         ],
       });
@@ -3298,7 +3288,6 @@ describe("item routes (issue #241)", () => {
       }
       const inProgress = { type: "equals", property: "status", value: "inProgress" };
 
-      // A new user's `users.locale` is `cs`.
       const res = await postFacets(await authHeader(), projects.id, {
         filter: {
           type: "and",
@@ -3508,7 +3497,7 @@ describe("item routes (issue #241)", () => {
   });
 
   describe("include=links (issue #1403)", () => {
-    /** A file linked to a task, as the later propagation issue (#1593) will leave it; written through the store because nothing in product code writes links yet. */
+    /** Written through the store because no product code writes links yet. */
     async function makeLinkedFile(options: { extraSource?: boolean; broken?: boolean } = {}) {
       const tasksDb = await chokePoint.createDatabase({ name: "Tasks", ownerModuleId: "linksTasks", system: true });
       await chokePoint.createProperty({ databaseId: tasksDb.id, key: "title", name: "Title", type: "title" });
@@ -3722,7 +3711,7 @@ describe("item routes (issue #241)", () => {
         const address = runtimeServer.address();
         if (!address || typeof address === "string") throw new Error("Expected runtime server");
         const base = `http://127.0.0.1:${address.port}`;
-        // Real writes in the reader's tenant through the choke point; the link comes from the manifest's rule.
+        // The link comes from the manifest's rule.
         const fixture = await runInTenant(getTenantZeroId(), async () => {
           const cp = createChokePoint(runtime);
           const databases = await cp.listDatabases();
@@ -4088,9 +4077,8 @@ describe("item routes (issue #241)", () => {
           name: "System Link",
           targetDatabaseId: target.id,
         });
-        // The public facade never accepts a `SystemRelationWriteContext`, so an owner:'system'
-        // property can't be created through it at all; flip it directly in the DB to set up the
-        // fixture this route's rejection is being tested against.
+        // The public facade never accepts a `SystemRelationWriteContext`, so an owner:'system' property is set
+        // directly in the DB.
         await pool.query("UPDATE properties SET owner = 'system', owner_process = $2 WHERE id = $1", [
           property.id,
           "some-internal-process",
@@ -4337,7 +4325,7 @@ describe("item routes (issue #241)", () => {
       });
       const after = await fetch(`${baseUrl}/api/items/${person.id}/related`, { headers });
       expect(after.status).toBe(200);
-      // The relation has no inverse property, so the person is found from the target side of the task's property.
+      // The relation has no inverse property, so the person is found from the target side.
       expect(await after.json()).toEqual([
         {
           databaseKey: null,
@@ -4442,10 +4430,9 @@ describe("item routes (issue #241)", () => {
       expect(await res.json()).toEqual({
         related: [{ databaseKey: null, count: 1 }],
         subtreeItemCount: 3,
-        // The page of the note, its two subpages and the page nested under one of them.
         subtreePageCount: 4,
         linksToOwn: [{ itemId: task.id, propertyKey: "title" }],
-        // The note belongs to a database without an owner module, which counts none of the series numbers.
+        // A database without an owner module counts no series numbers.
         seriesInstanceCount: 0,
         attachmentCount: 0,
         hostEventCount: 0,
@@ -4507,7 +4494,6 @@ describe("item routes (issue #241)", () => {
     it("reads all four parts in one repeatable-read snapshot", async () => {
       const db = await chokePoint.createDatabase({ name: "Notes" });
       const note = await chokePoint.createItem({ databaseId: db.id, properties: {} });
-      // `begins` records every transaction start the route issues on its own connection.
       const begins: string[] = [];
       const recordingPool = new Proxy(pool, {
         get(target, property) {
@@ -4571,8 +4557,8 @@ describe("item routes (issue #241)", () => {
 
   describe("relation property resolution through property.getByKey (issue #432)", () => {
     /**
-     * `UNIQUE(database_id, key)` makes more than one match unreachable through a real database, so
-     * the ambiguous branch is driven by the real service with only `getPropertyByKey` overridden.
+     * `UNIQUE(database_id, key)` makes more than one match unreachable, so the ambiguous branch is driven with only
+     * `getPropertyByKey` overridden.
      */
     async function callRelationRoute(method: "GET" | "PUT" | "DELETE") {
       const { source, property } = await makeAmbiguousFixture();
@@ -4593,7 +4579,6 @@ describe("item routes (issue #241)", () => {
       if (!route) throw new Error(`expected a ${method} relation route`);
       const identity = { user: { id: randomUUID() } } as AuthenticatedIdentity;
       const result = await route.handler({
-        // The GET list reads its `?propertyKey=` filter from the request URL; the write routes ignore it.
         req: { url: `/api/items/${item.id}/relations?propertyKey=${property.key}` } as IncomingMessage,
         identity,
         params: { id: item.id, propertyKey: property.key, targetItemId: randomUUID() },
@@ -4631,10 +4616,7 @@ describe("item routes (issue #241)", () => {
   describe("page restore (issue #1617)", () => {
     const HALF_HOUR_MS = 30 * 60 * 1000;
 
-    /**
-     * A page with block `b1`: its history opens two hours before the database clock, and `b1` is dated an
-     * hour before it, so an instant half an hour back sits between the two.
-     */
+    /** History opens two hours before the database clock and `b1` is dated an hour before it. */
     async function pageWithBlock(): Promise<{ itemId: string; now: Date }> {
       const { rows } = await pool.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
       const now = rows[0]!.now;
@@ -4745,7 +4727,6 @@ describe("item routes (issue #241)", () => {
       return (await storedItem(id)).properties;
     }
 
-    /** A REST PATCH carrying the item's current version, as the generic item.patch requires. */
     function patch(id: string, properties: Record<string, unknown>, ifVersion: string) {
       return fetch(`${baseUrl}/api/items/${id}`, {
         method: "PATCH",
@@ -4802,7 +4783,6 @@ describe("item routes (issue #241)", () => {
       async (_label, date) => {
         const recurring = await createTask({ date: "2026-10-22" });
         expect((await recurrence("PUT", recurring.id, { preset: "weekly" })).status).toBe(200);
-        // The PUT wrote the task, so the PATCH carries the version read after it.
         const { properties: before, updatedAt } = await storedItem(recurring.id);
         const response = await patch(recurring.id, { date }, updatedAt);
         expect(response.status).toBe(400);
@@ -4832,11 +4812,9 @@ describe("item routes (issue #241)", () => {
       });
       expect(await storedProperties(task.id)).toEqual(before);
 
-      // The Tasks module, a system writer, may store missed.
       await runInTenant(getTenantZeroId(), () =>
         chokePoint.updateItem({ databaseId: tasksDb, itemId: task.id, propertiesPatch: { status: "missed" } }),
       );
-      // The system write changed the version; the PATCH carries the one read after it.
       const done = await patch(task.id, { status: "done" }, (await storedItem(task.id)).updatedAt);
       expect(done.status).toBe(200);
       expect(await storedProperties(task.id)).toMatchObject({ status: "done", completedOn: expect.any(String) });

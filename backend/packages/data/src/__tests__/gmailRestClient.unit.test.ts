@@ -429,7 +429,6 @@ describe("Gmail sendMessage (issue #1637)", () => {
     return { fetchMock, client: new GmailRestClient(async () => SECRET_TOKEN, fetchMock) };
   }
 
-  /** The URL, init and string body of the request the mock recorded at `index`. */
   function sentRequest(
     fetchMock: { mock: { calls: unknown[][] } },
     index = 0,

@@ -35,7 +35,7 @@ const BACKFILL = CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL;
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
-// Strict, so a field the session's user object does not have (a password hash, say) fails the parse.
+// Strict, so a field the session's user object lacks (a password hash, say) fails the parse.
 const userShape = z
   .object({
     id: z.string(),
@@ -78,7 +78,7 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
     return { tenantId, userId: user.id, email, signedIn, headers: { Authorization: `Bearer ${signedIn.token}` } };
   }
 
-  /** Sends `body` as JSON, verbatim when it is already a string, and no body at all when it is `undefined`. */
+  /** No body at all when `body` is `undefined`. */
   function patchProfile(headers: Record<string, string>, body: unknown): Promise<Response> {
     return fetch(`${baseUrl}/api/account/profile`, {
       method: "PATCH",
@@ -93,7 +93,7 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
     return sessionBody.parse(await res.json()).user;
   }
 
-  /** The whole stored row, read as the superuser: `users` is a global identity table. */
+  /** Read as the superuser: `users` is a global identity table. */
   async function storedUser(userId: string): Promise<Record<string, unknown>> {
     const { rows } = await adminPool.query<Record<string, unknown>>("SELECT * FROM users WHERE id = $1", [userId]);
     const row = rows[0];
@@ -105,7 +105,6 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
     return (await storedUser(userId)).locale;
   }
 
-  /** The queued tenant-wide search rebuilds, as the envelopes the queue stores. */
   function queuedReindexes(): Promise<unknown[]> {
     return readJobPayloadsByIdentifier(adminPool, BACKFILL);
   }
@@ -113,11 +112,10 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
   const reindexOf = (account: Account) =>
     expect.objectContaining({ tenantId: account.tenantId, payload: { onlyMissing: false } });
 
-  /** Runs the queued search rebuilds with the production API task list's handler until none is left. */
   async function runReindexes(): Promise<void> {
     const backfill = createApiCoreTaskList(pool, createActionRegistry())[BACKFILL];
     if (!backfill) throw new Error("the production API task list has no item search backfill task");
-    // A full chunk queues its continuation, which a later run picks up.
+    // A full chunk queues its continuation.
     let remaining = (await queuedReindexes()).length;
     while (remaining > 0) {
       await runOnce({ pgPool: adminPool }, { [BACKFILL]: backfill });
@@ -139,7 +137,6 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
     return database;
   }
 
-  /** Creates a person through the item route and returns the item id. */
   async function createPerson(account: Account, properties: Record<string, unknown>): Promise<string> {
     const people = await databaseOf(account, "people");
     const res = await fetch(`${baseUrl}/api/databases/${people.id}/items`, {
@@ -151,12 +148,11 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
     return itemBody.parse(await res.json()).id;
   }
 
-  /** The ids of the tenant's indexed items a search for `text` matches, through the production query builder. */
   async function searchHits(account: Account, text: string): Promise<string[]> {
     const built = buildItemSearchQuery(text);
     const { rows } = await runInTenant(account.tenantId, () =>
       pool.query<{ item_id: string }>(
-        // `built.sql` is the builder's own tsquery expression over bind positions; the text itself is bound.
+        // `built.sql` is the builder's tsquery over bind positions; the text itself is bound.
         `SELECT item_id FROM item_search_index WHERE search_vector @@ ${built.sql} ORDER BY item_id`,
         built.params,
       ),
@@ -164,7 +160,6 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
     return rows.map((row) => row.item_id);
   }
 
-  /** Writes a heartbeat failure notification for the account through the production writer and returns its id. */
   function notifyHeartbeatFailure(account: Account, name: string): Promise<string> {
     return runInTenant(account.tenantId, () =>
       withTransaction(pool, (client) =>
@@ -285,7 +280,6 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
   it("queues the tenant's search rebuild when the stored locale changes and nothing when it stays the same", async () => {
     const account = await signUp();
 
-    // The account is created with cs.
     const same = await patchProfile(account.headers, { locale: "cs" });
     expect(same.status).toBe(200);
     expect(profileBody.parse(await same.json()).user.locale).toBe("cs");
@@ -398,8 +392,8 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
       (candidate) => candidate.method === "PATCH" && candidate.path === "/api/account/profile",
     );
     if (!route) throw new Error("the profile route is not registered");
-    // No request reaches this state through the dispatcher, which refuses a session without a user with
-    // 401 first, so the handler is called with the identity of an account whose row is gone.
+    // The dispatcher refuses a session without a user with 401 first, so the handler is called directly with the
+    // identity of an account whose row is gone.
     const identity = {
       session: account.signedIn.session,
       user: { ...account.signedIn.user, id: randomUUID() },
@@ -457,7 +451,7 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
 
     expect((await patchProfile(account.headers, { locale: "en" })).status).toBe(200);
 
-    // The rebuild is a queued job: until it runs, the document still holds the Czech label.
+    // The rebuild is a queued job; until it runs, the document still holds the Czech label.
     expect(await searchHits(account, "Soused")).toEqual([neighbor]);
     expect(await searchHits(account, "Neighbor")).toEqual([]);
 

@@ -1,29 +1,20 @@
-// The approval snapshot of an agent's `page.convertToBlock` (issue #1876), shaped like the page replace's
-// (`pageReplaceApproval.ts`): the gateway asks for it when the agent calls the operation and again when the approved
-// request is executed, and the two must agree. The conversion itself is `convertPageToBlockWithClient`.
-// Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
+// Approval snapshot of an agent's `page.convertToBlock`; computed at call time and again at execution, and the two
+// must agree.
 import type { PoolClient } from "pg";
 import type { PageConvertToBlockInput } from "@semprec/shared";
 import { buildResourceSnapshot, type DestructiveResourceProjection } from "../chokePoint/destructiveProjection.js";
 import { planPageConvertToBlock } from "./pageOperations.js";
 
-/** The approval-gated check of `page.convertToBlock`. */
 export interface PageConvertCheck {
   operation: "page.convertToBlock";
   input: PageConvertToBlockInput;
-  /** The agent's project: its `write` access to the database that owns the parent page is checked as the conversion checks it. */
   agentProjectItemId?: string;
 }
 
 /**
- * Authorizes and projects a `page.convertToBlock` without writing, by running the refusals of the conversion
- * (`planPageConvertToBlock`): the agent's project needs write access to the parent page's owner database, the block
- * has to be the page block of a live subpage of the parent, and `confirmedPageCount` has to be the current count of
- * pages the trash takes. A conversion that would be refused therefore creates no approval request, and an approved one
- * whose page tree changed since ends as a conflict. The snapshot holds the identity of the block and the page, the
- * target type and the page count; the description names the page by the title its page block shows in the parent's
- * document (normalized like a page title), the text the new block receives, not by the mirrored `title` of the Pages
- * item, which may lag, and holds no page content.
+ * Runs the conversion's own refusals without writing, so a refused conversion creates no approval request and an
+ * approved one whose tree changed ends as a conflict. The description uses the block's title, not the lagging
+ * mirrored item `title`, and holds no page content.
  */
 export async function computePageConvertProjection(
   client: PoolClient,

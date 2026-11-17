@@ -70,7 +70,6 @@ const mailProblem = (tenant: string, userId: string, mailboxId: string, severity
     dedupeKey: mailProblemKey(mailboxId),
   });
 
-/** Writes the tenant's caps with the writer the admin route uses. */
 async function adminSetsBudget(
   tenantId: string,
   updatedBy: string,
@@ -119,7 +118,7 @@ describe("Semp status summary (issue #1631)", () => {
       })
     ).id;
     for (const tenant of [own, foreign]) await runInTenant(tenant, () => seedSystem(data));
-    // A tenant without a budget row lists `aiBudgetMissing` (issue gh-1871), so both get a row without caps.
+    // A tenant without a budget row lists `aiBudgetMissing`, so both get a row without caps.
     await adminSetsBudget(own, ownUser, { dailyCapUsd: null, monthlyCapUsd: null });
     await adminSetsBudget(foreign, foreignUser, { dailyCapUsd: null, monthlyCapUsd: null });
   });

@@ -53,7 +53,7 @@ interface MessageRow {
   run_started_at: Date | null;
   run_finished_at: Date | null;
   run_status: string | null;
-  /** The language of the tenant's user (`users.locale`), read by the same statement as the page. */
+  /** `users.locale`, read by the same statement as the page. */
   user_locale: string | null;
 }
 
@@ -252,10 +252,9 @@ export async function sendSempMessage(
 }
 
 /**
- * The automation header and the running run of a tick thread (issue #1562). The rule is validated against
- * `moduleRuleKinds`, the rule kinds of the active modules, as the scheduler validates it. The heartbeat
- * comes from a left join; `semp_threads.heartbeat_id` references it `ON DELETE RESTRICT`, so no ordinary path leaves a tick thread without its heartbeat
- * and the `heartbeat: null` branch is defensive. The project name is read only from a live project item.
+ * The automation header and running run of a tick thread. The rule is validated against the active modules'
+ * rule kinds, as the scheduler does. `semp_threads.heartbeat_id` is `ON DELETE RESTRICT`, so the
+ * `heartbeat: null` branch is defensive. The project name is read only from a live project item.
  */
 async function readTickThreadHeader(
   client: PoolClient,
@@ -277,7 +276,7 @@ async function readTickThreadHeader(
       canTrigger: row.heartbeat_enabled === true && !isOnItemEventRule(rule),
     };
   }
-  // The latest running run, so the choice is deterministic should more than one be running.
+  // The latest running run, so the choice is deterministic if several run.
   const runs = await client.query<{ id: string; started_at: Date }>(
     `SELECT id, started_at FROM agent_runs WHERE thread_id = $1 AND status = 'running'
       ORDER BY started_at DESC, id DESC LIMIT 1`,
@@ -293,10 +292,8 @@ function requireValue<T>(value: T | null, label: string): T {
 }
 
 /**
- * The detail of one Semp thread of the current tenant, or null when it is not visible. A tick thread
- * also carries its heartbeat header and active run (issue #1562); other kinds carry neither key.
- * `moduleRuleKinds` is the active modules' rule-kind registry (`resolveModuleRuleKinds`); a rule kind that
- * is neither core nor registered there is refused, as the scheduler refuses it.
+ * Null when the thread is not visible. Only tick threads carry the heartbeat header and active run; a rule kind
+ * neither core nor in `moduleRuleKinds` is refused, as the scheduler refuses it.
  */
 export async function getSempThread(
   client: PoolClient,
@@ -326,10 +323,10 @@ export async function getSempThread(
   return kind === "tick" ? { ...detail, ...(await readTickThreadHeader(client, row, moduleRuleKinds)) } : detail;
 }
 
-/** A message of the thread history: with the stored `steps` of an assistant reply that has a finished-turn summary (issue #1887). */
+/** Assistant replies with a finished-turn summary carry their stored `steps`. */
 export type SempThreadHistoryMessage = SempThreadMessage & { steps?: SempReplyStep[] };
 
-/** The derived fields of a message read (issue #1890): `incompleteReason`, `mcpServerItemId` and `timeoutMs` only when incomplete. */
+/** `incompleteReason`, `mcpServerItemId` and `timeoutMs` only when incomplete. */
 function replyOutcomeFields(
   reply: ReplyOutcome,
 ): Pick<SempThreadMessage, "outcome" | "incompleteReason" | "mcpServerItemId" | "timeoutMs"> {
@@ -342,11 +339,7 @@ function replyOutcomeFields(
   };
 }
 
-/**
- * The `error` of each message of a page (issue #1907): `{ code, message }` for a failed message, with the text
- * rendered from the stored code and params in the locale of the tenant's user (Czech while it has none), and
- * `undefined` for any other message.
- */
+/** `{ code, message }` for failed messages, rendered in the tenant user's locale (Czech without one). */
 async function renderedErrors(rows: readonly MessageRow[]): Promise<(SempThreadMessage["error"] | undefined)[]> {
   return Promise.all(
     rows.map(async (row) => {
@@ -381,7 +374,7 @@ export async function listSempThreadMessages(
     client,
     page.map((row) => row.context),
   );
-  // The one reader of `semp_messages.steps` (issue #1887) parses each row once; the reply outcome (issue #1890) is derived from its result.
+  // Each row's steps are parsed once; the reply outcome is derived from them.
   const stepsOfRows = page.map((row) => parseStoredSempReplySteps(row.steps));
   const changes = await resolveSempHistoryChanges(
     client,

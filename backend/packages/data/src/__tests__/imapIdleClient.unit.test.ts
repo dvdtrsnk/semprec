@@ -9,9 +9,8 @@ import {
 import { logger } from "../mail/logger.js";
 
 /**
- * Just enough of imapflow's `ImapFlow` surface for this transport (list/connect/mailboxOpen/logout/close + the three
- * events it wires) — a real socket is never involved. The factory hands it over already connected, as
- * `openImapFlow` does, so `connectCalls` stays 0 unless the transport connects it itself, which it must not.
+ * Just enough of imapflow's `ImapFlow` surface for this transport; no real socket. The factory hands it
+ * over already connected, as `openImapFlow` does, so `connectCalls` must stay 0.
  */
 class FakeImapFlow extends EventEmitter {
   connectCalls = 0;
@@ -79,7 +78,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const folders = await transport.resolveFolders("mailbox-1", "cred");
 
     expect(folders.map((f) => f.path).sort()).toEqual(["INBOX", "[Gmail]/All Mail"].sort());
-    expect(client.connectCalls).toBe(0); // the client arrives connected; the transport never connects it.
+    expect(client.connectCalls).toBe(0);
     expect(client.logoutCalls).toBe(1); // resolveFolders' own connection is always released, not left open.
     expect(idleOptionsSeen[0]).toEqual({
       maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
@@ -107,7 +106,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++);
 
     expect(client.openedMailbox).toBe("INBOX");
-    expect(client.connectCalls).toBe(0); // the client arrives connected; the transport never connects it.
+    expect(client.connectCalls).toBe(0);
     client.emit("exists", {});
     client.emit("expunge", {});
     client.emit("flags", {});

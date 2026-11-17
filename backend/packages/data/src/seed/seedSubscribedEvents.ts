@@ -6,7 +6,6 @@ import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import type { DatabaseRow, PropertyType } from "../types.js";
 import { SUBSCRIBED_EVENTS_MODULE_ID } from "./calendarsKeys.js";
 
-/** The keys of the recurrence properties (issue gh-1966). */
 export const SUBSCRIBED_EVENT_RECURRENCE_KEYS = ["recurrenceRule", "exceptionDates", "recurrenceId"] as const;
 
 interface PropSpec {
@@ -16,14 +15,11 @@ interface PropSpec {
 }
 
 /**
- * The scalar properties of a subscribed event (issue gh-1962), all `owner: 'system'` with the calendar module as
- * owner process. `startsAt` and `endsAt` are date properties with a time (`includeTime`); `timeZone` keeps the
- * IANA zone the feed named. The seed does not validate the format of a date value: the format a writer stores
- * is the convention of the feed import (#2004) and of the timeline source that reads it. The three recurrence
- * properties (issue gh-1966) are text: `recurrenceRule` is the feed's `RRULE`, `exceptionDates` a JSON array of the
- * excluded occurrences' original starts and `recurrenceId` the original start of the occurrence an override row
- * replaces, the starts being tenant wall-clock values. The `calendar` relation is added by
- * `createSubscribedEventsRelation`.
+ * All system-owned by the calendar module. `startsAt`/`endsAt` include a time; `timeZone` is the feed's
+ * IANA zone. Date formats are the feed import's convention and are not validated here. Recurrence fields
+ * are text: `recurrenceRule` is the `RRULE`, `exceptionDates` a JSON array of excluded original starts,
+ * `recurrenceId` the original start an override replaces (tenant wall-clock values). The `calendar`
+ * relation is added by `createSubscribedEventsRelation`.
  */
 const SUBSCRIBED_EVENT_PROPERTIES: readonly PropSpec[] = [
   { key: "uid", type: "text" },
@@ -51,12 +47,9 @@ async function insertCalendarOwnedRelationProperty(
 }
 
 /**
- * The `Calendars.subscribedEvents` / `SubscribedEvents.calendar` pair: one calendar, many subscribed events,
- * so `Calendars.subscribedEvents` is property A of a `one_to_many` definition and each subscribed event has at
- * most one calendar, as `Events.calendar` does. Both sides are system-owned by the calendar module, so a user
- * cannot write an edge from either side. The Calendars schema is locked and `propertiesStore` refuses to
- * change a locked schema, so the properties, the definition and their configs are written with raw SQL under
- * an exclusive `properties` lock, in the steps `seedCalendars.ts` uses for `Calendars.events`.
+ * `Calendars.subscribedEvents` (property A of a `one_to_many`) / `SubscribedEvents.calendar`, both
+ * system-owned so users cannot write edges. Calendars is locked, so this uses raw SQL under an exclusive
+ * `properties` lock, as `seedCalendars.ts` does for `Calendars.events`.
  */
 async function createSubscribedEventsRelation(
   client: PoolClient,
@@ -87,12 +80,10 @@ async function createSubscribedEventsRelation(
 }
 
 /**
- * Creates the `subscribedEvents` system database (issue gh-1962) in the caller's open transaction: the database
- * under the project that owns `calendars`, its system-owned properties, the relation to Calendars, and the
- * schema lock. No row is seeded, and a name is
- * stored as null: the labels come from the calendar module catalog.
+ * Creates the `subscribedEvents` database under the project owning `calendars`, with its properties,
+ * the relation to Calendars and the schema lock. No rows; names are null (labels from the catalog).
  *
- * Not idempotent on its own: `seedCalendarsInTransaction` calls it once for the Calendars database it creates.
+ * Not idempotent: `seedCalendarsInTransaction` calls it once.
  */
 export async function seedSubscribedEventsInTransaction(
   client: PoolClient,

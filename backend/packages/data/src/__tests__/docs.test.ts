@@ -33,10 +33,8 @@ let pool: Pool;
 let chokePoint: ChokePoint;
 let docStore: DocStore;
 
-// `SET TIME ZONE` is session-scoped, not transaction-scoped — issuing it via pool.query()
-// would leak the UTC setting onto whichever pooled connection served that query, for
-// whichever later, unrelated test next borrows it. Pinning to a dedicated client and
-// resetting before release keeps this test's determinism fix from leaking state.
+// `SET TIME ZONE` is session-scoped: a dedicated client, reset before release, keeps the UTC setting off
+// other tests' pooled connections.
 async function withUtcReferenceTime(pool: Pool): Promise<Date> {
   const client = await pool.connect();
   try {
@@ -50,12 +48,8 @@ async function withUtcReferenceTime(pool: Pool): Promise<Date> {
 }
 
 /**
- * The same live cutoff formula openDocVersionAt/rebaselineDocHistory compute internally,
- * read fresh at call time. A fixed buffer added to a timestamp captured earlier in a test
- * can't outrun this: the retention window keeps sliding forward with the wall clock, so on a
- * loaded CI host enough time can pass between two calls to make an "of course it's still
- * retained" timestamp fall behind the live cutoff by the second call. Computing this
- * immediately before the call it guards gives an exact, non-flaky lower bound instead.
+ * The live cutoff openDocVersionAt/rebaselineDocHistory compute, read fresh at call time: the retention
+ * window slides with the wall clock, so a timestamp captured earlier can fall behind it on a loaded host.
  */
 async function currentRetentionCutoff(pool: Pool, retentionDays: number): Promise<Date> {
   const { rows } = await pool.query<{ cutoff: Date }>(
@@ -443,7 +437,10 @@ describe("docs (CRDT layer)", () => {
     });
   });
 
-  /** Captures the binary diff produced by one `doc.transact(...)` call, the same way docPersistence.mutateDoc does — used here to seed `doc_updates` directly, bypassing mutateDoc's own lazy compaction check so the test controls exactly when the threshold is crossed. */
+  /**
+   * Captures the binary diff of one `doc.transact(...)` call, as docPersistence.mutateDoc does, to seed
+   * `doc_updates` directly and bypass mutateDoc's lazy compaction.
+   */
   function captureUpdate(doc: Y.Doc, fn: () => void): Uint8Array {
     let captured: Uint8Array | null = null;
     const onUpdate = (update: Uint8Array) => {
@@ -502,8 +499,8 @@ describe("docs (CRDT layer)", () => {
       const doc = await docStore.getDoc(item.id);
       if (!doc) throw new Error("doc not created");
 
-      // A large per-call threshold means mutateDoc's own lazy-on-read check never fires,
-      // so these updates accumulate untouched until the sweep visits the doc.
+      // A large per-call threshold keeps mutateDoc's lazy check from firing, so the updates accumulate until
+      // the sweep visits the doc.
       for (let i = 0; i < threshold; i++) {
         await mutateDoc(
           pool,
@@ -557,8 +554,8 @@ describe("docs (CRDT layer)", () => {
       await docStore.putBlock(itemB.id, { id: "seed", flavour: "paragraph" }, "user");
       const docB = await docStore.getDoc(itemB.id);
       if (!docB) throw new Error("doc not created");
-      // A doc_updates row whose bytes are not a valid Yjs update: Y.applyUpdate throws while
-      // replaying docB, so the whole doc is counted as failed rather than partially compacted.
+      // A doc_updates row that is not a valid Yjs update: replaying docB throws, so the whole doc counts as
+      // failed rather than partially compacted.
       await pool.query(
         `INSERT INTO doc_updates (doc_id, update, created_by) SELECT $1, $2, 'user' FROM generate_series(1, $3)`,
         [docB.id, Buffer.from([0x00, 0xff]), DEFAULT_COMPACTION_THRESHOLD],
@@ -577,8 +574,7 @@ describe("docs (CRDT layer)", () => {
       ]);
       expect(docBRows[0].n).toBeGreaterThan(0); // docB's failed transaction never compacted or deleted its rows
 
-      // docA is already compacted, so pair docB's still-failing doc with a fresh, valid
-      // one: a mixed outcome (some succeed, some fail) must still resolve the task, not reject it.
+      // A mixed outcome (some succeed, some fail) must still resolve the task, not reject it.
       const itemC = await makeItem();
       await docStore.putBlock(itemC.id, { id: "seed", flavour: "paragraph" }, "user");
       const docC = await docStore.getDoc(itemC.id);
@@ -762,8 +758,8 @@ describe("docs (CRDT layer)", () => {
       const doc = await docStore.getDoc(item.id);
       if (!doc) throw new Error("doc not created");
 
-      // The baseline from doc creation, plus a directly-inserted already-expired checkpoint
-      // standing in for an ordinary compaction checkpoint whose retention window has passed.
+      // The creation baseline plus a directly inserted, already-expired checkpoint standing in for an
+      // ordinary compaction checkpoint past retention.
       await pool.query(
         `INSERT INTO doc_snapshot_history (doc_id, state, through_update_id, represented_at, expires_at, created_by)
          VALUES ($1, '\\x'::bytea, 1, now(), now() - interval '1 second', 'system')`,
@@ -804,10 +800,8 @@ describe("docs (CRDT layer)", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       await docStore.putBlock(item.id, { id: "b2", flavour: "paragraph" }, "user");
 
-      // A compaction after checkpointTime used to make a naive reconstruction at
-      // checkpointTime unrecoverable (its only usable checkpoint was superseded and the
-      // doc_updates rows it needed were deleted). The mirrored doc_history_updates log means
-      // it no longer matters how many compactions have run since.
+      // The mirrored doc_history_updates log keeps checkpointTime reconstructible however many compactions
+      // have run since.
       await mutateDoc(
         pool,
         doc.id,
@@ -849,13 +843,8 @@ describe("docs (CRDT layer)", () => {
     });
 
     it("openVersionAt raises HistoryNotRetainedError for a nonfuture time before the retention cutoff", async () => {
-      // Session timezone pinned to UTC and every "now" derived from a single Postgres read
-      // (rather than each of Node's Date.now() and Postgres's own now() drifting
-      // independently) so the boundary math below is deterministic regardless of the host's
-      // local timezone or clock skew between the test process and the database. `SET TIME
-      // ZONE` is session-scoped, so this borrows a dedicated client (rather than pool.query,
-      // which could hand the now-UTC session to a later, unrelated test) and resets it before
-      // releasing the client back to the pool.
+      // UTC session and every "now" from a single Postgres read, so the boundary math is independent of host
+      // timezone and clock skew (dedicated client, see above).
       const reference = await withUtcReferenceTime(pool);
 
       const item = await makeItem();
@@ -863,8 +852,7 @@ describe("docs (CRDT layer)", () => {
       const doc = await docStore.getDoc(item.id);
       if (!doc) throw new Error("doc not created");
 
-      // Push history_available_from back so it doesn't itself trip the check, isolating the
-      // retention-cutoff branch (retentionDays = 1 below, so 2 days ago is outside it).
+      // Push history_available_from back so only the retention cutoff (1 day) applies.
       const tenDaysAgo = new Date(reference.getTime() - 10 * 24 * 60 * 60 * 1000);
       await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, tenDaysAgo]);
       const twoDaysAgo = new Date(reference.getTime() - 2 * 24 * 60 * 60 * 1000);
@@ -873,13 +861,8 @@ describe("docs (CRDT layer)", () => {
     });
 
     it("a just-after-cutoff read succeeds while a just-before-cutoff read is not retained (deterministic under a configured retention window)", async () => {
-      // Session timezone pinned to UTC and every "now" derived from a single Postgres read
-      // (rather than each of Node's Date.now() and Postgres's own now() drifting
-      // independently) so the boundary math below is deterministic regardless of the host's
-      // local timezone or clock skew between the test process and the database. `SET TIME
-      // ZONE` is session-scoped, so this borrows a dedicated client (rather than pool.query,
-      // which could hand the now-UTC session to a later, unrelated test) and resets it before
-      // releasing the client back to the pool.
+      // UTC session and every "now" from a single Postgres read, so the boundary math is independent of host
+      // timezone and clock skew (dedicated client, see above).
       const reference = await withUtcReferenceTime(pool);
 
       const item = await makeItem();
@@ -932,8 +915,7 @@ describe("docs (CRDT layer)", () => {
         [doc.id],
       );
 
-      // A brand-new doc's history_available_from is "now" — with the default 30-day
-      // retention, the cutoff (30 days ago) precedes it, so nothing should change.
+      // A brand-new doc's history_available_from is "now", after the 30-day cutoff, so nothing changes.
       const rebaselined = await rebaselineDocHistory(pool, doc.id, 30);
       expect(rebaselined).toBe(false);
 
@@ -950,9 +932,7 @@ describe("docs (CRDT layer)", () => {
     });
 
     it("re-baselines at the cutoff, reconstructing exact state and deleting only what the new baseline makes redundant", async () => {
-      // Session timezone pinned to UTC and every "now" derived from a single Postgres read,
-      // per the #216 boundary-test convention, so the retention math below is deterministic
-      // regardless of host timezone or test/database clock skew.
+      // UTC session and every "now" from a single Postgres read, so the retention math is deterministic.
       const reference = await withUtcReferenceTime(pool);
 
       const item = await makeItem();
@@ -973,8 +953,7 @@ describe("docs (CRDT layer)", () => {
       const afterCutoff = new Date(reference.getTime() - (retentionDays - 10) * 24 * 60 * 60 * 1000);
       const cutoff = new Date(reference.getTime() - retentionDays * 24 * 60 * 60 * 1000);
 
-      // b1 (and the doc's original baseline/availability) land before the cutoff; b2 lands
-      // after it — the split the re-baseline is expected to resolve.
+      // b1 (and the doc's baseline/availability) land before the cutoff; b2 after it.
       await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, beforeCutoff]);
       await pool.query(
         `UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0`,
@@ -1015,7 +994,7 @@ describe("docs (CRDT layer)", () => {
         represented_at: Date;
         expires_at: Date | null;
       }>(`SELECT through_update_id, represented_at, expires_at FROM doc_snapshot_history WHERE doc_id = $1`, [doc.id]);
-      // The old (pre-cutover) NULL-expiry baseline is gone; exactly the new one remains.
+      // The old NULL-expiry baseline is gone; exactly the new one remains.
       expect(checkpointRows).toHaveLength(1);
       expect(checkpointRows[0]!.through_update_id).toBe(b1UpdateId);
       expect(checkpointRows[0]!.expires_at).toBeNull();
@@ -1024,16 +1003,11 @@ describe("docs (CRDT layer)", () => {
         `SELECT update_id FROM doc_history_updates WHERE doc_id = $1`,
         [doc.id],
       );
-      // b1's history row (at/before the cutoff) is deleted as redundant; b2's (after the
-      // cutoff) is kept — required for reconstruction inside the retained interval.
+      // b1's history row (before the cutoff) is redundant and deleted; b2's is kept for reconstruction.
       expect(remainingHistory.map((r) => r.update_id)).toEqual([b2UpdateId]);
 
-      // The reconstructed baseline itself contains exactly b1 (state as of the cutoff).
-      // openDocVersionAt rejects any `at` below its own freshly-recomputed live cutoff, which
-      // keeps sliding forward with the wall clock — a fixed buffer added to a timestamp
-      // captured earlier in this test could be outrun by that drift on a loaded host. Reading
-      // the live cutoff immediately before this call and taking the later of it and
-      // history_available_from gives an exact, non-flaky lower bound instead.
+      // The reconstructed baseline contains exactly b1. The lower bound is the later of the live cutoff (read
+      // immediately before the call) and history_available_from.
       const liveCutoff = await currentRetentionCutoff(pool, retentionDays);
       const justAfterHistoryAvailableFrom = new Date(
         Math.max(docRows[0]!.history_available_from.getTime(), liveCutoff.getTime()) + 100,
@@ -1071,9 +1045,8 @@ describe("docs (CRDT layer)", () => {
       const itemB = await makeItem();
       await docStore.putBlock(itemB.id, { id: "b1", flavour: "paragraph" }, "user"); // stays recent
 
-      // A third doc, also eligible for rebaselining, whose checkpoint state is corrupted so
-      // that rebaselineDocHistory's Y.applyUpdate throws — the only way to actually exercise
-      // the sweep's try/catch isolation, rather than merely assert on which docs were eligible.
+      // A third doc whose checkpoint state is corrupted so rebaselineDocHistory's Y.applyUpdate throws,
+      // exercising the sweep's per-doc isolation.
       const itemC = await makeItem();
       await docStore.putBlock(itemC.id, { id: "c1", flavour: "paragraph" }, "user");
       const docC = await docStore.getDoc(itemC.id);
@@ -1096,8 +1069,6 @@ describe("docs (CRDT layer)", () => {
       );
       expect(docARows[0]!.history_available_from.getTime()).toBeGreaterThan(oldEnough.getTime());
 
-      // docC's thrown error didn't abort the sweep for the other docs, and left docC's own
-      // state untouched by the failed attempt.
       const { rows: docCRows } = await pool.query<{ history_available_from: Date }>(
         `SELECT history_available_from FROM docs WHERE id = $1`,
         [docC.id],
@@ -1148,9 +1119,8 @@ describe("docs (CRDT layer)", () => {
         await clientX.query(`SELECT 1 FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`, [doc.id]);
 
         let compacted = false;
-        // compactionThreshold=1: the single pending doc_updates row from putBlock above is
-        // already at/over threshold, so loadDoc's lazy check compacts it on this very read —
-        // loadSnapshotForUpdate's own `doc_snapshots ... FOR UPDATE` is the same row lock.
+        // compactionThreshold=1: the pending row from putBlock is at threshold, so loadDoc compacts on this read;
+        // loadSnapshotForUpdate's `doc_snapshots ... FOR UPDATE` is the same row lock.
         const compactPromise = loadDoc(pool, doc.id, 1).then(() => {
           compacted = true;
         });

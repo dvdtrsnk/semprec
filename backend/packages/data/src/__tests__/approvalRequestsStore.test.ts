@@ -452,7 +452,6 @@ describe("approvalRequestsStore thread activity (issue #1728)", () => {
     const thread = await runInTenant(getTenantZeroId(), () =>
       withTransaction(pool, (client) => getOrCreateTickThread(client, heartbeat.id)),
     );
-    // The public tick writer cannot set a historical activity timestamp.
     const reset = await withTransaction(pool, (client) =>
       client.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [thread.id, OLD]),
     );
@@ -682,7 +681,6 @@ describe("listApprovalRequestStatesByIdsForOwner (issue #1887)", () => {
     ownerId = await createUser();
   });
 
-  /** A pending request of a user in a tenant of its own, created in that tenant's scope. */
   async function createForeignPendingRequest(): Promise<string> {
     const foreignTenant = await createTestTenant(pool);
     const foreignUser = await createRawUser(pool, {
@@ -912,8 +910,7 @@ describe("approvalRequestsStore (issue #130)", () => {
 
     it("listPendingApprovalRequests returns only the owner's pending requests (issue #1028)", async () => {
       const ownRequestId = await createPendingRequest();
-      // Another account's run lives in that account's own tenant: a run's actor must be its own
-      // tenant's user (agent_runs_actor_user_id_tenant_fkey, issue #1066).
+      // Another account's run lives in that account's own tenant.
       const foreignTenant = await createTestTenant(pool);
       const foreignUser = await createRawUser(pool, {
         email: `${randomUUID()}@example.com`,
@@ -956,7 +953,7 @@ describe("approvalRequestsStore (issue #130)", () => {
 
     it("leaves out the pending requests of another account", async () => {
       await createPendingRequest();
-      // Another account's run lives in that account's own tenant (agent_runs_actor_user_id_tenant_fkey, issue #1066).
+      // Another account's run lives in that account's own tenant.
       const foreignTenant = await createTestTenant(pool);
       const foreignUser = await createRawUser(pool, {
         email: `${randomUUID()}@example.com`,

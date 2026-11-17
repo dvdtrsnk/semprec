@@ -4,7 +4,7 @@ import { refreshAndPersistAccessToken } from "./mailOAuthAccess.js";
 import { GOOGLE_TOKEN_URL } from "./oauthTokenExchange.js";
 import type { MailTransport } from "./mailTransport.js";
 
-/** Names the send's token refresh in `credential_access_log`, next to `gmail_api_sync` for the sync pass. */
+/** The `credential_access_log` purpose of a send's token refresh. */
 export const GMAIL_SEND_PURPOSE = "gmail_api_send";
 
 export interface GmailMailTransportOptions {
@@ -12,19 +12,13 @@ export interface GmailMailTransportOptions {
   mailboxItemId: string;
   clientId: string;
   clientSecret: string;
-  /** Replaces the global `fetch` for the token endpoint and the Gmail API. Tests inject a fake Google here. */
   fetchImpl?: typeof fetch;
 }
 
 /**
- * The transport of a `gmail_api` mailbox. Each send refreshes an access token from the stored refresh token
- * (`refreshAndPersistAccessToken`, under its row lock), then submits the raw MIME with `users.messages.send`.
- * A provider thread id on the message becomes the send's `threadId`, which files a reply into its Gmail conversation.
- * The Message-ID inside the MIME is sent unchanged. The sent draft's `mail_message_meta` row keeps that id (send.ts),
- * which is the key ingest matches a later synced copy against.
- *
- * The client is built per send, so no access token outlives the send that obtained it. A refresh or send that
- * throws leaves nothing behind that a later send could reuse.
+ * Each send refreshes the access token under its row lock and submits the raw MIME unchanged, so
+ * ingest can match the later synced copy by Message-ID. The client is built per send so no access
+ * token outlives it.
  */
 export function createGmailMailTransport(options: GmailMailTransportOptions): MailTransport {
   const { pool, mailboxItemId, clientId, clientSecret, fetchImpl } = options;

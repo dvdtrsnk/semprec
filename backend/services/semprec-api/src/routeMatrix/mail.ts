@@ -1,10 +1,7 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/**
- * `ROUTE_MATRIX` slice for the `/api/mail` path family, except the mailbox list, detail and password connect
- * entries in `mailMailboxes.ts`.
- */
+/** Except the mailbox list, detail and password connect entries in `mailMailboxes.ts`. */
 export const MAIL_ROUTES: RouteMatrixEntry[] = [
   // prettier-ignore
   { name: "mail autonomous send projects", method: "GET", path: "/api/mail/autonomous-send-projects", surface: "api", public: false, tenancy: "tenant" },

@@ -17,32 +17,27 @@ import {
 import { proposalHistoryEntrySchema, type ProposalHistoryEntry } from "./proposalHistory.js";
 import { z } from "zod";
 
-/**
- * What a thread turn on an Inbox item knows about the item's Processing proposals card (issue #1938), and the text
- * that puts it into the model's prompt. There is no read tool for it: the turn's prompt carries it
- * (`semprec-agents`' `sempMessageTask.ts` adds the text to the turn's prefix), so it is read again for every turn and
- * is never stored with the turn.
- */
+// What a thread turn on an Inbox item knows about its proposal card, and the prompt text for it. The prompt carries it
+// (no read tool), so it is read for every turn and never stored with the turn.
 
-/** What an Inbox item carries, as the model reads it. Attachments have no stored name, so only their ids are listed. */
+/** Attachments have no stored name, so only their ids are listed. */
 export interface InboxCardThreadSource {
   text: string | null;
   date: string | null;
   time: string | null;
-  /** The name of the Inbox item type, or `null` for an untyped item. */
+  /** `null` for an untyped item. */
   type: string | null;
   attachments: Array<{ attachmentId: string; name: null }>;
 }
 
 interface InboxCardThreadBase {
   proposalId: string;
-  /** The card's `updatedAt`: the version the model passes back as `ifVersion` when it revises the card. */
+  /** The version the model passes back as `ifVersion` when it revises the card. */
   version: string;
   status: string;
   source: InboxCardThreadSource;
 }
 
-/** An item the card's confirm created, as the card stored it in `results`. */
 export interface InboxCardCreatedItem {
   itemId: string;
   databaseKey: string | null;
@@ -52,7 +47,7 @@ export interface InboxCardCreatedItem {
 export type InboxCardThreadContext =
   | (InboxCardThreadBase & {
       card: "open";
-      /** The effective envelope (the stored `proposal`), with the user's manual values laid over the assistant's. */
+      /** The stored `proposal`: the user's manual values laid over the assistant's. */
       envelope: ProposalEnvelope | UnknownKindProposalEnvelope | null;
       userEditedKeys: string[];
       history: ProposalHistoryEntry[];
@@ -65,14 +60,9 @@ const storedCardSchema = z.object({
 });
 
 /**
- * The card context of the thread whose subject is the Inbox item `itemId`, read in the caller's tenant scope:
- * - a live open card (any status that is not locked) gives its status, the source, the effective envelope, the keys
- *   the user edited and the history;
- * - a `confirmed` card gives its status, the source and the items its confirm created (`results`: `itemId`,
- *   `databaseKey`, `label`), because those items are ordinary items that the thread may edit while the card stays
- *   read-only;
- * - anything else gives `null`: no live Inbox item, no card, a `rejected` card.
- * The card is the newest live Processing proposals card whose `sourceInbox` edge leads to the item.
+ * The card context for a thread about Inbox item `itemId`, from the newest live card whose `sourceInbox` edge leads to
+ * it: an open card gives status, source, effective envelope, edited keys and history; a `confirmed` card gives status,
+ * source and its created items (which the thread may edit while the card stays read-only); otherwise `null`.
  */
 export async function loadInboxCardThreadContext(
   client: PoolClient,
@@ -114,7 +104,6 @@ export async function loadInboxCardThreadContext(
   };
 }
 
-/** The newest live card of the Processing proposals database whose `sourceInbox` edge leads to `sourceId`, or `null`. */
 async function findNewestLiveCard(client: PoolClient, sourceId: string): Promise<ItemRow | null> {
   const proposals = await getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
   if (!proposals) return null;
@@ -149,7 +138,7 @@ async function readSource(client: PoolClient, source: ItemRow): Promise<InboxCar
   };
 }
 
-/** The most characters of one text field the prompt carries; a longer one is cut and marked. */
+/** A longer text field is cut and marked. */
 export const THREAD_CARD_FIELD_LIMITS = {
   sourceText: 4000,
   envelope: 8000,
@@ -159,7 +148,7 @@ export const THREAD_CARD_FIELD_LIMITS = {
   key: 100,
 } as const;
 
-/** The most entries of each list the prompt carries; the newest history entries are the ones kept. */
+/** The newest history entries are the ones kept. */
 const MAX_HISTORY_ENTRIES = 20;
 const MAX_KEYS = 50;
 const MAX_ITEMS = 20;
@@ -173,7 +162,7 @@ function boundNullable(text: string | null, limit: number): string | null {
   return text === null ? null : bound(text, limit);
 }
 
-/** The envelope as JSON-safe data: every string cut at its limit, and the whole cut as one string when it is still too long. */
+/** The envelope as JSON-safe data with strings cut at their limit, or the whole as one cut string when still too long. */
 function boundEnvelope(envelope: ProposalEnvelope | UnknownKindProposalEnvelope | null): unknown {
   if (envelope === null) return null;
   const json = JSON.stringify(envelope, (_key, value: unknown) =>
@@ -195,11 +184,9 @@ function boundSource(source: InboxCardThreadSource) {
 }
 
 /**
- * The text a thread turn adds to its prompt for `context`: a fixed sentence that says what follows is data and then
- * the context as one JSON object between data tags. The user's capture text, the envelope and the history are user
- * content or assistant output, so each field is cut at a limit (`THREAD_CARD_FIELD_LIMITS`, the lists at 20 or 50
- * entries) and marked when cut, and `<` is written as the six characters `\u003c` (the JSON escape of `<`), so none
- * of it can close the tag or pass as an instruction. The user's own message is not part of it: it is the turn's text.
+ * The prompt text for `context`: a fixed sentence saying what follows is data, then the context as JSON between data
+ * tags. User content and assistant output are cut at limits and marked, and `<` is written as `<`, so nothing can
+ * close the tag or pass as an instruction.
  */
 export function renderInboxCardThreadContext(context: InboxCardThreadContext): string {
   const common = {

@@ -15,22 +15,12 @@ import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 export { allowLoopbackOutboundForTests } from "../net/outboundAddressPolicy.js";
 
 /**
- * Minimal MCP contract servers for `stdio`, `sse`, and `http` (issue #231): each completes the
- * `initialize` handshake, records the credential it observed (from the child process env for
- * `stdio`, from the `Authorization` header for `sse`/`http`), and tracks its own transport-level
- * resources so a test can assert cleanup left nothing behind. `mcpConnectionFactory.test.ts`
- * (this issue) and later #125/#128 tests import these rather than each standing up their own
- * fake server, so all three run against identical behavior.
+ * Minimal MCP contract servers for `stdio`, `sse` and `http`, shared by MCP tests so every transport behaves
+ * identically. Each completes `initialize`, records the credential it saw (child env for `stdio`, `Authorization`
+ * for `sse`/`http`) and tracks its transport resources so a test can assert cleanup.
  *
- * Each server also answers `tools/list` with a configurable, mutable tool set (issue #125's
- * sync tests need to reconcile against a changing tool list across repeated syncs) via
- * `setTools`/`DEFAULT_CONTRACT_TOOLS` below.
- *
- * Each server also answers `tools/call` (issue #128) with the same deterministic, assertable
- * contract: echoing back `{ name, arguments }` as its result's only text content, unless the
- * call's arguments include `__forceError: true`, in which case it answers with `isError: true`
- * instead — this is how #128's tests exercise both the success and MCP-level-error result path
- * identically across all three transports. `getLastToolCall()` records the most recent call.
+ * `tools/list` answers a mutable tool set (`setTools`). `tools/call` echoes `{ name, arguments }` as its only text
+ * content, or answers `isError: true` when the arguments include `__forceError: true`.
  */
 
 export interface ContractServerTool {
@@ -39,7 +29,7 @@ export interface ContractServerTool {
   inputSchema: { type: "object"; properties?: Record<string, unknown>; required?: string[] };
 }
 
-/** What a freshly-started contract server advertises until a test calls `setTools`. */
+/** Advertised until a test calls `setTools`. */
 export const DEFAULT_CONTRACT_TOOLS: ContractServerTool[] = [
   {
     name: "search_web",
@@ -50,26 +40,22 @@ export const DEFAULT_CONTRACT_TOOLS: ContractServerTool[] = [
 export interface ContractToolCall {
   name: string;
   arguments: Record<string, unknown>;
-  /** The `tools/call` request's `_meta`, or `null` when the caller sent none (issue #693). */
+  /** `null` when the caller sent no `_meta`. */
   meta: Record<string, unknown> | null;
 }
 
 export interface McpContractServer {
-  /** A ready-to-use `mcpServers.connectionConfig` pointing at this running contract server. */
   readonly connectionConfig: McpConnectionConfig;
-  /** The credential the server last observed (via header or child env), or `null` if none/not yet connected. */
+  /** Via header or child env; `null` if none or not yet connected. */
   getObservedCredential(): string | null;
-  /** How many `initialize`/`initialized` handshakes this server has completed. */
   getHandshakeCount(): number;
-  /** Changes what `tools/list` answers on this server's *next* request — takes effect immediately for sse/http, on the next spawned child for stdio. */
+  /** Takes effect immediately for sse/http, on the next spawned child for stdio. */
   setTools(tools: ContractServerTool[]): void;
-  /** The most recent `tools/call` this server received, or `null` if none yet. */
   getLastToolCall(): ContractToolCall | null;
-  /** Stops the contract server (and, for stdio, waits briefly for the spawned child to have exited). */
+  /** For stdio, also waits briefly for the spawned child to exit. */
   stop(): Promise<void>;
 }
 
-/** Shared `tools/call` contract every server below answers identically — see this file's header comment. */
 const FORCE_ERROR_ARG = "__forceError";
 function handleContractToolCall(name: string, args: Record<string, unknown> | undefined) {
   const callArguments = args ?? {};
@@ -100,18 +86,14 @@ function isProcessAlive(pid: number): boolean {
 }
 
 export interface StdioContractServer extends McpContractServer {
-  /** Waits (with a short timeout) until the spawned child process is no longer running. */
   waitForChildExit(): Promise<void>;
-  /** Names (never values) of the environment variables the last spawned child saw, or `null` before any spawn. */
+  /** Names (never values) of the env vars the last spawned child saw; `null` before any spawn. */
   getChildEnvironmentNames(): string[] | null;
 }
 
 /**
- * Spawns via `StdioClientTransport`'s own `command`/`args` — this factory doesn't start a
- * process itself, it only returns the `connectionConfig` that will cause the real connection
- * factory to spawn `testSupport/fixtures/mcpStdioContractServerScript.mjs` as a child of
- * whichever test connects to it. `credentialEnvVar` names the env var that script reports the
- * credential back under (see that file's header comment).
+ * Starts no process itself: returns a `connectionConfig` that makes the real connection factory spawn
+ * `fixtures/mcpStdioContractServerScript.mjs`. `credentialEnvVar` names the env var the script reports back.
  */
 export function startStdioContractServer(
   initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS,
@@ -150,19 +132,16 @@ export function startStdioContractServer(
     getHandshakeCount: () => readRecord()?.handshakeCount ?? 0,
     getLastToolCall: () => readRecord()?.lastToolCall ?? null,
     getChildEnvironmentNames: () => readRecord()?.envNames ?? null,
-    // Read fresh by each newly-spawned child at startup (see the fixture script) — there's no
-    // shared memory across the process boundary to push this into an already-running child.
+    // Read by each newly spawned child at startup; a running child cannot be updated.
     setTools: (tools) => writeFileSync(toolsFile, JSON.stringify(tools)),
     async stop() {
-      // Nothing owned by this handle itself runs persistently — the spawned child is the
-      // connection factory's to close; `waitForChildExit` (below) is what a test calls after
-      // `handle.close()` to assert that actually happened. This does, however, own the two temp
-      // files created above, which otherwise leak into `os.tmpdir()` across every test run.
+      // The child is the connection factory's to close (a test asserts that via `waitForChildExit`); this handle
+      // owns only the two temp files.
       for (const file of [recordFile, toolsFile]) {
         try {
           unlinkSync(file);
         } catch {
-          // Already absent (e.g. the child never spawned, so recordFile was never written) — fine.
+          // Already absent, e.g. the child never spawned.
         }
       }
     },
@@ -204,11 +183,11 @@ async function closeHttpServer(handle: HttpContractServerHandle): Promise<void> 
 export interface HttpTransportContractServer extends McpContractServer {
   /** True while any transport-level socket to this server remains open. */
   hasOpenSockets(): boolean;
-  /** Sends `notifications/tools/list_changed` to the currently connected client, if any — for the "structural non-reactivity" acceptance criterion. */
+  /** Sends `notifications/tools/list_changed` to the connected client, if any. */
   triggerToolsListChanged(): Promise<void>;
 }
 
-/** @deprecated transport (SSEServerTransport itself is deprecated upstream) but still a required contract per issue #231's scope. */
+/** @deprecated transport upstream (`SSEServerTransport`), but still a required contract. */
 export async function startSseContractServer(
   initialTools: ContractServerTool[] = DEFAULT_CONTRACT_TOOLS,
 ): Promise<HttpTransportContractServer> {
@@ -220,8 +199,7 @@ export async function startSseContractServer(
   const transportsBySession = new Map<string, SSEServerTransport>();
 
   const httpServer = http.createServer((req, res) => {
-    // A thrown/rejected handler must still end the response — otherwise a bug here surfaces as
-    // the test's client hanging until its own timeout, rather than as a clear server-side error.
+    // A failed handler must still end the response, or the test client hangs until its timeout.
     void (async () => {
       const authorization = req.headers.authorization;
       observedCredential = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : null;
@@ -234,8 +212,7 @@ export async function startSseContractServer(
           { name: "mcp-contract-sse", version: "1.0.0" },
           { capabilities: { tools: { listChanged: true } } },
         );
-        // Reads `currentTools` at request time (not capture time), so a test's `setTools` call
-        // takes effect on this already-connected session's very next `tools/list` request.
+        // Reads `currentTools` per request, so `setTools` affects an already-connected session.
         mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
         mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
           lastToolCall = {
@@ -295,17 +272,12 @@ export async function startHttpContractServer(
   let currentTools = initialTools;
   let currentMcpServer: McpServer | undefined;
   let lastToolCall: ContractToolCall | null = null;
-  // A single `StreamableHTTPServerTransport` instance represents exactly one session (per the
-  // SDK's own stateful-mode contract) — issue #125's sync tests reconnect to the same contract
-  // server repeatedly (sync, mutate tools, sync again), which is a second independent session,
-  // not a resumed one. So this keys a fresh transport (and `McpServer`) per session, the same
-  // `Map<sessionId, transport>` pattern the SDK's own multi-session example uses, mirroring how
-  // the sse contract server above already keys `transportsBySession`.
+  // One `StreamableHTTPServerTransport` is one session, and tests reconnect repeatedly (new sessions), so this
+  // keys a transport and `McpServer` per session id, as the SDK's multi-session example does.
   const transportsBySession = new Map<string, StreamableHTTPServerTransport>();
 
   const httpServer = http.createServer((req, res) => {
-    // Same rationale as the SSE server above: without this, a thrown/rejected handler leaves
-    // the test's client hanging instead of surfacing a clear server-side error.
+    // As above: a failed handler must still end the response.
     void (async () => {
       const authorization = req.headers.authorization;
       observedCredential = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : null;
@@ -318,13 +290,12 @@ export async function startHttpContractServer(
         return;
       }
       if (sessionId) {
-        // An unknown/stale session id — the SDK's own multi-session example does the same.
+        // Unknown or stale session id, as in the SDK example.
         res.writeHead(400).end();
         return;
       }
 
-      // No session id header: per the streamable-HTTP spec this must be a new `initialize`
-      // request — `handleRequest` itself rejects it with 400 below if it isn't.
+      // No session id: must be an `initialize` request; `handleRequest` answers 400 otherwise.
       const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id: string) => {
@@ -339,7 +310,6 @@ export async function startHttpContractServer(
         { name: "mcp-contract-http", version: "1.0.0" },
         { capabilities: { tools: { listChanged: true } } },
       );
-      // Reads `currentTools` at request time, same as the sse server above.
       mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: currentTools }));
       mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         lastToolCall = {

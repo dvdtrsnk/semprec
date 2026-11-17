@@ -5,58 +5,43 @@ import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { resolveProperty, toManifestLocale } from "../manifest/catalogResolution.js";
 import { computeDatabaseFacets, loadFacetMetadata } from "../views/facetQuery.js";
 
-/** At most this many text properties of one database contribute known values (issue gh-1990). */
 export const MAX_CATALOG_TEXT_PROPERTIES = 5;
 
 /**
- * At most this many distinct values per text property, the most frequent first (issue gh-1990). It is a bound and not a
- * quota: the facets read cuts to its 20 most frequent values first and a value over `MAX_CATALOG_TEXT_VALUE_LENGTH` is
- * then left out of those, so fewer than 20 are listed when a frequent value is long.
+ * A bound, not a quota: the facets read takes the 20 most frequent first and then drops values over
+ * `MAX_CATALOG_TEXT_VALUE_LENGTH`, so fewer may be listed.
  */
 export const MAX_CATALOG_TEXT_VALUES = 20;
 
-/**
- * The longest value the catalog lists, in characters. A longer text is a note and not a value to reuse, so it is
- * left out whole instead of cut: a cut value would be proposed as if it were the stored one.
- */
+/** Longer text is a note, not a reusable value, so it is left out whole: a cut value would look like a stored one. */
 export const MAX_CATALOG_TEXT_VALUE_LENGTH = 100;
 
 export interface TargetCatalogSelect {
   propertyKey: string;
-  /** `true` for a `multi_select` property, whose value is a list of option keys. */
   multi: boolean;
-  /** The stored option keys, each with the label the user's language shows for it. */
   options: Array<{ key: string; label: string }>;
 }
 
 export interface TargetCatalogTextValues {
   propertyKey: string;
-  /** Values already stored in the property, with the number of live items that hold each. */
+  /** Values already stored, with the number of live items holding each. */
   values: Array<{ value: string; count: number }>;
 }
 
-/** What a proposal into one database may be grounded in: its select options and the values its text properties hold. */
 export interface TargetCatalog {
   selects: TargetCatalogSelect[];
   textValues: TargetCatalogTextValues[];
 }
 
 /**
- * The catalog of one target database for a proposal (issue gh-1990), read under the caller's tenant transaction;
- * it writes nothing.
+ * The grounding catalog of one target database, read in the caller's tenant transaction.
  *
- * `selects` lists every user-owned `select` and `multi_select` property in the database's property order with its
- * option keys and the option labels in `locale` (`cs` or, for any other value, `en`), resolved through the owning
- * module's catalog like `GET /api/schema` does. This is schema, so it is returned whatever the reader may read.
+ * `selects`: every user-owned `select`/`multi_select` property with option keys and labels in `locale` (`cs`, else
+ * `en`). This is schema, so it is returned whatever the reader may read.
  *
- * `textValues` lists, for the first `MAX_CATALOG_TEXT_PROPERTIES` user-owned `text` properties (a `title` property
- * is of another type and never appears), the values already in use with their counts, read through the facets of
- * `database.facets` (`computeDatabaseFacets`): the `MAX_CATALOG_TEXT_VALUES` most frequent, trashed items not counted,
- * values longer than `MAX_CATALOG_TEXT_VALUE_LENGTH` and items without a value left out, a property without any value
- * left out. These are data, so they are read only when the project `projectItemId` may read the database, decided as
- * the workspace context does (`listUnreadableDatabaseIds`, issue #1810); otherwise `textValues` is empty.
- *
- * A database that does not exist for the tenant, whether it is unknown or another tenant's, has an empty catalog.
+ * `textValues`: for the first `MAX_CATALOG_TEXT_PROPERTIES` user-owned `text` properties, the values in use with
+ * counts via `computeDatabaseFacets`. These are data, so they are read only when project `projectItemId` may read the
+ * database (`listUnreadableDatabaseIds`); otherwise empty. An unknown or other-tenant database has an empty catalog.
  */
 export async function buildTargetCatalog(
   client: PoolClient,

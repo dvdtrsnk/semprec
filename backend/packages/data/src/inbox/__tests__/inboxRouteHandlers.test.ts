@@ -74,14 +74,11 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 /**
- * Issue #239's `inboxPipeline`-owned custom-route handler factories, exercised directly against
- * the real functions they thinly wrap (#105's `confirmProposalWithClient`, #101's
- * `listActiveInboxTypes`) — the HTTP-level auth/mounting mechanics these are cast into an
- * `AdapterHandler` for are covered separately by `customRouteMount.test.ts` and
- * `routeMatrix.test.ts` in `semprec-api`.
+ * The inbox custom-route handler factories, exercised directly against the functions they wrap; HTTP auth and mounting
+ * are covered by `customRouteMount.test.ts` and `routeMatrix.test.ts` in `semprec-api`.
  */
 
-/** The `file` value of a Files item (a blob that exists): the Files editor schema requires it, so a Files card needs one to confirm (issue #1928). */
+/** The `file` value of a Files item (a blob that exists): the Files editor schema requires it, so a Files card needs one to confirm. */
 async function newFileValue(client: PoolClient): Promise<{ blobId: string }> {
   const blob = await createBlob(client, {
     mimeType: "application/pdf",
@@ -474,7 +471,7 @@ describe("inbox custom route handlers (issue #239)", () => {
         );
       });
       const handler = createConfirmProposalRouteHandler(pool);
-      // In a tenant scope, as a request is: the task's Tasks.project edge queues value-link propagation (issue #1702).
+      // In a tenant scope, as a request is: the task's Tasks.project edge queues value-link propagation.
       const response = await runInTenant(getTenantZeroId(), () => handler({ params: { id: proposalId }, body: {} }));
       if (!("item" in response) || !response.results) throw new Error("Missing confirmed results");
       expect(response.results).toHaveLength(2);
@@ -875,7 +872,6 @@ describe("inbox custom route handlers (issue #239)", () => {
     });
 
     describe("an MCP server confirm (issue gh-1976)", () => {
-      /** A card for a new MCP server, so confirming it creates the server item. */
       async function createServerCard(): Promise<string> {
         const proposalId = await createDatabaseProposal("Server");
         await withTransaction(pool, async (client) => {
@@ -1121,7 +1117,6 @@ describe("inbox custom route handlers (issue #239)", () => {
   });
 
   describe("createRejectProposalRouteHandler (issue #1845)", () => {
-    /** The ids of the cards `GET /api/inbox/cards` lists for the tenant's only user. */
     async function listedCardIds(): Promise<string[]> {
       const userId = (await createTenantZeroUser(pool)).id;
       const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale: "en" } } });
@@ -1314,7 +1309,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       return { id: item.id, properties: item.properties, updatedAt: item.updatedAt };
     }
 
-    /** The ids of the cards `GET /api/inbox/cards` lists for the tenant's only user. */
     async function listedCardIds(): Promise<string[]> {
       const userId = (await createTenantZeroUser(pool)).id;
       const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale: "en" } } });
@@ -1347,7 +1341,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       return answer.item;
     }
 
-    /** What a reopen may write: every item's version and every queued Journal recompute job. */
     async function writtenState(): Promise<{ items: string[]; recomputeJobs: number }> {
       const items = await pool.query<{ id: string; updated_at: Date }>("SELECT id, updated_at FROM items ORDER BY id");
       const jobs = await pool.query<{ n: number }>(
@@ -1359,11 +1352,7 @@ describe("inbox custom route handlers (issue #239)", () => {
       };
     }
 
-    /**
-     * Removes the queued Journal recompute jobs. `graphile_worker.jobs` is a read-only view, so the delete goes to the
-     * table behind it (graphile-worker 0.16, as `inboxTickRecompute.test.ts` does it); a job queued afterwards is the
-     * reopen's own.
-     */
+    /** `graphile_worker.jobs` is a read-only view, so the delete goes to the table behind it. */
     async function clearRecomputeJobs(): Promise<void> {
       await pool.query(
         `DELETE FROM graphile_worker._private_jobs
@@ -1391,7 +1380,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect(item.properties.userEditedKeys).toEqual(["primary.name"]);
       expect(item.properties).not.toHaveProperty("results");
       expect(item.properties).not.toHaveProperty("invalidReason");
-      // The earlier history stays as it was and one `reopened` entry follows it.
       expect(historyOf(item).slice(0, -1)).toEqual(historyOf(rejected));
       expect(historyOf(item).at(-1)).toMatchObject({ author: "user", message: "Reopened by user.", kind: "reopened" });
       expect(await listedCardIds()).toContain(cardId);
@@ -1619,7 +1607,6 @@ describe("inbox custom route handlers (issue #239)", () => {
   });
 
   describe("createReopenProposalRouteHandler on a confirmed card (issue #1943)", () => {
-    /** Older than any stored `updatedAt`, so it never equals the version a card holds. */
     const STALE_VERSION = "2000-01-01T00:00:00.000Z";
     const EVENT_DATE = "2024-03-01T12:00:00.000Z";
     let tasksId: string;
@@ -1641,7 +1628,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       it(name, () => runInTenant(getTenantZeroId(), body));
     }
 
-    /** The stored fields of a card: an update's answer also carries the write's own metadata, which a read of the row has not. */
     function storedFields(item: ItemRow) {
       return { id: item.id, properties: item.properties, updatedAt: item.updatedAt };
     }
@@ -1652,7 +1638,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       return card;
     }
 
-    /** An item of `databaseId` in any state, the Trash included. */
     async function anyItem(itemId: string): Promise<ItemRow> {
       const [item] = await itemsStore.getItemsByIdsIncludingDeleted(pool, [itemId]);
       if (!item) throw new Error(`Item ${itemId} is missing`);
@@ -1702,7 +1687,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       return z.array(z.unknown()).parse(item.properties.history);
     }
 
-    /** What an undo may write: every item's version and its trash state, the origin rows and the credentials. */
     async function writtenState(): Promise<string[]> {
       const items = await pool.query<{ id: string; updated_at: Date; deleted_at: Date | null }>(
         "SELECT id, updated_at, deleted_at FROM items ORDER BY id",
@@ -2068,7 +2052,6 @@ describe("inbox custom route handlers (issue #239)", () => {
 
         expect(item.properties.status).toBe("proposed");
         expect(await dayPage()).toBe("Morning.");
-        // The first entry inserted the edge, the second only found it.
         expect(await edgeExists(day.id, areaId)).toBe(true);
       });
 
@@ -2397,7 +2380,7 @@ describe("inbox custom route handlers (issue #239)", () => {
 
           expect(item.properties.status).toBe("proposed");
           expect(await edgeExists(transcriptId, occurrenceId)).toBe(false);
-          // Trashing the materialized item would read as a cancelled occurrence, so it stays (the ADR of the undo says why).
+          // Trashing the materialized item would read as a cancelled occurrence, so it stays.
           const occurrence = await anyItem(occurrenceId);
           expect(occurrence.deletedAt).toBeNull();
           expect(occurrence.properties).toMatchObject({ seriesId: series, occurrenceDate: "2026-10-14" });
@@ -2949,7 +2932,6 @@ describe("inbox custom route handlers (issue #239)", () => {
   });
 
   describe("ifVersion on confirm and reject (issue #1852)", () => {
-    /** Older than any stored `updatedAt`, so it never equals the version a card holds. */
     const STALE_VERSION = "2000-01-01T00:00:00.000Z";
     const handlers = { confirm: createConfirmProposalRouteHandler, reject: createRejectProposalRouteHandler } as const;
     type Action = keyof typeof handlers;
@@ -2962,7 +2944,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       return card;
     }
 
-    /** What an action may write: every item, every queued job and every history entry. */
     async function writtenState(cardId: string): Promise<{ items: string[]; jobs: number; card: ItemRow }> {
       const items = await pool.query<{ id: string; updated_at: Date }>("SELECT id, updated_at FROM items ORDER BY id");
       const jobs = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM graphile_worker.jobs");
@@ -3192,7 +3173,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       return rows[0].id;
     }
 
-    /** The card the match step emits for a recording with no Event in its window: a create-Event proposal. */
     async function createEventCard(): Promise<string> {
       const transcriptId = await createTranscript("Weekly sync");
       await inTenant(() =>
@@ -3201,7 +3181,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       return onlyTranscriptCardId();
     }
 
-    /** The card that proposes who a transcript's speaker is. */
     async function createSpeakerCard(): Promise<{ cardId: string; personId: string }> {
       const transcriptId = await createTranscript("Speaker fixture");
       const person = await inTenant(() =>
@@ -3225,7 +3204,6 @@ describe("inbox custom route handlers (issue #239)", () => {
           await itemsStore.writeComputed(client, transcriptsId, transcriptId, "segments", [
             { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
           ]);
-          // The suggestion is proposed only for a person who took part in the transcript's Event.
           await createRelationWithClient(client, {
             relationPropertyId: eventPeopleId,
             callerItemId: meetingId,
@@ -3960,7 +3938,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       if (!card) throw new Error(`card ${id} not found`);
       return card;
     }
-    /** A card with a manual title over the assistant's "Buy milk". */
     async function editedCard(): Promise<string> {
       const proposalId = await createDatabaseProposal("Buy milk");
       await createUpdateProposalValuesRouteHandler(pool)({
@@ -4409,7 +4386,6 @@ describe("inbox custom route handlers (issue #239)", () => {
         (await pool.query<{ n: string }>("SELECT count(*) AS n FROM items WHERE database_id = $1", [inboxId])).rows[0]!
           .n,
       );
-    /** The items an Inbox item points to, by the key of the relation property it is held under. */
     const targetsOf = (itemId: string): Promise<Record<string, ItemRow[]>> =>
       withTransaction(pool, async (client) => {
         const grouped: Record<string, ItemRow[]> = {};
@@ -4729,10 +4705,7 @@ describe("inbox custom route handlers (issue #239)", () => {
       );
     }
 
-    /**
-     * A raw UPDATE: since issue #1436 the choke point refuses an unknown target, so this is the stored
-     * state an older write could leave behind.
-     */
+    /** A raw UPDATE: the choke point refuses an unknown target, so only an older write could leave this stored state. */
     async function storeTargetDirectly(itemId: string, target: string): Promise<void> {
       const { rows } = await pool.query<{ id: string }>(
         `UPDATE items SET properties = jsonb_set(properties, '{targetDatabase}', to_jsonb($3::text))
@@ -4956,7 +4929,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       } | null;
     }
 
-    /** The cards the handler returns for the tenant's only user, read as the adapter would pass the caller. */
     async function listedCards(userId: string, locale: string): Promise<ListedCard[]> {
       const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale } } });
       if (!("body" in answer)) throw new Error("expected a raw JSON body");
@@ -5027,7 +4999,6 @@ describe("inbox custom route handlers (issue #239)", () => {
 
       const listed = (await listedCards(userId, "en")).find((candidate) => candidate.cardId === card.cardId)!;
 
-      // The card really went through the invalid path; a card left proposed would carry the same schema.
       expect(listed).toMatchObject({ cardKind: "invalid", status: "invalid" });
       expect(listed.editorSchema?.baseKind).toBe("task");
       expect(fieldsOf(listed).map((field) => field.key)).toEqual([
@@ -5093,7 +5064,7 @@ describe("inbox custom route handlers (issue #239)", () => {
         health: "healthRecords",
       };
       // Fields without a property of their own: the all-day and step switches, the follow-up date, the Tasks
-      // `area` choice, and the page content of the two page cards (issue #1825).
+      // `area` choice, and the page content of the two page cards.
       const pseudoKeys = new Set([
         "allDay",
         "followupTask",

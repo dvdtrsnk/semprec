@@ -37,7 +37,7 @@ const mcpIdentity = {
   toolName: "events",
 };
 
-/** A call of an MCP tool and its failed result, as `agentSessionComposition` stores them (issue #1444). */
+/** A failed MCP call as `agentSessionComposition` stores it. */
 function failedMcpCall(failure: Record<string, unknown>): EventSpec[] {
   return [
     {
@@ -71,7 +71,6 @@ function failedMcpCall(failure: Record<string, unknown>): EventSpec[] {
 
 const TIMEOUT = { failureKind: "timeout", mcpServerItemId: SERVER, timeoutMs: 60000 };
 
-/** Plays a turn of `tenant` whose events are `toolEvents` and returns it, still running. */
 function playIn(tenant: string, toolEvents: EventSpec[], finalText?: string): Promise<PlayedTurn> {
   return playTurn({ ...setup, tenant }, [
     userMessageEvent(),
@@ -82,7 +81,7 @@ function playIn(tenant: string, toolEvents: EventSpec[], finalText?: string): Pr
   ]);
 }
 
-/** Closes a played turn as the turn handler does after a failure: summary read first, then the classified error. */
+/** Closes a turn as the turn handler does after a failure: summary first, then the classified error. */
 async function failPlayedTurn(tenant: string, turn: PlayedTurn, error: unknown): Promise<void> {
   await runInTenant(tenant, () =>
     withTransaction(setup.runtime, async (client) => {

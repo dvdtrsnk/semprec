@@ -30,7 +30,7 @@ let tasksId: string;
 const identity = { user: { id: randomUUID() } };
 const WAIT_MS = 10_000;
 
-/** The server's day in every test: 10:00 UTC on Friday 16 October 2026, which is noon of that day in the seeded zone. */
+/** 10:00 UTC on Friday 16 October 2026, noon in the seeded zone. */
 const NOW = new Date("2026-10-16T10:00:00Z");
 const TODAY = "2026-10-16";
 
@@ -50,7 +50,6 @@ async function tasksDatabaseId(tenantId: string): Promise<string> {
   });
 }
 
-/** A series started through the recurrence route on a task dated `date`. */
 async function series(
   recurrence: unknown = { preset: "daily" },
   properties: Record<string, unknown> = {},
@@ -67,10 +66,7 @@ async function series(
   return { seriesId, currentId: created.id };
 }
 
-/**
- * A daily series whose id has a letter, so the id written in upper case is another string. Nearly every random UUID
- * has one; a series whose id has none is left in the tenant and another is started.
- */
+/** The id must contain a letter so its upper-case form differs; series without one are left and another started. */
 async function seriesWithLetterInId(): Promise<{ seriesId: string; currentId: string }> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const started = await series();
@@ -85,7 +81,6 @@ interface OccurrenceRow {
   status: string | null;
 }
 
-/** The live items that carry `seriesId`, read in `tenantId`. */
 async function occurrences(seriesId: string, tenantId: string = tenant): Promise<OccurrenceRow[]> {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ id: string; occurrence_date: string | null; status: string | null }>(
@@ -122,10 +117,7 @@ async function stored(id: string): Promise<{ properties: Record<string, unknown>
   return { properties: item.properties, updatedAt: item.updatedAt };
 }
 
-/**
- * One line per projected occurrence, of every series or of series `only`: its date, then the stored item's id or
- * `virtual:<status>`.
- */
+/** One line per projected occurrence: date, then the stored item id or `virtual:<status>`. */
 async function projected(from: string, to: string, only?: string): Promise<string[]> {
   const result = await runInTenant(tenant, () =>
     withTransaction(pool, (client) => projectTaskOccurrences(client, { from, to, today: TODAY })),
@@ -151,7 +143,6 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error("A transaction failed with a non-Error value", { cause: error });
 }
 
-/** Waits until exactly `count` backends of this database wait for a lock another backend holds. */
 async function waitForBlocked(count: number): Promise<void> {
   // `Date` is faked in this file, so the deadline is measured on the monotonic clock.
   const deadline = performance.now() + WAIT_MS;
@@ -167,10 +158,8 @@ async function waitForBlocked(count: number): Promise<void> {
 }
 
 /**
- * Runs `hold` in a transaction that stays open and, once it holds its locks, starts the `contenders` in order, each
- * only after the one before it waits for a lock. When the last one waits, the holding transaction runs `beforeCommit`,
- * when given, and commits. Returns what each contender settled with (its value, or the error it rejected with) after
- * every transaction has ended; a failure of the holding transaction or of a wait is thrown after that.
+ * Holds `hold` open and starts the `contenders` in order, each after the previous one waits for a lock; when the
+ * last waits, runs `beforeCommit` and commits. Returns each contender's outcome after every transaction ended.
  */
 async function whileHolding(
   hold: Parameters<typeof withTransaction<void>>[1],
@@ -511,9 +500,8 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
 
   it("refuses a stored occurrence whose date the rule does not give, and leaves it unchanged", async () => {
     const { seriesId } = await series({ preset: "weekly" });
-    // An occurrence on a Saturday of a Friday series. A stored occurrence is off the dates this route accepts after a
-    // rule change, when the series was started on a date its rule does not give, and when a floating series advanced
-    // from a completion day that is not a whole number of intervals after the anchor date.
+    // An occurrence on a Saturday of a Friday series: stored occurrences can be off-rule after a rule change, an
+    // off-rule start date, or a floating series advancing from a non-interval completion day.
     const offRule = await runInTenant(tenant, () =>
       createSeriesOccurrence(pool, {
         databaseId: tasksId,
@@ -590,7 +578,6 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
     expect(foreign).toEqual(await outcome(randomUUID()));
     expect(await occurrences(seriesId)).toEqual([{ id: currentId, occurrenceDate: TODAY, status: "notDone" }]);
     expect(await occurrences(seriesId, other)).toEqual([]);
-    // The owner's own request for the same date is served, so the refusal above came from the tenant boundary.
     expect((await post(seriesId, "2026-10-20", { status: "done" })).status).toBe(201);
   });
 
@@ -605,7 +592,7 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
     ["template", "UPDATE task_recurrence SET template = NULL WHERE series_id = $1::uuid"],
   ])("fails without a domain error and stores nothing for a series row without its %s", async (_label, corrupt) => {
     const { seriesId } = await series();
-    // Raw SQL: the store writes a series' id, anchor date and template together, so no write path leaves one null.
+    // Raw SQL: the store writes id, anchor date and template together, so no write path leaves one null.
     await runInTenant(tenant, () => pool.query(corrupt, [seriesId]));
     const before = await occurrences(seriesId);
     const error: unknown = await post(seriesId, "2026-10-20", {}).then(
@@ -619,8 +606,7 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
 
   it("stores one item when two requests for the same virtual occurrence run at once, and refuses the other with 409", async () => {
     const { seriesId, currentId } = await series();
-    // Both requests look for the occurrence, find none and wait for the series row; one creates it, the other
-    // reads it under the lock it got second.
+    // Both requests find no occurrence and wait for the series row; one creates it, the other reads it under the lock.
     const request = () => post(seriesId, "2026-10-20", { status: "done" });
     const results = await whileHolding(
       async (client) => {
@@ -636,7 +622,6 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
       { id: currentId, occurrenceDate: TODAY, status: "notDone" },
       { id: expect.any(String), occurrenceDate: "2026-10-20", status: "done" },
     ]);
-    // The refused request can be repeated: it now finds the stored item.
     expect((await post(seriesId, "2026-10-20", { status: "done" })).status).toBe(200);
   });
 
@@ -646,10 +631,8 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
       runInTenant(tenant, () =>
         createTaskSeriesPatchRouteHandler(pool)({ params: { seriesId }, body: { timeFrom: "08:00" }, identity }),
       );
-    // The request finds no item for the date and waits for the held series row. The edit starts after it, locks the
-    // current occurrence and the open occurrences stored so far, and waits for the row behind the request:
-    // PostgreSQL gives a row lock to its waiters in the order they came. The request then stores an item the edit
-    // has not locked, from the template the edit is about to replace.
+    // The request waits for the held series row; the edit then locks the current and open occurrences and queues behind
+    // the request (PostgreSQL grants row locks in arrival order), so the request stores an item the edit has not locked.
     const results = await whileHolding(
       async (client) => {
         await getTaskRecurrenceBySeriesId(client, seriesId, true);
@@ -658,7 +641,6 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
     );
     expect(results[0]).toMatchObject({ status: 201, item: { properties: { occurrenceDate: "2026-10-20" } } });
     expect(results[1]).toBeInstanceOf(ConflictError);
-    // The refused edit wrote nothing: the template and both open occurrences have no start time.
     const [, created] = await occurrences(seriesId);
     if (!created) throw new Error("The request stored no occurrence");
     expect(await seriesRow(seriesId)).toMatchObject([{ item_id: currentId, template: { timeFrom: null } }]);
@@ -674,8 +656,7 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
 
   it("creates the occurrence from the edited template when the request waited for the series row behind a series edit", async () => {
     const { seriesId, currentId } = await series();
-    // The edit locks the current occurrence and waits for the held series row; the request starts after it and waits
-    // for the row behind the edit. The edit commits the new template before the request reads it under the lock.
+    // The edit commits the new template before the request, queued behind it on the series row, reads it.
     const results = await whileHolding(
       async (client) => {
         await getTaskRecurrenceBySeriesId(client, seriesId, true);
@@ -700,8 +681,8 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
   it("waits for a stored occurrence without holding the series row, which its holder then locks", async () => {
     const { seriesId } = await series();
     const occurrence = (await post(seriesId, "2026-10-20", {})).item.id;
-    // The holder locks as a Tasks status write does: the occurrence, then the series row. Had the request taken the
-    // series row before it waited for the occurrence, the two would deadlock and one of them would fail.
+    // The holder locks as a Tasks status write does: occurrence, then series row. Taking the series row before the
+    // occurrence would deadlock.
     const results = await whileHolding(
       async (client) => {
         await lockItemById(client, tasksId, occurrence);
@@ -719,8 +700,7 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
     const trashed = (await post(seriesId, "2026-10-20", {})).item.id;
     const results = await whileHolding(
       async (client) => {
-        // Fixture SQL: the choke point trashes a series as a whole and turns its rule off (issue gh-1882), so the
-        // occurrence is trashed on its own to reach the route's branch for an occurrence that left the live items.
+        // Fixture SQL: the choke point trashes a whole series, so the occurrence is trashed on its own.
         await client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
           tasksId,
           trashed,
@@ -749,9 +729,8 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
 
   it("answers not found when the occurrence leaves its series while the request waits for its row", async () => {
     const { seriesId, currentId } = await series();
-    // The clear route locks the current occurrence and waits for the held series row; only then does the request
-    // start, and it waits for the occurrence. Once released, the clear route turns the series off and takes the
-    // occurrence out of it.
+    // The clear route locks the current occurrence and waits for the series row; then the request waits for the
+    // occurrence. Once released, the clear route turns the series off and removes the occurrence from it.
     const results = await whileHolding(
       async (client) => {
         await getTaskRecurrenceBySeriesId(client, seriesId, true);

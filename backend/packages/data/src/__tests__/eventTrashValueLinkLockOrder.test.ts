@@ -12,12 +12,11 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
-// The lock order of the trash of an Event against the removal of a transcript's `event` edge. The trash detaches the
-// value links the Event feeds (`valueLinkSourceDeleteHook`) in the order of their item id, the position of their rule
-// in the catalog and their link id; the release of a removed `event` edge takes the transcript's `project` link and then
-// its `people` link. See
-// docs/adr/2026-11-15-the-trash-of-an-event-locks-the-value-links-it-feeds-in-item-order-then-rule-order.md.
-// Every call is a production call on a pool of the runtime role `semprec_data`, one pool per participant.
+// The lock order of the trash of an Event against the removal of a transcript's `event` edge: the trash
+// detaches the value links the Event feeds by item id, then rule position, then link id; the release of a
+// removed `event` edge takes the transcript's `project` link, then its `people` link. See
+// docs/architecture/domain-calendar-tasks-and-media.md#event-trash-lock-order. One runtime-role pool per
+// participant.
 
 const USER: WriterIdentity = { writerKind: "user" };
 const RECORDING_START = "2024-03-01T12:00:00.000Z";
@@ -41,7 +40,6 @@ async function participant(name: string): Promise<Participant> {
   return { name, pool, cp: createChokePoint(pool) };
 }
 
-/** One tenant with the Event "client meeting", its project and participant, and a transcript linked to that Event. */
 interface World {
   tenant: string;
   eventsDatabase: string;
@@ -116,9 +114,9 @@ async function buildWorld(): Promise<World> {
 }
 
 /**
- * Gives the transcript's value links the ids `[project, people, company]`. Raw SQL for a state the store cannot
- * produce, since it generates the link ids: the ids are rewritten on the admin pool, with foreign keys off, in
- * `value_links` and in `value_link_sources` together (the foreign key has no ON UPDATE CASCADE).
+ * Gives the transcript's value links the ids `[project, people, company]`. Raw SQL on the admin pool with
+ * foreign keys off, in `value_links` and `value_link_sources` together (no ON UPDATE CASCADE), since the
+ * store generates the ids.
  */
 async function rewriteLinkIds(world: World, ids: { project: string; people: string; company: string }): Promise<void> {
   const client = await admin.connect();
@@ -208,8 +206,8 @@ async function blockersOrEnd(running: Running): Promise<string[] | null> {
 }
 
 /**
- * Starts the steps one after the other while a third transaction holds the transcript's `project` link row, each
- * only after the one before it waits for a lock or has ended, then releases the row and lets every call end.
+ * Starts the steps one after the other while a third transaction holds the transcript's `project` link
+ * row, each only after the previous one waits for a lock or has ended, then releases the row.
  */
 async function behindHeldProjectLink(
   world: World,
@@ -266,7 +264,6 @@ const trashesEvent = (world: World): Step => ({
   call: ({ cp }) => cp.softDeleteItem(world.eventsDatabase, world.event, undefined, USER),
 });
 
-/** The transcript's edges and value link rows and the Event's trash state, read through the runtime role. */
 async function settledState(world: World) {
   return runInTenant(world.tenant, async () => {
     const targets = async (relationPropertyId: string): Promise<string[]> =>
@@ -315,9 +312,8 @@ describe("the trash of an Event against the removal of a transcript's event edge
     await admin?.end();
   });
 
-  // With a third transaction holding the transcript's `project` link row, whichever call started first waits for it.
-  // The edge removal takes `project` and then `people`. The trash used to take them in the order of their link ids,
-  // so it took `people` first when that link had the smaller id.
+  // With a third transaction holding the transcript's `project` link row, whichever call started first
+  // waits for it. Both the edge removal and the trash take `project` before `people`, whatever the link ids.
   const idOrders = [
     {
       name: "project link has the smaller id",

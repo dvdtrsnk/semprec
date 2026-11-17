@@ -12,10 +12,8 @@ interface ProbeRun {
 }
 
 /**
- * How long an unaffinitized probe waits for the other one to start before it gives up and
- * finishes alone. It only bounds the failure case (the two never overlap), so it sits well above
- * graphile-worker's 2s `pollInterval`, the latest an idle worker picks up a job whose
- * `jobs:insert` notification reached no idle worker.
+ * Bounds only the failure case (the probes never overlap); well above graphile-worker's 2 s `pollInterval`,
+ * the latest an idle worker picks up a job whose `jobs:insert` notification it missed.
  */
 const UNAFFINITIZED_OVERLAP_WAIT_MS = 5_000;
 
@@ -39,16 +37,11 @@ describe("production concurrency: semprec-tick serializes, unaffinitized jobs ru
     delete process.env.QUEUE_CONCURRENCY;
 
     const tickRuns: ProbeRun[] = [];
-    // One entry per finished unaffinitized probe: whether the other one had started before it
-    // stopped waiting.
+    // Per finished probe: whether the other one had started before it stopped waiting.
     const unaffinitizedOverlaps: boolean[] = [];
 
-    // A fixed sleep only shows the two unaffinitized runs overlapping if graphile-worker picks the
-    // second one up within that sleep of the first, which it does not promise: a `jobs:insert`
-    // notification only nudges a worker that is idle at that moment, and a job it misses waits for
-    // a freed worker or the next poll. Each unaffinitized probe instead stays in flight until both
-    // have started, so they overlap whenever they can run concurrently at all, and a serialized
-    // pair shows up as the first giving up before the second ever started.
+    // graphile-worker does not promise to pick up the second job within a fixed sleep, so each probe stays in
+    // flight until both started; a serialized pair shows up as the first giving up first.
     let unaffinitizedStarted = 0;
     let releaseUnaffinitized!: () => void;
     const bothUnaffinitizedStarted = new Promise<void>((resolve) => {

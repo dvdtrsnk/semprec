@@ -14,9 +14,7 @@ import {
   editorSchemaDescriptorSchema,
 } from "../index.js";
 
-// `../catalog.js`'s named export binding can't be `vi.spyOn`'d directly under vitest's
-// ESM module loader, so `vi.mock` with a factory that wraps the real implementation in a
-// `vi.fn` is the supported way to observe calls while every test keeps the real behavior.
+// An ESM named export cannot be `vi.spyOn`'d, so `vi.mock` wraps the real implementation in a `vi.fn`.
 vi.mock("../catalog.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../catalog.js")>();
   return {
@@ -140,15 +138,13 @@ describe("ModuleRegistry.loadModule", () => {
     const registry = new ModuleRegistry(alwaysActive);
     await registry.loadModule(fixturePath("goodModule.js"));
 
-    // Collides on its second database key ("fixtureGoodItems"); its first key
-    // ("fixturePartialFirst") must not be left claimed even though it was checked first.
+    // Collides on its second database key; its first key must not be left claimed.
     await expect(registry.loadModule(fixturePath("partialCollisionModule.js"))).rejects.toThrow(
       /Duplicate database key "fixtureGoodItems"/,
     );
     expect(registry.listModuleIds()).toEqual(["fixture-good"]);
 
-    // A later, unrelated module reusing that same key must succeed — it was never
-    // actually claimed by the rejected module.
+    // A later module reusing that key succeeds: the rejected module never claimed it.
     const reclaimedId = await registry.loadModule(fixturePath("reclaimsPartialFirstModule.js"));
     expect(reclaimedId).toBe("fixture-reclaims-partial-first");
   });
@@ -269,9 +265,7 @@ describe("ModuleRegistry projections", () => {
     const workers = await registry.getWorkers();
     expect(workers).toEqual([{ moduleId: "fixture-good", name: "fixtureGood.worker", handlerExport: "runWorker" }]);
 
-    // Every returned projection object is a narrow, ad-hoc shape — none of them is (or
-    // contains) the full ModuleManifest, e.g. no "capabilities"/"agentTools" keys leak
-    // into the database projection.
+    // Projections are narrow shapes; no manifest keys leak into them.
     expect(Object.keys((await registry.getDatabases())[0]!)).toEqual(["moduleId", "key", "name"]);
   });
 
@@ -408,8 +402,7 @@ describe("ModuleRegistry projections", () => {
     expect(valid({ ...base, capability: undefined, mcp })).toBe(false);
     expect(valid({ ...base, approval: "always", mcp })).toBe(false);
     expect(valid({ ...base, approval: "unlessProjectPermitted", projectPermission: "allowed", mcp })).toBe(false);
-    // A gated tool may declare it (the calendar write tools, issue gh-1957), but the flag is what admits it: the mode
-    // alone is not.
+    // A gated tool may declare it, but the flag is what admits it: the mode alone is not.
     expect(valid({ ...base, approval: "always", requiresApproval: true, mcp })).toBe(true);
     expect(valid({ ...base, requiresApproval: true, mcp })).toBe(true);
     expect(valid({ ...base, approval: "always", requiresApproval: false, mcp })).toBe(false);

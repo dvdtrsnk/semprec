@@ -1,6 +1,5 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/journal` path family. */
 export const JOURNAL_ROUTES: RouteMatrixEntry[] = [
   {
     name: "journal period ensure",

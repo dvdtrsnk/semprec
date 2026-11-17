@@ -10,17 +10,10 @@ export interface GatewayCallContext {
   /** Set when the call originates inside an agent run; omit/NULL otherwise. */
   agentRunId?: string | null;
   sempMessageId?: string | null;
-  /**
-   * #215: set together with `operation` by `POST /internal/complete`, the only current caller that
-   * attributes a call to a project item; every other caller omits it. The audio routes set only
-   * `operation` (#625).
-   */
+  /** Set with `operation` by `POST /internal/complete` only; the audio routes set only `operation`. */
   projectItemId?: string | null;
   operation?: string | null;
-  /**
-   * #620: the caller's upper-bound estimate of this call's cost in USD, reserved against the
-   * budget cap before the provider is called and replaced by the real cost on settle.
-   */
+  /** Upper-bound cost estimate in USD, reserved before the provider call and replaced by the real cost on settle. */
   estimatedCostUsd: number;
   /** The operator-wide safety caps, checked with the tenant's own caps before each reservation. */
   globalCaps: GlobalAiCaps;

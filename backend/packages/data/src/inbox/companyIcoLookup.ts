@@ -2,12 +2,9 @@ import type { Queryable } from "../db/pool.js";
 import { COMPANIES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 /**
- * The id of a live Companies item whose `ico` is `ico`, or `null` (issue gh-1992). `ico` is the eight-digit form of
- * the number; a stored value is compared in the same form (whitespace removed, left-padded with zeros to eight digits),
- * and a stored value that is not one to eight digits matches nothing. The comparison is exact equality: the check digit
- * is not examined and no name is compared. An item in the Trash and an item of an archived Companies database are not
- * live. Several live companies with one number answer the oldest. The read writes nothing and is confined to the
- * caller's tenant by row-level security.
+ * `ico` is the eight-digit form; stored values are normalized the same way (whitespace removed, zero-padded) and a
+ * stored value that is not 1-8 digits matches nothing. No check digit or name comparison. Trashed items and archived
+ * databases are excluded; duplicates answer the oldest. Tenant-confined by RLS.
  */
 export async function lookupLiveCompanyIdByIco(client: Queryable, ico: string): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>(

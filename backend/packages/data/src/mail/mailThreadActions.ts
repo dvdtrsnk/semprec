@@ -21,31 +21,20 @@ import { mailThreadCopyCtes } from "./mailThreadListQuery.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
 
-/**
- * One live Emails copy of a mail thread, as the thread actions see it. A message delivered to several
- * mailboxes is several copies with one `messageId`.
- */
+/** A message delivered to several mailboxes is several copies with one `messageId`. */
 export interface MailThreadActionMessage {
-  /** The copy's Emails item. */
   itemId: string;
   messageId: string;
-  /** The copy's `read` property (an absent one reads as `false`). */
+  /** An absent property reads as `false`. */
   read: boolean;
-  /**
-   * Whether the copy is incoming mail: its sender is none of the tenant's mailbox addresses and it is in
-   * neither a Sent nor a Drafts folder.
-   */
+  /** The sender is none of the tenant's mailbox addresses and the copy is in neither a Sent nor a Drafts folder. */
   incoming: boolean;
 }
 
 export interface MailThreadActionMessages {
   /** Every live copy of the thread, in any folder or mailbox, ordered by item id. */
   messages: MailThreadActionMessage[];
-  /**
-   * The `messageId` of the last incoming message: that of the incoming copy with the latest activity, then
-   * the highest item id (the order the thread list picks a thread's latest copy in). `null` when the thread
-   * has no incoming copy.
-   */
+  /** Of the incoming copy with the latest activity, then the highest item id (the thread list's latest-copy order). */
   lastIncomingMessageId: string | null;
 }
 
@@ -58,17 +47,9 @@ const messageRow = z.object({
 });
 
 /**
- * Starts a thread action in the caller's READ COMMITTED tenant transaction: takes the tenant's mail-thread guard
- * (`lockMailThreadMutation`) and then resolves the thread id. A merged-away id is translated to the thread that
- * absorbed it (issue #1493), a live id is returned as it is. An unknown id and another tenant's id (row-level
- * security hides it) both throw the same `NotFoundError`.
- *
- * The guard comes first, before the thread is resolved and before any copy is locked, as it does in the reconcilers
- * and ingest ([[2026-11-01-mail-thread-mutations-use-a-tenant-transaction-guard]]): a reconcile pass holds the
- * guard for its whole transaction and locks Emails items one after another in provider order, so a thread action
- * that locked several copies in item id order without it could wait on a copy the pass holds while the pass waits
- * on one of its own, a deadlock no layer answers as a domain error. Every thread action calls this first; see
- * [[2026-11-13-mail-thread-actions-take-the-thread-guard-before-their-item-locks]].
+ * Takes the tenant's mail-thread guard, then resolves the thread id. The guard comes before any copy lock, as in the
+ * reconcilers and ingest: a reconcile pass holds it while locking Emails items in provider order, so an action locking
+ * copies in item id order without it could deadlock against the pass. Every thread action calls this first.
  */
 export async function resolveMailThreadForAction(client: PoolClient, threadId: string): Promise<string> {
   await lockMailThreadMutation(client);
@@ -77,11 +58,7 @@ export async function resolveMailThreadForAction(client: PoolClient, threadId: s
   return resolved;
 }
 
-/**
- * The copies of thread `threadId` (an id `resolveMailThreadForAction` returned) in the thread detail's view
- * of the thread: every live copy, drafts included, read from the CTEs the thread list and the detail share
- * (`mailThreadCopyCtes`). A copy in a Drafts folder is never incoming, whoever the sender is.
- */
+/** Every live copy, drafts included. A copy in a Drafts folder is never incoming, whoever the sender is. */
 export async function listMailThreadActionMessages(
   client: PoolClient,
   threadId: string,
@@ -115,13 +92,8 @@ ORDER BY k.item_id
 }
 
 /**
- * Whether thread `threadId` (an id `resolveMailThreadForAction` returned) is unread, as the thread detail reports
- * it: some live copy, drafts included, is neither the user's own mail nor in Sent and has no `read` flag set
- * (`copy_stats` of `mailThreadCopyCtes` with a thread id). A thread without a live copy is not unread.
- *
- * The thread list leaves drafts out of that aggregate (`mailThreadCopyCtes`), the detail and this value do not.
- * A thread action never writes a copy in a Drafts folder, so a draft whose sender is none of the tenant's
- * mailbox addresses and that has no `read` flag keeps the value `true` after `read: true`, as the detail shows it.
+ * As the thread detail reports it, drafts included (the thread list leaves them out). Actions never write a Drafts
+ * copy, so an unread draft stays unread after `read: true`.
  */
 export async function readMailThreadUnread(client: PoolClient, threadId: string): Promise<boolean> {
   const { rows } = await client.query<{ unread: boolean }>(
@@ -131,11 +103,7 @@ export async function readMailThreadUnread(client: PoolClient, threadId: string)
   return rows[0]?.unread === true;
 }
 
-/**
- * Whether thread `threadId` (an id `resolveMailThreadForAction` returned) is flagged, as the thread detail reports it:
- * some live copy, drafts included, has its `flagged` flag set (`copy_stats` of `mailThreadCopyCtes` with a thread
- * id). A thread without a live copy is not flagged.
- */
+/** Flagged as the thread detail reports it: some live copy, drafts included, has `flagged` set. */
 export async function readMailThreadFlagged(client: PoolClient, threadId: string): Promise<boolean> {
   const { rows } = await client.query<{ flagged: boolean }>(
     `WITH ${mailThreadCopyCtes(1)} SELECT COALESCE((SELECT flagged FROM copy_stats), false) AS flagged`,
@@ -144,12 +112,7 @@ export async function readMailThreadFlagged(client: PoolClient, threadId: string
   return rows[0]?.flagged === true;
 }
 
-/**
- * Announces after the commit of the caller's transaction that mail thread `threadId` changed: one thin
- * `mailThread` invalidation to every socket of the tenant (issue #1816), so a client refetches the thread,
- * the mailbox counts and the overview. A rolled-back transaction announces nothing. `threadId` is the id a
- * client knows the thread by now, which is the id `resolveMailThreadForAction` returned.
- */
+/** After the commit, one thin `mailThread` invalidation to every socket of the tenant. */
 export function announceMailThreadChanged(client: PoolClient, threadId: string): void {
   runAfterCommit(client, () => notifyInvalidation({ scope: "mailThread", threadId }));
 }
@@ -163,34 +126,25 @@ const moveCopyRow = z.object({
   purposes: z.array(z.string()),
 });
 
-/**
- * One live Emails copy of a mail thread as the move routes (archive, trash, restore) see it. A message delivered to
- * several mailboxes is several copies, each in its own mailbox.
- */
+/** A copy as the move routes see it; each copy is in its own mailbox. */
 export interface MailThreadMoveCopy {
   itemId: string;
-  /** The mailbox the copy belongs to; its provider holds the copy's move. */
+  /** Its provider holds the copy's move. */
   mailboxItemId: string;
-  /** The copy's provider message id (`mail_message_meta`); `null` for a copy that has none, as every IMAP copy. */
+  /** `null` for a copy without one, as every IMAP copy. */
   providerMessageId: string | null;
-  /** Incoming mail, with the meaning `MailThreadActionMessage.incoming` has. */
   incoming: boolean;
   /**
-   * A draft: the copy is in any Drafts folder or has a Semprec draft row that was not sent. The move routes leave a
-   * draft where it is. This is wider than what the thread list leaves out (a copy whose every folder is Drafts, or
-   * that has an unsent draft row), so a copy in a Drafts folder and another folder is counted by the list but never
-   * moved: no provider puts one message in Inbox and Drafts, and moving a copy out of Drafts would lose the draft.
+   * In any Drafts folder, or with an unsent Semprec draft row; the move routes leave a draft where it is. Wider than
+   * the thread list's rule, so a copy in Drafts and another folder is counted but never moved: moving it out of
+   * Drafts would lose the draft.
    */
   draft: boolean;
-  /** The `specialPurpose` of every live folder the copy is in (`none` for a folder without one). */
+  /** `none` for a folder without one. */
   purposes: ReadonlySet<string>;
 }
 
-/**
- * The live copies of thread `threadId` (an id `resolveMailThreadForAction` returned) in any folder or mailbox,
- * drafts included and flagged as such, ordered by item id. The classification is that of
- * `listMailThreadActionMessages`.
- */
+/** Classified like `listMailThreadActionMessages`, ordered by item id. */
 export async function listMailThreadMoveCopies(client: PoolClient, threadId: string): Promise<MailThreadMoveCopy[]> {
   const { rows } = await client.query<{ copy: unknown }>(
     `
@@ -225,26 +179,18 @@ const MOVE_TARGET_MISSING: Record<MailMovePurpose, { code: string; folder: strin
   sent: { code: "mail_sent_folder_missing", folder: "Sent" },
 };
 
-/** One copy to move and the `specialPurpose` of the folder it moves to. */
 export interface MailThreadMoveSelection {
   copy: MailThreadMoveCopy;
   purpose: MailMovePurpose;
 }
 
-/** One copy to move, the purpose of the folder it moves to and that folder in the copy's own mailbox. */
 export interface MailThreadMovePlan {
   copy: MailThreadMoveCopy;
   purpose: MailMovePurpose;
   targetFolderId: string;
 }
 
-/**
- * Finds, for each selected copy, the folder with the wanted `specialPurpose` in the copy's own mailbox (a Gmail API
- * mailbox keeps its synthetic Archive there too). A mailbox without such a folder fails the whole call with the 409
- * code of that purpose (`mail_archive_folder_missing`, `mail_trash_folder_missing`, `mail_inbox_folder_missing`,
- * `mail_sent_folder_missing`); the first copy in item id order decides which. Nothing is written here, so the failure
- * leaves every copy as it was.
- */
+/** A Gmail API mailbox keeps its synthetic Archive among its folders too. Writes nothing. */
 export async function planMailThreadMoves(
   client: PoolClient,
   selections: readonly MailThreadMoveSelection[],
@@ -280,9 +226,8 @@ const imapSourceRow = z.object({
 const MAX_IMAP_UID = 4_294_967_295;
 
 /**
- * The source of an IMAP copy's move: the one folder edge of the copy that carries a UID, with the folder's path and
- * its stored `UIDVALIDITY`. `null` when the copy has no such edge or more than one (a tentative edge a move wrote
- * carries no UID), which means the provider copy cannot be addressed.
+ * The one folder edge carrying a UID, with path and stored `UIDVALIDITY`. `null` for none or several (a tentative
+ * move edge carries no UID): the provider copy cannot be addressed.
  */
 async function readImapMoveSource(
   client: PoolClient,
@@ -314,10 +259,8 @@ async function readImapMoveSource(
 }
 
 /**
- * The source evidence a new desired move of `copy` records, or `undefined` when an earlier desire of the copy is still
- * outstanding and keeps its own (`hasPreservedMailMoveSource`). A Gmail API or Graph copy is addressed by its provider
- * message id, an IMAP copy by the folder, UID and `UIDVALIDITY` of its current edge. Throws a 409
- * `mail_move_source_unverified` for a copy that has none of them or whose mailbox has no sync state.
+ * `undefined` when an earlier outstanding desire keeps its own evidence. Throws 409 `mail_move_source_unverified` when
+ * the copy cannot be addressed.
  */
 async function resolveMoveSource(
   client: PoolClient,
@@ -346,15 +289,9 @@ async function resolveMoveSource(
 }
 
 /**
- * Moves the planned copies inside the caller's transaction, which has taken the thread guard
- * (`resolveMailThreadForAction`), and returns how many it moved. The source of every copy is resolved first
- * (`resolveMoveSource`), so a copy that cannot be addressed fails the call before anything is written. Then each copy,
- * in the order of the plan, records its desired move (`recordDesiredMailMessageMove`, which verifies an IMAP source
- * against the copy's current edge and so runs before the edge is replaced), loses all its folder edges and gets one
- * edge to the target folder, written as the Emails module with no metadata, so no UID of the old edge survives. The
- * account sync of each mailbox the plan touched is enqueued once, in the same transaction. Every move route calls
- * this function and does not repeat these steps:
- * [[2026-11-14-a-mail-thread-move-records-the-desired-move-before-it-replaces-the-folder-edge]].
+ * Moves the planned copies under the caller's thread guard. All sources are resolved first, so nothing is written for
+ * an unaddressable copy. Recording the desired move verifies an IMAP source against the current edge, so it must
+ * precede the edge replacement; the new edge carries no metadata, so no old UID survives.
  */
 export async function applyMailThreadMoves(client: PoolClient, plans: readonly MailThreadMovePlan[]): Promise<number> {
   if (plans.length === 0) return 0;
@@ -397,21 +334,14 @@ export async function applyMailThreadMoves(client: PoolClient, plans: readonly M
   return plans.length;
 }
 
-/**
- * Selects what `POST /api/mail/threads/:threadId/archive` moves: the copies that are not drafts
- * (`MailThreadMoveCopy.draft`) and are in a folder with the `specialPurpose` `inbox`, each to `archive`.
- */
+/** Archive: non-draft copies in an `inbox` folder, to `archive`. */
 export function selectMailThreadArchiveMoves(copies: readonly MailThreadMoveCopy[]): MailThreadMoveSelection[] {
   return copies
     .filter((copy) => !copy.draft && copy.purposes.has("inbox"))
     .map((copy) => ({ copy, purpose: "archive" }));
 }
 
-/**
- * Selects what `POST /api/mail/threads/:threadId/trash` moves: every copy that is not a draft and not already in Trash,
- * each to `trash`. A thread whose copies that are not drafts are all in Trash or Junk fails with 409
- * `mail_thread_already_trashed`; a thread of drafts only selects nothing and is no error.
- */
+/** Trash: every non-draft copy not already in Trash; a drafts-only thread selects nothing. */
 export function selectMailThreadTrashMoves(copies: readonly MailThreadMoveCopy[]): MailThreadMoveSelection[] {
   const counted = copies.filter((copy) => !copy.draft);
   if (counted.length > 0 && counted.every((copy) => copy.purposes.has("trash") || copy.purposes.has("junk")))
@@ -419,13 +349,7 @@ export function selectMailThreadTrashMoves(copies: readonly MailThreadMoveCopy[]
   return counted.filter((copy) => !copy.purposes.has("trash")).map((copy) => ({ copy, purpose: "trash" }));
 }
 
-/**
- * Selects what `POST /api/mail/threads/:threadId/restore` moves: the copies that are not drafts and are in a
- * folder with the `specialPurpose` `archive` or `trash`. An incoming copy goes back to `inbox`, the user's own copy
- * (not incoming, in the classification of `listMailThreadActionMessages`) to `sent`, so that the user's sent mail
- * never lands in an Inbox. Copies in any other folder, Junk included, are not selected. A thread with no copy in
- * Archive or Trash fails with 409 `mail_thread_not_archived_or_trashed`.
- */
+/** Restore: incoming copies to `inbox`, the user's own to `sent` so sent mail never lands in an Inbox. */
 export function selectMailThreadRestoreMoves(copies: readonly MailThreadMoveCopy[]): MailThreadMoveSelection[] {
   const selected = copies
     .filter((copy) => !copy.draft && (copy.purposes.has("archive") || copy.purposes.has("trash")))

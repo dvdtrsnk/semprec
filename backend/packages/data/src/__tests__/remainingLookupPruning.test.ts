@@ -38,7 +38,6 @@ interface ScanSummary {
   falseFilter: boolean;
 }
 
-/** Runs `fn` in a transaction on the owner role that is always rolled back. */
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
   try {
@@ -68,7 +67,6 @@ function partitionName(databaseId: string): string {
   return `items_p_${databaseId.replaceAll("-", "")}`;
 }
 
-/** Wraps `client` so every statement reading or writing `items` is recorded, then forwards each call. */
 function recordItemsStatements(client: PoolClient, sink: RecordedStatement[]): PoolClient {
   return new Proxy(client, {
     get(target, prop) {
@@ -381,9 +379,8 @@ describe("the remaining id-only item lookups are pruned to the tenant's partitio
       await scopeTo(client, fx.tenantB);
       await client.query("SET LOCAL ROLE semprec_data");
 
-      // Lands a new database and a referencing item between `visibleDatabaseIds` and the DELETE,
-      // the window a concurrent commit opens under READ COMMITTED. The owner creates them, since
-      // creating a partition is DDL the runtime role may not run.
+      // Lands a new database and referencing item between `visibleDatabaseIds` and the DELETE, as a concurrent
+      // commit can under READ COMMITTED. The owner creates them: partition creation is DDL.
       let injected = false;
       const racing = new Proxy(client, {
         get(target, prop) {

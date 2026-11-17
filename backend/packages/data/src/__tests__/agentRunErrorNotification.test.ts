@@ -211,9 +211,8 @@ describe("finishAgentRunWithErrorNotification in a tenant (issue #1018)", () => 
   });
 
   it("closes the run and writes nothing when the tenant has no user", async () => {
-    // A run in a tenant without a user is a state agent_runs_actor_user_id_tenant_fkey (issue #1066)
-    // refuses, since its actor must be that tenant's user. Raw fixture: the admin connection skips
-    // foreign-key triggers for this one insert so the defensive no-user branch stays reachable.
+    // A run in a tenant without a user violates agent_runs_actor_user_id_tenant_fkey. The admin connection
+    // skips foreign-key triggers for this one insert so the defensive no-user branch stays reachable.
     const run = await withTenantTransaction(adminPool, tenantB, async (client) => {
       await client.query("SET LOCAL session_replication_role = replica");
       return createAgentRun(client, { triggeredBy: "user", task: "t", userId: userA });

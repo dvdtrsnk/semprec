@@ -6,9 +6,8 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 
 /**
- * Issue #971: every ordinary or partitioned table in `public` (partitions are classified through
- * their parent) carries exactly one `semprec:tenancy=tenant|global` comment, written by the
- * migration that creates it. Later tenancy issues append their catalog assertions to this file.
+ * Every ordinary or partitioned table in `public` (partitions via their parent) carries exactly one
+ * `semprec:tenancy=tenant|global` comment, written by the migration that creates it.
  */
 const GLOBAL_TABLES = [
   "users",
@@ -121,7 +120,7 @@ async function readClassifications(db: Queryable, tables: string[]): Promise<Map
   return new Map(rows.map((row) => [row.relname, row.comment]));
 }
 
-/** Issue #974: parent-scoped keys and the provider-assigned id kept global by decision; each entry says why it needs no tenant_id. */
+/** Parent-scoped keys and the provider-assigned id kept global by decision; each says why it needs no tenant_id. */
 const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }[] = [
   { table: "properties", columns: ["database_id", "key"], reason: "scoped by the server-generated database id" },
   { table: "relation_definitions", columns: ["property_id_a"], reason: "scoped by the server-generated property id" },
@@ -311,7 +310,6 @@ function sameKey(
   return row.table_name === entry.table && row.columns.join(",") === entry.columns.join(",");
 }
 
-/** Names every unique index on a tenant table that neither leads with tenant_id nor is a surrogate key or a listed exception. */
 async function listUniquenessViolations(db: Queryable): Promise<string[]> {
   const rows = await listUniqueIndexes(db);
   return rows
@@ -328,9 +326,8 @@ async function listUniquenessViolations(db: Queryable): Promise<string[]> {
 }
 
 /**
- * Issue #1066: foreign keys whose own tenant_id mapping is exempt from the composite-FK rule, by
- * table and columns. tenant_ai_budgets.updated_by names the admin who changed a tenant's budget,
- * and an admin of any tenant writes it (#1039).
+ * Foreign keys exempt from the composite-FK rule. tenant_ai_budgets.updated_by names the admin who changed a
+ * tenant's budget, and an admin of any tenant writes it.
  */
 const COMPOSITE_FK_EXCEPTIONS: { table: string; columns: string[]; reason: string }[] = [
   { table: "tenant_ai_budgets", columns: ["updated_by"], reason: "written by an admin of any tenant (#1039)" },
@@ -345,10 +342,9 @@ interface ForeignKeyRow {
 }
 
 /**
- * Names, as `<table>.<columns>`, every foreign key from a tenant table (or a table carrying
- * tenant_id) to a tenant table or users that neither maps tenant_id to tenant_id itself nor has a
- * validated twin on the same table and parent over (tenant_id, <same columns>). Foreign-key checks
- * ignore row-level security, so a key without the twin is satisfied by another tenant's parent.
+ * Every foreign key from a tenant table to a tenant table or users that neither maps tenant_id itself nor has a
+ * validated (tenant_id, <same columns>) twin. FK checks ignore RLS, so without the twin another tenant's parent
+ * satisfies the key.
  */
 async function listCompositeForeignKeyViolations(db: Queryable): Promise<string[]> {
   const { rows } = await db.query<ForeignKeyRow>(
@@ -454,7 +450,6 @@ describe("tenancy classification catalog", () => {
     }
   });
 
-  /** Issue #972: `tenant_id uuid NOT NULL DEFAULT app_tenant_default()` referencing tenants(id). */
   it("gives every tenant table and items partition a defaulted, foreign-keyed tenant_id", async () => {
     await resetDatabase(pool);
     await createChokePoint(pool).createDatabase({ name: "Tenancy catalog tenant_id" });
@@ -496,7 +491,7 @@ describe("tenancy classification catalog", () => {
     }
   });
 
-  /** Issue #973: RLS enabled and not forced, with exactly the restrictive and the permissive policy. */
+  /** RLS enabled and not forced, with exactly the restrictive and the permissive policy. */
   it("enables row-level security without forcing it on every tenant table", async () => {
     const { rows } = await pool.query<{ relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }>(
       `SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
@@ -582,7 +577,7 @@ describe("tenancy classification catalog", () => {
     }
   });
 
-  /** Issue #974: unique checks ignore RLS, so every unique key on a tenant table leads with tenant_id. */
+  /** Unique checks ignore RLS, so every unique key on a tenant table leads with tenant_id. */
   it("gives every unique index on a tenant table a tenant-leading, surrogate or listed shape", async () => {
     const offenders = await listUniquenessViolations(pool);
     expect(
@@ -617,13 +612,12 @@ describe("tenancy classification catalog", () => {
       expect(row, `${expected.name} exists`).toBeDefined();
       expect(row?.table_name, `${expected.name} table`).toBe(expected.table);
       expect(row?.columns, `${expected.name} columns`).toEqual(expected.columns);
-      // pg_get_expr parenthesizes a compound predicate but not a bare column, so compare without parentheses.
       expect(row?.predicate?.replaceAll(/[()]/g, "") ?? null, `${expected.name} predicate`).toBe(expected.predicate);
     }
     expect(NEW_UNIQUE_INDEXES).toHaveLength(22);
   });
 
-  /** Issue #1065: the contract step dropped every legacy global key and the dormant resource_grants table. */
+  /** The legacy global keys and the dormant resource_grants table are gone. */
   it("drops the legacy global unique keys and resource_grants", async () => {
     const legacy = await pool.query<{ name: string }>(
       `SELECT c.relname::text AS name FROM pg_class c
@@ -660,7 +654,7 @@ describe("tenancy classification catalog", () => {
     ]);
   });
 
-  /** Issue #1066: foreign-key checks ignore RLS, so every reference between tenant rows has a tenant-consistent twin. */
+  /** FK checks ignore RLS, so every reference between tenant rows has a tenant-consistent twin. */
   it("gives every foreign key between tenant rows a validated (tenant_id, ...) twin", async () => {
     const offenders = await listCompositeForeignKeyViolations(pool);
     expect(
@@ -759,7 +753,6 @@ describe("tenancy classification catalog", () => {
     ).rejects.toMatchObject({ code: "23505", constraint: "databases_tenant_system_module_uq" });
   });
 
-  /** Issue #1067: the strict switch. */
   it("defines app_tenant_default() through app_current_tenant() alone", async () => {
     const { rows } = await pool.query<{ definition: string }>(
       "SELECT pg_get_functiondef('public.app_tenant_default()'::regprocedure) AS definition",

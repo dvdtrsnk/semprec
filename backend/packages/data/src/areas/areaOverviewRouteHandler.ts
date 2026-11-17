@@ -17,17 +17,13 @@ import { compileFilterNode, type FilterProperties } from "../views/filterCompile
 import { buildFilterProperties } from "../views/filterProperties.js";
 import type { FilterNode } from "../views/filterTree.js";
 
-/** The horizon of `upcoming`, in days counting today. */
+/** Days counting today. */
 const HORIZON_DAYS = 14;
-/** The largest number of entries `upcoming` holds. */
 const UPCOMING_LIMIT = 20;
 const OPEN_TASK_STATUS = "notDone";
 const ARCHIVED_PROJECT_STATUS = "archived";
 
-/**
- * The active-project rule (issue #1760): a project of the user's own whose status is `inProgress` or `longTerm`.
- * A system project stores a `systemActive` value, `true` or `false`, and a user's project stores none.
- */
+/** A user's own project (system projects always store `systemActive`) that is `inProgress` or `longTerm`. */
 export const ACTIVE_PROJECTS_FILTER: FilterNode = {
   type: "and",
   nodes: [
@@ -36,23 +32,17 @@ export const ACTIVE_PROJECTS_FILTER: FilterNode = {
   ],
 };
 
-/** One entry of `upcoming`, as `GET /api/areas/:id/overview` returns it. */
 interface AreaOverviewEntry {
   kind: "task" | "event";
   itemId: string;
-  /** The item's `name`, or `""` when it has none. */
   title: string;
   date: string;
   timeFrom: string | null;
   timeTo: string | null;
-  /** `notDone` for a task, `null` for an event. */
+  /** `null` for an event. */
   status: string | null;
-  /**
-   * The mode and rule of the active `task_recurrence` row that points at the task; `null` for a task without
-   * such a row and for an event.
-   */
+  /** From the active `task_recurrence` row; `null` for an event. */
   recurrence: { mode: TaskRecurrenceMode; rule: TaskRecurrenceRule } | null;
-  /** The project the item belongs to: its id, its `name` (`""` when it has none) and its own `color`. */
   project: { id: string; title: string; color: string | null };
 }
 
@@ -64,12 +54,9 @@ interface AreaOverview {
   upcoming: AreaOverviewEntry[];
 }
 
-/** One relation of the Projects database, as its edges are stored in `item_relations`. */
 interface ProjectRelation {
   definitionId: string;
-  /** The side of the definition a project sits on. */
   projectSide: "a" | "b";
-  /** The database of the items at the other end. */
   otherDatabaseId: string;
 }
 
@@ -81,11 +68,7 @@ interface ProjectsSchema {
   events: ProjectRelation;
 }
 
-/**
- * The Projects database of the tenant in scope with its relations to Areas, Tasks and Events. The system seed
- * creates all of them, so a tenant that holds an area and lacks one of them has a broken schema: that is an
- * error, not an empty overview.
- */
+/** The system seed creates all of these, so a missing one is a broken schema (an error, not an empty overview). */
 async function readProjectsSchema(client: PoolClient): Promise<ProjectsSchema> {
   const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
   if (!projects) throw new Error("The Projects database is missing");
@@ -110,15 +93,10 @@ async function readProjectsSchema(client: PoolClient): Promise<ProjectsSchema> {
   };
 }
 
-/** The two `item_relations` columns of a Projects relation: the one with the project and the one with the other end. */
 function edgeColumns(relation: ProjectRelation): { project: "item_a" | "item_b"; other: "item_a" | "item_b" } {
   return relation.projectSide === "a" ? { project: "item_a", other: "item_b" } : { project: "item_b", other: "item_a" };
 }
 
-/**
- * The area's number of active projects, read with the grouped count of issue #1709: the live projects that
- * `ACTIVE_PROJECTS_FILTER` matches, grouped by their area. An area without such a project has no group.
- */
 async function countActiveProjects(client: PoolClient, schema: ProjectsSchema, areaId: string): Promise<number> {
   const { groups } = await countItemsGrouped(client, schema.databaseId, {
     buildFilterSql: (params) => compileFilterNode(ACTIVE_PROJECTS_FILTER, schema.properties, params),
@@ -146,18 +124,11 @@ const linkedRow = z.object({
 type LinkedRow = z.infer<typeof linkedRow>;
 
 /**
- * The live items that the eligible projects of an area hold through `relation`, each with its project. A
- * project is eligible when it is a live project of the area, its status is not `archived` and it stores no
- * `systemActive` value; a project with status `done` is eligible. `condition` narrows the items, which the
- * statement calls `linked`.
- *
- * Parameters: `$1` the definition of the Projects `area` relation, `$2` the Projects database, `$3` the area,
- * `$4` the status `archived`, `$5` the definition of `relation`, `$6` the database of the items. `condition`
- * uses `$7` and up.
+ * Eligible projects: live, of the area, not `archived` (`done` counts), and not system projects. `condition` filters
+ * the `linked` alias and uses `$7` and up.
  */
 function linkedItemsSql(area: ProjectRelation, relation: ProjectRelation, condition: string): string {
-  // The four column names below are `item_a` or `item_b`, chosen by the side of each relation definition, and
-  // `condition` is one of the two constants of this module: nothing in the statement text comes from a request.
+  // Interpolated column names and `condition` are module constants; nothing in the SQL text comes from a request.
   const areaEdge = edgeColumns(area);
   const linkedEdge = edgeColumns(relation);
   return `
@@ -178,13 +149,9 @@ SELECT linked.id AS "itemId", linked.properties->>'name' AS title, linked.proper
    AND ${condition}`;
 }
 
-/** Every task with status `$7`, with or without a date. */
 const OPEN_TASKS_CONDITION = `linked.properties->>'status' = $7`;
 
-/**
- * The events whose stored `date`, compared as text, is from `$7` to `$8`. A stored value that is not a
- * calendar date can pass this comparison; the caller judges each row's whole value.
- */
+/** A text comparison that non-date values can pass; the caller validates each row. */
 const EVENTS_IN_RANGE_CONDITION = `(linked.properties->>'date') COLLATE "C" BETWEEN $7 AND $8`;
 
 async function readLinkedItems(
@@ -207,10 +174,7 @@ async function readLinkedItems(
   return rows.map((row) => linkedRow.parse(row));
 }
 
-/**
- * The rows that have a place in time, as entries: a row whose stored `date` is not a calendar date
- * `YYYY-MM-DD` has none and is left out. A stored time that is not a wall-clock time counts as no time.
- */
+/** Drops rows without a valid calendar date; an invalid time counts as no time. */
 function toEntries(kind: AreaOverviewEntry["kind"], rows: LinkedRow[]): AreaOverviewEntry[] {
   return rows.flatMap((row) => {
     if (!isCalendarDate(row.date)) return [];
@@ -235,26 +199,9 @@ function compareText(a: string, b: string): number {
 }
 
 /**
- * The overview of a live area of the tenant in scope at the instant `at`, or `null` when `areaId` names no
- * such area: an unknown id, an item of another database, an area in the trash, another tenant's area (the
- * lookup reads the Areas database of the tenant in scope) and a tenant without an Areas database all answer
- * the same way.
- *
- * "Today" and "now" are the date and the wall-clock minute of `at` in the tenant's time zone. The horizon
- * ends with the 14th day counting today.
- *
- * - `activeProjectCount`: see `countActiveProjects`.
- * - `openTaskCount`: the `notDone` tasks of the area's eligible projects (`linkedItemsSql`), dated or not.
- * - `todayTaskCount`: those of them whose date is today or earlier.
- * - `upcoming`: those of them whose date is not after the horizon, and the events of the eligible projects
- *   that start from now to the end of the horizon. An event starts at its `timeFrom` on its `date`, an
- *   all-day event at 00:00, and is compared with now by the minute. The entries are ordered by date, then by
- *   time with the entries without a time first, then by title as `collator` compares it, then by item id, and
- *   cut to the first 20.
- * - `upcomingEventCount`: the number of those events before the cut.
- *
- * A task or an event in the trash is never read. A task of the list gets its `recurrence` from the
- * `task_recurrence` row that points at it, with one lookup for each listed task.
+ * `null` for any id that is not a live area of the tenant in scope, so another tenant's area looks unknown. "Today"
+ * and "now" are in the tenant's time zone; an all-day event starts at 00:00. `upcomingEventCount` is taken before the
+ * `UPCOMING_LIMIT` cut.
  */
 async function readAreaOverview(
   client: PoolClient,
@@ -274,7 +221,7 @@ async function readAreaOverview(
     .plus({ days: HORIZON_DAYS - 1 })
     .toFormat("yyyy-MM-dd");
 
-  // `area.id` is the id as the database prints it, which is the form the count's group keys have.
+  // `area.id` is in the database's printed form, matching the group keys.
   const activeProjectCount = await countActiveProjects(client, schema, area.id);
   const openTasks = await readLinkedItems(client, schema, area.id, schema.tasks, OPEN_TASKS_CONDITION, [
     OPEN_TASK_STATUS,
@@ -312,10 +259,7 @@ async function readAreaOverview(
   };
 }
 
-/**
- * Duck-typed the same way `calendar/eventParticipantsRouteHandlers.ts` is: matches `semprec-api`'s
- * `AdapterRequestContext` structurally, with no dependency on that service's HTTP types.
- */
+/** Structurally matches `semprec-api`'s `AdapterRequestContext` without depending on its HTTP types. */
 interface AreaOverviewRouteRequestContext {
   params: Record<string, string>;
   identity: { user: { locale: string } };
@@ -324,12 +268,8 @@ interface AreaOverviewRouteRequestContext {
 const areaIdSchema = z.uuid();
 
 /**
- * `GET /api/areas/:id/overview` (issue #1760): what an area's page shows above its content, as
- * `{ activeProjectCount, todayTaskCount, openTaskCount, upcomingEventCount, upcoming }`; `readAreaOverview`
- * states each value. Titles are compared in Czech or English by the caller's `users.locale`
- * (`toManifestLocale`). Every statement runs in one REPEATABLE READ transaction in the caller's tenant scope,
- * so the counts and the list describe one state of the data, and another tenant's area answers exactly like
- * an unknown id: the same `not_found` body. An `id` that is not a UUID is `validation_failed` on `id`.
+ * `GET /api/areas/:id/overview`. REPEATABLE READ so the counts and the list describe one state of the data. Another
+ * tenant's area answers exactly like an unknown id.
  */
 export function createAreaOverviewRouteHandler(pool: Pool) {
   return async (ctx: AreaOverviewRouteRequestContext): Promise<{ status: number; body: unknown }> => {

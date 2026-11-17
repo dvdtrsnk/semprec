@@ -7,14 +7,14 @@ export const MAIL_SERVER_PORTS = [993, 143, 465, 587] as const;
 export const MAIL_SERVER_SECURITIES = ["tls", "starttls"] as const;
 export type MailServerSecurity = (typeof MAIL_SERVER_SECURITIES)[number];
 
-/** One server endpoint of a mailbox; host, port and security are always set together. */
+/** Host, port and security are always set together. */
 export interface MailServerEndpoint {
   host: string;
   port: number;
   security: MailServerSecurity;
 }
 
-/** The password is not part of these settings; it lives in `external_credentials`. */
+/** The password lives in `external_credentials`. */
 export interface MailServerSettingsInput {
   imap: MailServerEndpoint | null;
   smtp: MailServerEndpoint | null;
@@ -43,10 +43,8 @@ const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const RESERVED_SUFFIXES = [".localhost", ".local", ".internal"];
 
 /**
- * Validates a mail server host and returns it lower-cased. The host must be a DNS name: no IP
- * literal in any notation, no `localhost` and nothing ending in `.localhost`, `.local` or
- * `.internal`. This is an input contract only; the address a name resolves to is checked at
- * connect time (docs/adr/2026-10-25-mail-server-settings-allow-the-standard-mail-ports.md).
+ * Returns the host lower-cased. It must be a DNS name: no IP literal in any notation, no `localhost`, nothing ending
+ * in `.localhost`, `.local` or `.internal`. Input contract only; resolved addresses are checked at connect time.
  */
 export function normalizeMailServerHost(raw: unknown, field: string): string {
   if (typeof raw !== "string") throw new ValidationError(`${field} must be a string`, { field });
@@ -128,7 +126,6 @@ export async function getMailServerSettings(db: Queryable, mailboxItemId: string
   return row ? toSettings(row) : null;
 }
 
-/** Validates, then inserts or replaces the settings of `mailboxItemId`; returns what was stored. */
 export async function upsertMailServerSettings(
   db: Queryable,
   mailboxItemId: string,
@@ -162,7 +159,7 @@ export async function upsertMailServerSettings(
   return toSettings(row);
 }
 
-/** Deletes the settings of `mailboxItemId`; returns whether a row existed. */
+/** Returns whether a row existed. */
 export async function deleteMailServerSettings(db: Queryable, mailboxItemId: string): Promise<boolean> {
   const result = await db.query("DELETE FROM mail_account_server_settings WHERE mailbox_item_id = $1", [mailboxItemId]);
   return (result.rowCount ?? 0) > 0;

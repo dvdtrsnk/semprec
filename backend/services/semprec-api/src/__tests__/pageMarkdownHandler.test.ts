@@ -166,7 +166,6 @@ describe("GET /api/items/:id/page.md (issue #1678)", () => {
     expect(foreignText).not.toContain("secret");
     expect(foreign.headers.get("content-type")).toBe(missing.headers.get("content-type"));
     expect(foreign.headers.get("etag")).toBeNull();
-    // The owner still reads it.
     expect(await (await readMd(harness.headersA, hostA)).text()).toBe("A's secret page");
   });
 

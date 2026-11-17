@@ -29,10 +29,8 @@ async function project(name: string): Promise<string> {
 }
 
 /**
- * The grant has no writer in the app by design (issue #1635 Out of scope; `ManifestCapabilities` in
- * manifest/permissionManifest.ts): the server operator sets `emailSendAutonomous` on the project row
- * directly. This fixture does exactly that, with direct SQL in the tenant's scope; it is not a
- * production write path and no route test uses it as one.
+ * No app writer grants `emailSendAutonomous` by design: the server operator sets it on the project row directly. This
+ * fixture does the same with direct SQL in the tenant's scope; it is not a production write path.
  */
 async function setGrant(projectItemId: string, value: unknown): Promise<void> {
   await withTransaction(runtime, async (client) => {
@@ -139,7 +137,6 @@ describe("GET /api/mail/autonomous-send-projects (issue #1635)", () => {
       await setGrant(granted, true);
       await project("Plain");
       const id = await mailbox("Work");
-      /** The tenant's projects and mailboxes as stored, and every queued job, before and after the reads. */
       const snapshot = async () => ({
         items: (
           await runtime.query<{ id: string; properties: unknown; updated_at: string; deleted_at: string | null }>(

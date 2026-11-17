@@ -1,12 +1,8 @@
-// Owns which agent writes wait for approval because they would end a value link (issue #1758), and
-// reads the links such a write ends for its approval request. A write by an agent under a run that
-// changes the value an active link feeds raises `ApprovalRequiredForWrite` with a `breaksLinks`
-// reason inside the write's own transaction, before the link is broken; a user write, a system
-// write and an agent write without a run never defer, and neither does a write to a property
-// without an active link. The approved replay carries `approvedRequestId`, passes, and the break
-// in `valueLinkWrites.ts` records the agent as `broken_by`. Nothing here writes.
-// Constrained by: docs/adr/2026-11-04-flagged-agent-writes-require-approval.md,
-// docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
+// Which agent writes wait for approval because they would end a value link, and the links such a
+// write ends. An agent write under a run that changes a value an active link feeds raises
+// `ApprovalRequiredForWrite` (`breaksLinks`) inside the write's transaction, before the link is
+// broken; user, system and run-less agent writes never defer. The approved replay carries
+// `approvedRequestId` and passes. Nothing here writes.
 import { DatabaseError, type PoolClient } from "pg";
 import { markManagedTransactionRollbackOnly } from "../db/pool.js";
 import { ApprovalResourceBusyError } from "../errors.js";
@@ -26,13 +22,11 @@ export interface LinkTarget {
   propertyKey: string;
 }
 
-/** The reason a deferred write carries: the item properties whose active links it would end. */
 export interface BreaksLinksReason {
   kind: "breaksLinks";
   links: LinkTarget[];
 }
 
-/** One active link a write would end, with the sources it takes its value from. */
 export interface BreakingLink {
   id: string;
   itemId: string;
@@ -76,7 +70,6 @@ function throwIfAny(client: PoolClient, writer: WriterIdentity, links: ValueLink
   requireApprovalForWrite(client, writer, [reason]);
 }
 
-/** A write of `changedKeys` to an item: defers when any of them has an active link. */
 export async function requireApprovalForChangedItemLinks(
   client: PoolClient,
   writer: WriterIdentity,
@@ -87,7 +80,6 @@ export async function requireApprovalForChangedItemLinks(
   throwIfAny(client, writer, await lockOnValueLinksOfProperties(client, targets, "wait"));
 }
 
-/** A newly inserted relation edge: defers when a side of it has an active link. */
 export async function requireApprovalForInsertedEdgeLinks(
   client: PoolClient,
   writer: WriterIdentity,
@@ -99,9 +91,8 @@ export async function requireApprovalForInsertedEdgeLinks(
 }
 
 /**
- * A single-valued relation replacement that removes an existing edge: defers when a side of a
- * removed or added edge has an active link. A replacement that removes no edge (the relation was
- * empty) is not a change of an inherited value and never defers.
+ * A single-valued replacement that removes an existing edge: defers when a side of a removed or added
+ * edge has an active link. Replacing an empty relation never defers.
  */
 export async function requireApprovalForReplacedEdgeLinks(
   client: PoolClient,
@@ -138,9 +129,8 @@ async function withSources(client: PoolClient, links: ValueLinkRow[]): Promise<B
 }
 
 /**
- * Share-locks, without waiting, the active links of the given item properties for an approval
- * snapshot, and reads their sources. A link another transaction holds is a busy resource, the same
- * outcome the other approval reservations give.
+ * Share-locks, without waiting, the active links of the given properties for an approval snapshot and
+ * reads their sources. A link held elsewhere is a busy resource, like the other approval reservations.
  */
 export async function reserveBreakingLinks(client: PoolClient, targets: LinkTarget[]): Promise<BreakingValueLinks> {
   try {

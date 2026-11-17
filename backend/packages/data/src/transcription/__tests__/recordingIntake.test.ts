@@ -124,7 +124,6 @@ describe("recording intake", () => {
   });
 
   describe("the explicit no-event decision (issue gh-1986)", () => {
-    /** A Files item with its recording request, written by the intake, in the current tenant scope. */
     async function uploadedRecording(name: string): Promise<string> {
       const files = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "files"));
       if (!files) throw new Error("Files database missing");

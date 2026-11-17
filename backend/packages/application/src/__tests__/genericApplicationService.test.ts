@@ -20,7 +20,7 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { createGenericApplicationService } from "../genericApplicationService.js";
 
 /**
- * The stored link of the production rule fileCompaniesFromProjects (issue #1653) on a file with one project: the
+ * The stored link of the production rule fileCompaniesFromProjects on a file with one project: the
  * file's companies are inherited from that project's company, and the link is on even while the project has no
  * company. It is a stored value link, so it is present whatever the derived-links flag says.
  */

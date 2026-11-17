@@ -100,7 +100,6 @@ let pool: Pool;
 let server: Server;
 let baseUrl: string;
 
-/** A tenant with its user and that user's bearer header. */
 async function tenantSession(): Promise<Session> {
   const tenant = await createTestTenant(admin);
   const email = `${randomUUID()}@example.test`;
@@ -115,7 +114,6 @@ function createRun(session: Session, input: Partial<Parameters<typeof createAgen
   );
 }
 
-/** Stores one event through the data owner's write and returns its id and stored time. */
 function addEvent(session: Session, runId: string, kind: AgentRunEventKind, payload: unknown) {
   return runInTenant(session.tenant, async () => {
     const stored = await insertAgentRunEvent(pool, runId, kind, payload);
@@ -165,14 +163,13 @@ async function finish(session: Session, runId: string, status: "done" | "error" 
   await addStatus(session, runId, status);
 }
 
-/** Moves a finished run's `finished_at` back past the settle time, as a run that finished minutes ago has it. */
+/** As a run that finished minutes ago has it. */
 async function settle(session: Session, runId: string): Promise<void> {
   await runInTenant(session.tenant, () =>
     pool.query("UPDATE agent_runs SET finished_at = now() - interval '10 minutes' WHERE id = $1", [runId]),
   );
 }
 
-/** The opening event, a plan, two calls (one of an operation, one of an MCP tool), an answer and the end. */
 async function writeFinishedRun(session: Session, runId: string): Promise<void> {
   await addStatus(session, runId, "running");
   await addEvent(session, runId, "turn_start", { kind: "turn_start" });
@@ -278,7 +275,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       await addStatus(owner, run.id, "running");
       const use = await addToolUse(owner, run.id, "call-1");
       const result = await addToolResult(owner, run.id, "call-1");
-      // The two times are database defaults, which a test cannot choose; pin them to see the subtraction.
+      // Database defaults a test cannot choose; pinned to see the subtraction.
       await runInTenant(owner.tenant, async () => {
         await pool.query("UPDATE agent_run_events SET at = $2 WHERE id = $1", [
           use.id,
@@ -315,7 +312,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const replayOrder = events.map((e) => e.id);
       const stepIds = unpaged.steps.map((s) => s.stepId);
       expect(stepIds).toEqual(replayOrder.filter((id) => stepIds.includes(id)));
-      // A page ends after a whole step: the cursors are the plan and the second call's result, never a tool_use.
+      // A page ends after a whole step: cursors are never a tool_use.
       const toolUseIds = events.filter((e) => e.kind === "tool_use").map((e) => e.id);
       const cursors = pages.map((p) => p.nextCursor);
       expect(cursors.slice(0, -1).every((c) => c !== null && !toolUseIds.includes(c))).toBe(true);
@@ -420,7 +417,6 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const use = await addToolUse(owner, run.id, "call-1");
       await runInTenant(owner.tenant, () => finishAgentRun(pool, run.id, "error", "internal"));
 
-      // The row was just closed and the terminal event may still be on its way.
       const fresh = await readPage(owner, run.id);
       expect(fresh.steps.map((s) => s.state)).toEqual(["ok", "running"]);
       expect(fresh.nextCursor).not.toBeNull();
@@ -474,16 +470,14 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
   describe("title, target, change and summary (issue #1847)", () => {
     const SECRET = "tok-1847-never-returned";
 
-    /** A tenant with the system databases seeded, so it has a Tasks database, and a user of the given locale. */
     async function seededSession(locale: "cs" | "en" = "en"): Promise<Session> {
       const session = await tenantSession();
       await runInTenant(session.tenant, () => seedSystem(pool, createViewTypeRegistry()));
-      // A new user reads Czech, so English is set as explicitly as Czech.
+      // A new user reads Czech, so English is set explicitly.
       await updateUserLocale(admin, session.userId, locale);
       return session;
     }
 
-    /** The Tasks database of the tenant and a task of it with the given name, written through the choke point. */
     function createTask(session: Session, name: string): Promise<{ databaseId: string; itemId: string }> {
       return runInTenant(session.tenant, async () => {
         const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
@@ -499,7 +493,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       targetItemId: task.itemId,
     });
 
-    /** A finished item.patch call whose result reports changes, as the runtime stores it (issue #1527). */
+    /** A finished item.patch call whose result reports changes, as the runtime stores it. */
     async function writePatchCall(session: Session, runId: string, task: { databaseId: string; itemId: string }) {
       await addStatus(session, runId, "running");
       await addToolUse(session, runId, "patch-1", { ...patchIdentity(task), name: "item_patch" });
@@ -652,7 +646,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const run = await createRun(owner);
       await addStatus(owner, run.id, "running");
       await addToolUse(owner, run.id, "i1", { operation: "item.get" });
-      // The shape the startup repair of issue #1374 writes for a call without a result.
+      // The shape the startup repair writes for a call without a result.
       await addToolResult(owner, run.id, "i1", {
         operation: "item.get",
         isError: true,
@@ -767,7 +761,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
   describe("approval state (issue #1862)", () => {
     const SECRET = "execution-text-1862-never-returned";
 
-    /** A run with one approval step whose call created `requestId`, as the runtime stores the result (issue #1527). */
+    /** The result is stored as the runtime stores it. */
     async function runWithApprovalStep(session: Session, requestId: string): Promise<string> {
       const run = await createRun(session);
       await addStatus(session, run.id, "running");
@@ -804,7 +798,6 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       expect(res.status).toBe(200);
     }
 
-    /** A session with a run whose approval step points at a real, still pending request of the same run. */
     async function pendingApproval(): Promise<{ session: Session; runId: string; requestId: string }> {
       const session = await tenantSession();
       const run = await createRun(session);
@@ -1046,8 +1039,8 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const stranger = await tenantSession();
       const run = await createRun(owner);
       await writeFinishedRun(owner, run.id);
-      // Raw fixture: a run's actor must be a user of its own tenant (agent_runs_actor_user_id_tenant_fkey) and the
-      // test tenant has one user, so the admin connection skips the foreign key for this one run.
+      // A run's actor must be a user of its own tenant and the test tenant has one user, so the admin connection
+      // skips the foreign key for this one run.
       const otherActorRun = await runInTenant(owner.tenant, () =>
         withTransaction(admin, async (client) => {
           await client.query("SET LOCAL session_replication_role = replica");
@@ -1160,7 +1153,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       userId: session.userId,
     });
 
-    /** A chat run with two replies: A holds one tool call, B two. Each has an answer, so A has 2 steps and B 3. */
+    /** A holds one tool call, B two; each has an answer, so A has 2 steps and B 3. */
     async function twoReplies(session: Session) {
       const setup = replySetup(session);
       const chat = await createChatRun(setup);
@@ -1238,7 +1231,6 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
 
       expect(pages.map((page) => page.steps.length)).toEqual([1, 1, 1]);
       expect(pages.flatMap((page) => page.steps)).toEqual(unpaged.steps);
-      // A tool step is returned whole: its call and its result belong to one step with a duration.
       expect(
         pages
           .flatMap((page) => page.steps)
@@ -1252,10 +1244,8 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const owner = await tenantSession();
       const { chat, a, b } = await twoReplies(owner);
 
-      // A cursor inside reply A is before reply B's range, so B is still returned from its start.
       const early = await readPage(owner, chat.runId, scoped(b.assistantMessageId, `&after=${a.firstEventId}`));
       const full = await readPage(owner, chat.runId, scoped(b.assistantMessageId));
-      // A cursor at the reply's last event leaves nothing to return.
       const done = await readPage(owner, chat.runId, scoped(b.assistantMessageId, `&after=${b.lastEventId}`));
 
       expect(early).toEqual(full);
@@ -1339,7 +1329,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
         end: "error",
       });
       await createApproval(setup, chat.runId, "call-b1");
-      // The run's terminal event follows the last reply, which stored no last event, so it lies in its range.
+      // The last reply stored no last event, so the run's terminal event lies in its range.
       await finish(owner, chat.runId);
 
       const page = await readPage(owner, chat.runId, scoped(last.assistantMessageId));
@@ -1401,7 +1391,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
     it("returns no step and no truncation for a reply that stored no event", async () => {
       const owner = await tenantSession();
       const { chat, a } = await twoReplies(owner);
-      // No production write leaves a started reply without its first event id; the column is cleared by SQL.
+      // No production write leaves a started reply without its first event id.
       await admin.query("UPDATE semp_messages SET event_from_id = NULL, event_to_id = NULL WHERE id = $1", [
         a.assistantMessageId,
       ]);
@@ -1447,7 +1437,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const setup = replySetup(owner);
       const chat = await createChatRun(setup);
       const reply = await playReply(setup, chat, { userText: "First", startMs: 0 });
-      // No production write gives a user message a run; the link is set by SQL so that only its role is refused.
+      // No production write gives a user message a run; set by SQL so only its role is refused.
       await admin.query("UPDATE semp_messages SET agent_run_id = $2 WHERE id = $1", [reply.userMessageId, chat.runId]);
 
       const user = await getSteps(owner, chat.runId, scoped(reply.userMessageId ?? ""));
@@ -1471,10 +1461,6 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       expect(JSON.parse(answer.text)).toMatchObject({ code: "validation_failed", details: { field: "messageId" } });
     });
 
-    /**
-     * A heartbeat run in a project of the tenant (seeded on first use) with one tool call, an answer and its one
-     * assistant message in the tick thread.
-     */
     async function heartbeatRunWithMessage(
       session: Session,
       name: string,
@@ -1569,7 +1555,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       it("answers a user message of the run's thread like an unknown id, even when it names the run", async () => {
         const owner = await tenantSession();
         const run = await heartbeatRunWithMessage(owner, "Sunday planning");
-        // No production write gives a user message a run; the row is made by SQL so that only its role is refused.
+        // No production write gives a user message a run; made by SQL so only its role is refused.
         const user = await admin.query<{ id: string }>(
           `INSERT INTO semp_messages (tenant_id, thread_id, role, text, agent_run_id)
            VALUES ($1, $2, 'user', 'Private question', $3) RETURNING id`,

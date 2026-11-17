@@ -17,7 +17,6 @@ import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsActionRegistry, unwiredRunAgent } from "../actionRegistryComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -105,8 +104,7 @@ describe("createAgentsActionRegistry (issue #641)", () => {
     );
     expect(heartbeats).toHaveLength(1);
     const heartbeat = heartbeats[0]!;
-    // A manual (`triggeredByRunId`) fire skips the seeded rule's item-relation filter, which only
-    // applies to an item-triggered fire.
+    // A manual (`triggeredByRunId`) fire skips the seeded rule's item-relation filter.
     const parentRun = await createAgentRun(pool, {
       projectItemId: heartbeat.project_item_id,
       triggeredBy: "user",

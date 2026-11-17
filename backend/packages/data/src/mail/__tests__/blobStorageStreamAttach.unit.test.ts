@@ -30,7 +30,6 @@ interface Gate {
   fail(error: Error): void;
 }
 
-/** Closes the `mkdir` gate until `open` or `fail` is called. */
 function closeMkdirGate(): Gate {
   let open!: () => void;
   let fail!: (error: Error) => void;

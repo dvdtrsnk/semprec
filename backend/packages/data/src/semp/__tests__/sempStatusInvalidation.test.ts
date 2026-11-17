@@ -38,7 +38,6 @@ function input(overrides: Partial<RaiseProblemInput> = {}): RaiseProblemInput {
   };
 }
 
-/** Runs `fn` as the runtime role in a committed transaction scoped to tenant zero. */
 function inZero<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return withTenantTransaction(runtimePool, tenantZero, fn);
 }

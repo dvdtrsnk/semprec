@@ -28,7 +28,6 @@ let runtime: Pool;
 let storageRoot: string;
 let storage: LocalFsBlobStorageWriter;
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -60,7 +59,6 @@ async function seededIds(tenantId: string): Promise<SeededIds> {
   });
 }
 
-/** One tenant's mail fixture, every row written through the writers production uses. */
 async function mailFixture(tenantId: string) {
   const ids = await seededIds(tenantId);
 
@@ -72,7 +70,6 @@ async function mailFixture(tenantId: string) {
     return item.id;
   });
 
-  /** A folder of the mailbox, through folder discovery. */
   const folder = (specialPurpose: string): Promise<string> =>
     inTenant(tenantId, (client) =>
       ensureFolderItem(client, {
@@ -87,7 +84,6 @@ async function mailFixture(tenantId: string) {
     );
   const draftsFolderId = await folder("drafts");
 
-  /** One message through the ingest writer; `references` joins it to an earlier message's thread. */
   const message = (input: {
     folderId: string;
     messageId: string;
@@ -126,7 +122,6 @@ async function mailFixture(tenantId: string) {
       return { itemId, threadId };
     });
 
-  /** A Semprec draft with its `mail_drafts` row, through the draft writer; answers the draft's Emails item id. */
   const draft = (threadId: string | null, createdBy: MailDraftActor): Promise<string> =>
     inTenant(tenantId, async (client) => {
       const item = await createEmailDraft(client, {
@@ -150,7 +145,6 @@ async function mailFixture(tenantId: string) {
     await inTenant(tenantId, (client) => markMailDraftSent(client, draftItemId));
   };
 
-  /** Soft-deletes one Emails item through the choke point and fails if nothing was deleted. */
   const softDeleteEmail = async (itemId: string): Promise<void> => {
     const deleted = await runInTenant(tenantId, () =>
       createChokePoint(runtime).softDeleteItem(ids.emailsDatabaseId, itemId),
@@ -167,7 +161,6 @@ const listPage = z.object({
 });
 type ListedThread = z.infer<typeof listPage>["threads"][number];
 
-/** Every row `GET /api/mail/threads?<query>` returns, two a page, following its cursor to the end. */
 async function listed(tenantId: string, query = ""): Promise<ListedThread[]> {
   const handler = createMailThreadListRouteHandler(runtime);
   const rows: ListedThread[] = [];
@@ -201,7 +194,6 @@ function flagsByName(rows: ListedThread[], threads: Record<string, string>): Rec
 
 const summaryBody = z.object({ sempDrafts: z.number() });
 
-/** `sempDrafts` of `GET /api/mail/summary` as `tenantId`, the way the adapter calls it: inside the session's tenant. */
 async function sempDraftCount(tenantId: string): Promise<number> {
   const answer = await runInTenant(tenantId, () => createMailSummaryRouteHandler(runtime)());
   expect(answer.status).toBe(200);
@@ -234,17 +226,14 @@ async function seedDraftThreads(tenantId: string) {
 
   const none = await inInbox("none");
 
-  // A read thread whose first agent draft was sent and which got a new one since.
   const sentThenNew = await inInbox("sent-then-new", ["\\Seen"]);
   await fixture.markSent(await fixture.draft(sentThenNew, "agent"));
   await fixture.draft(sentThenNew, "agent");
 
-  // Two messages outside the inbox and one draft: one thread.
   const archived = (await fixture.message({ folderId: archive, messageId: id("archived") })).threadId;
   await fixture.message({ folderId: archive, messageId: id("archived-reply"), references: [id("archived")] });
   await fixture.draft(archived, "agent");
 
-  // An agent draft that belongs to no thread.
   await fixture.draft(null, "agent");
 
   // An agent draft of a thread whose only message is deleted: the list has no row for that thread.
@@ -255,7 +244,6 @@ async function seedDraftThreads(tenantId: string) {
   return { inbox, archive, threads: { agent, user, sent, deleted, none, sentThenNew, archived, gone: gone.threadId } };
 }
 
-/** The live thread a merged-away thread id of `tenantId` leads to, through the production resolver. */
 function mergeTarget(tenantId: string, threadId: string): Promise<string | null> {
   return inTenant(tenantId, (client) => resolveMergedThreadId(client, threadId));
 }
@@ -333,7 +321,6 @@ describe("Semp drafts in the mail thread list and the mail summary (issue gh-169
 
     const box = await listed(tenant, "box=sempDrafts");
 
-    // Three threads, two a page: the box is read over a cursor.
     expect(flagsByName(box, threads)).toEqual({ agent: true, sentThenNew: true, archived: true });
     expect(box).toHaveLength(3);
     // Threads, not drafts: neither the thread-less draft nor the draft of the thread without a message counts.
@@ -394,7 +381,6 @@ describe("Semp drafts in the mail thread list and the mail summary (issue gh-169
       await other.message({ folderId: await other.folder("inbox"), messageId: "<foreign@example.test>" })
     ).threadId;
     await other.draft(otherThread, "agent");
-    // The other tenant's agent draft that names this tenant's thread id.
     await other.draft(ownThread, "agent");
 
     // The other tenant sees its own Semp draft, so its rows exist and are countable.
@@ -405,7 +391,6 @@ describe("Semp drafts in the mail thread list and the mail summary (issue gh-169
     expect(await listed(tenant, "box=sempDrafts")).toEqual([]);
     expect(await sempDraftCount(tenant)).toBe(0);
 
-    // This tenant's own draft changes its own box and count only.
     await own.draft(ownThread, "agent");
     expect(flagsByName(await listed(tenant, "box=sempDrafts"), { ownThread })).toEqual({ ownThread: true });
     expect(await sempDraftCount(tenant)).toBe(1);
@@ -501,7 +486,6 @@ describe("Semp drafts in the mail thread list and the mail summary (issue gh-169
       const own = await mailFixture(tenant);
       const { survivor, merged } = await mergedThreads(tenant, own, await own.folder("inbox"), "own", async () => {});
       const other = await mailFixture(foreign);
-      // The other tenant's agent draft that names this tenant's merged-away thread id.
       const foreignDraft = await other.draft(merged, "agent");
       expect((await inTenant(foreign, (client) => getMailDraft(client, foreignDraft)))?.threadId).toBe(merged);
 

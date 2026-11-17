@@ -22,9 +22,8 @@ import {
 } from "../mail/providerTypes.js";
 import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 
-// A fake Microsoft answers the token endpoint, Graph and the upload URLs through the `fetchImpl` seam. The token endpoint
-// accepts only the refresh token it currently holds and rotates it on every refresh, as Microsoft does, so a refresh that
-// presents a retired token is refused.
+// A fake Microsoft answers the token endpoint, Graph and the upload URLs through `fetchImpl`. The token
+// endpoint accepts only its current refresh token and rotates it on every refresh, as Microsoft does.
 
 const TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 const GRAPH_BASE = "https://graph.microsoft.com/v1.0/me";
@@ -40,7 +39,6 @@ type Route = "sendMail" | "createDraft" | "createUploadSession" | "sendDraft" | 
 interface GraphCall {
   route: Route;
   authorization: string | undefined;
-  /** The request body as text: base64 MIME for sendMail, JSON for the other routes. */
   text: string;
 }
 
@@ -52,9 +50,7 @@ interface UploadCall {
 }
 
 interface FakeMicrosoftOptions {
-  /** Makes the token endpoint refuse every refresh, the way a revoked refresh token is refused. */
   tokenRefused?: boolean;
-  /** Replaces the reply of one Graph route. */
   replies?: Partial<Record<Route, () => Response>>;
 }
 
@@ -73,7 +69,6 @@ function requestTarget(input: Parameters<typeof fetch>[0]): string {
   return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 }
 
-/** True for the chunk whose last byte is the attachment's last byte. */
 function isFinalChunk(contentRange: string | undefined): boolean {
   const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(contentRange ?? "");
   if (!match) throw new Error(`upload chunk has no usable Content-Range: ${contentRange}`);
@@ -144,7 +139,6 @@ function fakeMicrosoft(options: FakeMicrosoftOptions = {}) {
 
 type FakeMicrosoft = ReturnType<typeof fakeMicrosoft>;
 
-/** The only call of a route; fails when the route was called another number of times. */
 function onlyCallOf(calls: GraphCall[], route: Route): GraphCall {
   const [first, ...rest] = calls.filter((call) => call.route === route);
   if (!first || rest.length > 0) throw new Error(`expected exactly one ${route} call`);
@@ -162,7 +156,6 @@ function patternedBytes(size: number): Buffer {
 }
 
 interface MimeAttachment {
-  /** `false` leaves the attachment without a file name. */
   filename?: string | false;
   content: Buffer;
   cid?: string;
@@ -180,8 +173,8 @@ interface MimeOptions {
 }
 
 /**
- * Builds a message with nodemailer's composer, the library `buildOutgoingMime` uses. It carries no Bcc header, as the
- * production MIME does not. The subject is set unless the caller names the key with no value.
+ * Builds a message with nodemailer's composer, as `buildOutgoingMime` does, without a Bcc header. The
+ * subject is set unless the caller names the key with no value.
  */
 async function composeMime(options: MimeOptions & { subject?: string }): Promise<Buffer> {
   const subject = "subject" in options ? options.subject : "Graph send";
@@ -218,7 +211,7 @@ async function largeMime(attachments: MimeAttachment[] = []): Promise<Buffer> {
   return raw;
 }
 
-/** A plain-text message of exactly `bytes` bytes, built by hand so its size is exact. `messageIdLine` null omits the header. */
+/** A plain-text message of exactly `bytes` bytes. `messageIdLine` null omits the header. */
 function textMessageOfSize(bytes: number, messageIdLine: string | null): Buffer {
   const headers = [
     "From: sender@graph.test",

@@ -33,7 +33,6 @@ const NOW = new Date("2026-11-12T10:00:00Z");
 const YESTERDAY = "2026-11-11";
 const TODAY = "2026-11-12";
 const TOMORROW = "2026-11-13";
-/** The 14th day counting `TODAY`, and the day after it. */
 const LAST_DAY = "2026-11-25";
 const DAY_AFTER = "2026-11-26";
 
@@ -89,7 +88,6 @@ function refusalOf(error: unknown): { status: number; code: string; message: str
 
 const ids = (overview: Overview): string[] => overview.upcoming.map((entry) => entry.itemId);
 
-/** One tenant's fixture writes and overview reads, each in that tenant's scope on the runtime-role pool. */
 function world(tenantId: string) {
   const chokePoint = createChokePoint(runtime);
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenantId, fn);
@@ -127,7 +125,6 @@ function world(tenantId: string) {
     return property.id;
   }
 
-  /** Sets the single-valued relation `key` of an item, as the user's edit of that field does. */
   async function setRelation(moduleId: string, key: string, itemId: string, targetItemId: string): Promise<void> {
     const relationPropertyId = await propertyId(moduleId, key);
     await inTenant(() => chokePoint.setRelation({ relationPropertyId, callerItemId: itemId, targetItemId }, USER));
@@ -176,11 +173,9 @@ function world(tenantId: string) {
     });
   }
 
-  /** The handler's raw answer for `id`, as a caller whose `users.locale` is `locale` gets it. */
   const request = (id: string, locale = "cs"): Promise<{ status: number; body: unknown }> =>
     inTenant(() => createAreaOverviewRouteHandler(runtime)({ params: { id }, identity: { user: { locale } } }));
 
-  /** The overview of an area, checked to be a 200 that carries exactly the documented fields. */
   async function overview(id: string, locale = "cs"): Promise<Overview> {
     const result = await request(id, locale);
     expect(result.status).toBe(200);
@@ -526,7 +521,6 @@ describe("GET /api/areas/:id/overview (issue #1760)", () => {
 
     expect(ids(await w.overview(area, "cs"))).toEqual(expected("cs"));
     expect(ids(await w.overview(area, "en"))).toEqual(expected("en"));
-    // A locale that is not Czech is read in English.
     expect(ids(await w.overview(area, "de"))).toEqual(expected("en"));
   });
 
@@ -780,7 +774,6 @@ describe("GET /api/areas/:id/overview (issue #1760)", () => {
         () => undefined,
         (failure: unknown) => failure,
       );
-    // Either the writer holds the lock, or it failed before it took it and the failure is reported below.
     await Promise.race([locked, writer]);
     const reader = w.request(area).then(
       (value) => ({ value }),

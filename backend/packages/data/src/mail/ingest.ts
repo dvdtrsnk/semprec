@@ -32,7 +32,6 @@ import { applyObservedMailMessageFlags } from "./mailFlagObservation.js";
 import { enqueueThreadLinkRulesForFirstInbound } from "./threadLinkRules.js";
 import { enqueueThreadProjectTriage } from "./threadProjectTriage.js";
 
-/** Shared with mail/draft.ts and mail/send.ts, whose draft/outgoing display fields are formatted identically to a synced message's. */
 export function formatAddress(address: MailEnvelopeAddress): string {
   return address.name ? `${address.name} <${address.address}>` : address.address;
 }
@@ -41,7 +40,7 @@ export function formatAddressList(list: MailEnvelopeAddress[] | undefined): stri
   return (list ?? []).map(formatAddress).join(", ");
 }
 
-/** The Emails properties the sync worker mirrors from the real mailbox are `owner: 'system'` (see seedEmailModule.ts) — not user-editable, hence written through this escape hatch. `read`/`flagged` are deliberately absent: those two are owner:'user' (issue #97) and need no exemption. */
+/** System-owned Emails properties mirrored from the mailbox; `read`/`flagged` are user-owned and need no exemption. */
 export const EMAIL_INGEST_ALLOWED_SYSTEM_KEYS = ["name", "sender", "recipients", "body", "date"];
 
 export interface IngestEmailMessageInput {
@@ -50,10 +49,10 @@ export interface IngestEmailMessageInput {
   folderRelationPropertyId: string;
   attachmentsRelationPropertyId: string;
   folderItemId: string;
-  /** The Mailbox item being synced — the dedup scope: the same `Message-ID` in two mailboxes is two items. */
+  /** Dedup scope: the same `Message-ID` in two mailboxes is two items. */
   mailboxItemId: string;
   protectedMoveMessageIds?: ReadonlySet<string>;
-  /** IMAP adapter only — the UID this message has *in this folder*; lives on the relation edge, not the item (see the migration's header note). */
+  /** IMAP only: the UID in this folder, stored on the relation edge. */
   folderUid?: number;
   messageId: string;
   inReplyTo?: string | null;
@@ -68,25 +67,20 @@ export interface IngestEmailMessageInput {
   attachments: ClassifiedAttachment[];
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
-  /** This mailbox's registered addresses (`Mailboxes.addresses`) — the alias-fallback and primary-address steps of deliveredToAddress's precedence rule (mail/deliveredTo.ts). Defaults to `[]` for direct test calls that don't exercise that fallback. */
+  /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
   mailboxAliases?: string[];
-  /** Raw deliveredToAddress candidates (mail/deliveredTo.ts) — see FetchedMessage's header note (providerTypes.ts). */
   deliveredToHeaders?: string[];
   xOriginalTo?: string | null;
   envelopeTo?: string | null;
-  /** The raw bulk-mail headers — see FetchedMessage.bulkHeaders (providerTypes.ts). */
   bulkHeaders?: BulkMailHeaders;
-  /** True for a multipart/report;report-type=delivery-status DSN/bounce (mail/dsn.ts) — distinguished from an ordinary human reply. */
+  /** A delivery-status report (bounce), not a human reply. */
   isDsn?: boolean;
-  /** The message's IMAP flags, when the adapter reports them — see FetchedMessage.flags (providerTypes.ts). */
   flags?: string[];
 }
 
 /**
- * True when the message being ingested is the tenant's own and was sent: the folder it is ingested into is the
- * mailbox's Sent folder, or its sender is one of the registered addresses of the mailbox being synced
- * (`input.mailboxAliases`). A message filed in the mailbox's Drafts folder is never one that was sent: it is the user's
- * unsent work in another client, which answers nothing yet, whoever its sender is.
+ * A sent message of the user's own: in the Sent folder or from a registered address. Drafts
+ * folder messages never count; they are unsent work from another client.
  */
 async function isOwnMessage(client: PoolClient, input: IngestEmailMessageInput): Promise<boolean> {
   const [folder] = await getItemsByIds(client, [input.folderItemId]);
@@ -100,28 +94,19 @@ async function isOwnMessage(client: PoolClient, input: IngestEmailMessageInput):
 
 export interface IngestEmailMessageResult {
   itemId: string;
-  /** false when this call converged onto an already-ingested message (dedup by Message-ID/provider id) instead of creating a new item. */
+  /** false when the call converged onto an already-ingested message. */
   created: boolean;
 }
 
 /**
- * The single writer shared by all three sync adapters (imap/gmail/graph) — see the
- * migration's and mail/threading.ts's header notes for why this is the one place messages
- * become Emails items. Dedups by `Message-ID` per mailbox (an optimistic outgoing insert from
- * issue #27 or a re-observed message on a second sync pass of the same mailbox both converge
- * onto the same item instead of duplicating; the same message delivered to another mailbox
- * becomes that mailbox's own item, so read/flag state never leaks across mailboxes), resolves/updates the conversation thread, links the message into the given
- * folder (always — even for an already-known message, since the same message can appear in
- * a newly-observed folder), ingests attachments, and reindexes full-text search. A newly created
- * message announces its thread to the tenant's sockets (a `mailThread` invalidation) once the
- * transaction has committed; a rolled-back or already-known message announces nothing. A new message that is then
- * the first inbound message of its thread queues the evaluation of the thread's company and project rules
- * (`enqueueThreadLinkRulesForFirstInbound`) and the delayed project assignment of the thread
- * (`enqueueThreadProjectTriage`), which both need a tenant scope. A newly created message of the user's own
- * (`isOwnMessage`) also retires the thread's outdated Semp drafts (`retireSupersededSempDrafts`). Must be
- * called inside a transaction: the Emails item write and the `mail_message_meta` write need
- * to commit together for the onItemEvent person-linking trigger (personLinkingActions.ts) to
- * see a consistent envelope once its enqueued job actually runs.
+ * The single writer turning synced messages into Emails items, for all adapters. Dedups by
+ * Message-ID per mailbox (so read/flag state never leaks across mailboxes), resolves the thread,
+ * always links the folder (a known message can appear in a new folder), ingests attachments and
+ * reindexes search. Only a newly created message announces its thread after commit, triggers
+ * first-inbound thread rules and triage, and (if the user's own) retires outdated Semp drafts.
+ *
+ * Must run in a transaction: the item and `mail_message_meta` writes must commit together so
+ * person linking sees a consistent envelope.
  */
 export async function ingestEmailMessage(
   client: PoolClient,
@@ -131,20 +116,15 @@ export async function ingestEmailMessage(
   const existing = await getMailMessageMetaByMailboxAndMessageId(client, input.mailboxItemId, input.messageId);
   let itemId: string;
   let created = false;
-  /** The thread of the message this call stored: unset for a converged message and for one that lost a provider-id conflict. */
+  /** Unset for a converged message or one that lost a provider-id conflict. */
   let newMessageThreadId: string | null = null;
 
   if (existing) {
     itemId = existing.itemId;
   } else {
-    // Concurrency-safe arbiter for the partial-unique, non-null `provider_message_id` index
-    // (mail_message_meta_tenant_provider_msg_uq): two sync passes can race to ingest distinct
-    // Message-IDs (the `existing` check above found neither) that turn out to name the same
-    // provider message. Rather than let the loser's INSERT surface a raw Postgres unique-
-    // violation, its item/thread/meta writes run under a SAVEPOINT and get rolled back on
-    // that specific conflict, converging onto whichever insert actually won — the winner's
-    // item/message identity is left unchanged, and this call still links the folder relation
-    // below so synchronization continues.
+    // Two passes can race to ingest different Message-IDs naming the same provider message. The
+    // loser's writes run under a SAVEPOINT, roll back on the unique-index conflict and converge
+    // onto the winner; the folder relation below is still linked.
     await client.query("SAVEPOINT ingest_provider_msg_conflict");
     try {
       const threadId = await resolveThreadId(client, {
@@ -164,10 +144,7 @@ export async function ingestEmailMessage(
             recipients: formatAddressList(input.envelope.to),
             body: input.bodyHtml ?? input.bodyText ?? "",
             ...(input.date ? { date: input.date.toISOString() } : {}),
-            // Read/flag state as the server already has it, so a message that was read or
-            // flagged elsewhere does not arrive here looking unread. Only ever written here,
-            // at creation: a later pass over an already-ingested message must not overwrite
-            // what the user has since done to it in the mailbox client.
+            // Seeded from the server only at creation; later passes must not overwrite user changes.
             ...messageFlagProperties(input.flags),
           },
         },
@@ -187,9 +164,7 @@ export async function ingestEmailMessage(
         mailboxAliases: input.mailboxAliases ?? [],
       });
 
-      // RFC 3464: a DSN's own References/In-Reply-To name the outgoing message it reports on —
-      // the same ancestor threading.ts just resolved from, reused here as "the original message"
-      // rather than a second parsing rule for the identical header.
+      // RFC 3464: a DSN's References/In-Reply-To name the original outgoing message.
       const dsnOriginalMessageId = input.isDsn
         ? (input.inReplyTo ?? input.references?.[input.references.length - 1] ?? null)
         : null;
@@ -206,8 +181,7 @@ export async function ingestEmailMessage(
         envelope: input.envelope,
         deliveredToAddress: deliveredToAddress ?? null,
         messageKind: input.isDsn ? "dsn" : "message",
-        // Computed only on this first-ingest path: the upsert's DO UPDATE never touches is_bulk, so a
-        // later pass over the same message keeps the stored value.
+        // First ingest only: the upsert's DO UPDATE never touches is_bulk.
         isBulk: detectBulkMail({ ...input.bulkHeaders, senderAddress: input.envelope.from?.address }),
         dsnOriginalMessageId,
         previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
@@ -224,10 +198,7 @@ export async function ingestEmailMessage(
         storageKeyPrefix: input.storageKeyPrefix,
       });
 
-      // PDF/DOCX attachment text (issue #26: "the output goes into the same index table") is
-      // folded into the owning message's own search text rather than indexed as a separate
-      // item — there is no per-attachment search surface in this issue's scope, only "search my
-      // mail," which a PDF invoice's contents should still match.
+      // Attachment text is folded into the message's own search text; there is no per-attachment index.
       await reindexItemSearch(client, {
         itemId,
         databaseId: input.emailsDatabaseId,
@@ -242,8 +213,7 @@ export async function ingestEmailMessage(
       });
 
       await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");
-      // One announcement per newly created message, for every socket of the tenant (no `userId`). The savepoint
-      // is released, so a provider-id conflict that converged onto another message announces nothing here.
+      // Tenant-wide (no `userId`); a converged provider-id conflict never reaches here.
       runAfterCommit(client, () => notifyInvalidation({ scope: "mailThread", threadId }));
       newMessageThreadId = threadId;
     } catch (err) {
@@ -260,8 +230,7 @@ export async function ingestEmailMessage(
     }
   }
 
-  // A message of the user's own that enters Semprec answers the thread, so the thread's Semp drafts that were written
-  // for an older message are outdated (issue gh-1902). A message that was in Semprec already was handled then.
+  // A new message of the user's own answers the thread, outdating Semp drafts written for older messages.
   if (newMessageThreadId !== null && (await isOwnMessage(client, input))) {
     await retireSupersededSempDrafts(client, {
       threadId: newMessageThreadId,
@@ -272,11 +241,8 @@ export async function ingestEmailMessage(
   if (!created && (input.protectedMoveMessageIds?.has(itemId) || (await hasUnsettledMailMove(client, itemId))))
     return { itemId, created };
 
-  // Provider observations establish current state but deliberately never replace a desired
-  // user value already awaiting write-back. A newly created IMAP message gets matching desired
-  // and current state (the row does not exist yet, so there is nothing to converge into the
-  // item). An already-known message instead goes through applyObservedMailMessageFlags, which
-  // also folds a converged observation into the item's own read/flagged property.
+  // Observations never replace a desired user value awaiting write-back. A new message gets
+  // matching desired and current state; a known one goes through applyObservedMailMessageFlags.
   if (input.flags) {
     if (created) {
       const flags = messageFlagProperties(input.flags);
@@ -304,9 +270,8 @@ export async function ingestEmailMessage(
     EMAILS_RELATION_CONTEXT,
   );
 
-  // The folder edge is in place, so the message can be told apart from the user's own mail and from drafts. A new
-  // message that is now the first inbound one of its thread sets the thread's company and project to inherit, and
-  // queues the thread for the AI project assignment (a delayed task, so that the inheritance has run before it).
+  // Needs the folder edge to tell inbound mail from own mail and drafts. Triage is delayed so the
+  // inherited company/project is set first.
   if (created) {
     const firstInboundThreadItemId = await enqueueThreadLinkRulesForFirstInbound(client, itemId);
     if (firstInboundThreadItemId !== null) await enqueueThreadProjectTriage(client, firstInboundThreadItemId);

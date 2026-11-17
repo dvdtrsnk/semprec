@@ -23,40 +23,30 @@ import {
 
 export interface SchemaDatabaseProjection {
   databaseId: string;
-  /** The stable canonical key (issue #235/#147) — `null` for a user-authored database, which has no catalog entry and never will. */
+  /** `null` for a user-authored database, which has no catalog entry. */
   key: string | null;
   name: string;
-  /** The whole-sentence search placeholder; `null` when the catalog has no entry (never the key). */
+  /** `null` when the catalog has no entry (never the key). */
   searchPlaceholder: string | null;
   icon: string | null;
   color: string | null;
   overviewOrder: number | null;
   switcherOrder: number | null;
   clientVisible: boolean;
-  /** True while the user hides the database from the overview (issue #2002). */
   overviewHidden: boolean;
-  /** True for a system database whose data an agent must not read or write by default (issue #1808). */
+  /** An agent must not read or write this database's data by default. */
   sensitive: boolean;
   properties: ResolvedProperty[];
-  /** The collection's quick-filter chips in display order, labels resolved for the locale; empty without declarations (issue #1647). */
+  /** In display order; empty without declarations. */
   quickFilters: SchemaQuickFilterProjection[];
-  /**
-   * The order the collection opens with, always present (issue #1995): the manifest's declared sort (issue
-   * #1647), otherwise `FALLBACK_DEFAULT_SORT`, newest first.
-   */
+  /** Always present: the declared sort, otherwise `FALLBACK_DEFAULT_SORT`. */
   defaultSort: SortSpec;
-  /** The resolved past and no-date labels of a date-grouped collection (issue #1647). */
   dateLabels?: { past: string; noDate: string };
-  /** The filter tree of the items that belong in the collection (issue #1647). */
   collectionFilter?: Record<string, unknown>;
-  /** The filter tree a picker for this database applies by default (issue #1647). */
   pickerFilter?: Record<string, unknown>;
 }
 
-/**
- * The default sort of every database whose manifest declares none, system or user-created (issue #1995):
- * creation time, newest first. Computed here and never written into a manifest or a view config.
- */
+/** Newest first. Computed on read; never written into a manifest or view config. */
 export const FALLBACK_DEFAULT_SORT: SortSpec = Object.freeze({ system: "createdAt", direction: "desc" });
 
 export interface SchemaSortProjection {
@@ -85,9 +75,8 @@ export interface SchemaAgentToolProjection {
 }
 
 export interface SchemaTenantProjection {
-  /** The tenant's IANA time zone (the System settings `timezone`). */
   timezone: string;
-  /** The current calendar day in `timezone`, `YYYY-MM-DD`. Stale after midnight; clients use it as a drift check. */
+  /** `YYYY-MM-DD` in `timezone`. Stale after midnight; clients use it as a drift check. */
   today: string;
 }
 
@@ -99,27 +88,18 @@ export interface SchemaProjection {
 }
 
 export interface GenerateSchemaProjectionOptions {
-  /** Defaults to `"en"`, the reference locale — same default as `generatePermissionManifest`. */
+  /** Defaults to `"en"`. */
   locale?: ManifestLocale;
   /**
-   * Which module-declared agent tools (issue #106's `ModuleRegistry.getAgentTools`) are visible
-   * in this projection. Defaults to every capability every active module declares — this is a
-   * system-wide schema catalog, not one project's runtime MCP grant (`PermissionManifest.agentTools`,
-   * sourced from `getGrantedMcpAgentTools`, is the separate, per-project mechanism for that); a
-   * caller with a narrower notion of "granted" may pass its own set instead.
+   * Defaults to every capability of every active module: this is a system-wide catalog, not a
+   * project's runtime MCP grant (that is `PermissionManifest.agentTools`).
    */
   grantedCapabilities?: ReadonlySet<string>;
-  /** The instant `tenant.today` is computed for; defaults to the current time. A test seam for the clock. */
+  /** Clock seam for `tenant.today`. */
   now?: Date;
-  /**
-   * The Projects item of the agent the projection is made for (issue #1810): the databases its project may not
-   * read are left out. Absent for a person, who sees every database.
-   */
+  /** Leaves out databases the agent's project may not read. Absent for a person. */
   agentProjectItemId?: string;
-  /**
-   * The projection is made for an external AI client on `/mcp` (issue #1998): the sensitive databases are left out.
-   * Ignored when `agentProjectItemId` is set, which decides by the project's access.
-   */
+  /** For an external `/mcp` client: sensitive databases are left out. Ignored with `agentProjectItemId`. */
   externalClient?: true;
 }
 
@@ -128,11 +108,7 @@ type DatabaseViewHints = Pick<
   "quickFilters" | "defaultSort" | "dateLabels" | "collectionFilter" | "pickerFilter"
 >;
 
-/**
- * A database's view hints from its manifest descriptor (issue #1647), with every `labelKey` resolved
- * against the owning module's catalog for `locale`. A database without a descriptor, every user-created
- * database among them, gets empty quick filters, the fallback default sort (issue #1995) and nothing else.
- */
+/** Without a descriptor (e.g. user-created): empty quick filters and the fallback sort only. */
 function resolveDatabaseViewHints(
   descriptor: ModuleDatabaseProjection | undefined,
   catalogs: ModuleCatalogs | undefined,
@@ -165,13 +141,8 @@ function resolveDatabaseViewHints(
 }
 
 /**
- * The system-wide counterpart to `generatePermissionManifest` (issue #147): every non-archived
- * database (including the ten hardcoded system databases, which carry no `owner_project_item_id`
- * and so never appear in a project-scoped manifest), every active module's view types, and every
- * module-declared agent tool — each with its name/label resolved through the same
- * `catalogResolution.ts` resolver the manifest uses, against the caller-supplied locale only
- * (never a query/body override — see `services/semprec-api/src/schemaHandler.ts`, the one caller
- * that turns an authenticated request's `users.locale` into this function's `locale` option).
+ * System-wide counterpart to `generatePermissionManifest`, including system databases that carry
+ * no project owner. `locale` comes from the authenticated user, never a request override.
  */
 export async function generateSchemaProjection(
   client: PoolClient,
@@ -191,14 +162,12 @@ export async function generateSchemaProjection(
     options.agentProjectItemId ?? (options.externalClient === true ? { externalClient: true } : undefined);
   const unreadableDatabaseIds = reader === undefined ? undefined : await listUnreadableDatabaseIds(client, reader);
   const databaseRows = (await listAllDatabases(client)).filter((db) => !unreadableDatabaseIds?.has(db.id));
-  // One batch query for every database's properties (issue #147 review: the naive per-database
-  // loop was an N+1 that grows unboundedly with the number of databases in a deployment).
+  // Batched to avoid N+1 queries over databases.
   const propertiesByDatabaseId = await listPropertiesByDatabases(
     client,
     databaseRows.map((db) => db.id),
   );
-  // One batch query for the relation definitions of every relation property (issue #1360), so the
-  // query count does not grow with the number of relation properties.
+  // Batched to avoid N+1 queries over relation properties.
   const relationPropertyIds = [...propertiesByDatabaseId.values()]
     .flat()
     .filter((p) => p.type === "relation")
@@ -224,10 +193,7 @@ export async function generateSchemaProjection(
     });
   }
 
-  // `getViewTypes()` returns a flat key list with no per-key moduleId (several modules each
-  // declare their own view types — see systemDatabases/inbox/library/mail's manifests): find
-  // whichever active module's catalog actually defines `viewType.<key>.name` rather than
-  // assuming one owning module.
+  // `getViewTypes()` has no per-key module id, so find whichever catalog defines the key.
   const activeModuleIds = await moduleRegistry.listActiveModuleIds();
   const catalogsByActiveModuleId = new Map<string, ModuleCatalogs | undefined>();
   for (const moduleId of activeModuleIds) {
@@ -249,8 +215,7 @@ export async function generateSchemaProjection(
   const agentToolProjections = await moduleRegistry.getAgentTools(grantedCapabilities);
   const agentTools: SchemaAgentToolProjection[] = [];
   for (const tool of agentToolProjections) {
-    // `getAgentTools` only ever returns tools from active modules (the same set
-    // `catalogsByActiveModuleId` was built from above), so this lookup always hits.
+    // `getAgentTools` returns only active modules' tools, so this lookup always hits.
     const catalogs = catalogsByActiveModuleId.get(tool.moduleId);
     agentTools.push({
       moduleId: tool.moduleId,

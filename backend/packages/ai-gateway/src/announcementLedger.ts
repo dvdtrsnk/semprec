@@ -1,9 +1,8 @@
 /**
- * Remembers, in this process, which budget windows already had their first refusal announced. An entry
- * lives until the instant its window ends and is dropped by the first call that finds it past that
- * instant, so the ledger holds at most one entry per key, and an entry of an ended window stays only
- * until the next call. Nothing is persisted: a restart forgets every entry, and the announcement then repeats once,
- * which is harmless because both things it sends are idempotent.
+ * Remembers in this process which budget windows already had their first refusal announced. An entry
+ * lives until its window ends and is dropped by the next call after that, so there is at most one per
+ * key. A restart forgets everything and the announcement repeats once, which is harmless because both
+ * things it sends are idempotent.
  */
 export class AnnouncementLedger {
   private readonly windowEndsAtMs = new Map<string, number>();

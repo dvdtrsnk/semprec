@@ -7,19 +7,14 @@ import { NotFoundError } from "../errors.js";
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 
-/**
- * What removing one mailbox would affect (issue gh-1501). The removal (#1690) soft-deletes the
- * mailbox's folders and messages, as #2029 specifies; the confirmation dialog shows these counts
- * first. The counting rules below are the definition #2029 applies too.
- */
+/** What removing one mailbox would affect; the confirmation dialog shows these counts. */
 export interface MailboxRemovalImpact {
-  /** Non-deleted Emails in one of the mailbox's Folders, except the ones counted as drafts. */
+  /** Non-deleted Emails in the mailbox's Folders, drafts excluded. */
   messages: number;
-  /** Non-deleted Emails in one of the mailbox's Drafts folders (`specialPurpose` `drafts`). */
   drafts: number;
-  /** Threads whose every non-deleted message is one of this mailbox's messages or drafts. */
+  /** Threads whose every non-deleted message is one of this mailbox's. */
   threads: number;
-  /** Attachment rows of the counted messages and drafts. The stored files are kept. */
+  /** The stored files are kept. */
   attachmentsKept: number;
 }
 
@@ -31,13 +26,9 @@ interface MailboxRemovalImpactRow {
 }
 
 /**
- * The membership rules of a mailbox removal, as the leading CTEs of a statement whose parameters are `$1`
- * the mailbox item id, `$2` the Folders database id and `$3` the Emails database id. `mailbox_folders`
- * (`id`, `is_drafts`) are the non-deleted Folders related to the mailbox, and `mailbox_emails`
- * (`email_id`, `is_draft`) the non-deleted Emails in any of them, each once. An Email is a draft when
- * one of its folders is a Drafts folder. The relation definitions are found by the property key on the
- * module-owned database. The impact report below and the removal
- * job (`mailboxRemovalJob.ts`, issue gh-2029) both start from this text, so both apply one definition.
+ * Leading CTEs (`$1` mailbox id, `$2` Folders db, `$3` Emails db) defining the removal's members. The
+ * impact report and the removal job both start from this text, so both apply one definition. An Email
+ * is a draft when one of its folders is a Drafts folder.
  */
 export const MAILBOX_REMOVAL_MEMBERS_CTE_SQL = `
 WITH mailbox_folders AS (
@@ -76,11 +67,7 @@ mailbox_emails AS (
   GROUP BY fm.email_id
 )`;
 
-/**
- * All four counts in one statement, so they read one snapshot, over the members of
- * `MAILBOX_REMOVAL_MEMBERS_CTE_SQL`. A thread counts when it has a member and no non-deleted message
- * outside `mailbox_emails`.
- */
+/** One statement, so the counts read one snapshot. */
 const MAILBOX_REMOVAL_IMPACT_SQL = `${MAILBOX_REMOVAL_MEMBERS_CTE_SQL},
 member_threads AS (
   SELECT DISTINCT meta.thread_id
@@ -107,18 +94,12 @@ SELECT
    WHERE a.message_item_id IN (SELECT email_id FROM mailbox_emails))::int AS "attachmentsKept"
 `;
 
-/**
- * The counts a removal of `mailboxItemId` would affect, read in the caller's tenant scope. Returns
- * `null` when the mailbox is unknown, belongs to another tenant (row-level security hides it), is
- * already soft-deleted, or the tenant has no Mailboxes database at all. Each answers the same way,
- * as `send.ts` treats a removed mailbox.
- */
+/** `null` for an unknown, foreign (hidden by RLS) or soft-deleted mailbox, or no Mailboxes database. */
 export async function getMailboxRemovalImpact(
   client: PoolClient,
   mailboxItemId: string,
 ): Promise<MailboxRemovalImpact | null> {
-  // A tenant without a Mailboxes database has no mailbox, so the answer is the same 404 without
-  // resolving the Folders and Emails databases, which such a tenant may not have either.
+  // Such a tenant may not have the Folders and Emails databases either.
   const mailboxesDatabase = await getDatabaseByModuleId(client, MAILBOXES_MODULE_ID);
   if (mailboxesDatabase === null) return null;
   const mailbox = await getItemById(client, mailboxesDatabase.id, mailboxItemId);
@@ -144,13 +125,10 @@ interface CustomRouteRequestContext {
 
 type CustomRouteResult = { status: number; body: unknown };
 
-/** `items.id` is a uuid: a malformed id names no mailbox, so it gets the same 404 as an unknown one. */
+/** A malformed id gets the same 404 as an unknown one. */
 const mailboxIdSchema = z.string().uuid();
 
-/**
- * `GET /api/mail/mailboxes/:id/removal-impact` (issue gh-1501). The lookup runs in the caller's tenant
- * scope, so a foreign mailbox answers exactly like an unknown one: the same `not_found` body.
- */
+/** A foreign mailbox answers exactly like an unknown one. */
 export function createMailboxRemovalImpactRouteHandler(pool: Pool) {
   return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
     const parsedId = mailboxIdSchema.safeParse(ctx.params.id);

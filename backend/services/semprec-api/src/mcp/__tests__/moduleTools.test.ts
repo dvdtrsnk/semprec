@@ -141,16 +141,17 @@ describe("restricted MCP module tools", () => {
       const list = record((await rpc("tools/list")).result);
       if (!Array.isArray(list.tools)) throw new Error("Missing tools");
       const names = list.tools.map((entry: unknown) => record(entry).name);
-      // The tool that needs no approval is offered, and so is each tool that requires one (issue gh-1957).
+      // The tool that needs no approval is offered, and so is each tool that requires one.
       expect(names).toContain("semprec.gated.free");
       for (const gated of ["semprec.gated.apply", "semprec.gated.noSnapshot", "semprec.gated.noneApproval"]) {
         expect(names).toContain(gated);
-        // The call files a request and runs nothing: the answer is the approval-required error of the generic operations.
+        // The call files a request and runs nothing.
         const answer = record((await rpc("tools/call", { name: gated, arguments: { value: "x" } })).error);
         expect(answer.code).toBe(-32001);
         expect(record(answer.data).approvalRequestId).toEqual(expect.any(String));
       }
-      // A tool whose `approval` is `always` without `requiresApproval` has no deferral and stays absent and unknown.
+      // `approval: always` without `requiresApproval` has no deferral, so the tool stays absent and
+      // unknown.
       expect(names).not.toContain("semprec.gated.always");
       expect(
         record((await rpc("tools/call", { name: "semprec.gated.always", arguments: { value: "x" } })).error).code,

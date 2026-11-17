@@ -5,7 +5,7 @@ import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import { requireUuidParam } from "./adapter/requestValidation.js";
 
-/** The most entries one request returns, and what it returns without a `limit`. */
+/** Also the default without a `limit`. */
 const MAX_LIMIT = 500;
 const DEFAULT_LIMIT = 100;
 
@@ -36,13 +36,11 @@ function parseLimit(raw: string | null): number {
 }
 
 /**
- * `GET /api/items/:id/page/changes?since=&by=&limit=` (issue #1680): what was written to a page since an instant, by
- * one author, as `[{ at, blockIds, kind }]`, oldest first (see `listPageChanges`). The query is checked first, with the
- * same answer for every caller; the `page.changes` catalog operation then reads the item in the caller's tenant like
- * any item read, so a foreign item answers exactly like an unknown one (404). An item with no page document has no
- * changes (`[]`), a `since` in the future is 400, one before the retained history is 410 `history_not_retained` and a
- * window larger than the fixed replay budget is 400 `history_window_too_large`. The adapter supplies authentication,
- * the tenant scope and the error mapping.
+ * `[{ at, blockIds, kind }]`, oldest first. The query is checked first, with the same answer for
+ * every caller; the item is then read in the caller's tenant, so a foreign item answers like an
+ * unknown one (404). No page document is `[]`; a future `since` is 400, one before the retained
+ * history is 410 `history_not_retained`, and a window over the replay budget is 400
+ * `history_window_too_large`.
  */
 export function createPageChangesRoutes(service: GenericApplicationPort): RouteDefinition[] {
   return [

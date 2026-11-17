@@ -29,8 +29,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-// Hooks cannot be unregistered; these recorders stay registered for this file's process only and
-// are emptied before each test.
+// Hooks cannot be unregistered: these recorders are emptied before each test.
 const createdBy: WriterIdentity[] = [];
 const updatedBy: WriterIdentity[] = [];
 const edgesBy: WriterIdentity[] = [];

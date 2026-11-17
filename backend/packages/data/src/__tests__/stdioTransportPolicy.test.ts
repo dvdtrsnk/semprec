@@ -39,8 +39,7 @@ describe("tenantAllowsStdio (issue #1030)", () => {
   });
 
   it("is false for an admin bound to another tenant", async () => {
-    // With a second tenant present `app_tenant_default()` no longer falls back to the sole tenant,
-    // so the current tenant is set explicitly; the tenant-zero admin is the positive control.
+    // With a second tenant `app_tenant_default()` has no sole-tenant fallback, so the tenant is set explicitly.
     const tenantZeroAdmin = await createTenantZeroUser(pool);
     await setRole(tenantZeroAdmin.id, "admin");
     const otherTenantId = await createTestTenant(pool);

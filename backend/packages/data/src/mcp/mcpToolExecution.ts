@@ -19,36 +19,27 @@ export type { McpFailureKind, McpInvokeFailure } from "./mcpFailure.js";
 
 const logger = createLogger("mcp");
 
-/** Shaped like a pi-agent-core `tool_result` payload — see `delegateTool.ts`'s own comment for the same convention. */
+/** Shaped like a pi-agent-core `tool_result` payload. */
 export type McpInvokeResult =
   { error: false; result: string; failure?: never } | { error: true; result: string; failure?: McpInvokeFailure };
 
 export type McpInvokeArgs = Record<string, unknown>;
 
 export interface McpInvokeOptions {
-  /** Forwarded to `connectMcpServer`'s `credential_access_log.actor_id`. */
   actorId?: string;
   /**
-   * Sent as `_meta.idempotencyKey` on the `tools/call` request — the MCP-permitted request
-   * metadata slot — so a server that de-duplicates can recognise a redelivered call (issue #693:
-   * the approval-execution job passes the claimed request's id here). This process never re-calls
-   * a request it has already claimed; the key exists purely for the server's own benefit.
+   * Sent as `_meta.idempotencyKey` so a de-duplicating server can recognise a redelivered call. This process never
+   * re-calls a claimed request; the key is for the server's benefit only.
    */
   idempotencyKey?: string;
 }
 
-/**
- * Bounds one `tools/call`. The SDK already defaults to 60 s; stating it here keeps the bound
- * visible at the call site instead of depending on a library default.
- */
+/** Matches the SDK default, stated so the bound is visible here. */
 const MCP_TOOL_CALL_TIMEOUT_MS = 60_000;
 
 /**
- * Maps a transport/invoke failure to a fixed, secret-free message. `McpConnectionError`'s own
- * `message` is already built from fixed wording plus non-secret identifiers (see
- * `mcpConnectionFactory.ts`), so it's safe to surface verbatim; anything else (an SDK-level
- * `tools/call` failure, a bug) gets a generic message instead of that error's own possibly
- * server-influenced `message`.
+ * `McpConnectionError` messages are fixed and secret-free; anything else gets a generic message instead of its
+ * possibly server-influenced text.
  */
 function safeInvokeErrorMessage(err: unknown): string {
   if (err instanceof McpConnectionError) return err.message;
@@ -130,10 +121,7 @@ function formatCallToolContent(result: unknown): McpInvokeResult {
     : { error: false, result: formattedText };
 }
 
-/**
- * Best-effort (issue #1450): a failure to record the connection outcome is logged and never
- * changes the invocation result. Logs the error name and the server id only.
- */
+/** Best-effort: a recording failure is logged (error name and server id only) and never changes the result. */
 async function recordConnectionOutcome(record: () => Promise<void>, serverItemId: string): Promise<void> {
   try {
     await record();
@@ -146,18 +134,9 @@ async function recordConnectionOutcome(record: () => Promise<void>, serverItemId
 }
 
 /**
- * Opens a connection through the #231 factory, calls `tools/call`, and always closes the
- * connection again — on both the success and failure path, matching `connectMcpServer`'s own
- * try/finally contract. Assumes `target` was already authorized (either just resolved by
- * `resolveMcpInvocation`, or reconstructed from an approved `approval_requests` snapshot by
- * issue #131's execution job); it does not re-check authorization itself. Only `serverItem` and
- * `toolName` are read, so a caller that has just those two (the approval-execution job doesn't
- * have a full, freshly-resolved `McpToolInvocationTarget`) can pass a matching partial object.
- * `signal` cancels an in-flight `tools/call` (an aborted agent run passes its own), which then
- * resolves as an error result like any other failed call. `options.idempotencyKey`, when set, is
- * sent as `_meta.idempotencyKey` on the call — see `McpInvokeOptions`'s docstring. A `close()`
- * failure after the call never overrides the result the `try`/`catch` above already produced —
- * see that block's own comment.
+ * Assumes `target` is already authorized (freshly resolved or an approved snapshot); it does not re-check. Only
+ * `serverItem` and `toolName` are read, so the approval job can pass a partial object. An aborted `signal` resolves
+ * as an error result. The connection is always closed.
  */
 export async function executeMcpInvocation(
   pool: Pool,
@@ -205,9 +184,7 @@ export async function executeMcpInvocation(
     };
   } finally {
     observation?.close();
-    // A close failure must never replace the `try`'s return value or the `catch`'s error result
-    // above — only log it, so a rejecting `close()` after a successful `tools/call` can't turn a
-    // successful outcome into a job failure (issue #693).
+    // A close failure is only logged, so it cannot turn a successful call into a job failure.
     try {
       await handle?.close();
     } catch {

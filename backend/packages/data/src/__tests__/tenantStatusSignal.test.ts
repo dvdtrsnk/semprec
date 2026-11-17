@@ -32,18 +32,13 @@ function deferred(): Deferred {
   return { promise, resolve };
 }
 
-/** What the next `pool.connect()` of the listener pool does before (or instead of) connecting. */
 type ConnectStep =
   | { kind: "wait"; gate: Promise<void> }
   | { kind: "reject"; error: Error; gate?: Promise<void> }
   | { kind: "failListen" }
   | { kind: "afterResyncSnapshot"; run: () => Promise<void> };
 
-/**
- * Wraps the dedicated listener pool's `connect()` so a test can see every backend pid the listener
- * connects with, hold a reconnect at a gate, fail it outright, or fail its `LISTEN`. The pool is
- * created per test and ended afterwards, so the patched method never outlives the test.
- */
+/** Lets a test see every listener backend pid, hold a reconnect at a gate, fail it, or fail its `LISTEN`; per-test pool. */
 function instrumentConnect(pool: Pool): { pids: number[]; clients: PoolClient[]; steps: ConnectStep[] } {
   const pids: number[] = [];
   const clients: PoolClient[] = [];
@@ -67,8 +62,7 @@ function instrumentConnect(pool: Pool): { pids: number[]; clients: PoolClient[];
         text.startsWith("LISTEN") ? Promise.reject(new Error("listen refused")) : query(text)) as PoolClient["query"];
     }
     if (step?.kind === "afterResyncSnapshot") {
-      // Runs the resync, then commits `run` and waits for its NOTIFY to reach this client before the
-      // resync resolves, so the notification arrives after the snapshot and before attach().
+      // Commits `run` and waits for its NOTIFY after the resync snapshot and before attach().
       const query = client.query.bind(client) as (text: string) => Promise<unknown>;
       client.query = (async (text: string) => {
         const result = await query(text);
@@ -82,7 +76,6 @@ function instrumentConnect(pool: Pool): { pids: number[]; clients: PoolClient[];
     }
     return client;
   };
-  // Viewed through its promise overload only: the listener never uses the callback form.
   vi.spyOn(pool as unknown as { connect: () => Promise<PoolClient> }, "connect").mockImplementation(connect);
   return { pids, clients, steps };
 }
@@ -190,7 +183,6 @@ describe("tenant deactivation signal (issue #1042)", () => {
     const c = await makeAccount("member");
     await suspend(b);
     const calls: string[] = [];
-    // The resync reports B, which is still suspended at start.
     await start(async (tenantId) => {
       calls.push(tenantId);
     });

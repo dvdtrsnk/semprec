@@ -71,9 +71,9 @@ describe("the agent tools of the mail module manifest (issues gh-1927, gh-1949, 
       ["mail.thread.get", createMailThreadGetTool, "read", undefined],
       ["mail.draft.create", createMailDraftCreateTool, "write", undefined],
       ["mail.draft.update", createMailDraftUpdateTool, "write", undefined],
-      // The send tool files the request of its own kind itself (docs/adr/2026-11-14-the-mail-send-tool-is-declared-...).
+      // The send tool files the request of its own kind itself.
       ["mail.draft.send", createMailDraftSendTool, undefined, undefined],
-      // It writes a card and no task, so it declares no approval (docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md).
+      // It writes a card and no task, so it declares no approval.
       ["mail.thread.proposeTask", createMailThreadProposeTaskTool, "write", undefined],
     ]);
     expect(definitions.map((tool) => tool.argumentSchema)).toEqual([

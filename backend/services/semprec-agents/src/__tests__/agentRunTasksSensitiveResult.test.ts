@@ -15,8 +15,7 @@ const MARKER = "[redacted: sensitive]";
 const QUOTED_VALUE = "Quoted diagnosis";
 const sessionsByRunId = new Map<string, CreateAgentSession>();
 
-// The session composition needs a gateway and tool wiring that this result path does not exercise: the factory
-// is replaced with one that hands out the test's own fake session per run.
+// The session factory is replaced with one that hands out a fake session per run.
 vi.mock("../agentSessionComposition.js", () => ({
   createAgentSessionFactoryForRun: (
     _pool: Pool,
@@ -30,7 +29,7 @@ vi.mock("../agentSessionComposition.js", () => ({
   },
 }));
 
-/** A turn that reads a sensitive item (the tool marks its answer, issue #1827) and then quotes it in its reply. */
+/** A turn that reads a sensitive item (the tool marks its answer) and then quotes it in its reply. */
 function quotingSession(read: boolean): CreateAgentSession {
   const messages: AgentMessage[] = [
     { kind: "turn_start" },

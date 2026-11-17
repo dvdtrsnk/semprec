@@ -99,7 +99,6 @@ function isOwnedPgClosure(
   return error instanceof Error && error.constructor === Error && !("code" in error) && error.message === message;
 }
 
-/** Owns only this overlap's runtime clients, gates and operations. */
 function ownOverlap(
   runtime: Pool,
   cancel: () => void,
@@ -408,7 +407,6 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** The authors of a page document's updates, oldest first. */
 async function docUpdateAuthors(itemId: string): Promise<string[]> {
   const { rows } = await pool.query<{ created_by: string }>(
     `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1 ORDER BY u.id`,
@@ -417,7 +415,6 @@ async function docUpdateAuthors(itemId: string): Promise<string[]> {
   return rows.map((row) => row.created_by);
 }
 
-/** The block ids a confirmed card's primary result lists. */
 function resultBlockIds(confirmed: { properties: Record<string, unknown> }): string[] {
   const results = z
     .array(z.object({ role: z.string(), blockIds: z.array(z.string()) }))
@@ -425,7 +422,7 @@ function resultBlockIds(confirmed: { properties: Record<string, unknown> }): str
   return results.find((result) => result.role === "primary")?.blockIds ?? [];
 }
 
-/** The `file` value of a Files item (a blob that exists): the Files editor schema requires it, so a Files card needs one to confirm (issue #1928). */
+/** The Files editor schema requires a `file` value, so a Files card needs one to confirm. */
 async function newFileValue(client: PoolClient): Promise<{ blobId: string }> {
   const blob = await createBlob(client, {
     mimeType: "application/pdf",
@@ -1197,7 +1194,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs WHERE item_id = $1", [project.id]),
       );
       expect(docsBefore.rows).toEqual([{ count: 0 }]);
-      // Issue #1681 replaced the earlier 409: the revised card now confirms and writes its content.
+      // The revised card confirms and writes its content.
       const confirmed = await runInTenant(tenant, () =>
         withTransaction(runtime, (client) =>
           confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id),
@@ -1332,7 +1329,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       return project.id;
     }
 
-    /** The target page's blocks in document order, as [id, type, text]. */
     async function pageBlocks(itemId: string): Promise<Array<[string, string, string]>> {
       const doc = await docStore.getDoc(itemId);
       if (!doc) return [];
@@ -1982,8 +1978,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         async (client) => (await createItemWithClient(client, { databaseId: projectsId, properties: { name } })).id,
       );
     }
-    // In a tenant scope, as a request is: the write of a Tasks.project edge queues value-link propagation (issue
-    // #1702), which needs the scope.
+    // A Tasks.project edge queues value-link propagation, which needs a tenant scope.
     const confirm = (proposalId: string) =>
       runInTenant(getTenantZeroId(), () =>
         withTransaction(pool, (client) =>
@@ -2118,8 +2113,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
   describe("multi-step proposals on confirm (issue #1486)", () => {
     type Step = NonNullable<ProposalEnvelope["operations"]>[number];
-    // In a tenant scope, as a request is: the writes of a People.companies edge or a Projects status queue
-    // value-link propagation (issue gh-1869), which needs the scope.
+    // A People.companies edge or Projects status queues value-link propagation, which needs a tenant scope.
     const confirm = (proposalId: string, actingUserId?: string) =>
       runInTenant(getTenantZeroId(), () =>
         withTransaction(pool, (client) =>
@@ -2152,7 +2146,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     const cardStatus = async (cardId: string) =>
       (await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, cardId)))!.properties.status;
 
-    /** Stores a multi-step envelope on a fresh card the way the tick will (system-owned `proposal`). */
     async function cardWithSteps(primaryDatabase: string, steps: Step[]): Promise<string> {
       const card = await createDatabaseProposal("seed");
       const primary = steps.find((step) => step.role === "primary")!;
@@ -2368,7 +2361,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const itemRow = async (itemId: string) =>
         (await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [itemId])))[0];
 
-      /** A card whose only step is the update the tick stores for a company that already exists. */
       async function cardForExistingCompany(companyId: string): Promise<string> {
         return cardWithSteps("companies", [
           {
@@ -3464,7 +3456,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         return ids;
       }
 
-      /** A two-operation answer, a new Task plus an update of an existing one, so the tick prepares an update step. */
       const twoSteps =
         (
           existingTaskId: string,
@@ -3501,7 +3492,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       it("propagates from the computed update preparation of a tick and writes no card", async () => {
         const existing = await createIn("tasks", { name: "Buy milk" });
         const [control, source] = await taskInboxItems("Buy milk", "Buy milk again");
-        // With the stored zone valid the same answer becomes a proposed card.
         await runTick(control!, twoSteps(existing));
         expect((await findProposalForItem(control!))?.properties.status).toBe("proposed");
 
@@ -4191,7 +4181,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       ),
     ).rejects.toThrow(/not a writable target database/);
 
-    // The proposal must be untouched by the rejected revise attempts — still pointed at Tasks.
     const untouched = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
     expect((untouched!.properties.proposal as { target: string }).target).toBe(tasksId);
   });
@@ -4457,7 +4446,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       return withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
     }
 
-    /** Stores `status` `invalid` (with `invalidReason` when given) through the choke point, the state #1916 will write reactively. */
+    /** Stores `status` `invalid` through the choke point. */
     async function markInvalid(proposalId: string, invalidReason?: Record<string, unknown>) {
       await withTransaction(pool, (client) =>
         updateItemWithClient(
@@ -4615,7 +4604,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       if (!card) throw new Error(`card ${id} not found`);
       return card;
     };
-    /** Runs `attempt`, expects the refusal `error` and proves it wrote nothing: the card's properties and `updatedAt` are as they were. */
+    /** Expects the refusal and proves nothing was written: properties and `updatedAt` unchanged. */
     async function expectRefusedUnchanged(cardId: string, attempt: () => Promise<unknown>) {
       const before = await readCard(cardId);
       const error = await attempt().then(
@@ -4635,7 +4624,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           { allowedSystemKeys: Object.keys(patch) },
         ),
       );
-    /** Stores a multi-step envelope as the assistant's output of a fresh card, the way the tick will. */
     async function cardWithSteps(steps: Step[]): Promise<string> {
       const card = await createDatabaseProposal("seed");
       const primary = steps.find((step) => step.role === "primary")!;
@@ -4829,7 +4817,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     it("materializes aiProposal from proposal on a legacy card and leaves aiVersion absent", async () => {
       const card = await createDatabaseProposal("Send the invoice");
-      // A card written before aiProposal and aiVersion existed: no current writer can produce that state.
+      // No current writer can produce a card without aiProposal and aiVersion.
       await pool.query("UPDATE items SET properties = properties - 'aiProposal' - 'aiVersion' WHERE id = $1", [
         card.id,
       ]);
@@ -5131,7 +5119,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         );
       const historyOf = (card: { properties: Record<string, unknown> }) =>
         z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
-      /** Stores overrides no edit can produce (a key the target database does not have), the state left by a property that was removed. */
+      /** Overrides no edit can produce (a key the target database lacks), as left by a removed property. */
       const storeOverrides = (cardId: string, overrides: Record<string, Record<string, unknown>>, keys: string[]) =>
         setStatus(cardId, { userOverrides: overrides, userEditedKeys: keys });
 
@@ -5372,7 +5360,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const thread = { threadId: randomUUID(), messageId: randomUUID() };
       const historyOf = (card: { properties: Record<string, unknown> }) =>
         z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
-      /** The Inbox item a card was made from: the subject of its item thread. */
       async function sourceOf(cardId: string): Promise<string> {
         return withTransaction(pool, async (client) => {
           const property = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
@@ -5795,14 +5782,12 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           (await pool.query<{ n: string }>("SELECT count(*) AS n FROM items WHERE database_id = $1", [tasksId])).rows[0]
             ?.n,
         );
-      /** A task card whose assistant envelope carries `properties`. */
       async function taskCard(properties: Record<string, unknown>): Promise<string> {
         const card = await createDatabaseProposal("seed");
         const envelope = { entityKind: "database", target: tasksId, properties };
         await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
         return card.id;
       }
-      /** A card for a Files item, which the Files schema requires to hold a file. */
       async function fileCard(withFile: boolean): Promise<string> {
         const card = await createDatabaseProposal("seed", "files");
         const properties = withFile
@@ -6119,14 +6104,12 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     describe("what confirm writes is what the editor shows (issue #1934)", () => {
       const confirmCard = (cardId: string): Promise<ItemRow> =>
         withTransaction(pool, (client) => confirmProposalWithClient(client, config(), cardId));
-      /** A card for an item of `moduleId` whose assistant envelope carries `properties`. */
       async function cardFor(moduleId: string, properties: Record<string, unknown>): Promise<string> {
         const card = await createDatabaseProposal("seed");
         const envelope = { entityKind: "database", target: await databaseIdFor(moduleId), properties };
         await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
         return card.id;
       }
-      /** Confirms the card and reads the item it created back from the database. */
       async function confirmedItem(cardId: string, moduleId: string): Promise<ItemRow> {
         const confirmed = await confirmCard(cardId);
         const itemId = z.string().parse(confirmed.properties.resultItemId);
@@ -6350,7 +6333,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
       it("refuses a stdio MCP server card with a validation error on transport and writes nothing", async () => {
         const card = await createDatabaseProposal("seed");
-        // Raw write: a proposal that holds a stdio connection cannot be created through the API (it is refused as a card).
+        // Raw write: the API refuses a proposal holding a stdio connection.
         const envelope = {
           entityKind: "database",
           target: await databaseIdFor("mcpServers"),
@@ -6384,8 +6367,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       });
     });
     describe("relation lists and step switches (issue #1920)", () => {
-      // In a tenant scope, as a request is: a confirm that writes a Tasks.project edge queues value-link propagation
-      // (issue #1702), which needs the scope.
+      // A Tasks.project edge queues value-link propagation, which needs a tenant scope.
       const confirmCard = (cardId: string): Promise<ItemRow> =>
         runInTenant(getTenantZeroId(), () =>
           withTransaction(pool, (client) => confirmProposalWithClient(client, config(), cardId)),
@@ -6417,7 +6399,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         parts: Pick<Parameters<typeof updateProposalValuesWithClient>[3], "set" | "relations" | "steps">,
       ): Promise<ItemRow> =>
         (await withTransaction(pool, (client) => updateProposalValuesWithClient(client, config(), cardId, parts))).item;
-      /** A card whose assistant envelope is `envelope`, as the tick stores it. */
       async function storeCard(envelope: Record<string, unknown>): Promise<string> {
         const card = await createDatabaseProposal("seed");
         await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
@@ -6430,7 +6411,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         role: "secondary",
         properties: { name: "Follow up" },
       };
-      /** A company with an optional follow-up task step that nothing refers to. */
       const companyWithFollowup = async (extra: Partial<Step> = {}): Promise<string> =>
         storeCard({
           entityKind: "database",
@@ -6943,7 +6923,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       if (!card) throw new Error(`card ${id} not found`);
       return card;
     };
-    /** Stores system properties through the choke point: the states no route writes (a status, a reason, a malformed value). */
+    /** Stores system properties no route writes. */
     const store = (cardId: string, patch: Record<string, unknown>) =>
       withTransaction(pool, (client) =>
         updateItemWithClient(
@@ -6954,7 +6934,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       );
     const historyOf = (card: ItemRow) => z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
     const taskEnvelope = (name: string) => ({ entityKind: "database", target: tasksId, properties: { name } });
-    /** Runs `attempt`, expects its refusal and proves it wrote nothing: the card's properties and `updatedAt` are as they were. */
+    /** Expects the refusal and proves nothing was written: properties and `updatedAt` unchanged. */
     async function expectRefusedUnchanged(cardId: string, attempt: () => Promise<unknown>) {
       const before = await readCard(cardId);
       const error = await attempt().then(
@@ -7257,7 +7237,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       if (!card) throw new Error(`card ${id} not found`);
       return card;
     };
-    /** Stores system properties through the choke point: the states no route writes (a status, a reason). */
+    /** Stores system properties no route writes. */
     const store = (cardId: string, patch: Record<string, unknown>) =>
       withTransaction(pool, (client) =>
         updateItemWithClient(
@@ -7266,10 +7246,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           { allowedSystemKeys: Object.keys(patch) },
         ),
       );
-    /** What a card's row holds; the item a write returns also carries the metadata of the patch, which a read does not. */
     const plain = (card: ItemRow) => ({ id: card.id, updatedAt: card.updatedAt, properties: card.properties });
     const historyOf = (card: ItemRow) => z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
-    /** A card of the given `kind` and `status` with no source, written through the choke point. */
     const bareCard = (kind: string, status: string) =>
       withTransaction(
         pool,
@@ -7282,7 +7260,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
             )
           ).id,
       );
-    /** The Inbox item the card's `sourceInbox` edge leads to. */
     const sourceOf = (cardId: string): Promise<string> =>
       withTransaction(pool, async (client) => {
         const property = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
@@ -7291,7 +7268,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         expect(edges).toHaveLength(1);
         return relationsStore.otherSide(edges[0]!, cardId);
       });
-    /** The queue, by key and how often a keyed enqueue replaced the queued job (`revision`). */
     const queuedJobs = async () =>
       (
         await pool.query<{ key: string | null; revision: number }>(
@@ -7312,7 +7288,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         await runOnce({ pgPool: pool }, taskList);
       }
     }
-    /** The key of the job that runs the tick of the Inbox `update` heartbeat for `itemId`. */
     async function tickJobKey(itemId: string): Promise<string> {
       const { rows } = await pool.query<{ id: string }>(
         `SELECT id FROM project_heartbeats
@@ -7332,7 +7307,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       await discardQueuedJobs();
       return { card: await readCard(card.id), itemId };
     }
-    /** Runs `attempt`, expects it to fail and proves it wrote nothing: the card, its `updatedAt` and the queue are as they were. */
+    /** Expects failure and proves nothing was written: the card, its `updatedAt` and the queue unchanged. */
     async function expectRefusedUnchanged(cardId: string, attempt: () => Promise<unknown>): Promise<unknown> {
       const cardBefore = await readCard(cardId);
       const jobsBefore = await queuedJobs();
@@ -7536,8 +7511,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     it("refuses a card whose source Inbox item is in the Trash but whose status the tick has not changed yet, and writes nothing", async () => {
       const { card, itemId } = await editedCard();
-      // Raw SQL: the production trash write leaves the card to the tick, which this test does not run; the point is the card's
-      // state while the tick is still to come.
+      // Raw SQL: the production trash leaves the card to the tick, which this test does not run.
       await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [itemId]);
 
       const error = await expectRefusedUnchanged(card.id, () => recompute(card.id));
@@ -7579,7 +7553,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     describe("a card that stays computing past the timeout (issue gh-2026)", () => {
       const MINUTE_MS = 60_000;
 
-      /** Moves the clock `ms` ahead of the real one. Only `Date` is faked, so the database and the timers of the pool run as they do. */
+      /** Only `Date` is faked, so the database and pool timers run normally. */
       function clockAfter(ms: number): void {
         const base = Date.now();
         vi.useFakeTimers({ toFake: ["Date"] });
@@ -7809,7 +7783,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     it("a revise of a legacy card without aiProposal stores aiProposal and sets aiVersion to 1", async () => {
       const proposal = await createDatabaseProposal("Buy milk");
-      // A card written before aiProposal and aiVersion existed: no current writer can produce that state.
+      // No current writer can produce a card without aiProposal and aiVersion.
       await pool.query("UPDATE items SET properties = properties - 'aiProposal' - 'aiVersion' WHERE id = $1", [
         proposal.id,
       ]);
@@ -7858,7 +7832,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
   describe("thread task cards (issue gh-2034)", () => {
     const USER = { writerKind: "user" } as const;
-    /** A transaction in the tenant's scope, which the mail thread writers require. */
     const scoped = <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> =>
       runInTenant(getTenantZeroId(), () => withTransaction(pool, fn));
     const config = () => ({ processingProposalsDatabaseId: proposalsId });
@@ -7900,7 +7873,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       return property.id;
     }
 
-    /** A message in the inbox through the sync writer: its thread, the thread's Threads item and its Emails item. */
     async function newMessage(messageId: string): Promise<{ threadId: string; itemId: string; emailItemId: string }> {
       return scoped(async (client) => {
         const ingested = await ingestEmailMessage(client, {
@@ -7965,10 +7937,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       return { thread, project, people: [alice, bob].sort() };
     }
 
-    /**
-     * A `kind = 'mailThread'` card as its producer writes it (issue gh-2035): the card with its envelope and, unless
-     * `threadItemId` is null, its `sourceThread` edge.
-     */
+    /** A `mailThread` card as its producer writes it; `threadItemId` null omits the `sourceThread` edge. */
     async function createThreadCard(
       threadItemId: string | null,
       proposalProperties: Record<string, unknown> = { name: "Pay the invoice" },
@@ -8029,7 +7998,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       });
     }
 
-    /** What a confirm adds to: the Tasks items, the edges and the value links of the tenant. */
     async function writtenState() {
       const tasks = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
         tasksId,
@@ -8039,7 +8007,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       return { tasks: tasks.rows.map((row) => row.id), edges: edges.rows[0]?.count, links: links.rows[0]?.count };
     }
 
-    /** The links of a task: property key, state and the Threads items they follow. */
     async function linksOfTask(taskId: string) {
       return scoped(async (client) => {
         const links = await listValueLinksByItemIds(client, [taskId]);
@@ -8467,7 +8434,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       return { ...entry(), properties: rest };
     }
 
-    /** The tick's check of a computed envelope before it stores it. */
     function tickWrite(envelope: ProposalEnvelope) {
       return withTransaction(pool, (client) => assertValidProposalEnvelope(client, envelope));
     }
@@ -8676,7 +8642,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
         it("is refused at confirm for a card that already holds it, and nothing is written", async () => {
           const card = await createDatabaseProposal("Buy milk");
-          // A pair stored before the rule existed is a state revise can no longer produce, so it is stored without its checks.
+          // Stored without checks: revise can no longer produce this pair.
           await setStoredProperty(card.id, "proposal", await both());
           const before = await writtenState();
 
@@ -8751,7 +8717,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     describe("confirming a journal entry (issue gh-1981)", () => {
       const DAY = "2026-10-16";
 
-      /** The id of the Journal item of `day`, or `null` when the day has no item. */
       async function dayItemId(day: string): Promise<string | null> {
         const { rows } = await pool.query<{ id: string }>(
           "SELECT id FROM items WHERE database_id = $1 AND properties->>'type' = 'day' AND properties->>'period' = $2",
@@ -8760,7 +8725,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         return rows[0]?.id ?? null;
       }
 
-      /** How many live Journal items stand for `day`. */
       async function dayCount(day: string): Promise<number> {
         const { rows } = await pool.query<{ n: number }>(
           "SELECT count(*)::int AS n FROM items WHERE database_id = $1 AND properties->>'type' = 'day' AND properties->>'period' = $2 AND deleted_at IS NULL",
@@ -8769,7 +8733,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         return rows[0]?.n ?? 0;
       }
 
-      /** The ids of the real blocks of an item's page, in page order. */
       async function pageBlockIds(itemId: string): Promise<string[]> {
         return withTransaction(pool, async (client) => {
           const row = await getDocByItemId(client, itemId);
@@ -8783,7 +8746,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         });
       }
 
-      /** The relation property keys through which `itemId` has an edge, each with the item on the other side. */
       async function edgesOf(itemId: string): Promise<Array<{ key: string; other: string }>> {
         const { rows } = await pool.query<{ key: string; other: string }>(
           `SELECT p.key, CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS other
@@ -8796,7 +8758,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         return rows;
       }
 
-      /** A `proposed` card that holds `envelope`, written by revise as a person would write it. */
       async function journalCard(envelope: ProposalEnvelope = entry()): Promise<ItemRow> {
         const card = await createDatabaseProposal("Buy milk");
         await revise(card.id, envelope);
@@ -9051,7 +9012,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
         it("a Journal database that is no longer the card's target", async () => {
           const card = await journalCard();
-          // A stale target is a state only an older card can be in, so it is stored without the checks of revise.
+          // Stored without revise's checks: only an older card can hold a stale target.
           await setStoredProperty(card.id, "proposal", { ...entry(), target: tasksId });
           const written = await writtenState();
 
@@ -9065,13 +9026,13 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       });
 
       describe("when a step of the confirm fails, the card stays proposed and no part of the entry remains", () => {
-        /** Runs `run` while a trigger raises on the writes of `table` that `condition` selects; the trigger is removed after. */
+        /** A trigger raises on the writes of `table` that `condition` selects; removed afterwards. */
         async function withFailingWrite(
           table: "items" | "item_relations",
           condition: "TRUE" | "NEW.properties ->> 'status' = 'confirmed'",
           run: () => Promise<void>,
         ) {
-          // The names, the table and the condition are constants of this test, never values from outside.
+          // Names, table and condition are test constants.
           await pool.query(
             `CREATE FUNCTION test_fail_journal_confirm() RETURNS trigger LANGUAGE plpgsql AS $$
              BEGIN
@@ -9150,7 +9111,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
               return createItemWithClient(client, { databaseId: database.id, properties: { name: "Foreign project" } });
             }),
           );
-          // A stale reference is a state only an older card can be in, so it is stored without the checks of revise.
+          // Stored without revise's checks: only an older card can hold a stale reference.
           for (const [card, projectId] of [
             [foreignCard, foreignProject.id],
             [randomCard, randomUUID()],
@@ -9179,7 +9140,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           expect(shape(foreignError)).toEqual(shape(randomError));
           expect(shape(foreignError).field).toBe("projectId");
           expect(confirmed.properties.status).toBe("confirmed");
-          // Only the tenant's own entry was written: one day, one entry, and no edge to the foreign project.
           expect(await dayCount(DAY)).toBe(1);
           const itemId = (await dayItemId(DAY)) ?? "";
           expect(await edgesOf(itemId)).toEqual([]);
@@ -9252,7 +9212,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
   describe("an MCP server card queues the sync of its tools (issue gh-1976)", () => {
     const config = () => ({ processingProposalsDatabaseId: proposalsId });
-    /** A transaction in the tenant's scope, as the confirm route runs it: the job envelope takes the tenant from it. */
+    /** The confirm route's tenant scope: the job envelope takes the tenant from it. */
     const scoped = <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> =>
       runInTenant(getTenantZeroId(), () => withTransaction(pool, fn));
     const serverProperties = {
@@ -9297,10 +9257,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       return scoped((client) => confirmProposalWithClient(client, config(), cardId, credential, user));
     }
 
-    /** The pending `mcpServerSync` jobs: their keys and business payloads. */
     async function queuedSyncs(): Promise<Array<{ key: string | null; payload: Record<string, unknown> }>> {
       const { rows } = await pool.query<{ key: string | null; payload: { payload: Record<string, unknown> } }>(
-        // The public `jobs` view has no payload column; graphile-worker 0.17.3 keeps the queue envelope in `_private_jobs`.
+        // The public `jobs` view has no payload column.
         `SELECT j.key, j.payload FROM graphile_worker._private_jobs j
            JOIN graphile_worker._private_tasks t ON t.id = j.task_id
           WHERE t.identifier = 'mcpServerSync' ORDER BY j.key`,
@@ -9396,7 +9355,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const cardId = await serverCard();
       const first = await confirmAs(cardId, actingUserId);
       const serverId = z.string().parse(first.properties.resultItemId);
-      // The job leaves the queue as it does when it completes.
       await pool.query("SELECT graphile_worker.remove_job($1)", [`mcp-server-sync-${serverId}`]);
       expect(await queuedSyncs()).toEqual([]);
 

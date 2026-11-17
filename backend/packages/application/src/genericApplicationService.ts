@@ -34,23 +34,14 @@ type BreadcrumbEntry = NonNullable<
 >[number];
 
 /**
- * The sole neutral implementation of `GenericApplicationPort` (issue #219): built only over
- * `packages/data`'s public entry points — the choke-point facade (`createChokePoint`), the page
- * store (`createDocStore`) and the global search query (`searchItemGroups`) — never a store or SQL
- * directly — `packages/application` is core (see `core-knows-nobody` in
- * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
- * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
- * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 47-operation catalog's business logic.
+ * The only implementation of `GenericApplicationPort`, built solely over `packages/data`'s public
+ * entry points (`createChokePoint`, `createDocStore`, `searchItemGroups`), never a store or SQL.
+ * It is transport-agnostic; a composition root builds one per `Pool`.
  */
 
 /**
- * Every generic-catalog write governs `createdBy`/`creatorProjectItemId` (views) and edge/property
- * ownership (relations) through this — an agent actor is identified by carrying
- * `agentProjectItemId`, matching how #220's AgentTool/MCP composition root will populate
- * `AuthenticatedActor`. Exported so `ApprovedOperationExecutor` and `DestructiveApprovalPreflight`
- * (issue #89, in `genericOperationGateway.ts`) can convert the same actor shape without
- * duplicating this mapping.
+ * Maps the caller identity to the choke point's `Actor`; an agent is identified by carrying
+ * `agentProjectItemId`. Exported for the gateway's approval executor and preflight.
  */
 export function toActor(actor: AuthenticatedActor): Actor {
   return actor.agentProjectItemId !== undefined
@@ -58,14 +49,14 @@ export function toActor(actor: AuthenticatedActor): Actor {
     : { type: "user" };
 }
 
-/** `patch`-shaped inputs (database/property/view) reject an empty object outright, rather than silently no-op'ing a write that changed nothing. */
+/** An empty patch is rejected rather than silently writing nothing. */
 function assertNonEmptyPatch(patch: Record<string, unknown>): void {
   if (Object.keys(patch).length === 0) {
     throw new ValidationError("Patch must include at least one field", { reason: "empty_patch" });
   }
 }
 
-/** In-memory keyset pagination over an already-fetched row set, id-ordered — the choke-point's own list calls (`listDatabases`, `listCuratedViews`) return every row unpaginated. */
+/** In-memory id-ordered keyset pagination over rows the choke point returns unpaginated. */
 function paginate<T extends { id: string }>(rows: readonly T[], cursor: string | undefined, limit: number): Page<T> {
   const sorted = [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const start = cursor === undefined ? 0 : sorted.findIndex((row) => row.id > cursor);
@@ -94,8 +85,8 @@ export function createGenericApplicationService(
   }
 
   /**
-   * Legacy `include: ["links"]` or `{ links: true }`: attaches each item's links (an empty object when it has none) in one batched read; without it the items come back untouched.
-   * For an agent (issue #1849) or an external client (issue #1998) a link source item in a database the reader may not read is left out of the link.
+   * `include: ["links"]` or `{ links: true }` attaches each item's links (empty object when none) in one batched read.
+   * For an agent or an external client, a link source item in a database the reader may not read is left out.
    */
   async function withLinks<T extends Item>(
     items: T[],
@@ -124,7 +115,6 @@ export function createGenericApplicationService(
       : undefined;
   }
   return {
-    // ---- databases ----
     async listDatabases(actor, input) {
       const databases = await chokePoint.listDatabases(readerOf(actor));
       return paginate<Database>(databases, input.cursor, input.limit);
@@ -184,10 +174,8 @@ export function createGenericApplicationService(
       return chokePoint.restoreDatabase(input.databaseId, actor.userId, externalClientReaderOf(actor));
     },
 
-    // ---- properties ----
-    // The operations on a property, a view and a page below take the external-client reader (issue #1998) and decide it
-    // in the data layer, in the transaction of the operation. An agent's project is not passed on these paths: they stay
-    // as docs/adr/2026-11-12-per-database-agent-grants.md leaves them.
+    // The property, view and page operations below pass only the external-client reader, decided in the data layer
+    // inside the operation's transaction; an agent's project is not passed on these paths.
     async listProperties(actor, input) {
       return chokePoint.listProperties(input.databaseId, externalClientReaderOf(actor));
     },
@@ -243,12 +231,8 @@ export function createGenericApplicationService(
     },
 
     async patchProperty(actor, input) {
-      // Both the existence check and the empty-patch/relation-type guards run inside
-      // `chokePoint.updateProperty`'s own transaction, against the row that same transaction
-      // fetches — not as a separate read-then-write here, which would leave a window for a
-      // concurrent change to slip past them, and would also mean deciding the 404-vs-400 error
-      // priority for "unknown id + empty patch" outside the transaction that already knows the
-      // answer (issue #219).
+      // The existence and empty-patch/relation-type guards run inside `chokePoint.updateProperty`'s transaction against
+      // the row it fetches, so no concurrent change slips between check and write.
       const { property: updated } = await chokePoint.updateProperty(
         input.propertyId,
         { name: input.patch.name, config: input.patch.config, type: input.patch.type },
@@ -259,9 +243,7 @@ export function createGenericApplicationService(
     },
 
     async patchPropertyWithDatabase(actor, input) {
-      // Same transaction-scoped guards as `patchProperty` above (issue #219); the only
-      // difference is `chokePoint.updatePropertyWithDatabase` also reads the owning `Database`
-      // row inside that same transaction (issue #789).
+      // Same transaction-scoped guards as `patchProperty`; this variant also returns the owning `Database`.
       const { property, database } = await chokePoint.updatePropertyWithDatabase(
         input.propertyId,
         { name: input.patch.name, config: input.patch.config, type: input.patch.type },
@@ -279,9 +261,8 @@ export function createGenericApplicationService(
     },
 
     /**
-     * The returned label of an option that stores none is its catalog label in the caller's locale, English when the
-     * user row is not visible. The empty-patch and unknown-option refusals are raised inside the choke point's
-     * transaction.
+     * An option that stores no label returns its catalog label in the caller's locale (English when the user row is not
+     * visible). Empty-patch and unknown-option refusals are raised inside the choke point's transaction.
      */
     async updatePropertyOption(actor, input) {
       return chokePoint.updatePropertyOption(
@@ -293,7 +274,6 @@ export function createGenericApplicationService(
       );
     },
 
-    // ---- views ----
     async listViews(_actor, input) {
       const views = await chokePoint.listCuratedViews();
       return paginate(views, input.cursor, input.limit);
@@ -391,7 +371,6 @@ export function createGenericApplicationService(
       });
     },
 
-    // ---- items ----
     async getItem(actor, input) {
       const writer = writerIdentityOf(actor);
       const reader = readerOfWriter(writer);
@@ -494,10 +473,10 @@ export function createGenericApplicationService(
     },
 
     /**
-     * The choke point resolves every entry's database in the caller's tenant, and applies the declared collection filter through `resolver`.
-     * An external client (issue #1998) is refused the whole call when an entry names a sensitive database. An agent's
-     * run (issue #2000) is refused an entry whose filter reaches a sensitive database its project may not read; the
-     * access to the counted database itself is not decided here for an agent.
+     * The choke point resolves each entry's database in the caller's tenant and applies its collection filter. An
+     * external client is refused the whole call when an entry names a sensitive database; an agent run is refused an
+     * entry whose filter reaches a sensitive database its project may not read (the counted database itself is not
+     * checked for an agent).
      */
     async countItems(actor, input) {
       const reader = readerOf(actor);
@@ -509,10 +488,9 @@ export function createGenericApplicationService(
     },
 
     /**
-     * The choke point resolves the database in the caller's tenant; labels that are not stored follow the locale of the user the actor is or acts for.
-     * An external client (issue #1998) is refused a sensitive database. An agent's run (issue #2000) is refused a filter
-     * or a facet that reaches a sensitive database its project may not read; the access to the faceted database itself
-     * is not decided here for an agent.
+     * Unstored labels follow the locale of the user the actor is or acts for. An external client is refused a sensitive
+     * database; an agent run is refused a filter or facet reaching a sensitive database its project may not read (the
+     * faceted database itself is not checked for an agent).
      */
     async getDatabaseFacets(actor, input) {
       const reader = readerOf(actor);
@@ -527,9 +505,8 @@ export function createGenericApplicationService(
     },
 
     /**
-     * Global search (issue #1842): the data function runs in the caller's tenant, and an agent actor's project limits it
-     * to the databases the project may read. Only a person (a REST session that is not acting for an agent) is given
-     * the `chat` group of Semp threads (issue #1854); an agent run and an MCP client are not.
+     * Runs in the caller's tenant; an agent's project limits it to the databases it may read. Only a person (a REST
+     * session not acting for an agent) gets the `chat` group of Semp threads.
      */
     async searchItems(actor, input) {
       return searchItemGroups(pool, {
@@ -542,7 +519,6 @@ export function createGenericApplicationService(
       });
     },
 
-    // ---- relations ----
     async setRelation(actor, input) {
       return chokePoint.setRelation(input, writerIdentityOf(actor), actor.userId);
     },
@@ -581,7 +557,7 @@ export function createGenericApplicationService(
       return edge;
     },
 
-    /** The choke point answers `null` for an unknown, trashed or foreign item; that is the same not-found `requireItem` gives, so no caller can tell the three apart. */
+    /** `null` for an unknown, trashed or foreign item gives the same not-found as `requireItem`, so the three are indistinguishable. */
     async listRelations(actor, input) {
       const relations = await chokePoint.listItemRelations(input.itemId, input.relationPropertyId, readerOf(actor));
       if (!relations)
@@ -589,7 +565,7 @@ export function createGenericApplicationService(
       return relations;
     },
 
-    /** The choke point answers `null` for an unknown, trashed or foreign item, the same not-found as `listRelations`. */
+    /** Same not-found for unknown, trashed or foreign items as `listRelations`. */
     async listRelatedCollections(actor, input) {
       const related = await chokePoint.listRelatedCollections(input.itemId, resolver, readerOf(actor));
       if (!related)
@@ -598,28 +574,24 @@ export function createGenericApplicationService(
     },
 
     async unlinkValue(actor, input) {
-      // The full identity, so an agent under a run is told from one without (issue #1758).
+      // The full identity, so an agent under a run is told from one without.
       const writer = writerIdentityOf(actor);
       if (writer.writerKind === "system") throw new Error("An actor never writes as the system");
       return chokePoint.unlinkValue(input, { ...writer, writerKind: writer.writerKind }, actor.userId);
     },
     async relinkValue(actor, input) {
-      // The full identity, so an agent under a run is held to its project's grant on the item's database (issue #1810).
+      // The full identity, so an agent under a run is held to its project's grant on the item's database.
       const writer = writerIdentityOf(actor);
       if (writer.writerKind === "system") throw new Error("An actor never writes as the system");
       return chokePoint.relinkValue(input, actor.userId, { ...writer, writerKind: writer.writerKind });
     },
 
-    // ---- pages ----
-    // The page operations of an agent run are held to its project's grant on the database that owns the page
-    // (`resolvePageOwner`), and, when the host item of the page is a file, transcript or Inbox entry linked to a
-    // sensitive record, to the grant on that record's database (issue #1999), and those of an external client on `/mcp`
-    // (issue #1998) to the same owner database being not sensitive: one resolver, one check, for both readers (`assertAgentPageAccess`). Each method below that
-    // reads or writes a page hands the actor's reader (`readerOf`) to the document store, which checks it in the
-    // transaction of the operation; `replacePage` hands it over in its writer, and for `restorePageVersion` an agent is
-    // checked by its approval projection, because an agent's call is held for approval first, so only an external
-    // client's reader is passed. A person and the system carry no reader and are not checked
-    // (docs/adr/2026-11-13-page-operations-follow-the-owner-database-grant.md).
+    // Page access (`assertAgentPageAccess`, one resolver for both readers): an agent run is held to its project's grant
+    // on the page's owner database (`resolvePageOwner`), plus the grant on a sensitive record's database when the host
+    // item is a file, transcript or Inbox entry linked to one; an external client on `/mcp` is refused a sensitive owner
+    // database. Each method passes `readerOf(actor)` to the document store, checked in the operation's transaction;
+    // `replacePage` passes it in its writer. `restorePageVersion` passes only an external client's reader, since an
+    // agent's call is held for approval and checked by its approval projection. A person and the system carry no reader.
     async getPage(actor, input) {
       const item = await requireItem(input.itemId);
       const reader = readerOf(actor);
@@ -634,9 +606,8 @@ export function createGenericApplicationService(
         reader,
       );
       const path = await chokePoint.getItemPath(item.id);
-      // An ancestor can live in a database this reader may not read (a database nested under an item of a sensitive
-      // one), so for an agent's project and for an external client its trail entry names the item and nothing else, as a
-      // hidden relation target does (docs/adr/2026-11-12-per-database-agent-grants.md).
+      // An ancestor can live in a database this reader may not read, so for an agent's project or an external client
+      // its trail entry names the item and nothing else, like a hidden relation target.
       const unreadableDatabaseIds =
         reader === undefined
           ? new Set<string>()
@@ -670,7 +641,7 @@ export function createGenericApplicationService(
       return { ...summary, breadcrumbs: hasTrail ? breadcrumbs : null };
     },
 
-    /** The change list of one page; the docs module resolves the item in the caller's tenant and bounds the replay. */
+    /** The docs module resolves the item in the caller's tenant and bounds the replay. */
     async listPageChanges(actor, input) {
       return docStore.listPageChanges(
         input.itemId,
@@ -692,9 +663,8 @@ export function createGenericApplicationService(
     },
 
     /**
-     * Merges the two live entries of a Journal period that were created first, or answers `{ merged: false }`. The
-     * merge itself needs no approval here: a person's call is their decision, and an agent's call is held for approval
-     * by the gateway before it can reach this method (issue #2017).
+     * Merges the first two live entries of a Journal period, or answers `{ merged: false }`. No approval here: an agent's
+     * call is held for approval by the gateway before it reaches this method.
      */
     async mergeJournalDuplicates(actor, input) {
       return withTransaction(pool, (client) => mergeJournalDuplicatesForWriter(client, input, writerIdentityOf(actor)));
@@ -704,12 +674,12 @@ export function createGenericApplicationService(
       return docStore.ensurePage(input.itemId, readerOf(actor));
     },
 
-    /** The block is authored by the caller: `ai_agent` for an agent actor, `user` for a person (the same split `toActor` makes). */
+    /** The block is authored as `ai_agent` for an agent actor, `user` for a person. */
     async createSubpage(actor, input) {
       return docStore.createSubpage(input, toActor(actor).type, readerOf(actor));
     },
 
-    /** The copies are authored like `createSubpage`'s block; the suffix of the copy's title follows the locale of the user the actor is or acts for (English when that user is not found). */
+    /** Authored like `createSubpage`; the copy's title suffix follows the locale of the user the actor is or acts for (English when not found). */
     async duplicatePage(actor, input) {
       return docStore.duplicatePage(
         input.pageItemId,
@@ -721,15 +691,14 @@ export function createGenericApplicationService(
       );
     },
 
-    /** The parent's block is rewritten as the caller, with the origin split `createSubpage` makes. */
+    /** The parent's block is rewritten as the caller, authored like `createSubpage`. */
     async renamePage(actor, input) {
       return docStore.renamePage(input, toActor(actor).type, readerOf(actor));
     },
 
     /**
-     * The new block is authored with the origin split `createSubpage` makes, and the page tree is trashed by the caller's
-     * writer identity and user, so the choke point's trash hooks see who asked for it. An agent run's call is held for
-     * approval by the gateway before it can reach this method (issue #1876).
+     * Authored like `createSubpage`; the page tree is trashed with the caller's writer identity and user so trash hooks
+     * see who asked. An agent run's call is held for approval by the gateway first.
      */
     async convertPageToBlock(actor, input) {
       return docStore.convertPageToBlock(input, {
@@ -739,7 +708,7 @@ export function createGenericApplicationService(
       });
     },
 
-    /** Same origin split as `createSubpage`: `ai_agent` for an agent actor (a run credential), `user` for a person. */
+    /** Authored like `createSubpage`. */
     async insertPage(actor, input) {
       const { itemId, placement, markdown, blockIds } = input;
       return docStore.insertPageMarkdown(
@@ -749,10 +718,7 @@ export function createGenericApplicationService(
       );
     },
 
-    /**
-     * Same origin split as `insertPage`. The subpages the replace trashes are trashed by the caller's writer identity and
-     * user, so the choke point's trash hooks see who asked for it.
-     */
+    /** Authored like `insertPage`; subpages it trashes are trashed with the caller's writer identity and user. */
     async replacePage(actor, input) {
       return docStore.replacePageMarkdown(input.itemId, {
         markdown: input.markdown,
@@ -771,11 +737,10 @@ export function createGenericApplicationService(
 }
 
 /**
- * The one derivation of who wrote, from the caller identity the transport's composition root
- * built (never from a request body): an actor carrying both run ids is an agent run; a REST
- * session is a person; anything else (`/mcp` on a human session, no run credential) is still an
- * agent, an MCP client, without run ids, and carries `externalClient` when the actor does (issue #1998). Every agent
- * value names the user it acts for.
+ * Who wrote, derived from the caller identity the composition root built (never a request body):
+ * both run ids make an agent run; a REST session is a person; anything else is an MCP client agent
+ * without run ids, carrying `externalClient` when the actor does. Every agent value names the user
+ * it acts for.
  */
 export function writerIdentityOf(actor: AuthenticatedActor): WriterIdentity {
   if (actor.runId !== undefined && actor.agentProjectItemId !== undefined) {
@@ -794,19 +759,15 @@ export function writerIdentityOf(actor: AuthenticatedActor): WriterIdentity {
   };
 }
 
-/**
- * Whom a read is checked for: an agent run's project, or an external AI client on `/mcp` (issue #1998). A person is
- * no reader and `undefined`.
- */
+/** Whom a read is checked for: an agent run's project or an external AI client on `/mcp`; `undefined` for a person. */
 function readerOf(actor: AuthenticatedActor): DatabaseReader | undefined {
   return readerOfWriter(writerIdentityOf(actor));
 }
 
 /**
- * The reader of the paths that only an external client (issue #1998) is checked on: a count, the facets, the
- * operations on a property, a view and a page, and the schema writes of a database. A run credential's project is not a
- * reader there, because docs/adr/2026-11-12-per-database-agent-grants.md leaves those paths to the issues that own them
- * and an agent run keeps the behavior of that decision. `undefined` for an agent and for a person.
+ * The reader for paths only an external client is checked on: counts, facets, property/view/page
+ * operations and database schema writes. A run credential's project is deliberately not a reader
+ * there. `undefined` for an agent and for a person.
  */
 function externalClientReaderOf(actor: AuthenticatedActor): DatabaseReader | undefined {
   const reader = readerOf(actor);

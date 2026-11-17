@@ -53,7 +53,6 @@ function tokenFromUrl(resetUrl: string): string {
   return token;
 }
 
-/** `resetPassword` requires a `PoolClient` (a caller-managed transaction) — this mirrors the HTTP handler's `withTransaction` wrapping. */
 function resetPasswordInTransaction(testPool: Pool, input: Parameters<typeof resetPassword>[1]): Promise<void> {
   return withTransaction(testPool, (client) => resetPassword(client, input));
 }
@@ -178,7 +177,6 @@ describe("password reset actions (issue #142)", () => {
         expect(mailer.sent).toHaveLength(1);
       }
 
-      // The next request past the cap is a silent no-op, same shape as an unknown email.
       const mailer = fakeMailer();
       await expect(
         requestPasswordReset(pool, mailer, { email: user.email, appBaseUrl: APP_BASE_URL }),
@@ -281,7 +279,6 @@ describe("password reset actions (issue #142)", () => {
       expect(err).toBeInstanceOf(PasswordResetTokenError);
       expect((err as PasswordResetTokenError).reason).toBe("consumed");
 
-      // The second, rejected attempt must not have overwritten the password the first attempt set.
       const updated = await getUserByEmail(pool, user.email);
       expect(await verifyPassword(updated!.passwordHash, "first-new-password")).toBe(true);
     });
@@ -301,7 +298,6 @@ describe("password reset actions (issue #142)", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]!.consumed_at).toBeNull();
 
-      // The same token still works with a password that meets the minimum.
       await resetPasswordInTransaction(pool, { token, newPassword: "12345678" });
       const updated = await getUserByEmail(pool, user.email);
       expect(await verifyPassword(updated!.passwordHash, "12345678")).toBe(true);

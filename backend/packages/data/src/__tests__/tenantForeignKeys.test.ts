@@ -25,13 +25,9 @@ import { createSempChatThread, insertSempUserTurn } from "../sempThreads/sempThr
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 /**
- * Issue #1066: foreign-key checks ignore row-level security, so each reference between tenant rows
- * has a (tenant_id, <column>) twin. A row of tenant B that names tenant A's parent must fail exactly
- * like one naming a random UUID (23503), so the outcome tells B nothing about A's ids.
- *
- * The parents are written through their production stores. The child rows are raw INSERTs on
- * purpose: the production writers check that the parent exists before they insert, so they would
- * refuse a foreign parent before the foreign key is reached, and these tests are about the key.
+ * FK checks ignore RLS, so each reference between tenant rows has a (tenant_id, <column>) twin: naming another
+ * tenant's parent fails exactly like a random UUID (23503). Child rows are raw INSERTs because the production
+ * writers check the parent first and would never reach the key.
  */
 
 interface Parents {
@@ -60,7 +56,6 @@ let tenantB: string;
 let parentsA: Parents;
 let parentsB: Parents;
 
-/** Runs `fn` in one transaction inside `tenantId`, on the runtime-role pool. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(pool, fn));
 }
@@ -154,20 +149,13 @@ async function seedParents(tenantId: string): Promise<Parents> {
 }
 
 interface Reference {
-  /** The parent kind as the issue names it. */
   parent: string;
-  /** The twin that must refuse another tenant's parent. */
   constraint: string;
   table: string;
   column: string;
   parentId: (parents: Parents) => string;
-  /**
-   * The SQLSTATE for a random parent id when it is not the foreign-key violation: an items row is
-   * routed to its database's partition before any constraint runs, so an unknown database has no
-   * partition (23514).
-   */
+  /** An items row is routed to its database's partition first, so an unknown database fails with 23514. */
   unknownParentCode?: string;
-  /** Inserts one child row of the tenant in scope pointing at `parentId`; `own` holds that tenant's other parents. */
   insert: (client: PoolClient, parentId: string, own: Parents) => Promise<unknown>;
 }
 
@@ -385,10 +373,8 @@ const REFERENCES: Reference[] = [
   },
 ];
 
-/** Rows of `table` whose `column` is `parentId`, limited to `tenantId` when it is given. */
 async function countReferencing(table: string, column: string, parentId: string, tenantId?: string): Promise<number> {
-  // `table` and `column` are always literals of this file or come from the closed REFERENCES list
-  // above, never from input; the values are bound parameters.
+  // `table` and `column` are literals or come from the closed REFERENCES list; values are bound.
   const tenantFilter = tenantId === undefined ? "" : " AND tenant_id = $2";
   const { rows } = await adminPool.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM ${table} WHERE ${column} = $1${tenantFilter}`,
@@ -445,7 +431,6 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
   });
 
   it("still cascades the delete of a database to its properties, views and view items", async () => {
-    // A database of its own: the seeded one holds an item, and items do not cascade.
     const { databaseId, viewId } = await inTenant(tenantA, async (client) => {
       const database = await createDatabase(client, { name: "Cascade probe" });
       await createProperty(client, { databaseId: database.id, key: "title", name: "Title", type: "text" });
@@ -485,9 +470,7 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
   });
 
   it("still cascades the delete of a doc to its snapshots, updates and history", async () => {
-    // getOrCreateDoc wrote the doc_snapshots row and the doc_snapshot_history baseline; one edit
-    // through the production writer appends a doc_updates row and its doc_history_updates mirror,
-    // so every child table holds a row before the delete.
+    // getOrCreateDoc wrote the snapshot and history baseline; one edit appends doc_updates and its history mirror.
     await inTenant(tenantA, (client) =>
       mutateDocWithClient(client, parentsA.docId, "user", (doc) => doc.getText("body").insert(0, "probe")),
     );

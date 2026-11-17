@@ -35,21 +35,16 @@ import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.j
 import { handleLinkPropagation } from "../valueLinks/linkPropagation.js";
 import { linkRuleEdgeLockHook } from "../valueLinks/linkRuleEdgeHook.js";
 
-// The lock order of an ordinary relation edge write. A user or agent edge write on the via relation of a link rule
-// locks the rule's target item row right after the edge row is written or deleted and before it locks a value link
-// row (`linkRuleEdgeLockHook`, run through the before-link-break registry of `chokePoint/hooks.ts`), as the
-// propagation job and the engine's edge hook do. See
-// docs/adr/2026-11-15-a-user-edge-write-on-a-link-rules-via-relation-locks-the-rules-target-item-before-ending-value-links.md.
-// Every schedule runs production calls on pools of the runtime role `semprec_data`. The schedules were first run on
-// the tree without the lock; the ADR records what each did there, the deadlocks included.
+// The lock order of a relation edge write on a link rule's via relation: it locks the rule's target item row right
+// after the edge row and before any value link row (`linkRuleEdgeLockHook`, before-link-break registry of
+// `chokePoint/hooks.ts`), as the propagation job and the engine's edge hook do. Every schedule runs production calls
+// on `semprec_data` pools.
 
 const USER: WriterIdentity = { writerKind: "user" };
-/** An agent without a run credential: its writes need no approval, so one that ends a link just ends it. */
 const AGENT: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: "00000000-0000-4000-8000-000000000003" };
 const RECORDING_START = "2024-03-01T12:00:00.000Z";
 const PROJECT_RULE = "transcriptProjectFromEvent";
 
-/** One party of a schedule: its own pool, so its backends are told apart by their `application_name`. */
 interface Participant {
   name: string;
   pool: Pool;
@@ -66,7 +61,7 @@ let trasher: Participant;
 
 async function participant(name: string): Promise<Participant> {
   const pool = await createRuntimeRolePool(admin, "semprec_data");
-  // Set before the pool opens its first connection, so every backend of this participant carries the name.
+  // Set before the pool's first connection, so every backend of this participant carries the name.
   pool.options.application_name = name;
   return { name, pool, cp: createChokePoint(pool) };
 }
@@ -84,10 +79,8 @@ interface Schema {
   transcriptPeople: string;
 }
 
-/** Which project the Event of a world has: Web for client (company Novak), one without a company, or none. */
 type EventProject = "web" | "bare" | "none";
 
-/** One tenant with companies, projects, the Event "client meeting" and a transcript linked to that Event. */
 interface World {
   tenant: string;
   schema: Schema;
@@ -142,11 +135,7 @@ async function seedTenant(): Promise<{ tenant: string; schema: Schema }> {
   });
 }
 
-/**
- * Builds a world through the choke point as a user does. The transcript is linked to the Event last, so the
- * link rules copy the Event's project, that project's company and the Event's participant into it and record
- * a value link for each property they fill or find empty.
- */
+/** The transcript is linked to the Event last, so the link rules copy project, company and participant into it. */
 async function buildWorld(eventProject: EventProject): Promise<World> {
   const { tenant, schema } = await seedTenant();
   const scope = { tenant };
@@ -192,7 +181,6 @@ interface TranscriptState {
   links: Record<string, LinkState>;
 }
 
-/** The transcript's project and company edges and its value link rows, read through the runtime role in the tenant. */
 async function transcriptState(world: World): Promise<TranscriptState> {
   return inTenant(world, async () => {
     const related = async (relationPropertyId: string): Promise<string[]> =>
@@ -214,7 +202,7 @@ async function transcriptState(world: World): Promise<TranscriptState> {
 const ON: LinkState = { state: "on", brokenBy: null };
 const BROKEN_BY_USER: LinkState = { state: "broken", brokenBy: "user" };
 
-/** How a production call of a schedule ended: committed, PostgreSQL's deadlock error, or the busy refusal of the relation admission. */
+/** Committed, PostgreSQL's deadlock error, or the relation admission's busy refusal. */
 type Outcome = "committed" | "deadlock" | "busy";
 
 async function outcomeOf(operation: Promise<unknown>): Promise<Outcome> {
@@ -228,7 +216,6 @@ async function outcomeOf(operation: Promise<unknown>): Promise<Outcome> {
   }
 }
 
-/** A production call of one participant, running in the world's tenant. */
 interface Step {
   participant: Participant;
   call: (participant: Participant) => Promise<unknown>;
@@ -248,10 +235,7 @@ function start(world: World, step: Step): Running {
   return { participant: step.participant, outcome, settled: () => done };
 }
 
-/**
- * Waits until the call has either ended or one of its participant's backends waits for a lock. Returns the
- * participants whose backends block it, by `application_name`, or `null` when the call ended without waiting.
- */
+/** Returns the blocking participants by `application_name`, or `null` when the call ended without waiting. */
 async function blockersOrEnd(running: Running): Promise<string[] | null> {
   let blockers: string[] | null = null;
   await vi.waitFor(
@@ -276,10 +260,7 @@ async function blockersOrEnd(running: Running): Promise<string[] | null> {
   return blockers;
 }
 
-/**
- * Locks one row with `lock`, a row-locking read of the owning store, in a transaction of the holder that stays
- * open until `release` is called. `ready` resolves once the row is locked.
- */
+/** Holds one row locked by the owning store's row-locking read until `release`; `ready` once locked. */
 function holdRow(world: World, lock: (client: PoolClient) => Promise<unknown>) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -306,17 +287,11 @@ function holdRow(world: World, lock: (client: PoolClient) => Promise<unknown>) {
 }
 
 interface ScheduleResult {
-  /** What blocked each call when it was started, in the order the calls were started; `null` for a call that ended at once. */
   blockedBy: Array<string[] | null>;
-  /** How each call ended, in the same order. */
   outcomes: Outcome[];
 }
 
-/**
- * Starts the steps one after the other while a third transaction holds the row `lock` locks, each only after
- * the one before it waits for a lock or has ended, runs `whileWaiting` with every step started, then releases
- * the row and lets every call end.
- */
+/** Starts each step after the previous one waits or ended, runs `whileWaiting`, then releases the held row. */
 async function behindHeldRow(
   world: World,
   lock: (client: PoolClient) => Promise<unknown>,
@@ -342,7 +317,6 @@ async function behindHeldRow(
   return { blockedBy, outcomes: await Promise.all(running.map((call) => call.outcome)) };
 }
 
-/** A user replaces the Event's project, which queues the propagation job the schedules run the handler for. */
 async function changeEventProject(world: World, from: string, to: string): Promise<void> {
   await inTenant(world, async () => {
     const edge = { relationPropertyId: world.schema.eventProject, callerItemId: world.event };
@@ -356,7 +330,6 @@ async function changeEventProject(world: World, from: string, to: string): Promi
   expect(rows.map((row) => row.key)).toContain(`valueLinksPropagate:${world.tenant}:${PROJECT_RULE}:${world.event}:1`);
 }
 
-/** The `valueLinksPropagate` handler for the job a change of the Event's project queues. */
 function propagateEventProject(world: World): Step {
   return {
     participant: propagation,
@@ -378,7 +351,6 @@ function userCreates(world: World, relationPropertyId: string, targetItemId: str
   };
 }
 
-/** The `relation.set` operation of a user: `setRelationWithClient` in its own transaction. */
 function userSets(world: World, relationPropertyId: string, targetItemId: string): Step {
   return {
     participant: setter,
@@ -386,7 +358,6 @@ function userSets(world: World, relationPropertyId: string, targetItemId: string
   };
 }
 
-/** The transcript's row, locked as every writer of the row locks it. */
 function transcriptRow(world: World): (client: PoolClient) => Promise<unknown> {
   return (client) => lockItemById(client, world.schema.db.transcripts, world.transcript);
 }
@@ -395,7 +366,6 @@ async function expectTranscript(world: World, expected: TranscriptState): Promis
   expect(await transcriptState(world)).toEqual(expected);
 }
 
-/** What one hook of the two registries saw of an edge write; the client is left out. */
 interface EdgeHookCall {
   registry: "beforeLinkBreak" | "changed";
   op: RelationEdgeChangedHookContext["op"];
@@ -405,11 +375,9 @@ interface EdgeHookCall {
   itemB: string;
   metadata: Record<string, unknown>;
   writer: WriterIdentity;
-  /** The state of every value link row of the edge's two items when the hook ran, by `property_key`. */
   linkStates: Record<string, string>;
 }
 
-/** Every call of the two recording hooks since `startRecording`, in the order the hooks ran. */
 let hookCalls: EdgeHookCall[] = [];
 
 function recorder(registry: EdgeHookCall["registry"]): (context: RelationEdgeChangedHookContext) => Promise<void> {
@@ -432,17 +400,15 @@ function recorder(registry: EdgeHookCall["registry"]): (context: RelationEdgeCha
   };
 }
 
-/** Forgets what the fixture's own writes ran, so a test reads only the calls of the write it makes. */
 function startRecording(): void {
   hookCalls = [];
 }
 
-/** The calls the hooks of both registries saw for the edges of one relation property. */
 function callsOf(propertyId: string): EdgeHookCall[] {
   return hookCalls.filter((call) => call.propertyId === propertyId);
 }
 
-/** The value link rows of an item, locked on a connection of their own: it fails while a transaction holds one. */
+/** Locked on a separate connection, so it fails while a transaction holds one. */
 async function lockLinksNowait(itemId: string): Promise<string[]> {
   const client = await admin.connect();
   let failed = true;
@@ -456,7 +422,6 @@ async function lockLinksNowait(itemId: string): Promise<string[]> {
     failed = false;
     return rows.map((row) => row.property_key);
   } finally {
-    // A connection that failed inside its transaction is not returned to the pool.
     client.release(failed);
   }
 }
@@ -467,7 +432,6 @@ interface LinkBreak {
   brokenAt: string | null;
 }
 
-/** The transcript's `project` value link row, with the time it was ended. */
 async function projectLinkOf(world: World): Promise<LinkBreak> {
   const { rows } = await admin.query<{ state: string; broken_by: string | null; broken_at: Date | null }>(
     "SELECT state, broken_by, broken_at FROM value_links WHERE item_id = $1 AND property_key = 'project'",
@@ -478,7 +442,6 @@ async function projectLinkOf(world: World): Promise<LinkBreak> {
   return { state: row.state, brokenBy: row.broken_by, brokenAt: row.broken_at?.toISOString() ?? null };
 }
 
-/** The transcript's row, as the propagation job would leave it when it wrote nothing. */
 async function transcriptRowOf(world: World): Promise<{ properties: unknown; updatedAt: string }> {
   const { rows } = await admin.query<{ properties: unknown; updated_at: Date }>(
     "SELECT properties, updated_at FROM items WHERE id = $1",
@@ -489,7 +452,6 @@ async function transcriptRowOf(world: World): Promise<{ properties: unknown; upd
   return { properties: row.properties, updatedAt: row.updated_at.toISOString() };
 }
 
-/** The relation definition of a property and which side of it the transcript is. */
 async function transcriptEdgeOf(
   world: World,
   relationPropertyId: string,
@@ -552,8 +514,8 @@ describe("the lock order of an ordinary edge write on a link rule's via relation
         userDeletes(world, world.schema.transcriptProject, world.web),
       ]);
 
-      // The user's write waits for the row before it holds a link row, so the propagation that gets the row first
-      // meets no link row of the user and is refused by the nonblocking admission of its own relation write.
+      // The user's write waits for the row before holding a link row, so the propagation that gets the row first is
+      // refused by its own relation write's nonblocking admission.
       expect(result.blockedBy).toEqual([[holder.name], [propagation.name]]);
       expect(result.outcomes).toEqual(["busy", "committed"]);
       const settled: TranscriptState = {
@@ -563,7 +525,6 @@ describe("the lock order of an ordinary edge write on a link rule's via relation
       };
       await expectTranscript(world, settled);
 
-      // Run again, the propagation commits and writes nothing: the row, its edges and its links stay as they are.
       const before = await transcriptRowOf(world);
       expect(await outcomeOf(inTenant(world, () => propagateEventProject(world).call(propagation)))).toBe("committed");
       expect(await transcriptRowOf(world)).toEqual(before);
@@ -583,8 +544,7 @@ describe("the lock order of an ordinary edge write on a link rule's via relation
         blockedBy: [[holder.name], [edgeWriter.name]],
         outcomes: ["committed", "committed"],
       });
-      // The propagation found the link broken by the user and wrote nothing: neither the Event's new project
-      // nor that project's company reached the transcript.
+      // The link was broken by the user, so neither the new project nor its company reached the transcript.
       await expectTranscript(world, {
         project: [],
         company: [world.novak],
@@ -594,10 +554,9 @@ describe("the lock order of an ordinary edge write on a link rule's via relation
   });
 
   describe("schedule B: a user's relation.set against a user's edge write of the same relation on the same transcript", () => {
-    // Two cases of `Transcripts.project` have no test: when the set waits for the transcript row first and the
-    // write deletes or creates the edge, one of the two ends with PostgreSQL's deadlock error, on the tree before
-    // this lock and on this one (the set locks the row first, then the edge row; the write holds the edge row,
-    // then waits for the row in the engine's hook). The ADR of this lock records them.
+    // Untested: when the set waits for the transcript row first and the write deletes or creates the edge, one of
+    // them deadlocks (the set locks the row then the edge row; the write holds the edge row, then waits for the row
+    // in the engine's hook).
     describe("project, the target of one rule and the via relation of another", () => {
       it("settles when the write that deletes the edge waits first", async () => {
         const world = await buildWorld("web");
@@ -630,7 +589,6 @@ describe("the lock order of an ordinary edge write on a link rule's via relation
           blockedBy: [[holder.name], [edgeWriter.name]],
           outcomes: ["committed", "committed"],
         });
-        // The created edge took its project's company; the set replaced the project and kept that company as own.
         await expectTranscript(world, {
           project: [world.web],
           company: [world.siko],
@@ -706,10 +664,9 @@ describe("the lock order of an ordinary edge write on a link rule's via relation
     });
   });
 
-  // Moving an Event to the Trash locks the link rows of its transcripts without their item rows: first the links the
-  // Event feeds (`project`, `people`), then the `company` link. An edge write on the transcript's `project` that took
-  // the `company` link before the `project` link would deadlock with it. The third transaction holds the `company`
-  // link row.
+  // Trashing an Event locks its transcripts' link rows without their item rows: `project` and `people` first, then
+  // `company`. An edge write taking `company` before `project` would deadlock with it. A third transaction holds
+  // the `company` link row.
   describe("schedule C: the trash of the Event against a user removing the transcript's project", () => {
     const companyLinkRow = (world: World) => (client: PoolClient) => lockValueLink(client, world.transcript, "company");
     const userTrashesEvent = (world: World): Step => ({
@@ -1090,7 +1047,6 @@ describe("the lock order of an ordinary edge write on a link rule's via relation
   });
 
   describe("linkRuleEdgeLockHook", () => {
-    /** Calls the hook in a transaction of its own for the edge between the transcript and `otherItemId`. */
     async function lockHookStep(
       world: World,
       relationPropertyId: string,

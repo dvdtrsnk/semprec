@@ -89,7 +89,7 @@ const rowSchema = z
 const bodySchema = z.strictObject({ rows: z.array(rowSchema) });
 type ListRow = z.infer<typeof rowSchema>;
 
-/** Calls the handler as the adapter does: inside the tenant's scope, with the request URL and the caller. */
+/** Calls the handler as the adapter does: inside the tenant's scope. */
 async function call(
   query: string,
   caller: { tenant: TenantSetup; userId?: string; locale?: string } = { tenant: tenantA },
@@ -102,7 +102,7 @@ async function call(
   );
 }
 
-/** The rows of a successful list, parsed with a strict schema so an added or missing field is noticed. */
+/** A strict schema so an added or missing field is noticed. */
 async function listRows(
   projectItemId: string,
   options: { limit?: string; tenant?: TenantSetup; userId?: string; locale?: string } = {},
@@ -118,7 +118,6 @@ async function listRows(
   return bodySchema.parse(JSON.parse(JSON.stringify(result.body))).rows;
 }
 
-/** The SQL text of the first argument of a `query` call: a string, or the `text` of a query config. */
 function statementText(statement: unknown): string | null {
   if (typeof statement === "string") return statement;
   if (typeof statement === "object" && statement !== null && "text" in statement) {
@@ -163,11 +162,7 @@ async function createRun(input: RunInput): Promise<AgentRunRow> {
   );
 }
 
-/**
- * Gives the run the instants a test asserts. Raw SQL on the admin pool, because the production writers stamp
- * `now()` and the order and the durations a test asserts need a clock it controls; `finished_at` stays NULL for a
- * run that has not finished.
- */
+/** Raw SQL because production writers stamp `now()` and the asserted order and durations need a controlled clock. */
 async function setInstants(runId: string, startedAt: string, finishedAt: string | null = null): Promise<void> {
   const result = await admin.query(
     `UPDATE agent_runs SET started_at = $2::timestamptz,
@@ -228,7 +223,6 @@ async function requestApproval(runId: string): Promise<void> {
 const SERVER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const REGISTRATION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-/** An MCP call of the server "GitHub" that fails as unavailable, as `agentSessionComposition` stores a failure. */
 function unavailableMcpCall(): EventSpec[] {
   const identity = { toolRegistrationId: REGISTRATION, serverItemId: SERVER, serverName: "GitHub", toolName: "search" };
   return [
@@ -261,7 +255,6 @@ function unavailableMcpCall(): EventSpec[] {
   ];
 }
 
-/** A heartbeat run of `projectItemId` whose one reply ended `done` after the tool events, with the run closed as done. */
 async function createRunWithReply(projectItemId: string, toolEvents: EventSpec[]): Promise<AgentRunRow> {
   const setup: TurnSetup = { admin, runtime, tenant: tenantA.tenant };
   const threadId = await runInTenant(tenantA.tenant, () => withTransaction(runtime, createSempChatThread));
@@ -682,7 +675,6 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
   });
 
   describe("index", () => {
-    /** Every node of an EXPLAIN (FORMAT JSON) result: the result is an array holding `{ Plan }`, a plan has `Plans`. */
     function planNodes(node: unknown): Record<string, unknown>[] {
       if (Array.isArray(node)) return node.flatMap(planNodes);
       if (typeof node !== "object" || node === null) return [];
@@ -690,7 +682,7 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
       return [record, ...planNodes(record.Plan), ...planNodes(record.Plans)];
     }
 
-    /** The nodes from the root of `plan` down to the first node that satisfies `match`, the matching node last; `[]` when none does. */
+    /** From the root of `plan` down to the first match (last); `[]` when none matches. */
     function ancestorsOf(plan: unknown, match: (node: Record<string, unknown>) => boolean): Record<string, unknown>[] {
       const root = Array.isArray(plan) ? plan[0] : plan;
       const visit = (node: unknown, path: Record<string, unknown>[]): Record<string, unknown>[] => {
@@ -713,8 +705,8 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
       for (let i = 0; i < 8; i += 1) projects.push(await createProject());
       const [target] = projects;
       if (target === undefined) throw new Error("The project fixtures are missing");
-      // Bulk fixture by raw SQL on the admin pool: 8 projects of 400 runs each cannot be written one by one
-      // through the store in reasonable time, and the planner needs rows to prefer the index over a sort.
+      // Raw SQL: 3,200 runs are too many to write through the store, and the planner needs rows to prefer the index
+      // over a sort.
       await admin.query(
         `INSERT INTO agent_runs (tenant_id, project_item_id, triggered_by, unit, task, actor_user_id, started_at)
          SELECT $1, p.project, 'user', 'invocation', 'bulk', $3, now() - (g || ' minutes')::interval
@@ -742,8 +734,7 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
       if (statement === undefined) throw new Error("The list statement was not sent");
       const { text, values } = statement;
 
-      // `text` is the production statement captured above, a constant of the store with its values still bound as
-      // parameters, so nothing from a request is interpolated.
+      // `text` is the captured production statement with its values bound as parameters; nothing is interpolated.
       const plan = await runInTenant(tenantA.tenant, () =>
         withTransaction(runtime, async (client) => {
           const { rows } = await client.query<{ "QUERY PLAN": unknown }>(`EXPLAIN (FORMAT JSON) ${text}`, values);
@@ -756,10 +747,8 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
         .map((node) => node["Index Name"])
         .filter((name): name is string => typeof name === "string");
       const nodeTypes = nodes.map((node) => node["Node Type"]);
-      // The scan of the project's index reads in the order of the list and the probe for a later attempt uses the
-      // occurrence index, so nothing groups or ranks the project's history before LIMIT, and no table is scanned
-      // whole. (The answers of chat runs are sorted by their start, which no index covers: a Sort over them is
-      // allowed, a Sort over the runs is checked below.)
+      // Nothing groups or ranks the project's history before LIMIT and no table is scanned whole. A Sort over chat
+      // answers is allowed (no index covers their start); a Sort over runs is checked below.
       expect(indexNames).toContain("agent_runs_tenant_project_started_idx");
       expect(indexNames).toContain("agent_runs_occurrence_idx");
       for (const unbounded of ["WindowAgg", "Aggregate", "Unique", "Seq Scan"]) {
@@ -788,10 +777,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
     return { projectItemId, heartbeatId: await createNamedHeartbeat(projectItemId, name) };
   }
 
-  /**
-   * A heartbeat occurrence of `heartbeatId`. Raw SQL: only the heartbeat sweep writes occurrences, and nothing
-   * else in the data layer creates one for a test to start from.
-   */
+  /** Raw SQL: only the heartbeat sweep writes occurrences. */
   async function createOccurrence(heartbeatId: string, tenant = tenantA): Promise<string> {
     occurrenceCount += 1;
     return runInTenant(tenant.tenant, async () => {
@@ -806,7 +792,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
     });
   }
 
-  /** The attempts 1..`count` of one occurrence, chained as the scheduler chains them, each started a minute after the last. */
+  /** Chained as the scheduler chains them, one minute apart. */
   async function createAttempts(
     tick: Tick,
     occurrenceId: string,
@@ -1228,9 +1214,8 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
     for (const run of attempts) await recordCost(run.id, 0.01);
     const third = attempts[2];
     if (third === undefined) throw new Error("Missing attempts");
-    // Raw fixture on the admin pool: the composite key of agent_runs refuses another tenant's occurrence, so this
-    // run of tenant B, which names tenant A's project and occurrence with a higher attempt that started later,
-    // can only be forged by skipping the foreign-key triggers for this one insert.
+    // Raw fixture: the composite key refuses another tenant's occurrence, so this forged tenant-B run (naming tenant
+    // A's project and occurrence with a higher, later attempt) needs the foreign-key triggers skipped for one insert.
     const forged = await withTransaction(admin, async (client) => {
       await client.query("SET LOCAL session_replication_role = replica");
       const { rows } = await client.query<{ id: string }>(
@@ -1262,14 +1247,12 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
     userId: tenant.userId,
   });
   const setup = (): AnswerSetup => setupOf(tenantA);
-  /** The instant `ms` milliseconds into the fixture clock, as the list writes it. */
   const at = (ms: number): string => new Date(ANSWER_CLOCK_START + ms).toISOString();
 
   async function chatSession(projectItemId: string, task = "Chat"): Promise<ChatSession> {
     return createChatSession(setup(), projectItemId, { task });
   }
 
-  /** The row a finished answer of `session` with no cost, no retry and no failure has. */
   function answerRow(
     session: ChatSession,
     messageId: string,
@@ -1293,7 +1276,6 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
     };
   }
 
-  /** A pending approval request of the run for the tool call `toolCallId`. */
   async function requestApprovalFor(runId: string, toolCallId: string | null): Promise<void> {
     await runInTenant(tenantA.tenant, () =>
       createPendingApprovalRequest(runtime, {
@@ -1431,7 +1413,6 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
   });
 
   describe("an answer that was retried", () => {
-    /** A question whose first attempt failed, with the queued retry, and the session it was asked in. */
     async function failedFirstAttempt(projectItemId: string) {
       const session = await chatSession(projectItemId);
       const first = await playAnswer(setup(), session, "Why did it fail?", {
@@ -1530,9 +1511,8 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
       const projectItemId = await createProject();
       const session = await chatSession(projectItemId);
       const answer = await playAnswer(setup(), session, "Only attempt", { startMs: 0, durationMs: 100 });
-      // Raw fixture on the admin pool: the composite keys refuse another tenant's thread and message, so this
-      // assistant message of tenant B, which names tenant A's thread, question and run with attempt 9, can only be
-      // forged by skipping the foreign-key triggers for this one insert.
+      // Raw fixture: the composite keys refuse another tenant's thread and message, so this forged tenant-B message
+      // needs the foreign-key triggers skipped for one insert.
       await withTransaction(admin, async (client) => {
         await client.query("SET LOCAL session_replication_role = replica");
         await client.query(
@@ -1549,7 +1529,6 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
   });
 
   describe("the title", () => {
-    /** A tick thread of a new heartbeat of the project, with a chat run the user started in it. */
     async function tickSession(projectItemId: string): Promise<ChatSession> {
       const heartbeatId = await createNamedHeartbeat(projectItemId, "Morning review");
       const threadId = await runInTenant(tenantA.tenant, () =>
@@ -1558,7 +1537,7 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
       return createChatSession(setup(), projectItemId, { threadId });
     }
 
-    /** The approval outcome `key` in the tick thread and the answer to it, played as the turn handler plays it. */
+    /** Played as the turn handler plays it. */
     async function playApprovalOutcome(session: ChatSession, key: string, startMs: number) {
       await runInTenant(tenantA.tenant, () =>
         withTransaction(runtime, (client) =>

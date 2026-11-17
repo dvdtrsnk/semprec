@@ -37,7 +37,6 @@ interface LaunchHeader {
   env: Record<string, string>;
 }
 
-/** The fake launcher's own check of what crossed the socket; anything else is recorded as `null`. */
 function parseHeader(line: string): LaunchHeader | null {
   let value: unknown;
   try {
@@ -69,22 +68,18 @@ type LauncherMode = "spawn" | "closeWithoutAnswering" | "neverClose" | "raw" | "
 
 interface FakeLauncher {
   readonly socketPath: string;
-  /** Every header line received, parsed (`null` when it was not a valid header). */
   readonly headers: (LaunchHeader | null)[];
   spawnedCount(): number;
   childExitCount(): number;
   openConnections(): number;
-  /** Destroys every accepted connection from the launcher's side. */
   dropConnections(): void;
   stop(): Promise<void>;
 }
 
 /**
- * Stands in for `deploy/bin/semprec-mcp-launch` behind its systemd socket: reads the header line,
- * then (in `spawn` mode) runs the command with exactly the header's `env` and forwards the bytes
- * after the header to its stdin, its stdout back to the socket, and closes the connection when the
- * child exits. `allowHalfOpen` keeps the socket writable after the client's EOF, as systemd's
- * accepted socket is, so the child's last answer still reaches the client.
+ * Stands in for `deploy/bin/semprec-mcp-launch` behind its systemd socket: reads the header, then (in `spawn`
+ * mode) runs the command with exactly the header's `env` and pipes the socket to it. `allowHalfOpen` keeps
+ * the socket writable after the client's EOF, as systemd's accepted socket is.
  */
 async function startFakeLauncher(mode: LauncherMode, answer?: (socket: net.Socket) => void): Promise<FakeLauncher> {
   const directory = mkdtempSync(path.join(os.tmpdir(), "semprec-mcp-launch-"));
@@ -178,7 +173,6 @@ async function createMcpServerItem(connectionConfig: McpConnectionConfig, creden
   return item;
 }
 
-/** A `stdio` spawn needs an admin of tenant zero (issue #1033). */
 async function makeSoleTenantAdmin(): Promise<void> {
   const tenantId = getTenantZeroId();
   await createUser(pool, { email: "admin@example.test", passwordHash: "unused", tenantId, role: "admin" });
@@ -201,7 +195,6 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
   );
 }
 
-/** Guards against a circular-reference throw so the assertion is about content, not about whether `JSON.stringify` itself survives. */
 function safeStringify(value: unknown): string {
   const seen = new WeakSet();
   try {
@@ -232,7 +225,6 @@ async function captureRejection(promise: Promise<unknown>): Promise<unknown> {
   throw new Error("Expected the promise to reject");
 }
 
-/** Records every socket the transport opens, so a test can assert none is left open. */
 function spyOnCreatedSockets(): net.Socket[] {
   const created: net.Socket[] = [];
   const original = net.createConnection.bind(net);

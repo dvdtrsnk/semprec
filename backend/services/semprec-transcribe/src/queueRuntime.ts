@@ -30,14 +30,9 @@ export interface TranscribeQueueRuntime {
 type WorkerStarter = (options: Parameters<typeof runWorker>[0]) => Promise<{ stop(): Promise<void> }>;
 
 /**
- * The sole graphile-worker registration site for `transcriptionJob`. `blobStorage` defaults to the same local-filesystem backend semprec-api writes Files blobs to, configured via `FILES_STORAGE_DIR`.
- * Four runners of one slot each: the media pipeline (`transcriptionJob`), the fast row creation (`transcriptionCreate`),
- * the short model tasks (`transcriptCardRecompute`, issue gh-1940, `transcriptSpeakerSuggestion`, issue gh-1942, and
- * `inboxVoiceNoteTranscribe`, issue gh-1980, the transcript of the voice notes of an Inbox item) and the metadata of
- * Inbox attachments (`inboxAttachmentMetadata`, issue gh-1965), so none of the three short kinds waits behind the long
- * pipeline. The attachment metadata has a runner of its own because it runs `ffprobe` and `ffmpeg` over
- * an uploaded file, which can hold its slot for as long as the tools' timeouts, and no other kind should wait for that.
- * `clients.summary` is the completion client of the pipeline's model steps and of the model tasks.
+ * Four one-slot runners: the media pipeline, fast row creation, the short model tasks, and
+ * attachment metadata (its ffmpeg runs can hold a slot up to the tools' timeouts), so no short kind
+ * waits behind a long one. `blobStorage` defaults to the backend semprec-api writes Files blobs to.
  */
 export async function createTranscribeQueueRuntime(
   pool: Pool,

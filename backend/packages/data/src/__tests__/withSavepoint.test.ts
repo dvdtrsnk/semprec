@@ -5,9 +5,8 @@ import { runAfterCommit, withSavepoint, withTransaction } from "../db/pool.js";
 import { getTestPool } from "../testSupport/testDb.js";
 
 /**
- * `withSavepoint` against a real Postgres. The probe table is raw SQL on purpose: a generic transaction primitive has no
- * production table of its own to write to, and what is checked here is PostgreSQL's savepoint behaviour, which a fake
- * connection cannot show (the statement order and the callback bookkeeping are in `withSavepoint.unit.test.ts`).
+ * Raw SQL on purpose: PostgreSQL's savepoint behaviour cannot be shown by a fake connection (statement order and
+ * bookkeeping are in `withSavepoint.unit.test.ts`).
  */
 let adminPool: Pool;
 

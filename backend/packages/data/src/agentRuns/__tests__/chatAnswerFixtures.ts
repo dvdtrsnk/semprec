@@ -16,19 +16,15 @@ import type { AgentRunErrorCode } from "../agentRunErrorCodes.js";
 import type { EventSpec } from "../../semp/__tests__/sempReplyTestSupport.js";
 
 /**
- * Fixtures of the chat answers of the project run list (issue gh-1932): a `session` run that the user started with
- * the thread it answers in, and answers played through their turns with the production writers the turn handler of
- * `semprec-agents` uses (`sendSempMessage`, `claimSempMessage`, `startSempMessageTurn`, `insertAgentRunEvent`,
- * `buildSempReplySummary`, `finishSempMessageTurn`) and retried with `retrySempReply`.
+ * Chat-answer fixtures for the project run list, played through the production writers the agents turn handler
+ * uses.
  */
 
-/** The start of the fixed clock the played events are stamped with. */
 export const ANSWER_CLOCK_START = Date.parse("2026-11-01T10:00:00.000Z");
 
 export interface AnswerSetup {
-  /** The superuser pool: it only stamps event times (see `playQueuedAnswer`). */
+  /** Superuser pool; only stamps event times (see `playQueuedAnswer`). */
   admin: Pool;
-  /** The runtime-role pool every production write goes through. */
   runtime: Pool;
   tenant: string;
   userId: string;
@@ -41,15 +37,11 @@ export interface ChatSession {
 
 export interface PlayedAnswer {
   assistantMessageId: string;
-  /** The message it answers. */
   replyToMessageId: string | null;
   eventIds: string[];
 }
 
-/**
- * A chat run of the tenant's user in `projectItemId`: an unfinished `session` run started by the user, with its
- * Semp thread (`threadId` when the thread already exists, such as a tick thread, otherwise a new chat thread).
- */
+/** An unfinished user-started `session` run with its thread (`threadId` reuses an existing one, e.g. a tick thread). */
 export async function createChatSession(
   setup: AnswerSetup,
   projectItemId: string,
@@ -69,7 +61,7 @@ export async function createChatSession(
   });
 }
 
-/** Sends `text` to the thread of `session` as a user message; the ids of the message and the queued assistant message. */
+/** Returns the ids of the user message and the queued assistant message. */
 export async function askQuestion(
   setup: AnswerSetup,
   session: ChatSession,
@@ -83,24 +75,22 @@ export async function askQuestion(
 }
 
 export interface AnswerPlay {
-  /** Milliseconds after `ANSWER_CLOCK_START` the turn starts. */
+  /** Milliseconds after `ANSWER_CLOCK_START`. */
   startMs: number;
-  /** How long the turn lasts; the stored `duration_ms` of the message. */
+  /** The stored `duration_ms`. */
   durationMs: number;
-  /** How the turn ends: `done` (the default), `error` (with `errorCode`) or `running` (not finished). */
+  /** Default `done`; `running` leaves the turn unfinished. */
   end?: "done" | "error" | "running";
   errorCode?: AgentRunErrorCode;
-  /** Events between the start and the answer; their `atMs` is relative to `startMs`. */
+  /** `atMs` is relative to `startMs`. */
   toolEvents?: EventSpec[];
-  /** The run the turn is stored on; `session` when omitted. */
+  /** Defaults to `session`. */
   runId?: string;
 }
 
 /**
- * Claims the queued assistant message, stores the events of its turn on a run, starts the turn on the first of them
- * and, unless it is `running`, finishes it with the summary the turn handler builds. A stored event gets its `at`
- * from the spec by a raw `UPDATE` on the admin pool: the production writer stamps `now()`, and the starts and
- * durations a test asserts need a clock it controls.
+ * Event `at` is set by a raw `UPDATE` on the admin pool: the production writer stamps `now()`, and tests need a
+ * controlled clock.
  */
 export async function playQueuedAnswer(
   setup: AnswerSetup,
@@ -168,7 +158,6 @@ export async function playQueuedAnswer(
   });
 }
 
-/** One question and its answer, played through its turn: `askQuestion` then `playQueuedAnswer`. */
 export async function playAnswer(
   setup: AnswerSetup,
   session: ChatSession,
@@ -180,7 +169,7 @@ export async function playAnswer(
   return { ...played, userMessageId: sent.messageId };
 }
 
-/** Queues the next attempt at the failed reply `messageId` as the retry route does; the id of the new assistant message. */
+/** As the retry route does; returns the new assistant message id. */
 export async function retryAnswer(setup: AnswerSetup, session: ChatSession, messageId: string): Promise<string> {
   return runInTenant(setup.tenant, async () => {
     const retried = await withTransaction(setup.runtime, (client) =>
@@ -190,7 +179,6 @@ export async function retryAnswer(setup: AnswerSetup, session: ChatSession, mess
   });
 }
 
-/** One settled token call attributed to the message `messageId` of the run `runId`, as the gateway attributes a model call. */
 export async function settleAnswerCall(
   setup: AnswerSetup,
   runId: string,

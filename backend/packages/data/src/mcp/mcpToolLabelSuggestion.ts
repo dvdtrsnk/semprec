@@ -1,10 +1,6 @@
-// Suggested display labels for the tools an MCP server advertises (issue gh-1983): after a sync, the model proposes a
-// short Czech and English label for each active tool that has none. Constrained by:
-// docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md (the call leaves through the gateway client port),
-// docs/adr/2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions.md (the model call runs
-// between two transactions, and the write re-checks its condition),
-// docs/adr/2026-11-14-mcp-tool-label-suggestions-fill-only-empty-display-labels.md (this module is the one other
-// writer of the user-owned `display_label`, and fills it only where it is empty).
+// After a sync, the model proposes a short Czech and English label for each active tool that has none. The call
+// goes through the AI gateway between two transactions, and the write re-checks that the label is still empty
+// (docs/architecture/transactions-and-side-effects.md#staleness-checked-brackets).
 import type { Pool } from "pg";
 import { z } from "zod";
 import { AiGatewayFailedError, type AiGatewayClientPort } from "@semprec/shared";
@@ -12,22 +8,22 @@ import { withTransaction } from "../db/pool.js";
 import { logger } from "./logger.js";
 import type { McpToolDisplayLabel } from "./mcpToolRegistrationsStore.js";
 
-/** The `operation` of the gateway call; the gateway attributes it to no project (`OPERATION_REQUIRES_PROJECT_ITEM`). */
+/** The gateway attributes it to no project (`OPERATION_REQUIRES_PROJECT_ITEM`). */
 const MCP_TOOL_LABEL_OPERATION = "mcp_tool_label";
 
 /**
- * The most tools one call asks about, so that the answer fits the output the gateway reserves for a completion. A
- * server with more unlabeled tools is asked about in several calls of at most this many tools each, in name order.
+ * So the answer fits the gateway's reserved completion output; larger servers are asked in several calls, in name
+ * order.
  */
 const MAX_TOOLS_PER_CALL = 50;
 
-/** The first characters of a tool's description that the model reads: the text is a third party's, so it is bounded. */
+/** Third-party text, so bounded. */
 const MAX_DESCRIPTION_CHARACTERS = 500;
 
-/** The longest label stored: the bound `parseStoredMcpToolDisplayLabel` and `setMcpToolDisplayLabel` hold too. */
+/** Same bound as `parseStoredMcpToolDisplayLabel` and `setMcpToolDisplayLabel`. */
 const MAX_LABEL_LENGTH = 120;
 
-/** Control characters (line breaks and tabs among them), the Unicode line and paragraph separators, and angle brackets. */
+/** Control characters (incl. line breaks and tabs), Unicode line/paragraph separators, and angle brackets. */
 const FORBIDDEN_LABEL_CHARACTERS = /[\p{Cc}\u2028\u2029<>]/u;
 
 const SYSTEM_PROMPT =
@@ -56,7 +52,7 @@ const RESPONSE_JSON_SCHEMA = {
   additionalProperties: false,
 };
 
-/** The answer as a whole; each entry is checked on its own, so that one bad entry does not discard the others. */
+/** Entries are checked one by one, so one bad entry does not discard the rest. */
 const answerSchema = z.object({ labels: z.array(z.unknown()) });
 
 const entrySchema = z.object({ toolName: z.string(), cs: z.string(), en: z.string() });
@@ -77,10 +73,8 @@ function plainLabel(value: string): string | null {
 }
 
 /**
- * The active registrations of the server that have no label and whose name sorts after `afterToolName` (all of them
- * when it is `null`), in name order, at most `MAX_TOOLS_PER_CALL`. The description is cut in the query, so that a long
- * text is not read in full. Paging by name, not by "still unlabeled", is what makes the loop of the caller end when the
- * model leaves a tool without a label.
+ * The description is cut in SQL. Paging by name rather than by "still unlabeled" is what lets the caller's loop end
+ * when the model leaves a tool unlabeled.
  */
 async function listUnlabeledTools(
   pool: Pool,
@@ -104,11 +98,7 @@ async function listUnlabeledTools(
   });
 }
 
-/**
- * The labels of `answer` for the tools that were asked about, by the registration id. An entry for a name that was not
- * asked about, an entry that does not fit the schema, an entry with an unusable label in either language and a repeated
- * name (the first entry of a name decides) give nothing.
- */
+/** Unasked names, schema misfits, unusable labels in either language and repeated names (first wins) give nothing. */
 function labelsFromAnswer(answer: unknown, tools: readonly UnlabeledTool[]): Map<string, McpToolDisplayLabel> {
   const idsByName = new Map(tools.map((tool) => [tool.toolName, tool.id]));
   const labels = new Map<string, McpToolDisplayLabel>();
@@ -129,9 +119,8 @@ function labelsFromAnswer(answer: unknown, tools: readonly UnlabeledTool[]): Map
 }
 
 /**
- * Stores each label on a registration that still has none, in one transaction. The condition is part of each
- * `UPDATE`, so a label a person set after `listUnlabeledTools` read the row is never overwritten, and neither is a
- * label a concurrent sync stored. Returns how many registrations were filled.
+ * The "still empty" condition is in each `UPDATE`, so a label set by a person or a concurrent sync after the read is
+ * never overwritten.
  */
 async function storeLabelsWhereEmpty(pool: Pool, labels: ReadonlyMap<string, McpToolDisplayLabel>): Promise<number> {
   return withTransaction(pool, async (client) => {
@@ -174,21 +163,13 @@ async function suggestForChunk(
 }
 
 /**
- * Asks the gateway for a Czech and an English label of each active tool of `mcpServerItemId` that has none, and stores
- * the ones that come back valid. Returns how many registrations got a label. It runs in the caller's tenant scope,
- * and after a sync that succeeded, which it never fails: a refusal or failure of the gateway (the tenant's budget, a
- * timeout, an answer that does not fit the schema) and any other error are logged by name and leave the labels as they
- * were.
+ * Runs in the caller's tenant scope after a successful sync, which it never fails: every error is logged by name
+ * and leaves labels as they were. No transaction is open during a model call.
  *
- * The unlabeled tools are asked about in name order, `MAX_TOOLS_PER_CALL` at most per call, until every one of them
- * has been asked about once, so that a server with many tools gets all its labels from the one sync. Each call
- * carries each tool as its name and the start of its description inside the JSON of the user message; the system
- * prompt says that this text is data. A call that fails leaves its own tools without labels and the later calls go
- * on, except when the gateway refuses for the tenant's budget, which the later calls would meet too. What the model
- * answers is trusted no further than its schema: an entry is used only for a tool that was asked about in that call,
- * and only when `cs` and `en` are both plain text of 1 to 120 characters without a line break or an angle bracket. A
- * label is written only where the registration still has none, so a person's label, whenever it was set, and a label
- * of an earlier sync both stay. No transaction is open during a model call.
+ * Every unlabeled tool is asked about once, in chunks. Tool names and descriptions travel as JSON data in the user
+ * message, and the system prompt says it is data. A failed chunk does not stop later ones, except a budget refusal,
+ * which later calls would hit too. The answer is trusted no further than its schema: only tools asked in that call,
+ * only plain `cs` and `en` text of 1-120 characters.
  */
 export async function suggestMcpToolLabels(
   pool: Pool,

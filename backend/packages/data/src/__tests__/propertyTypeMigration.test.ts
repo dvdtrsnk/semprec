@@ -16,9 +16,8 @@ async function drainQueue() {
 }
 
 /**
- * Wraps `target` so every client answers a query whose SQL contains `sqlFragment` with a zero-row
- * result without running it, and forwards every other query unchanged. The migration batch holds
- * its rows under `FOR UPDATE`, so a real concurrent delete cannot produce this zero count.
+ * Answers queries containing `sqlFragment` with zero rows without running them. The batch holds rows
+ * `FOR UPDATE`, so a real concurrent delete cannot produce this count.
  */
 function zeroRowUpdatePool(target: Pool, sqlFragment: string): Pool {
   return new Proxy(target, {
@@ -97,10 +96,7 @@ describe("property type migration", () => {
     const bad = await chokePoint.createItem({ databaseId: db.id, properties: { score: "not a number" } });
 
     await chokePoint.changePropertyType(prop.id, "number");
-    // Run the job body itself twice concurrently, rather than draining the queue once,
-    // to exercise the retry-replay guarantee documented on isAlreadyTargetType: a second
-    // pass over rows the first pass already converted must recognize and skip them
-    // instead of re-converting (and failing) an already-converted value.
+    // Runs the job body twice concurrently: per isAlreadyTargetType, the second pass must skip converted rows.
     await Promise.all([
       runPropertyTypeMigrationJob(pool, prop.id, "text"),
       runPropertyTypeMigrationJob(pool, prop.id, "text"),
@@ -122,10 +118,8 @@ describe("property type migration", () => {
     await runPropertyTypeMigrationJob(pool, prop.id, "text");
     expect((await chokePoint.getProperty(prop.id))!.migrationStatus).toBe("partial");
 
-    // Exactly what graphile-worker does after a crash that happened between the row pass and
-    // the status write. The replay sees no unconvertible values left to drop — the first run
-    // already removed that key — so it must take the verdict from the migration's durable
-    // state instead of from its own (empty) bookkeeping.
+    // A replay after a crash between the row pass and the status write takes the verdict from the migration's
+    // durable state, not from its own (empty) bookkeeping.
     await runPropertyTypeMigrationJob(pool, prop.id, "text");
     expect((await chokePoint.getProperty(prop.id))!.migrationStatus).toBe("partial");
   });
@@ -159,8 +153,7 @@ describe("property type migration", () => {
     const failingPool = {
       connect: () => {
         connectCount += 1;
-        // The bootstrap client is the first connect(); the first batch's withTransaction
-        // client is the second — reject exactly that one to simulate a mid-batch failure.
+        // The second connect() is the first batch's transaction client.
         if (connectCount === 2) return Promise.reject(new Error("simulated connection failure"));
         return pool.connect();
       },

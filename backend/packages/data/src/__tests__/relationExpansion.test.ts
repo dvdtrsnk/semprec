@@ -37,7 +37,6 @@ async function link(item: ItemRow, key: string, target: ItemRow, metadata?: Reco
     metadata,
   });
 }
-/** The target when its database was readable, `undefined` for a hidden one or none. */
 function expandedTarget(target: ItemRelationTarget | undefined): ExpandedRelationTarget | undefined {
   return target !== undefined && !("hidden" in target) ? target : undefined;
 }

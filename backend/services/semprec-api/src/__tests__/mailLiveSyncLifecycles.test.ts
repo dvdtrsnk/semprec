@@ -52,10 +52,7 @@ import {
 import { loadGmailPubSubConfig } from "../gmailPubSubConfig.js";
 import { logger } from "../logger.js";
 
-/**
- * A fault for `node:fs/promises`'s `readFile`, armed by one case and disarmed in `afterEach`: while armed, the
- * key file read rejects with exactly this error; otherwise every call passes through to the real module.
- */
+/** Armed by one case and disarmed in `afterEach`; while armed, the key file read rejects with this error. */
 const fsFault = vi.hoisted((): { readFile: Error | undefined } => ({ readFile: undefined }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -69,10 +66,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-/**
- * Every error `node:crypto`'s `createPrivateKey` threw, recorded and rethrown unchanged; cleared in `afterEach`.
- * Recording only: every call passes through to the real function, so the owner's decode is the real one.
- */
+/** Records every error `createPrivateKey` threw, passing through to the real function; cleared in `afterEach`. */
 const decodeFailures = vi.hoisted((): unknown[] => []);
 
 vi.mock("node:crypto", async (importOriginal) => {
@@ -91,9 +85,8 @@ vi.mock("node:crypto", async (importOriginal) => {
 });
 
 /**
- * Runs every cleanup even when one fails. The case's own failure, `primary`, stays first: it is rethrown, or,
- * when a cleanup failed too, rethrown inside an `AggregateError` with the cleanup failures after it. A thrown
- * falsy value counts as a failure because `primary` wraps it.
+ * Runs every cleanup even when one fails. `primary` stays first: rethrown alone, or inside an `AggregateError`
+ * with the cleanup failures after it. A thrown falsy value counts because `primary` wraps it.
  */
 async function settleAll(primary: { error: unknown } | undefined, cleanups: (() => unknown)[]): Promise<void> {
   const failures: unknown[] = [];
@@ -138,10 +131,7 @@ let stub: DnsLookupStub | undefined;
 let lifecycleErrors: LifecycleErrorRecord[] = [];
 let idleErrors: IdleErrorRecord[] = [];
 
-/**
- * An IDLE connection that stays open until the lifecycle closes it. `onSignal` is the callback the lifecycle
- * handed to the transport, so a test fires the signal the way imapflow would.
- */
+/** `onSignal` is the lifecycle's callback, so a test fires the signal the way imapflow would. */
 class FakeIdleConnection implements ImapIdleConnection {
   closeCalls = 0;
   private endResolve: (value: unknown) => void = () => {};
@@ -167,7 +157,7 @@ class FakeIdleConnection implements ImapIdleConnection {
 
 interface FakeIdleOptions {
   folders?: string[];
-  /** Whether connect attempt number `attempt` for `key` (`mailboxItemId/folderPath`) is refused. */
+  /** `key` is `mailboxItemId/folderPath`. */
   refuses?: (key: string, attempt: number) => boolean;
 }
 
@@ -189,7 +179,7 @@ function createFakeIdleTransport(options: FakeIdleOptions = {}): {
       const key = `${mailboxItemId}/${folderPath}`;
       const attempt = (attempts.get(key) ?? 0) + 1;
       attempts.set(key, attempt);
-      // The refusal the address policy gives: the transport rejects with the mapped error, no socket is opened.
+      // As the address policy refuses: the mapped error, no socket opened.
       if (options.refuses?.(key, attempt)) throw new MailServerUnreachableError();
       const connection = new FakeIdleConnection(mailboxItemId, folderPath, onSignal);
       connections.push(connection);
@@ -199,7 +189,6 @@ function createFakeIdleTransport(options: FakeIdleOptions = {}): {
   return { transport, resolvedMailboxes, connections, attempts };
 }
 
-/** The bounded IDLE lifecycle over `transport`, with the test's credential and a short reconnect backoff. */
 function imapIdleOver(transport: ImapIdleTransport): MailLiveSyncLifecycleFactory {
   return createBoundedImapIdleLifecycleFactory(pool, transport, {
     getCredential: async () => APP_PASSWORD,
@@ -212,7 +201,7 @@ function imapIdleOver(transport: ImapIdleTransport): MailLiveSyncLifecycleFactor
   });
 }
 
-/** Composes the live-sync root the way serve.ts does, with a shortened discovery interval. */
+/** As serve.ts does, with a shortened discovery interval. */
 function composeRoot(hosted: MailLiveSyncLifecycleDispatchOptions["hosted"]): MailLiveSyncRoot {
   return createMailLiveSyncRoot(pool, createMailLiveSyncLifecycleFactory({ pool, hosted }), {
     discoveryIntervalMs: DISCOVERY_INTERVAL_MS,
@@ -235,7 +224,6 @@ async function insertMailbox(provider: string, properties: Record<string, unknow
   );
 }
 
-/** Stores the app password the IDLE lifecycle reads, and the IMAP settings that name `host`. */
 async function storeImapSetup(mailboxItemId: string, host: string): Promise<void> {
   await inTenantZero(() =>
     withTransaction(pool, async (client) => {
@@ -249,10 +237,6 @@ async function storeImapSetup(mailboxItemId: string, host: string): Promise<void
   );
 }
 
-/**
- * Queued mail-account sync jobs for `mailboxItemId`. Reads graphile-worker's `_private_jobs` and `_private_tasks`
- * tables, as imapIdleLifecycle.test.ts does.
- */
 async function syncJobsFor(mailboxItemId: string): Promise<number> {
   const { rows } = await pool.query<{ count: string }>(
     `SELECT count(*)::text AS count FROM graphile_worker._private_jobs jobs
@@ -263,12 +247,11 @@ async function syncJobsFor(mailboxItemId: string): Promise<number> {
   return Number(rows[0]?.count ?? 0);
 }
 
-/** Drops the sync the lifecycle enqueued at start, so a test observes only the enqueue its own signal causes. */
+/** Drops the sync enqueued at start, so a test observes only the enqueue its own signal causes. */
 async function clearSyncJobsFor(mailboxItemId: string): Promise<void> {
   await pool.query(`DELETE FROM graphile_worker._private_jobs WHERE key = $1`, [`mail-account-sync:${mailboxItemId}`]);
 }
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails through the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -278,12 +261,9 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
   expect(await check()).toBe(true);
 }
 
-/** How long a case waits for one token-owner outcome it drives, well inside the case timeout. */
 const OWNER_MS = 5_000;
-/** How long the cleanup waits for every started token-owner outcome once held provider work is released. */
 const OWNER_DRAIN_MS = 5_000;
 
-/** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
 async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
@@ -298,21 +278,17 @@ async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T>
 
 type OwnerOutcome = { token: string } | { error: unknown };
 
-/** What a bounded wait gave: its value, or the very error it rejected with. */
 type Observation<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
-/** The value of `observation`, or its rejection rethrown as the same error object. */
+/** Rethrows the rejection as the same error object. */
 function take<T>(observation: Observation<T>): T {
   if (!observation.ok) throw observation.error;
   return observation.value;
 }
 
 /**
- * The held token-provider work of one case, each piece recorded when it is created: every token-owner outcome the
- * case starts, every bounded observation of one, every fake fetch it holds open (with its own release handle and
- * abort listener), every response stream it serves (by its controller) and every stream pull or cancel promise it
- * holds. `release` frees all of it without waiting for any production deadline, then drains every owner outcome and
- * every observation.
+ * Records a case's held token-provider work (owner outcomes, bounded observations, held fetches, streams and
+ * pull/cancel promises). `release` frees all of it without waiting for any production deadline, then drains.
  */
 function heldProviders() {
   const owners: Promise<OwnerOutcome>[] = [];
@@ -324,7 +300,7 @@ function heldProviders() {
   const hold = () => new Promise<void>((resolve) => holds.push(resolve));
   return {
     releasedError,
-    /** Starts one token-owner call and records its outcome, which never rejects. */
+    /** The recorded outcome never rejects. */
     owner(start: () => Promise<string>): Promise<OwnerOutcome> {
       const outcome = start().then(
         (token): OwnerOutcome => ({ token }),
@@ -334,9 +310,8 @@ function heldProviders() {
       return outcome;
     },
     /**
-     * Bounds `outcome` within `ms` and observes the bound at once, with both handlers, so a bound that expires while
-     * the case still waits for something else rejects into this observation and never goes unhandled. The returned
-     * promise never rejects; `take` rethrows the bound's own error.
+     * Observes the bound at once, so a bound expiring while the case waits elsewhere never goes unhandled. Never
+     * rejects; `take` rethrows the bound's own error.
      */
     bounded<T>(outcome: Promise<T>, ms: number, what: string): Promise<Observation<T>> {
       const observation = within(outcome, ms, what).then(
@@ -346,7 +321,6 @@ function heldProviders() {
       observations.push(observation);
       return observation;
     },
-    /** A fetch answer that settles only when its request is aborted or the cleanup releases it. */
     heldFetch(request: Request, onHeld: () => void): Promise<Response> {
       return new Promise<Response>((_resolve, reject) => {
         const onAbort = () => {
@@ -358,7 +332,6 @@ function heldProviders() {
         onHeld();
       });
     },
-    /** A response whose body stream is recorded; its pull (when `onPull` is given) and its cancel are held. */
     heldStream(options: { onPull?: () => void; onCancel?: () => void; status?: number }): Response {
       const onPull = options.onPull;
       return new Response(
@@ -383,10 +356,8 @@ function heldProviders() {
       );
     },
     /**
-     * Rejects every held fetch and removes its abort listener, errors every served stream (a no-op for one already
-     * closed, errored or cancelled), resolves every held pull and cancel, and only then waits for every started owner
-     * outcome within `drainMs`, and then for every bounded observation within `drainMs`. Each step is attempted
-     * whatever an earlier one did; an outcome or observation still pending is a failure, never a settlement.
+     * Each step is attempted whatever an earlier one did; an outcome or observation still pending after
+     * `drainMs` is a failure, never a settlement.
      */
     async release(drainMs = OWNER_DRAIN_MS): Promise<void> {
       const failures: unknown[] = [];
@@ -428,7 +399,6 @@ describe("mail live-sync lifecycles by sync mode (issue #1550)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);
-    // Writes below run in tenant zero's scope, as the fixtures of mailSyncAdapters.test.ts do.
     await createTenantZeroUser(pool);
     lifecycleErrors = [];
     idleErrors = [];
@@ -665,9 +635,7 @@ describe("mail live-sync lifecycles by sync mode (issue #1550)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
-// Gmail watch (issue #1739) and Microsoft Graph subscription (issue #1745) hosting
-// ---------------------------------------------------------------------------------------------
+// Gmail watch and Microsoft Graph subscription hosting
 
 const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
 const GMAIL_WATCH = "https://gmail.googleapis.com/gmail/v1/users/me/watch";
@@ -684,9 +652,8 @@ const CLIENT_SECRET = "synthetic-client-secret-that-must-never-be-logged";
 type FakeRoute = (request: Request) => Promise<Response> | Response;
 
 /**
- * Replaces the global `fetch` with a closed set of synthetic provider endpoints, keyed by method and exact
- * URL (`PATCH` on a Graph subscription by its URL prefix); any other request is refused, so nothing reaches
- * the network. Restored by `vi.unstubAllGlobals()` after every test.
+ * A closed set of synthetic provider endpoints keyed by method and exact URL (`PATCH` on a Graph subscription by
+ * URL prefix); any other request is refused, so nothing reaches the network.
  */
 function stubProviders(routes: Record<string, FakeRoute>): Request[] {
   const seen: Request[] = [];
@@ -709,7 +676,6 @@ async function formOf(request: Request): Promise<URLSearchParams> {
   return new URLSearchParams(await request.text());
 }
 
-/** Every logger call of this service, captured; the mock keeps them out of the test output. */
 function captureServiceLogs(): { calls: unknown[][] } {
   const calls: unknown[][] = [];
   for (const level of ["debug", "info", "warn", "error"] as const) {
@@ -720,7 +686,6 @@ function captureServiceLogs(): { calls: unknown[][] } {
   return { calls };
 }
 
-/** A synthetic service account key file in a directory this test owns; returns its path and public key. */
 async function writeServiceAccountKey(directory: string) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -732,7 +697,6 @@ async function writeServiceAccountKey(directory: string) {
   return { path, publicKey, pem };
 }
 
-/** The claims of a service-account JWT assertion whose RS256 signature `publicKey` verifies; `null` otherwise. */
 function verifiedAssertionClaims(assertion: string, publicKey: Parameters<typeof verify>[2]): unknown {
   const [header, claims, signature] = assertion.split(".");
   if (!header || !claims || !signature) return null;
@@ -756,7 +720,6 @@ const assertionClaimsSchema = z.object({
   exp: z.number(),
 });
 
-/** A Gmail-mode mailbox in `tenantId` with its refresh token, sync state and provider-verified address. */
 async function insertGmailMailbox(
   db: Pool,
   tenantId: string,
@@ -852,7 +815,6 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       },
       () => vi.unstubAllGlobals(),
       () => vi.restoreAllMocks(),
-      // This test's own key directory.
       () => (owned === undefined ? undefined : rm(owned, { recursive: true, force: true })),
     ]);
   });
@@ -860,7 +822,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
   it("routes a notification for a watched, provider-verified address to one sync per mailbox, never by Mailboxes.addresses", async () => {
     const key = await writeServiceAccountKey(ownDirectory());
     const logs = captureServiceLogs();
-    // Two tenants: every production read and write runs on a runtime-role pool, under row-level security.
+    // Every production read and write runs on a runtime-role pool, under row-level security.
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     let primary: { error: unknown } | undefined;
     try {
@@ -868,7 +830,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       await runInTenant(otherTenant, () => seedSystem(runtime));
       const first = await insertGmailMailbox(runtime, getTenantZeroId(), "Verified@Example.com", "claimed@example.com");
       const second = await insertGmailMailbox(runtime, otherTenant, "verified@example.com");
-      // Phase one delivers only the claimed address, so no verified notification's sync can mask a wrong route.
+      // Only the claimed address first, so no verified notification's sync can mask a wrong route.
       const pending = [pubSubMessage("ack-claimed", "claimed@example.com")];
       const acknowledged: string[][] = [];
       let serviceAccountExchanges = 0;
@@ -934,18 +896,17 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       dispatcher = running;
       await running.start();
       await waitFor(async () => acknowledged.length === 1);
-      // Handed off to no mailbox: the claimed address is the first mailbox's Mailboxes.addresses only.
+      // The claimed address is only the first mailbox's Mailboxes.addresses, so nothing receives it.
       expect(acknowledged).toEqual([["ack-claimed"]]);
       expect(await syncJobsFor(first)).toBe(0);
       expect(await syncJobsFor(second)).toBe(0);
 
-      // Phase two: the provider-verified address reaches both tenants' watching mailboxes.
       pending.push(pubSubMessage("ack-verified", "verified@example.com"));
       await waitFor(async () => acknowledged.length === 2);
       expect(acknowledged).toEqual([["ack-claimed"], ["ack-verified"]]);
       expect(await syncJobsFor(first)).toBe(1);
       expect(await syncJobsFor(second)).toBe(1);
-      // One assertion exchange for the pull and the acknowledge: the service-account token is cached.
+      // The service-account token is cached across the pull and the acknowledge.
       expect(serviceAccountExchanges).toBe(1);
       expect(lifecycleErrors).toEqual([]);
       const recorded = JSON.stringify([logs.calls, seen.map((request) => request.url)]);
@@ -956,7 +917,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     } catch (error) {
       primary = { error };
     }
-    // Both run on `runtime`, so they stop before it ends; each step runs even when an earlier one fails.
+    // Both run on `runtime`, so they stop before it ends.
     const [stopping, rooted] = [dispatcher, root];
     dispatcher = undefined;
     root = undefined;
@@ -977,8 +938,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     ]);
     expect(JSON.stringify(configured.mock.calls)).not.toContain(CLIENT_SECRET);
     configured.mockRestore();
-    // Without the OAuth client the mail sync adapters own the provider warning; the lifecycle adds none, also
-    // when the Pub/Sub keys are present.
+    // Without the OAuth client the mail sync adapters own the provider warning; the lifecycle adds none.
     for (const env of [
       {},
       {
@@ -1057,7 +1017,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
 
   it("propagates an unexpected key file read failure as it is rather than reporting a missing configuration", async () => {
     const directory = ownDirectory();
-    // Two symlinks pointing at each other: the read fails with ELOOP, which is not a configuration category.
+    // ELOOP is not a configuration category.
     await symlink(join(directory, "loop-b"), join(directory, "loop-a"));
     await symlink(join(directory, "loop-a"), join(directory, "loop-b"));
     const failure = await loadGmailPubSubConfig({
@@ -1075,14 +1035,13 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
   it("maps a denied, a forbidden and an overlong key path to their fixed reasons, never the path", async () => {
     const directory = ownDirectory();
     const complete = { GMAIL_PUBSUB_TOPIC: TOPIC, GMAIL_PUBSUB_SUBSCRIPTION: SUBSCRIPTION };
-    // A real ENAMETOOLONG: one path component longer than any supported file system allows.
     expect(
       await loadGmailPubSubConfig({
         ...complete,
         GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH: join(directory, "k".repeat(300)),
       }),
     ).toEqual({ config: null, reason: "GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH is not a valid path" });
-    // EACCES and EPERM through the armed read fault: a permission bit does not deny a root user, as CI may run.
+    // Through the armed read fault: a permission bit does not deny a root user, as CI may run.
     const keyPath = join(directory, "key.json");
     for (const code of ["EACCES", "EPERM"]) {
       fsFault.readFile = Object.assign(new Error(`${code}: synthetic, open '${keyPath}'`), {
@@ -1138,11 +1097,10 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       () => null,
       (error: unknown) => error,
     );
-    // The very error the owner's real decode threw, not a wrapper or a copy of it.
+    // The very error the real decode threw, not a wrapper.
     expect(decodeFailures).toHaveLength(1);
     expect(failure).toBe(decodeFailures[0]);
-    // An unrecognized decoder error: an Error whose string code lies outside the one decoder code the owner maps
-    // to a configuration reason (`ERR_OSSL_UNSUPPORTED`), whichever code this host's OpenSSL gives it.
+    // A decoder code outside the one the owner maps (`ERR_OSSL_UNSUPPORTED`), whichever code this host's OpenSSL gives.
     expect(failure).toBeInstanceOf(Error);
     const code: unknown = failure instanceof Error ? Reflect.get(failure, "code") : undefined;
     expect(typeof code).toBe("string");
@@ -1159,7 +1117,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     });
     if (!loaded.config) throw new Error(loaded.reason);
     const config = loaded.config;
-    // Each token request's deadline, controlled by this case instead of 15 real seconds.
+    // Controlled here instead of 15 real seconds.
     const deadlines: { ms: number; controller: AbortController }[] = [];
     vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
       const controller = new AbortController();
@@ -1209,7 +1167,6 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
         return answer(request);
       },
     });
-    // Every owner outcome is recorded by the harness when it starts, and its bound is observed as it is created.
     const bounded = (what: string) =>
       providers.bounded(
         providers.owner(() => config.getPubSubAccessToken()),
@@ -1219,7 +1176,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     const outcome = async (what: string) => take(await bounded(what));
     let primary: { error: unknown } | undefined;
     try {
-      // Observed from here on: a bound expiring during the readiness wait below cannot reject unhandled.
+      // Observed from here on, so a bound expiring during the readiness wait cannot reject unhandled.
       const fetching = bounded("The owner of the held fetch");
       await waitFor(async () => fetchHeld);
       const fetchReason = expire(0);
@@ -1253,15 +1210,13 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
         new Error("The Pub/Sub token response's cancellation did not settle before its deadline"),
       ]);
       expect(cancelFailed.error.cause).toBe(cancelFailed.error.errors[0]);
-      // No failure was cached: every later call exchanged again and succeeded.
+      // No failure was cached.
       expect(await outcome("A later token request")).toEqual({ token: "pubsub-token-good" });
       expect(exchanges).toBe(answers.length);
       expect(deadlines.map((deadline) => deadline.ms)).toEqual(answers.map(() => 15_000));
     } catch (error) {
       primary = { error };
     }
-    // Every held fetch, stream and stream promise is released, then every started owner outcome and every bounded
-    // observation drained, before afterEach restores the globals and the spy.
     await settleAll(primary, [() => providers.release()]);
   });
 
@@ -1274,7 +1229,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     });
     if (!loaded.config) throw new Error(loaded.reason);
     const config = loaded.config;
-    // A deadline that never expires: nothing below relies on the production deadline to free the held fetch.
+    // A deadline that never expires: nothing relies on the production deadline to free the held fetch.
     vi.spyOn(AbortSignal, "timeout").mockImplementation(() => new AbortController().signal);
     const providers = heldProviders();
     let fetchHeld = false;
@@ -1298,14 +1253,12 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       (error: unknown) => error,
     );
     expect(thrown).toBe(early);
-    // The real owner settled with the release, not with a deadline.
     expect(await within(owner, OWNER_MS, "The released owner")).toEqual({ error: providers.releasedError });
   });
 
   it("reports an owner outcome that never settles as an unsettled failure after the case's own", async () => {
     const providers = heldProviders();
-    // A synthetic owner that never settles, standing for a regressed one; it holds no resource. The harness keeps its
-    // outcome, which never rejects, and the release below reports it as unsettled; nothing here awaits it.
+    // A regressed owner that never settles; the release below must report it as unsettled.
     void providers.owner(() => new Promise<string>(() => {}));
     const early = new Error("The case's own failure");
     const thrown = await settleAll({ error: early }, [() => providers.release(50)]).then(
@@ -1332,7 +1285,6 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       });
       if (!loaded.config) throw new Error(loaded.reason);
       const config = loaded.config;
-      // A deadline that never expires: only the release below frees the held fetch.
       vi.spyOn(AbortSignal, "timeout").mockImplementation(() => new AbortController().signal);
       const providers = heldProviders();
       let fetchHeld = false;
@@ -1343,9 +1295,9 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
           }),
       });
       const owner = providers.owner(() => config.getPubSubAccessToken());
-      // A bound far below the readiness wait. The owner is held until the release, so this bound expires first.
+      // Far below the readiness wait, so this bound expires first.
       const fetching = providers.bounded(owner, 20, "The owner of the held fetch");
-      // Set once the observation has settled; the readiness wait reads this flag and never awaits the observation.
+      // The readiness wait reads this flag and never awaits the observation.
       let expired = false;
       const expiring = fetching.then(() => {
         expired = true;
@@ -1358,7 +1310,6 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       process.on("unhandledRejection", onUnhandled);
       let primary: { error: unknown } | undefined;
       try {
-        // Readiness is held until the owner's fetch is held and the bound has expired, then arrives late or fails.
         await waitFor(async () => {
           if (!fetchHeld || !expired) return false;
           if (readiness === "failed") throw readinessFailed;
@@ -1371,7 +1322,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       }
       const thrown = await settleAll(primary, [
         () => providers.release(),
-        // One more turn of the event loop, after which an unhandled rejection would already have been reported.
+        // One more event-loop turn, after which an unhandled rejection would already have been reported.
         () => new Promise<void>((resolve) => setImmediate(resolve)),
         () => {
           process.off("unhandledRejection", onUnhandled);
@@ -1384,10 +1335,8 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       const observation = await fetching;
       if (observation.ok) throw new Error("expected the bound to have rejected");
       expect(observation.error).toEqual(new Error("The owner of the held fetch did not settle within 20 ms"));
-      // The case's own failure is kept: the readiness failure, or the bound's error rethrown unchanged by `take`.
       expect(thrown).toBe(readiness === "failed" ? readinessFailed : observation.error);
       expect(unhandled).toEqual([]);
-      // The real owner settled with the release, not with a deadline.
       expect(await within(owner, OWNER_MS, "The released owner")).toEqual({ error: providers.releasedError });
     },
   );
@@ -1406,7 +1355,6 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     const cancelFailure = new Error("synthetic cancel failure");
     const releaseFailure = new Error("synthetic release failure");
 
-    /** A body stream that yields `chunks`, then ends or fails with `fail`; it records each cancel and can fail it. */
     function body(
       chunks: string[],
       options: { fail?: unknown; cancelFails?: boolean } = {},
@@ -1426,7 +1374,6 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
         },
       });
     }
-    /** A response whose body hands out a reader that reads normally but fails to release its lock. */
     function unreleasable(text: string): Response {
       const stream = body([text]);
       const response = new Response(null, { status: 200 });
@@ -1527,11 +1474,10 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
       new Error("The Pub/Sub token response could not be settled"),
       releaseFailure,
     ]);
-    // The token of a response that could not be settled is not cached: the next call exchanges again.
+    // An unsettled response's token is not cached.
     expect(await outcome()).toEqual({ token: "pubsub-token-good" });
 
     expect(exchanges).toBe(answers.length);
-    // The 503 and 500 bodies were never read and were cancelled, as were both oversized bodies.
     expect(cancelled).toEqual(["cancel", "cancel", "cancel", "cancel"]);
     expect(JSON.stringify([nonOk, nonOkCancelFails, readFails, unsettled])).not.toContain("leaked-token");
   });
@@ -1574,7 +1520,7 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
     expect(await first.config.getPubSubAccessToken()).toBe("pubsub-token-1");
     expect(exchanges).toBe(2);
 
-    // A token that lives less than the refresh margin is replaced on the next call.
+    // A token living less than the refresh margin is replaced on the next call.
     const second = await loadGmailPubSubConfig(env);
     if (!second.config) throw new Error(second.reason);
     expect(await second.config.getPubSubAccessToken()).toBe("pubsub-token-short");
@@ -1585,7 +1531,6 @@ describe("Gmail watch lifecycles and the Pub/Sub dispatcher (issue #1739)", () =
   });
 });
 
-/** A Graph-mode mailbox in tenant zero with its refresh token and sync state. */
 async function insertGraphMailbox(): Promise<string> {
   return inTenantZero(() =>
     withTransaction(pool, async (client) => {
@@ -1647,12 +1592,11 @@ describe("Microsoft Graph subscription lifecycles (issue #1745)", () => {
     "https://user@semprec.example",
     "not a url",
     "https://",
-    // URL parsing of an https URL turns a backslash into a path separator: each would otherwise lose its path.
+    // URL parsing turns a backslash into a path separator, so each would lose its path.
     "https://semprec.example\\app",
     "https://semprec.example\\",
     "https://semprec.example\\?x=1",
     "https://semprec.example:8443\\app",
-    // Passes the text check but does not parse.
     "https://semprec.example:99999",
   ])("does not host Graph for APP_BASE_URL %s", (appBaseUrl) => {
     expect(decideGraphSubscriptionHosting(appBaseUrl, { clientId: "id", clientSecret: "secret" })).toEqual({
@@ -1721,14 +1665,13 @@ describe("Microsoft Graph subscription lifecycles (issue #1745)", () => {
     await sleep(50);
     expect(seen.length).toBe(requestsAtStop);
 
-    // A restart renews the persisted subscription; Graph no longer has it, so a new one is registered.
+    // Graph no longer has the persisted subscription, so the restart registers a new one.
     root = composeRoot({ graph_api: graph });
     await root.start();
     await waitFor(async () => (await syncStateOf(mailboxId))?.graph_subscription_id === "sub-2");
     expect(renewals).toEqual([`${GRAPH_SUBSCRIPTIONS}/sub-1`]);
     await root.stop();
 
-    // A renewal Graph accepts moves only the expiry.
     renewStatus = 200;
     const before = await syncStateOf(mailboxId);
     root = composeRoot({ graph_api: graph });
@@ -1797,7 +1740,7 @@ describe("Microsoft Graph subscription lifecycles (issue #1745)", () => {
   it("without the Graph OAuth client logs no lifecycle warning, hosts nothing and keeps Graph accounts on the noop lifecycle", async () => {
     stubProviders({});
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    // The mail sync adapters own this provider's one startup warning (mailSyncAdapters.test.ts).
+    // The mail sync adapters own this provider's startup warning.
     expect(resolveGraphSubscriptionHosting(pool, {}, "https://semprec.example")).toBeNull();
     expect(warning).not.toHaveBeenCalled();
     root = composeRoot({});

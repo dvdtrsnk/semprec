@@ -26,21 +26,16 @@ import {
 import { buildSearchSnippetSql } from "./searchSnippet.js";
 import { buildSubtitleParts } from "./searchSubtitleParts.js";
 
-// Global search over `item_search_index` (issue #1842). The groups are not listed here: `searchGroupRegistry.ts` holds
-// them and the composition root `domainWriteHooks.ts` fills it. An item group is an allow-list of databases by owner
-// module, so a database that no registered group lists (the inbox pipeline, mailboxes, folders, MCP servers,
-// settings, proposals, the Inbox, subpage storage, Health records, Library, Recordings and every user-created
-// collection) is never searched. An Inbox entry is found through the text its Journal day holds. A thread group (`chat`
-// of issue #1854, `mail` of issue #1864) is not item-backed: it runs its own search over threads.
+// Global search over `item_search_index`. Groups come from `searchGroupRegistry.ts`. An item group is an allow-list
+// of databases by owner module, so any unlisted database is never searched; an Inbox entry is found through its
+// Journal day's text. Thread groups (`chat`, `mail`) run their own search over threads.
 
-/** A project that belongs to a system module (Email, Personal finance, ...) is infrastructure and is never a result. */
+/** A project owned by a system module is infrastructure and never a result. */
 const EXCLUDE_SYSTEM_PROJECTS_SQL = "AND i.properties ->> 'systemActive' IS DISTINCT FROM 'true'";
 
 /**
- * An extra condition on the items of one group, with the parameters it binds (numbered from `firstParameter`). A project
- * that belongs to a system module is infrastructure. A Journal entry whose `type` is not a Journal period type, or whose
- * `period` is not a non-empty text, is dropped from the group (issue #1859), in the count and in the page alike, so a
- * group's `total` and its cursor never disagree with the results it lists.
+ * Applied to count and page alike, so `total` and the cursor never disagree with the listed results. Drops Journal
+ * entries without a period `type` and a non-empty `period`.
  */
 function groupFilter(group: SearchItemGroupType, firstParameter: number): { sql: string; params: unknown[] } {
   if (group === "project") return { sql: EXCLUDE_SYSTEM_PROJECTS_SQL, params: [] };
@@ -56,27 +51,23 @@ function groupFilter(group: SearchItemGroupType, firstParameter: number): { sql:
 
 export interface SearchItemGroupsInput {
   q: string;
-  /** The groups to search; the answer follows the fixed order of `SEARCH_GROUP_TYPES`, not this order. */
+  /** The answer follows the fixed `SEARCH_GROUP_TYPES` order, not this one. */
   scope: readonly SearchGroupType[];
   perGroupLimit: number;
-  /** The `nextCursor` of one group; allowed only when `scope` holds exactly that group. */
+  /** Allowed only when `scope` holds exactly that group. */
   cursor?: string;
-  /** The Projects item of an agent's run: databases it has no read grant for are not searched. Absent for a person. */
+  /** An agent run's Projects item: databases without a read grant are not searched. */
   agentProjectItemId?: string;
-  /**
-   * True when a person asks. A thread group applies its own actor rule to it: `chat` is given to a person only,
-   * because Semp conversations belong to the user and are part of no database an agent or an MCP client is granted.
-   * Absent means not a person.
-   */
+  /** `chat` is given to a person only: Semp conversations belong to the user, not to any granted database. */
   humanActor?: boolean;
 }
 
-/** The position of the last result of a page in the order rank, then `updated_at`, then item id. */
+/** Order: rank, then `updated_at`, then item id. */
 const cursorSchema = z
   .object({
-    /** `ts_rank_cd` of the item, widened from `real` to a double, which converts back without loss. */
+    /** `real` widened to double, which converts back without loss. */
     r: z.number().min(0).max(1e9),
-    /** `updated_at` as whole microseconds since the epoch: a JavaScript date has only milliseconds. */
+    /** Whole microseconds since the epoch: a JavaScript date has only milliseconds. */
     u: z.string().regex(/^\d{1,18}$/),
     i: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
   })
@@ -91,7 +82,7 @@ function encodeCursor(cursor: SearchCursor): string {
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
-/** Every shape the token can take is checked here, so a forged token is a 400 and never reaches the database. */
+/** Every shape is checked here, so a forged token is a 400 and never reaches the database. */
 function decodeCursor(token: string): SearchCursor {
   if (!/^[A-Za-z0-9_-]+$/.test(token)) throw invalidCursor();
   let raw: unknown;
@@ -135,10 +126,9 @@ interface SnippetDbRow {
 
 const propertiesSchema = z.record(z.string(), z.unknown());
 
-/** The Journal period a Journal item stores. `groupFilter` keeps every other Journal item out of the query, so this never refuses a row it is given. */
+/** `groupFilter` keeps every other Journal item out, so this never refuses a row it is given. */
 const journalPeriodSchema = z.object({ type: z.enum(JOURNAL_PERIOD_TYPES), period: z.string().min(1) });
 
-/** The unarchived databases of the requested modules that the actor may read, each with the key of its title property. */
 async function listSearchableDatabases(
   client: PoolClient,
   moduleIds: readonly string[],
@@ -155,7 +145,6 @@ async function listSearchableDatabases(
   return rows;
 }
 
-/** How many live items of the group's databases match, whatever the page or the cursor. */
 async function countMatches(
   client: PoolClient,
   databaseIds: readonly string[],
@@ -173,7 +162,7 @@ async function countMatches(
   return rows[0]?.total ?? 0;
 }
 
-/** One page of the group, one row more than `limit` so the caller can tell whether another page follows. */
+/** One row more than `limit` tells whether another page follows. */
 async function readPage(
   client: PoolClient,
   databases: readonly SearchableDatabaseDbRow[],
@@ -218,10 +207,7 @@ async function readPage(
   return rows;
 }
 
-/**
- * The excerpts of the listed items, by item id: read for the page that is returned and no other match, once the
- * per-group limit and the cursor have been applied. An item whose `body` does not match the query has a null excerpt.
- */
+/** Read only for the returned page. An item whose `body` does not match has a null excerpt. */
 async function readSnippets(
   client: PoolClient,
   databaseIds: readonly string[],
@@ -240,34 +226,12 @@ async function readSnippets(
 }
 
 /**
- * Searches the caller tenant's data for `input.q`, one group per registered type of `input.scope`, in the fixed order
- * of `SEARCH_GROUP_TYPES`; a group without a match is omitted. The groups are the ones `searchGroupRegistry.ts`
- * holds: a requested type with no registration contributes nothing and is not an error. The tenant is the ambient one
- * (`runInTenant`), as for every data function. The whole answer is read in one repeatable-read transaction, so a
- * group's `total` and its page come from the same snapshot.
- *
- * A group's `total` counts every match, even when `items` holds only `perGroupLimit` of them. Item groups are ordered by
- * `ts_rank_cd` (best first), then `updated_at` (newest first), then item id, and `nextCursor` is the opaque token of
- * the last listed match, or `null` when nothing follows. Items in the trash, projects with `systemActive`, items of
- * an archived database and, for an agent (`agentProjectItemId`), items of a database it has no read grant for are
- * never found, and neither is a Journal entry without a valid `type` and `period`. A result of the `journal` group
- * carries that `type` and `period` (issue #1859). A query with no searchable word matches nothing. `q` is bound as a
- * parameter and is never logged; only its length and the counts of the answer are.
- *
- * An item-backed result carries a `snippet` (issue #1996): an excerpt of at most 160 characters of its page text (for a
- * Journal day, of its Inbox entries and page text) when that text itself matches `q`, and `null` when the item was found
- * only through its title or other properties. The excerpt is read for the returned rows only.
- *
- * A thread group runs after the item groups, in the same transaction, through the search its `prepare` returned; it is
- * given `q`, the query builder, `perGroupLimit`, `agentProjectItemId` and `humanActor` and applies its own actor rule
- * (`chat` lists the user's Semp threads for a person only, `searchSempThreads`; `mail` lists the mail threads, unless
- * the actor may not read the Emails database, `mailGlobalSearchGroup`). Its `nextCursor` is a token of its own.
- *
- * Throws a `ValidationError` for a `cursor` that is not in the shape of the group that owns it: the thread group's
- * `prepare` decides for a scope that is exactly one registered thread group, and every other scope is checked in the
- * shape this function issues for item groups. A `cursor` with a scope of more or fewer than one group is refused too.
- * The cursor is checked before anything is searched, so it is refused for every actor and for a query with no
- * searchable word too.
+ * Searches the tenant for `input.q`, one group per registered type in `SEARCH_GROUP_TYPES` order; empty groups are
+ * omitted. One repeatable-read transaction, so `total` and the page share a snapshot. Item groups are ordered by
+ * `ts_rank_cd`, `updated_at` desc, id. Trashed items, system projects, archived databases, ungranted databases (for
+ * an agent) and invalid Journal entries are never found. `snippet` is an excerpt of at most 160 characters when the
+ * page text itself matches, else `null`. `q` is bound and never logged. A malformed cursor, or one with a scope of
+ * not exactly one group, is a `ValidationError` before anything is searched.
  */
 export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput): Promise<SearchOutput> {
   const itemGroups: ItemSearchGroup[] = [];
@@ -278,8 +242,8 @@ export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput)
     if ("ownerModuleIds" in registered) itemGroups.push(registered);
     else threadGroups.push(registered);
   }
-  // A thread group owns the cursor of a scope that is exactly that group; every other cursor is ours. Both are checked
-  // here, before anything is searched, so a token of the wrong shape is refused whoever asks and whatever the query says.
+  // A thread group owns the cursor of a scope that is exactly that group; every other cursor is ours. Checked
+  // before searching, so a malformed token is refused whoever asks.
   const [onlyType] = input.scope;
   const owner = input.scope.length === 1 ? threadGroups.find((group) => group.type === onlyType) : undefined;
   const cursor = input.cursor === undefined || owner !== undefined ? undefined : decodeCursor(input.cursor);
@@ -339,7 +303,6 @@ export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput)
                 tenantDatabaseIds,
                 unreadable,
               );
-              // The extra row `readPage` asks for says another page follows; the cursor is the last listed match.
               const lastListed = rows.length > input.perGroupLimit ? page[page.length - 1] : undefined;
               const toResult = (row: SearchPageDbRow): SearchItemResult => ({
                 itemId: row.id,

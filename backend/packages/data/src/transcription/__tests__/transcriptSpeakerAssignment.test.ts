@@ -80,7 +80,7 @@ async function createItem(moduleId: string, properties: Record<string, unknown>)
   return (await createChokePoint(runtime).createItem({ databaseId: await databaseId(moduleId), properties })).id;
 }
 
-/** A user-written edge, the way the generic relation endpoint writes it. */
+/** As the generic relation endpoint writes it. */
 async function link(
   moduleId: string,
   key: string,
@@ -96,7 +96,6 @@ async function link(
   });
 }
 
-/** A transcript of the tenant in scope with segments of three speakers and no mapping. */
 async function createTranscript(): Promise<string> {
   const transcripts = await databaseId("transcripts");
   return withTransaction(runtime, async (client) => {
@@ -106,11 +105,6 @@ async function createTranscript(): Promise<string> {
   });
 }
 
-/**
- * The tenant in scope with its own person, who organizes an Event, a participant with an accepted
- * invitation, a participant linked without one, a person outside the Event and a transcript linked to the
- * Event whose three speakers are unmapped.
- */
 async function buildWorld(): Promise<World> {
   const me = await createItem("people", { name: "Zdenek Own" });
   const alice = await createItem("people", { name: "Alice Novak", relationship: "client" });
@@ -119,7 +113,7 @@ async function buildWorld(): Promise<World> {
   await withTransaction(runtime, (client) => setSelfPersonId(client, me));
   const event = await createItem("events", { name: "Offer meeting", date: "2026-10-16" });
   await link("events", "people", event, me, { role: "organizer" });
-  // An invitation is written by the calendar module's invitation code with the system writer kind (issue #1757).
+  // The calendar module writes invitations with the system writer kind.
   await createChokePoint(runtime).createRelation({
     relationPropertyId: await propertyId("events", "people"),
     callerItemId: event,
@@ -148,7 +142,7 @@ function candidates(transcriptId: string) {
 
 const assignedSchema = z.object({ speaker: z.string(), label: z.string(), personId: z.string().nullable() }).strict();
 
-/** The answer of an assignment that succeeded, its body parsed at the boundary. */
+/** Body parsed at the boundary. */
 async function assigned(transcriptId: string, speaker: string, personId: string | null) {
   const answer = await assign(transcriptId, speaker, { personId });
   expect(answer.status).toBe(200);
@@ -159,7 +153,6 @@ const speakersSchema = z.object({
   speakers: z.array(z.object({ speaker: z.string(), label: z.string(), personId: z.string().nullable() })),
 });
 
-/** The label and person `GET /api/transcripts/:id/speakers` shows for every key. */
 async function listedSpeakers(transcriptId: string) {
   const answer = await createTranscriptSpeakersRouteHandler(runtime)({ params: { id: transcriptId }, identity });
   return speakersSchema.parse(JSON.parse(JSON.stringify(answer.body))).speakers;
@@ -193,7 +186,7 @@ async function candidateList(transcriptId: string) {
   return { ...parsed, participants: [...parsed.participants].sort((a, b) => a.personId.localeCompare(b.personId)) };
 }
 
-/** The `ChokePointError` a call was refused with: its status, code and details. Any other outcome fails the test. */
+/** Any outcome other than a `ChokePointError` fails the test. */
 async function refusal(
   call: Promise<unknown>,
 ): Promise<{ status: number; code: string; message: string; details: unknown }> {
@@ -222,7 +215,7 @@ interface EdgeRow {
   metadata: Record<string, unknown>;
 }
 
-/** Every edge of the relation `key` of the database `moduleId`, read through the runtime role; ordered by endpoint ids. */
+/** Read through the runtime role; ordered by endpoint ids. */
 async function edgesOf(moduleId: string, key: string): Promise<EdgeRow[]> {
   const { rows } = await runtime.query<EdgeRow>(
     `SELECT r.id, r.item_a, r.item_b, r.metadata
@@ -233,7 +226,6 @@ async function edgesOf(moduleId: string, key: string): Promise<EdgeRow[]> {
   return rows;
 }
 
-/** The speaker keys the `speakers` edges of the transcript map, as `[speaker, personId]`, sorted. */
 async function mappings(transcriptId: string): Promise<[string, string][]> {
   return (await edgesOf("transcripts", "speakers"))
     .filter((edge) => edge.item_a === transcriptId)
@@ -241,7 +233,6 @@ async function mappings(transcriptId: string): Promise<[string, string][]> {
     .sort();
 }
 
-/** The persons on the `people` edges of the Event, sorted. */
 async function participants(eventId: string): Promise<string[]> {
   return (await edgesOf("events", "people"))
     .filter((edge) => edge.item_a === eventId)
@@ -258,7 +249,6 @@ const cardSchema = z
   })
   .passthrough();
 
-/** The speaker-suggestion card of `speaker`, as stored, with its id. */
 async function cardOf(transcriptId: string, speaker: string) {
   const proposals = await databaseId("processingProposals");
   const item = await withTransaction(runtime, (client) =>
@@ -268,10 +258,7 @@ async function cardOf(transcriptId: string, speaker: string) {
   return { id: item.id, properties: item.properties, card: cardSchema.parse(item.properties) };
 }
 
-/**
- * Creates the cards of the three unmapped speakers the way the transcription pipeline does: SPEAKER_00 proposes
- * Alice, SPEAKER_01 asks for clarification and SPEAKER_02 proposes Bob.
- */
+/** As the pipeline does: SPEAKER_00 proposes Alice, SPEAKER_01 asks for clarification, SPEAKER_02 proposes Bob. */
 async function createCards(world: World): Promise<void> {
   await withTransaction(runtime, async (client) => {
     const proposed = await proposeSpeakerMappings(client, {
@@ -285,7 +272,7 @@ async function createCards(world: World): Promise<void> {
   });
 }
 
-/** Stores `proposal` as the open card of `speaker`, which production writes cannot do for a malformed or foreign envelope. */
+/** Production writes cannot store a malformed or foreign envelope. */
 async function storeProposal(transcriptId: string, speaker: string, proposal: Record<string, unknown>): Promise<void> {
   const card = await cardOf(transcriptId, speaker);
   const processingProposals = await databaseId("processingProposals");
@@ -298,7 +285,6 @@ async function storeProposal(transcriptId: string, speaker: string, proposal: Re
   );
 }
 
-/** Records the invalidations `fn` publishes; the hook is cleared again afterwards. */
 async function capturingInvalidations(fn: () => Promise<unknown>): Promise<InvalidationEvent[]> {
   const events: InvalidationEvent[] = [];
   setInvalidationHook((event) => events.push(event));
@@ -310,7 +296,6 @@ async function capturingInvalidations(fn: () => Promise<unknown>): Promise<Inval
   return events;
 }
 
-/** The `inboxCards` invalidations `fn` publishes after its transactions committed (issue #1811). */
 async function capturingInboxCards(fn: () => Promise<unknown>): Promise<InboxCardsInvalidationEvent[]> {
   const events: InboxCardsInvalidationEvent[] = [];
   setInboxCardsInvalidationHook((event) => events.push(event));
@@ -330,10 +315,7 @@ function within<T>(promise: Promise<T>, label: string): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-/**
- * Polls, bounded, until `count` backends wait for a lock; read on the superuser pool. The embedded server of
- * the run serves this test file alone.
- */
+/** Bounded; read on the superuser pool. The embedded server serves this test file alone. */
 async function untilBlocked(count: number): Promise<void> {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
@@ -346,10 +328,7 @@ async function untilBlocked(count: number): Promise<void> {
   }
 }
 
-/**
- * Holds the row lock of one item in an open transaction until `whileHeld` has finished, then commits it. The
- * gate opens on every path and the holder is awaited before this returns.
- */
+/** The gate opens on every path and the holder is awaited before this returns. */
 async function holdingRowLock(moduleId: string, itemId: string, whileHeld: () => Promise<void>): Promise<void> {
   const database = await databaseId(moduleId);
   let open: () => void = () => {};
@@ -375,9 +354,8 @@ async function holdingRowLock(moduleId: string, itemId: string, whileHeld: () =>
 }
 
 /**
- * Runs `during` while a transaction that proposed the cards of the transcript (SPEAKER_00 proposes Alice) holds the
- * transcript's row lock and has not committed them, then commits it. The gate opens on every path and the
- * proposing transaction is awaited before this returns.
+ * While a transaction that proposed the cards (SPEAKER_00 proposes Alice) holds the transcript lock
+ * uncommitted. The gate opens on every path and the proposer is awaited before this returns.
  */
 async function whileProposalUncommitted(world: World, during: () => Promise<void>): Promise<void> {
   let open: () => void = () => {};
@@ -483,7 +461,6 @@ describe("transcript speaker assignment (issue #1770)", () => {
         expect(card.status).toBe("rejected");
         expect(card.resultItemId).toBeUndefined();
         expect(card.history?.at(-1)?.message).toContain("manual assignment");
-        // The cards of the other keys are not touched.
         expect((await cardOf(world.transcript, "SPEAKER_01")).card.status).toBe("needsClarification");
         expect((await cardOf(world.transcript, "SPEAKER_02")).card.status).toBe("proposed");
       });
@@ -493,8 +470,7 @@ describe("transcript speaker assignment (issue #1770)", () => {
       await runInTenant(tenant, async () => {
         const world = await buildWorld();
         await createCards(world);
-        // The card of SPEAKER_01 proposes Alice for SPEAKER_00. No production write makes such a card, so
-        // the fixture stores the envelope directly.
+        // No production write makes such a card, so the fixture stores the envelope directly.
         await storeProposal(world.transcript, "SPEAKER_01", {
           entityKind: "relation",
           target: world.alice,
@@ -903,8 +879,8 @@ describe("transcript speaker assignment (issue #1770)", () => {
           await assigned(world.transcript, "SPEAKER_00", world.bob);
         });
 
-        // Removing Alice's edge and writing Bob's announces the transcript once (its two writes are coalesced to
-        // the last) and each person once, all addressed to the signed-in user so that every device of theirs refreshes.
+        // The transcript is announced once (its two writes coalesce) and each person once, all addressed to
+        // the signed-in user so every device of theirs refreshes.
         const relation = (databaseId: string, itemId: string, propertyKey: string | null, op: "put" | "delete") => ({
           scope: "relation",
           databaseId,
@@ -1058,8 +1034,7 @@ describe("transcript speaker assignment (issue #1770)", () => {
     it("answers 409 and changes nothing when a confirm holds the card that appeared while the assignment waited", async () => {
       await runInTenant(tenant, async () => {
         const world = await buildWorld();
-        // The card is locked by another transaction at the moment the assignment asks for it, as a confirm of the
-        // card would hold it before it waits for the transcript. NOWAIT must refuse instead of waiting.
+        // The card is locked elsewhere when the assignment asks, as a confirm would hold it; NOWAIT must refuse.
         // The managed transaction knows its client by identity, so the client itself is wrapped, not proxied.
         const contend = (client: PoolClient): PoolClient => {
           const original = client.query.bind(client);
@@ -1068,7 +1043,6 @@ describe("transcript speaker assignment (issue #1770)", () => {
             if (!text.includes("FOR UPDATE NOWAIT")) return Reflect.apply(original, client, args);
             const card = await cardOf(world.transcript, "SPEAKER_00");
             let answer: unknown;
-            // The statement fails with lock_not_available while the other transaction holds the card.
             await holdingRowLock("processingProposals", card.id, async () => {
               answer = await Reflect.apply(original, client, args);
             });

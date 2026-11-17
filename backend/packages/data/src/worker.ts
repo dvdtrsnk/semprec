@@ -81,7 +81,7 @@ function requirePropertyType(payload: unknown, field: string): PropertyType {
   return value as PropertyType;
 }
 
-/** Validates against the same schema the enqueue side (libraryMetadataActions.ts) uses, so the two can't drift apart. */
+/** Same schema as the enqueue side (libraryMetadataActions.ts), so the two cannot drift. */
 function requireLibraryMetadataConfig(payload: unknown): LibraryMetadataJobConfig {
   const raw = (payload as Record<string, unknown> | null)?.config;
   const result = libraryMetadataJobConfigSchema.safeParse(raw);
@@ -91,13 +91,7 @@ function requireLibraryMetadataConfig(payload: unknown): LibraryMetadataJobConfi
   return result.data;
 }
 
-/**
- * "A static entry in the job queue's cron table (no in-process setInterval) triggers a
- * sweep every minute" — graphile-worker `crontab` format (standard 5-field cron +
- * task identifier). Actually running a worker process against this (`run({ crontab:
- * CORE_CRONTAB, taskList: createCoreTaskList(...), ... })`) is for the services/
- * process a later issue stands up; this constant is the ready-to-use entry for it.
- */
+/** graphile-worker crontab (5-field cron + task identifier); sweeps run from here, never from setInterval. */
 export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 */5 * * * * ${CORE_TASK_NAMES.DOC_COMPACTION_SWEEP}
 15 3 * * * ${CORE_TASK_NAMES.DOC_HISTORY_CLEANUP}
@@ -120,21 +114,13 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 `;
 
 /**
- * Composes every core task handler this issue implements into one graphile-worker TaskList.
- * `libraryMetadataFetcher` defaults to a no-op (see libraryMetadataJob.ts): actually calling
- * an external metadata source (TMDb/OMDB/...) is out of issue #25's scope — a real server
- * composition root supplies its own fetcher the same way it would supply `runAgent` to
- * `coreAgentRunAction`.
+ * Every core task handler as one graphile-worker TaskList.
  *
- * It takes no mail module ids: the mail jobs resolve them per job inside the job's own tenant
- * scope (`resolveMailModuleIds`), so nothing tenant-specific is captured when the list is built.
- *
- * `mailSendTransports` (issue gh-1913) are the transports an approved mail send of an agent leaves through,
- * with the attachment storage of this list; a list built without them ends such a request without sending.
- *
- * `aiGateway` is the client of the AI gateway for the tasks that ask it for a model answer: the title of a Semp
- * thread and, after the sync of an MCP server's tools (issue gh-1983), the labels of those tools. A list built
- * without it skips both.
+ * - `libraryMetadataFetcher` defaults to a no-op; a composition root supplies a real one.
+ * - Mail jobs resolve their module ids per job inside the job's tenant scope, so nothing tenant-specific is
+ *   captured when the list is built.
+ * - Without `mailSendTransports`, an approved agent mail send ends without sending.
+ * - Without `aiGateway`, Semp thread titles and MCP tool labels are skipped.
  */
 export function createCoreTaskList(
   pool: Pool,
@@ -173,8 +159,7 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: async () => {
       await handleHeartbeatSweepTask(pool, moduleRegistry);
     },
-    // Issue #222: both split handlers run in this single-process test/dev task list until a
-    // future issue (#91) hosts them under their own separate api/agents composition roots.
+    // Both split heartbeat handlers run in this single-process list; `createApiCoreTaskList` drops the agent one.
     [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: createHeartbeatFireCoreTask(pool, actionRegistry, moduleRegistry),
     [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: createHeartbeatFireAgentTask(pool, actionRegistry, moduleRegistry),
     [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: async (payload) => {
@@ -234,7 +219,6 @@ export function createCoreTaskList(
         }),
       );
     },
-    // Issue gh-2029: soft-deletes a removed mailbox's Emails and Folders in committed chunks.
     [CORE_TASK_NAMES.MAILBOX_REMOVAL]: async (payload) => {
       await handleMailboxRemovalTask(pool, payload);
     },
@@ -247,7 +231,6 @@ export function createCoreTaskList(
         { approvalRequestId: requireString(payload, "approvalRequestId") },
         genericOperationApprovalReplay,
         moduleRegistry,
-        // Issue gh-1913: an approved mail send leaves through these transports; without them the request ends without sending.
         mailSendTransports
           ? {
               transports: mailSendTransports,
@@ -263,50 +246,40 @@ export function createCoreTaskList(
         pushSenders,
       );
     },
-    // Issue #1826: the silent dismiss push for resolved notifications.
     [CORE_TASK_NAMES.PUSH_DISMISS]: async (payload) => {
       await handlePushDismissTask(pool, payload);
     },
-    // Issue #1891: the badge-only push that refreshes the app icon after a count or a badge switch changed.
     [CORE_TASK_NAMES.PUSH_BADGE_REFRESH]: async (payload) => {
       await handlePushBadgeRefreshTask(pool, payload);
     },
-    // Issue gh-1879: the silent push that makes the phone read the reminders feed again.
     [CORE_TASK_NAMES.REMINDERS_RESYNC]: async (payload) => {
       await handleRemindersResyncTask(pool, payload);
     },
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
       await handleItemTrashPurgeSweepTask(pool, mailBlobStorage, filesBlobStorage);
     },
-    // Issue #221 declared `trashPurge` as a second daily crontab entry alongside
-    // `itemTrashPurgeSweep`, distinct in name but not in effect — it runs the same purge sweep.
+    // A second daily crontab name for the same purge sweep as `itemTrashPurgeSweep`.
     [CORE_TASK_NAMES.TRASH_PURGE]: async () => {
       await handleItemTrashPurgeSweepTask(pool, mailBlobStorage, filesBlobStorage);
     },
-    // Issue #1401: removes standalone upload blobs nothing references 24 hours after creation.
     [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: async () => {
       await handleBlobsUnreferencedSweepTask(pool, filesBlobStorage);
     },
-    // Issue #1660: one person's derived People `lastContact`, and the daily sweep that catches sources whose date passed.
     [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: async (payload) => {
       await handlePeopleLastContactRecomputeTask(pool, payload);
     },
     [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: async () => {
       await handlePeopleLastContactSweep(pool);
     },
-    // Issue #1710: announces the items of a project whose area or company edge changed.
     [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: async (payload) => {
       await handleDerivedValuesInvalidateTask(pool, payload);
     },
-    // Issue #1749: sends the Pages items that no document references any more to the Trash.
     [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: async () => {
       await sweepOrphanedPages(pool);
     },
-    // Issue #1782: recomputes a task's host state once the last Event it sits in has ended.
     [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: async (payload) => {
       await handleTaskHostEventEndedTask(pool, payload);
     },
-    // Issue gh-2024: announces the Semp status at the instant a tenant's exhausted AI budget window resets.
     [CORE_TASK_NAMES.AI_BUDGET_RESET]: async (payload) => {
       await handleAiBudgetResetTask(pool, payload);
     },
@@ -316,8 +289,6 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: async () => {
       await handleMcpRunCredentialExpirySweepTask(pool);
     },
-    // Issue gh-1976: loads the tools of an MCP server item the confirmation of an Inbox card created; issue gh-1983:
-    // then asks the gateway for labels of the tools that have none.
     [CORE_TASK_NAMES.MCP_SERVER_SYNC]: async (payload) => {
       await handleMcpServerSyncTask(
         pool,
@@ -343,8 +314,7 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: async () => {
       await handleQueueFailedJobsPruneTask(pool);
     },
-    // Issue #1043: archives are written under the files root; blob bytes are read from whichever
-    // root holds them.
+    // Archives are written under the files root; blob bytes are read from whichever root holds them.
     [CORE_TASK_NAMES.TENANT_EXPORT]: async (payload, helpers) => {
       await handleTenantExportTask(
         pool,
@@ -356,19 +326,16 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: async () => {
       await handleTenantExportExpirySweepTask(pool, filesBlobStorage);
     },
-    // Issue #1055: enumerates `deleting` tenants itself, so it is a system task.
+    // Enumerates `deleting` tenants itself, so it is a system task.
     [CORE_TASK_NAMES.TENANT_PURGE]: async (_payload, helpers) => {
       await handleTenantPurgeTask(pool, tenantBlobStorageDirs, helpers);
     },
-    // Issue #221 declared this name in the closed API affinity set ("handler and enqueue routing
-    // are delivered later") but nothing enqueues it yet — no crontab line, no producer. A no-op
-    // placeholder keeps the `api` runtime's registered handlers matching its affinity set exactly
-    // (issue #91's startup validation) until the deferred issue gives it a real body.
+    // Nothing enqueues this yet; the no-op keeps the `api` runtime's handlers matching its affinity set exactly,
+    // which startup validates.
     [CORE_TASK_NAMES.DOC_HISTORY_SQUASH]: async () => {},
   };
 
-  // Issue #167: every core task restores the trace its `enqueueJob` producer stamped (or, for a
-  // crontab-fired sweep with no producer, mints a fresh one for that tick) before its handler runs.
+  // Each task restores the trace its producer stamped (or mints one for a crontab tick) before running.
   return Object.fromEntries(
     Object.entries(handlers)
       .filter((entry): entry is [string, Task] => entry[1] !== undefined)
@@ -377,12 +344,8 @@ export function createCoreTaskList(
 }
 
 /**
- * Issue #91's `api` composition root's own task list: every `createCoreTaskList` handler except
- * `AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT`, which belongs to the agents runtime's affinity set,
- * not the API runtime's. `createCoreTaskList` keeps hosting both split heartbeat handlers for the
- * single-process test/dev list its own comment describes; the API runtime's registered handler
- * set must match `resolveTaskAffinitySets(...).api` exactly, so it never registers a handler for
- * a task name outside that set.
+ * The `api` runtime's task list: every core handler except `HEARTBEAT_FIRE_AGENT`, which belongs to the agents
+ * runtime. The registered set must match `resolveTaskAffinitySets(...).api` exactly.
  */
 export function createApiCoreTaskList(...args: Parameters<typeof createCoreTaskList>): TaskList {
   const taskList = createCoreTaskList(...args);

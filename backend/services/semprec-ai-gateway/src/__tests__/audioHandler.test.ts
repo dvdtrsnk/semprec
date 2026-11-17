@@ -131,10 +131,7 @@ function post(path: string, body: unknown, token = "test-internal-token"): Promi
   });
 }
 
-/**
- * Streams `totalBytes` of body through `node:http` rather than `fetch`, so the whole oversized
- * payload never has to sit in memory and the early 413 is read as soon as the server sends it.
- */
+/** Through `node:http`, so the oversized payload never sits in memory and the early 413 is read at once. */
 function postOversized(path: string, totalBytes: number): Promise<number> {
   const { port } = new URL(baseUrl);
   return new Promise<number>((resolve, reject) => {

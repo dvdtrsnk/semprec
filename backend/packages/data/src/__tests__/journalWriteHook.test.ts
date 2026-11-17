@@ -14,11 +14,10 @@ import { ForbiddenError } from "../errors.js";
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-// The owning-process grant getOrCreateJournalItem uses: `type` and `period` are owner:'system' and
-// only Journal's own lazy creation may write them. Passing it lets a test reach the hook's checks.
+// The owning-process grant getOrCreateJournalItem uses: `type` and `period` are owner:'system' and only
+// Journal's lazy creation may write them.
 const JOURNAL_SYSTEM_KEYS = { allowedSystemKeys: ["name", "type", "period"] } as const;
 
-/** The hook's refusal: a 403 `forbidden` that names the first missing key, checked in `type`, `period` order. */
 function refusalFor(field: "type" | "period") {
   return { status: 403, code: "forbidden", details: { field } };
 }

@@ -8,7 +8,6 @@ export interface RollupDependencyRow {
   sourcePropertyKey: string | null;
 }
 
-/** The raw `rollup_dependencies` row shape this module reads back from Postgres. */
 type RollupDependencyDbRow = {
   rollup_property_id: string;
   relation_definition_id: string;
@@ -98,11 +97,7 @@ export async function getRollupDependency(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * Removes every dependency whose source is `sourceDatabaseId` — used by the trash purge (issue #675)
- * when it drops an emptied inline database, in that purge's own transaction. Zero rows is valid: most
- * databases are no rollup's source.
- */
+/** For the trash purge dropping an emptied inline database. Zero rows is valid. */
 export async function deleteRollupDependenciesBySourceDatabase(
   client: PoolClient,
   sourceDatabaseId: string,

@@ -149,7 +149,6 @@ let tenant: string;
 let cp: ChokePoint;
 let tasksId: string;
 let eventsId: string;
-/** The tenant's own today in its system time zone; dates are relative to it (no clock is faked). */
 let today: DateTime;
 let heartbeat: { id: string; projectItemId: string; config: Record<string, unknown> };
 
@@ -184,7 +183,7 @@ function run(): Promise<void> {
   );
 }
 
-/** Synthetic state for a property no production writer sets yet (#1780 and #1798 will): written directly as Tasks. */
+/** Synthetic state for a property no production writer sets yet, written directly as Tasks. */
 async function setSystemProperties(id: string, properties: Record<string, unknown>): Promise<void> {
   await inTenant(async () => {
     const result = await pool.query(
@@ -206,7 +205,6 @@ async function setSystemPropertiesMany(ids: string[], properties: Record<string,
   });
 }
 
-/** The item invalidations a run sends, per item id. */
 async function invalidationsDuring(work: () => Promise<void>): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   setInvalidationHook((event) => {
@@ -396,7 +394,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
           "SELECT id FROM properties WHERE database_id = $1 AND key = 'completedInEvent'",
           [tasksId],
         );
-        // Synthetic edge: the Tasks module's process writes it; its producer is not built yet.
+        // Synthetic edge: its producer is not built yet.
         await createRelationWithClient(
           client,
           { relationPropertyId: property.rows[0]!.id, callerItemId: completedInEvent, targetItemId: event },
@@ -544,7 +542,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
         .rows,
     ).toEqual(jobsBeforeRepeat.rows);
-    // The repeat writes nothing, so no item or relation is announced; the run itself still announces the day (issue #1951).
+    // The repeat writes nothing, so only the run's day announcement is sent.
     expect(repeatEvents).toEqual([{ scope: "overview" }]);
     expect(
       (
@@ -914,8 +912,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
             "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
           );
           if (!identity.rows[0]) throw new Error("Missing holder identity");
-          // Fixture SQL: the choke point trashes a whole series (issue gh-1882), so the latest occurrence is trashed
-          // on its own to hold its row lock the way a concurrent trash of that one row does.
+          // Fixture SQL: the choke point trashes a whole series, so the latest occurrence is trashed on its own to hold its row lock.
           const trashed = await client.query(
             "UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL",
             [tasksId, latest],
@@ -1037,7 +1034,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     const trashed = await inTenant(() =>
       createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: day(0), status: "notDone" }),
     );
-    // Fixture SQL: the choke point trashes a whole series (issue gh-1882), so the latest occurrence is trashed on its own.
+    // Fixture SQL: the choke point trashes a whole series, so the latest occurrence is trashed on its own.
     await admin.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [tasksId, trashed]);
     const beforeTrashed = await row(trashed);
     await run();
@@ -1209,7 +1206,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
   it("moves a task whose event ended yesterday, with since yesterday", async () => {
     const id = await task({ date: day(-3) });
-    // The event-derived day and the end of its event (#1780, #1798 write them later): synthetic Tasks values.
+    // Synthetic Tasks values: no writer sets the event-derived day and event end yet.
     await setSystemProperties(id, {
       effectiveDate: day(-1),
       hiddenUntil: today.minus({ hours: 1 }).toISO(),
@@ -1308,7 +1305,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       await setSystemProperties(id, { effectiveDate: day(-2), hiddenUntil: today.minus({ hours: 1 }).toISO() });
       const first = await invalidationsDuring(run);
       const moved = await row(id);
-      // The Tasks transform stores the effective day with the new date (issue #1780), so the task is not selected again.
+      // The Tasks transform stores the effective day with the new date, so the task is not selected again.
       expect(moved.properties).toMatchObject({ date: day(0), timeFrom: null, timeTo: null, effectiveDate: day(0) });
       expect(first.get(id)).toBe(1);
       const second = await invalidationsDuring(run);
@@ -1401,7 +1398,6 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     });
   });
   describe("the overview invalidation (issue #1951)", () => {
-    /** The events of one run, with what a reader of the database sees of `watched` at the moment an overview event is sent. */
     async function overviewEventsDuring(work: () => Promise<void>, watched?: string) {
       const overview: Array<{ event: InvalidationEvent; watchedDate: Promise<unknown> | null }> = [];
       const all: InvalidationEvent[] = [];
@@ -1435,7 +1431,6 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
       expect(overview.map((entry) => entry.event)).toEqual([{ scope: "overview" }]);
       expect(await overview[0]?.watchedDate).toBe(day(0));
-      // It follows the item invalidation of the task the run moved.
       const lastItem = all.map((event) => event.scope).lastIndexOf("item");
       expect(lastItem).toBeGreaterThanOrEqual(0);
       expect(all.map((event) => event.scope).indexOf("overview")).toBeGreaterThan(lastItem);
@@ -1498,7 +1493,6 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
   });
 });
 
-/** An Event to be the target of a fixture edge, created through the choke point in the caller's transaction. */
 async function createRelationTarget(client: PoolClient): Promise<string> {
   return (await createItemWithClient(client, { databaseId: eventsId, properties: { name: "Workshop", date: day(-2) } }))
     .id;

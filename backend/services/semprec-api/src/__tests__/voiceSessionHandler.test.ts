@@ -39,7 +39,7 @@ import { createSyncUpgradeHandler } from "../syncHandler.js";
 import { createVoiceChannel, type VoiceChannel } from "../voiceChannel.js";
 import { createVoiceSessionHandler, VoiceTextState } from "../voiceSessionHandler.js";
 
-/** Thread details resolve only core heartbeat rule kinds here; no test module declares one. */
+/** No test module declares a heartbeat rule kind. */
 const CORE_RULES_ONLY = async () => new Map();
 
 describe("voice text state (component only)", () => {
@@ -1232,7 +1232,8 @@ describe("voice session through the real gateway and registered worker", () => {
       let failed: { error: unknown } | undefined;
       let socketError: { error: Error } | undefined;
       const cleanup: unknown[] = [];
-      // The statement also sets the search vector of the text (#1783); it is told by its start and its user role.
+      // The statement also sets the search vector of the text; it is told by its start and its user
+      // role.
       const isUserMessageInsert = (statement: unknown): boolean =>
         typeof statement === "string" &&
         statement.startsWith(
@@ -2252,7 +2253,7 @@ describe("voice session through the real gateway and registered worker", () => {
     );
     expect(rows.rows).toHaveLength(2);
     expect(rows.rows.every((row) => row.source === null)).toBe(true);
-    // Synthetic omitted-column insert exercises the additive schema, not an old deployed binary.
+    // An insert that omits the column exercises the additive schema.
     const legacy = await runInTenant(tenant, () =>
       withTransaction(pool, (client) =>
         client.query<{ source: string | null }>(
@@ -2308,7 +2309,9 @@ describe("voice session through the real gateway and registered worker", () => {
       cancelListener = undefined;
     });
 
-    /** Opens a session whose speech-to-text provider has accepted audio, so a scripted transcript can be delivered. */
+    /**
+     * Its speech-to-text provider has accepted audio, so a scripted transcript can be delivered.
+     */
     async function openSession(): Promise<void> {
       if (!gateway) throw new Error("Missing fixture gateway");
       const ownedGateway = gateway;
@@ -2335,7 +2338,7 @@ describe("voice session through the real gateway and registered worker", () => {
       );
     }
 
-    /** Delivers `text` as a final transcript and waits until the session has sent it back to the client. */
+    /** Waits until the session has sent the transcript back to the client. */
     async function say(text: string): Promise<void> {
       if (!gateway) throw new Error("Missing fixture gateway");
       send(gateway, "finalText", { text });
@@ -2360,9 +2363,9 @@ describe("voice session through the real gateway and registered worker", () => {
       );
 
     /**
-     * Says the first question while the model and the speech are held, and returns once the turn is running and its
-     * first sentence is being spoken. The model's first text is held until the session watches the run: the text
-     * deltas are live only, so a delta sent before the watch exists would never be spoken.
+     * Returns once the turn is running and its first sentence is being spoken. The model's first
+     * text is held until the session watches the run: text deltas are live only, so one sent before
+     * the watch exists would never be spoken.
      */
     async function startHeldTurn() {
       if (!gateway) throw new Error("Missing fixture gateway");
@@ -2541,8 +2544,8 @@ describe("voice session through the real gateway and registered worker", () => {
         pool.query<{ id: string }>("SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.'"),
       );
       await openSession();
-      // The turn handler reads the system settings between the claim of the reply and the start of its run. With the
-      // table locked, the reply stays `running` without a run for as long as the lock is held.
+      // The turn handler reads the system settings between claiming the reply and starting its run,
+      // so with the table locked the reply stays `running` without a run.
       const lock = await admin.connect();
       let locked = false;
       let assistantId: string;
@@ -2785,9 +2788,9 @@ describe("voice session through the real gateway and registered worker", () => {
       await vi.waitFor(async () => expect((await assistantFor(source.id)).rows[0]?.status).toBe("done"), {
         timeout: 30_000,
       });
-      // With the turn over, the lookup of the stop command is the next use of the table by this session. The runtime
-      // role holds its privilege on the table through `semprec_side`, which loses the read privilege for the length of
-      // the command; no other case runs meanwhile.
+      // The runtime role reads `semp_messages` through `semprec_side`, which loses the privilege
+      // for the length of the command, making the stop command's lookup fail; no other case runs
+      // meanwhile.
       await admin.query("REVOKE SELECT ON semp_messages FROM semprec_side");
       try {
         const privilege = await admin.query<{ allowed: boolean }>(
@@ -2848,7 +2851,8 @@ describe("voice session through the real gateway and registered worker", () => {
         { timeout: 10_000 },
       );
 
-      // The admissions of a session run in order, so both commands were handled before the second question was stored.
+      // A session's admissions run in order, so both commands were handled before the second
+      // question was stored.
       expect(cancels).toEqual([]);
       const messagesAfter = await runInTenant(tenant, () =>
         pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"),
@@ -2887,7 +2891,9 @@ describe("voice session through the real gateway and registered worker", () => {
         ),
       );
 
-    /** Opens a session whose speech-to-text provider has accepted audio, so a scripted transcript can be delivered. */
+    /**
+     * Its speech-to-text provider has accepted audio, so a scripted transcript can be delivered.
+     */
     async function openSession(): Promise<void> {
       if (!gateway) throw new Error("Missing fixture gateway");
       const ownedGateway = gateway;

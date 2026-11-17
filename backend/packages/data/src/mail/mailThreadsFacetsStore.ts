@@ -3,20 +3,16 @@ import { z } from "zod";
 import { requireSingleRow } from "../db/pool.js";
 import { mailThreadCopyCtes } from "./mailThreadListQuery.js";
 
-/** The thread counts of the mailbox filter bar (issue gh-1747): one group per area, one per project. */
 export interface MailThreadFacets {
-  /** The visible threads, whatever is selected. */
   total: number;
   areas: {
-    /** The visible threads, or those of the selected project when one is selected. */
     total: number;
-    /** One row for every area that is not in the trash, with 0 for an area that counts no thread. Ordered by id. */
+    /** Every live area, 0 included. Ordered by id. */
     items: Array<{ id: string; count: number }>;
   };
   projects: {
-    /** The visible threads, or those whose project is in the selected area when one is selected. */
     total: number;
-    /** One row for every project whose count is above 0, `areaId` null for a project that has no area. Ordered by id. */
+    /** Only projects with a count above 0. Ordered by id. */
     items: Array<{ id: string; areaId: string | null; count: number }>;
   };
 }
@@ -30,32 +26,13 @@ const facetsRow = z.object({
 });
 
 /**
- * Both groups of counts in one statement, so they read one snapshot. `$1` is the selected project or
- * null, `$2` the selected area or null. `$3` is the thread id parameter of `mailThreadCopyCtes` and is
- * null: the list mode, which leaves drafts out.
+ * Both groups in one statement, so they read one snapshot. `$3` is null: list mode, drafts left out.
  *
- * - `visible_threads`: a thread with a visible copy in the thread list's `copies`. A copy is visible
- *   when it has a folder other than Junk and Trash, or no folder, and none of its folders is in
- *   `junk_labels`. The second condition is for a mailbox of labels (Folders `behavior` 'label',
- *   Gmail): there a copy is one message and each folder edge is a label it carries, so a message
- *   that carries the Trash or the Junk label is in Trash or Junk whatever else it carries (the Sent
- *   label, a user label). In a mailbox of folders (`behavior` 'folder', IMAP and Graph) each folder
- *   edge of a copy is a message of its own, so the first condition alone decides and the one outside
- *   Junk and Trash is visible. A deleted message has no copy, so a thread whose messages are all
- *   deleted, or all in Junk or Trash, is in no count. No box, folder or mailbox filter applies.
- * - `junk_labels`: one row with the ids of the tenant's live Junk and Trash folders that are labels,
- *   an empty array when there is none.
- * - `thread_project`: the thread's project through `Threads.project`. `project_area`: that project's
- *   area through `Projects.area`. `live_areas` are the areas of `areas.items`. A project or an area in
- *   the trash is not read: a thread whose project is in the trash counts like a thread without a
- *   project, and a project whose area is in the trash has no area.
- * - `thread_facets` has a row for every visible thread, so a thread without a project counts in
- *   `total`, in a group's total while no selection narrows that group, and in no item.
- *
- * The area counts are narrowed by the selected project and the project counts by the selected area;
- * neither group is narrowed by its own selection. `visible_threads` holds a thread once and every
- * count is over distinct thread ids. The two item lookups keyed by a relation row pin `database_id`
- * in the lateral shape that `scheduler/itemRelationFilter.ts` describes.
+ * A copy is visible when it has a folder other than Junk/Trash (or none) and none of its folders is in
+ * `junk_labels`. The second condition is for label mailboxes (Gmail): there one copy carries all its
+ * labels, so a Trash or Junk label hides it whatever else it carries. In folder mailboxes (IMAP, Graph)
+ * each folder edge is its own copy, so the first condition decides. A project or area in the trash
+ * counts as absent. Neither group is narrowed by its own selection.
  */
 const MAIL_THREAD_FACETS_SQL = `
 WITH ${mailThreadCopyCtes(3)}, junk_labels AS (
@@ -117,11 +94,7 @@ SELECT t.total, t.areas_total AS "areasTotal", t.projects_total AS "projectsTota
 FROM totals t
 `;
 
-/**
- * The facets of the caller's tenant for the selected project and area, either of which may be null.
- * Row-level security and the tenant filters confine every count to that tenant, so an id of another
- * tenant selects what an unknown id selects: no thread.
- */
+/** RLS and the tenant filters confine every count, so another tenant's id selects no thread. */
 export async function readMailThreadFacets(
   client: PoolClient,
   selection: { projectId: string | null; areaId: string | null },

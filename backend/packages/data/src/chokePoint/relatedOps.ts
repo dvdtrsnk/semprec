@@ -1,10 +1,5 @@
-// Owns the choke point's read of the collections related to one record (issue #1839, `relation.related`): for
-// each database, how many live records are connected to the record, and the filter that selects them. It writes
-// nothing and knows nothing about which transport asked.
-// Constrained by:
-// - docs/adr/2026-09-17-generic-application-service-port.md
-// - docs/adr/2026-11-12-per-database-agent-grants.md
-// - docs/adr/2026-11-13-an-external-ai-client-on-mcp-is-refused-sensitive-databases.md
+// The read of the collections related to one record: per database, how many live records connect to
+// it and the filter that selects them. Nothing here writes.
 import type { PoolClient } from "pg";
 import {
   assertReaderDatabaseAccess,
@@ -34,7 +29,6 @@ import {
 /** What the read needs of the manifests; a resolver that declares no related order or area filter declares none. */
 export type RelatedResolver = Pick<CollectionMetadataResolver, "resolve" | "relatedOrder" | "areaFilter">;
 
-/** The records of one database that the viewed record is directly connected to, and the properties that connect them. */
 interface DirectCollectionRow {
   database_id: string;
   count: number;
@@ -42,14 +36,11 @@ interface DirectCollectionRow {
 }
 
 /**
- * The records connected to the viewed record through every relation property that points at its database, counted
- * once per database whichever property reaches them. A relation property belongs to the database that holds it
- * and points at the database on the other side: side A of a definition reads `item_b` from `item_a`, side B the
- * reverse. A property that points at the viewed record's database therefore sits on the connected records, and a
- * one-directional relation, which has side A only, is found from its target side as well. A relation the viewed
- * record's database holds with no property on the other side cannot be selected by a filter of that other
- * database, so it gives no row. A record counts while it is not in the Trash; the caller leaves out the databases
- * that are archived.
+ * Records connected through every relation property pointing at the viewed record's database,
+ * counted once per database. Side A reads `item_b` from `item_a`, side B the reverse, so a
+ * one-directional relation is found from its target side too. A relation with no property on the
+ * other side cannot be selected by that database's filter and gives no row. Trashed records do not
+ * count; the caller drops archived databases.
  */
 const DIRECT_COLLECTIONS_SQL = `
   WITH pointing AS (
@@ -76,13 +67,12 @@ const DIRECT_COLLECTIONS_SQL = `
   JOIN items live ON live.database_id = hits.database_id AND live.id = hits.item_id AND live.deleted_at IS NULL
   GROUP BY hits.database_id`;
 
-/** The filter that selects the records of a database connected to the viewed record through `propertyKeys`. */
 function directFilter(propertyKeys: readonly string[], itemId: string): FilterNode {
   const nodes: FilterNode[] = propertyKeys.map((property) => ({ type: "relation_contains", property, value: itemId }));
   return nodes.length === 1 ? nodes[0]! : { type: "or", nodes };
 }
 
-/** The number of live records of the database that `filter` selects, counted by the statement `item.count` runs. */
+/** Counted by the same statement `item.count` runs. */
 async function countSelected(client: PoolClient, databaseId: string, filter: FilterNode): Promise<number> {
   const properties = await buildFilterProperties(
     client,
@@ -94,7 +84,6 @@ async function countSelected(client: PoolClient, databaseId: string, filter: Fil
   return count;
 }
 
-/** The routes of the viewed record that replace the directly connected records of a database, by database key. */
 function routesOf(
   viewed: DatabaseRow,
   itemId: string,
@@ -117,18 +106,14 @@ function routesOf(
 }
 
 /**
- * Whether a collection may be listed: a user-created database, a client-visible system database and the Threads
- * database. Every other system database is internal. The mail module does not make Threads client-visible, but the
- * related orders of the manifests list it and this operation gives it a row of its own.
+ * User-created databases, client-visible system databases and Threads are listable; every other
+ * system database is internal. Threads is not client-visible but the manifests' related orders list it.
  */
 function isListable(database: DatabaseRow, resolver: RelatedResolver): boolean {
   return database.key === THREADS_MODULE_ID || resolver.resolve(database).clientVisible;
 }
 
-/**
- * Orders two rows: the databases the declared `order` lists, in that order, then the other system databases by
- * display order, then user-created databases by name.
- */
+/** Declared `order` first, then other system databases by display order, then user databases by name. */
 function compareRows(
   a: { database: DatabaseRow },
   b: { database: DatabaseRow },
@@ -150,21 +135,17 @@ function compareRows(
 }
 
 /**
- * The collections related to `itemId`, ordered as the viewed record's database declares (issue #1517): the
- * declared `order` first, then the other client-visible system databases by display order, then user-created
- * databases by name, and never a database the declaration omits. A collection is left out when it is empty,
- * archived or internal (a system database that is not client-visible, other than Threads), and, for a `reader` (an
- * agent's project, issue #1810, or an external client on `/mcp`, issue #1998), when the reader may not read the
- * database. The reader also needs `read` access to the database of the viewed record (and, for an agent, to the
- * sensitive databases the record is linked to when its own database inherits sensitivity, issue #1999), else the
- * read is refused as `forbidden`.
+ * The collections related to `itemId`, ordered as `compareRows` describes and never including a
+ * database the declaration omits. Empty, archived and internal collections are left out, and for a
+ * `reader` the databases it may not read. The reader also needs `read` on the viewed record's database
+ * (and, for an agent, on the sensitive databases the record is linked to when its database inherits
+ * sensitivity), else `forbidden`.
  *
- * A database that has a route (`relatedRoutes.ts`) is counted by the route's filter, and the other databases by the
- * records connected to the viewed record. The `count` of a row built here is the number of records its `filter`
- * selects; the Threads database has no filter, a client opens it by the viewed record's id. Rows the contributors
- * registered for the viewed record's database (`relatedContributors.ts`) replace the row of their database.
+ * A database with a route (`relatedRoutes.ts`) is counted by the route's filter. Threads has no filter;
+ * a client opens it by the record's id. Contributor rows (`relatedContributors.ts`) replace the row of
+ * their database.
  *
- * Returns `null` when the item does not exist, is in the Trash, or belongs to another tenant; the three answer alike.
+ * `null` when the item does not exist, is trashed, or belongs to another tenant, indistinguishably.
  */
 export async function listRelatedWithClient(
   client: PoolClient,
@@ -227,7 +208,7 @@ export async function listRelatedWithClient(
   }));
 }
 
-/** Replaces the directly connected records of `database` with the records `route` selects, dropping the row if none. */
+/** Drops the row when the route selects nothing. */
 async function applyRoute(
   client: PoolClient,
   rows: Map<string, RelatedCollectionRow>,

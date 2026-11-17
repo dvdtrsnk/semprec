@@ -26,9 +26,8 @@ import {
 } from "../sourceProblemKeys.js";
 
 /**
- * `resolvedRecent` of `GET /api/semp-status` (issue gh-1919). Problems are raised and resolved with the
- * production store functions; a resolution time is moved back with a raw statement only where a test needs
- * a day the clock has not reached. Isolation is asserted through the runtime role pool with two tenants.
+ * `resolvedRecent` of `GET /api/semp-status`, via the production store functions; raw SQL only backdates a
+ * resolution. Isolation is asserted through the runtime role pool with two tenants.
  */
 
 const behaviorPayload = {
@@ -88,7 +87,7 @@ describe("Semp status resolvedRecent (issue gh-1919)", () => {
       [foreign, foreignUser],
     ] as const) {
       await runInTenant(tenantId, () => seedSystem(data));
-      // A tenant without a budget row lists `aiBudgetMissing` first (issue gh-1871); it is not under test here.
+      // A tenant without a budget row lists `aiBudgetMissing` first; it is not under test here.
       await runAsSystem("resolved status test budget", () =>
         withTransaction(data, (client) =>
           setTenantAiBudget(client, { tenantId, updatedBy, dailyCapUsd: null, monthlyCapUsd: null }),
@@ -150,7 +149,7 @@ describe("Semp status resolvedRecent (issue gh-1919)", () => {
     });
   }
 
-  /** A mailbox problem resolved the way a successful sync resolves it (`resolveMailboxProblem` of the sync job). */
+  /** Resolved as a successful sync resolves it. */
   async function resolvedMailbox(tenant: string, userId: string, name: string) {
     const { item, databaseId } = await createMailbox(tenant, name);
     const problemId = await raise(tenant, userId, {
@@ -329,7 +328,6 @@ describe("Semp status resolvedRecent (issue gh-1919)", () => {
   });
 
   describe("titles by problem kind", () => {
-    /** Resolves one problem per supported kind and returns the titles in `locale` keyed by a label. */
     async function titlesOfEveryKind(tenant: string, userId: string) {
       const byLabel = new Map<string, string>();
       const mailbox = await resolvedMailbox(tenant, userId, "Inbox");
@@ -360,8 +358,7 @@ describe("Semp status resolvedRecent (issue gh-1919)", () => {
       );
       await resolve(tenant, agentHeartbeatProblemKey(heartbeat.id));
 
-      // The reply-problem producer is delivered later; these rows are a synthetic source fixture, as in
-      // sempStatusReport.test.ts.
+      // Synthetic reply-problem source rows, as in sempStatusReport.test.ts.
       const messageId = await runInTenant(tenant, () =>
         withTransaction(data, async (client) => {
           const thread = await client.query<{ id: string }>(
@@ -676,8 +673,7 @@ describe("Semp status resolvedRecent (issue gh-1919)", () => {
     }
 
     await resolveOneOfEach(own, ownUser, 0);
-    // One round resolves five problems: a mailbox, a heartbeat, a reply, a guidance finding and a library
-    // automation, so every batched name query runs in both measurements.
+    // One round resolves one problem per batched name query, so each runs in both measurements.
     const perRound = 5;
     const one = await count(perRound);
     for (let i = 1; i < 6; i++) await resolveOneOfEach(own, ownUser, i);

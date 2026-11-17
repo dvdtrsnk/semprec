@@ -32,7 +32,7 @@ function sessionCookieFrom(res: Response): string {
   return match[1]!;
 }
 
-/** Resolves once `client` opens, rejecting on `error` — a bad credential must reach the second branch instead. */
+/** Rejects on `error`, so a bad credential must reach the second branch instead. */
 function waitForOpen(client: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
     client.once("open", () => resolve());
@@ -248,7 +248,7 @@ describe("WS /api/sync under SEMPREC_TENANT_SCOPE=strict (issue #1025)", () => {
   });
 
   it("opens a socket for a valid session and closes a revoked one on heartbeat revalidation", async () => {
-    // The listener's own LISTEN connection is already open; the session is created before strict mode.
+    // The listener's LISTEN connection is already open; the session is created before strict mode.
     const user = await makeUser();
     const login = await fetch(`${baseUrl}/api/auth/login`, {
       method: "POST",
@@ -257,7 +257,7 @@ describe("WS /api/sync under SEMPREC_TENANT_SCOPE=strict (issue #1025)", () => {
     });
     const cookie = sessionCookieFrom(login);
     process.env.SEMPREC_TENANT_SCOPE = "strict";
-    // Only the heartbeat interval is faked; the socket's own I/O keeps running on real timers.
+    // Only the heartbeat interval is faked; the socket's I/O keeps real timers.
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const client = new WebSocket(`${wsBaseUrl}/api/sync`, { headers: { Cookie: `${SESSION_COOKIE_NAME}=${cookie}` } });
     await waitForOpen(client);

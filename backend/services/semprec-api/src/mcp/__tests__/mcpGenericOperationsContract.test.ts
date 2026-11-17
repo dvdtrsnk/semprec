@@ -69,7 +69,10 @@ const DESTRUCTIVE_OPERATIONS: readonly GenericOperationName[] = GENERIC_OPERATIO
   (operation) => OPERATION_METADATA[operation].requiresApproval,
 );
 
-/** Operations whose fixture holds an active value link they end, so an agent run credential is asked for approval (issue #1758). */
+/**
+ * Their fixture holds an active value link they end, so an agent run credential is asked for
+ * approval.
+ */
 const LINK_ENDING_OPERATIONS: readonly GenericOperationName[] = ["link.unlink"];
 
 let pool: Pool;
@@ -88,15 +91,15 @@ async function authHeader(): Promise<{ Authorization: string }> {
 }
 
 /**
- * Tenant zero's user, created on first use. A minted credential's run names its actor, and a run's
- * actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066).
+ * Created on first use. A run's actor must be a user of its own tenant
+ * (`agent_runs_actor_user_id_tenant_fkey`).
  */
 async function tenantZeroUserId(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
   return rows[0]?.id ?? (await createTenantZeroUser(pool)).id;
 }
 
-/** Mirrors `mcpHandler.test.ts`'s own `credentialHeader` — a restricted, single-run credential narrowed to exactly `capabilities`. */
+/** A single-run credential narrowed to exactly `capabilities`. */
 async function credentialHeader(
   projectItemId: string,
   capabilities: CapabilityId[],
@@ -108,7 +111,7 @@ async function credentialHeader(
   return { Authorization: `Bearer ${minted.token}` };
 }
 
-/** The Projects database row every `ai_agent` actor's `agentProjectItemId` is checked against (issue #87, `assertAuthenticatedAgentIdentity`). */
+/** The database every `ai_agent` actor's `agentProjectItemId` is checked against. */
 async function projectsDatabaseId(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'projects'`);
   if (!rows[0]) throw new Error("Projects database was not seeded");
@@ -156,30 +159,28 @@ async function rpc(
 interface Fixtures {
   database: { id: string };
   property: PropertyRow;
-  /** A multi_select property with one option, the target of the two REST-only option operations. */
+  /** Target of the two REST-only option operations. */
   optionProperty: PropertyRow;
   itemA: ItemRow;
   itemB: ItemRow;
   view: ViewRow;
-  /** The actor `view` was created by — every further `view`/`view_items` write in the same case must reuse it, since a mismatched actor either fails ownership or (for a 'user' write) silently adopts the view away from its agent creator. */
+  /**
+   * Every further `view`/`view_items` write in a case must reuse it: a mismatched actor either
+   * fails ownership or (for a `user` write) silently adopts the view away from its agent creator.
+   */
   viewActor: { type: "user" } | { type: "ai_agent"; agentProjectItemId: string };
   targetDatabase: { id: string };
   targetItem: ItemRow;
   relationProperty: PropertyRow;
   singleRelationProperty: PropertyRow;
-  /** A subpage of `itemA`, present only after the `prepare` of a case that needs an existing page. */
   subpageItemId?: string;
-  /** The `page` block of `itemA` that names `subpageItemId`, present with it after the `prepare` of `page.convertToBlock`. */
   subpageBlockId?: string;
-  /** The version token of `itemA`'s page, present only after the `prepare` of `page.replace`. */
   pageEtag?: string;
 }
 
 /**
- * `agentProjectItemId`, when supplied, creates the view (and its initial membership) as that
- * `ai_agent` actor instead of the default `user` actor — required for the restricted-credential
- * loop below, since `assertViewWritable` (issue #87) rejects an agent actor's patch/membership
- * write to a view it did not itself create, regardless of capability grant.
+ * With `agentProjectItemId` the view is created as that `ai_agent` actor, because
+ * `assertViewWritable` rejects an agent's write to a view it did not create, regardless of grants.
  */
 async function buildFixtures(agentProjectItemId?: string): Promise<Fixtures> {
   const viewActor =
@@ -244,8 +245,8 @@ async function buildFixtures(agentProjectItemId?: string): Promise<Fixtures> {
 }
 
 /**
- * A REST-only operation over MCP (issue #1699): the caller's answer is the one it gets for an invented tool name,
- * apart from the name the message repeats, and the option list is as the fixture created it.
+ * The answer is the one for an invented tool name, apart from the repeated name, and the option
+ * list is unchanged.
  */
 async function expectRefusedAsUnknownTool(
   baseUrl: string,
@@ -263,21 +264,20 @@ async function expectRefusedAsUnknownTool(
 }
 
 interface Case {
-  /** The exact `tools/call` name/arguments a real MCP caller would send — MCP has no route layer to resolve a shorthand on its own, unlike REST's `:propertyKey` relation route. */
+  /** MCP has no route layer to resolve a shorthand, unlike REST's `:propertyKey` relation route. */
   tool: (fx: Fixtures) => { name: string; arguments: unknown };
-  /** State a case needs already in place before its own operation runs — `restore`/`reorder` targets a row whose prior state (archived, deleted, already-positioned) the operation itself is not what creates. Applied directly through `chokePoint`, never through the tool under test. */
+  /**
+   * State the operation itself does not create (archived, deleted, positioned), applied through
+   * `chokePoint`, never through the tool under test.
+   */
   prepare?: (fx: Fixtures) => Promise<void>;
 }
 
 /**
- * One `tools/call` case per operation in the closed 47-operation catalog, mirroring
- * `genericOperationsContract.test.ts`'s REST pattern one adapter over (the code-review finding on
- * issue #220's diff: parameterized contract tests across all of the then-28 operations were missing for the
- * MCP and AgentTool adapters). Reused across two describe-blocks below: dispatched by a plain
- * human-session actor (never approval-gated, matching `mcpHandler.test.ts`'s existing "no approval
- * gate for MCP actors" case) and by a restricted run-credential actor scoped to exactly the
- * operation's own capability (approval-gated for the 5 destructive operations). The REST-only
- * operations (issues #1699 and #1765) carry valid arguments and are expected to be refused as unknown tools by both actors.
+ * One `tools/call` case per catalog operation, run by a human-session actor (never approval-gated)
+ * and by a run credential scoped to the operation's own capability (approval-gated for destructive
+ * operations). REST-only operations carry valid arguments and are expected to be refused as unknown
+ * tools by both.
  */
 const CASES: Record<GenericOperationName, Case> = {
   "database.list": { tool: () => ({ name: "semprec.database.list", arguments: {} }) },
@@ -454,7 +454,8 @@ const CASES: Record<GenericOperationName, Case> = {
   "page.ensureJournalPeriod": {
     tool: () => ({ name: "semprec.page.ensureJournalPeriod", arguments: { type: "week", date: "2026-10-16" } }),
   },
-  // The period has no duplicate, so a human session gets `{ merged: false }` and a run credential is held for approval (issue #2017).
+  // The period has no duplicate, so a human session gets `{ merged: false }` and a run credential
+  // is held for approval.
   "page.mergeJournalDuplicates": {
     tool: () => ({ name: "semprec.page.mergeJournalDuplicates", arguments: { type: "day", period: "2026-10-16" } }),
   },
@@ -464,7 +465,7 @@ const CASES: Record<GenericOperationName, Case> = {
       arguments: { itemId: fx.itemA.id, placement: "end", markdown: "Contract text" },
     }),
   },
-  // Destructive for a run credential (issue #1844): held for approval with the version token the page has now.
+  // Destructive for a run credential: held for approval with the page's current version token.
   "page.replace": {
     tool: (fx) => ({
       name: "semprec.page.replace",
@@ -497,7 +498,8 @@ const CASES: Record<GenericOperationName, Case> = {
       fx.subpageItemId = created.pages[0]?.pageItemId;
     },
   },
-  // Destructive for a run credential (issue #1876): held for approval, with the count of pages the page block names now.
+  // Destructive for a run credential: held for approval with the current count of pages the block
+  // names.
   "page.convertToBlock": {
     tool: (fx) => ({
       name: "semprec.page.convertToBlock",
@@ -517,7 +519,8 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "page.restoreVersion": {
-    // The block's update is dated an hour back, so the instant (half an hour back) sits inside the history `prepare` opens.
+    // The block's update is dated an hour back, so the instant (half an hour back) sits inside the
+    // history `prepare` opens.
     tool: (fx) => ({
       name: "semprec.page.restoreVersion",
       arguments: { itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
@@ -687,7 +690,8 @@ describe("generic operation MCP contract (issue #220)", () => {
     servers.push(server);
     const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
     if (!journal) throw new Error("Journal not seeded");
-    // Two live entries of one period are a state the lazy creation never produces, so the fixture creates them directly.
+    // Lazy creation never produces two live entries of one period, so the fixture creates them
+    // directly.
     const entries: string[] = [];
     for (let n = 0; n < 2; n += 1) {
       const created = await withTransaction(pool, (client) =>
@@ -711,7 +715,7 @@ describe("generic operation MCP contract (issue #220)", () => {
     const requests = await pool.query<{ tool_name: string; status: string; payload: { operationName?: string } }>(
       `SELECT tool_name, status, payload FROM approval_requests`,
     );
-    // The request names the catalog operation, which is the name the AgentTool adapter queues it under.
+    // The request names the catalog operation, the name the AgentTool adapter queues it under.
     expect(requests.rows).toEqual([
       {
         tool_name: "page.mergeJournalDuplicates",
@@ -1016,7 +1020,7 @@ describe("generic operation MCP contract (issue #220)", () => {
         .object({ result: z.object({ tools: z.array(z.object({ name: z.string() })) }) })
         .parse(await response.json())
         .result.tools.map((tool) => tool.name);
-      // The same capability's other write is listed, so the two are absent for being REST-only, not ungranted.
+      // So the two are absent for being REST-only, not ungranted.
       expect(names).toContain("semprec.property.patch");
       for (const operation of REST_ONLY_OPERATION_NAMES) expect(names).not.toContain(`semprec.${operation}`);
     }
@@ -1391,7 +1395,8 @@ describe("generic operation MCP contract (issue #220)", () => {
             databaseId: (await database("projects")).id,
             properties: { name: "Journal project" },
           });
-          // The derived edge as its owning process (the event-link sync) writes it, through the system choke point.
+          // Written as the owning process (the event-link sync) writes it, through the system choke
+          // point.
           const ownerProcess = events.ownerProcess;
           await withTransaction(runtime, (client) =>
             createRelationWithClient(
@@ -1475,8 +1480,8 @@ describe("generic operation MCP contract (issue #220)", () => {
       expect(await snapshot(ownTenant)).toEqual(ownBefore);
       expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
 
-      // The same credential writes the user-owned Journal `project` relation, and its delete reaches the approval gate:
-      // the refusals above are the relation's ownership, not a missing grant or the approval requirement.
+      // So the refusals above are the relation's ownership, not a missing grant or the approval
+      // requirement.
       const put = await call("semprec.relation.put", {
         relationPropertyId: own.project.id,
         callerItemId: own.day,
@@ -1818,10 +1823,8 @@ describe("generic operation MCP contract (issue #220)", () => {
   });
 
   /**
-   * The four parity cases the code-review finding on issue #220's diff called out by name
-   * (`database_archived`, actor schema parity, relation type/config patch rejection, relation
-   * route resolution vs. direct `relationPropertyId` supply) — REST already covers each in
-   * `itemsHandler.test.ts`/`propertiesHandler.test.ts`; these are their MCP-adapter equivalents.
+   * MCP-adapter equivalents of REST parity cases covered in
+   * `itemsHandler.test.ts`/`propertiesHandler.test.ts`.
    */
   describe("issue #220 REST/MCP parity: database_archived, actor spoofing, relation patch rejection", () => {
     it("surfaces database_archived (issue #83) as a JSON-RPC -32000 for a write against an archived database", async () => {
@@ -1844,9 +1847,9 @@ describe("generic operation MCP contract (issue #220)", () => {
       servers.push(server);
       const fx = await buildFixtures();
 
-      // Every generic-operation input schema is a strict zod object (see `schemas.ts`) with none
-      // of `AuthenticatedActor`'s own field names — an attempt to smuggle a different identity in
-      // through `arguments` fails validation rather than silently being ignored or honored.
+      // Every input schema is a strict zod object without `AuthenticatedActor`'s field names, so
+      // smuggling an identity through `arguments` fails validation instead of being ignored or
+      // honored.
       const body = await rpc(baseUrl, await authHeader(), "semprec.view.create", {
         databaseId: fx.database.id,
         type: "table",
@@ -1892,10 +1895,9 @@ describe("generic operation MCP contract (issue #220)", () => {
       servers.push(server);
       const fx = await buildFixtures();
 
-      // REST resolves a relation route's `:propertyKey` segment against the caller item's own
-      // database (`resolveRelationProperty` in `itemsHandler.ts`) and 404s for no match. MCP has
-      // no route layer: it takes `relationPropertyId` directly and the choke point rejects a
-      // syntactically valid id that doesn't name a relation property, rather than resolving it.
+      // REST resolves `:propertyKey` against the caller item's database and 404s for no match. MCP
+      // has no route layer: it takes `relationPropertyId` directly and the choke point rejects an
+      // id that names no relation property.
       const body = await rpc(baseUrl, await authHeader(), "semprec.relation.put", {
         relationPropertyId: fx.property.id,
         callerItemId: fx.itemA.id,

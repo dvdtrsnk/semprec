@@ -55,7 +55,6 @@ function spyFactory(): { factory: MailLiveSyncLifecycleFactory; byAccount: Map<s
   return { factory, byAccount };
 }
 
-/** Tenant zero's seeded mailbox, created through the runtime role inside tenant zero. */
 async function addMailboxToTenantZero(runtimePool: Pool): Promise<string> {
   return runInTenant(getTenantZeroId(), () =>
     withTransaction(runtimePool, async (client) => {
@@ -70,7 +69,6 @@ async function addMailboxToTenantZero(runtimePool: Pool): Promise<string> {
   );
 }
 
-/** Tenant B's minimal mail fixture: the four system databases, and one mailbox when asked. */
 async function createMailFixture(runtimePool: Pool, tenantId: string, withMailbox: boolean): Promise<string | null> {
   return runInTenant(tenantId, () =>
     withTransaction(runtimePool, async (client) => {

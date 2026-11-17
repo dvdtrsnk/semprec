@@ -22,8 +22,7 @@ import {
   parseNotificationPreferencesPatch,
 } from "../notifications/notificationPreferencesRoutes.js";
 
-// Issue #1441: per-user notification preferences. The store and the two custom-route handlers are
-// exercised against the real database; isolation runs on the runtime-role pool with two tenants.
+// Isolation runs on the runtime-role pool with two tenants.
 let adminPool: Pool;
 let runtimePool: Pool;
 
@@ -53,27 +52,23 @@ afterAll(async () => {
   await adminPool?.end();
 });
 
-/** A user account in `tenantId`; a tenant holds exactly one user (`users.tenant_id` is unique). */
 async function userIn(tenantId: string): Promise<string> {
   const user = await createUser(adminPool, { email: `${randomUUID()}@example.com`, passwordHash: "unused", tenantId });
   return user.id;
 }
 
-/** Calls the GET handler the way the adapter does: the request runs inside the caller's tenant. */
 function getPreferences(tenantId: string, userId: string) {
   return runInTenant(tenantId, () =>
     createGetNotificationPreferencesRouteHandler(runtimePool)({ body: undefined, identity: { user: { id: userId } } }),
   );
 }
 
-/** Calls the PATCH handler the way the adapter does, with the parsed JSON body the adapter would pass. */
 function patchPreferences(tenantId: string, userId: string, body: unknown) {
   return runInTenant(tenantId, () =>
     createPatchNotificationPreferencesRouteHandler(runtimePool)({ body, identity: { user: { id: userId } } }),
   );
 }
 
-/** Counts the rows of one user through the superuser pool, which sees every row regardless of tenant. */
 async function countRowsFor(userId: string): Promise<number> {
   const { rows } = await adminPool.query<{ n: number }>(
     "SELECT COUNT(*)::int AS n FROM notification_preferences WHERE user_id = $1",
@@ -159,7 +154,6 @@ describe("notification preferences (issue #1441)", () => {
       [{ problemsLevel: "none" }, "problemsLevel"],
       [{ problemsLevel: 3 }, "problemsLevel"],
       [{ mute: true }, "body"],
-      // A valid field next to an unknown key still refuses the whole request: nothing is written.
       [{ approvals: false, updatedAt: "2026-01-01T00:00:00.000Z" }, "body"],
     ];
 

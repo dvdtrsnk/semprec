@@ -8,9 +8,8 @@ import { Pool, type PoolConfig } from "pg";
 import { runMigrations } from "../db/migrate.js";
 
 /**
- * Compatibility fixture for issue #191: applies each migration example on top of the previous
- * release's schema with the real migration runner, then runs the previous release's code against
- * the result — exactly what happens while a deploy migrates and after `deploy.sh --rollback`.
+ * Applies each migration example on top of the previous release's schema, then runs the previous
+ * release's code against it, as during a deploy and after `deploy.sh --rollback`.
  */
 
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
@@ -19,9 +18,8 @@ const LONG_TITLE = "a title longer than ten characters";
 const poolErrors: unknown[] = [];
 
 /**
- * A pool whose errors fail the test that owns it. A pool without an 'error' listener turns the error of an idle client
- * the server dropped into an uncaught exception, which fails the whole run after every test passed. No fixture pool is
- * expected to fail, so every error counts.
+ * A pool without an 'error' listener turns a dropped idle client into an uncaught exception that fails
+ * the whole run, so every pool error fails the owning test.
  */
 function guardedPool(config: PoolConfig): Pool {
   const pool = new Pool(config);
@@ -36,7 +34,6 @@ afterEach(() => {
   if (errors.length) throw new AggregateError(errors, "A pool of the test reported an error");
 });
 
-/** The previous release's data access: it names only `id` and `title`. */
 async function previousReleaseWritesAndReadsANote(pool: Pool): Promise<void> {
   await pool.query("INSERT INTO notes (id, title) VALUES ($1, $2)", [1, LONG_TITLE]);
   const { rows } = await pool.query<{ id: number; title: string }>("SELECT id, title FROM notes WHERE id = $1", [1]);
@@ -63,7 +60,6 @@ async function withScratchSchema(fn: (pool: Pool) => Promise<void>): Promise<voi
   }
 }
 
-/** Migrates a scratch schema to the previous release's schema plus one example, then runs `fn`. */
 async function withExampleApplied(kind: "accepted" | "rejected", file: string, fn: (pool: Pool) => Promise<void>) {
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-migration-compat-"));
   try {

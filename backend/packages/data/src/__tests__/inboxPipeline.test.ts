@@ -29,7 +29,6 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Records every SQL text `client.query` is called with, for asserting which queries a code path actually issues. */
 function instrumentQueries(client: PoolClient): string[] {
   const texts: string[] = [];
   const originalQuery = client.query.bind(client);
@@ -89,7 +88,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
     expect(inboxProps.find((p) => p.key === "text")).toMatchObject({ type: "text", owner: "user" });
     expect(inboxProps.find((p) => p.key === "type")).toMatchObject({ type: "relation", owner: "user" });
     expect(inboxProps.find((p) => p.key === "journalDay")).toMatchObject({ type: "relation", owner: "system" });
-    // Issue gh-1964.
     expect(inboxProps.find((p) => p.key === "captureChannel")).toMatchObject({
       type: "select",
       owner: "user",
@@ -103,7 +101,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
       ownerProcess: "inbox",
       config: { includeTime: true },
     });
-    // Issue gh-1980.
     expect(inboxProps.find((p) => p.key === "transcribedText")).toMatchObject({
       type: "text",
       owner: "system",
@@ -159,7 +156,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
       "userEditedKeys",
       "userOverrides",
     ]);
-    // Card state (issue #1451): every new property is system-owned and typed as declared.
+    // Card state: every new property is system-owned and typed as declared.
     for (const key of [
       "aiProposal",
       "userOverrides",
@@ -175,7 +172,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
     }
     expect(proposalProps.find((p) => p.key === "aiVersion")).toMatchObject({ type: "number", owner: "system" });
     expect(proposalProps.find((p) => p.key === "reason")).toMatchObject({ type: "text", owner: "system" });
-    // Issue #1939: the marker of a sibling card of a split source.
+    // The marker of a sibling card of a split source.
     expect(proposalProps.find((p) => p.key === "splitFromProposalId")).toMatchObject({ type: "text", owner: "system" });
     expect(proposalProps.find((p) => p.key === "recognizedTypeId")).toMatchObject({ type: "text", owner: "system" });
     expect(proposalProps.find((p) => p.key === "kind")).toMatchObject({
@@ -213,7 +210,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
   });
 
   it("re-running the seed is idempotent — no duplicate databases/properties", async () => {
-    await seedSystem(pool, viewTypeRegistry); // second run, same process's registry
+    await seedSystem(pool, viewTypeRegistry);
     for (const moduleId of ["inbox", "inboxItemTypes", "processingProposals"]) {
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM databases WHERE owner_module_id = $1", [
         moduleId,
@@ -550,7 +547,6 @@ describe("Inbox pipeline databases (issue #101)", () => {
       ),
     ).rejects.toBeInstanceOf(ValidationError);
 
-    // Explicitly clearing targetDatabase alongside the switch succeeds.
     const switched = await withTransaction(pool, (client) =>
       updateInboxTypeWithClient(client, {
         inboxItemTypesDatabaseId: typesId,
@@ -594,9 +590,8 @@ describe("Inbox pipeline databases (issue #101)", () => {
       }),
     );
 
-    // A confirmed Processing proposal card locks its source Inbox item. `kind`/`status` are
-    // owner:'system' (written only by the not-yet-implemented confirm flow, issue #105), so
-    // this test seeds the row directly, the same way a real confirm would.
+    // A confirmed Processing proposal card locks its source Inbox item. `kind`/`status` are owner:'system',
+    // so the row is seeded directly.
     const proposal = await withTransaction(pool, (client) =>
       itemsStore.insertItem(client, {
         databaseId: proposalsId,
@@ -655,9 +650,8 @@ describe("Inbox pipeline databases (issue #101)", () => {
       .listProperties(proposalsId)
       .then((props) => props.find((p) => p.key === "sourceInbox")!);
 
-    // Three referencing Inbox items with an uneven number of proposals each: one unlocked
-    // with none, one unlocked with several non-locking proposals, and one locked by a confirmed
-    // proposal — whose `type` edge must survive the delete.
+    // Three referencing Inbox items: one unlocked with no proposals, one unlocked with several non-locking
+    // proposals, and one locked by a confirmed proposal, whose `type` edge must survive the delete.
     const unlockedNoProposals = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
         inboxDatabaseId: inboxId,
@@ -701,9 +695,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
         type: type.id,
       }),
     );
-    // A confirmed Processing proposal card locks its source Inbox item. `kind`/`status` are
-    // owner:'system' (written only by the not-yet-implemented confirm flow, issue #105), so
-    // this test seeds the row directly, the same way a real confirm would.
+    // A confirmed Processing proposal card locks its source Inbox item; seeded directly as above.
     const confirmedProposal = await withTransaction(pool, (client) =>
       itemsStore.insertItem(client, {
         databaseId: proposalsId,
@@ -732,12 +724,10 @@ describe("Inbox pipeline databases (issue #101)", () => {
     // Every associated card is reserved, including all three open cards and the decided card.
     expect(queries.filter((sql) => sql.includes("FOR UPDATE NOWAIT")).length).toBeGreaterThanOrEqual(4);
 
-    // `enqueueRollupRecomputeForEdge` always calls `findDependenciesByRelationDefinition`,
-    // which issues a SELECT even when there are no rollup dependencies — so this SELECT is
-    // observable proof the recompute step ran. `deleteRelationWithClient` performs its own
-    // dependency lookup for each of the two unlocked items' edges, so those alone would pass
-    // with or without this fix — what only the fix produces is one *further* lookup, for the
-    // locked item's surviving edge, issued after the soft-delete `UPDATE`.
+    // `enqueueRollupRecomputeForEdge` always calls `findDependenciesByRelationDefinition`, which issues a
+    // SELECT even without rollup dependencies, so it proves the recompute step ran. The two unlocked items'
+    // edges produce their own lookups; only the locked item's surviving edge produces one issued after the
+    // soft-delete `UPDATE`.
     const softDeleteIndex = queries.findIndex((sql) =>
       sql.includes("UPDATE items SET deleted_at = COALESCE($3::timestamptz, now())"),
     );

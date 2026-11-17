@@ -189,7 +189,6 @@ describe("the daily next-occurrence refresh (issue gh-1905)", () => {
 
     await refresh(zero, events);
 
-    // Rule only, both would name Monday 19 Oct.
     expect(await value(zero, cancelled.id)).toBe("2026-10-20");
     expect(await value(zero, moved.id)).toBe("2026-10-17");
   });

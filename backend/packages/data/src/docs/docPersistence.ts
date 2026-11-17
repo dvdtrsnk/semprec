@@ -10,13 +10,13 @@ import { assertSweepNotFailedEntirely, type SweepOutcome } from "./sweepOutcome.
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { enqueueSearchLaneJob } from "../search/searchLaneEnqueue.js";
 
-/** y-leveldb uses 500, y-postgresql uses 200 — the issue asks for "the same shape", 200-500. */
+/** y-leveldb uses 500, y-postgresql uses 200. */
 export const DEFAULT_COMPACTION_THRESHOLD = 200;
 
-/** A page's text is converted this long after its last edit; further edits within the window keep this run time (issue #1658). */
+/** Further edits within the window keep the first run time. */
 const PAGE_TEXT_DEBOUNCE_MS = 30_000;
 
-/** Subpage titles are mirrored this long after the first edit of a burst; the job keeps that run time (issue #1715). */
+/** Measured from the first edit of a burst. */
 const PAGE_TITLE_MIRROR_DEBOUNCE_MS = 10_000;
 
 interface PendingUpdateRow {
@@ -42,21 +42,11 @@ async function loadPendingUpdatesForUpdate(client: PoolClient, docId: string): P
 }
 
 /**
- * Compacts `doc_updates` into `doc_snapshots`: store the merged state first, only then
- * delete the merged rows (issue #23, point 5 — "store-then-delete, never the reverse").
- * Must run inside the same transaction as the read that produced `doc` and
- * `mergedUpdates`, so a concurrent update landing mid-compaction is simply not among
- * the rows locked/read/deleted here — commutativity of CRDT merging means it converges
- * correctly regardless of ordering.
+ * Store-then-delete, never the reverse. Must run in the same transaction as the read that produced `doc` and
+ * `mergedUpdates`, so a concurrent update is simply not among the locked rows and converges by CRDT commutativity.
  *
- * Also drops a `doc_snapshot_history` checkpoint in the same transaction, under the same
- * document lock (issue #216): `through_update_id`/`represented_at` are the greatest merged
- * update's id/`created_at` — the inclusive boundary `openDocVersionAt` resumes replay from
- * using `doc_history_updates` (never touched here, and never deleted by compaction — that's
- * the whole point of mirroring appends into it). The mirrored log means this checkpoint is
- * no longer the only thing standing between a query and a `ValidationError`: even a doc
- * compacted many times over can always be reconstructed by replaying forward from its
- * nearest checkpoint through `doc_history_updates`.
+ * Also writes a `doc_snapshot_history` checkpoint whose `through_update_id` is the inclusive boundary
+ * `openDocVersionAt` resumes from. `doc_history_updates` is never touched by compaction.
  */
 async function compact(
   client: PoolClient,
@@ -74,17 +64,10 @@ async function compact(
   );
 
   if (mergedUpdates.length > 0) {
-    // Rows are loaded ordered by id ascending, so the last one is the greatest id — the
-    // inclusive boundary when several merged updates share a timestamp.
+    // Greatest id (rows are id-ordered): the boundary even when several updates share a timestamp.
     const boundary = mergedUpdates[mergedUpdates.length - 1]!;
-    // expires_at = represented_at + make_interval(hours => ...) per issue #216's Task
-    // (represented_at is boundary.created_at, the content timestamp this checkpoint's state
-    // was current at). A dormant doc's compaction checkpoint can therefore expire before a
-    // query within the nominal retentionDays window reaches it — but that query still finds
-    // the doc's earlier, non-expiring new-doc baseline checkpoint, which is
-    // always represented_at-earlier and NULL-expiry, so replay still succeeds; it just
-    // replays a longer stretch of doc_history_updates instead of resuming from the now-
-    // expired later checkpoint. History_not_retained is never returned incorrectly by this.
+    // A dormant doc's checkpoint may expire while still inside the retention window; reads then replay from the
+    // earlier NULL-expiry baseline, so this never causes a false `history_not_retained`.
     await client.query(
       `INSERT INTO doc_snapshot_history (doc_id, state, through_update_id, represented_at, expires_at, created_by)
        VALUES ($1, $2, $3, $4::timestamptz, $4::timestamptz + make_interval(hours => $5::int), 'system')`,
@@ -98,19 +81,9 @@ async function compact(
 }
 
 /**
- * Loads a headless `Y.Doc` (`gc = false` — see issue #23, point 4: default GC would
- * permanently discard deleted content, breaking `doc_snapshot_history`'s ability to
- * reconstruct it) by replaying `doc_snapshots` plus the following `doc_updates`, inside
- * a caller-supplied transaction/client.
- *
- * Compaction threshold is checked lazily here, on read (issue #23, point 5): if the
- * pending update count has crossed the threshold, the just-computed merged state is
- * written back and the merged rows deleted, in the same transaction as this read.
- *
- * Exported (not just `loadDoc` below) so callers that already hold a transaction/client
- * (e.g. `docsStore.getOrCreateDoc`) can run this read in the same transaction as their own
- * writes — the `FOR UPDATE` locks taken here on `doc_snapshots`/`doc_updates` serialize
- * against a concurrent `compact()` on the same doc.
+ * `gc = false`: default GC would discard deleted content that history reconstruction needs. Compacts lazily on read
+ * when over the threshold. The `FOR UPDATE` locks on `doc_snapshots`/`doc_updates` are the per-document lock that
+ * serializes appends, compaction and history re-baselining.
  */
 export async function loadDocWithClient(
   client: PoolClient,
@@ -142,13 +115,8 @@ export async function loadDoc(
 }
 
 /**
- * Fetches one durable `doc_updates` row's raw bytes by primary key — the "referenced
- * bytes" a realtime `doc_update` NOTIFY event points to (issue #162). Returns `null` when
- * the row is gone by the time this runs: a concurrent `compact()` may have already merged
- * it into `doc_snapshots` and deleted it, since NOTIFY delivery and this fetch race against
- * that DELETE. The caller (the WS fan-out) treats `null` as "already compacted" and falls
- * back to `doc_snapshots`, which retains everything this row held — never as "nothing to
- * send". A row that belongs to a different doc than `docId` also resolves to `null`.
+ * The bytes a realtime `doc_update` NOTIFY points to. `null` when compaction already merged the row (NOTIFY delivery
+ * races the DELETE); the WS fan-out then falls back to `doc_snapshots`, never to "nothing to send".
  */
 export async function getDocUpdateById(pool: Pool, docId: string, updateId: string): Promise<Buffer | null> {
   const { rows } = await pool.query<{ update: Buffer }>(
@@ -159,17 +127,9 @@ export async function getDocUpdateById(pool: Pool, docId: string, updateId: stri
 }
 
 /**
- * The realtime notification is deferred via `runAfterCommit` rather than fired here —
- * this runs inside the caller's still-open transaction (possibly one also writing other
- * tables, e.g. `inbox/proposalActions.ts`'s `confirmProposalWithClient`), and firing
- * immediately would let a subscriber observe a `doc_updates` row that a later failure in
- * that same transaction then rolls back.
- *
- * Mirrors the appended row into `doc_history_updates` in the same transaction, with the
- * same id/bytes/attribution/timestamp (issue #216): `doc_updates.id` is returned from the
- * INSERT via `RETURNING` rather than regenerated, so the mirrored row's `update_id` always
- * matches `doc_updates.id` exactly, which is what lets `openDocVersionAt` resume replay from
- * a checkpoint's `through_update_id` boundary.
+ * The NOTIFY runs after commit so a subscriber never sees a row the caller's transaction later rolls back. The
+ * `doc_history_updates` mirror reuses `doc_updates.id`, which `openDocVersionAt` relies on to resume from a
+ * checkpoint's `through_update_id`.
  */
 async function appendDocUpdateWithClient(
   client: PoolClient,
@@ -184,9 +144,7 @@ async function appendDocUpdateWithClient(
     [docId, updateBuffer, createdBy],
   );
   const { id, created_at } = rows[0]!;
-  // Same transaction as the insert, and the insert's own created_at, so the docs row and
-  // the update agree on when and by whom the doc was last edited (issue #1405). RETURNING gives
-  // the owner item and kind the page-text job needs, without a second lookup.
+  // Uses the insert's own created_at so the docs row and the update agree on the last edit.
   const docResult = await client.query<{ item_id: string; kind: DocKind }>(
     `UPDATE docs SET last_edited_at = $2::timestamptz, last_edited_by = $3 WHERE id = $1 RETURNING item_id, kind`,
     [docId, created_at, createdBy],
@@ -199,10 +157,8 @@ async function appendDocUpdateWithClient(
     [id, docId, updateBuffer, createdBy, created_at, retentionHours(retentionDays)],
   );
   if (doc.kind === "page") {
-    // Registered in this transaction and added at its pre-commit flush (`enqueueSearchLaneJob`), so the job exists
-    // only if the edit commits; its run time is taken now, at the edit. While that job is still waiting,
-    // `preserve_run_at` keeps its run time and a burst of edits collapses onto it; the job reads the page back
-    // when it runs. Canvas docs have no text to convert and queue nothing.
+    // Both jobs exist only if the edit commits; `preserve_run_at` collapses a burst of edits onto the first run time
+    // (the default `replace` would push it back for as long as the user types).
     enqueueSearchLaneJob(
       client,
       CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT,
@@ -213,9 +169,6 @@ async function appendDocUpdateWithClient(
         runAt: new Date(Date.now() + PAGE_TEXT_DEBOUNCE_MS),
       },
     );
-    // A second, independent job: it copies the edited `page` block titles onto their Pages items. `add_job` runs in
-    // this transaction, so the job exists only if the edit commits, and `preserve_run_at` keeps the run time of the
-    // first edit while the job waits (the default `replace` would push it back for as long as the user types).
     await enqueueJob(
       client,
       CORE_TASK_NAMES.PAGE_TITLE_MIRROR,
@@ -231,17 +184,8 @@ async function appendDocUpdateWithClient(
 }
 
 /**
- * Loads the doc, runs `fn` inside `doc.transact(fn, origin)`, and persists the
- * resulting binary diff as a new `doc_updates` row attributed to `origin` — the Yjs
- * `origin` parameter propagating into `created_by` (issue #23, point 4, steps 3-5).
- * `fn` returning without mutating the doc produces no `doc_updates` row.
- *
- * Runs inside a caller-supplied transaction/client — so a caller that also writes to
- * the structured-data tables in the same transaction (e.g. inbox/proposalActions.ts's
- * `confirmProposalWithClient`, issue #105) gets one atomic commit across both, despite
- * docs being an otherwise-independent persistence mechanism (see docStore.ts's module
- * comment). `mutateDoc` below is the pool-opening convenience wrapper for callers with
- * no transaction of their own.
+ * Persists the diff `fn` makes as one `doc_updates` row attributed to `origin`; no change, no row. Runs on the
+ * caller's client so document and structured-data writes commit atomically.
  */
 export async function mutateDocWithClient<T>(
   client: PoolClient,
@@ -285,12 +229,8 @@ export async function mutateDoc<T>(
 }
 
 /**
- * Periodic sweep (issue #23, point 5): catches up documents that are rarely opened, so
- * their log doesn't grow unboundedly just because nobody reads them. Compacts the
- * over-threshold docs visible in the current scope, i.e. one tenant's docs when called per
- * tenant (see `handleDocCompactionSweepTask`). One doc failing
- * (a transient DB error, a corrupted update row) must not abort the sweep before it
- * reaches the rest of the over-threshold docs, so each is isolated and logged.
+ * Compacts rarely opened documents, which lazy compaction on read never reaches. Per-doc failures are logged so one
+ * cannot abort the sweep.
  */
 export async function runCompactionSweep(
   pool: Pool,

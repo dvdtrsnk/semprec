@@ -23,14 +23,13 @@ import {
 import { createAiUsageSummaryRouteHandler } from "../aiUsageRouteHandler.js";
 import { getAiUsageSummary, type AiUsageSummary } from "../aiUsageSummary.js";
 
-/** UTC+14 with no daylight saving: its local midnight is 10:00 UTC the day before, so a UTC reset is visibly wrong. */
+/** UTC+14 without DST, so a UTC-based reset is visibly wrong. */
 const KIRITIMATI = "Pacific/Kiritimati";
 
 let admin: Pool;
 let runtime: Pool;
 let tenant: string;
 
-/** Seeds the tenant's systemSettings database with one settings item carrying `timezone`, through the production writers. */
 async function seedTimezone(tenantId: string, timezone: string): Promise<void> {
   await runInTenant(tenantId, () =>
     withTransaction(runtime, async (client) => {
@@ -45,7 +44,6 @@ async function seedTimezone(tenantId: string, timezone: string): Promise<void> {
   );
 }
 
-/** One settled call at `costUsd`, written by the gateway's accounting writer in the tenant's scope. */
 async function recordSpend(tenantId: string, costUsd: number): Promise<void> {
   await runInTenant(tenantId, () =>
     recordTokenGatewayCall(runtime, {
@@ -58,7 +56,6 @@ async function recordSpend(tenantId: string, costUsd: number): Promise<void> {
   );
 }
 
-/** A reservation at `estimatedCostUsd`, as the gateway writes before a provider call; it counts until settled or failed. */
 async function reserveSpend(tenantId: string, estimatedCostUsd: number): Promise<string> {
   const row = await runInTenant(tenantId, () =>
     reserveGatewayCall(runtime, { provider: "anthropic", model: "summary-test", estimatedCostUsd }),
@@ -85,7 +82,6 @@ interface LocalParts {
   second: string;
 }
 
-/** Wall-clock parts of `instant` in `timeZone`, read with the same Intl API the expectations below are derived from. */
 function localParts(instant: string, timeZone: string): LocalParts {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -123,14 +119,12 @@ function localMonth(instant: string, timeZone: string): string {
   return `${p.year}-${p.month}`;
 }
 
-/** The calendar day `days` after `day` (YYYY-MM-DD), by UTC arithmetic on a date that has no time zone. */
 function shiftDay(day: string, days: number): string {
   const date = new Date(`${day}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
 
-/** The month `months` after `month` (YYYY-MM). */
 function shiftMonth(month: string, months: number): string {
   const date = new Date(`${month}-01T00:00:00Z`);
   date.setUTCMonth(date.getUTCMonth() + months);

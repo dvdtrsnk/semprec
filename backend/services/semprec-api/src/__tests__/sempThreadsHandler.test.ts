@@ -250,7 +250,7 @@ describe("durable Semp thread history", () => {
       mcpServerItemId: serverId,
       timeoutMs: 60000,
     });
-    // The connector's name is not a field of the message; the steps it is derived from are (issue #1887).
+    // The connector's name is derived from the steps, not stored on the message.
     expect(row(fixture.timedOut)).not.toHaveProperty("connectorName");
     expect(row(fixture.timedOut)).toHaveProperty("steps");
     for (const id of [fixture.complete, fixture.withoutSummary]) {
@@ -305,7 +305,6 @@ describe("durable Semp thread history", () => {
 
       expect(response.status).toBe(200);
       expect(row(fixture.budget)).toMatchObject({ status: "error", error: { code: "budgetExceeded", message } });
-      // The text names nothing of the stored params.
       expect(JSON.stringify(row(fixture.budget))).not.toContain("Calendar");
       expect(row(fixture.legacy)).toMatchObject({ status: "error", error: { code: "internal" } });
       expect(row(fixture.done)).not.toHaveProperty("error");
@@ -574,7 +573,7 @@ describe("durable Semp thread history", () => {
       });
     const night = { kind: "sleepNight", night: "2026-10-16" };
 
-    // The tenant is not seeded: no sleep database exists, and the ref is accepted all the same.
+    // Unseeded tenant: no sleep database exists, and the ref is accepted all the same.
     const accepted = await send(`/api/semp/threads/${threadId}/messages`, [
       night,
       { ...night },
@@ -669,7 +668,6 @@ describe("durable Semp thread history", () => {
         [threadId],
       ),
     );
-    // Stored exactly as sent: the occurrence carries no item id.
     expect(stored.rows).toHaveLength(2);
     expect(stored.rows).toEqual(expect.arrayContaining([{ context: [occurrence] }, { context: [trace] }]));
 
@@ -700,12 +698,11 @@ describe("durable Semp thread history", () => {
       refusedBodies.push(await response.json());
       expect(await snapshot()).toEqual(before);
     }
-    // Every refusal is the same body: a foreign series or task answers exactly as an unknown one.
+    // A foreign series or task answers exactly as an unknown one.
     for (const body of refusedBodies) {
       expect(body).toMatchObject({ error: { code: "validation_failed", details: { field: "context[0]" } } });
       expect(body).toEqual(refusedBodies[0]);
     }
-    // An extra key, an unknown kind and a malformed day are refused at the edge.
     for (const bad of [
       { ...occurrence, itemId: own.task.id },
       { ...trace, extra: true },
@@ -819,7 +816,6 @@ describe("durable Semp thread history", () => {
       );
 
     expect((await post(segment(own.itemId, 0, 900))).status).toBe(202);
-    // A transcript in the Trash is still a valid target; the history shows it as recoverable.
     await runInTenant(tenant, () => createChokePoint(pool).softDeleteItem(own.databaseId, own.itemId));
     expect((await post(segment(own.itemId, 10, 20))).status).toBe(202);
     await runInTenant(tenant, () => createChokePoint(pool).restoreItem(own.databaseId, own.itemId));
@@ -970,8 +966,8 @@ describe("durable Semp thread history", () => {
       await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
       const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
       const storage = new LocalFsBlobStorageWriter(directory);
-      // Messages of one tenant: the root starts a thread, the reply arrives before the bridge it answers and starts
-      // another, and the bridge then joins the root, so the root's thread absorbs the reply's thread.
+      // The reply arrives before the bridge it answers and starts its own thread; the bridge then joins the root,
+      // so the root's thread absorbs the reply's.
       const mail = async (tenantId: string) => {
         await runInTenant(tenantId, () => seedSystem(pool));
         return runInTenant(tenantId, () =>
@@ -1199,7 +1195,7 @@ describe("durable Semp thread history", () => {
     const originalJob = stored.job[0];
     if (!originalJob) throw new Error("Missing queued Semp job");
     expect(duplicate.rows).toEqual([{ id: originalJob.id, revision: originalJob.revision + 1 }]);
-    // An answer of the run needs an assistant message the run produced; the queued one of the first message is it.
+    // A run answer needs an assistant message the run produced: the first message's queued one.
     await runInTenant(tenant, () =>
       withTransaction(pool, async (client) => {
         expect(await claimSempMessage(client, first.threadId, first.assistantMessageId)).toBe(true);
@@ -1209,7 +1205,7 @@ describe("durable Semp thread history", () => {
     );
     const firstRunRef = { kind: "agentRun", agentRunId: request.agentRunId, messageId: first.assistantMessageId };
     const approvalRef = { kind: "approvalRequest", approvalRequestId: request.id };
-    // The same answer posted twice is one ref; the identity of a run ref includes `messageId` (issue gh-1936).
+    // The same answer posted twice is one ref; a run ref's identity includes `messageId`.
     const context = [firstRunRef, approvalRef, { ...firstRunRef }];
     const withContext = await fetch(`${baseUrl}/api/semp/threads`, {
       method: "POST",
@@ -1262,7 +1258,6 @@ describe("durable Semp thread history", () => {
     });
     const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
     const headers = { authorization: `Bearer ${session.token}`, "content-type": "application/json" };
-    /** A chat thread with a run and one answered question: the run produced the assistant message. */
     const chatWithAnswer = (tenantId: string) =>
       runInTenant(tenantId, () =>
         withTransaction(pool, async (client) => {
@@ -1309,7 +1304,7 @@ describe("durable Semp thread history", () => {
       ]),
     });
 
-    // An answer next to the whole run it belongs to are two refs: neither is dropped as a duplicate of the other.
+    // An answer and its whole run are two refs; neither is a duplicate of the other.
     const wholeRunRef = { kind: "agentRun", agentRunId: own.runId };
     const both = await fetch(`${baseUrl}/api/semp/threads/${own.threadId}/messages`, {
       method: "POST",
@@ -1350,7 +1345,7 @@ describe("durable Semp thread history", () => {
       expect(await response.json(), name).toEqual(unknownTargetBody);
       expect(await snapshot(), name).toEqual(before);
     }
-    // A messageId belongs to the agentRun kind alone: every other kind is refused with it, on both message routes.
+    // A messageId belongs to the agentRun kind alone, on both message routes.
     const stray = randomUUID();
     for (const refused of [
       { kind: "item", itemId: stray, databaseId: stray, messageId: own.answerId },
@@ -1376,7 +1371,6 @@ describe("durable Semp thread history", () => {
         expect(await snapshot(), refused.kind).toEqual(before);
       }
     }
-    // A malformed messageId on an agentRun ref is refused before any lookup.
     const malformed = await post({ kind: "agentRun", agentRunId: own.runId, messageId: "not-a-uuid" });
     expect(malformed.status).toBe(400);
     expect(await snapshot()).toEqual(before);
@@ -1604,7 +1598,7 @@ describe("durable Semp thread history", () => {
           rule: { kind: "interval", minutes: 10 },
           actionId: "core.agentRun",
         });
-        // The existing tick writer is private to data; seed its valid FK-constrained row here.
+        // The tick writer is private to data; seed its FK-constrained row here.
         const thread = await client.query<{ id: string }>(
           "INSERT INTO semp_threads (kind, heartbeat_id) VALUES ('tick', $1) RETURNING id",
           [heartbeat.id],

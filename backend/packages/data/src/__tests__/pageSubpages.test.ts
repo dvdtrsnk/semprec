@@ -75,7 +75,6 @@ interface WriteCounts {
   journalItems: number;
 }
 
-/** What a refused call must leave exactly as it found it, read inside the tenant. */
 async function writeCounts(tenantId = tenant): Promise<WriteCounts> {
   return inTenant(async (client) => {
     const { rows } = await client.query<WriteCounts>(
@@ -101,7 +100,6 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   throw new Error("Expected the call to be rejected");
 }
 
-/** The `resource` field of a not-found error's details, read without assuming the details' shape. */
 function detailsResource(details: unknown): unknown {
   return typeof details === "object" && details !== null && "resource" in details ? details.resource : undefined;
 }
@@ -211,7 +209,6 @@ describe("page.createSubpage (issue #1676)", () => {
       { key: "title", type: "title", owner: "system", owner_process: PAGES_MODULE_ID },
     ]);
 
-    // A second call finds the database instead of creating another one.
     await createSubpage({ parent: { itemId: project }, title: "Two" });
     expect((await writeCounts()).pagesDatabases).toBe(1);
     const again = await inTenant((client) => ensurePagesDatabase(client));
@@ -327,7 +324,6 @@ describe("page.createSubpage (issue #1676)", () => {
             }
           : error;
       expect(shape(foreignError)).toEqual(shape(unknownError));
-      // The foreign tenant's own item is unharmed and still has no page.
       expect((await writeCounts(otherTenant)).docs).toBe(0);
     });
 
@@ -336,8 +332,7 @@ describe("page.createSubpage (issue #1676)", () => {
       const first = (await createSubpage({ parent: { itemId: project }, title: "First" })).pages[0];
       const second = first && (await createSubpage({ parent: { itemId: first.pageItemId }, title: "Second" })).pages[0];
       if (!first || !second) throw new Error("Missing pages");
-      // The API never reparents a page, so a cycle cannot be built through it; this superuser write stands in for
-      // corrupted or hand-edited data, which is the case the walk must survive.
+      // Superuser write: the API never reparents a page, so a cycle only comes from corrupted data.
       await admin.query(
         `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
         [first.pageItemId, second.pageItemId],
@@ -353,8 +348,7 @@ describe("page.createSubpage (issue #1676)", () => {
       const first = (await createSubpage({ parent: { itemId: project }, title: "Chain head" })).pages[0];
       if (!first) throw new Error("Missing page");
       const pagesDatabase = await inTenant((client) => ensurePagesDatabase(client));
-      // A 1001-deep chain would take 1001 API calls; this superuser insert builds it with one statement. Page 1's
-      // parent is the head created above, so the head is page 0 and page n has chain length n + 1.
+      // One superuser insert builds the 1001-deep chain; page n has chain length n + 1.
       const { rows } = await admin.query<{ id: string; label: string }>(
         `WITH chain AS (
            SELECT n, gen_random_uuid() AS id FROM generate_series(1, 1000) AS n
@@ -387,8 +381,8 @@ describe("page.createSubpage (issue #1676)", () => {
       await createTestProjectItem(runtime),
     ]);
     if (!projectA || !projectB) throw new Error("Missing projects");
-    // One open transaction holds the creation lock after creating the database, uncommitted. The two calls queue
-    // on the lock, see no database before it, and must find the committed one after it instead of creating another.
+    // An open transaction holds the creation lock after creating the database; the queued calls must find
+    // the committed database instead of creating another.
     const holder = await runtime.connect();
     let held = false;
     try {

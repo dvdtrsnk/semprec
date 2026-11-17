@@ -57,14 +57,13 @@ const mcpError = z.object({
   error: z.object({ code: z.number(), message: z.string(), data: z.record(z.string(), z.unknown()) }).strict(),
 });
 
-/** A refusal as REST exposes it: the HTTP status and the error body's `code` and `details`; the body has no message. */
+/** The body has no message. */
 interface RestRefusal {
   status: number;
   code: string;
   details: Record<string, unknown>;
 }
 
-/** A refusal as the agent gateway exposes it: the `ValidationError` it throws. */
 interface GatewayRefusal {
   code: string;
   status: number;
@@ -72,7 +71,7 @@ interface GatewayRefusal {
   details: Record<string, unknown>;
 }
 
-/** A refusal as MCP exposes it: a JSON-RPC error's code, message and `data`. It carries no category string. */
+/** It carries no category string. */
 interface McpRefusal {
   rpcCode: number;
   message: string;
@@ -82,7 +81,7 @@ interface McpRefusal {
 const TRANSPORTS = ["rest", "gateway", "mcp"] as const;
 type Transport = (typeof TRANSPORTS)[number];
 
-/** The rejections of issue #1663 on create: a label, the field named, and the Event's properties besides its name. */
+/** A label, the field named, and the Event's properties besides its name. */
 const CREATE_REFUSALS: Array<[string, string, Record<string, unknown>]> = [
   ["timeTo not after timeFrom", "timeTo", { date: "2026-10-16", timeFrom: "10:00", timeTo: "09:30" }],
   ["timeFrom and timeTo both 23:55", "timeTo", { date: "2026-10-16", timeFrom: "23:55", timeTo: "23:55" }],
@@ -103,10 +102,7 @@ const CREATE_REFUSALS: Array<[string, string, Record<string, unknown>]> = [
   ["a date with a time the time transform could not convert", "date", { date: "2026-10-16T25:00" }],
 ];
 
-/**
- * The rejections of issue #1663 on update: a label, the field named, the Event a write path creates first, the patch,
- * and the legacy values stored into it afterwards (`null` for none).
- */
+/** A label, the field named, the created Event, the patch, and legacy values stored afterwards (`null` for none). */
 const PATCH_REFUSALS: Array<[string, string, Record<string, unknown>, Record<string, unknown>, Legacy]> = [
   [
     "only timeFrom 11:45 on an Event from 10:00 to 11:30",
@@ -166,7 +162,7 @@ const PATCH_REFUSALS: Array<[string, string, Record<string, unknown>, Record<str
   ],
 ];
 
-/** The accepted creates of issue #1663: a label, the Event's properties besides its name, and what is stored. */
+/** A label, the Event's properties besides its name, and what is stored. */
 const CREATE_PASSES: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
   ["timeTo 24:00", { date: "2026-10-16", timeFrom: "23:00", timeTo: "24:00" }, { timeFrom: "23:00", timeTo: "24:00" }],
   ["23:30 with no end, stored with 24:00", { date: "2026-10-16", timeFrom: "23:30" }, { timeTo: "24:00" }],
@@ -187,10 +183,7 @@ const CREATE_PASSES: Array<[string, Record<string, unknown>, Record<string, unkn
   ],
 ];
 
-/**
- * The accepted updates of issue #1663 on an Event with legacy values: a label, the legacy values, the patch, and what
- * is stored afterwards.
- */
+/** A label, the legacy values, the patch, and what is stored afterwards. */
 const PATCH_PASSES: Array<[string, Record<string, unknown>, Record<string, unknown>, Record<string, unknown>]> = [
   [
     "only name on an Event whose stored date is 2026-10-16T08:00:00Z",
@@ -206,7 +199,6 @@ const PATCH_PASSES: Array<[string, Record<string, unknown>, Record<string, unkno
   ],
 ];
 
-/** Values stored into an Event with raw SQL after its create, or `null` for none. */
 type Legacy = Record<string, unknown> | null;
 
 let pool: Pool;
@@ -228,10 +220,7 @@ async function eventsNamed(name: string): Promise<number> {
   return rows[0]?.count ?? -1;
 }
 
-/**
- * Synthetic legacy state: the Events time transform converts a date-time on every write, so only a row stored before
- * issue #1598 holds one; no write path can produce it, so it is written with raw SQL.
- */
+/** The Events time transform converts a date-time on every write, so no write path can produce this state. */
 async function storeLegacy(itemId: string, legacy: Record<string, unknown>): Promise<void> {
   const result = await pool.query(
     "UPDATE items SET properties = properties || $3::jsonb WHERE database_id = $1 AND id = $2",
@@ -345,16 +334,15 @@ describe("Events validation errors are the same through REST, the agent gateway 
     };
   }
 
-  /** MCP carries a `ValidationError` as JSON-RPC `-32602` (invalid params): its message, and its details as `data`. */
+  /** MCP carries a `ValidationError` as JSON-RPC `-32602` with its details as `data`. */
   async function mcpRefusal(name: string, args: unknown): Promise<McpRefusal> {
     const parsed = mcpError.parse(await mcpCall(name, args));
     return { rpcCode: parsed.error.code, message: parsed.error.message, data: parsed.error.data };
   }
 
   /**
-   * Every exposed part of the three refusals: REST and the gateway carry the same category and status, MCP the
-   * gateway's message, and all three the same details naming `field`. MCP's category is not exposed, so it is not
-   * compared.
+   * REST and the gateway carry the same category and status, MCP the gateway's message, and all three the same
+   * details. MCP does not expose the category, so it is not compared.
    */
   function expectSameRefusal(refusals: { rest: RestRefusal; gateway: GatewayRefusal; mcp: McpRefusal }, field: string) {
     expect(refusals.rest).toEqual({ status: 400, code: "validation_failed", details: { field } });
@@ -406,7 +394,6 @@ describe("Events validation errors are the same through REST, the agent gateway 
     mcpResult.parse(await mcpCall("semprec.item.patch", input));
   }
 
-  /** An Event a write path created, with any legacy values stored into it, and its stored row before the patch. */
   async function patchTarget(path: Transport, name: string, base: Record<string, unknown>, legacy: Legacy) {
     const item = await createVia(path, { name: `${name} ${path}`, ...base });
     if (legacy !== null) await storeLegacy(item.id, legacy);

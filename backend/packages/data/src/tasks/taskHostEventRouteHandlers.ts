@@ -18,54 +18,43 @@ interface Context {
   identity: { user: { id: string } };
 }
 
-/** One event a task sits in, and the instant the task was last put into it. */
 interface TaskHostEvent {
   eventId: string;
   addedAt: string;
 }
 
-/** What the three routes answer: the task's host events that are not in the trash, the one added last at the end. */
+/** Non-trashed host events, the one added last at the end. */
 interface TaskHostEventsBody {
   taskId: string;
   hostEvents: TaskHostEvent[];
 }
 
-/** The `Tasks.hostEvents` relation of the caller's tenant. */
 interface HostEventsRelation {
   propertyId: string;
   definitionId: string;
   eventsDatabaseId: string;
 }
 
-/** The Tasks-side key of the relation; its inverse on Events is `hostedTasks` (issue #1540). */
 const HOST_EVENTS_KEY = "hostEvents";
 
-/** The Tasks module's own process identity: both sides of the relation are system-owned with this owner process. */
+/** Both sides of the relation are system-owned by the Tasks process. */
 const TASKS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: TASKS_MODULE_ID };
 
-/**
- * The writer of a request. The put and remove handlers take another one as their second argument, which only code that
- * composes it server-side passes: the calendar agent tools (`calendar/calendarAgentTools.ts`), never an HTTP request.
- */
+/** The HTTP writer. Only server-side code (the calendar agent tools) passes another writer to put and remove. */
 const USER_WRITER: WriterIdentity = { writerKind: "user" };
 
-/** The Tasks properties `DELETE /api/tasks/:id/host-events` may set while it removes the task from its events. */
 const RESCHEDULE_KEYS: ReadonlySet<string> = new Set(["date", "timeFrom", "timeTo"]);
 
-/**
- * The edge metadata these routes write. `addedAt` has the form `Date.prototype.toISOString` produces (UTC,
- * milliseconds), so two values order as instants when they are compared as strings.
- */
+/** `addedAt` is `toISOString` form (UTC, milliseconds), so string comparison orders instants. */
 const hostEventMetadataSchema = z.object({ addedAt: z.iso.datetime({ precision: 3 }) });
 
-/** The path parameter `name` as a lower-case UUID, the form stored ids have. */
 function uuidParam(ctx: Context, name: "id" | "eventId"): string {
   const result = z.uuid().safeParse(ctx.params[name]);
   if (!result.success) throw new ValidationError(`Path parameter '${name}' must be a UUID`, { field: name });
   return result.data.toLowerCase();
 }
 
-/** The Tasks database and the task `id`, locked; a missing task, a trashed one and another tenant's are not found alike. */
+/** Locked; missing, trashed and other tenants' tasks are not found alike. */
 async function lockLiveTask(client: PoolClient, id: string): Promise<{ tasksDatabaseId: string; taskId: string }> {
   const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
   const task = tasks ? await itemsStore.lockItemById(client, tasks.id, id) : null;
@@ -83,7 +72,7 @@ async function hostEventsRelation(client: PoolClient, tasksDatabaseId: string): 
   return { propertyId: property.id, definitionId: definition.id, eventsDatabaseId };
 }
 
-/** Every stored host event edge of the task, edges to trashed events included, in no particular order. */
+/** Edges to trashed events included, in no particular order. */
 async function storedHostEvents(
   client: PoolClient,
   relation: HostEventsRelation,
@@ -97,16 +86,12 @@ async function storedHostEvents(
   });
 }
 
-/** `addedAt` ascending; two edges with the same `addedAt` are ordered by event id, so the order is total. */
 function byAddedAtThenEventId(a: TaskHostEvent, b: TaskHostEvent): number {
   if (a.addedAt !== b.addedAt) return a.addedAt < b.addedAt ? -1 : 1;
   return a.eventId < b.eventId ? -1 : 1;
 }
 
-/**
- * The response of the three routes, read after the write: the task's host events ordered by `addedAt` ascending. An
- * edge to an event that is in the trash stays stored and is left out, as the generic relation list leaves it out.
- */
+/** Read after the write. Edges to trashed events stay stored but are left out, as the generic relation list does. */
 async function hostEventsBody(
   client: PoolClient,
   relation: HostEventsRelation,
@@ -125,16 +110,14 @@ async function hostEventsBody(
 }
 
 /**
- * The `addedAt` of a new or replaced edge: the server's clock, or one millisecond after the latest `addedAt` the task
- * already stores when the clock is not past it. The caller holds the task's row lock, so no other call of these
- * routes writes an edge of the same task between this read and the write.
+ * The server clock, or one millisecond past the latest stored `addedAt` when the clock is not past it. The
+ * caller holds the task row lock, so no concurrent call writes an edge of this task in between.
  */
 function nextAddedAt(stored: readonly TaskHostEvent[]): string {
   const latest = stored.reduce((max, entry) => Math.max(max, Date.parse(entry.addedAt)), Number.NEGATIVE_INFINITY);
   return new Date(Math.max(Date.now(), latest + 1)).toISOString();
 }
 
-/** The body of `DELETE /api/tasks/:id/host-events`: an object whose keys are among `date`, `timeFrom` and `timeTo`. */
 function parseReschedule(body: unknown): Record<string, unknown> {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw new ValidationError("The body must be an object", { field: "body" });
@@ -146,20 +129,15 @@ function parseReschedule(body: unknown): Record<string, unknown> {
 }
 
 /**
- * `PUT /api/tasks/:id/host-events/:eventId` (issue #1764): puts a task into an event. In one transaction it locks the
- * task and writes the `Tasks.hostEvents` edge as the Tasks process with the metadata `{ addedAt }` (`nextAddedAt`). An
- * edge that already exists gets the new `addedAt`, which makes that event the last of the task's host events. The
- * request body is not read. The edge is written as `writer`: the user for the route, the agent of a run for the calendar
- * tool.
+ * `PUT /api/tasks/:id/host-events/:eventId`: locks the task and writes the edge as the Tasks process with a new
+ * `addedAt` (also on an existing edge, making that event the last). The body is not read; `writer` is the user or
+ * the calendar tool's agent.
  *
- * An occurrence of a recurring series, the series' current instance or another stored occurrence, is put into the
- * event like any other task (issue #2012). The handler writes the edge of that item; it neither reads nor writes
- * `task_recurrence` or another occurrence of the series, so the series row with its rule and template stays as it is.
- * Completing the series' current instance advances the series whether or not that instance sits in an event.
+ * A recurring occurrence is put like any task: only its own edge is written, never `task_recurrence` or other
+ * occurrences.
  *
- * A task or an event that is missing, in the trash or another tenant's is not found alike. The event row is not
- * locked: the edge write checks both endpoints again, and an event trashed after that check keeps its edge, as an
- * event trashed after the request does.
+ * Missing, trashed and foreign tasks or events are not found alike. The event row is not locked: the edge write
+ * re-checks both endpoints, and an event trashed afterwards keeps its edge.
  */
 export function createTaskHostEventPutRouteHandler(pool: Pool) {
   return async (
@@ -193,10 +171,8 @@ export function createTaskHostEventPutRouteHandler(pool: Pool) {
 }
 
 /**
- * `DELETE /api/tasks/:id/host-events/:eventId` (issue #1764): takes a task out of one event. In one transaction it
- * locks the task and deletes that edge as the Tasks process; the task's other host event edges stay. A task that does
- * not sit in the event, whatever the event id names, answers 200 with the current list. A task that is missing, in the
- * trash or another tenant's is not found alike. The edge is deleted as `writer`, as in the put handler.
+ * `DELETE /api/tasks/:id/host-events/:eventId`: locks the task and deletes that one edge as the Tasks process.
+ * A task not in the event answers 200 with the current list; missing, trashed and foreign tasks are not found.
  */
 export function createTaskHostEventRemoveRouteHandler(pool: Pool) {
   return async (
@@ -222,12 +198,9 @@ export function createTaskHostEventRemoveRouteHandler(pool: Pool) {
 }
 
 /**
- * `DELETE /api/tasks/:id/host-events` (issue #1764): takes a task out of every event, optionally with a new date and
- * time. In one transaction it locks the task and deletes each of its host event edges as the Tasks process, edges to
- * trashed events included. When the body names `date`, `timeFrom` or `timeTo`, those values are then written to the
- * task through the Tasks write path as the caller, in the same transaction: a value that write refuses fails the
- * request and the edges stay. A body with any other key is refused on that key before anything is written. A task
- * that is missing, in the trash or another tenant's is not found alike.
+ * `DELETE /api/tasks/:id/host-events`: locks the task and deletes every host edge, trashed events included.
+ * Named `date`/`timeFrom`/`timeTo` are then written through the Tasks write path as the caller in the same
+ * transaction; a refused value fails the request and the edges stay. Other keys are refused before any write.
  */
 export function createTaskHostEventsClearRouteHandler(pool: Pool) {
   return async (ctx: Context): Promise<{ status: number; body: TaskHostEventsBody }> => {

@@ -10,18 +10,15 @@ import { claimSempMessage, finishSempMessageTurn, startSempMessageTurn } from ".
 import { buildSempReplySummary, type SempReplySummary } from "../sempReplySummary.js";
 
 /**
- * Shared fixtures of the integration tests of the Semp reply summaries (issues #1860 and #1885): a turn is played
- * with the production writers (`sendSempMessage`, `startSempMessageTurn`, `insertAgentRunEvent`) and finished with
- * `buildSempReplySummary` and `finishSempMessageTurn`, exactly as the turn handler of `semprec-agents` does.
+ * Reply-summary fixtures: turns are played with the production writers and finished with `buildSempReplySummary`
+ * and `finishSempMessageTurn`, as the turn handler does.
  */
 
-/** The start of the fixed clock the played events are stamped with. */
 export const CLOCK_START = Date.parse("2026-11-01T10:00:00.000Z");
 
 export interface EventSpec {
   kind: AgentRunEventKind;
   payload: unknown;
-  /** Milliseconds after `CLOCK_START` the event is stamped with. */
   atMs: number;
 }
 
@@ -38,11 +35,7 @@ export interface TurnSetup {
   tenant: string;
 }
 
-/**
- * Sends a message, claims it, stores `events` on a run and starts the turn on the first of them. A stored
- * event gets its `at` from the spec by a raw `UPDATE` on the admin pool: the production writer stamps `now()`,
- * and the durations a test asserts need a clock it controls.
- */
+/** Event `at` is set by raw `UPDATE`: the writer stamps `now()`, and duration tests need a controlled clock. */
 export async function playTurn(
   setup: TurnSetup,
   events: EventSpec[],
@@ -81,7 +74,6 @@ export async function playTurn(
   });
 }
 
-/** Builds the summary of a played turn the way the turn handler does, then stores the final status with it. */
 export async function finishPlayedTurn(
   setup: TurnSetup,
   turn: PlayedTurn,
@@ -116,7 +108,6 @@ export interface StoredReply {
   event_to_id: string | null;
 }
 
-/** The summary columns of a message, read on the admin pool. */
 export async function readStoredReply(admin: Pool, messageId: string): Promise<StoredReply> {
   const { rows } = await admin.query<StoredReply>(
     "SELECT status, steps, duration_ms, tokens, changes, event_to_id FROM semp_messages WHERE id = $1",
@@ -127,7 +118,7 @@ export async function readStoredReply(admin: Pool, messageId: string): Promise<S
   return row;
 }
 
-/** Creates an item of a seeded system database by its module id, written by the system as an ingest path would. */
+/** Written by the system, as an ingest path would. */
 export async function createFixtureItem(
   setup: TurnSetup,
   moduleId: string,

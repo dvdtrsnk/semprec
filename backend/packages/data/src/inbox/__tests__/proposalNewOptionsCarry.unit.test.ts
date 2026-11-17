@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ProposalEnvelope } from "../proposalEnvelope.js";
 import { carryNewOptions } from "../proposalNewOptions.js";
 
-// Issue gh-1994: the new options a revise carries over from the previous assistant envelope.
+// The new options a revise carries over from the previous assistant envelope.
 
 const TARGET = "8f6f2d3e-8b1e-4a0e-9d0b-1c1f0f1a2b3c";
 const HERBS = { propertyKey: "tags", label: "Bylinky" };

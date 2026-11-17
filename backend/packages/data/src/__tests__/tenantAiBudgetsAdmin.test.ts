@@ -16,7 +16,6 @@ let pool: Pool;
 let dataPool: Pool;
 let sidePool: Pool;
 
-/** Raw SQL: a row's `at` and `status` must be controlled to sit on either side of a window boundary. */
 async function insertCall(tenantId: string, costUsd: number, at: Date, status = "settled"): Promise<void> {
   await pool.query(
     `INSERT INTO ai_gateway_calls (tenant_id, provider, model, input_tokens, output_tokens, cost_usd, at, status)
@@ -25,7 +24,7 @@ async function insertCall(tenantId: string, costUsd: number, at: Date, status = 
   );
 }
 
-/** The database's current instant and the starts of its current UTC day and month, the windows `ai_tenant_spend()` uses. */
+/** The database's now and the starts of its UTC day and month, the windows `ai_tenant_spend()` uses. */
 async function utcWindows(): Promise<{ now: Date; dayStart: Date; monthStart: Date }> {
   const { rows } = await pool.query<{ now: Date; day_start: Date; month_start: Date }>(
     `SELECT now() AS now,
@@ -70,12 +69,10 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
     const readInTenant = () => withTenantTransaction(dataPool, tenantId, (client) => getCurrentTenantAiBudget(client));
     expect(await readInTenant()).toBeNull();
 
-    // Through semprec_data, the production role, so its INSERT/UPDATE/SELECT grants are what is exercised.
     const first = await withTransaction(dataPool, (client) =>
       setTenantAiBudget(client, { tenantId, dailyCapUsd: 5, monthlyCapUsd: 40, updatedBy: adminId }),
     );
     expect(first).toMatchObject({ tenantId, dailyCapUsd: 5, monthlyCapUsd: 40 });
-    // The gateway's own read, inside the tenant's scope, sees the caps the admin writer created.
     expect(await readInTenant()).toEqual({ tenantId, dailyCapUsd: 5, monthlyCapUsd: 40 });
 
     const second = await withTransaction(dataPool, (client) =>
@@ -111,8 +108,8 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
     // On the 1st of a UTC month the instant before today's midnight belongs to the previous month.
     const beforeTodayIsThisMonth = beforeToday.getTime() >= monthStart.getTime();
 
-    // Tenant A: today (UTC) 1.50 settled, 0.25 reserved, one failed at 0; 2.00 one second before
-    // today's UTC midnight (this month except on the 1st); 100.00 one second before the UTC month starts.
+    // Tenant A: today 1.50 settled, 0.25 reserved, one failed at 0; 2.00 one second before today's UTC midnight
+    // (this month except on the 1st); 100.00 one second before the month starts.
     await insertCall(tenantA, 1.5, now);
     await insertCall(tenantA, 0.25, dayStart, "reserved");
     await insertCall(tenantA, 0, now, "failed");

@@ -41,7 +41,6 @@ let baseUrl: string;
 
 const PASSWORD = "tick-thread-password";
 
-/** A tenant with a user and a seeded system, and that user's bearer header. */
 async function tenantSession(): Promise<{ tenant: string; headers: { Authorization: string } }> {
   const tenant = await createTestTenant(admin);
   const email = `${randomUUID()}@example.test`;

@@ -47,7 +47,6 @@ function append(itemId: string, markdown: string) {
   );
 }
 
-/** A replace with the token the page has when it starts, unless `overrides` names another. */
 function replace(itemId: string, markdown: string, overrides: Partial<ReplacePageMarkdownInput> = {}) {
   return withTransaction(pool, async (client) =>
     replacePageMarkdown(client, itemId, {
@@ -84,7 +83,6 @@ async function updateAuthors(itemId: string): Promise<string[]> {
   return rows.map((row) => row.created_by);
 }
 
-/** What a refused replace must leave as it found it. */
 async function footprint() {
   const { rows } = await pool.query<{ docs: number; updates: number; live_items: number }>(
     `SELECT (SELECT count(*)::int FROM docs) AS docs, (SELECT count(*)::int FROM doc_updates) AS updates,
@@ -377,10 +375,7 @@ describe("replace a page from Markdown (issue #1765)", () => {
   });
 
   describe("when a later step of the request fails", () => {
-    /**
-     * Runs `run` with a trigger that makes the trash of any item titled "Poison" fail. The trigger body is a fixed
-     * text; it is dropped again whatever `run` does.
-     */
+    /** A trigger fails the trash of any item titled "Poison"; dropped whatever `run` does. */
     async function withPoisonedTrash<T>(run: () => Promise<T>): Promise<T> {
       await pool.query(`
         CREATE FUNCTION test_fail_poison_trash() RETURNS trigger LANGUAGE plpgsql AS $fn$
@@ -437,7 +432,6 @@ describe("replace a page from Markdown (issue #1765)", () => {
       throw new Error(`${applicationName} never waited for a lock`);
     }
 
-    /** Runs `work` in a managed transaction whose backend is listed in `pg_stat_activity` as `applicationName`. */
     function transactionNamed<T>(applicationName: string, work: (client: PoolClient) => Promise<T>): Promise<T> {
       return withTransaction(pool, async (client) => {
         await client.query(`SELECT set_config('application_name', $1, true)`, [applicationName]);
@@ -470,8 +464,8 @@ describe("replace a page from Markdown (issue #1765)", () => {
       try {
         await holdsDocument;
 
-        // The replace finds no committed document, so its first comparison is against the empty one and passes. It
-        // then waits for the creator's `docs` row, and on getting it must compare the token again.
+        // The replace sees no committed document, so its first token check passes; after getting the creator's
+        // `docs` row it must compare the token again.
         const replacing = transactionNamed("page-replace-latecomer", (client) =>
           replacePageMarkdown(client, host.id, {
             markdown: "Overwrites",

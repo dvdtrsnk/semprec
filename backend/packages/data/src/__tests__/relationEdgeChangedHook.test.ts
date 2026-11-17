@@ -72,8 +72,7 @@ describe("relation edge changed hooks", () => {
     runInTenant(tenant, async () => {
       await withTransaction(pool, (client) => assertRelationCreatableWithClient(client, input));
       expect(calls).toHaveLength(0);
-      // The data layer checks the agent's project against the database of every edge (issue gh-1810), and the
-      // project id is a uuid. The databases here are user-created, which stay open to a project without a grant.
+      // Every edge's database is checked against the agent's project (a uuid); user-created databases need no grant.
       const writer = {
         writerKind: "agent" as const,
         agentRunId: "run",

@@ -9,13 +9,8 @@ const MIN_AGE_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 200;
 
 /**
- * Deletes the standalone upload blobs (`POST /api/blobs`) of the tenant in scope that were created
- * more than 24 hours ago and that nothing references any more (`deleteBlobIfUnreferenced`'s rule).
- * Candidates are read in keyset pages; each blob is deleted in its own transaction and its bytes
- * are removed from `storage` only after that transaction committed (best effort, see
- * `docs/adr/2026-09-28-blob-bytes-deleted-best-effort-after-the-commit.md`). A blob whose delete
- * failed is logged and skipped so one bad row does not stop the rest; the sweep then throws so the
- * job is retried. Returns the number of blob rows deleted.
+ * Deletes unreferenced standalone uploads older than 24 hours, one transaction each; bytes are removed best effort
+ * after commit. A failing blob is logged and skipped, then the sweep throws so the job retries.
  */
 export async function sweepUnreferencedBlobs(
   pool: Pool,
@@ -59,7 +54,6 @@ export async function sweepUnreferencedBlobs(
   return deleted;
 }
 
-/** The `blobsUnreferencedSweep` task handler: `sweepUnreferencedBlobs` once per active tenant. */
 export async function handleBlobsUnreferencedSweepTask(pool: Pool, storage: BlobStorageWriter): Promise<void> {
   await forEachActiveTenant(pool, async () => {
     await sweepUnreferencedBlobs(pool, storage);

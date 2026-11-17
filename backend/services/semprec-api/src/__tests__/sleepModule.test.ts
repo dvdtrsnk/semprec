@@ -20,7 +20,7 @@ import { runInTenant } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 
 const PASSWORD = "s3cret-password";
-// Each test seeds two tenants with their couple of dozen system databases and hashes two passwords.
+// Each test seeds two tenants with their system databases and hashes two passwords.
 const SEEDING_HOOK_TIMEOUT_MS = 90_000;
 const SLEEP_KEYS = ["sleepSettings", "sleepPlans", "sleepNights"] as const;
 
@@ -112,7 +112,6 @@ async function database(who: Tenant, key: string): Promise<z.infer<typeof databa
   return found;
 }
 
-/** The live items of a database, through `POST /api/databases/:id/query`. */
 async function items(who: Tenant, databaseId: string): Promise<Array<z.infer<typeof itemBody>>> {
   const { status, body } = await request(who, "POST", `/api/databases/${databaseId}/query`, { limit: 200 });
   expect(status).toBe(200);
@@ -124,7 +123,7 @@ async function planNames(who: Tenant): Promise<unknown[]> {
   return (await items(who, plans.id)).map((plan) => plan.properties.name).sort();
 }
 
-/** The labels `GET /api/schema` answers `who` for the sleep databases: database names and the alarm sound options. */
+/** Database names and the alarm sound options. */
 async function schemaLabels(who: Tenant) {
   const { status, body } = await request(who, "GET", "/api/schema");
   expect(status).toBe(200);
@@ -217,7 +216,6 @@ describe("sleep module over HTTP (issue #1776)", () => {
       sleepNights: "Sleep nights",
     });
     expect(inEnglish.every((entry) => entry.clientVisible === false)).toBe(true);
-    // The other tenant has its own three databases.
     expect(inEnglish.map((entry) => entry.id).filter((id) => sleep.some((entry) => entry.id === id))).toEqual([]);
   });
 
@@ -257,7 +255,6 @@ describe("sleep module over HTTP (issue #1776)", () => {
     expect(itemBody.parse(deletedNight.body)).toMatchObject({ id: night.id, deletedAt: expect.any(String) });
     expect(await items(czech, plans.id)).toEqual([otherPlan]);
     expect(await items(czech, nights.id)).toEqual([]);
-    // The other tenant's plans are untouched.
     expect(await planNames(english)).toEqual(["Weekdays", "Weekend"]);
   });
 

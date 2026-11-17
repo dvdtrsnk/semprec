@@ -18,19 +18,13 @@ import { parseUserOverrides, retainOverridesForEnvelope, type RetainedOverrides 
 import { assertProposalVersion } from "./proposalPreconditions.js";
 import type { ProposalEnvelope, SemprecTickActionConfig } from "./proposalEnvelope.js";
 
-/**
- * Replaces an Inbox item's type and sends its card back to the tick (issue gh-1947). The route
- * `PUT /api/inbox/items/:id/type` is the single entry; the rules below are what the write needs
- * to hold together in one transaction.
- */
-
-/** The history message of the user's choice; it names no type, because the type's name is user content. */
+/** Names no type, because the type's name is user content. */
 const TYPE_CHOSEN_MESSAGE = "The user chose another type for the source item; the proposal is being recomputed.";
 
 export interface ChangeInboxItemTypeInput {
   itemId: string;
   typeId: string;
-  /** The card's `updatedAt` as the caller last saw it. Refused for an item that has no card. */
+  /** Refused for an item that has no card. */
   ifVersion?: string;
   actingUserId?: string;
 }
@@ -38,11 +32,11 @@ export interface ChangeInboxItemTypeInput {
 export interface ChangeInboxItemTypeResult {
   itemId: string;
   typeId: string;
-  /** The card as this call wrote it (status `computing`); `null` when the item has none, which the tick then creates. */
+  /** `null` when the item has none; the tick then creates it. */
   card: ItemRow | null;
 }
 
-/** The destination of the assistant's previous envelope: the pair the user's manual values were typed for, and the keys of a page's properties. */
+/** The destination the user's manual values were typed for. */
 const previousEnvelopeSchema = z.object({
   entityKind: z.string(),
   target: z.string(),
@@ -51,14 +45,12 @@ const previousEnvelopeSchema = z.object({
 
 type PreviousEnvelope = z.infer<typeof previousEnvelopeSchema>;
 
-/** The keys this write may set on a Processing proposals card (all are system-owned). */
+/** All are system-owned. */
 const CARD_WRITE_KEYS = ["status", "userOverrides", "userEditedKeys", "history", "invalidReason"];
 
 /**
- * The type as a chosen one: an Inbox item type that is live and `active`, held in a shared row lock for the rest of
- * the transaction so that archiving or deleting it waits for this write. A type another transaction holds for update
- * is a 409 instead of a wait, the way the tick's write phase treats it (`tryLockInboxType`). Also the check of the
- * capture route (`createCaptureInboxItemRouteHandler`, issue gh-1961).
+ * Holds a shared row lock so archiving or deleting the type waits for this write. A type another transaction holds for
+ * update is a 409 instead of a wait, as in the tick's write phase. Also used by the capture route.
  */
 export async function lockActiveInboxType(
   client: PoolClient,
@@ -76,10 +68,8 @@ export async function lockActiveInboxType(
 }
 
 /**
- * The destination a card of `type` will have, as far as the type decides it, and the keys that destination accepts as
- * manual values. A type that processes into a database decides both the database and its properties. For a page the
- * model picks the page during the tick, so the destination is assumed to be the previous one when that was a page too;
- * the tick judges the manual values again with the real envelope.
+ * For a page the model picks it during the tick, so the destination is assumed to be the previous one when that was a
+ * page too; the tick re-judges the manual values against the real envelope.
  */
 async function destinationOfType(
   client: PoolClient,
@@ -106,13 +96,11 @@ async function destinationOfType(
   };
 }
 
-/** The destination the card's assistant proposal was made for; `null` for a card without one. */
 function previousEnvelopeOf(card: ItemRow): PreviousEnvelope | null {
   const stored = previousEnvelopeSchema.safeParse(card.properties.aiProposal ?? card.properties.proposal);
   return stored.success ? stored.data : null;
 }
 
-/** Which of the card's manual values the new type's destination keeps (`retainOverridesForEnvelope`, issue gh-1924). */
 function retainForDestination(
   card: ItemRow,
   previous: PreviousEnvelope | null,
@@ -127,9 +115,8 @@ function retainForDestination(
 }
 
 /**
- * Deletes every `type` edge of the Inbox item and creates the one to `typeId`, through the relation operations, so
- * that exactly one remains. The relation is many to many, and its write hook refuses a second edge, so the old ones go
- * first. The edge hooks of the type lock and the tick trigger run for each write.
+ * The relation is many-to-many but its write hook refuses a second edge, so the old edges are deleted first. The edge
+ * hooks (type lock, tick trigger) run for each write.
  */
 async function replaceTypeEdges(
   client: PoolClient,
@@ -164,7 +151,7 @@ async function replaceTypeEdges(
   );
 }
 
-/** Writes the card as `computing` with the manual values `retained` keeps and the `typeChosen` entry, and announces the change after the commit. */
+/** Announces the change after the commit. */
 async function sendCardBack(
   client: PoolClient,
   card: ItemRow,
@@ -191,23 +178,14 @@ async function sendCardBack(
 }
 
 /**
- * Sets the Inbox item's type to `typeId` and sends its card back for a new proposal, in the caller's transaction. It
- * locks, in the order of the tick's write phase, the live Inbox item, the shared lock of the type and the item's
- * live card (`reserveInboxTypeCards`, which fails with 409 instead of waiting for a card that another transaction holds).
+ * Runs in the caller's transaction. Locks in the tick write phase's order: the live Inbox item, the type (shared), then
+ * the live card (`reserveInboxTypeCards`, 409 instead of waiting).
  *
- * - An unknown, archived or deleted type, and a type that processes into a database that is missing or archived, is a
- *   `ValidationError` on `typeId`, for an item with a card and for one without; an item that is not a live Inbox item of
- *   the tenant is a `NotFoundError`.
- * - A card that is `confirmed` or `rejected` is a `ProposalLockedError`, and an `ifVersion` that is not the card's
- *   `updatedAt` is the 409 `version_conflict` carrying the card. An `ifVersion` for an item without a card is a
- *   `ValidationError`, since it names a card that is not there.
- * - The `type` edges are replaced (`replaceTypeEdges`). With a card, the card becomes `computing`, its manual values are
- *   cleared where the new type's destination differs from the one they were typed for (`retainOverridesForEnvelope`),
- *   an `invalidReason` goes with a status of `invalid`, and a `typeChosen` entry joins its history. `proposal` and
- *   `aiProposal` stay as they were: the tick writes both when it has computed the new one.
- * - The `update` heartbeats of the Inbox database are triggered for the item, which queues the tick, in the same
- *   transaction. The tick computes the card, or creates it when the item has none, and for a `computing` card it does not
- *   stop at an unchanged fingerprint. The edge writes queue the same job, which has one key per heartbeat and item.
+ * An unusable type (unknown, archived, deleted, or targeting a missing/archived database) is a `ValidationError` with
+ * or without a card. A locked card is `ProposalLockedError`; a stale `ifVersion` is `version_conflict`; an `ifVersion`
+ * without a card is a `ValidationError`. The card becomes `computing` and keeps only manual values that still fit the new
+ * destination; `proposal` and `aiProposal` stay until the tick writes new ones. The Inbox `update` heartbeats queue the
+ * tick in the same transaction, and a `computing` card is not stopped by an unchanged fingerprint.
  */
 export async function changeInboxItemTypeWithClient(
   client: PoolClient,
@@ -232,8 +210,7 @@ export async function changeInboxItemTypeWithClient(
   }
   if (card !== null) assertProposalVersion(card, input.ifVersion);
 
-  // The destination is resolved for an item without a card too, so a type whose target database is not available is
-  // refused the same way whether or not the item has a card yet.
+  // Resolved without a card too, so an unavailable target is refused the same way either way.
   const previous = card === null ? null : previousEnvelopeOf(card);
   const destination = await destinationOfType(client, type, previous);
   await replaceTypeEdges(client, config, input);

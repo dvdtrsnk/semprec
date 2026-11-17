@@ -106,7 +106,6 @@ import { createApiActionRegistry } from "../actionRegistryComposition.js";
 import { createMailSyncAdapters } from "../mailSyncAdapters.js";
 import { runTranscriptionFixture } from "./transcriptionHttpFixture.js";
 
-/** What the spy on the APNs background send recorded: the device token and the data of one silent push. */
 interface RecordedBackgroundPush {
   deviceToken: string;
   data: unknown;
@@ -114,10 +113,8 @@ interface RecordedBackgroundPush {
 
 const backgroundPushes = vi.hoisted(() => ({ sent: [] as RecordedBackgroundPush[] }));
 
-// Passthrough spy on the APNs background send the `sleep.resync` and `remindersResync` tasks call by default: a call still reaches the
-// real adapter, which answers `not-configured` without a network request while no APNs configuration is set, so
-// the job's own wiring runs and the case observes which registration each run sent to. The path is the module
-// the task imports (`packages/data/src/push/apnsAdapter.ts`), given as a string because this package may not
+// Passthrough spy on the APNs background send: the real adapter answers `not-configured` without a network
+// request, and the spy records which registration each run sent to. A string path because this package may not
 // import another package's source.
 vi.mock("../../../../packages/data/src/push/apnsAdapter.js", async (importOriginal) => {
   const actual = await importOriginal<{
@@ -133,14 +130,9 @@ vi.mock("../../../../packages/data/src/push/apnsAdapter.js", async (importOrigin
 });
 
 /**
- * Two-tenant proof that every task of the `api` affinity set keeps its data, notifications and side
- * effects inside the tenant it runs for (issue #1056). The task list is composed exactly as
- * `createApiQueueRuntime` composes it, over a `semprec_data` pool; jobs are enqueued with
- * `enqueueJob` and drained with `runOnce`, under strict tenant-scope enforcement.
- *
- * Fixture writes enqueue jobs of their own (a rollup backfill, a notification fanout, the export a
- * request schedules). They are discarded before the job under test is enqueued, so the queue holds
- * only that job and whatever it enqueues itself.
+ * Two-tenant proof that every task of the `api` affinity set keeps its data, notifications and side effects
+ * inside its own tenant. Tasks are composed as `createApiQueueRuntime` composes them, under strict
+ * tenant-scope enforcement. Jobs the fixture writes enqueue are discarded before the job under test runs.
  */
 
 interface Tenant {
@@ -152,23 +144,16 @@ type Payload = Record<string, unknown>;
 
 interface TenantTaskCase {
   tenancy: "tenant";
-  /** Seeds `tenant`'s fixture rows and returns the job payload naming them. */
   seed(tenant: Tenant): Promise<Payload>;
-  /**
-   * Set when this composition root cannot complete the job: the error its run for its own tenant
-   * ends with. `mailAccountSync` is the one — `createApiQueueRuntime` wires no mail transport.
-   */
+  /** The error this composition root's run ends with; `createApiQueueRuntime` wires no mail transport. */
   expectedError?: RegExp;
-  /** Asserts, inside `tenant`, the effect the job with `payload` had. */
   expectDone(tenant: Tenant, payload: Payload): Promise<void>;
 }
 
-/** Asserts, once the job ran, that the work it was returned for was done. */
 type Check = () => Promise<void>;
 
-/** Work seeded in one tenant: the ids that identify it, and the check that it was done. */
 interface SeededWork {
-  /** Ids of the seeded rows (and, for a purge, the tenant); no row of another tenant may contain one. */
+  /** No row of another tenant may contain one of these ids. */
   markers: string[];
   check: Check;
 }
@@ -185,22 +170,19 @@ function marked(markers: string[], check: Check): SeededWork {
 interface SystemTaskCase {
   tenancy: "system";
   touchesTenantTables: true;
-  /** The two tenants the work is due in; A and B unless given. */
+  /** A and B unless given. */
   tenants?(): Promise<[Tenant, Tenant]>;
-  /** Seeds due work in `tenant`; its check asserts, inside `tenant`, that the work was done. */
   seed(tenant: Tenant): Promise<SeededWork>;
 }
 
 interface GlobalSystemTaskCase {
   tenancy: "system";
   touchesTenantTables: false;
-  /** Seeds due work outside every tenant table; the returned check asserts it was done. */
   seed(): Promise<Check>;
 }
 
 type TaskCase = TenantTaskCase | SystemTaskCase | GlobalSystemTaskCase;
 
-/** One table's share of a tenant fingerprint. */
 interface TableFingerprint {
   count: number;
   md5: string;
@@ -248,7 +230,7 @@ async function buildTenant(tenantId: string): Promise<Tenant> {
   return { tenantId, userId: user.id };
 }
 
-/** Every table whose catalog comment classifies it as tenant data (partitions count with their parent). */
+/** Tables whose catalog comment classifies them as tenant data (partitions count with their parent). */
 async function loadTenantTables(): Promise<string[]> {
   const { rows } = await adminPool.query<{ relname: string }>(
     `SELECT c.relname FROM pg_class c
@@ -262,14 +244,12 @@ async function loadTenantTables(): Promise<string[]> {
   return rows.map((row) => row.relname);
 }
 
-/** `tenant`'s fingerprint: per tenant table, read inside `runInTenant(tenant)`, its row count and an md5 over its ordered row texts. */
 async function fingerprint(tenant: Tenant): Promise<Fingerprint> {
   return runInTenant(tenant.tenantId, () =>
     withTransaction(pool, async (client) => {
       const result: Fingerprint = {};
       for (const table of tenantTables) {
-        // `table` comes from pg_class (see loadTenantTables), never from input, and escapeIdentifier
-        // quotes it; a table name cannot be a bind parameter.
+        // `table` comes from pg_class, never from input; a table name cannot be a bind parameter.
         const { rows } = await client.query<{ count: number; md5: string }>(
           `SELECT count(*)::int AS count, md5(COALESCE(string_agg(t::text, E'\\n' ORDER BY t::text), '')) AS md5
              FROM ${escapeIdentifier(table)} t`,
@@ -283,7 +263,6 @@ async function fingerprint(tenant: Tenant): Promise<Fingerprint> {
   );
 }
 
-/** Ids of every notification visible inside `tenant`, with the user each is addressed to. */
 async function notifications(tenant: Tenant): Promise<Map<string, string>> {
   return runInTenant(tenant.tenantId, async () => {
     const { rows } = await pool.query<{ id: string; user_id: string }>("SELECT id, user_id FROM notifications");
@@ -291,14 +270,12 @@ async function notifications(tenant: Tenant): Promise<Map<string, string>> {
   });
 }
 
-/** Asserts every notification `tenant` gained since `before` is addressed to `tenant`'s own user. */
 async function expectNewNotificationsAddressedTo(tenant: Tenant, before: Map<string, string>): Promise<void> {
   const after = await notifications(tenant);
   const added = [...after].filter(([id]) => !before.has(id)).map(([, userId]) => userId);
   expect(added.filter((userId) => userId !== tenant.userId)).toEqual([]);
 }
 
-/** The job's final state, read through graphile-worker's public `jobs` view. */
 async function jobOutcome(jobKey: string): Promise<JobOutcome> {
   const { rows } = await adminPool.query<{ attempts: number; last_error: string | null }>(
     "SELECT attempts, last_error FROM graphile_worker.jobs WHERE key = $1",
@@ -309,30 +286,24 @@ async function jobOutcome(jobKey: string): Promise<JobOutcome> {
   return { attempts: row.attempts, lastError: row.last_error?.replace(UUID_PATTERN, "<id>") ?? null };
 }
 
-/** Removes a job a case left failed in the queue, so it cannot run again in a later case. */
+/** Removes a failed job so it cannot run again in a later case. */
 async function removeJob(jobKey: string): Promise<void> {
   await adminPool.query("SELECT graphile_worker.remove_job($1)", [jobKey]);
 }
 
-/**
- * What a run may change: the tenant's fingerprint and notifications, and the queued jobs of the whole
- * queue — the `jobs` view carries no tenant, so a job any run enqueued anywhere counts.
- */
+/** The `jobs` view carries no tenant, so a job any run enqueued anywhere counts. */
 interface SideEffectSnapshot {
   fingerprint: Fingerprint;
   notificationIds: ReadonlySet<string>;
   jobIds: ReadonlySet<string>;
 }
 
-/** What one run changed, stated without ids so two runs naming different ids compare equal. */
+/** Stated without ids so two runs naming different ids compare equal. */
 interface SideEffects {
-  /** Tables whose row count changed, with the change. */
   rowCountDeltas: Record<string, number>;
-  /** Tables whose content changed, including rows updated in place, sorted. */
+  /** Includes rows updated in place. */
   changedTables: string[];
-  /** Kinds of the notifications the run wrote, sorted. */
   notificationKinds: string[];
-  /** Task identifiers of the jobs the run left queued anywhere in the queue (its own job excluded), sorted. */
   queuedJobs: string[];
 }
 
@@ -370,7 +341,6 @@ async function sideEffectsSince(tenant: Tenant, before: SideEffectSnapshot, ownJ
   return { rowCountDeltas, changedTables, notificationKinds, queuedJobs };
 }
 
-/** Runs `name` in B with `payload` and returns how the job ended and what it changed in B and the queue. */
 async function runInBObserved(name: string, payload: Payload): Promise<{ outcome: JobOutcome; effects: SideEffects }> {
   const before = await sideEffectSnapshot(tenantB);
   const jobKey = await runJobIn(tenantB, name, payload);
@@ -380,7 +350,6 @@ async function runInBObserved(name: string, payload: Payload): Promise<{ outcome
   return { outcome, effects };
 }
 
-/** Enqueues `name` inside `tenant` under a fresh job key, drains the queue once and returns the key. */
 async function runJobIn(tenant: Tenant, name: string, payload: Payload): Promise<string> {
   const jobKey = randomUUID();
   await runInTenant(tenant.tenantId, () => enqueueJob(pool, name, payload, { jobKey }));
@@ -388,7 +357,6 @@ async function runJobIn(tenant: Tenant, name: string, payload: Payload): Promise
   return jobKey;
 }
 
-/** `value` with every UUID inside it replaced by a fresh random one. */
 function withRandomIds(value: unknown): unknown {
   if (typeof value === "string") return value.replace(UUID_PATTERN, () => randomUUID());
   if (Array.isArray(value)) return value.map(withRandomIds);
@@ -411,15 +379,13 @@ function tenancyOf(name: string): TaskTenancy {
   return Object.hasOwn(declared, name) ? (declared[name] ?? "tenant") : "tenant";
 }
 
-/** Tenant tables of which some row, read inside `tenant`, contains one of `markers` in its text. */
 async function tablesMentioning(tenant: Tenant, markers: string[]): Promise<string[]> {
   const patterns = markers.map((marker) => `%${marker}%`);
   return runInTenant(tenant.tenantId, () =>
     withTransaction(pool, async (client) => {
       const mentioning: string[] = [];
       for (const table of tenantTables) {
-        // `table` comes from pg_class (see loadTenantTables), never from input, and escapeIdentifier
-        // quotes it; a table name cannot be a bind parameter.
+        // `table` comes from pg_class, never from input; a table name cannot be a bind parameter.
         const { rows } = await client.query<{ found: boolean }>(
           `SELECT EXISTS (SELECT 1 FROM ${escapeIdentifier(table)} t WHERE t::text LIKE ANY($1)) AS found`,
           [patterns],
@@ -431,7 +397,6 @@ async function tablesMentioning(tenant: Tenant, markers: string[]): Promise<stri
   );
 }
 
-/** Enqueues `name` as system work under a fresh job key, drains the queue once and returns the key. */
 async function runSystemJob(name: string): Promise<string> {
   const jobKey = randomUUID();
   await runAsSystem("test:enqueue-system-job", () => enqueueJob(pool, name, {}, { jobKey }));
@@ -439,7 +404,6 @@ async function runSystemJob(name: string): Promise<string> {
   return jobKey;
 }
 
-/** Completes every queued job without running it, through graphile-worker's public `complete_jobs`. */
 async function discardQueuedJobs(): Promise<void> {
   await adminPool.query(
     "SELECT graphile_worker.complete_jobs(ARRAY(SELECT id FROM graphile_worker.jobs WHERE locked_at IS NULL))",
@@ -464,7 +428,6 @@ async function rows<T extends Record<string, unknown>>(
   return inTenant(tenant, async () => (await pool.query<T>(sql, params)).rows);
 }
 
-/** Sets a VAPID configuration with a freshly generated key pair; `restoreVapidConfiguration` puts the previous one back. */
 function useVapidConfiguration(): void {
   const keys = createECDH("prime256v1");
   keys.generateKeys();
@@ -473,7 +436,7 @@ function useVapidConfiguration(): void {
   process.env.VAPID_SUBJECT = "mailto:ops@example.test";
 }
 
-/** Unsets the APNs configuration, so the default APNs sender answers `not-configured` without a network request; `restoreApnsConfiguration` puts the previous one back. */
+/** With no APNs configuration the default sender answers `not-configured` without a network request. */
 function useUnconfiguredApns(): void {
   for (const name of APNS_ENV) delete process.env[name];
 }
@@ -494,7 +457,6 @@ function restoreVapidConfiguration(): void {
   }
 }
 
-/** Whether the newest of `tenant`'s user's loopback Web Push registrations, the one `pushDismiss`'s case seeds, is revoked. */
 async function pushRegistrationRevoked(tenant: Tenant): Promise<boolean> {
   const found = await rows<{ revoked: boolean }>(
     tenant,
@@ -506,7 +468,6 @@ async function pushRegistrationRevoked(tenant: Tenant): Promise<boolean> {
   return found[0]?.revoked === true;
 }
 
-/** What the calendar feed case set up: a local feed server, the loopback allowance and the consumer, torn down after the test. */
 interface FeedFixture {
   server: http.Server;
   port: number;
@@ -551,10 +512,7 @@ async function requireModuleDatabaseId(tenant: Tenant, moduleId: string): Promis
   return database.id;
 }
 
-/**
- * Switches `muteSemp` of `tenant`'s sleep settings off. The fanout job reads the real clock, and with the
- * mute on a run at night would hold the push until the wake time instead of delivering it (issue #1794).
- */
+/** The fanout job reads the real clock; with the mute on, a run at night would hold the push until wake time. */
 async function switchSleepMuteOff(tenant: Tenant): Promise<void> {
   const databaseId = await requireModuleDatabaseId(tenant, "sleepSettings");
   await inTenant(tenant, async () => {
@@ -608,10 +566,7 @@ async function createEmail(tenant: Tenant): Promise<{ emailsDatabaseId: string; 
   return { emailsDatabaseId, itemId: item.id };
 }
 
-/**
- * A daily heartbeat on `tenant`'s Semprec project running an api-affinity action that finds nothing
- * to do: the library metadata retry sweep over an empty database of the tenant's own.
- */
+/** A daily heartbeat running an api-affinity action that finds nothing to do. */
 async function createRetrySweepHeartbeat(tenant: Tenant): Promise<string> {
   const projectItemId = await seededSemprecProjectItemId(tenant);
   const heartbeat = await inTenant(tenant, async () => {
@@ -675,7 +630,6 @@ async function createReadyExport(tenant: Tenant): Promise<string> {
   return requested.export.id;
 }
 
-/** A Movies-free item with a pending automation row, the minimal input of the metadata job. */
 async function createItemWithAutomation(tenant: Tenant): Promise<{ databaseId: string; itemId: string }> {
   return inTenant(tenant, async () => {
     const database = await chokePoint.createDatabase({ name: `Library ${randomUUID()}` });
@@ -685,11 +639,9 @@ async function createItemWithAutomation(tenant: Tenant): Promise<{ databaseId: s
   });
 }
 
-/** A trashed item whose `deleted_at` lies past the 30-day retention. */
 /**
- * A person of `tenant` linked to an Event dated `date` (and starting at `timeFrom`, when given) through
- * `Events.people`, through the choke point. The link queues the person's `lastContact` recompute; it is
- * removed here, so only the job under test can set the value.
+ * The link queues the person's `lastContact` recompute; it is removed here, so only the job under test can
+ * set the value.
  */
 async function createPersonWithEvent(
   tenant: Tenant,
@@ -735,10 +687,9 @@ async function hiddenUntilOf(tenant: Tenant, taskId: string): Promise<unknown> {
   return found[0]?.hidden_until ?? null;
 }
 
-/** A date with a fixed past value, so the case does not depend on the wall clock. */
 const PAST_EVENT_DATE = "2025-06-15";
 
-/** A realtime invalidation with the tenant scope its hook was called in; `null` outside a tenant scope. */
+/** `null` outside a tenant scope. */
 interface RecordedInvalidation {
   tenantId: string | null;
   event: InvalidationEvent;
@@ -746,10 +697,7 @@ interface RecordedInvalidation {
 
 let recordedInvalidations: RecordedInvalidation[] = [];
 
-/**
- * Records every realtime invalidation announced from now on, through the in-process hook `wireRealtimeHooks`
- * publishes as NOTIFYs. A job that only announces changes no row, so its effect shows nowhere else.
- */
+/** A job that only announces changes no row, so its effect shows nowhere else. */
 function recordInvalidations(): void {
   const recorded: RecordedInvalidation[] = [];
   recordedInvalidations = recorded;
@@ -759,13 +707,11 @@ function recordInvalidations(): void {
   });
 }
 
-/** Removes the recording hook and returns what it recorded. */
 function stopRecordingInvalidations(): RecordedInvalidation[] {
   setInvalidationHook(() => {});
   return recordedInvalidations;
 }
 
-/** A project of `tenant` with one task linked to it through `Tasks.project`, through the choke point. */
 async function createProjectWithTask(tenant: Tenant): Promise<string> {
   const projectsId = await requireModuleDatabaseId(tenant, "projects");
   const tasksId = await requireModuleDatabaseId(tenant, "tasks");
@@ -784,9 +730,8 @@ async function createProjectWithTask(tenant: Tenant): Promise<string> {
 }
 
 /**
- * A task hidden in an Event, through the choke point, and then the Event moved into the past: the stored `hiddenUntil`
- * is what a task holds when the end of its Event passes (issue #1782). The move is written directly because the
- * choke point recomputes the task at once, and nothing but the clock reveals it in production.
+ * The stored `hiddenUntil` a task holds once its Event ends. The move is written directly because the choke
+ * point would recompute the task at once; in production only the clock reveals it.
  */
 async function createTaskHiddenInPassedEvent(tenant: Tenant): Promise<string> {
   const eventsId = await requireModuleDatabaseId(tenant, "events");
@@ -829,10 +774,8 @@ async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
   });
 }
 
-/** The queue name of the calendar module's invitation task (`calendarModuleManifest.ts`). */
 const CALENDAR_SEND_EVENT_INVITATION_TASK = "calendarSendEventInvitation";
 
-/** One message the recording transport was asked to send, with the tenant scope the send ran in. */
 interface InvitationSend {
   tenantId: string | null;
   mailboxId: string;
@@ -843,10 +786,7 @@ interface InvitationSend {
 
 const invitationSends: InvitationSend[] = [];
 
-/**
- * The transports `createApiQueueRuntime` binds for the invitation task, replaced by one that sends nothing and
- * records each message with the mailbox it was asked for and the tenant scope of the job that sent it.
- */
+/** Records each message with its mailbox and the tenant scope of the sending job instead of sending it. */
 const invitationTransports: MailTransportFactory = {
   async forMailbox(mailboxId) {
     return {
@@ -865,17 +805,11 @@ const invitationTransports: MailTransportFactory = {
   },
 };
 
-/** The task each seeded person of the thread task people case is to be added to, by person id. */
 const threadTaskPeopleTasks = new Map<string, string>();
 
-/** The queue name of the mail module's thread task people task (`mailModuleManifest.ts`, issue gh-1923). */
 const MAIL_SYNC_THREAD_TASK_PEOPLE_TASK = "mailSyncThreadTaskPeople";
 
-/**
- * A mail thread with one message and a task made from it, in `tenant`, and a person who is then linked to the message
- * as its sender, which is the change the task's people have not followed yet. Returns the thread's Threads item, the
- * person and the task.
- */
+/** A thread with a task made from it, and a person then linked as the message's sender, whom the task's people do not include yet. */
 async function seedThreadTaskWithNewPerson(
   tenant: Tenant,
 ): Promise<{ threadItemId: string; personId: string; taskId: string }> {
@@ -940,7 +874,6 @@ async function seedThreadTaskWithNewPerson(
   );
 }
 
-/** The ids of the tasks that have `personId` among their people, in `tenant`. */
 async function tasksWithPerson(tenant: Tenant, personId: string): Promise<string[]> {
   const found = await rows<{ task_id: string }>(
     tenant,
@@ -954,14 +887,11 @@ async function tasksWithPerson(tenant: Tenant, personId: string): Promise<string
   return found.map((row) => row.task_id);
 }
 
-/** The queue name of the sleep module's resync task (`sleepModuleManifest.ts`, issue gh-1838). */
 const SLEEP_RESYNC_TASK = "sleep.resync";
 
-/** Revokes `tenant`'s user's registrations and gives the user one active iOS APNs registration; returns its device token. */
 async function seedIosRegistration(tenant: Tenant): Promise<string> {
   const deviceToken = randomUUID();
   await inTenant(tenant, async () => {
-    // The registrations other cases left for this user are not this job's business.
     await revokeAllPushSubscriptionsForUser(pool, tenant.userId);
     await upsertApnsSubscription(pool, {
       userId: tenant.userId,
@@ -974,7 +904,6 @@ async function seedIosRegistration(tenant: Tenant): Promise<string> {
   return deviceToken;
 }
 
-/** The device tokens of `tenant`'s user's active APNs registrations. */
 async function activeApnsTokens(tenant: Tenant): Promise<string[]> {
   const found = await rows<{ device_token: string }>(
     tenant,
@@ -984,12 +913,10 @@ async function activeApnsTokens(tenant: Tenant): Promise<string[]> {
   return found.map((row) => row.device_token);
 }
 
-/** The silent pushes sent since the last `seed` of the `sleep.resync` or the `remindersResync` case. */
 function sleepResyncSends(): RecordedBackgroundPush[] {
   return [...backgroundPushes.sent];
 }
 
-/** The invitation of `tenant`'s Event to its person, as the system writer stores it: pending, naming the mailbox. */
 interface SeededInvitation {
   eventId: string;
   personId: string;
@@ -998,11 +925,7 @@ interface SeededInvitation {
   attendeeEmail: string;
 }
 
-/**
- * A mailbox of `tenant` with an address of its own, an Event with a UID, and a person invited to it through the
- * system writer, the way the invitation code stores it. The link queues a message of its own; it is discarded by the
- * caller before the job under test is enqueued, as for every case.
- */
+/** The invitation is stored through the system writer, as the invitation code stores it. */
 async function seedInvitation(tenant: Tenant): Promise<SeededInvitation> {
   const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
   const peopleId = await requireModuleDatabaseId(tenant, "people");
@@ -1043,7 +966,6 @@ async function seedInvitation(tenant: Tenant): Promise<SeededInvitation> {
   });
 }
 
-/** The `sentAt` stored on the invitation of the Event's edge to the person in `tenant`, or `null` when none is. */
 async function invitationSentAt(tenant: Tenant, eventId: string, personId: string): Promise<unknown> {
   const found = await rows<{ sent_at: unknown }>(
     tenant,
@@ -1055,10 +977,8 @@ async function invitationSentAt(tenant: Tenant, eventId: string, personId: strin
   return found[0]?.sent_at ?? null;
 }
 
-/** The queue name of the calendar module's invitation reply task (`calendarModuleManifest.ts`, issue gh-1953). */
 const CALENDAR_SEND_INVITATION_REPLY_TASK = "calendarSendInvitationReply";
 
-/** The invitation keys the calendar module writes, as the ingest of an iMIP message and the respond route write them. */
 const ANSWERED_INVITATION_KEYS = [
   "title",
   "startsAt",
@@ -1080,10 +1000,6 @@ interface SeededInvitationReply {
   respondedAt: string;
 }
 
-/**
- * A mailbox of `tenant` with an address of its own and an invitation the user accepted, linked to that mailbox, as the
- * ingest and the respond route leave them. The job under test is enqueued by the case, not by an answer.
- */
 async function seedAnsweredInvitation(tenant: Tenant): Promise<SeededInvitationReply> {
   const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
   const invitationsId = await requireModuleDatabaseId(tenant, "invitations");
@@ -1134,13 +1050,10 @@ async function seedAnsweredInvitation(tenant: Tenant): Promise<SeededInvitationR
   return { ...ids, organizerEmail, mailboxAddress, respondedAt };
 }
 
-/** The mailbox address and organizer of each reply case seeded, by invitation id. */
 const seededReplies = new Map<string, SeededInvitationReply>();
 
-/** The queue name of the mail module's thread project task (`mailModuleManifest.ts`, issue gh-1872). */
 const MAIL_TRIAGE_THREAD_PROJECT_TASK = "mailTriageThreadProject";
 
-/** One question the triage gateway was asked, with the tenant scope the job asked it in and the project ids it offered. */
 interface TriageQuestion {
   tenantId: string | null;
   offeredProjectIds: string[];
@@ -1148,15 +1061,13 @@ interface TriageQuestion {
 
 const triageQuestions: TriageQuestion[] = [];
 
-/** The project the triage case seeded, by the id of the thread it belongs to. */
 const triageProjects = new Map<string, string>();
 
-/** The name of the project the gateway chooses: the one the latest seed made, since earlier cases leave projects behind. */
+/** The project the latest seed made; earlier cases leave projects behind. */
 let triageProjectName = "";
 
 const offeredProjects = z.array(z.object({ id: z.uuid(), name: z.string() }));
 
-/** A gateway that records what the job offered and chooses the offered project named `triageProjectName`. */
 const triageGateway: AiGatewayClientPort = {
   async complete(input) {
     const scope = currentTenantScope();
@@ -1177,7 +1088,6 @@ const triageGateway: AiGatewayClientPort = {
   },
 };
 
-/** A thread of `tenant` with one inbound message and no project, and one active project the gateway will choose. */
 async function seedTriageThread(tenant: Tenant): Promise<{ threadItemId: string }> {
   const mailboxItemId = await createMailbox(tenant);
   const projectsDatabaseId = await requireModuleDatabaseId(tenant, "projects");
@@ -1287,8 +1197,7 @@ const cases: Record<string, TaskCase> = {
       titlePortCalls.length = 0;
     },
   },
-  // The production catalog has no configured link rules: this exercises registered refusal,
-  // not successful propagation (covered by the configured-rule data tests).
+  // No configured link rules: this exercises registered refusal, not successful propagation.
   [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: {
     tenancy: "tenant",
     expectedError: /Value link rule is unavailable/,
@@ -1336,7 +1245,7 @@ const cases: Record<string, TaskCase> = {
           databaseId: database.id,
           properties: { title: "Legacy searchable" },
         });
-        // Simulate an item predating indexing; production writes now create this row automatically.
+        // Simulate an item predating indexing.
         const removed = await pool.query("DELETE FROM item_search_index WHERE item_id = $1", [item.id]);
         expect(removed.rowCount).toBe(1);
         return { databaseId: database.id, onlyMissing: true };
@@ -1370,8 +1279,7 @@ const cases: Record<string, TaskCase> = {
           callerItemId: task.id,
           targetItemId: project.id,
         });
-        // A project title that changed while its dependents' documents were not rebuilt yet: written
-        // directly, so the task's document is stale until this job runs.
+        // A stale dependent document: the title is written directly so only this job rebuilds it.
         const renamed = await pool.query(
           "UPDATE items SET properties = properties || jsonb_build_object('name', 'Přejmenovaný') WHERE id = $1",
           [project.id],
@@ -1421,7 +1329,6 @@ const cases: Record<string, TaskCase> = {
         const blockId = created.pages[0]?.blockId;
         const doc = await docStore.getDoc(host.id);
         if (!blockId || !doc) throw new Error("expected a subpage block in the host document");
-        // A title typed into the parent document, as a sync client writes it; the Pages item still holds the old one.
         await mutateYDoc(pool, doc.id, "user", (ydoc) => {
           const title = ydoc.getMap<Y.Map<unknown>>("blocks").get(blockId)?.get("text");
           if (!(title instanceof Y.Text)) throw new Error("expected the page block title to be a Y.Text");
@@ -1498,7 +1405,7 @@ const cases: Record<string, TaskCase> = {
       expect(good?.properties.score).toBe(42);
     },
   },
-  // A placeholder handler (worker.ts) that reads no payload and writes nothing yet.
+  // A placeholder handler that reads no payload and writes nothing yet.
   [CORE_TASK_NAMES.DOC_HISTORY_SQUASH]: {
     tenancy: "tenant",
     async seed() {
@@ -1573,8 +1480,8 @@ const cases: Record<string, TaskCase> = {
             storageKeyPrefix: mailboxItemId,
           });
         });
-        // The removal queues this job itself; the driver discards that one and enqueues its own. An empty
-        // affinity map routes the removal's heartbeats to the default queue.
+        // The removal queues this job itself; the driver discards it. An empty affinity map routes the
+        // removal's heartbeats to the default queue.
         if (!(await removeMailbox(pool, mailboxItemId, { queueAffinity: new Map() }))) {
           throw new Error("expected the seeded mailbox to be removed");
         }
@@ -1582,7 +1489,6 @@ const cases: Record<string, TaskCase> = {
       return { mailboxItemId };
     },
     async expectDone(tenant, payload) {
-      // The mailbox's one folder and one message carry the mailbox's own deletion time.
       expect(
         await rows(
           tenant,
@@ -1713,8 +1619,7 @@ const cases: Record<string, TaskCase> = {
         const notificationId = await withTransaction(pool, (client) =>
           writeNotification(client, {
             userId: tenant.userId,
-            // A critical Semp problem: the default preferences push it, a warning would not be pushed
-            // (issues #1443 and #1466).
+            // Critical, so the default preferences push it; a warning would not be pushed.
             kind: "semp_problem",
             linkHref: null,
             sourceTable: "semp_problems",
@@ -1739,13 +1644,10 @@ const cases: Record<string, TaskCase> = {
   [CORE_TASK_NAMES.PUSH_DISMISS]: {
     tenancy: "tenant",
     async seed(tenant) {
-      // The default senders reach the registration for real: a VAPID configuration and a registration with
-      // valid keys let the Web Push send build its request. Its endpoint is a loopback address, which the
-      // outbound address policy refuses at connect time without any network, so the provider verdict is
-      // "dead registration" and the job revokes it. Restored after each test.
+      // A VAPID configuration and valid keys let the real Web Push send build its request; the loopback
+      // endpoint is refused by the outbound address policy without network, so the job revokes it as dead.
       useVapidConfiguration();
       return inTenant(tenant, async () => {
-        // The registrations other cases left for this user would be sent to for real.
         await revokeAllPushSubscriptionsForUser(pool, tenant.userId);
         await upsertWebPushSubscription(pool, {
           userId: tenant.userId,
@@ -1764,13 +1666,10 @@ const cases: Record<string, TaskCase> = {
   [CORE_TASK_NAMES.PUSH_BADGE_REFRESH]: {
     tenancy: "tenant",
     async seed(tenant) {
-      // The default sender is the real APNs adapter. With no APNs configuration it answers `not-configured`
-      // without a network request, which the job accepts, so the run neither fails nor revokes. What the job
-      // sends, and that it sends nothing for another tenant's user, is proven with a fake sender in
-      // `pushBadgeRefresh.test.ts`; this case proves the job runs for its own tenant and leaves the others alone.
+      // With no APNs configuration the real adapter answers `not-configured`, which the job accepts. What the job
+      // sends is proven with a fake sender in `pushBadgeRefresh.test.ts`.
       useUnconfiguredApns();
       return inTenant(tenant, async () => {
-        // The registrations other cases left for this user are not this job's business.
         await revokeAllPushSubscriptionsForUser(pool, tenant.userId);
         await upsertApnsSubscription(pool, {
           userId: tenant.userId,
@@ -1783,7 +1682,7 @@ const cases: Record<string, TaskCase> = {
       });
     },
     async expectDone(tenant) {
-      // `not-configured` does not revoke: the registration the seed created is still active.
+      // `not-configured` does not revoke.
       expect(
         await rows(
           tenant,
@@ -1796,18 +1695,14 @@ const cases: Record<string, TaskCase> = {
   [SLEEP_RESYNC_TASK]: {
     tenancy: "tenant",
     async seed(tenant) {
-      // The default sender is the real APNs adapter behind the spy above. With no APNs configuration it answers
-      // `not-configured` without a network request, which the job accepts, so the run neither fails nor revokes.
-      // Every tenant gets an active iOS registration of its own, so a job that read or pushed for a tenant other
-      // than its own would have a registration to send to; the spy shows which one each run sent to.
+      // Every tenant gets an active iOS registration, so a job that pushed for another tenant would have a
+      // registration to send to; the spy shows which one each run sent to.
       useUnconfiguredApns();
       for (const other of [tenantA, tenantB]) await seedIosRegistration(other);
       backgroundPushes.sent.length = 0;
       return { tenantId: tenant.tenantId };
     },
     async expectDone(tenant) {
-      // Exactly one silent push, to the one registration of this tenant's user and to none of another tenant's;
-      // `not-configured` does not revoke, so that registration is still active.
       const tokens = await activeApnsTokens(tenant);
       expect(tokens).toHaveLength(1);
       expect(sleepResyncSends()).toEqual([{ deviceToken: tokens[0], data: { kind: "sleepResync" } }]);
@@ -1816,16 +1711,13 @@ const cases: Record<string, TaskCase> = {
   [CORE_TASK_NAMES.REMINDERS_RESYNC]: {
     tenancy: "tenant",
     async seed(tenant) {
-      // As for `sleep.resync`: the real APNs adapter behind the spy answers `not-configured` without a network request,
-      // and every tenant has an active iOS registration of its own, so a job that pushed for a tenant other than its
-      // own would have a registration to send to; the spy shows which one each run sent to.
+      // As for `sleep.resync`.
       useUnconfiguredApns();
       for (const other of [tenantA, tenantB]) await seedIosRegistration(other);
       backgroundPushes.sent.length = 0;
       return { tenantId: tenant.tenantId };
     },
     async expectDone(tenant) {
-      // Exactly one silent push, to the one registration of this tenant's user and to none of another tenant's.
       const tokens = await activeApnsTokens(tenant);
       expect(tokens).toHaveLength(1);
       expect(sleepResyncSends()).toEqual([{ deviceToken: tokens[0], data: { kind: "remindersResync" } }]);
@@ -1835,8 +1727,8 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       const databaseId = await requireModuleDatabaseId(tenant, "mcpServers");
-      // The server has no connection config, so its sync stops at the connection factory without a network request
-      // and records `syncStatus: error`; the job accepts that, so the run neither fails nor retries.
+      // No connection config: the sync stops at the connection factory without network and records
+      // `syncStatus: error`, which the job accepts.
       const server = await inTenant(tenant, () =>
         withTransaction(pool, (client) =>
           createItemWithClient(client, { databaseId, properties: { name: "Isolation server", active: true } }),
@@ -1856,7 +1748,6 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       const { threadItemId, personId, taskId } = await seedThreadTaskWithNewPerson(tenant);
-      // The task has not got the person yet: the job is what adds them.
       expect(await tasksWithPerson(tenant, personId)).toEqual([]);
       threadTaskPeopleTasks.set(personId, taskId);
       return { threadItemId, personId };
@@ -1888,7 +1779,7 @@ const cases: Record<string, TaskCase> = {
     touchesTenantTables: true,
     async seed(tenant) {
       const heartbeatId = await createRetrySweepHeartbeat(tenant);
-      // `createHeartbeat` schedules the next fire in the future; no production writer makes it due now.
+      // No production writer makes a heartbeat due now.
       await inTenant(tenant, () =>
         pool.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
           heartbeatId,
@@ -1938,7 +1829,7 @@ const cases: Record<string, TaskCase> = {
         const found = await pool.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [item.id]);
         const doc = found.rows[0];
         if (!doc) throw new Error("expected the item to have a doc");
-        // History only ages in real time; no production writer moves its baseline into the past.
+        // No production writer moves the history baseline into the past.
         await pool.query("UPDATE docs SET history_available_from = now() - interval '40 days' WHERE id = $1", [doc.id]);
         await pool.query(
           `UPDATE doc_snapshot_history SET represented_at = now() - interval '40 days'
@@ -1963,7 +1854,7 @@ const cases: Record<string, TaskCase> = {
     touchesTenantTables: true,
     async seed(tenant) {
       const mailboxItemId = await createMailbox(tenant);
-      // The sweep enqueues the mailbox's sync in its tenant; that sync fails for want of a transport.
+      // The sweep enqueues the mailbox's sync, which fails for want of a transport.
       return marked([mailboxItemId], async () => {
         expect(
           await rows(tenant, "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1", [mailboxItemId]),
@@ -1976,7 +1867,7 @@ const cases: Record<string, TaskCase> = {
     touchesTenantTables: true,
     async seed(tenant) {
       const stateId = randomUUID();
-      // The row is inserted already expired; production only creates states valid for ten minutes.
+      // Production only creates states valid for ten minutes.
       await inTenant(tenant, () =>
         pool.query(
           `INSERT INTO mail_oauth_states
@@ -1995,7 +1886,6 @@ const cases: Record<string, TaskCase> = {
     touchesTenantTables: true,
     async seed(tenant) {
       const { itemId } = await createEmail(tenant);
-      // The sweep exists for an Emails item written past the standard indexing path; this produces one.
       await inTenant(tenant, () => pool.query("DELETE FROM item_search_index WHERE item_id = $1", [itemId]));
       return marked([itemId], async () => {
         expect(await rows(tenant, "SELECT 1 AS present FROM item_search_index WHERE item_id = $1", [itemId])).toEqual([
@@ -2019,8 +1909,7 @@ const cases: Record<string, TaskCase> = {
     touchesTenantTables: true,
     async seed(tenant) {
       const blobId = randomUUID();
-      // A standalone upload (`<tenantId>/blobs/...`) nothing references; only its age is back-dated,
-      // because the sweep leaves anything younger than 24 hours alone.
+      // An unreferenced standalone upload, back-dated because the sweep skips anything younger than 24 hours.
       await inTenant(tenant, () =>
         pool.query(
           `INSERT INTO blobs (id, mime_type, byte_size, storage_key, created_at)
@@ -2053,7 +1942,7 @@ const cases: Record<string, TaskCase> = {
     },
     async expectDone(tenant, payload) {
       const announced = stopRecordingInvalidations();
-      // `Tasks.project` is the inverse side of its definition: the project is `item_a`, its task `item_b`.
+      // `Tasks.project` is the inverse side: the project is `item_a`, its task `item_b`.
       const tasks = await rows<{ id: string; database_id: string; updated_at: Date }>(
         tenant,
         `SELECT i.id, i.database_id, i.updated_at FROM item_relations r JOIN items i ON i.id = r.item_b
@@ -2089,7 +1978,6 @@ const cases: Record<string, TaskCase> = {
   [CORE_TASK_NAMES.AI_BUDGET_RESET]: {
     tenancy: "tenant",
     async seed() {
-      // The job takes nothing from its payload. Recording starts after the fixture, so only the job is recorded.
       recordInvalidations();
       return {};
     },
@@ -2101,7 +1989,6 @@ const cases: Record<string, TaskCase> = {
     tenancy: "system",
     touchesTenantTables: true,
     async seed(tenant) {
-      // An Event that started an hour ago, inside the sweep's last 24 hours.
       const zone = await inTenant(tenant, () => withTransaction(pool, getSystemTimezone));
       const start = instantToWallClock(new Date(Date.now() - 60 * 60 * 1000), zone);
       const { personId, eventId } = await createPersonWithEvent(tenant, start.date, start.time);
@@ -2117,7 +2004,6 @@ const cases: Record<string, TaskCase> = {
       const feed = await ensureFeedFixture();
       const databaseId = await requireModuleDatabaseId(tenant, "calendars");
       const calendarId = await inTenant(tenant, async () => {
-        // `kind` is written by the calendar module, as the subscribe flow will write it.
         const created = await withTransaction(pool, (client) =>
           createItemWithClient(
             client,
@@ -2135,7 +2021,7 @@ const cases: Record<string, TaskCase> = {
         );
         return created.id;
       });
-      // Raw SQL as the superuser: the write rule refuses an `http` address with a port, which a local server is.
+      // As the superuser: the write rule refuses an `http` address with a port, which a local server is.
       await adminPool.query(
         "UPDATE items SET properties = jsonb_set(properties, '{subscriptionUrl}', to_jsonb($2::text)) WHERE id = $1",
         [calendarId, `http://127.0.0.1:${feed.port}/${calendarId}.ics`],
@@ -2157,9 +2043,8 @@ const cases: Record<string, TaskCase> = {
         const created = await docStore.createSubpage({ parent: { itemId: hostItemId }, title: "Orphan" }, "user");
         const page = created.pages[0];
         if (!page) throw new Error("expected the subpage to be created");
-        // An editor deletes the page block over the sync socket, which runs no domain code.
+        // A sync-socket delete runs no domain code.
         await docStore.deleteBlock(hostItemId, page.blockId, "user");
-        // Documents only age in real time; no production writer back-dates the last edit.
         await pool.query("UPDATE docs SET last_edited_at = now() - interval '2 hours' WHERE item_id = $1", [
           hostItemId,
         ]);
@@ -2176,7 +2061,6 @@ const cases: Record<string, TaskCase> = {
     tenancy: "system",
     touchesTenantTables: true,
     async seed(tenant) {
-      // A syncable mailbox whose sync process never beat is stale.
       const mailboxItemId = await createMailbox(tenant);
       return marked([mailboxItemId], async () => {
         expect(
@@ -2203,7 +2087,6 @@ const cases: Record<string, TaskCase> = {
         const minted = await withTransaction(pool, (client) =>
           mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId: tenant.userId }),
         );
-        // A credential only expires in real time; no production writer backdates it.
         await pool.query(
           "UPDATE agent_run_mcp_credentials SET expires_at = now() - interval '1 minute' WHERE agent_run_id = $1",
           [minted.run.id],
@@ -2230,7 +2113,6 @@ const cases: Record<string, TaskCase> = {
         });
         const message = await insertAgentRunEvent(pool, run.id, "message", {});
         await insertAgentRunEvent(pool, run.id, "compaction", { kind: "compaction" });
-        // Events only age in real time; no production writer backdates them.
         await pool.query("UPDATE agent_run_events SET at = now() - interval '40 days' WHERE agent_run_id = $1", [
           run.id,
         ]);
@@ -2271,7 +2153,6 @@ const cases: Record<string, TaskCase> = {
     touchesTenantTables: true,
     async seed(tenant) {
       const exportId = await createReadyExport(tenant);
-      // An export only expires in real time; no production writer backdates it.
       await adminPool.query(
         `UPDATE tenant_exports
             SET created_at = created_at - interval '8 days',
@@ -2288,7 +2169,7 @@ const cases: Record<string, TaskCase> = {
   [CORE_TASK_NAMES.TENANT_PURGE]: {
     tenancy: "system",
     touchesTenantTables: true,
-    // The work is erasing a tenant, so it is due in two tenants of its own; A and B stay bystanders.
+    // Erasing a tenant needs two tenants of its own; A and B stay bystanders.
     async tenants() {
       return [
         await buildTenant(await createTestTenant(adminPool)),
@@ -2300,7 +2181,7 @@ const cases: Record<string, TaskCase> = {
       return marked([tenant.tenantId], async () => {
         const remaining = Object.entries(await fingerprint(tenant)).filter(([, table]) => table.count > 0);
         expect(remaining).toEqual([]);
-        // `tenants` and the `tenant_deletions` tombstone are global tables, outside every fingerprint; read them as admin.
+        // Global tables, outside every fingerprint.
         const { rows: tenantRows } = await adminPool.query<{ present: number }>(
           "SELECT 1 AS present FROM tenants WHERE id = $1",
           [tenant.tenantId],
@@ -2325,7 +2206,7 @@ const cases: Record<string, TaskCase> = {
           throw new Error("probe failure");
         }),
       };
-      // A probe outside the task catalogs counts as a tenant task, so it is enqueued in A; it touches no table.
+      // A probe outside the task catalogs counts as a tenant task; it touches no table.
       await runInTenant(tenantA.tenantId, () => enqueueJob(pool, identifier, {}, { jobKey, maxAttempts: 1 }));
       await runOnce({ pgPool: pool }, failingTaskList);
       expect(await jobOutcome(jobKey)).toEqual({ attempts: 1, lastError: "probe failure" });
@@ -2356,7 +2237,6 @@ const cases: Record<string, TaskCase> = {
         "SELECT properties ->> 'addresses' AS addresses FROM items WHERE id = $1",
         [mailboxId],
       );
-      // One message left, from the mailbox of the job's own tenant, to the invited address, in that tenant's scope.
       expect(invitationSends).toEqual([
         {
           tenantId: tenant.tenantId,
@@ -2381,7 +2261,6 @@ const cases: Record<string, TaskCase> = {
     async expectDone(tenant, payload) {
       const seeded = seededReplies.get(requirePayloadString(payload, "invitationId"));
       if (!seeded) throw new Error("expected the reply case to have seeded the invitation");
-      // One REPLY left, from the mailbox of the job's own tenant, to the organizer, in that tenant's scope.
       expect(invitationSends).toEqual([
         {
           tenantId: tenant.tenantId,
@@ -2403,7 +2282,6 @@ const cases: Record<string, TaskCase> = {
     async expectDone(tenant, payload) {
       const threadItemId = requirePayloadString(payload, "threadItemId");
       const projectId = triageProjects.get(threadItemId);
-      // The thread of the tenant holds the project of that tenant as its own value, written by Semp.
       expect(
         await rows(
           tenant,
@@ -2416,7 +2294,6 @@ const cases: Record<string, TaskCase> = {
         ),
       ).toEqual([{ project_id: projectId }]);
       expect(await rows(tenant, "SELECT 1 FROM value_links WHERE item_id = $1", [threadItemId])).toEqual([]);
-      // The gateway was asked once, in this tenant's scope, and every project it was offered is a row of this tenant.
       expect(triageQuestions).toHaveLength(1);
       const [question] = triageQuestions;
       expect(question?.tenantId).toBe(tenant.tenantId);
@@ -2461,7 +2338,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     process.env.SEMPREC_TENANT_SCOPE = "strict";
     for (const name of ENV_OVERRIDES) previousEnv.set(name, process.env[name]);
     blobRoot = await mkdtemp(join(tmpdir(), "semprec-api-isolation-"));
-    // `createApiActionRegistry` refuses to build without a gateway token; the blob roots default from the env.
+    // `createApiActionRegistry` refuses to build without a gateway token.
     process.env.AI_GATEWAY_INTERNAL_TOKEN = randomUUID();
     process.env.FILES_STORAGE_DIR = join(blobRoot, "files");
     process.env.MAIL_ATTACHMENTS_DIR = join(blobRoot, "mail");
@@ -2481,7 +2358,6 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     chokePoint = createChokePoint(pool);
     docStore = createDocStore(pool);
 
-    // Composed exactly as createApiQueueRuntime composes it.
     const actionRegistry = createApiActionRegistry(pool, moduleRegistry);
     const gmailAdapters = createMailSyncAdapters({
       pool,
@@ -2510,13 +2386,10 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       undefined,
       titlePort,
     );
-    // The calendar's invitation task reads its pool and transports from the binding `createApiQueueRuntime` sets.
+    // These tasks read their pool, transports and gateway from bindings `createApiQueueRuntime` sets.
     setEventInvitationDelivery({ pool, transports: invitationTransports });
-    // The calendar's invitation reply task reads its pool and transports from the same kind of binding.
     setInvitationReplyDelivery({ pool, transports: invitationTransports });
-    // The mail module's thread project task reads its pool and gateway from the binding `createApiQueueRuntime` sets.
     setThreadProjectTriageRuntime({ pool, gateway: triageGateway });
-    // The mail module's thread task people task reads its pool from the same kind of binding.
     setThreadTaskPeopleDelivery({ pool });
     taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "api");
     assertTaskListMatchesAffinity(taskList, (await resolveTaskAffinitySets(moduleRegistry)).api, "api");
@@ -2735,7 +2608,6 @@ describe("background task isolation across two tenants: api runtime (issue #1056
           });
         }
         if (name === CALENDAR_SEND_EVENT_INVITATION_TASK) {
-          // The Event and the mailbox are A's: B's job reads neither, so it sends no message, for A's ids or random ones.
           expect(invitationSends).toEqual([]);
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },
@@ -2743,7 +2615,6 @@ describe("background task isolation across two tenants: api runtime (issue #1056
           });
         }
         if (name === CALENDAR_SEND_INVITATION_REPLY_TASK) {
-          // The invitation and the mailbox are A's: B's job finds no such invitation, so it sends no message, for A's id or a random one.
           expect(invitationSends).toEqual([]);
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },
@@ -2751,7 +2622,6 @@ describe("background task isolation across two tenants: api runtime (issue #1056
           });
         }
         if (name === MAIL_TRIAGE_THREAD_PROJECT_TASK) {
-          // The thread is A's: B's job finds no such Threads item, so it asks the gateway nothing, for A's id or a random one.
           expect(triageQuestions).toEqual([]);
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },
@@ -2759,19 +2629,18 @@ describe("background task isolation across two tenants: api runtime (issue #1056
           });
         }
         if (name === SLEEP_RESYNC_TASK) {
-          // Both tenants have an active iOS registration, and the payload names A: only the scope check keeps B's
-          // job from pushing to its own registration for A's change, or to A's. Neither run sent anything, and
-          // both registrations are still active.
+          // Both tenants have an active iOS registration and the payload names A: only the scope check keeps
+          // B's job from pushing.
           expect(sleepResyncSends()).toEqual([]);
           expect(await activeApnsTokens(tenantA)).toHaveLength(1);
           expect(await activeApnsTokens(tenantB)).toHaveLength(1);
         }
         if (name === CORE_TASK_NAMES.PUSH_DISMISS) {
-          // The registration of A's user is global data; only the user check keeps B's job from reaching it.
+          // A's registration is global data; only the user check keeps B's job from reaching it.
           expect(await pushRegistrationRevoked(tenantA)).toBe(false);
         }
         if (name === CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE) {
-          // The job only announces, which no fingerprint shows: neither run in B announced anything.
+          // No fingerprint shows announcements.
           expect(stopRecordingInvalidations()).toEqual([]);
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },
@@ -2779,7 +2648,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
           });
         }
         if (name === CORE_TASK_NAMES.AI_BUDGET_RESET) {
-          // The job announces for the tenant it runs in, whatever its payload names: both runs in B announced for B.
+          // The job announces for the tenant it runs in, whatever its payload names.
           const bStatus = { tenantId: tenantB.tenantId, event: { scope: "sempStatus" } };
           expect(stopRecordingInvalidations()).toEqual([bStatus, bStatus]);
         }
@@ -2863,7 +2732,6 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
         await firstWork.check();
         await secondWork.check();
-        // Each tenant's results stay in it: no row of the other working tenant names its seeded ids.
         expect(await tablesMentioning(second, firstWork.markers)).toEqual([]);
         expect(await tablesMentioning(first, secondWork.markers)).toEqual([]);
         expect(await Promise.all(bystanders.map((tenant) => fingerprint(tenant)))).toEqual(bystandersBefore);

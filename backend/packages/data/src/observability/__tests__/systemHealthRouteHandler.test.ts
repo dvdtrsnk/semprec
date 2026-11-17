@@ -18,11 +18,7 @@ const REPORT_KEYS = [
   "queue",
 ];
 
-/**
- * Issue #170's `schemaCore`-owned `GET /api/system-health` custom-route handler, exercised
- * directly against the real function it thinly wraps (`getSystemHealthReport`). The handler runs
- * in the caller's tenant scope (issue #1052), so this test calls it the way the route does.
- */
+/** The handler runs in the caller's tenant scope, so this test calls it the way the route does. */
 describe("system health custom route handler (issue #170, per-tenant since #1052)", () => {
   beforeAll(async () => {
     pool = getTestPool();

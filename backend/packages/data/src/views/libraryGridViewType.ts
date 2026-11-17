@@ -1,13 +1,7 @@
 import { registerViewType, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { libraryModuleContractSchema } from "../library/libraryModuleContract.js";
 
-/**
- * The card-grid view type issue #22 named but deferred to this issue: one generic view
- * type shared by both library-module instantiations (Books, Movies/TV), not a per-domain
- * view type — its config is exactly the generic "library module" contract
- * (coverKey/subtitleKey/...), so a future client can render any library-grid view the
- * same way regardless of which concrete domain it's showing.
- */
+/** One card-grid view type shared by every library module (Books, Movies/TV); its config is the generic library contract. */
 export const LIBRARY_GRID_VIEW_TYPE = "library-grid";
 
 export function registerLibraryGridViewType(registry: ViewTypeRegistry): void {

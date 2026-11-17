@@ -1,6 +1,5 @@
-// Owns the batched read behind `include=links` (issue #1403): the value links of a set of items,
-// with their sources' titles and database keys resolved. It does not write links (that is
-// link creation, #1593) and knows nothing about which transport asked.
+// The batched read behind `include=links`: the value links of a set of items, with their sources'
+// titles and database keys resolved.
 import type { PoolClient } from "pg";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
@@ -18,18 +17,13 @@ export interface ValueLinkEntry {
   brokenAt: string | null;
 }
 
-/** An item's links keyed by property key. */
 export type ItemValueLinks = Record<string, ValueLinkEntry>;
 
 /**
- * Per item id, the links on it keyed by property key; an item with no link has no entry in the
- * map. A constant number of queries whatever the number of items or sources: links, sources, the
- * source items (a trashed or missing one is left out of `sources`, the entry still returned), and
- * their databases. Under the caller's tenant scope, so another tenant's rows and items are
- * invisible, a source id that belongs to another tenant included. A source item in one of
- * `unreadableDatabaseIds` (the databases the reading agent's project may not read, issue #1849) is left
- * out of `sources` like a missing one, so its id, database key and title are not returned. The derived
- * sources are projects, areas and companies, which are non-sensitive system databases that every project may read.
+ * Per item id, its links keyed by property key; an item with no link has no entry. A constant number
+ * of queries whatever the input size. Runs under the caller's tenant scope. A trashed or missing
+ * source item, or one in `unreadableDatabaseIds`, is left out of `sources` (the entry is still
+ * returned), so its id, key and title are not disclosed.
  */
 export async function getValueLinksForItems(
   client: PoolClient,

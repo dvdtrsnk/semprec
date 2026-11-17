@@ -18,28 +18,20 @@ import { logger } from "./logger.js";
 
 export interface MergeJournalDuplicatesInput {
   periodType: JournalPeriodType;
-  /** The canonical period key, as stored in the entries' `period` property. */
   period: string;
 }
 
 export interface MergeJournalDuplicatesResult {
-  /** The entry that was created first; it stays live and receives the content and the edges. */
+  /** Created first; stays live and receives the content and the edges. */
   survivorId: string;
-  /** The entry that was merged into the survivor and moved to the Trash. */
   mergedItemId: string;
-  /**
-   * The relation edges of the merged entry that the survivor did not take, because the choke point refuses them for
-   * it. Each one is still stored on the merged entry, in the Trash with it. Empty when the survivor took every edge.
-   */
+  /** Edges the choke point refused for the survivor; they stay on the merged entry in the Trash. */
   refusedEdges: RefusedRelationEdge[];
 }
 
 const HEADING_TYPES: ReadonlySet<string> = new Set(["h1", "h2", "h3"]);
 
-/**
- * The duplicate's page as it is appended to the survivor's: its canonical Markdown, without its first block when that
- * block is a heading and the survivor's page starts with a heading of the same level and the same inline content.
- */
+/** Drops the duplicate's leading heading when the survivor's page starts with the same one. */
 function withoutRepeatedHeading(duplicateMarkdown: string, survivorMarkdown: string): string {
   const [heading, ...rest] = parseMarkdown(duplicateMarkdown);
   const [survivorHeading] = parseMarkdown(survivorMarkdown);
@@ -51,34 +43,14 @@ function withoutRepeatedHeading(duplicateMarkdown: string, survivorMarkdown: str
 }
 
 /**
- * Merges the two live Journal entries of one period that were created first (issue #1726): the older one survives, the
- * newer one is merged into it and moved to the Trash. Returns their ids and the edges the survivor did not take, or
- * `null` when the period has fewer than two live entries; a repeated call reads that and writes nothing. A period with
- * more live entries takes one call per duplicate. It must run on the client of the caller's `withTransaction`: every
- * step below is part of that transaction, so a failure of any of them leaves both entries as they were.
+ * Merges the two oldest live entries of a period: the newer one's page is appended to the survivor's, its edges
+ * move over and it goes to the Trash. Returns `null` (writing nothing) with fewer than two live entries; more
+ * duplicates take one call each. Must run inside the caller's `withTransaction`, so any failure leaves both entries
+ * unchanged.
  *
- * 1. `lockJournalDuplicatePair` takes the period reservation, row-locks both entries and points the reservation at the
- *    survivor.
- * 2. The duplicate's page is appended to the end of the survivor's page through `insertPageMarkdown`, authored
- *    `system`, in block order, without the duplicate's leading heading when the survivor's page starts with the same
- *    one. The duplicate keeps its own page. What that insertion refuses fails the merge with its error: a page with a
- *    subpage block, or with a link to an item that is not live.
- * 3. The edges of every user-owned relation property of the Journal database move from the duplicate to the survivor
- *    (`moveRelationEdgesWithClient`): an edge the survivor already has is not written twice, and an edge the choke
- *    point would refuse for the survivor (its other item is in the Trash, or the survivor's `area` is derived from its
- *    project) stays on the duplicate. A system-owned relation property is not written here: `events` is made equal
- *    to the event links of the merged page by its owner, `syncJournalEventLinks`.
- * 4. The Inbox module moves the `journalDay` edges of the duplicate's live Inbox items (`moveJournalDayEdges`); the
- *    edge of an Inbox item in the Trash stays on the duplicate.
- * 5. The duplicate is moved to the Trash through the choke point's `itemDeleteWithClient`, as the system writer.
- *
- * A merge that leaves edges on the duplicate in steps 3 and 4 still succeeds, and says so: every such edge is in
- * `refusedEdges` of the result, and one log line per edge, ids, the refusal's code and its `field` only, is written
- * once the caller's transaction has committed. The `field` is a fixed name (`callerItemId`, `targetItemId` or a
- * property key), or `null` when the refusal names none, and never an item's name or content. An edge the survivor
- * already holds is not left behind and is in neither: the duplicate's copy of it is deleted.
- *
- * See docs/adr/2026-11-10-journal-duplicate-merge-locks-the-reservation-before-both-entries.md.
+ * System-owned `events` is not moved but re-derived from the merged page by `syncJournalEventLinks`. Edges the
+ * choke point refuses for the survivor (trashed other item, derived `area`) stay on the duplicate and are reported
+ * in `refusedEdges` and logged after commit with ids, code and `field` only, never names or content.
  */
 export async function mergeJournalDuplicates(
   client: PoolClient,
@@ -121,10 +93,9 @@ export async function mergeJournalDuplicates(
     queueAffinity: createActionQueueAffinity(),
     writer: SYSTEM_WRITER,
   });
-  // The row is locked since step 1, so the trash finds it; a missing row would mean the lock was not held.
+  // Locked since `lockJournalDuplicatePair`, so a missing row means the lock was not held.
   if (!trashed) throw new Error(`Journal entry ${duplicateId} disappeared during its merge`);
-  // The edges are left behind by design, so the merge goes on; the log is what lets an operator see why each one was
-  // refused (`code` and `field`). It follows the commit, so a merge that is rolled back logs nothing.
+  // Logged after commit, so a rolled-back merge logs nothing.
   for (const { relationPropertyId, otherItemId, code, field } of refusedEdges) {
     runAfterCommit(client, () =>
       logger.info(

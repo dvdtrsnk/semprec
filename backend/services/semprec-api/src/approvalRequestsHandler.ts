@@ -27,18 +27,17 @@ const MAX_BODY_BYTES = 1 * 1024 * 1024;
 
 const APPROVAL_REQUEST_PATH = /^\/api\/approval-requests\/([^/]+)$/;
 
-/** The literal path of the count. It is served before `APPROVAL_REQUEST_PATH` is tried, which would take `count` for an id. */
+/** Served before `APPROVAL_REQUEST_PATH` is tried, which would take `count` for an id. */
 const APPROVAL_REQUEST_COUNT_PATH = "/api/approval-requests/count";
 
-/** The query parameters of `GET /api/approval-requests`; the presence of any one selects the paged answer. */
+/** The presence of any one selects the paged answer. */
 const LIST_PARAMETERS = ["status", "source", "q", "order", "cursor", "limit"] as const;
 const LIST_STATUSES = ["pending", "decided"] as const;
 const LIST_ORDERS = ["desc", "asc"] as const;
 
-/** Longest search text `GET /api/approval-requests` takes in `q`, in Unicode code points. */
+/** In Unicode code points. */
 const MAX_SEARCH_CODE_POINTS = 100;
 
-/** The value of a query parameter that may be given at most once; null when it is absent. */
 function singleQueryValue(query: URLSearchParams, name: string): string | null {
   const values = query.getAll(name);
   if (values.length > 1) throw new ValidationError(`'${name}' must be given at most once`, { field: name });
@@ -58,11 +57,9 @@ function parseSourceKinds(value: string): ApprovalRequestSourceKind[] {
 }
 
 /**
- * The validated query of the paged `GET /api/approval-requests` (issue #1785), or null when the
- * request carries none of `LIST_PARAMETERS` and gets the answer the route gave before them. An
- * absent `status` is `pending`, an absent `order` is `desc` (newest first), an absent `source` is
- * every source and an absent `limit` is 50. A parameter of another value, or given twice, is a
- * `ValidationError` that names it.
+ * `null` when the request carries none of `LIST_PARAMETERS`. Defaults: `status` pending, `order`
+ * desc, every `source`, `limit` 50. Another value, or a parameter given twice, is a
+ * `ValidationError` naming it.
  */
 function parseListQuery(query: URLSearchParams) {
   if (!LIST_PARAMETERS.some((name) => query.has(name))) return null;
@@ -77,8 +74,8 @@ function parseListQuery(query: URLSearchParams) {
   if (rawLimit !== null && (!/^[1-9]\d*$/.test(rawLimit) || Number(rawLimit) > 100))
     throw new ValidationError("'limit' must be an integer between 1 and 100", { field: "limit" });
   const rawCursor = singleQueryValue(query, "cursor");
-  // Trimmed first: only the text that is searched counts against the cap, and a blank `q` is no filter.
-  // Postgres refuses a NUL character in a text value, so one is refused here.
+  // Trimmed first, so only searched text counts against the cap and a blank `q` is no filter.
+  // Postgres refuses a NUL in a text value.
   const search = singleQueryValue(query, "q")?.trim() ?? "";
   if (search.includes("\u0000") || Array.from(search).length > MAX_SEARCH_CODE_POINTS)
     throw new ValidationError(`'q' must be at most ${MAX_SEARCH_CODE_POINTS} characters without a NUL character`, {
@@ -95,10 +92,8 @@ function parseListQuery(query: URLSearchParams) {
 }
 
 /**
- * The validated query of `GET /api/approval-requests/count` (issue #1786). `status` accepts only
- * `pending` and is `pending` when absent; `source` is an optional comma list of the source kinds,
- * every source when absent. A parameter of another value, or given twice, is a `ValidationError`
- * that names it. Parameters other than these two are ignored, as on the list.
+ * `status` accepts only `pending` (the default); `source` is an optional comma list of source
+ * kinds. Other parameters are ignored, as on the list.
  */
 function parseCountQuery(query: URLSearchParams) {
   const status = singleQueryValue(query, "status");
@@ -110,45 +105,22 @@ function parseCountQuery(query: URLSearchParams) {
 }
 
 /**
- * The authenticated-user approval surface: the global queue read (issue #132)
- * `GET /api/approval-requests` and the approve/reject write (issue #131)
- * `PATCH /api/approval-requests/:id`, body `{ decision: "approved" | "rejected" }`.
+ * `GET /api/approval-requests` answers `{ rows }` (the caller's pending requests, oldest first)
+ * without list parameters, and `{ rows, nextCursor }` with any of them. `/count` answers the number
+ * the list returns for the same `status` and `source`. `GET /:id` answers one request in any
+ * status; only an `mcpInvoke` request also carries `arguments`, redacted and bounded by
+ * `toApprovalRequestArgumentValues`, and no other answer carries argument values
+ * (docs/architecture/agents-approvals-and-ai.md#what-a-request-shows).
  *
- * Without any of the query parameters `status`, `source`, `q`, `order`, `cursor` and `limit` the
- * read answers `{ rows }` with the caller's pending requests, oldest first. With any of them it
- * answers `{ rows, nextCursor }` with one page of the list `parseListQuery` describes (issue
- * #1785); an invalid value of one of them is a 400 `validation_failed`.
+ * `PATCH /:id` with `{ decision }` delegates to `decideAndEnqueueApprovalRequest`: one conditional
+ * UPDATE on the caller being the run's actor plus, on approval, the `approvalExecute` job in the
+ * same transaction. The decider is always the session user; a `decidedByUserId` body field is
+ * ignored, not rejected, because deployed web clients still send it. A repeat decision answers 200
+ * with the current state and `outcome: "unchanged"`.
  *
- * `GET /api/approval-requests/count?status=pending&source=chat,tick` answers `{ count }`, the number
- * of the caller's pending requests that the list returns for the same `status` and `source` (issue
- * #1786); `source` is optional and an absent one counts every source. `GET /api/approval-requests/:id`
- * answers one request, in any status, with `toApprovalRequestDecisionView`, the view the `PATCH` answers (issue #1786),
- * and for an `mcpInvoke` request alone also `arguments` and `argumentsTruncated`, its argument values redacted and bounded by
- * `toApprovalRequestArgumentValues` (issue #2021). No other answer of this handler, and no other kind of request (a generic operation or a module tool), carries a value of an argument
- * (`docs/adr/2026-11-12-mcp-argument-values-leave-the-server-only-in-the-owners-request-detail.md`). A request
- * of another user, an unknown id and an id of another tenant answer the same 404.
- *
- * The decider recorded in `approval_requests.decided_by` is the authenticated session's user
- * (`authenticateRequest`), never a client-supplied value. A `decidedByUserId` body field, which
- * the already-deployed web client still sends, is ignored rather than rejected — rejecting a field
- * a deployed client sends would break it (the additive-only REST contract ADR); the web client
- * stops sending it in a later batch.
- *
- * Delegates the actual state transition to `decideAndEnqueueApprovalRequest` — one atomic
- * `UPDATE ... WHERE status = 'pending'` conditioned on the caller being the run's actor, plus,
- * only on approval, enqueueing the reserved `approvalExecute` job in the same transaction (see
- * `approvalDecisionAction.ts`). A repeat decision by the owner answers 200 with the current state.
- * An unknown, foreign or other-tenant id answers the same 404 body, so the response never reveals
- * whether a request exists for someone else (issue #1028).
- *
- * Both 200 responses are `toApprovalRequestDecisionView`'s projection, not the stored row: the
- * payload is reduced to `safeSummary` (argument names, never values) exactly as on the queue read.
- * The `PATCH` answer adds `outcome` (issue #2022): `decided` when this call made the transition and
- * `unchanged` when the request was already decided. It describes that one call, so the list and the
- * read of one request do not carry it.
- *
- * Every row of the queue read and both 200 responses of the write carry `source` (issue #1766),
- * derived in the session user's `users.locale`.
+ * Another user's request, an unknown id and another tenant's id answer the same 404. Every 200 is
+ * the `toApprovalRequestDecisionView` projection (argument names, never values) with `source` in
+ * the session user's locale.
  */
 export function createApprovalRequestsRequestListener(pool: Pool) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -197,16 +169,14 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
           return;
         }
 
-        // Group 1 of the route pattern above is not optional, so a successful match always
-        // captured it; a runtime check here would be unreachable code.
+        // Group 1 of the route pattern is not optional.
         const approvalRequestId = assertUuid(match[1]!, "id");
         if (req.method === "GET") {
           const detail = await withTransaction(pool, async (client) => {
             const request = await getApprovalRequestForOwner(client, approvalRequestId, identity.user.id);
             if (!request) return null;
             const view = await toApprovalRequestDecisionView(client, request, identity.user.locale);
-            // The one answer that carries argument values, redacted and bounded, and only for an `mcpInvoke` request;
-            // a generic operation and a module tool request have none (the ADR names `mcpInvoke` alone).
+            // The one answer that carries argument values, and only for an `mcpInvoke` request.
             return isMcpInvokeApprovalRequestPayload(request.payload)
               ? { ...view, ...toApprovalRequestArgumentValues(request.payload.args) }
               : view;
@@ -257,10 +227,9 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
   }
 
   /**
-   * `http.createServer` discards its listener's return value, so an `async` listener turns any
-   * rejection escaping the try/catch above into an unhandled rejection — which Node answers by
-   * exiting the process. Keeping the boundary synchronous confines it to a 500 for the one
-   * request. Same shape as `setupHandler.ts`.
+   * `http.createServer` discards the listener's return value, so an async rejection would become an
+   * unhandled rejection and exit the process. A synchronous boundary confines it to a 500 for the
+   * one request.
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {

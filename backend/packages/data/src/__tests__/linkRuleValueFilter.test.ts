@@ -15,10 +15,9 @@ import { readOmittedItemIds, resolveLinkRule } from "../valueLinks/linkRuleCatal
 const OWN_PERSON = { databaseKey: "systemSettings", propertyKey: "selfPerson" };
 
 /**
- * A rule over real seeded properties whose value filter names a property System settings does not have. Its
- * endpoints are an Event's files and the files of the Event's action-item tasks, so its via edge is the one on
- * which the real `taskProjectFromEvent` and `taskPeopleFromEvent` rules of the systemDatabases manifest
- * (issue #1724) copy the project and the people; those two show that the rule engine sees the edge at all.
+ * A rule over real seeded properties whose value filter names a property System settings lacks. Its via
+ * edge is the one the real `taskProjectFromEvent` and `taskPeopleFromEvent` rules copy over, which show
+ * that the engine sees the edge at all.
  */
 export const manifest: ModuleManifest = {
   id: "fixtureValueFilter",
@@ -40,7 +39,6 @@ export const manifest: ModuleManifest = {
   ],
 };
 
-/** The real people rule of a transcript with another value filter. */
 function peopleRule(omit?: { databaseKey: string; propertyKey: string }): ModuleLinkRuleProjection {
   return {
     moduleId: "fixtureValueFilter",

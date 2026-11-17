@@ -38,7 +38,6 @@ describe("tenant entity (issue #968)", () => {
           throw new Error("unreachable: getSoleTenantId should have thrown");
         }),
       ).rejects.toThrow("Expected exactly one tenant, found none or several");
-      // The delete was rolled back with the transaction.
       expect(await getSoleTenantId(pool)).toMatch(/^[0-9a-f-]{36}$/);
     });
 

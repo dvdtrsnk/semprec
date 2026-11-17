@@ -416,7 +416,6 @@ function graphClient(fetchImpl: typeof fetch): GraphRestClient {
   return new GraphRestClient(async () => GRAPH_TOKEN, fetchImpl);
 }
 
-/** The error a rejected call produced; fails the test when the call resolves instead. */
 async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
   return promise.then(
     () => {

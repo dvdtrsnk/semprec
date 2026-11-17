@@ -5,22 +5,17 @@ import type { ItemRow } from "../types.js";
 import type { ComputedProposalEntityKind } from "./proposalEnvelope.js";
 import type { ProcessingMethod } from "./inboxTypesStore.js";
 
-/** What a typed Inbox item's processing method decides about the envelope the tick proposes (`readTickSnapshot`). */
 export interface TickTarget {
   entityKind: ComputedProposalEntityKind;
-  /** Resolved target database id of a `database` method type. */
   targetDatabaseId?: string;
-  /** The module id of that target database. */
   targetModuleId?: string;
-  /** The tenant's Journal database id, resolved for a `journal` method type (issue gh-1982). */
   journalDatabaseId?: string;
 }
 
 /**
- * Maps the processing method of `type` to the envelope kind the tick computes and resolves the database that kind
- * writes to: the type's `targetDatabase` for `database`, the Journal database (owner module `journal`) for `journal`,
- * and nothing for `pageContent`, where the target page is part of the content decision. The model never chooses the
- * kind. A `database` type with no `targetDatabase` and a module with no seeded database are errors, not clarifications.
+ * `pageContent` resolves no database: the target page is part of the content decision. The model never chooses the
+ * kind. A `database` type without `targetDatabase` and a module without a seeded database are errors, not
+ * clarifications.
  */
 export async function resolveTickTarget(
   client: PoolClient,

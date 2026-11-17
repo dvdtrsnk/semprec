@@ -3,11 +3,8 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 
 /**
- * One MCP tool a project's agent run may actually invoke (issue #126): the fourth source of
- * `generatePermissionManifest`'s agent-tool facts, alongside module-declared native tools.
- * `requiresApproval`/`riskClass` ride along unchanged from `mcp_tool_registrations` — a grant
- * controls visibility only, per-invocation approval is a separate later concern (#128/approval
- * queue) that reads these same two fields off the tool it's approving.
+ * `requiresApproval`/`riskClass` come unchanged from the registration: a grant controls visibility only, approval
+ * is decided per invocation from these fields.
  */
 export interface McpAgentToolProjection {
   source: "mcp";
@@ -31,12 +28,8 @@ interface McpAgentToolRow {
 }
 
 /**
- * Exactly the tools whose `mcpServers` item has `active=true`, whose registration is `active`,
- * and whose `project_mcp_grants` row for this project has `granted=true`. Deactivating the
- * server, deactivating the registration (a sync no longer seeing the tool), or revoking the
- * grant each independently and immediately drops a tool from this list without deleting any
- * audit row — the next call to this function simply stops returning it. Computed fresh on
- * every call, matching `generatePermissionManifest`'s own no-caching contract.
+ * Server active, registration active and grant `granted`; losing any one drops the tool immediately without
+ * deleting audit rows. Computed fresh on every call (the permission manifest does not cache).
  */
 export async function getGrantedMcpAgentTools(
   client: PoolClient,

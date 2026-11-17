@@ -8,10 +8,7 @@ import { createTtsStreamRequestListener, TTS_STREAM_PATH, type TtsStreamHandlerO
 import { STT_STREAM_PATH, type SttStreamUpgradeHandler } from "./sttStreamHandler.js";
 import { createPiMessagesRequestListener, type PiMessagesHandlerOptions } from "./piMessagesHandler.js";
 
-/**
- * Every path the gateway serves. Every endpoint must be an entry of this table, so a suite can
- * enumerate the endpoints and a new one cannot be added without it.
- */
+/** Every endpoint must be an entry here, so a suite can enumerate them. */
 export const GATEWAY_ENDPOINTS = [
   "/internal/complete",
   "/internal/pi/messages",
@@ -27,13 +24,7 @@ function isGatewayEndpoint(pathname: string): pathname is GatewayEndpoint {
   return (GATEWAY_ENDPOINTS as readonly string[]).includes(pathname);
 }
 
-/**
- * The full request dispatcher for `semprec-ai-gateway`, mirroring `semprec-api`'s `app.ts`
- * pattern: `serve.ts` calls this to get the listener it hands to `http.createServer`, and tests
- * call it the same way to drive a real in-memory server with no process/port of its own to
- * manage. Requests are routed by looking the pathname up in a table keyed by
- * {@link GATEWAY_ENDPOINTS}; every endpoint must be an entry of that table.
- */
+/** The request listener for `serve.ts` and for tests driving an in-memory server. */
 export function createDispatcher(
   pool: Pool,
   options: CompleteHandlerOptions,
@@ -51,8 +42,7 @@ export function createDispatcher(
   function handleAudio(req: IncomingMessage, res: ServerResponse): void {
     const release = audioLimit.tryAcquire();
     if (release === null) {
-      // Refused before the body is read, so a rejected request never adds to the memory the
-      // limit exists to bound; the caller's job retry picks it up after `Retry-After`.
+      // Refused before the body is read, so it never adds to the memory the limit bounds.
       res.writeHead(503, { "Content-Type": "application/json; charset=utf-8", "Retry-After": "1" });
       res.end(JSON.stringify({ error: "Audio capacity exhausted", code: "audio_capacity_exhausted" }));
       return;
@@ -94,10 +84,7 @@ export function createDispatcher(
   };
 }
 
-/**
- * The `upgrade` listener `serve.ts` hands to the HTTP server: `/internal/stt/stream` goes to the
- * streaming speech-to-text handler, any other path is refused and its socket closed.
- */
+/** Any path other than `/internal/stt/stream` is refused and its socket closed. */
 export function createUpgradeDispatcher(
   stt: SttStreamUpgradeHandler,
 ): (req: IncomingMessage, socket: Duplex, head: Buffer) => void {

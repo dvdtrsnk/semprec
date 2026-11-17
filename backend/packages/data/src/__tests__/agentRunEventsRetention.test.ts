@@ -17,7 +17,6 @@ async function createUser(): Promise<void> {
   await createTenantZeroUser(pool);
 }
 
-/** All ids of `agent_run_events` rows currently belonging to `agentRunId`, in id order. */
 async function eventIdsFor(agentRunId: string): Promise<string[]> {
   const { rows } = await pool.query<{ id: string }>(
     `SELECT id FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`,
@@ -26,12 +25,10 @@ async function eventIdsFor(agentRunId: string): Promise<string[]> {
   return rows.map((r) => r.id);
 }
 
-/** Backdates every existing `agent_run_events` row for `agentRunId` to `at`. */
 async function backdateEvents(agentRunId: string, at: Date): Promise<void> {
   await pool.query(`UPDATE agent_run_events SET at = $2 WHERE agent_run_id = $1`, [agentRunId, at]);
 }
 
-/** Wraps a pool so `connectCalls()` reports how many times `.connect()` was invoked on it. */
 function withConnectCounter(target: Pool): { pool: Pool; connectCalls: () => number } {
   let calls = 0;
   const boundConnect = target.connect.bind(target);
@@ -85,14 +82,12 @@ describe("handleAgentRunEventsRetentionTask", () => {
 
     await backdateEvents(run1.id, old);
     await backdateEvents(run2.id, old);
-    // run3 stays at its natural (recent) `at`.
 
     const result = await handleAgentRunEventsRetentionTask(pool);
 
     expect(result.deleted).toBe(5);
     expect(await eventIdsFor(run1.id)).toEqual([]);
     expect(await eventIdsFor(run2.id)).toEqual([compactionEvent.id, run2PostCheckpointMessage.id, run2LastEvent.id]);
-    // run3's rows are untouched: all three remain.
     const run3Ids = await eventIdsFor(run3.id);
     expect(run3Ids).toHaveLength(3);
     expect(run3Ids[0]).toBe(run3FirstEvent.id);
@@ -132,7 +127,6 @@ describe("handleAgentRunEventsRetentionTask", () => {
     const run1PreCheckpoint = await insertAgentRunEvent(pool, run1.id, "turn_start", { kind: "turn_start" });
     const compactionEvent = await insertAgentRunEvent(pool, run1.id, "compaction", { kind: "compaction" });
     await backdateEvents(run1.id, old);
-    // run1 stays 'running'.
 
     const result = await handleAgentRunEventsRetentionTask(pool);
 

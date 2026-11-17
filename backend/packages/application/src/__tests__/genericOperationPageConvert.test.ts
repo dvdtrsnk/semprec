@@ -21,7 +21,7 @@ import {
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
-// `page.convertToBlock` of an agent run through the generic operation gateway (issue #1876): the call is held for
+// `page.convertToBlock` of an agent run through the generic operation gateway: the call is held for
 // approval, the approved request trashes the page tree and writes the block once, and the grant on the database that
 // owns the parent page decides who may ask.
 

@@ -273,8 +273,8 @@ describe("caller tenant on the gateway routes", () => {
       expect(rows).toEqual([{ tenant_id: tenantZero, status: "failed", agent_run_id: null }]);
     });
 
-    // In warn mode the scopeless reservation reaches Postgres; strict `app_tenant_default()` (#1067)
-    // no longer falls back to the sole tenant, so it is refused like an unknown tenant.
+    // In warn mode the scopeless reservation reaches Postgres; strict `app_tenant_default()` does not
+    // fall back to the sole tenant, so it is refused like an unknown tenant.
     it("refuses a request without the header, with no row and no provider call", async () => {
       const res = await send(route);
       expect(res.status).toBe(403);

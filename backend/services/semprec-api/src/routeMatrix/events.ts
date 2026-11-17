@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/events` path family. */
 export const EVENTS_ROUTES: RouteMatrixEntry[] = [
   {
     name: "event people",

@@ -6,9 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { applyTenantScopeMode, readTenantScopeWarnFiles, selectTenantScopeMode } from "../tenantScopeMode.js";
 
 /**
- * The selection logic of the integration tier's `setupFiles` entry. Importing the module also runs it for this
- * unit file, where `vitest.unit.config.ts` pins `SEMPREC_TENANT_SCOPE`, so that run keeps the pinned value; every
- * case below passes its own environment object and touches `process.env` not at all.
+ * Importing the module also runs it here, where `vitest.unit.config.ts` pins `SEMPREC_TENANT_SCOPE`, so the pinned
+ * value stays; each case passes its own env object and leaves `process.env` alone.
  */
 
 const backendDirectory = fileURLToPath(new URL("../../../../../", import.meta.url));

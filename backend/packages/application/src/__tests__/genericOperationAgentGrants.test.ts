@@ -77,9 +77,9 @@ async function newUserDatabase(name: string): Promise<DatabaseRow> {
 }
 
 const human = (): AuthenticatedActor => ({ userId, restSession: true });
-/** An actor with no run credential and no external-client marker (the `/mcp` human token carries it, issue #1998): no project. */
+/** No run credential and no external-client marker (which the `/mcp` human token carries): no project. */
 const unmarkedActor = (): AuthenticatedActor => ({ userId });
-/** The `/mcp` human token (issue #1998): an external AI client, which is refused every sensitive database. */
+/** The `/mcp` human token: an external AI client, which is refused every sensitive database. */
 const externalClient = (): AuthenticatedActor => ({ userId, externalClient: true });
 
 describe("agent access to databases through the generic operation gateway (issue #1810)", () => {

@@ -28,8 +28,7 @@ describe("views", () => {
     chokePoint = createChokePoint(pool, undefined, viewTypeRegistry);
     await resetDatabase(pool);
 
-    // A minimal stand-in for the seeded Projects system database — enough for
-    // assertAuthenticatedAgentIdentity to resolve a real "owning Projects item" per agent.
+    // A minimal Projects stand-in so assertAuthenticatedAgentIdentity resolves an owning Projects item per agent.
     const projectsDb = await chokePoint.createDatabase({
       name: null,
       key: "projects",
@@ -425,7 +424,6 @@ describe("views", () => {
         chokePoint.reorderViewItem({ viewId: view.id, itemId: item.id, position: 0, actor: agentActor(agentA) }),
       ).rejects.toBeInstanceOf(ForbiddenError);
 
-      // Same for removeViewItem/reorderViewItem starting from a fresh agent-owned view.
       const view2 = await chokePoint.createView(
         { type: "list", name: "Agent's collection 2", config: { membership: "manual" } },
         agentActor(agentA),
@@ -682,7 +680,7 @@ describe("views", () => {
       await chokePoint.addViewItem({ viewId: curated.id, itemId: item3.id, position: 0, actor: userActor });
       const members = await chokePoint.listViewItems(curated.id);
       expect(members.map((m) => m.itemId)).toEqual([item3.id, item1.id, item2.id]);
-      expect(new Set(members.map((m) => m.position)).size).toBe(3); // no ties
+      expect(new Set(members.map((m) => m.position)).size).toBe(3);
     });
 
     it("re-adding an existing member with a new position moves it instead of duplicating", async () => {
@@ -804,11 +802,8 @@ describe("views", () => {
     });
 
     it("two concurrent reorders on the same view never leave two items tied on a position", async () => {
-      // Two racing reorders don't tie deterministically — the window in which both
-      // transactions read the same pre-shift positions is narrow — so run enough
-      // parallel pairs that an unlocked reorderViewItem reliably produces a duplicate
-      // position at least once, proving the view-level lock (mirroring addViewItem's)
-      // actually serializes them.
+      // Racing reorders tie only in a narrow window, so enough parallel pairs run that an unlocked reorderViewItem would
+      // produce a duplicate position, proving the view-level lock serializes them.
       const trials = 20;
       for (let trial = 0; trial < trials; trial++) {
         const db = await makeTasksDb();
@@ -958,7 +953,7 @@ describe("views", () => {
 
     it("'is_empty'/'is_not_empty' on a multi_select property check for an empty array, not an empty string", async () => {
       const db = await makeTasksDb();
-      await seedTasks(db, chokePoint); // none have empty tags
+      await seedTasks(db, chokePoint);
       const untagged = await chokePoint.createItem({
         databaseId: db.id,
         properties: { title: "Untagged", status: "todo", tags: [] },
@@ -1013,7 +1008,6 @@ describe("views", () => {
       });
       const result = await chokePoint.queryView(view.id);
       expect(result.items).toHaveLength(0);
-      // The views table must still exist and be queryable.
       expect(await chokePoint.getView(view.id)).not.toBeNull();
     });
 

@@ -27,10 +27,9 @@ import {
 } from "../testSupport/testDb.js";
 import type { DatabaseRow } from "../types.js";
 
-// `page.mergeJournalDuplicates` below the generic operation gateway (issue #2017): the merge for a writer and the
-// approval projection of an agent's call. The merge itself is covered by `mergeJournalDuplicates.test.ts` (issue #1726).
+// `page.mergeJournalDuplicates` below the generic operation gateway: the merge for a writer and the
+// approval projection of an agent's call. The merge itself is covered by `mergeJournalDuplicates.test.ts`.
 
-// Seeding the system databases of a tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 120_000;
 const FORBIDDEN = { status: 403, code: "forbidden" };
 const VALIDATION_ON_PERIOD = { status: 400, details: { field: "period" } };
@@ -42,7 +41,6 @@ let tenant: string;
 let otherTenant: string;
 let journal: DatabaseRow;
 let otherJournal: DatabaseRow;
-/** One calendar day per test, so no test sees the entries of another. */
 let dayCounter = 0;
 
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {
@@ -55,8 +53,8 @@ function nextDay(): string {
 }
 
 /**
- * One live entry of a day. Two live entries of one period are a state the lazy creation never produces (it reuses the
- * live entry), so the fixture creates them directly; entries made one after the other are created first and next.
+ * One live entry of a day. Two live entries of one period never come from the lazy creation, so the
+ * fixture creates them directly.
  */
 async function entry(period: string, name: string, tenantId = tenant, database = journal): Promise<string> {
   return inTenant(
@@ -78,7 +76,6 @@ async function duplicatedDay(period = nextDay()) {
   return { period, older, newer };
 }
 
-/** The ids of `ids` that are live in the tenant, in id order. */
 async function liveOf(ids: readonly string[], tenantId = tenant): Promise<string[]> {
   return inTenant(async (client) => {
     const { rows } = await client.query<{ id: string }>(
@@ -108,8 +105,8 @@ function project(period: string, writer: { agentProjectItemId?: string } = {}, t
 }
 
 async function setJournalSensitive(sensitive: boolean): Promise<void> {
-  // A non-sensitive system database is always open and its grant rows are ignored (docs/adr/2026-11-12-per-database-agent-grants.md),
-  // so the one way to make the grant on Journal decide is the flag the product sets on the Health and sleep databases.
+  // A non-sensitive system database is always open and its grant rows are ignored, so the one way to make
+  // the grant on Journal decide is the flag the product sets on the Health and sleep databases.
   await admin.query(`UPDATE databases SET sensitive = $2 WHERE id = $1`, [journal.id, sensitive]);
 }
 
@@ -117,7 +114,6 @@ function setGrant(projectItemId: string, access: AgentDatabaseAccess) {
   return inTenant((client) => setAgentDatabaseGrant(client, { projectItemId, databaseId: journal.id, access }));
 }
 
-/** What a projection must not write: the number of items and of period reservations of the tenant. */
 async function writeCounts(tenantId = tenant): Promise<{ items: number; reservations: number }> {
   return inTenant(async (client) => {
     const items = await client.query<{ n: number }>("SELECT count(*)::int AS n FROM items");

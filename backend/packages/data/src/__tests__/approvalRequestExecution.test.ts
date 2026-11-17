@@ -45,16 +45,13 @@ let pool: Pool;
 let mcpServersId: string;
 let servers: McpContractServer[] = [];
 let soleTenantAdminId: string;
-/** What the realtime hooks were asked to publish, in order (issue #1789). */
 let approvalAnnouncements: Array<{ approvalRequestId: string; userId: string | undefined }>;
 let threadAnnouncements: Array<{ tenantId: string; threadId: string }>;
-/** Every `approvalRequest` and `agentRuns` invalidation in publication order, with the id each names (issue #1863). */
 let invalidationLog: Array<{ scope: "approvalRequest" | "agentRuns"; id: string }>;
 
 /**
  * The run named by the `agentRuns` invalidation published right after each `approvalRequest` one, or
- * `null` where none followed: the two are published by one helper, so every request announcement must be
- * followed by its run's announcement.
+ * `null` where none followed.
  */
 function runsAnnouncedWithRequests(): Array<string | null> {
   return invalidationLog.flatMap((entry, index) => {
@@ -149,7 +146,7 @@ describe("approval request decide+execute (issue #131)", () => {
   });
 
   afterEach(async () => {
-    // Every site that announces a request also announces its run (issue #1863), whatever the test is about.
+    // Every site that announces a request also announces its run.
     const announcedRequests = invalidationLog.filter((entry) => entry.scope === "approvalRequest");
     const expectedRuns = await Promise.all(announcedRequests.map((entry) => runIdOfRequest(entry.id)));
     expect(runsAnnouncedWithRequests()).toEqual(expectedRuns);
@@ -167,7 +164,6 @@ describe("approval request decide+execute (issue #131)", () => {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration, projectItemId } = await createGrantedTool(contractServer);
-    // No production chat-thread creator exists on this tip.
     const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
     const run = await createAgentRun(pool, {
       triggeredBy: "user",
@@ -202,7 +198,6 @@ describe("approval request decide+execute (issue #131)", () => {
 
     await drainQueue();
 
-    // The recorded outcome is announced once more, the same way.
     expect(approvalAnnouncements).toEqual([announcementOf(request, userId), announcementOf(request, userId)]);
     expect(runsAnnouncedWithRequests()).toEqual([run.id, run.id]);
     expect(threadAnnouncements).toHaveLength(2);
@@ -334,7 +329,6 @@ describe("approval request decide+execute (issue #131)", () => {
       ),
     );
     expect(foreignRetry).toBeNull();
-    // Neither the repeated decision nor the foreign one announced anything.
     expect(approvalAnnouncements).toEqual([announcementOf(request, userId)]);
 
     await drainQueue();
@@ -350,7 +344,6 @@ describe("approval request decide+execute (issue #131)", () => {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration } = await createGrantedTool(contractServer);
-    // No production chat-thread creator exists on this tip.
     const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", threadId: thread.rows[0]!.id });
     const request = await createPendingApprovalRequest(pool, {
@@ -413,7 +406,6 @@ describe("approval request decide+execute (issue #131)", () => {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration, projectItemId } = await createGrantedTool(contractServer);
-    // No production chat-thread creator exists on this tip.
     const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
     const run = await createAgentRun(pool, {
       triggeredBy: "user",
@@ -590,7 +582,6 @@ describe("approval request decide+execute (issue #131)", () => {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration, projectItemId } = await createGrantedTool(contractServer);
-    // No production chat-thread creator exists on this tip.
     const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
     const run = await createAgentRun(pool, {
       triggeredBy: "user",
@@ -737,7 +728,6 @@ describe("approval request decide+execute (issue #131)", () => {
         context: [{ kind: "approvalRequest", approvalRequestId: request.id }],
       },
     ]);
-    // The decision and the failed call's outcome.
     expect(approvalAnnouncements).toHaveLength(2);
     expect(approvalAnnouncements.map((announcement) => announcement.approvalRequestId)).toEqual([
       request.id,

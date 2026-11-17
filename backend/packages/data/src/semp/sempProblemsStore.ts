@@ -10,10 +10,7 @@ export type SempProblemCategory = "mail" | "agents" | "guidance" | "automation" 
 /** Mirrors the CHECK on `semp_problems.severity`. */
 export type SempProblemSeverity = "critical" | "warning";
 
-/**
- * How a problem was closed: `recovered` when its source works again, `sourceDeleted` when the source
- * itself was deleted (issue #1915).
- */
+/** `recovered` when the source works again, `sourceDeleted` when the source itself was deleted. */
 const SEMP_PROBLEM_RESOLUTION_KINDS = ["recovered", "sourceDeleted"] as const;
 export type SempProblemResolutionKind = (typeof SEMP_PROBLEM_RESOLUTION_KINDS)[number];
 
@@ -26,18 +23,16 @@ export interface RaiseProblemInput {
   severity: SempProblemSeverity;
   sourceTable: string;
   sourceId: string;
-  /** Identifies "the same problem" within the tenant while it is active. */
   dedupeKey: string;
   projectItemId?: string | null;
-  /** When the problem started, for a first raise that happens after the fact. Defaults to now. */
+  /** Defaults to now. */
   since?: Date;
-  /** Identifies the job or run reporting; a repeat within this problem episode adds no occurrence. */
+  /** A repeat within this problem episode adds no occurrence. */
   occurrenceKey?: string;
   /**
-   * Whether a merge moves the stored source to `sourceId`. Only a merge that counts a new occurrence moves it, so
-   * a replay of an occurrence that was already counted cannot move it back. Default `false`: the source stays the
-   * one the first raise stored. A producer whose later reports name a newer source object (a retried attempt that
-   * replaces the failed one) sets it, so the problem always points at the object its actions have to act on.
+   * Whether a merge moves the stored source to `sourceId`; only merges counting a new occurrence move it, so a
+   * replay cannot move it back. Set by producers whose retried attempt replaces the failed one, so the problem
+   * points at the object its actions act on.
    */
   followLatestSource?: boolean;
 }
@@ -55,11 +50,9 @@ interface RaiseRow {
 }
 
 /**
- * Takes the transaction-scoped advisory lock that serializes every raise of the problem `dedupeKey` in the
- * current tenant, and releases it with the caller's transaction. `raiseProblem` takes it first. A caller that
- * decides to resolve from state another writer changes (a check that no source still fails) takes it before
- * reading that state: a raise of the same key that already holds it commits first and its failing source is
- * then visible to the read, and a raise that waits finds the problem resolved and creates a new one.
+ * Transaction-scoped advisory lock serializing raises of `dedupeKey` in the tenant; `raiseProblem` takes it first.
+ * A caller that resolves based on state other writers change takes it before reading that state, so a concurrent
+ * raise either commits first (and is seen) or waits and then creates a new problem.
  */
 export async function lockProblemKey(client: PoolClient, dedupeKey: string): Promise<void> {
   await client.query(
@@ -69,26 +62,15 @@ export async function lockProblemKey(client: PoolClient, dedupeKey: string): Pro
 }
 
 /**
- * Records one report of a problem in the caller's open transaction (it never opens one): creates
- * the active problem for `(tenant, dedupeKey)` or merges into it. A merge increases
- * `occurrence_count` and sets `last_seen_at`, unless `occurrenceKey` was already recorded for
- * this episode. A `critical` raise escalates a stored
- * `warning`; an equal or lower severity never changes the stored one. A merge keeps the stored source unless
- * the caller sets `followLatestSource` and the merge counts a new occurrence.
+ * Records one report in the caller's transaction: creates the active `(tenant, dedupeKey)` problem or merges
+ * into it (counting an occurrence unless `occurrenceKey` was already seen). `critical` escalates a `warning`;
+ * lower or equal severity never changes it.
  *
- * A new or escalated problem also writes its `semp_problem` notification in the same transaction
- * (issue #1466): one notification per problem and per severity rise, which the fanout job pushes
- * according to the user's preferences. A merge writes no notification. The returned outcome tells
- * the caller which of the three happened.
+ * A new or escalated problem writes its `semp_problem` notification in the same transaction; a merge writes none.
+ * Any status change announces `sempStatus` after commit; a replay changes and announces nothing.
  *
- * Every raise that changed the status announces `sempStatus` once the transaction commits (a new
- * problem, a severity rise, a merged occurrence); a replay of an occurrence that was already counted
- * and raised no severity changed nothing and announces nothing.
- *
- * One INSERT ... ON CONFLICT on the partial unique index `semp_problems_active_dedupe_uq`. A
- * transaction-scoped advisory lock on the key, taken first, makes the prior severity the
- * statement reads consistent with the row it updates, so two concurrent escalations cannot both
- * report `escalated`; it is released with the caller's transaction.
+ * One INSERT ... ON CONFLICT on `semp_problems_active_dedupe_uq`. The advisory lock taken first keeps the prior
+ * severity read consistent with the updated row, so two concurrent escalations cannot both report `escalated`.
  */
 export async function raiseProblem(client: PoolClient, input: RaiseProblemInput): Promise<RaiseProblemResult> {
   if (input.projectItemId != null) {
@@ -168,8 +150,8 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
   const outcome: RaiseProblemOutcome = row.inserted ? "created" : escalated ? "escalated" : "merged";
   if (outcome !== "merged" || countOccurrence) publishSempStatusInvalidation(client);
   if (outcome !== "merged") {
-    // The transition instance names the severity, so a severity rise is a new transition of the
-    // same problem. The severity comes from RETURNING, not from the input.
+    // The transition instance names the severity, so a severity rise is a new transition. The severity comes from
+    // RETURNING, not from the input.
     await writeNotification(client, {
       userId: input.userId,
       kind: "semp_problem",
@@ -183,11 +165,7 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
   return { problemId: row.id, outcome };
 }
 
-/**
- * Resolves the active problem with `dedupeKey` in the caller's open transaction (it never opens
- * one). Idempotent: a key with no active problem changes nothing. Returns whether a row changed;
- * a change announces `sempStatus` once the transaction commits, no change announces nothing.
- */
+/** Idempotent. Only a change announces `sempStatus`, after commit. */
 export async function resolveProblem(
   client: PoolClient,
   input: { dedupeKey: string; resolutionKind: SempProblemResolutionKind },

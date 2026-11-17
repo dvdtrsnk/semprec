@@ -5,7 +5,7 @@ import { z } from "zod";
 
 export type ModuleCatalog = Record<string, string>;
 
-/** A module's two shipped translation catalogs (issue #236) — no third locale, see the issue's scope note. */
+/** A module's two shipped translation catalogs. */
 export interface ModuleCatalogs {
   cs: ModuleCatalog;
   en: ModuleCatalog;
@@ -51,10 +51,9 @@ async function loadOneCatalog(i18nDir: string, locale: Locale, modulePath: strin
 }
 
 /**
- * Loads `i18n/cs.json` and `i18n/en.json` from beside the module manifest at `modulePath`
- * (issue #236). A module with no `i18n/` directory, or missing just one of the two locale
- * files, loads with an empty catalog for whatever isn't present — only a present-but-malformed
- * file (invalid JSON, a non-object top level, or any non-string value) fails loading.
+ * Loads `i18n/cs.json` and `i18n/en.json` beside the manifest at `modulePath`. A missing directory
+ * or file yields an empty catalog; only a malformed file (invalid JSON, non-object top level, or a
+ * non-string value) fails loading.
  */
 export async function loadModuleCatalogs(modulePath: string): Promise<ModuleCatalogs> {
   const i18nDir = path.join(path.dirname(toFilePath(modulePath)), "i18n");
@@ -66,11 +65,8 @@ export async function loadModuleCatalogs(modulePath: string): Promise<ModuleCata
 }
 
 /**
- * Resolves a system label's display string in the exact fallback order the `canonical-keys`
- * skill documents: an explicit per-item override, the requested locale's catalog entry, the
- * English reference catalog's entry, and finally the raw canonical key itself as a last-resort
- * placeholder. Pure and synchronous — every argument is already-loaded data, never an I/O call,
- * so it composes with any catalog source (a `ModuleRegistry`, a test fixture, ...).
+ * Resolves a system label in the `canonical-keys` fallback order: per-item override, the requested
+ * locale's entry, the English entry, then the raw canonical key. Pure and synchronous.
  */
 export function resolveCatalogLabel(
   override: string | null | undefined,

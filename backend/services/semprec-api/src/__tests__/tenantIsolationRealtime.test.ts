@@ -86,24 +86,17 @@ import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
 
 /**
- * Two-tenant proof of the realtime surface (`WS /api/sync`): every NOTIFY message type, every
- * inbound and outbound frame type and binary doc frames, over the same composition `serve.ts`
- * builds, on runtime-role pools with strict tenant-scope enforcement.
+ * Two-tenant proof of the realtime surface (`WS /api/sync`) over the composition `serve.ts` builds, on
+ * runtime-role pools with strict tenant-scope enforcement.
  *
- * Absence is proven without sleeping: after the event under test reached the socket that should
- * receive it, a sentinel event is published in the checked socket's own tenant. NOTIFYs are
- * delivered over the server's single LISTEN connection in commit order, so everything a NOTIFY
- * made the checked socket receive arrives before the sentinel. The one frame that is not made by a
- * NOTIFY of its own is the doc invalidation, which the server sends after it read the doc again, up
- * to a second after the write; `TestSocket.drainUntil` and the strict consumers `openDoc` and `watchRun`
- * set aside such a frame of the socket's own tenant (`nextSettingAsideOwnDocEcho`) and return one of any
- * other tenant.
+ * Absence is proven without sleeping: a sentinel event is published in the checked socket's own tenant, and
+ * NOTIFYs arrive over the single LISTEN connection in commit order, so anything a NOTIFY caused arrives first.
+ * The doc invalidation is the exception (sent after the server re-reads the doc, up to a second late), so
+ * consumers set aside such a frame of the socket's own tenant (`nextSettingAsideOwnDocEcho`).
  *
- * Frames a socket sends are not ordered against that connection. For those, the foreign frame is
- * sent before a request of B1's own whose reply is awaited, and the handlers do the same work in
- * the same order, so a leaked reply has been produced before the own reply is. A binary frame is
- * additionally decided synchronously at dispatch: `docSync.handleBinaryFrame` checks the socket's
- * subscription before its first `await`, and a frame it admits writes a row that fans out to A1.
+ * Frames a socket sends are not ordered against that connection: the foreign frame is sent before an own
+ * request whose reply is awaited, so a leaked reply is produced first. `docSync.handleBinaryFrame` checks
+ * the subscription before its first `await`, so a binary frame is decided synchronously at dispatch.
  */
 
 const PASSWORD = "s3cret-password";
@@ -114,7 +107,6 @@ const noopMailer: PasswordResetMailer = {
   async sendPasswordResetEmail() {},
 };
 
-/** What a case saw arrive at the socket that should receive its event. */
 type Observed = OutboundFrame["type"] | "binary";
 type Scenario = () => Promise<readonly Observed[]>;
 interface Case {
@@ -166,7 +158,6 @@ function parseFrame(data: RawData, isBinary: boolean): Frame {
 
 const ownedSockets = new Set<TestSocket>();
 
-/** A WebSocket that queues every frame it receives so a test consumes them in arrival order. */
 class TestSocket {
   private readonly queue: Frame[] = [];
   private wake: (() => void) | null = null;
@@ -176,7 +167,6 @@ class TestSocket {
   };
   closeCode: number | undefined;
   readonly closed: Promise<number>;
-  /** The tenant this socket is authenticated in, when the test knows it; `drainUntil` reads it. */
   ownTenantId: string | undefined;
 
   private constructor(private readonly ws: WebSocket) {
@@ -225,7 +215,6 @@ class TestSocket {
       return socket;
     } catch (error) {
       const cleanupFailures: unknown[] = [];
-      // The exact handshake event is carried as the rejected connect outcome.
       if (handshakeFailure && handshakeFailure === error) {
         const index = socket.errors.indexOf(handshakeFailure);
         if (index < 0) cleanupFailures.push(new Error("Missing observed handshake failure", { cause: error }));
@@ -296,7 +285,6 @@ class TestSocket {
     }
   }
 
-  /** Consumes frames until one matches, discarding the ones before it; returns the match. */
   async nextMatching(predicate: (frame: Frame) => boolean): Promise<Frame> {
     for (;;) {
       const frame = await this.next();
@@ -305,15 +293,9 @@ class TestSocket {
   }
 
   /**
-   * The next frame, with the doc invalidation of an earlier write of the socket's own tenant set aside.
-   *
-   * A socket that knows its tenant (`ownTenantId`) can still receive the doc invalidation of an earlier write of that
-   * tenant, and nothing orders that frame against a sentinel or against the reply to a request: the writer announces
-   * a doc update after its commit, through a pooled connection of its own and without being awaited, and the server
-   * then reads the doc before it sends the frame, which it does again a second later when the doc was written twice
-   * within that second. That frame is the echo of an earlier case, not of the event the caller checks, so it is not
-   * returned. It is dropped only after the admin pool confirmed that the item it names belongs to the socket's
-   * tenant: a doc invalidation of any other tenant is returned like every other frame.
+   * The writer announces a doc update after commit without being awaited, so an earlier case's echo is not
+   * ordered against a sentinel or reply. It is dropped only after the admin pool confirms the item belongs to
+   * the socket's tenant; another tenant's doc invalidation is returned like every other frame.
    */
   async nextSettingAsideOwnDocEcho(): Promise<Frame> {
     for (;;) {
@@ -329,11 +311,7 @@ class TestSocket {
     }
   }
 
-  /**
-   * Consumes frames up to and including the first match; returns the frames that arrived before it. A doc
-   * invalidation of the socket's own tenant is set aside (`nextSettingAsideOwnDocEcho`), any other frame, a doc
-   * invalidation of another tenant included, is returned and fails a drain that expects an empty list.
-   */
+  /** Returns the frames before the first match; own-tenant doc echoes are set aside. */
   async drainUntil(predicate: (frame: Frame) => boolean): Promise<Frame[]> {
     const before: Frame[] = [];
     for (;;) {
@@ -360,12 +338,11 @@ function isDocFrame(docId: string): (frame: Frame) => boolean {
   return (frame) => frame.kind === "binary" && frame.docId === docId;
 }
 
-/** The doc invalidation (`scope: "doc"`) the server sends to every socket of the tenant that wrote a doc. */
 function isDocInvalidation(frame: Frame): boolean {
   return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "doc";
 }
 
-/** Whether the item `frame` names belongs to `tenantId`, read by the admin pool, which no tenant scope narrows. */
+/** Read by the admin pool, which no tenant scope narrows. */
 async function isItemOfTenant(frame: Frame, tenantId: string): Promise<boolean> {
   const itemId = frame.kind === "text" ? frame.body.itemId : undefined;
   if (typeof itemId !== "string") return false;
@@ -377,7 +354,6 @@ function isAgentEvent(runId: string): (frame: Frame) => boolean {
   return (frame) => frame.kind === "text" && frame.type === "agent:event" && frame.body.agentRunId === runId;
 }
 
-/** A minimal Yjs update message (`messageYjsUpdate` + length-prefixed update) for a binary doc frame. */
 function yjsUpdateMessage(text: string): Buffer {
   const ydoc = new Y.Doc();
   let update: Uint8Array | null = null;
@@ -403,9 +379,7 @@ interface TenantFixture {
   itemId: string;
   docId: string;
   runId: string;
-  /** An unread notification for the tenant's user, written when the fixture is built. */
   notificationId: string;
-  /** Events already on the run when the fixture is built. */
   runEventCount: number;
 }
 
@@ -525,7 +499,6 @@ function ownRealtimeListener(configure?: (owned: Pool, onCancel: (cancel: () => 
   return { open, close, owned, hasOwnedClient: () => client !== undefined };
 }
 
-/** Each request owns its abort timer and consumes the response before returning. */
 async function ownedPut(
   url: string,
   headers: Record<string, string>,
@@ -543,7 +516,6 @@ async function ownedPut(
   }
 }
 
-/** A fresh web session for `fixture`'s user, presented as the cookie the browser would send. */
 async function openSession(fixture: TenantFixture): Promise<{ cookie: string; sessionId: string }> {
   // Sessions belong to the global identity tables, so they are issued as system work.
   const result = await runAsSystem("test:issue-session", () =>
@@ -597,7 +569,6 @@ async function joinSessionAttempts(
   }
 }
 
-/** Closes the current sockets and opens A's two sessions and B's one anew, each with a fresh queue. */
 async function reconnectAll(): Promise<void> {
   await disposeSockets();
   const [sessionA1, sessionA2, sessionB1] = await joinSessionAttempts([
@@ -656,7 +627,6 @@ async function restGet(cookie: string, path: string): Promise<Response> {
   return fetch(`${baseUrl}${path}`, { headers: { Cookie: cookie, Origin: baseUrl } });
 }
 
-/** The `total` of `GET /api/inbox/cards`, which the count of the Inbox stack is read from. */
 async function inboxCardsTotal(cookie: string): Promise<number> {
   const response = await restGet(cookie, "/api/inbox/cards");
   expect(response.status).toBe(200);
@@ -674,10 +644,7 @@ function isInboxCardFrame(op: string, cardId?: string): (frame: Frame) => boolea
     (cardId === undefined || frame.body.cardId === cardId);
 }
 
-/**
- * A `proposed` Processing proposals card in `tenantId`, made by the tick over the runtime pool (issue #1811): a
- * typed Inbox item and a tick with a stubbed computation. Returns the Inbox item id.
- */
+/** A `proposed` Processing proposals card made by the tick with a stubbed computation; returns the Inbox item id. */
 async function createProposedCard(tenantId: string): Promise<string> {
   return runInTenant(tenantId, async () => {
     const databases = await pool.query<{ id: string; owner_module_id: string }>(
@@ -714,10 +681,6 @@ async function createProposedCard(tenantId: string): Promise<string> {
   });
 }
 
-/**
- * Ingests one new message into a folder of a new mailbox of `tenantId` over the runtime pool (issue #1816); returns
- * the id of the mail thread the message joined.
- */
 async function ingestMessageIn(tenantId: string): Promise<string> {
   return runInTenant(tenantId, async () => {
     const { rows: mailboxDatabases } = await pool.query<{ id: string }>(
@@ -778,7 +741,7 @@ function isMailThreadFrame(threadId?: string): (frame: Frame) => boolean {
     (threadId === undefined || frame.body.threadId === threadId);
 }
 
-/** Publishes a schema invalidation in `tenantId` that reaches all of its sockets; returns its marker. */
+/** A schema invalidation that reaches all of the tenant's sockets. */
 async function publishSentinel(tenantId: string): Promise<string> {
   const databaseId = randomUUID();
   await runInTenant(tenantId, () =>
@@ -787,7 +750,6 @@ async function publishSentinel(tenantId: string): Promise<string> {
   return databaseId;
 }
 
-/** Proves `socket` (authenticated in `tenantId`) received nothing since the last time its queue was drained. */
 async function expectNothingReceived(socket: TestSocket, tenantId: string): Promise<void> {
   const sentinel = await publishSentinel(tenantId);
   expect(await socket.drainUntil(isSentinel(sentinel))).toEqual([]);
@@ -811,7 +773,6 @@ async function writeNotificationInA(): Promise<string> {
   return runInTenant(tenantA.tenantId, () => writeNotificationFor(tenantA.userId));
 }
 
-/** Writes one more block to `fixture`'s doc, which publishes a `doc_update`. */
 async function touchDoc(fixture: TenantFixture): Promise<void> {
   await runInTenant(fixture.tenantId, () =>
     docStore.putBlock(fixture.itemId, { id: randomUUID(), flavour: "page" }, "user"),
@@ -844,20 +805,15 @@ async function waitForDocUpdateCount(fixture: TenantFixture, docId: string, expe
   }
 }
 
-/**
- * Opens `docId` on `socket`; the very next frame must be the server's SyncStep1 for that doc. A late doc invalidation
- * of the socket's own tenant, the echo of an earlier case's write, is not that frame and is set aside; a frame of any
- * other tenant is.
- */
+/** The very next frame must be the server's SyncStep1 for `docId`; own-tenant doc echoes are set aside. */
 async function openDoc(socket: TestSocket, docId: string): Promise<void> {
   socket.sendJson({ type: "doc:open", docId });
   expect(await socket.nextSettingAsideOwnDocEcho()).toMatchObject({ kind: "binary", docId });
 }
 
 /**
- * Watches `fixture`'s run from the start; the next frames must be exactly its replayed events. Once
- * they arrived the live subscription is registered, so no later event can be missed. A late doc invalidation of the
- * socket's own tenant is set aside like in `openDoc`; a frame of any other tenant is not.
+ * The next frames must be exactly the replayed events; once they arrived the live subscription is registered,
+ * so no later event can be missed.
  */
 async function watchRun(socket: TestSocket, fixture: TenantFixture): Promise<void> {
   socket.sendJson({ type: "agent:watch", runId: fixture.runId, afterEventId: "0" });
@@ -874,7 +830,6 @@ function observedTypes(frames: readonly Frame[]): Observed[] {
   return frames.map((frame) => (frame.kind === "text" ? frame.type : "binary"));
 }
 
-/** Both of A's sockets receive the invalidation, B1 receives nothing. */
 async function expectInvalidationInA(match: Record<string, unknown>): Promise<readonly Observed[]> {
   const frames = await Promise.all(
     [a1, a2].map((socket) =>
@@ -891,10 +846,7 @@ function matches(body: Record<string, unknown>, expected: Record<string, unknown
   return Object.entries(expected).every(([key, value]) => body[key] === value);
 }
 
-/**
- * What B1 observes after an inbound frame it just sent, followed by opening its own doc: the first
- * frame must be its own doc's SyncStep1, and nothing else may precede the sentinel.
- */
+/** After an inbound frame, the first frame must be B1's own doc's SyncStep1 and nothing else may precede the sentinel. */
 async function observeB1AfterOpeningOwnDoc(): Promise<string[]> {
   await openDoc(b1, tenantB.docId);
   const sentinel = await publishSentinel(tenantB.tenantId);
@@ -902,7 +854,6 @@ async function observeB1AfterOpeningOwnDoc(): Promise<string[]> {
   return ["binary:own-doc", ...rest.map((frame) => frame.kind)];
 }
 
-/** One run of `fixture`'s user in its tenant, on a fresh Semp chat thread. */
 async function createRunOnThread(
   fixture: TenantFixture,
   sockets: readonly TestSocket[],
@@ -917,8 +868,7 @@ async function createRunOnThread(
     });
     return { runId: run.id, threadId };
   });
-  // The creation of the run is itself announced to its actor (issue #1863); consuming it keeps the frames a
-  // test looks at afterwards to the ones it caused.
+  // The run's creation is announced to its actor; consuming it keeps later frames to the ones the test caused.
   await Promise.all(sockets.map((socket) => socket.nextMatching(isAgentRunsFrame(created.runId))));
   return created;
 }
@@ -931,7 +881,6 @@ function isProjectAgentFrame(projectItemId?: string): (frame: Frame) => boolean 
     (projectItemId === undefined || frame.body.projectItemId === projectItemId);
 }
 
-/** Toggles a tool grant of `projectItemId` in `tenantId` through the runtime role, rolling the transaction back on request. */
 async function grantToolIn(tenantId: string, projectItemId: string, rollBack = false): Promise<void> {
   await runInTenant(tenantId, async () => {
     const registration = await upsertMcpToolRegistration(pool, {
@@ -954,7 +903,6 @@ function isSempStatusFrame(): (frame: Frame) => boolean {
   return (frame) => frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "sempStatus";
 }
 
-/** Raises a Semp problem for `fixture`'s user in its tenant through the runtime role, rolling back on request. */
 async function raiseProblemIn(fixture: TenantFixture, rollBack = false): Promise<void> {
   await runInTenant(fixture.tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -994,7 +942,6 @@ function isUserScopedFrame(scope: "notificationPreferences" | "badgeCounts" | "a
   return (frame) => frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === scope;
 }
 
-/** Changes the notification preferences of `fixture`'s user in its tenant through the runtime role, rolling back on request. */
 async function patchPreferencesIn(fixture: TenantFixture, rollBack = false): Promise<void> {
   await runInTenant(fixture.tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -1008,10 +955,7 @@ function isMcpServersFrame(frame: Frame): boolean {
   return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "mcpServers";
 }
 
-/**
- * Creates an MCP server item in `tenantId` and switches it off through the choke point of the runtime role, the write
- * that announces the tenant's `mcpServers` scope. Its creation announces nothing of that scope.
- */
+/** Only the switch-off announces the tenant's `mcpServers` scope; creation does not. */
 async function switchMcpServerOffIn(tenantId: string): Promise<void> {
   await runInTenant(tenantId, async () => {
     const database = (await chokePoint.listDatabases()).find((entry) => entry.ownerModuleId === "mcpServers");
@@ -1031,10 +975,7 @@ function isOverviewFrame(frame: Frame): boolean {
   return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "overview";
 }
 
-/**
- * Runs the nightly rollover of `fixture`'s tenant through the runtime role, over the tenant's fixture database (which
- * holds no task) so that nothing moves. The action's own transactions commit before it announces the day.
- */
+/** Over the fixture database, which holds no task, so nothing moves. */
 async function runRolloverIn(fixture: TenantFixture): Promise<void> {
   await runInTenant(fixture.tenantId, () =>
     createTasksDayRolloverAction(pool)(
@@ -1044,7 +985,6 @@ async function runRolloverIn(fixture: TenantFixture): Promise<void> {
   );
 }
 
-/** Publishes the account invalidation of `fixture`'s user in its tenant through the runtime role, rolling back on request. */
 async function publishAccountIn(fixture: TenantFixture, rollBack = false): Promise<void> {
   await runInTenant(fixture.tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -1054,12 +994,7 @@ async function publishAccountIn(fixture: TenantFixture, rollBack = false): Promi
   );
 }
 
-/**
- * Every socket in `sockets` receives the approval request invalidation, the agent run invalidation, the badge
- * count invalidation of the run's owner and the Semp thread invalidation paired with it. They are published over
- * separate connections, so they may arrive in any order. The run was created before (`createRunOnThread` consumed
- * that announcement), its project is null and its actor is the fixture's user.
- */
+/** These invalidations are published over separate connections, so they may arrive in any order. */
 async function expectRequestAndThreadInvalidations(
   sockets: readonly TestSocket[],
   approvalRequestId: string,
@@ -1104,7 +1039,6 @@ const notifyCases = {
         const confirmed = await restPost(a1Cookie, `/api/proposals/${cardId}/confirm`, {});
         expect(confirmed.status).toBe(200);
 
-        // Device A1 confirmed and device A2 is the other device of the same tenant: both are told it closed.
         await Promise.all([a1, a2].map((socket) => socket.nextMatching(isInboxCardFrame("closed", cardId))));
         await expectNothingReceived(b1, tenantB.tenantId);
         expect(await inboxCardsTotal(a1Cookie)).toBe(total);
@@ -1119,7 +1053,6 @@ const notifyCases = {
             expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "mailThread", threadId } });
             expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "threadId", "type"]);
           }
-          // One sentinel reaches both of A's sockets; nothing about the thread arrived before it a second time.
           const sentinel = await publishSentinel(tenantA.tenantId);
           for (const socket of [a1, a2]) {
             expect((await socket.drainUntil(isSentinel(sentinel))).filter(isMailThreadFrame())).toEqual([]);
@@ -1140,7 +1073,6 @@ const notifyCases = {
         await createProposedCard(tenantB.tenantId);
 
         await b1.nextMatching(isInboxCardFrame("created"));
-        // One sentinel reaches both of A's sockets, so each is drained up to it.
         const sentinel = await publishSentinel(tenantA.tenantId);
         expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
         expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
@@ -1165,7 +1097,6 @@ const notifyCases = {
           await runInTenant(tenantA.tenantId, () => finishAgentRun(pool, run.id, "done", "private result"));
           const closed = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isAgentRunsFrame(run.id))));
           for (const frame of closed) expect(frame).toMatchObject({ kind: "text", body: expected });
-          // One sentinel reaches both of A's sockets; nothing about the run arrived before it a third time.
           const sentinel = await publishSentinel(tenantA.tenantId);
           for (const socket of [a1, a2]) {
             expect((await socket.drainUntil(isSentinel(sentinel))).filter(isAgentRunsFrame())).toEqual([]);
@@ -1553,7 +1484,7 @@ const streamCases = {
   },
 } satisfies Record<AgentStreamMessage["type"], Case>;
 
-/** Sends `frame` as B1, then opens B1's own doc, and summarizes what B1 received; naming A's id must summarize like a random id. */
+/** Naming A's id must summarize like a random id. */
 async function b1AfterForeignDocFrame(frame: InboundFrame): Promise<string[]> {
   b1.sendJson(frame);
   return observeB1AfterOpeningOwnDoc();
@@ -1567,7 +1498,6 @@ const inboundCases = {
         const random = await b1AfterForeignDocFrame({ type: "doc:open", docId: randomUUID() });
         expect(foreign).toEqual(random);
 
-        // B1 never became a subscriber of A's doc: A's next update reaches A1 and not B1.
         await openDoc(a1, tenantA.docId);
         await touchDoc(tenantA);
         const update = await a1.nextMatching(isDocFrame(tenantA.docId));
@@ -1604,7 +1534,6 @@ const inboundCases = {
         expect(foreign).toEqual(random);
         expect(foreign).toEqual([]);
 
-        // B1 is not a watcher of A's run: A's next event reaches A1 only.
         await watchRun(a1, tenantA);
         await appendRunEvent(tenantA);
         const event = await a1.nextMatching(isAgentEvent(tenantA.runId));
@@ -1630,18 +1559,15 @@ const inboundCases = {
   },
 } satisfies Record<InboundFrame["type"], Case>;
 
-/** The text `docId` currently holds in its `body` Yjs text, read inside `fixture`'s tenant. */
 async function docBodyText(fixture: TenantFixture, docId: string): Promise<string> {
   const ydoc = await runInTenant(fixture.tenantId, () => loadYDoc(pool, docId));
   return ydoc.getText("body").toJSON();
 }
 
 /**
- * With A1 subscribed to A's doc, B1 sends a Yjs update prefixed with A's doc id and A1 then sends
- * a control update for the same doc. The foreign frame is refused or admitted when it is
- * dispatched, before any await in `handleBinaryFrame`, and was sent before the control through the
- * same handler, so an admitted frame is queued ahead of the control's write on the same doc. Once
- * the control's text is stored, A's doc must hold the control's row and none from the foreign frame.
+ * The foreign frame is decided at dispatch, before any await in `handleBinaryFrame`, and was sent before A1's
+ * control update, so an admitted frame would be written first. Once the control is stored, A's doc must hold
+ * nothing from the foreign frame.
  */
 async function foreignBinaryFrameWritesNothing(): Promise<void> {
   await openDoc(a1, tenantA.docId);
@@ -1677,8 +1603,8 @@ const binaryCase = {
     },
     "B1's frame prefixed with A's doc id, sent after a refused doc:open": async () => {
       b1.sendJson({ type: "doc:open", docId: tenantA.docId });
-      // B's own open is answered only after the refused one was handled, so the binary frame below
-      // meets a socket whose open of A's doc is finished, not one still pending its lookup.
+      // B's own open is answered only after the refused one was handled, so the binary frame below meets a
+      // finished open, not one still pending its lookup.
       await openDoc(b1, tenantB.docId);
       await foreignBinaryFrameWritesNothing();
       return [];
@@ -1686,7 +1612,6 @@ const binaryCase = {
   },
 } satisfies Case;
 
-/** A case whose single scenario runs every scenario of `producing` and requires a `type` frame among what they delivered. */
 function producedBy(type: OutboundFrame["type"], producing: Case): Case {
   return {
     scenarios: {
@@ -1703,7 +1628,6 @@ function producedBy(type: OutboundFrame["type"], producing: Case): Case {
   };
 }
 
-/** Each outbound frame type, mapped to the case whose scenarios produce it. */
 const outboundCases = {
   invalidate: producedBy("invalidate", notifyCases.invalidation),
   notification: producedBy("notification", notifyCases.notification_created),
@@ -1756,7 +1680,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     tenantA = await buildTenantFixture(await createTestTenant(adminPool));
     tenantB = await buildTenantFixture(await createTestTenant(adminPool));
 
-    // Composed as serve.ts composes them: the dispatcher and the sync upgrade handler over one pool.
+    // Composed as serve.ts composes them.
     const dispatch = await createDispatcher(pool, {
       passwordResetMailer: noopMailer,
       appBaseUrl: "http://localhost",
@@ -1787,7 +1711,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
     await pool?.end();
     await adminPool?.end();
-    // The hooks are module-global; leave none bound to the pool that was just ended.
+    // The hooks are module-global; leave none bound to the ended pool.
     setInvalidationHook(() => {});
     setDocUpdateHook(() => {});
     setAgentRunEventHook(() => {});
@@ -1801,7 +1725,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     else process.env.SEMPREC_TENANT_SCOPE = previousScope;
   });
 
-  // Fresh sessions and sockets per test: the revocation case ends A's second session for good.
+  // Fresh sessions per test: the revocation case ends A's second session for good.
   beforeEach(async () => {
     await reconnectAll();
   });
@@ -2576,7 +2500,6 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         expect(failure.error.errors[0]).toBe(bodyError);
         expect(failure.error.errors[1]).toBe(cleanupError);
       } else if (failure) {
-        // Preserve both the original failure and any owned-server cleanup failure.
         throw failure.error;
       }
     },
@@ -3376,7 +3299,6 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         return;
       }
       if (failure) {
-        // Preserve the original failure rather than replacing it with a timeout wrapper.
         throw failure.error;
       }
     },
@@ -3441,7 +3363,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         frame.body.notification.id === foreignId,
     );
     const first = await createApprovalNotification();
-    // The real hook invokes this same wired pool synchronously from the after-commit callback.
+    // The real hook invokes this pool synchronously from the after-commit callback.
     const querySpy = vi.spyOn(pool, "query");
     function readStatePublications(): Record<string, unknown>[] {
       const messages: Record<string, unknown>[] = [];
@@ -3536,7 +3458,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     ])("a raw pg_notify with %s reaches no socket", async (_name, build) => {
       await adminPool.query("SELECT pg_notify('semprec_events', $1)", [JSON.stringify(build(randomUUID()))]);
 
-      // One sentinel per tenant: it reaches every socket of that tenant, so both of A's sockets share it.
+      // One sentinel per tenant reaches every socket of that tenant.
       const sentinelA = await publishSentinel(tenantA.tenantId);
       const sentinelB = await publishSentinel(tenantB.tenantId);
       expect(await a1.drainUntil(isSentinel(sentinelA))).toEqual([]);

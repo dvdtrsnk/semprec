@@ -4,7 +4,6 @@ import { eventRecurrenceOccursOn, parseEventRecurrenceRule, type EventRecurrence
 
 const WEEKDAYS_MON_TO_FRI: EventRecurrenceRule = { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri"] };
 
-/** The days of `[from, to]` (UTC calendar days, ascending) on which the series occurs. */
 function occurrences(rule: EventRecurrenceRule, start: string, from: string, to: string): string[] {
   const days: string[] = [];
   for (let time = Date.parse(from); time <= Date.parse(to); time += 86_400_000) {

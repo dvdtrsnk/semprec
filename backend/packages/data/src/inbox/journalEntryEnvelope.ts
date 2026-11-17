@@ -10,17 +10,10 @@ import { AREAS_MODULE_ID, JOURNAL_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/
 import { assertJournalEntryAreaNotDerived } from "./proposalDerivedRelations.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
 
-// The envelope of the card that proposes an entry on a Journal day (issue gh-1975): an `inbox` card whose envelope kind
-// is `journalEntry`, whose `target` is the id of the tenant's Journal database and whose `properties` are
-// `{ date, markdown, areaId?, projectId? }`. The day it names usually has no Journal item yet; the confirm that
-// creates it and writes the entry is `journalEntryConfirm.ts` (issue gh-1981).
+// A `journalEntry` envelope's `target` is the tenant's Journal database; the day it names usually has no Journal item
+// yet, and `journalEntryConfirm.ts` creates it.
 
-/**
- * A journal entry card's envelope `properties`. `date` is the day's `YYYY-MM-DD` key and `markdown` the entry's body;
- * both are checked beyond their type by `assertValidJournalEntryEnvelope`. `areaId` and `projectId` are the optional
- * Areas and Projects items the entry is related to; each is checked on its own, and an envelope that sets both is
- * refused by `assertJournalEntryAreaNotDerived` (issue gh-1991).
- */
+/** Setting both `areaId` and `projectId` is refused by `assertJournalEntryAreaNotDerived`. */
 const journalEntryPropertiesSchema = z.strictObject({
   date: z.string(),
   markdown: z.string(),
@@ -30,10 +23,6 @@ const journalEntryPropertiesSchema = z.strictObject({
 
 export type JournalEntryProperties = z.infer<typeof journalEntryPropertiesSchema>;
 
-/**
- * Parses a journal entry envelope's `properties`. An unknown key, a missing `date` or `markdown` and a value of the
- * wrong type are a `ValidationError` naming the field.
- */
 export function parseJournalEntryProperties(properties: Record<string, unknown>): JournalEntryProperties {
   const parsed = journalEntryPropertiesSchema.safeParse(properties);
   if (parsed.success) return parsed.data;
@@ -45,7 +34,6 @@ export function parseJournalEntryProperties(properties: Record<string, unknown>)
   );
 }
 
-/** A `YYYY-MM-DD` that names a day of the calendar (`2026-02-30` does not), or a `ValidationError` on `date`. */
 function assertValidDay(date: string): void {
   try {
     parseJournalPeriodKey("day", date);
@@ -59,7 +47,7 @@ function assertValidDay(date: string): void {
   }
 }
 
-/** `markdown` as the Markdown parser reads it, page blocks refused; a `ValidationError` on `markdown` otherwise. */
+/** Page blocks are refused. */
 function assertValidMarkdown(markdown: string): void {
   if (markdown.trim().length === 0) {
     throw new ValidationError("A journal entry proposal's markdown must not be empty", { field: "markdown" });
@@ -77,29 +65,19 @@ function assertValidMarkdown(markdown: string): void {
   }
 }
 
-/** What no longer holds of a journal entry's references: the field that names it and the message. */
 export interface JournalEntryReferenceProblem {
   field: "target" | "areaId" | "projectId";
   message: string;
 }
 
-/**
- * Whether `itemId` is a live item of the database owned by `moduleId` in the current tenant that the day's edge may
- * point at: not in the Trash and, for a project, not archived (`relationTargetBlock`, the rule the relation write
- * refuses by), so a reference that passes here is one the confirm's edge write accepts.
- */
+/** Uses the relation write's own rule (`relationTargetBlock`), so a reference that passes is one confirm accepts. */
 async function isLinkableItemOf(client: PoolClient, moduleId: string, itemId: string): Promise<boolean> {
   const database = await databasesStore.getDatabaseByModuleId(client, moduleId);
   const item = database ? await getItemById(client, database.id, itemId) : null;
   return item !== null && relationTargetBlock(item, moduleId) === null;
 }
 
-/**
- * The first reference of the envelope that does not resolve in the current tenant, or `null`: `target` that is not the
- * tenant's Journal database, then `areaId` that is not a live item of the Areas database, then `projectId` that is not
- * a live, unarchived item of the Projects database. Another tenant's id resolves to nothing, so it is the same problem
- * as a random id.
- */
+/** Another tenant's id resolves to nothing, so it is the same problem as a random id. */
 export async function findJournalEntryReferenceProblem(
   client: PoolClient,
   target: string,
@@ -125,14 +103,9 @@ export async function findJournalEntryReferenceProblem(
 }
 
 /**
- * Validates a `journalEntry` envelope wherever it is written, the Inbox tick and a revise (both reach it through
- * `assertValidProposalEnvelope`): no `operations` and no `relations`; `properties` that `parseJournalEntryProperties`
- * accepts; `date` a day of the calendar; `markdown` not blank and valid Markdown (`parseMarkdown`) without a `page`
- * block; not both `projectId` and `areaId`, because the area is derived from the project
- * (`assertJournalEntryAreaNotDerived`, issue gh-1991); `target` the Journal database of the current tenant; and, when set, `areaId` a live item of the Areas database
- * and `projectId` a live, unarchived item of the Projects database of the current tenant. Each refusal is a `ValidationError`
- * naming the field. Resolves to `null`, as `assertValidProposalEnvelope` does for an envelope that has no target
- * database row to return.
+ * Reached through `assertValidProposalEnvelope` from both the tick and a revise. Refuses `operations`, `relations`, a
+ * non-calendar `date`, blank or invalid markdown or a `page` block, both `projectId` and `areaId`, and references that
+ * do not resolve in the current tenant. Resolves to `null` (no target database row).
  */
 export async function assertValidJournalEntryEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<null> {
   if (envelope.operations !== undefined)

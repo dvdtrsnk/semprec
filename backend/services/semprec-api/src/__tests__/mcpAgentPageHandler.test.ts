@@ -298,11 +298,7 @@ describe("createMcpAgentPageRequestListener", () => {
       return rows[0]!.classification_source;
     }
 
-    /**
-     * A registration the sync classified from annotations: `@semprec/data` exports no write of the classification,
-     * so the state is set up with SQL. The sync's own handling of an `annotation` and a `manual` row is tested in
-     * the data package (`mcpSyncClassification.test.ts`).
-     */
+    /** `@semprec/data` exports no write of the sync's classification, so the state is set up with SQL. */
     async function annotationRegistration(): Promise<{ id: string; mcpServerItemId: string }> {
       const server1 = await createMcpServerItem("Server", true);
       const registration = await upsertMcpToolRegistration(pool, {
@@ -400,7 +396,6 @@ describe("createMcpAgentPageRequestListener", () => {
       const id = await registerTool();
       const headers = await authHeader();
       expect((await patchLabel(headers, id, { cs: "Nástroj", en: "Tool label" })).status).toBe(200);
-      // New users default to locale 'cs'.
       expect(await listedLabel(headers)).toBe("Nástroj");
       const cleared = await patchLabel(headers, id, null);
       expect(cleared.status).toBe(200);
@@ -476,7 +471,7 @@ describe("createMcpAgentPageRequestListener", () => {
             throw new Error("Invalid MCP tool");
           return tool.name;
         });
-        // Every catalog operation except the REST-only ones, which the gateway lists for no caller (issue #1699).
+        // The gateway lists the REST-only operations for no caller.
         expect(names.sort()).toEqual(
           GENERIC_OPERATION_NAMES.filter((name) => !REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === name))
             .map((name) => `semprec.${name}`)
@@ -618,7 +613,7 @@ describe("createMcpAgentPageRequestListener", () => {
     async function createSyncTarget(connectionConfig?: McpConnectionConfig) {
       const item = await createMcpServerItem("Sync target", true);
       if (connectionConfig) {
-        // Raw SQL because the write hook refuses a loopback URL, which is all a contract server has.
+        // The write hook refuses a loopback URL, which is all a contract server has.
         await pool.query(
           "UPDATE items SET properties = properties || jsonb_build_object('connectionConfig', $2::jsonb) WHERE id = $1",
           [item.id, JSON.stringify(connectionConfig)],
@@ -672,7 +667,6 @@ describe("createMcpAgentPageRequestListener", () => {
       let labelBaseUrl: string;
       const gatewayCalls: AiGatewayCompletionInput[] = [];
 
-      /** Serves the same listener with a gateway whose answer is computed by `answer`. */
       async function startLabelListener(answer: (input: AiGatewayCompletionInput) => unknown): Promise<void> {
         gatewayCalls.length = 0;
         const gateway: AiGatewayClientPort = {
@@ -804,8 +798,8 @@ describe("createMcpAgentPageRequestListener", () => {
       const contract = await startHttpContractServer(TOOLS);
       try {
         const projectItemId = await runInTenant(getTenantZeroId(), () => createTestProjectItem(pool));
-        // The project item itself points at the contract server, so a route that wrongly synced it would
-        // be counted by the handshake assertion below.
+        // The project item itself points at the contract server, so wrongly syncing it would show in the handshake
+        // count below.
         await pool.query(
           "UPDATE items SET properties = properties || jsonb_build_object('connectionConfig', $2::jsonb) WHERE id = $1",
           [projectItemId, JSON.stringify(contract.connectionConfig)],

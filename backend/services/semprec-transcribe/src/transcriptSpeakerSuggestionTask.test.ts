@@ -185,10 +185,7 @@ function runTask(transcriptId: string): Promise<void> {
   return inTenant(() => createTranscriptSpeakerSuggestionTask(dataPool, gateway)({ transcriptId }));
 }
 
-/**
- * Runs the queued jobs with the task registered, as the runner of `semprec-transcribe` does. Jobs of a tenant share one
- * lane, so one `runOnce` takes one of them; it is repeated until no job is left, at most once per job expected.
- */
+/** A tenant's jobs share one lane, so `runOnce` is repeated once per expected job. */
 async function drainQueue(): Promise<void> {
   const taskList = {
     [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: registerTask(

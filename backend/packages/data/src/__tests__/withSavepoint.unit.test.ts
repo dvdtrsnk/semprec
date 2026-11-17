@@ -26,12 +26,10 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-/** A connection that needs no database: its statements are recorded and those that start with a `failOn` key are rejected. */
 function fakeConnection(failOn: Record<string, unknown> = {}) {
   const query = vi.fn(
     async (sql: string, _values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number }> => {
       for (const [prefix, failure] of Object.entries(failOn)) if (sql.startsWith(prefix)) throw failure;
-      // The search-lane flush checks that its task identifiers are registered.
       if (sql.includes("graphile_worker._private_tasks"))
         return { rows: SEARCH_TASK_IDENTIFIERS.map((identifier) => ({ identifier })), rowCount: 0 };
       return { rows: [], rowCount: 0 };
@@ -49,7 +47,6 @@ function inTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): P
   return runAsSystem("withSavepoint unit test", () => withTransaction(pool, fn));
 }
 
-/** The SQL text of each statement, with the savepoint name replaced by its order of first appearance. */
 function sqlOf(query: ReturnType<typeof fakeConnection>["query"]): string[] {
   const names: string[] = [];
   return query.mock.calls
@@ -65,7 +62,6 @@ function sqlOf(query: ReturnType<typeof fakeConnection>["query"]): string[] {
 
 const addJobIdentifier = z.tuple([z.string(), z.tuple([z.string(), z.string()]).rest(z.unknown())]);
 
-/** The job keys that were added to the queue, in order. */
 function addedJobKeys(query: ReturnType<typeof fakeConnection>["query"]): string[] {
   return query.mock.calls
     .filter(([sql]) => sql.includes("graphile_worker.add_job"))

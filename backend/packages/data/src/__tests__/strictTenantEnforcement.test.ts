@@ -13,10 +13,9 @@ import {
 } from "../testSupport/testDb.js";
 
 /**
- * Issue #1067: the strict switch. `app_tenant_default()` no longer falls back to the sole tenant and
- * an unset `SEMPREC_TENANT_SCOPE` means strict. Assertions go through a runtime-role pool (the
- * superuser pool bypasses row-level security); `tenant_observability_checks` stands in for every
- * tenant table, since all of them share the same default and policies.
+ * `app_tenant_default()` has no sole-tenant fallback and an unset `SEMPREC_TENANT_SCOPE` means strict.
+ * Assertions use a runtime-role pool (the superuser bypasses RLS); `tenant_observability_checks` stands in for
+ * every tenant table, which all share the same default and policies.
  */
 const SELECT_CHECKS = "SELECT check_key, tenant_id FROM tenant_observability_checks ORDER BY check_key";
 const INSERT_CHECK =
@@ -30,7 +29,6 @@ function restoreMode(): void {
   else process.env.SEMPREC_TENANT_SCOPE = originalMode;
 }
 
-/** Every check row of every tenant, read on the superuser pool so no policy hides one. */
 async function allCheckKeys(): Promise<string[]> {
   const { rows } = await adminPool.query<{ check_key: string }>(
     "SELECT check_key FROM tenant_observability_checks ORDER BY check_key",
@@ -135,7 +133,7 @@ describe("users.tenant_id NOT NULL (issue #1067)", () => {
 
   it("still lets bootstrapFirstAccount create tenant zero's admin on an empty database", async () => {
     delete process.env.SEMPREC_TENANT_SCOPE;
-    // Through the production pool constructor, in the system scope the setup route uses (`setupHandler.ts`).
+    // The production pool constructor in the setup route's system scope (`setupHandler.ts`).
     const setupPool = createPool(process.env.TEST_DATABASE_URL!);
     let account: { id: string };
     try {

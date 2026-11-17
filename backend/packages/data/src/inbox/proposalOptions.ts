@@ -19,25 +19,18 @@ import { readAiProposal, parseStoredProposalEnvelope, type ProposalEnvelope } fr
 import { parseUserOverrides, type UserOverrides } from "./proposalOverrides.js";
 import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.js";
 
-/**
- * The choices a card's picker offers for one field (issue gh-1959), read for `GET /api/proposals/:id/options`. Everything
- * here only reads: the card, the source database of the field, the edges that count its usage and the Inbox catalogs.
- */
+// The choices a card's picker offers for one field (`GET /api/proposals/:id/options`). Read-only.
 
-/** The fields the options route answers for; any other value is a `ValidationError` of the route. */
 export const PROPOSAL_OPTION_FIELDS = ["project", "area", "people", "company", "page", "mcpProjects"] as const;
 export type ProposalOptionField = (typeof PROPOSAL_OPTION_FIELDS)[number];
 
-/** Narrows a request value to a field of the closed set. */
 export function isProposalOptionField(value: string): value is ProposalOptionField {
   return (PROPOSAL_OPTION_FIELDS as readonly string[]).includes(value);
 }
 
-/** One choice of a picker, as the route answers it. */
 export interface ProposalOption {
-  /** The item the choice stands for; `null` for the none choice and for a step that would create the item (`ref` names that step). */
+  /** `null` for the none choice and for a step that would create the item (`ref` names it). */
   id: string | null;
-  /** The `ref` of a step of the proposal that would create the item. */
   ref?: string;
   label: string;
   color?: string;
@@ -50,11 +43,10 @@ export interface ProposalOption {
 }
 
 interface FieldSpec {
-  /** `databases.owner_module_id` of every database the choices are read from. */
   sourceModuleIds: readonly string[];
   /** Where the none choice sits, `null` when the field has none. */
   none: "first" | "last" | null;
-  /** Whether the usage of a target is the number of edges of the card's relation to it; the other fields have no such relation. */
+  /** Whether usage is the card relation's edge count; other fields have no such relation. */
   countsEdges: boolean;
 }
 
@@ -67,10 +59,8 @@ const FIELD_SPECS: Readonly<Record<ProposalOptionField, FieldSpec>> = {
   mcpProjects: { sourceModuleIds: [PROJECTS_MODULE_ID], none: null, countsEdges: false },
 };
 
-/** The configuration of a relation property that names the database it points at. */
 const relationConfigSchema = z.object({ targetDatabaseId: z.string() });
 
-/** What a card's envelope refers to for one field: item ids, and the refs of steps that would create the item. */
 interface FieldReferences {
   itemIds: ReadonlySet<string>;
   stepRefs: ReadonlySet<string>;
@@ -78,7 +68,6 @@ interface FieldReferences {
 
 const NO_REFERENCES: FieldReferences = { itemIds: new Set(), stepRefs: new Set() };
 
-/** The item ids a stored value holds: one id string, or the id strings of a list; anything else holds none. */
 function idsOf(value: unknown): string[] {
   const candidates = Array.isArray(value) ? (value as unknown[]) : [value];
   return candidates.filter(
@@ -87,10 +76,8 @@ function idsOf(value: unknown): string[] {
 }
 
 /**
- * What `envelope` (with the user's `overrides` laid over it) refers to for `field`: the item ids and step refs in the
- * relation lists of its primary step, whichever relation key carries them, and the item ids in the value the editor
- * holds under the field's own key (`area`, `page`, `mcpProjects` and a property of that name). Which of them belong
- * to the field's database is decided by the caller.
+ * The item ids and step refs `envelope` (with `overrides` over it) holds for `field`: from the primary step's relation
+ * lists and the field's own key. The caller decides which belong to the field's database.
  */
 function readReferences(
   envelope: ProposalEnvelope | null,
@@ -108,7 +95,7 @@ function readReferences(
   };
 }
 
-/** The database that holds what the card writes: the target database of a `database` envelope, else the database of the target item. */
+/** The target database of a `database` envelope, else the database of the target item. */
 async function destinationDatabaseId(client: PoolClient, envelope: ProposalEnvelope | null): Promise<string | null> {
   if (!envelope || !UUID_RE.test(envelope.target)) return null;
   if (envelope.entityKind === "database") return envelope.target;
@@ -117,9 +104,8 @@ async function destinationDatabaseId(client: PoolClient, envelope: ProposalEnvel
 }
 
 /**
- * How many edges of the card's relation point at each candidate: the edges of the relations between the card's
- * destination database and the source databases of the field, counted on the source side, with one grouped query. A
- * card with no destination, or a destination with no relation to the field's databases, counts nothing.
+ * Edge counts per candidate over the relations between the card's destination and the field's source databases, in
+ * one grouped query.
  */
 async function countUsage(
   client: PoolClient,
@@ -153,7 +139,6 @@ function stringProperty(item: ItemRow, key: string | null): string {
   return typeof value === "string" ? value : "";
 }
 
-/** The first letters of the first and the last word of a name, upper-cased; one letter for a one-word name, none for an empty one. */
 function initialsOf(name: string): string {
   const words = name.split(/\s+/).filter((word) => word.length > 0);
   const first = words[0];
@@ -163,7 +148,6 @@ function initialsOf(name: string): string {
   return words.length === 1 ? letter(first) : `${letter(first)}${letter(last)}`;
 }
 
-/** An option with its place in the order: current value first, suggestion next, then the usage and the name. */
 interface RankedOption {
   option: ProposalOption;
   rank: 0 | 1 | 2;
@@ -171,20 +155,11 @@ interface RankedOption {
 }
 
 /**
- * The choices of `field` for the card `proposalId`, in the order the picker shows them (issue gh-1959):
- * the card's current value, then the assistant's suggestion, then the targets with the most edges of the card's relation,
- * then by name in the locale; the none choice is last for `project` and `company`, first for `area`, and absent for the
- * other fields. The current value is read from the card's stored (effective) envelope with the user's manual values, the
- * suggestion from the assistant's envelope (`aiProposal`, which a recompute rewrites).
- *
- * - A trashed target or an archived project is listed only when it is the current value, `disabled` with the reason
- *   (`relationTargetBlock`, the evaluation relation validation uses). Any other trashed or archived target is left out.
- * - A `done` project is listed when it is the current value or `includeDone` is set, and is then an ordinary choice.
- * - A step of the proposal that would create an item in the field's database is listed with its `ref`, `suggested`
- *   and the localized hint; it counts as the current value when the primary step links to it.
- *
- * Reads only, without a lock: the card is a plain read, and an unknown card, a trashed one and a card of another tenant
- * (row-level security hides it) are the same `NotFoundError`.
+ * The picker choices of `field` for the card, in display order: current value, then the assistant's suggestion
+ * (`aiProposal`), then by edge usage, then by name. The none choice is last for `project`/`company`, first for
+ * `area`, absent otherwise. A trashed or archived target is listed only as the current value, `disabled`; a `done`
+ * project only as the current value or with `includeDone`. Steps that would create an item in the field's database
+ * are listed by `ref`. Read-only, unlocked; unknown, trashed and other-tenant cards (RLS) are all `NotFoundError`.
  */
 export async function listProposalOptions(
   client: PoolClient,

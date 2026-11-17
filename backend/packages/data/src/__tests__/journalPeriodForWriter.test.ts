@@ -21,7 +21,6 @@ import {
 import type { DatabaseRow } from "../types.js";
 import type { JournalPeriodType } from "../journal/journalPeriods.js";
 
-// Seeding the system databases of a tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 120_000;
 const FORBIDDEN = { status: 403, code: "forbidden" };
 const USER = {};
@@ -45,7 +44,6 @@ function ensure(
   return inTenant((client) => ensureJournalPeriodForWriter(client, type, selector, writer), tenantId);
 }
 
-/** The live Journal entries with the period key `period`, of `type` when one is given. */
 async function journalEntryCount(period: string, tenantId = tenant, type?: JournalPeriodType): Promise<number> {
   return inTenant(async (client) => {
     const { rows } = await client.query<{ n: number }>(
@@ -138,8 +136,8 @@ describe("ensureJournalPeriodForWriter (issue #1861)", () => {
 
   describe("the grant on the Journal database", () => {
     async function setJournalSensitive(sensitive: boolean): Promise<void> {
-      // A non-sensitive system database is always open and its grant rows are ignored (docs/adr/2026-11-12-per-database-agent-grants.md),
-      // so the one way to make the grant on Journal decide is the flag the product sets on the Health and sleep databases.
+      // A non-sensitive system database is always open and its grant rows are ignored, so the one way to make
+      // the grant on Journal decide is the flag the product sets on the Health and sleep databases.
       await admin.query(`UPDATE databases SET sensitive = $2 WHERE id = $1`, [journal.id, sensitive]);
     }
 

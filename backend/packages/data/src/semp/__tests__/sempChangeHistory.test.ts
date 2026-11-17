@@ -43,7 +43,6 @@ interface Patch {
   to: string;
 }
 
-/** The events of a reply that patched `patches`, one successful `item.patch` call each. */
 function patchEvents(patches: readonly Patch[]): EventSpec[] {
   const calls = patches.flatMap(({ item, key, from, to }, index) => {
     const call = { toolCallId: `p-${index}`, name: "item_patch", operation: "item.patch", targetItemId: item.id };
@@ -83,14 +82,13 @@ function task(name: string, date: string): Promise<Fixture> {
   return createFixtureItem(setup, "tasks", { name, date });
 }
 
-/** The row of a message that was stored by the turn, as the history returns it. */
 async function historyRow(turn: PlayedTurn) {
   const row = (await readHistory(turn.threadId)).rows.find((candidate) => candidate.id === turn.messageId);
   if (!row) throw new Error("The reply is missing from the history");
   return row;
 }
 
-/** A column value no production writer stores: `changes` is written only by the turn's projector. */
+/** No production writer stores this: `changes` is written only by the turn's projector. */
 async function forgeChanges(messageId: string, changes: unknown): Promise<void> {
   await setup.admin.query("UPDATE semp_messages SET changes = $2::jsonb WHERE id = $1", [
     messageId,
@@ -218,7 +216,6 @@ describe("changed-item cards in the Semp thread history (issue #1888)", () => {
       last = await replyThatPatched([{ item, key: "date", from: "2026-11-02", to: "2026-11-03" }], first.threadId);
     }
 
-    // A second thread with a single card, read the same way.
     const single = await replyThatPatched([
       { item: await task("One card", "2026-11-02"), key: "date", from: "2026-11-02", to: "2026-11-03" },
     ]);
@@ -286,8 +283,7 @@ describe("changed-item cards in the Semp thread history (issue #1888)", () => {
         turnEndEvent(12),
       ]);
       await finishPlayedTurn(setup, turn, "done");
-      // The projector keeps no before for a sensitive database; this one models a database that turned sensitive
-      // after its entry was stored.
+      // The projector keeps no before for a sensitive database; this models one that turned sensitive later.
       await forgeChanges(turn.messageId, [
         {
           itemId: record.id,

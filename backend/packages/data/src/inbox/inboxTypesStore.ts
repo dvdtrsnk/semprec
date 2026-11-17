@@ -22,17 +22,12 @@ export interface InboxTypeSummary {
   id: string;
   emoji: string;
   label: string;
-  /** The stored `processingMethod` (issue #1436 validates it on write), or `null` when the type has none. */
+  /** Validated on write; `null` when the type has none. */
   processingMethod: string | null;
-  /** The stored `targetDatabase` canonical key, or `null` when the type has no target. */
   targetDatabaseKey: string | null;
 }
 
-/**
- * An Inbox item type's processing method (issue #102) — replaces the mock's hardcoded label-text comparison.
- * `journal` (issue gh-1975) proposes an entry on a Journal day, which usually does not exist yet, so it has no target
- * database and no target page.
- */
+/** `journal` proposes an entry on a Journal day, which usually does not exist yet, so it has no target database or page. */
 export const PROCESSING_METHODS = ["pageContent", "database", "journal"] as const;
 export type ProcessingMethod = (typeof PROCESSING_METHODS)[number];
 
@@ -43,18 +38,12 @@ function isProcessingMethod(value: unknown): value is ProcessingMethod {
 }
 
 /**
- * Cross-field validation for `processingMethod`/`targetDatabase` — the schema engine has no
- * generic cross-field concept (see chokePoint.ts's `assertWritableProperties`). It is not part of
- * the generic write path: `inbox/inboxTypeWriteHook.ts` calls it from the item create and update
- * hooks, inside the write's own transaction (issue #1436).
- * `processingMethod` and `targetDatabase` are both `select` properties (not `relation` — a
- * relation's target database is fixed at property-creation time, but this must point at any
- * one of `INBOX_TYPE_TARGET_DATABASES`; see seedInboxPipeline.ts's comment), so nothing about
- * the generic write path enforces their combination either.
+ * Cross-field validation the schema engine cannot express; called by `inboxTypeWriteHook.ts` inside the write's
+ * transaction. Both fields are `select` properties, not relations, because a relation's target database is fixed at
+ * property creation while this must point at any of `INBOX_TYPE_TARGET_DATABASES`.
  *
- * `resolvedMethod`/`resolvedTarget` are the values that would be in effect *after* the write
- * (already merged with the existing item on an update) — this only judges that final state,
- * never a partial patch in isolation.
+ * The arguments are the values in effect after the write (merged with the existing item on an update), never a
+ * partial patch.
  */
 export function assertValidProcessingConfig(resolvedMethod: unknown, resolvedTarget: unknown): void {
   if (resolvedMethod === undefined || resolvedMethod === null) {
@@ -71,8 +60,7 @@ export function assertValidProcessingConfig(resolvedMethod: unknown, resolvedTar
     });
   }
   if (resolvedMethod === "database") {
-    // A `database` type that names the Journal database was accepted before the `journal` method existed and then
-    // proposed an empty Journal record (issue gh-1975), so the refusal names the method that replaces it.
+    // The Journal is targeted through the `journal` method, so the refusal names it.
     if (resolvedTarget === JOURNAL_MODULE_ID) {
       throw new ValidationError(
         "processingMethod 'database' cannot target the Journal database; use processingMethod 'journal' instead",
@@ -106,10 +94,7 @@ export interface CreateInboxTypeInput {
   targetDatabase?: InboxTypeTargetDatabase;
 }
 
-/**
- * The Inbox item type creation logic (issue #102), mirroring `inbox/inboxStore.ts`'s `createInboxItemWithClient`.
- * The processing-config check runs in the item create hook (issue #1436), not here.
- */
+/** The processing-config check runs in the item create hook, not here. */
 export async function createInboxTypeWithClient(client: PoolClient, input: CreateInboxTypeInput): Promise<ItemRow> {
   return createItemWithClient(client, {
     databaseId: input.inboxItemTypesDatabaseId,
@@ -130,11 +115,8 @@ export interface UpdateInboxTypeInput {
 }
 
 /**
- * The Inbox item type update logic (issue #102). The processing-config check runs in the item update
- * hook (issue #1436), which judges the item as the patch leaves it, so a patch that only touches one of
- * the two fields is judged against the resulting whole, not the patch in isolation — e.g. patching
- * `targetDatabase` alone on a type that is already `processingMethod: 'database'` is valid; patching it
- * alone on a `pageContent` type is rejected.
+ * The processing-config check runs in the item update hook against the resulting whole: patching `targetDatabase`
+ * alone is valid on a `database` type and rejected on a `pageContent` one.
  */
 export async function updateInboxTypeWithClient(client: PoolClient, input: UpdateInboxTypeInput): Promise<ItemRow> {
   const current = await itemsStore.getItemById(client, input.inboxItemTypesDatabaseId, input.itemId);
@@ -147,7 +129,7 @@ export async function updateInboxTypeWithClient(client: PoolClient, input: Updat
   });
 }
 
-/** Processing proposal states in which the card, and therefore its source Inbox item, is never recomputed again (issue #100's "a locked card is never recomputed again"). */
+/** A card in these states, and therefore its source Inbox item, is never recomputed. */
 export const LOCKED_PROPOSAL_STATUSES = new Set(["confirmed", "rejected"]);
 
 export interface DeleteInboxTypeInput {
@@ -158,19 +140,9 @@ export interface DeleteInboxTypeInput {
 }
 
 /**
- * Deletes an Inbox item type (issue #102). Per the epic (#100): "Deleting a type that
- * existing Inbox items still reference does not leave those items dangling with a dead
- * reference — they fall into the same path as an item with no type at all... no
- * special-case handling code just for deleted references, just reuse of the existing
- * 'unknown type' mechanism." Concretely: this clears the `type` relation on every
- * referencing Inbox item that is not locked, so the item becomes indistinguishable from
- * one that never had a type — the same untyped state `createInboxItemWithClient` already
- * treats as valid and which later (issue #103) enters `needsClarification`.
- *
- * A locked Inbox item — one with a `confirmed`/`rejected` Processing proposal card, per
- * the epic's "a locked card is never recomputed again" — is left alone: it is already
- * fully processed and historical, so dereferencing it would serve no purpose and would
- * discard the record of what type it actually was.
+ * Clears the `type` relation on every unlocked referencing Inbox item, so it falls into the ordinary untyped path
+ * (`needsClarification`) with no special case for deleted references. Locked items (a `confirmed`/`rejected` card) are
+ * left alone: they are historical, and dereferencing them would discard the record of their type.
  */
 export async function deleteInboxTypeWithClient(
   client: PoolClient,
@@ -222,15 +194,9 @@ export async function deleteInboxTypeWithClient(
 }
 
 /**
- * The data behind `GET /api/inbox-types` (issue #101; no HTTP layer exists yet in this repo
- * to mount it on — see backend/services' "empty until its issue" convention). Returns only
- * active types: archiving a type (issue #102) removes it from new capture while existing
- * Inbox items keep pointing at its id validly. `label` is the type's own `name`, not looked
- * up via i18n — unlike a structural, system-defined vocabulary entry, an Inbox item type is
- * user-managed content, the same as any other item's `name`. Relations always store `id`,
- * never `emoji` — renaming a type's emoji afterwards cannot break an Inbox item's relation.
- * `processingMethod` and `targetDatabaseKey` are the stored values (issue #1439); the target's
- * display name is not read here, `createInboxTypesRouteHandler` resolves it in the caller's locale.
+ * Only active types: archiving removes a type from new capture while existing items keep its id. Relations store the
+ * id, never the emoji, so changing the emoji cannot break them. The target's display name is resolved by the route
+ * handler.
  */
 export async function listActiveInboxTypes(
   client: Queryable,

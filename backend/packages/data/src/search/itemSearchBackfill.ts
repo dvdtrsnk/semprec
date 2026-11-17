@@ -17,11 +17,7 @@ const backfillOptionsSchema = z
   .strict();
 export type ItemSearchBackfillOptions = z.infer<typeof backfillOptionsSchema>;
 
-/**
- * Enqueues one chunk in the caller's managed transaction, added at its pre-commit flush
- * (`enqueueSearchLaneJob`); its cursor is part of the key so a running chunk cannot absorb its
- * continuation.
- */
+/** Added at the pre-commit flush; the cursor is part of the key so a running chunk cannot absorb its continuation. */
 export async function enqueueItemSearchBackfill(client: PoolClient, options: ItemSearchBackfillOptions): Promise<void> {
   const payload = backfillOptionsSchema.parse(options);
   const scope = currentTenantScope();

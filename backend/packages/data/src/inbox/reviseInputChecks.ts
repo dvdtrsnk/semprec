@@ -2,10 +2,8 @@
 export const MAX_REVISE_MESSAGE_LENGTH = 2000;
 
 /**
- * Whether a JSON value holds U+0000 in any string or object key. Postgres cannot store it in jsonb or text (22P05), so
- * the revise route and the revise tool refuse such a value before writing it. The walk is iterative and visits every
- * node of the value once, so a deeply nested value cannot exhaust the stack; the size cap of the request or of the
- * tool call bounds its length.
+ * Whether a JSON value holds U+0000 in any string or key; Postgres cannot store it (22P05). Iterative, so deep
+ * nesting cannot exhaust the stack.
  */
 export function containsNul(root: unknown): boolean {
   const pending: unknown[] = [root];

@@ -33,7 +33,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** A real Mailbox item — `mail_account_sync_state.item_id` is a foreign key, so a plain string id is rejected. */
+/** A real Mailbox item: `mail_account_sync_state.item_id` is a foreign key. */
 async function createMailboxItem(name: string): Promise<string> {
   const mailboxesId = await databaseIdFor("mailboxes");
   const item = await withTransaction(pool, (client) =>
@@ -57,7 +57,6 @@ interface FakeTransportOptions {
     mailboxItemId: string,
     credential: string,
   ) => GmailWatchRegistration | Promise<GmailWatchRegistration>;
-  /** Returns the notifications for the *next* pull call, or throws to simulate a transient pull failure. Defaults to an empty poll. */
   pullQueue?: Array<GmailPubSubNotification[] | "reject">;
 }
 
@@ -65,7 +64,7 @@ function createFakeTransport(options: FakeTransportOptions = {}): {
   transport: GmailWatchTransport;
   registerWatchCalls: Array<{ mailboxItemId: string; credential: string }>;
   ackCalls: string[][];
-  /** A mutable counter object, not a plain number — a destructured primitive would snapshot the count at zero forever. */
+  /** A counter object: a destructured primitive would snapshot the count at zero. */
   pullCallCount: { value: number };
 } {
   const registerWatchCalls: Array<{ mailboxItemId: string; credential: string }> = [];
@@ -132,9 +131,8 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
       expect(state?.gmailWatchExpiresAt).toBe(expiresAt.toISOString());
     });
     expect(registerWatchCalls.length).toBe(1);
-    // The account had no cursor yet, so the watch registration's own historyId seeds it —
-    // issue #197's "persist history/expiry" requirement — sparing reconcileGmailAccount an
-    // otherwise-unavoidable full listAllMessageIds() resync on first sync.
+    // The account had no cursor yet, so the watch registration's historyId seeds it, sparing
+    // reconcileGmailAccount a full listAllMessageIds() resync on first sync.
     expect((await getMailAccountSyncState(pool, mailboxItemId))?.gmailHistoryId).toBe("999999");
 
     await lifecycle.stop();
@@ -143,8 +141,7 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
   it("never overwrites an already-advanced history cursor with a later renewal's historyId", async () => {
     const mailboxItemId = await createMailboxItem("A2");
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "gmail_api" });
-    // Simulates a reconcile pass (gmailReconcile.ts) having already advanced the cursor past
-    // whatever this renewal's watch registration will report.
+    // Simulates a reconcile pass having already advanced the cursor past this renewal's historyId.
     await recordGmailActivity(pool, { itemId: mailboxItemId, historyId: "500000", nextExpectedActivityAt: new Date() });
 
     const { transport, registerWatchCalls } = createFakeTransport({
@@ -158,8 +155,6 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
 
     await lifecycle.start();
     await vi.waitFor(() => expect(registerWatchCalls.length).toBe(1));
-    // A renewal's own (older-looking) historyId must never regress the cursor a reconcile pass
-    // already advanced past it.
     expect((await getMailAccountSyncState(pool, mailboxItemId))?.gmailHistoryId).toBe("500000");
 
     await lifecycle.stop();
@@ -215,10 +210,8 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
   });
 
   it("renews the watch on the configured interval, replacing the persisted expiry each time", async () => {
-    // Real timers, not fake ones: each renewal round makes a real `recordGmailWatchRegistration`
-    // DB write, and racing that real I/O against a virtual clock (as the pull-error-backoff test
-    // above safely can, since its loop never touches the DB) is exactly the kind of flake this
-    // avoids by using a short real interval and polling instead.
+    // Real timers: each renewal makes a real `recordGmailWatchRegistration` DB write, which would race a
+    // virtual clock, so a short real interval and polling are used instead.
     const mailboxItemId = await createMailboxItem("F");
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "gmail_api" });
     let call = 0;
@@ -284,10 +277,8 @@ async function jobEnvelopeTenants(mailboxItemId: string): Promise<Array<string |
 }
 
 /**
- * Runs `body` with `enqueueMailAccountSync` rejecting for `failingMailboxItemId` and delegating to the
- * actual implementation for every other id. The actual implementation is reinstalled in `finally`, so a
- * rejected assertion or await inside `body` cannot leak the override into later tests; the hooks'
- * `mockClear` only resets recorded calls and would leave the override installed.
+ * Runs `body` with `enqueueMailAccountSync` rejecting for `failingMailboxItemId` and delegating otherwise.
+ * The real implementation is reinstalled in `finally`; `mockClear` alone would leave the override.
  */
 async function withFailingEnqueueTarget(failingMailboxItemId: string, body: () => Promise<void>): Promise<void> {
   const actual = await vi.importActual<typeof import("../mail/mailSyncJob.js")>("../mail/mailSyncJob.js");

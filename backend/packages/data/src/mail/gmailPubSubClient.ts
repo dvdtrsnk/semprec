@@ -4,51 +4,32 @@ import type { GmailPubSubNotification, GmailWatchRegistration, GmailWatchTranspo
 const GMAIL_BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
 const PUBSUB_BASE_URL = "https://pubsub.googleapis.com/v1";
 
-/**
- * Hard cap on a single response body — generous for anything Gmail/Pub/Sub's JSON APIs
- * legitimately return (a `users.watch` ack, a page of at most `maxPullMessages` notifications),
- * but bounds a misbehaving or compromised endpoint's ability to exhaust process memory by
- * streaming an unbounded body before `response.json()` would otherwise buffer all of it.
- */
+/** Bounds memory against a misbehaving endpoint; far above any legitimate response. */
 const MAX_JSON_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 export interface GmailPubSubClientOptions {
-  /**
-   * Exchanges one account's decrypted OAuth refresh token (`credential`, as decrypted by
-   * `getDecryptedCredential`) for a Gmail-API bearer token — called fresh per `registerWatch`,
-   * same `oauthTokenExchange.ts`-backed shape `mailSyncJob.ts` already uses when it builds a
-   * per-account `GmailRestClient`. Only `users.watch` needs this: it is the one call made under
-   * the watched account's own OAuth grant.
-   */
+  /** Exchanges the account's refresh token for a bearer token; only `users.watch` runs under the account's grant. */
   getGmailAccessToken: (mailboxItemId: string, credential: string) => Promise<string>;
   /**
-   * The Cloud Pub/Sub `pull`/`acknowledge` calls authenticate as this app's own GCP service
-   * account, not as any watched Gmail account — a user's Gmail OAuth grant has no Pub/Sub scope
-   * at all, and the topic/subscription is shared across every watched account in this project
-   * (`subscriptionName` below), not owned by one of them. Called fresh per request; this
-   * transport instance is shared across every Gmail-mode account's lifecycle (mirroring
-   * `ImapIdleTransport`'s design, where one transport instance serves every account).
+   * Pub/Sub calls authenticate as the app's own GCP service account: a Gmail grant has no Pub/Sub
+   * scope, and the subscription is shared by every watched account.
    */
   getPubSubAccessToken: () => Promise<string>;
-  /** `projects/{project}/topics/{topic}` — the already-provisioned Pub/Sub topic `users.watch` publishes to (GCP topic/subscription creation is explicitly out of scope for this issue). */
+  /** `projects/{project}/topics/{topic}`, provisioned outside this code. */
   topicName: string;
-  /** `projects/{project}/subscriptions/{subscription}` — the already-provisioned pull subscription on that topic, shared by every watched account in this GCP project. */
+  /** `projects/{project}/subscriptions/{subscription}`, provisioned outside this code. */
   subscriptionName: string;
-  /** Restricts notifications to these labels (Gmail default: all changes). Matches `users.watch`'s own `labelIds` request field. */
+  /** Gmail default: all changes. */
   labelIds?: string[];
-  /** How many messages to request per pull — Google caps this at 1000; small accounts never need that many at once. */
+  /** Google caps this at 1000. */
   maxPullMessages?: number;
   /**
-   * Called for a `receivedMessages` entry that doesn't parse as a valid notification (a version
-   * skew this parser doesn't understand yet, a malformed payload) — observability only. The
-   * entry itself is skipped, not thrown out of the whole batch: one bad notification must never
-   * block every other, well-formed notification in the same pull response from being processed.
-   * Left unacknowledged, so Pub/Sub redelivers it rather than losing it.
+   * Observability only. A malformed entry is skipped so it cannot block the rest of the batch,
+   * and left unacknowledged so Pub/Sub redelivers it.
    */
   onMalformedNotification?: (raw: unknown, err: unknown) => void;
 }
 
-/** Reads a response body up to `maxBytes`, throwing rather than buffering an unbounded stream — `response.json()` alone has no such limit. */
 async function readBoundedText(response: Response, url: string, maxBytes: number): Promise<string> {
   const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
   if (!reader) return response.text();
@@ -69,12 +50,7 @@ async function readBoundedText(response: Response, url: string, maxBytes: number
   return text;
 }
 
-/**
- * Returns the parsed JSON object, never cast to a caller-chosen type — every call site
- * validates the specific fields it needs (an `as T` cast here would let a response missing an
- * expected field flow silently into `Number(undefined)`/`undefined.property` deep inside a
- * caller instead of failing at the request boundary with a clear error).
- */
+/** Deliberately untyped: each call site validates the fields it reads. */
 async function jsonRequest(url: string, accessToken: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
   const response = await fetch(url, {
     ...init,
@@ -86,11 +62,6 @@ async function jsonRequest(url: string, accessToken: string, init: RequestInit =
   return assertJsonObject(JSON.parse(text), `response from ${url}`);
 }
 
-/**
- * Parses one Cloud Pub/Sub `receivedMessages` entry into a `GmailPubSubNotification`, validating
- * every field it reads along the way — throws on the first thing that doesn't match rather than
- * letting a missing/mistyped field reach the caller as `undefined`.
- */
 function parseReceivedMessage(raw: unknown): GmailPubSubNotification {
   const received = assertJsonObject(raw, "Pub/Sub receivedMessages entry");
   if (typeof received.ackId !== "string" || !received.ackId) {
@@ -100,10 +71,8 @@ function parseReceivedMessage(raw: unknown): GmailPubSubNotification {
   if (typeof message.data !== "string") {
     throw new Error(`Pub/Sub message for ackId ${received.ackId} is missing string data`);
   }
-  // Gmail's watch payload is base64 `{"emailAddress": "...", "historyId": "..."}`, itself
-  // wrapped as Pub/Sub's own base64 `message.data` — an extra layer of encoding on top of the
-  // `format=full` base64url bodies gmailRestClient.ts decodes, not the same alphabet (Pub/Sub's
-  // `message.data` is standard base64, unlike Gmail message parts' base64url).
+  // `message.data` is standard base64 (not the base64url of Gmail message parts) of
+  // `{"emailAddress", "historyId"}`.
   const decoded = assertJsonObject(
     JSON.parse(Buffer.from(message.data, "base64").toString("utf8")),
     `Pub/Sub notification payload for ackId ${received.ackId}`,
@@ -115,13 +84,8 @@ function parseReceivedMessage(raw: unknown): GmailPubSubNotification {
 }
 
 /**
- * Real `GmailWatchTransport` (gmailWatchLifecycle.ts) over the Gmail REST `users.watch`
- * endpoint plus the Cloud Pub/Sub REST `pull`/`acknowledge` endpoints — plain `fetch`, not the
- * `@google-cloud/pubsub` SDK, matching `GmailRestClient`'s (gmailRestClient.ts) own choice to
- * keep this package free of a network-vendor dependency beyond parsing libraries. Not exercised
- * by this issue's tests (no live Google account or GCP project in CI) — the orchestration this
- * depends on (renewal cadence, notification-to-reconcile handoff, account-validation filtering)
- * is what is actually unit-tested, against a fake transport in gmailWatchLifecycle.test.ts.
+ * Gmail `users.watch` plus Pub/Sub `pull`/`acknowledge` over plain `fetch` (no vendor SDK). Not
+ * covered by tests; the lifecycle is tested against a fake transport.
  */
 export function createGmailPubSubTransport(options: GmailPubSubClientOptions): GmailWatchTransport {
   const maxMessages = options.maxPullMessages ?? 100;

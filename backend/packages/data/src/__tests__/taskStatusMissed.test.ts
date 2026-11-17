@@ -24,7 +24,6 @@ let pool: Pool;
 let tenant: string;
 let cp: ChokePoint;
 let tasksId: string;
-/** The tenant's own today, read once per case: the rules compare with the day in the system time zone. */
 let today: DateTime;
 
 const USER: WriterIdentity = { writerKind: "user" };
@@ -44,7 +43,6 @@ async function stored(itemId: string): Promise<Record<string, unknown>> {
   return item.properties;
 }
 
-/** A daily series started on the day five days ago through the recurrence route. */
 async function dailySeries(): Promise<string> {
   const task = await runInTenant(tenant, () =>
     cp.createItem({ databaseId: tasksId, properties: { name: "Stretch", date: day(-5) } }),
@@ -61,7 +59,7 @@ async function dailySeries(): Promise<string> {
   return seriesId;
 }
 
-/** A done occurrence of the series on `date` (synthetic: the #1720 materialization that stores them is not built). */
+/** Synthetic: no materialization stores occurrences yet. */
 function doneOccurrence(seriesId: string, date: string): Promise<string> {
   return runInTenant(tenant, () =>
     createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: date, status: "done" }),
@@ -84,13 +82,12 @@ const cancelledRow = z.object({ cancelled: z.boolean() });
 const blockedRow = z.object({ blocked: z.boolean() });
 const pidRow = z.object({ pid: z.number() });
 
-/** One database backend: its pid and start time, which together never name a later backend that reuses the pid. */
+/** Pid plus start time never names a later backend that reuses the pid. */
 type Session = z.infer<typeof sessionRow>;
 
 const asError = (error: unknown): Error =>
   error instanceof Error ? error : new Error("A transaction failed with a non-Error value", { cause: error });
 
-/** Rejects after `ms` unless `promise` settles first. A rejection only ends the wait: it stops nothing. */
 async function bounded<T>(promise: Promise<T>, what: string, ms = WAIT_MS): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -105,7 +102,7 @@ async function bounded<T>(promise: Promise<T>, what: string, ms = WAIT_MS): Prom
   }
 }
 
-/** The first failure, the same object, with every later failure appended in order to its cause. */
+/** The first failure, with every later failure appended to its cause. */
 function withLaterFailures(first: Error, later: Error[]): Error {
   if (later.length > 0) {
     // An earlier cause stays the first entry.
@@ -121,21 +118,17 @@ async function sessionOf(client: PoolClient): Promise<Session> {
   return sessionRow.parse(rows[0]);
 }
 
-/** Actors whose end was not confirmed. Their pools stay open, and no later reset or pool end may race them. */
+/** Actors whose end was not confirmed; their pools stay open so no reset or pool end races them. */
 const unsettled: string[] = [];
 
 function assertNothingUnsettled(): void {
   if (unsettled.length > 0) throw new Error(`Not settled, so nothing is reset or closed: ${unsettled.join(", ")}`);
 }
 
-/**
- * A runtime-role pool of one actor alone. Each backend it opens is identified by a query queued on it before the pool
- * hands it out, so that query runs before the actor's first one.
- */
+/** Each backend is identified by a query queued before the pool hands it out. */
 interface OwnedPool {
   readonly pool: Pool;
   readonly sessions: Array<Promise<Session>>;
-  /** The first backend it opened. */
   readonly session: Promise<Session>;
 }
 
@@ -154,7 +147,6 @@ async function ownedPool(): Promise<OwnedPool> {
   return { pool: owned, sessions, session };
 }
 
-/** A concurrently running test actor on its own pool. Its outcome is observed from launch: null, or its error. */
 interface Actor {
   readonly what: string;
   readonly owned: OwnedPool;
@@ -169,7 +161,6 @@ function launch(what: string, owned: OwnedPool, run: (actorPool: Pool) => Promis
   return { what, owned, outcome };
 }
 
-/** Cancels the current statement of one backend the actor owns; anything short of a confirmed cancel throws. */
 async function cancelOwned(observer: PoolClient, session: Session): Promise<void> {
   const { rows } = await observer.query<Record<string, unknown>>(
     "SELECT pg_cancel_backend(pid) AS cancelled FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz",
@@ -181,10 +172,8 @@ async function cancelOwned(observer: PoolClient, session: Session): Promise<void
 }
 
 /**
- * Waits for the actor's outcome. If that wait fails, cancels the current statement of each backend its pool opened,
- * then waits once more. Its pool is ended only after its outcome arrived. When the outcome never arrives, `outcome`
- * is undefined, the actor is recorded in `unsettled` and its pool is not ended; a pool whose end does not complete is
- * recorded there too.
+ * Waits for the outcome; on failure, cancels each backend's current statement and waits once more. The pool is
+ * ended only after the outcome arrived; otherwise the actor is recorded in `unsettled`.
  */
 async function settleActor(
   actor: Actor,
@@ -231,7 +220,6 @@ async function settleActor(
   return { outcome, failures };
 }
 
-/** Settles each actor in order, each on its own: a failure settling one never skips a later one. */
 async function settleEach(
   actors: Array<{ actor: Actor; observeMs: number }>,
   observer: PoolClient,
@@ -248,7 +236,6 @@ function assertOwnSessions(observer: Session, actors: Session[]): void {
   }
 }
 
-/** Waits until backend `waiter` is blocked by backend `blocker`, as the observer's own session sees it. */
 async function waitsOn(observer: PoolClient, waiter: number, blocker: number, what: string): Promise<void> {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
@@ -262,7 +249,6 @@ async function waitsOn(observer: PoolClient, waiter: number, blocker: number, wh
   }
 }
 
-/** The pids of `sessions` still connected, once none is or after `WAIT_MS`, as the observer's own session sees it. */
 async function liveSessions(observer: PoolClient, sessions: Session[]): Promise<number[]> {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
@@ -277,14 +263,12 @@ async function liveSessions(observer: PoolClient, sessions: Session[]): Promise<
   }
 }
 
-/** The first actor: a transaction of the tenant that runs `work`, then stays open until it is released. */
+/** A transaction that runs `work`, then stays open until released. */
 interface HeldWork {
   work: (client: PoolClient) => Promise<void>;
-  /** Runs in the same transaction once it is released. */
   afterRelease?: (client: PoolClient) => Promise<void>;
 }
 
-/** Starts `held` on its own pool: `ready` resolves once `work` is done, `release` lets the transaction go on. */
 async function heldTransaction(held: HeldWork) {
   const owned = await ownedPool();
   let release!: () => void;
@@ -302,20 +286,16 @@ async function heldTransaction(held: HeldWork) {
   return { actor, ready, release };
 }
 
-/** Test-local faults for `secondWaitsForFirst`; production code is never changed. */
+/** Test-local faults; production code is never changed. */
 interface SecondWaitsFaults {
-  /** Replaces the barrier that observes the second transaction blocked by the first. */
   observe?: (observer: PoolClient, waiter: number, blocker: number, what: string) => Promise<void>;
-  /** How long the first wait for the first transaction's outcome lasts. */
   firstSettleMs?: number;
-  /** Receives each actor backend once identified. */
   sessions?: Session[];
 }
 
 /**
- * Holds the first transaction open, starts `second` on its own pool and waits until it is blocked by the first, then
- * releases the first. Both actors are then settled in that order, each on its own (`settleActor`). The first failure
- * is thrown, the same object, with every later failure appended to its cause.
+ * Holds the first transaction until `second` is blocked by it, then releases; both actors are settled in order.
+ * The first failure is thrown with every later one appended to its cause.
  */
 async function secondWaitsForFirst(
   held: HeldWork,
@@ -363,7 +343,6 @@ async function secondWaitsForFirst(
   if (failure) throw withLaterFailures(failure, later);
 }
 
-/** A user write of the Tasks item through the generic write on the actor's own pool. */
 function writeOn(actorPool: Pool, itemId: string, propertiesPatch: Record<string, unknown>) {
   return createChokePoint(actorPool).updateItem(
     { databaseId: tasksId, itemId, propertiesPatch },
@@ -373,7 +352,6 @@ function writeOn(actorPool: Pool, itemId: string, propertiesPatch: Record<string
   );
 }
 
-/** A monthly rule on the occurrence's day of the month: its next date after `date` is a month later. */
 function monthlyOn(date: string) {
   return { mode: "fixed" as const, rule: { kind: "monthDates" as const, dates: [DateTime.fromISO(date).day] } };
 }

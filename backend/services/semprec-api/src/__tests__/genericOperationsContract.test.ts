@@ -120,15 +120,9 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 47-operation catalog (issue #219's acceptance
- * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
- * `property.getByKey` by issue #432). Each case
- * issues the real HTTP request a REST caller would send and asserts only that it reaches
- * `genericApplicationService` through `GENERIC_OPERATION_BINDINGS` and succeeds — the exhaustive
- * per-field/per-error-branch behavior for each route already lives in its own handler test file
- * (`itemsHandler.test.ts`, `databasesHandler.test.ts`, `propertiesHandler.test.ts`,
- * `viewsHandler.test.ts`). The `Object.keys(CASES)` assertion below is what keeps this list
- * honest as the catalog evolves: an operation with no case here fails that assertion.
+ * One REST exercise per operation in the closed catalog, asserting only that the real HTTP request reaches
+ * `genericApplicationService` through `GENERIC_OPERATION_BINDINGS` and succeeds; per-branch behavior lives in each
+ * route's handler test. The `Object.keys(CASES)` assertion below fails for an operation with no case.
  */
 const CASES: Record<GenericOperationName, ContractCase> = {
   "database.list": async (fx, headers, baseUrl) => {
@@ -186,9 +180,8 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(body.id).toBe(fx.property.id);
     expect(body.config).toBeDefined();
   },
-  // REST exposes `property.getByKey` only through the relation routes' `:propertyKey` resolution
-  // (issue #432): a RELATION key resolves, a same-database non-relation key is filtered out by the
-  // operation's `type` and answers 404.
+  // REST exposes `property.getByKey` only through the relation routes' `:propertyKey`: a RELATION key resolves, a
+  // same-database non-relation key is filtered out by `type` and answers 404.
   "property.getByKey": async (fx, headers, baseUrl) => {
     const resolved = await fetch(
       `${baseUrl}/api/items/${fx.itemB.id}/relations/${fx.relationProperty.key}/${fx.targetItem.id}`,
@@ -492,7 +485,6 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(body.relations.map((relation) => relation.targetItemId)).toEqual([fx.targetItem.id]);
   },
   "relation.related": async (fx, headers, baseUrl) => {
-    // `itemA` is linked to the target item, and the target database holds the inverse property of that relation.
     const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/related`, { headers });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual([
@@ -546,7 +538,7 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const summary: unknown = await read.json();
     expect(summary).toMatchObject({ docId: body.docId });
   },
-  // The REST equivalent of this operation is the lazy-creating route of issue #1541, not a new route.
+  // Its REST equivalent is the lazy-creating route.
   "page.ensureJournalPeriod": async (_fx, headers, baseUrl) => {
     const response = await fetch(`${baseUrl}/api/journal/periods/week/2026-W42/doc`, { method: "PUT", headers });
     expect(response.status).toBe(200);
@@ -557,12 +549,12 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       range: { from: "2026-10-12", to: "2026-10-18" },
     });
   },
-  // The operation has no REST route: a merge action in the app is out of scope of issue #2017. The case dispatches the
-  // binding as a person's REST session, the way a route would, over a period with two live entries.
+  // No REST route: the case dispatches the binding as a person's REST session would, over a period with two live
+  // entries.
   "page.mergeJournalDuplicates": async () => {
     const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
     if (!journal) throw new Error("Journal database is not seeded");
-    // A state the lazy creation never produces (it reuses the live entry of a period), so the fixture creates both entries directly.
+    // The lazy creation never produces this state, so the fixture creates both entries directly.
     const entry = () =>
       withTransaction(pool, (client) =>
         createItemWithClient(
@@ -667,7 +659,7 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       .strict()
       .parse(await response.json());
     const read = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page`, { headers });
-    // The page block was the only block of the page, so the trash left the empty text block of an emptied document behind the new one.
+    // The page block was the only block, so the trash left the empty text block of an emptied document.
     expect(await read.json()).toMatchObject({
       blocks: [
         { id: converted.blockId, type: "h2", text: "Before" },
@@ -696,7 +688,7 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     });
   },
   "page.replace": async (fx, headers, baseUrl) => {
-    // The page of an item without a document has the version token of an empty document; replacing it creates the page.
+    // Without a document, the page has an empty document's version token; replacing it creates the page.
     const read = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/page.md`, { headers });
     const etag = read.headers.get("etag");
     expect(etag).not.toBeNull();
@@ -722,7 +714,6 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(await response.json()).toMatchObject({ docId: null, blocks: [], blockCount: 0, subpageCount: 0 });
   },
   "page.restoreVersion": async (fx, headers, baseUrl) => {
-    // A page whose history opens an hour ago, restored to half an hour ago: the one block it had is still there.
     await createDocStore(pool).putBlock(
       fx.itemA.id,
       { id: "b1", flavour: "paragraph", fields: { content: "first" } },
@@ -736,7 +727,6 @@ const CASES: Record<GenericOperationName, ContractCase> = {
        WHERE through_update_id = 0 AND doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
       [fx.itemA.id],
     );
-    // The block's update is dated an hour back too, so the page at the instant already had it.
     await pool.query(
       `UPDATE doc_updates SET created_at = now() - interval '1 hour'
        WHERE doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
@@ -767,7 +757,6 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     });
     expect(res.status).toBe(200);
     const body: unknown = await res.json();
-    // `itemA` is linked to the target item and `itemB` to none.
     expect(body).toEqual({
       counts: [
         {
@@ -793,7 +782,6 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     });
     expect(res.status).toBe(200);
     const body: unknown = await res.json();
-    // `itemA` is linked to the target item and `itemB` to none; `itemB` alone is titled "Dune".
     expect(body).toEqual({
       facets: [
         {
@@ -846,7 +834,7 @@ const CASES: Record<GenericOperationName, ContractCase> = {
       ],
     });
 
-    // A result of the journal group carries the stored period type and key, and a result of another group none (issue #1859).
+    // A journal result carries the stored period type and key; other groups none.
     const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
     if (!journal) throw new Error("Journal not seeded");
     const day = await withTransaction(pool, (client) =>
@@ -1628,7 +1616,6 @@ describe("generic operation REST contract (issue #219)", () => {
           await link(projects.id, secondProject.id, "area", area.id);
           await link(files.id, file.id, "projects", project.id);
           await link(files.id, file.id, "projects", secondProject.id);
-          // Existing value links are created by their production store before propagation is delivered.
           await withTransaction(runtime, (client) =>
             insertValueLink(client, {
               itemId: file.id,
@@ -2023,11 +2010,9 @@ describe("generic operation REST contract (issue #219)", () => {
     const fx = await buildFixtures();
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
 
-    // Every REST route assembles its own explicit command object (`genericBinding.ts`'s
-    // `dispatchGenericOperation`, called with a hand-picked field list, never a body spread) — an
-    // `agentProjectItemId`/`runId`/`userId` field in the JSON body has no route that reads it, so
-    // it cannot influence who the choke point believes made this write, unlike MCP/AgentTools'
-    // `arguments`, where the same fields are rejected outright by each operation's strict schema.
+    // Every REST route assembles an explicit command object from hand-picked fields, never a body spread, so
+    // `agentProjectItemId`/`runId`/`userId` in the JSON body cannot influence the write's actor. (MCP/AgentTools
+    // `arguments` reject those fields through each operation's strict schema.)
     const res = await fetch(`${baseUrl}/api/databases/${fx.database.id}/views`, {
       method: "POST",
       headers,

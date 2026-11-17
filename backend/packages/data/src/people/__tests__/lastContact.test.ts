@@ -45,12 +45,9 @@ import { findOrphanedOwnerProcessIds } from "../../manifest/moduleRegistryDriftC
 import { KNOWN_OWNER_PROCESS_IDS } from "../../manifest/knownActionIds.js";
 
 /**
- * Issue #1660: People `lastContact`, derived from linked Events, Emails and Transcripts. Every production
- * write goes through the choke point or the owning mail writers on a `semprec_data` pool, so row-level
- * security applies; the recompute and the sweep run through the production `createCoreTaskList` handlers
- * drained with `runOnce`, except where a case needs a clock other than the real one (the sweep's next day, an
- * Event's start later today), which calls `recomputePersonLastContact` or `handlePeopleLastContactSweep` with
- * that `now`, the job's own entry point.
+ * Production writes go through the choke point or the mail writers on a `semprec_data` pool, so RLS applies.
+ * Recompute and sweep run through the production handlers drained with `runOnce`, except where a case needs a
+ * different clock and calls the job entry point with that `now`.
  */
 
 let admin: Pool;
@@ -116,7 +113,6 @@ async function catalog(tenant: string): Promise<Catalog> {
   );
 }
 
-/** The calendar date `days` away from today in the tenant zone. */
 function dayFromToday(days: number): string {
   const date = DateTime.fromISO(today(ZONE), { zone: "utc" }).plus({ days }).toISODate();
   if (date === null) throw new Error("invalid day");
@@ -164,7 +160,7 @@ interface QueuedJob {
   queue_name: string | null;
 }
 
-/** The queued `peopleLastContactRecompute` jobs, read through graphile-worker's public `jobs` view. */
+/** Read through graphile-worker's public `jobs` view. */
 async function queuedRecomputes(): Promise<QueuedJob[]> {
   const { rows } = await admin.query<QueuedJob>(
     "SELECT key, queue_name FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -173,7 +169,7 @@ async function queuedRecomputes(): Promise<QueuedJob[]> {
   return rows;
 }
 
-/** Completes every queued job without running it, through graphile-worker's public `complete_jobs`. */
+/** Completes every queued job without running it. */
 async function discardQueuedJobs(): Promise<void> {
   await admin.query(
     "SELECT graphile_worker.complete_jobs(ARRAY(SELECT id FROM graphile_worker.jobs WHERE locked_at IS NULL))",
@@ -188,7 +184,6 @@ async function runRecomputes(): Promise<void> {
   expect(await queuedRecomputes()).toEqual([]);
 }
 
-/** Every queued job of any task, read through graphile-worker's public `jobs` view. */
 async function allQueuedJobs(): Promise<{ task_identifier: string; key: string | null }[]> {
   const { rows } = await admin.query<{ task_identifier: string; key: string | null }>(
     "SELECT task_identifier, key FROM graphile_worker.jobs ORDER BY id",
@@ -196,10 +191,7 @@ async function allQueuedJobs(): Promise<{ task_identifier: string; key: string |
   return rows;
 }
 
-/**
- * One item's whole stored row and its tuple version. `xmin` changes on every UPDATE, even one that writes
- * equal values, so an unchanged pair shows that no write reached the row. Read on the runtime pool in `tenant`.
- */
+/** `xmin` changes on every UPDATE, even of equal values, so an unchanged pair shows no write reached the row. */
 async function storedItem(tenant: string, itemId: string): Promise<{ row: unknown; xmin: string }> {
   const { rows } = await runInTenant(tenant, () =>
     pool.query<{ row: unknown; xmin: string }>(
@@ -212,7 +204,6 @@ async function storedItem(tenant: string, itemId: string): Promise<{ row: unknow
   return stored;
 }
 
-/** Rejects with a message naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
 async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
@@ -227,7 +218,7 @@ async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T>
 
 type Outcome = { failed: false } | { failed: true; error: unknown };
 
-/** `work`'s outcome as a value, so a started actor is observed from the start and read when the case is ready. */
+/** Captures the outcome as a value, so a started actor is observed from the start. */
 function outcomeOf(work: Promise<unknown>): Promise<Outcome> {
   return work.then(
     (): Outcome => ({ failed: false }),
@@ -235,7 +226,6 @@ function outcomeOf(work: Promise<unknown>): Promise<Outcome> {
   );
 }
 
-/** Reads `probe` until it returns a value, failing after `ms`. */
 async function pollFor<T>(probe: () => Promise<T | undefined>, ms: number, what: string): Promise<T> {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -246,10 +236,7 @@ async function pollFor<T>(probe: () => Promise<T | undefined>, ms: number, what:
   }
 }
 
-/**
- * Rethrows the case's own failure first: alone, or inside an `AggregateError` with the cleanup failures after it.
- * A thrown falsy value counts, because `primary` wraps it.
- */
+/** Rethrows the case's own failure first (alone or leading an `AggregateError`); a thrown falsy value counts. */
 function settle(primary: { error: unknown } | undefined, cleanupFailures: unknown[]): void {
   if (primary && cleanupFailures.length > 0) {
     throw new AggregateError([primary.error, ...cleanupFailures], "The case and its cleanup failed", {
@@ -262,21 +249,14 @@ function settle(primary: { error: unknown } | undefined, cleanupFailures: unknow
 }
 
 interface ObservedEffects {
-  /** Every realtime invalidation this process emitted: the in-process hook `@semprec/realtime` publishes as NOTIFYs. */
   invalidations: InvalidationEvent[];
-  /** The payload of every graphile-worker `jobs:insert` NOTIFY (sent when it inserts a job) before the sentinel. */
   jobInserts: string[];
 }
 
 /**
- * The side effects `operation` announced. The owners' realtime invalidation callbacks are recorded through
- * `setInvalidationHook`, because this file wires no realtime publisher; that shows what the owners announced,
- * not WebSocket delivery or a realtime NOTIFY. Graphile-worker's job-insert NOTIFYs are observed on a dedicated
- * LISTEN connection subscribed before `operation` runs; afterwards a sentinel is sent on the same channel, and
- * Postgres delivers notifications in commit order, so once the sentinel has arrived every `jobs:insert`
- * committed by `operation` has too. That channel says nothing about other NOTIFYs. The hook and the
- * subscription are removed on every path, and a connection whose UNLISTEN failed is destroyed rather than
- * returned to the pool.
+ * Invalidations are recorded via `setInvalidationHook` (no realtime publisher here). Job-insert NOTIFYs are read on
+ * a LISTEN connection; Postgres delivers notifications in commit order, so once the trailing sentinel arrives every
+ * `jobs:insert` from `operation` has too. A connection whose UNLISTEN failed is destroyed, not returned to the pool.
  */
 async function observeEffects(operation: () => Promise<unknown>): Promise<ObservedEffects> {
   const effects: ObservedEffects = { invalidations: [], jobInserts: [] };
@@ -321,10 +301,6 @@ async function observeEffects(operation: () => Promise<unknown>): Promise<Observ
   return effects;
 }
 
-/**
- * A mailbox with its inbox in `tenant`, and an ingest there of one message, followed by the production
- * `mail.linkPeopleByEmail` action as the Emails onItemEvent heartbeat runs it. Returns the Emails item id.
- */
 async function mailIngest(
   tenant: string,
   c: Catalog,
@@ -383,7 +359,6 @@ async function mailIngest(
     });
 }
 
-/** A transcript dated `date` at 10:00 UTC, written by the transcription owner, with `personId` as its speaker. */
 async function createTranscriptWithSpeaker(
   tenant: string,
   c: Catalog,
@@ -499,7 +474,6 @@ describe("People lastContact (issue #1660)", () => {
     expect(await queuedRecomputes()).toEqual([
       { key: peopleLastContactJobKey(person), queue_name: `people-last-contact:${tenantA}` },
     ]);
-    // The queued job's own entry point at the time it runs.
     await runInTenant(tenantA, () => recomputePersonLastContact(pool, person, { now: nextDay }));
     expect(await lastContactOf(tenantA, c, person)).toBe(tomorrow);
   });
@@ -555,7 +529,7 @@ describe("People lastContact (issue #1660)", () => {
     await runInTenant(tenantA, () => recomputePersonLastContact(pool, person, { now: after }));
     expect(await lastContactOf(tenantA, c, person)).toBe("2025-03-10");
 
-    // The create derived timeTo 16:00 (an hour after 15:00); a later start needs a later end too (issue #1663).
+    // The create derived timeTo 16:00; a later start needs a later end too.
     await runInTenant(tenantA, () =>
       chokePoint.updateItem({
         databaseId: c.eventsId,
@@ -652,7 +626,6 @@ describe("People lastContact (issue #1660)", () => {
             storageKeyPrefix: "test",
           }),
         );
-        // The production `mail.linkPeopleByEmail` action, as the Emails onItemEvent heartbeat runs it.
         await createLinkEmailToPeopleAction(pool)(
           { emailsDatabaseId: c.emailsId, senderPeopleKey: "senderPeople", recipientsPeopleKey: "recipientsPeople" },
           { heartbeatId: "hb", projectItemId: "proj", itemId },
@@ -695,7 +668,6 @@ describe("People lastContact (issue #1660)", () => {
           databaseId: c.transcriptsId,
           properties: { name: "Call" },
         });
-        // The transcription process's own writers: the segments cache and the recording time.
         await writeComputed(client, c.transcriptsId, created.id, "segments", [
           { speaker: "SPEAKER_00", text: "Hello", startsAt: 0, endsAt: 1 },
         ]);
@@ -901,7 +873,6 @@ describe("People lastContact (issue #1660)", () => {
     await runRecomputes();
     expect(await lastContactOf(tenantA, c, person)).toBe(date);
     await discardQueuedJobs();
-    // A second recompute of the same person, queued by the production enqueue before the observation starts.
     await runInTenant(tenantA, () =>
       withTransaction(pool, (client) => enqueuePersonLastContactRecompute(client, person)),
     );
@@ -1006,7 +977,6 @@ describe("People lastContact (issue #1660)", () => {
     let holding = false;
     let recompute: Promise<Outcome> | undefined;
     let linking: Promise<Outcome> | undefined;
-    // The actors whose outcome the case itself already read.
     const read = new Set<Promise<Outcome>>();
     let primary: { error: unknown } | undefined;
     try {

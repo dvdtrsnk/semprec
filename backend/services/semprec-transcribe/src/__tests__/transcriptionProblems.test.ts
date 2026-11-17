@@ -30,13 +30,7 @@ import { createTranscriptionTask } from "../transcriptionTask.js";
 import type { AudioGatewayClient, DiarizationTurn, TranscriptionResult } from "../audioGatewayClient.js";
 import { FIXTURE_CREATION_TIME, generateMp4Fixture } from "./fixtures/mediaFixtures.js";
 
-/**
- * The Semp status problem of a transcript that fails permanently, its resolution when a rerun finishes,
- * its silent resolution when the transcript is deleted, and the `transcription` service entry (issue
- * gh-1945). The pipeline runs the production task over a `semprec_data` pool inside a tenant with fake
- * audio and summary gateways, like the other transcribe tests; problems and jobs are read through the
- * status report of a runtime-role pool or, for the stored columns, through the admin pool.
- */
+/** The `transcription` Semp problem: raised on permanent failure, resolved on rerun or deletion. */
 
 const FINAL_ATTEMPT = { job: { attempts: 3, max_attempts: 3 } };
 const FIRST_ATTEMPT = { job: { attempts: 1, max_attempts: 3 } };
@@ -140,7 +134,7 @@ describe("Semp status problems of transcriptions (issue gh-1945)", () => {
     await admin.end();
   });
 
-  /** A tenant with the seeded system databases and an AI budget row (a tenant without one lists `aiBudgetMissing`). */
+  /** With an AI budget row; without one the tenant lists `aiBudgetMissing`. */
   async function buildTenant(withUser: boolean): Promise<Tenant> {
     const id = await createTestTenant(admin);
     const user = withUser
@@ -243,7 +237,6 @@ describe("Semp status problems of transcriptions (issue gh-1945)", () => {
   const report = async (tenant: Tenant) =>
     (await runInTenant(tenant.id, () => createSempStatusRouteHandler(runtime)())).body;
 
-  /** A transcript that failed permanently once: its file id, its id and the problem it raised. */
   async function failedTranscript(tenant: Tenant) {
     const fileItemId = await createSourceFile(tenant);
     await runFailing(tenant, fileItemId, FINAL_ATTEMPT);
@@ -310,8 +303,7 @@ describe("Semp status problems of transcriptions (issue gh-1945)", () => {
       await runTask(own, fileItemId, FIRST_ATTEMPT);
       const transcript = await transcriptOf(fileItemId);
       expect(transcript.status).toBe("done");
-      // Raw SQL: no production write removes the notes of a finished transcript, which only a transcript finished
-      // before issue #1695 lacks; their absence makes the rerun reach the summary step, which fails here.
+      // Raw SQL: no production write removes the notes; without them the rerun reaches the failing summary step.
       const stripped = await admin.query("UPDATE items SET computed = computed - 'meetingNotes' WHERE id = $1", [
         transcript.id,
       ]);
@@ -482,11 +474,7 @@ describe("Semp status problems of transcriptions (issue gh-1945)", () => {
       return fileItemIds;
     }
 
-    /**
-     * Marks the job of `fileItemId` as taken by a worker, or as one that used up its attempts. Raw SQL on the
-     * private tables of graphile-worker 0.17.x: a job is `running` only inside a worker's handler, which
-     * a test cannot hold open from outside the queue's own loop.
-     */
+    /** Raw SQL on graphile-worker's private tables: a test cannot hold a handler open from outside the queue loop. */
     async function setJobState(fileItemId: string, state: "running" | "exhausted"): Promise<void> {
       const result = await admin.query(
         state === "running"

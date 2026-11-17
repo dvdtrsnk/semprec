@@ -116,7 +116,6 @@ interface ReceiveOptions {
   references?: string[];
   deliveredToHeaders?: string[];
   attachmentNames?: string[];
-  /** Which folder of the mailbox the message is ingested into. */
   folder?: "inbox" | "drafts";
 }
 
@@ -190,7 +189,6 @@ async function seededTenant(locale = "en"): Promise<MailTenant> {
   });
 }
 
-/** Ingests a message into the Inbox (or the Drafts folder) of the tenant's mailbox as the sync worker does. */
 async function receive(t: MailTenant, options: ReceiveOptions = {}): Promise<string> {
   return inTenant(t, async () => {
     const cp = createChokePoint(runtime);
@@ -247,7 +245,6 @@ async function threadOf(t: MailTenant, emailItemId: string): Promise<string> {
   return threadId;
 }
 
-/** A run of the project, with the Semp thread it belongs to when `withThread` is set. */
 async function runOf(
   t: MailTenant,
   options: {
@@ -288,7 +285,6 @@ async function toolNamed(t: MailTenant, runId: string, name: string): Promise<Re
   return tool;
 }
 
-/** Calls the tool as a session does and parses the answer: `error` and the JSON text it holds. */
 async function call(t: MailTenant, runId: string, name: string, args: unknown): Promise<ToolResult> {
   const tool = await toolNamed(t, runId, name);
   const { result, error } = await inTenant(t, () => tool.invoke(args));
@@ -311,7 +307,6 @@ async function draftRow(t: MailTenant, draftId: string) {
   return row;
 }
 
-/** What the tenant holds that a draft write adds to: Emails items, `mail_drafts` rows and relation edges. */
 async function writtenState(t: MailTenant) {
   return inTenant(t, async () => {
     const emails = await runtime.query<{ n: number }>(
@@ -328,7 +323,6 @@ async function writtenState(t: MailTenant) {
   });
 }
 
-/** The Files items an email holds through `Emails.attachments`, trashed ones included. */
 async function attachmentsOf(t: MailTenant, emailItemId: string): Promise<{ fileId: string; name: string }[]> {
   const { rows } = await inTenant(t, () =>
     runtime.query<{ file_id: string; name: string }>(
@@ -345,7 +339,6 @@ async function attachmentsOf(t: MailTenant, emailItemId: string): Promise<{ file
   return rows.map((row) => ({ fileId: row.file_id, name: row.name }));
 }
 
-/** A draft created by a person through the draft operation, as the compose window would. */
 async function userDraft(t: MailTenant, overrides: { threadId?: string | null } = {}): Promise<EmailDraftView> {
   return inTenant(t, () =>
     withTransaction(runtime, (client) =>
@@ -405,7 +398,6 @@ describe("the mail agent tools (issue gh-1927)", () => {
     });
   }
 
-  /** Records every ephemeral delta published, and the body the draft held in the database at that moment. */
   function recordDeltas(): void {
     deltas = [];
     storedBodiesAtPublish = [];
@@ -973,7 +965,6 @@ describe("the mail agent tools (issue gh-1927)", () => {
 
     it("replaces the computed recipients and subject of a reply and a reply-all with those the call gives, field by field", async () => {
       const envelope = { from: PETR, to: [{ name: "Me", address: OWN_ADDRESS }, JANA] };
-      // Two threads, as an agent has one unsent draft for each.
       const source = await receive(tenant, { subject: "Offer", envelope });
       const second = await receive(tenant, { subject: "Offer", envelope });
       const { runId } = await runOf(tenant);
@@ -996,9 +987,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
         }),
       );
 
-      // The reply's recipients are the ones given and its subject stays computed.
       expect(reply).toMatchObject({ to: [JANA], subject: "Re: Offer" });
-      // The reply-all keeps its computed recipients and takes the subject and the Cc the call gives.
       expect(replyAll).toMatchObject({ to: [PETR, JANA], cc: [PETR], subject: "Re: Offer, new terms" });
     });
 

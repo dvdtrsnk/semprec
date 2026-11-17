@@ -12,19 +12,10 @@ function requestUrl(rawUrl: string | undefined): URL {
 }
 
 /**
- * The view endpoint family (issue #155, rebased onto the generic-operation bindings by issue
- * #219): `GET /api/views`, `GET/PATCH/DELETE /api/views/:id`, `POST /api/databases/:id/views`,
- * `PUT/PATCH/DELETE /api/views/:id/items/:itemId` for curated view membership (`PUT` adds or
- * repositions, `PATCH` reorders an existing member — issue #219 wires up `viewItem.reorder`,
- * which #155/#157 left unrouted), and `POST /api/views/:id/query` (issue #157). Every route
- * assembles a canonical command object and dispatches it through `dispatchGenericOperation`
- * against the injected `GenericApplicationPort` — no route constructs its own
- * `createChokePoint(pool)`. `view.list` has no database scope of its own (its catalog is global,
- * not per-database — see `packages/application`'s `listViews`), so `GET /api/views` takes no
- * `:id` path segment, unlike the property/item list routes. Every write's actor is a REST human
- * actor (`restActor`): this adapter authenticates only human sessions (#34/#143); an
- * agent-originated view write goes through a different adapter entirely (see
- * `docs/adr/2026-09-10-views-are-excluded-from-the-agent-proposal-flow.md`).
+ * Every route dispatches through `dispatchGenericOperation` against the injected
+ * `GenericApplicationPort`. `PUT` on a view item adds or repositions, `PATCH` reorders an existing
+ * member. `view.list` has a global catalog, so `GET /api/views` takes no database segment. Every
+ * write's actor is a REST human actor; agents do not write views through this adapter.
  */
 export function createViewRoutes(service: GenericApplicationPort, pool: Pool): RouteDefinition[] {
   return [
@@ -88,9 +79,8 @@ export function createViewRoutes(service: GenericApplicationPort, pool: Pool): R
       handler: async (ctx) => {
         const viewId = requireUuidParam(ctx.params, "id");
         const actor = restActor(ctx.identity.user.id);
-        // The deleted row comes back from `view.delete` itself — the state it reports is exactly
-        // the state the deletion transaction saw, not a separately-fetched snapshot that could go
-        // stale between reading it and deleting it (issue #219).
+        // The deleted row comes back from `view.delete` itself: exactly the state the deletion
+        // transaction saw.
         const view = await dispatchGenericOperation(service, "view.delete", actor, { viewId });
         return { status: 200, body: toViewEnvelope(view) };
       },

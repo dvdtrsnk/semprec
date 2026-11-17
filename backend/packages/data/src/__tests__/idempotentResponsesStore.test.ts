@@ -39,7 +39,6 @@ interface CallOptions {
   requestHash?: string;
 }
 
-/** One `runIdempotent` call in its own transaction of `tenantId`, as a route handler makes it. */
 function call(action: () => Promise<IdempotentResponse>, options: CallOptions = {}): Promise<IdempotentResponse> {
   return inTenantTransaction(options.tenantId ?? tenantA, (client) =>
     runIdempotent(
@@ -56,7 +55,6 @@ function call(action: () => Promise<IdempotentResponse>, options: CallOptions = 
   );
 }
 
-/** An action that counts its runs and answers `{ status, body }`. */
 function countingAction(status: number, body: object): { run: () => Promise<IdempotentResponse>; calls: () => number } {
   let calls = 0;
   return {
@@ -217,7 +215,6 @@ describe("runIdempotent (issue gh-1894)", () => {
   it("ignores a row that has expired, runs the action again and replaces the row, even for another request hash", async () => {
     const first = countingAction(200, { n: 1 });
     await call(first.run);
-    // Fixture SQL: the only way to age a row past its 24 hours.
     await admin.query("UPDATE idempotent_responses SET expires_at = now() - interval '1 second' WHERE tenant_id = $1", [
       tenantA,
     ]);
@@ -239,7 +236,6 @@ describe("runIdempotent (issue gh-1894)", () => {
   it("answers a row that is within its 24 hours", async () => {
     const first = countingAction(200, { n: 1 });
     await call(first.run);
-    // Fixture SQL: moves the row to the last second of its 24 hours.
     await admin.query("UPDATE idempotent_responses SET expires_at = now() + interval '1 minute' WHERE tenant_id = $1", [
       tenantA,
     ]);
@@ -346,7 +342,6 @@ describe("runIdempotent (issue gh-1894)", () => {
   });
 
   it("refuses to answer a stored body that is not a JSON object", async () => {
-    // Fixture SQL: a row the store itself never writes.
     await admin.query(
       `INSERT INTO idempotent_responses (tenant_id, user_id, key, route, request_hash, status, body, expires_at)
        VALUES ($1, $2, 'key-1', $3, 'hash-1', 200, '"text"'::jsonb, now() + interval '1 hour')`,
@@ -474,7 +469,6 @@ describe("the item purge hook of the Processing proposals cards (issue gh-1894)"
     delete: async () => {},
   };
 
-  /** A Processing proposals card or a Tasks item of `tenantId`, trashed and aged past the trash retention. */
   async function trashedItemOf(tenantId: string, moduleId: "processingProposals" | "tasks"): Promise<void> {
     const trashed = await runInTenant(tenantId, async () => {
       await seedSystem(runtime);

@@ -8,9 +8,9 @@ import type { ApnsTarget, NotificationPushPayload, PushSendResult } from "./push
 export interface ApnsConfig {
   teamId: string;
   keyId: string;
-  /** PEM-encoded PKCS#8 EC private key (the `.p8` APNs auth key), as issued by Apple. */
+  /** PEM PKCS#8 EC key (the `.p8` APNs auth key). */
   privateKey: string;
-  /** The app's bundle id, sent as `apns-topic`. */
+  /** Sent as `apns-topic`. */
   topic: string;
 }
 
@@ -26,13 +26,8 @@ function readPrivateKey(privateKeyPath: string): string {
 }
 
 /**
- * Provisioned by issue #175: `APNS_PRIVATE_KEY_PATH` points at the `apns-key.p8` file
- * distributed alongside `/opt/semprec/shared/.env`, provisioned readable by the service user by
- * `deploy/provision.sh`, never at inline PEM — a multi-line key has no safe representation in a
- * systemd `EnvironmentFile=`/Docker `env_file:` line, and shipping it as its own file keeps it
- * out of `.env` and out of any process log that might dump environment variables. Read lazily,
- * only when a send is actually attempted, and cached thereafter — this is called on every
- * `sendApnsNotification`, and the file never changes without a process restart.
+ * A key file path, never inline PEM: a multi-line key cannot live safely in an env file, and a
+ * separate file keeps it out of env dumps in logs. Read lazily on first send, then cached.
  */
 export function getApnsConfigFromEnv(): ApnsConfig {
   const teamId = process.env.APNS_TEAM_ID;
@@ -52,7 +47,7 @@ const APNS_HOSTS: Record<ApnsEnvironment, string> = {
   sandbox: "https://api.sandbox.push.apple.com",
 };
 
-/** APNs provider tokens are valid up to one hour; the issue's Task caps reuse at that maximum, so this regenerates a little early rather than risk a request landing right at the boundary. */
+/** Tokens are valid up to one hour; regenerate a little early rather than hit the boundary. */
 const MAX_PROVIDER_TOKEN_AGE_MS = 55 * 60 * 1000;
 
 interface CachedProviderToken {
@@ -67,7 +62,6 @@ function base64url(input: string | Buffer): string {
   return (typeof input === "string" ? Buffer.from(input) : input).toString("base64url");
 }
 
-/** One ES256 JWT reused across sends (issue #151's Task: "caches an ES256 provider JWT for no longer than one hour"). */
 function getProviderJwt(config: ApnsConfig): string {
   const now = Date.now();
   if (
@@ -99,7 +93,7 @@ interface ApnsResponse {
 /** A hung APNs connection/request must not block a graphile-worker task runner slot forever. */
 const APNS_REQUEST_TIMEOUT_MS = 10_000;
 
-/** APNs error bodies are a small JSON object (`{"reason": "..."}`); anything past this is not a legitimate response. */
+/** Error bodies are a small `{"reason"}` object; anything larger is not legitimate. */
 const MAX_APNS_RESPONSE_BYTES = 64 * 1024;
 
 function extractReason(responseBody: string): string | undefined {
@@ -179,43 +173,29 @@ function postApnsRequest(
   });
 }
 
-/** The sources a notification can name that outlive the notification, so repeated pushes about one of them belong together (issue #1829). */
+/** Sources that outlive the notification, so repeated pushes about one belong together. */
 const DURABLE_SOURCE_TABLES: ReadonlySet<string> = new Set(["semp_problems", "approval_requests", "invites"]);
 
 /** `apns-collapse-id` may not exceed 64 bytes. */
 const APNS_COLLAPSE_ID_MAX_BYTES = 64;
 
-/**
- * The key under which APNs collapses pushes about one thing and the device groups them (issue #1829): the
- * notification's source id when its source table has a durable identity (a Semp problem, an approval request
- * or an invitation), `null` for any other source and for an empty source id. A key longer than 64 bytes (the
- * limit of `apns-collapse-id`) is replaced by the first 64 hex characters of its SHA-256, which is the same for
- * the same source id every time.
- */
+/** `null` without a durable source. A key over 64 bytes is replaced by a stable SHA-256 hex prefix. */
 export function apnsCollapseKey(payload: Pick<NotificationPushPayload, "sourceTable" | "sourceId">): string | null {
   if (!DURABLE_SOURCE_TABLES.has(payload.sourceTable) || payload.sourceId === "") return null;
   if (Buffer.byteLength(payload.sourceId) <= APNS_COLLAPSE_ID_MAX_BYTES) return payload.sourceId;
   return crypto.createHash("sha256").update(payload.sourceId).digest("hex").slice(0, APNS_COLLAPSE_ID_MAX_BYTES);
 }
 
-/** A visible push that cannot be delivered within a day is not worth showing any more (issue #1829). */
+/** A visible push undeliverable within a day is no longer worth showing. */
 const APNS_ALERT_TTL_SECONDS = 24 * 60 * 60;
 
 /**
- * The `apns` half of issue #151's fanout adapters: HTTP/2 to production or sandbox depending on
- * this exact registration's `apns_environment`, an alert title (with `aps.alert.body` when the
- * notification has a body, issue #1773) plus `link_href` and `notification_id` in the payload (and
- * `aps["interruption-level"]` when the payload names one), and the shared, cached provider JWT above.
- * Every alert carries `apns-push-type: alert`, `apns-priority: 10` and an `apns-expiration` 24 hours after
- * the send; when the source has a durable identity (`apnsCollapseKey`) it also carries the same key as
- * `apns-collapse-id` and as `aps["thread-id"]` (issue #1829). `aps.category` and the top-level
- * `approvalRequestId` are sent only when the payload's `apns` fields carry them (issue #1831), and so are
- * the keys of `apns.data` (issue gh-1954), at the top level beside `aps`.
- * A 410 or `BadDeviceToken` means this exact device token is dead — the caller pairs that with #150's
- * `revokePushSubscriptionByProviderInvalidation`. Everything else (network failure, other 4xx/5xx)
- * is transient and left for the job's own retry. Missing `APNS_*` env vars or an unreadable key
- * file (issue #703) resolve `not-configured` instead of throwing — a server-side gap, not a
- * verdict on this device token.
+ * Environment follows the registration's `apns_environment`. A durable source's collapse key is
+ * sent as both `apns-collapse-id` and `thread-id`.
+ *
+ * 410 or `BadDeviceToken` is permanent (the caller revokes the registration); everything else is
+ * transient. Missing config or an unreadable key resolves `not-configured`, a server-side gap
+ * rather than a verdict on the device.
  */
 export async function sendApnsNotification(
   target: ApnsTarget,
@@ -226,9 +206,7 @@ export async function sendApnsNotification(
   const body = JSON.stringify({
     // The custom keys come first, so none of them can replace a key the adapter sets below.
     ...payload.apns?.data,
-    // `alert.body` is sent only when the notification has one (issue #1773), so a notification of
-    // another kind keeps the title-only alert it always had. `interruption-level` is sent only when
-    // the fanout job decided one; without it APNs delivers at its default, `active`.
+    // Without `interruption-level` APNs delivers at its default, `active`.
     aps: {
       alert: { title: payload.title, ...(payload.body === null ? {} : { body: payload.body }) },
       ...(payload.interruptionLevel === undefined ? {} : { "interruption-level": payload.interruptionLevel }),
@@ -254,11 +232,7 @@ export async function sendApnsNotification(
   );
 }
 
-/**
- * Sends one encoded request and maps APNs' answer to a `PushSendResult`. The alert and background
- * pushes both go through it, so the provider JWT, the 410/`BadDeviceToken` rule and the transient
- * fallback exist once. `extraHeaders` holds only what differs between the two push types.
- */
+/** Shared by every push type so the JWT and the result mapping exist once. */
 async function sendApnsRequest(
   target: ApnsTarget,
   body: string,
@@ -296,13 +270,8 @@ async function sendApnsRequest(
 }
 
 /**
- * A silent background push (issue #1445): `aps` carries only `content-available: 1`, with no alert,
- * sound or badge, so APNs can wake the app to reload its data without showing anything. The
- * caller's `data` is sent beside `aps`, unchanged. A `data` that names `aps` would replace the
- * wake-up key, so it is rejected with a `ValidationError` before any request. The request, the
- * provider token and the result mapping are `sendApnsNotification`'s. The adapter only sends:
- * finding a user's registrations and revoking a dead one stay with the caller, and nothing is
- * written to `notifications` or `push_deliveries`.
+ * Silent push (`content-available: 1` only) that wakes the app to reload. `data` naming `aps`
+ * would replace the wake-up key and is rejected. Sends only; writes nothing.
  */
 export async function sendApnsBackgroundPush(
   target: ApnsTarget,
@@ -317,17 +286,12 @@ export async function sendApnsBackgroundPush(
   return sendApnsRequest(target, body, { "apns-push-type": "background", "apns-priority": "5" }, config);
 }
 
-/** The collapse id of every badge-only push: a newer one replaces an older one APNs still holds for the device. */
+/** A newer badge push replaces an older one APNs still holds. */
 const APNS_BADGE_COLLAPSE_ID = "badge";
 
 /**
- * A badge-only push (issue #1891): `aps` carries only `badge`, with no alert and no sound, so the app icon
- * changes without anything showing and the app is not woken. APNs requires the push type `alert` for a payload
- * that sets a badge, so the request carries `apns-push-type: alert`, `apns-priority: 5` (a low priority push
- * that does not wake the app) and `apns-collapse-id: badge`. A `badge` of `0` clears the badge. A `badge` that is
- * not a non-negative integer is rejected with a `ValidationError` before any request. The request, the provider
- * token and the result mapping are `sendApnsNotification`'s; the adapter only sends, and finding a user's
- * registrations and revoking a dead one stay with the caller.
+ * Badge-only push. APNs requires push type `alert` for a badge payload; priority 5 does not wake
+ * the app. `0` clears the badge.
  */
 export async function sendApnsBadgeUpdate(
   target: ApnsTarget,

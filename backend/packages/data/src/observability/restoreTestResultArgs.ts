@@ -1,7 +1,6 @@
 /**
- * The steps `deploy/systemd/scripts/semprec-restore-test.sh` (issue #178) can fail at, in the
- * order it runs them. The script passes one of these as its failed step; anything else is a
- * mismatch between the script and this list and is rejected rather than stored.
+ * Must match the steps of `deploy/systemd/scripts/semprec-restore-test.sh`; anything else is a
+ * script/list mismatch and is rejected rather than stored.
  */
 export const RESTORE_TEST_FAILED_CHECKS = [
   "configuration",

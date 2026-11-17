@@ -23,7 +23,6 @@ import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 const WEEKLY = { kind: "weekly", days: ["sun"], at: "21:00" } as const;
-/** No module rule kind registered: only core rules validate. */
 const CORE_RULES_ONLY: HeartbeatRuleKindRegistry = new Map();
 
 let adminPool: Pool;
@@ -58,7 +57,6 @@ describe("tick thread header and active run on the thread detail (issue #1562)",
     await adminPool?.end();
   });
 
-  /** A project, its heartbeat and the heartbeat's tick thread, all through their production writers. */
   async function tickThread(
     rule: unknown,
     options: { enabled?: boolean } = {},

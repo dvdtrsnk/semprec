@@ -80,8 +80,7 @@ describe("tenant isolation for blob deduplication and MCP grants", () => {
         );
       const original = await write(tenantA, registration.id, true);
       expect(original).toMatchObject({ projectItemId, mcpToolRegistrationId: registration.id, granted: true });
-      // Exercise both the existing grant's conflict key and a new key that would otherwise
-      // insert a cross-tenant reference: FK checks themselves do not enforce RLS.
+      // Both the existing grant's conflict key and a new key: FK checks do not enforce RLS.
       for (const project of [projectItemId, randomUUID()]) {
         for (const id of [registration.id, randomUUID()]) {
           await expect(write(tenantB, id, granted, project)).rejects.toEqual(

@@ -14,7 +14,6 @@ import { createSempChatThread, insertSempUserTurn } from "../sempThreads/sempThr
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let adminPool: Pool;
-/** The runtime-role pool applies the ambient tenant scope as `app.tenant_id` and enforces RLS. */
 let pool: Pool;
 let tenantA: string;
 let tenantB: string;

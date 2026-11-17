@@ -4,17 +4,13 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 51-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017, #1842, #1839, #1876), extracted from #37's
- * domain-command validators into transport-independent shape. Every schema below is a strict
- * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
- * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
- * `ownerModuleId`, `owner`, `ownerProcess`, `locked`, `createdBy`, or `creatorProjectItemId` —
- * fails validation rather than being silently dropped. The sole exception is
+ * Strict Zod input schemas for the generic-operation catalog. Every schema is a strict object: an unrecognized key (a
+ * spoofed `actor`/`userId`/`agentProjectItemId`, or a server-derived field such as `system`, `schemaLocked`,
+ * `ownerProjectItemId`, `locked` or `createdBy`) fails validation instead of being dropped. The one exception is
  * `PropertyCreateInputSchema`'s relation branch, whose `locked` fields are required inputs.
  */
 
 const cursor = z.string().optional();
-/** Bounds `limit` at 200 and defaults to 50 when omitted, per issue #252's Task. */
 const limit = z.number().int().min(1).max(200).default(50);
 
 const jsonObject = z.record(z.string(), z.unknown());
@@ -33,7 +29,7 @@ const DatabaseColorSchema = z
   .regex(/^#[0-9A-Fa-f]{6}$/, "color must be #RRGGBB")
   .transform((color) => color.toUpperCase());
 
-/** Property types a collection can be created with; `title` is added by the operation itself, the rest are added afterwards through the property operations. */
+/** `title` is added by the operation itself; other types are added afterwards through the property operations. */
 const DATABASE_CREATE_PROPERTY_TYPES = ["text", "number", "select", "date", "checkbox", "url", "file"] as const;
 /** Key of the title property created together with `properties`. */
 export const DATABASE_CREATE_TITLE_PROPERTY_KEY = "name";
@@ -120,7 +116,6 @@ export type PropertyListInput = z.infer<typeof PropertyListInputSchema>;
 export const PropertyGetInputSchema = z.object({ propertyId: z.string() }).strict();
 export type PropertyGetInput = z.infer<typeof PropertyGetInputSchema>;
 
-/** Key lookup within one database (issue #432), optionally narrowed to one property type. */
 export const PropertyGetByKeyInputSchema = z
   .object({
     databaseId: z.string(),
@@ -148,11 +143,10 @@ const relationPropertySideInputSchema = z
 const nonEmptyString = z.string().min(1);
 
 /**
- * The number-filter part of a `number` property's `config` (issue #1622): `filterPresets` are the named thresholds a
- * filter offers, compared with `lte` or `gte` (never equality), and `emptyPreset` the optional "no value" choice,
- * which also matches 0 when `matchZero` is set. `labelKey` is a full catalog key of the owning module; a literal
- * `label` wins over it. Validate the picked `{ filterPresets, emptyPreset }` pair, not the whole config, which keeps
- * its other keys. Unknown keys inside a preset are rejected.
+ * The number-filter part of a `number` property's `config`: `filterPresets` are named thresholds compared with `lte` or
+ * `gte` (never equality), `emptyPreset` the optional "no value" choice, which also matches 0 when `matchZero` is set. A
+ * literal `label` wins over `labelKey`. Validate the picked `{ filterPresets, emptyPreset }` pair, not the whole
+ * config.
  */
 export const NumberFilterConfigSchema = z
   .object({
@@ -177,10 +171,6 @@ export const NumberFilterConfigSchema = z
   .strict();
 export type NumberFilterConfig = z.infer<typeof NumberFilterConfigSchema>;
 
-/**
- * The relation branch is the sole exception to the ban on external `locked` — its source and
- * inverse `locked` booleans are required inputs, not server-derived.
- */
 export const PropertyCreateInputSchema = z.union([
   z
     .object({
@@ -207,9 +197,8 @@ export const PropertyCreateInputSchema = z.union([
 export type PropertyCreateInput = z.infer<typeof PropertyCreateInputSchema>;
 
 /**
- * Supersedes the broader shorthand: `type` here excludes `'relation'`, so a non-relation
- * property cannot transition to relation through patch — a relation-definition change is #82's
- * protected path and stays outside this catalog.
+ * `type` excludes `'relation'`: a property cannot become a relation through patch; relation-definition changes stay
+ * outside this catalog.
  */
 export const PropertyPatchInputSchema = z
   .object({
@@ -228,25 +217,18 @@ export type PropertyPatchInput = z.infer<typeof PropertyPatchInputSchema>;
 export const PropertyDeleteInputSchema = z.object({ propertyId: z.string() }).strict();
 export type PropertyDeleteInput = z.infer<typeof PropertyDeleteInputSchema>;
 
-/** Longest label of a `select` or `multi_select` option, in UTF-16 code units. */
 const PROPERTY_OPTION_LABEL_MAX_LENGTH = 60;
 
 /**
- * Whether `text` can be a string inside a Postgres `jsonb` value. Two kinds of text cannot: text that holds U+0000,
- * and text that holds a UTF-16 surrogate without its pair, which is what cutting a text in the middle of an emoji
- * leaves. `JSON.stringify` writes both as `\uXXXX` escapes, and the `jsonb` input function refuses those escapes, so
- * the write fails in the database. The regular expression has the `u` flag, under which a surrogate pair is one
- * character outside the Surrogate category: only a surrogate without its pair matches.
+ * Whether `text` can be a string inside a Postgres `jsonb` value. U+0000 and unpaired UTF-16 surrogates (what cutting
+ * in the middle of an emoji leaves) cannot: `JSON.stringify` writes them as `\uXXXX` escapes that the `jsonb` input
+ * function refuses. With the `u` flag a surrogate pair is one character, so only an unpaired surrogate matches.
  */
 function isStorableInJsonb(text: string): boolean {
   return !text.includes("\u0000") && !/\p{Surrogate}/u.test(text);
 }
 
-/**
- * The label of an option that `property.option.add` or `property.option.update` writes (issue #1699): surrounding
- * whitespace is removed, and 1 to 60 UTF-16 code units must remain. A label that holds U+0000 or a surrogate without
- * its pair is refused, because the `jsonb` column that stores the options cannot hold either (`isStorableInJsonb`).
- */
+/** Option label: trimmed, 1 to 60 UTF-16 code units, and storable in `jsonb` (`isStorableInJsonb`). */
 export const PropertyOptionLabelSchema = z
   .string()
   .trim()
@@ -254,7 +236,7 @@ export const PropertyOptionLabelSchema = z
   .max(PROPERTY_OPTION_LABEL_MAX_LENGTH)
   .refine(isStorableInJsonb, "label must not hold U+0000 or a surrogate without its pair");
 
-/** Adds one option to a `select` or `multi_select` property (issue #1699); the operation derives the option key from `label`. */
+/** The operation derives the option key from `label`. */
 export const PropertyOptionAddInputSchema = z
   .object({
     propertyId: canonicalUuid,
@@ -264,10 +246,7 @@ export const PropertyOptionAddInputSchema = z
   .strict();
 export type PropertyOptionAddInput = z.infer<typeof PropertyOptionAddInputSchema>;
 
-/**
- * Renames or recolors the option `key` of a `select` or `multi_select` property (issue #1699); the key itself is
- * never changed. An input with neither `label` nor `color` is refused by the operation, not by this schema.
- */
+/** The option key itself never changes. An input with neither `label` nor `color` is refused by the operation. */
 export const PropertyOptionUpdateInputSchema = z
   .object({
     propertyId: canonicalUuid,
@@ -315,7 +294,6 @@ export type ViewDeleteInput = z.infer<typeof ViewDeleteInputSchema>;
 /** Bounds sort-spec fan-out the same way `MAX_FILTER_NODES_PER_LEVEL` bounds filter fan-out. */
 const MAX_SORT_SPECS = 10;
 
-/** Opt-in extras on an item read (issue #1403); a read without `include` returns exactly what it did before. */
 export const RelationIncludeSchema = z
   .record(z.string().min(1), z.array(z.string().min(1)).max(10))
   .refine((relations) => Object.keys(relations).length <= 5, "At most five relation keys are allowed");
@@ -334,12 +312,11 @@ const includeField = z
   .optional();
 export type ItemReadInclude = z.infer<typeof includeField>;
 
-/** The longest text `search` and the `q` of a query or a count take. */
 export const SEARCH_MAX_QUERY_LENGTH = 200;
 
 /**
- * Free text that narrows one database's rows together with the filter (issue #1857): the same text match the global
- * search uses, restricted to the queried database. It is plain text: query syntax characters carry no meaning.
+ * Free text that narrows one database's rows together with the filter, using the global search's text match. Query
+ * syntax characters carry no meaning.
  */
 const itemSearchText = z.string().min(1).max(SEARCH_MAX_QUERY_LENGTH);
 
@@ -360,15 +337,12 @@ export type ViewQueryInput = z.infer<typeof ViewQueryInputSchema>;
 export const DatabaseQueryInputSchema = z.object({ databaseId: z.string(), ...queryFields }).strict();
 export type DatabaseQueryInput = z.infer<typeof DatabaseQueryInputSchema>;
 
-/** Most entries one `item.count` call takes. */
 const ITEM_COUNT_MAX_ENTRIES = 20;
 
 /**
- * Up to 20 counts in one call (issue #1709). Each entry counts the items of one database under `filter`,
- * the filter tree `database.query` takes. `groupBy` names a relation or select property of that database
- * to split the count by, and `collection: true` also applies the collection filter the database's module
- * manifest declares. Whether `groupBy` names a groupable property is decided by the operation. `q` counts only the
- * items of that database the text matches (issue #1857), ANDed with the filter, and applies to every group.
+ * Up to 20 counts in one call, each counting one database's items under `filter`. `groupBy` names a relation or select
+ * property to split by (groupability is checked by the operation); `collection: true` also applies the manifest's
+ * collection filter; `q` is ANDed with the filter and applies to every group.
  */
 export const ItemCountInputSchema = z
   .object({
@@ -390,16 +364,13 @@ export const ItemCountInputSchema = z
   .strict();
 export type ItemCountInput = z.infer<typeof ItemCountInputSchema>;
 
-/** Most facets one `database.facets` call takes. */
 const DATABASE_FACETS_MAX_FACETS = 20;
 
 const facetKey = z.string().min(1);
 
 /**
- * The facets of one database (issue #1759). Each entry of `facets` is the key of a property of the database, or
- * `{ path: [relationKey, relationKey] }`: a relation of the database and then a relation of the items it reaches.
- * `filter` is the filter tree `database.query` takes, with the same size limits. `extra.open` is a second filter
- * tree of that kind. Whether a key or a path names something that can be a facet is decided by the operation.
+ * Each facet is a property key of the database or `{ path: [relationKey, relationKey] }` (a relation, then a relation
+ * of the items it reaches). `extra.open` is a second filter tree. Facet validity is decided by the operation.
  */
 export const DatabaseFacetsInputSchema = z
   .object({
@@ -421,9 +392,8 @@ export const DatabaseFacetsInputSchema = z
 export type DatabaseFacetsInput = z.infer<typeof DatabaseFacetsInputSchema>;
 
 /**
- * The groups of `search` results in their fixed order (issue #1842). `contact` holds People and Companies together;
- * `mail` holds the mail threads (issue #1864), one entry per thread. `chat` holds the Semp threads of a person
- * (issue #1854); an agent actor is never given it.
+ * Search groups in their fixed order. `contact` holds People and Companies; `mail` holds one entry per mail thread;
+ * `chat` holds a person's Semp threads and is never given to an agent actor.
  */
 export const SEARCH_GROUP_TYPES = [
   "task",
@@ -441,14 +411,12 @@ export type SearchGroupType = (typeof SEARCH_GROUP_TYPES)[number];
 /** The groups whose results are items, in the order of `SEARCH_GROUP_TYPES`; the others are threads and carry a `threadId`. */
 export const SEARCH_ITEM_GROUP_TYPES = ["task", "event", "project", "area", "contact", "journal", "file"] as const;
 export type SearchItemGroupType = (typeof SEARCH_ITEM_GROUP_TYPES)[number];
-/** The item groups whose results carry no Journal period. */
 const SEARCH_NON_JOURNAL_ITEM_GROUP_TYPES = ["task", "event", "project", "area", "contact", "file"] as const;
 const SEARCH_THREAD_GROUP_TYPES = ["mail", "chat"] as const;
 
 /** The Journal period types a subpage can be created under; mirrors the data package's `JOURNAL_PERIOD_TYPES`. */
 const JOURNAL_PERIOD_TYPE_VALUES = ["year", "quarter", "month", "week", "day"] as const;
 
-/** The closed set of `kind`s of a result's `subtitleParts`; `movedFrom` and `missedInEvent` are emitted by later issues. */
 export const SEARCH_SUBTITLE_KINDS = [
   "date",
   "time",
@@ -474,10 +442,8 @@ const SEARCH_MAX_PER_GROUP_LIMIT = 50;
 const SEARCH_MAX_CURSOR_LENGTH = 512;
 
 /**
- * Searches the tenant's tasks, events, projects, areas, contacts, journal days and files (issue #1842). `scope` is a
- * non-empty set of group types and defaults to all of them; `perGroupLimit` is the most results returned per group;
- * `cursor` is the `nextCursor` of one group and continues that group, so it is allowed only with exactly one scope
- * type. The cursor's content is checked by the operation, not by this schema.
+ * `scope` defaults to every group; `cursor` continues one group's `nextCursor`, so it requires exactly one scope type.
+ * The cursor's content is checked by the operation.
  */
 export const SearchInputSchema = z
   .object({
@@ -532,9 +498,8 @@ const SearchItemResultSchema = z.object(searchItemResultFields).strict();
 export type SearchItemResult = z.infer<typeof SearchItemResultSchema>;
 
 /**
- * The Journal period a `journal` group result stands for (issue #1859): the stored `type` and the canonical `period`
- * string (`2026-10-16`, `2026-W42`, `2026-08`, `2026-Q3`, `2026`). Both are canonical keys; a client composes the
- * localised label itself.
+ * The Journal period of a `journal` result: canonical `type` and `period` (`2026-10-16`, `2026-W42`, `2026-08`,
+ * `2026-Q3`, `2026`); clients localise the label.
  */
 const SearchJournalPeriodSchema = z
   .object({ type: z.enum(JOURNAL_PERIOD_TYPE_VALUES), period: z.string().min(1) })
@@ -546,10 +511,7 @@ export type SearchJournalResult = z.infer<typeof SearchJournalResultSchema>;
 const SearchThreadResultSchema = z.object({ threadId: canonicalUuid, ...searchResultFields }).strict();
 export type SearchThreadResult = z.infer<typeof SearchThreadResultSchema>;
 
-/**
- * An entry of the `mail` group (issue #1864): the thread and, beside it, the Emails item of the thread's last message,
- * which is what a client opens. The `chat` entries have no item and stay `SearchThreadResult`.
- */
+/** A `mail` entry: the thread plus the Emails item of its last message, which is what a client opens. */
 const SearchMailResultSchema = z
   .object({
     threadId: canonicalUuid,
@@ -561,10 +523,7 @@ const SearchMailResultSchema = z
   .strict();
 export type SearchMailResult = z.infer<typeof SearchMailResultSchema>;
 
-/**
- * A group is item-backed or thread-backed by its `type`; `total` counts every match of the group, not only the listed
- * ones. Only the `journal` group's results carry `journal` (issue #1859).
- */
+/** `total` counts every match of the group, not only the listed ones. */
 const SearchGroupSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -594,14 +553,14 @@ const SearchGroupSchema = z.discriminatedUnion("type", [
 export type SearchGroup = z.infer<typeof SearchGroupSchema>;
 export type SearchItemGroup = Extract<SearchGroup, { type: SearchItemGroupType }>;
 
-/** The groups that have matches, in the order of `SEARCH_GROUP_TYPES`; a group without a match is omitted. */
+/** A group without a match is omitted. */
 export const SearchOutputSchema = z.object({ groups: z.array(SearchGroupSchema) }).strict();
 export type SearchOutput = z.infer<typeof SearchOutputSchema>;
 
-/** Matches the `view_items.position` `integer` (int4) column's range. */
+/** Range of the int4 `view_items.position` column. */
 const viewItemPosition = z.number().int().min(0).max(2147483647);
 
-/** `position` is optional (issue #37 specifies no request body for this route): omitting it appends a new item to the end, or leaves an already-present item's position unchanged — see `viewItemsStore.addViewItem`. */
+/** Omitting `position` appends a new item, or leaves an already-present item where it is. */
 export const ViewItemAddInputSchema = z
   .object({ viewId: z.string(), itemId: z.string(), position: viewItemPosition.optional() })
   .strict();
@@ -618,7 +577,7 @@ export type ViewItemReorderInput = z.infer<typeof ViewItemReorderInputSchema>;
 export const ItemGetInputSchema = z.object({ itemId: z.string(), include: includeField }).strict();
 export type ItemGetInput = z.infer<typeof ItemGetInputSchema>;
 
-/** Omitting `idempotencyKey` preserves #21/#37's non-retry create behavior; supplying one activates dedup. */
+/** Supplying `idempotencyKey` activates dedup. */
 export const ItemCreateInputSchema = z
   .object({
     databaseId: z.string(),
@@ -637,7 +596,7 @@ export const ItemCreateInputSchema = z
   });
 export type ItemCreateInput = z.infer<typeof ItemCreateInputSchema>;
 
-/** `ifVersion` is required here — #37 defines optimistic concurrency only for item property patches; metadata patches (database/property/view) carry no `ifVersion` at all. */
+/** `ifVersion` is required: only item property patches use optimistic concurrency. */
 export const ItemPatchInputSchema = z
   .object({
     itemId: z.string(),
@@ -656,7 +615,7 @@ export type ItemDeleteInput = z.infer<typeof ItemDeleteInputSchema>;
 export const ItemRestoreInputSchema = z.object({ itemId: z.string() }).strict();
 export type ItemRestoreInput = z.infer<typeof ItemRestoreInputSchema>;
 
-/** #82's `CreateRelationInput` — idempotent create/full metadata replacement. */
+/** Idempotent create or full metadata replacement. */
 export const RelationPutInputSchema = z
   .object({
     relationPropertyId: z.string(),
@@ -686,7 +645,7 @@ export const RelationDeleteInputSchema = z
   .strict();
 export type RelationDeleteInput = z.infer<typeof RelationDeleteInputSchema>;
 
-/** Every live edge of `itemId` (issue #1404), optionally narrowed to one of the item's own relation properties. */
+/** Every live edge of `itemId`, optionally narrowed to one of the item's relation properties. */
 export const RelationListInputSchema = z
   .object({
     itemId: canonicalUuid,
@@ -695,7 +654,6 @@ export const RelationListInputSchema = z
   .strict();
 export type RelationListInput = z.infer<typeof RelationListInputSchema>;
 
-/** The collections related to one record, with their counts (issue #1839). */
 export const RelationRelatedInputSchema = z.object({ itemId: canonicalUuid }).strict();
 export type RelationRelatedInput = z.infer<typeof RelationRelatedInputSchema>;
 
@@ -703,9 +661,8 @@ export const PageEnsureInputSchema = z.object({ itemId: canonicalUuid }).strict(
 export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
 
 /**
- * Turns a Journal period (type `type`, named by its canonical `period` key such as `2026-W42` or by any calendar
- * `date` inside it) into its Journal entry and page, created when missing (issue #1861). Exactly one of `date` and
- * `period` is given. Whether `period` is a canonical key of that type is decided by the operation, not by this schema.
+ * Ensures the Journal entry and page of a period, named by its canonical `period` key or any `date` inside it; exactly
+ * one of the two is given. Key validity is checked by the operation.
  */
 export const PageEnsureJournalPeriodInputSchema = z
   .object({
@@ -721,10 +678,7 @@ export const PageEnsureJournalPeriodInputSchema = z
   });
 export type PageEnsureJournalPeriodInput = z.infer<typeof PageEnsureJournalPeriodInputSchema>;
 
-/**
- * Merges the duplicate Journal entries of one period (issue #2017). `type` is one of the Journal period types;
- * whether `period` is a canonical key of that type is decided by the operation, not by this schema.
- */
+/** Merges the duplicate Journal entries of one period; key validity is checked by the operation. */
 export const PageMergeJournalDuplicatesInputSchema = z
   .object({ type: z.enum(JOURNAL_PERIOD_TYPE_VALUES), period: z.string().min(1) })
   .strict();
@@ -744,11 +698,9 @@ export type PageGetInput = z.infer<typeof PageGetInputSchema>;
 const PAGE_CREATE_SUBPAGE_MAX_FROM_BLOCKS = 200;
 
 /**
- * Creates one new subpage under an item's page, or under a Journal period's page (issue #1676): the parent names a
- * live item or a Journal `{ type, period }` whose entry is created when missing. `afterBlockId` places the `page`
- * block after a block of the parent's document (the end when absent). With `fromBlockIds` (issue #2013) the named
- * non-page blocks of the parent are converted in place into one empty subpage each, and `afterBlockId` and `title` are
- * ignored. The period key itself is validated by the operation, not by this schema.
+ * Creates a subpage under an item's page or a Journal period's page (entry created when missing). `afterBlockId` places
+ * the `page` block (end when absent). With `fromBlockIds` the named non-page blocks are converted in place into one
+ * empty subpage each, and `afterBlockId` and `title` are ignored.
  */
 export const PageCreateSubpageInputSchema = z
   .object({
@@ -772,29 +724,21 @@ export const PageCreateSubpageInputSchema = z
   .strict();
 export type PageCreateSubpageInput = z.infer<typeof PageCreateSubpageInputSchema>;
 
-/**
- * Duplicates the subpage `pageItemId` with every page nested in it (issue #1722). The id names an item of the hidden
- * Pages database; whether it does, and how large its tree is, is decided by the operation, not by this schema.
- */
+/** Duplicates the subpage with every page nested in it. Tree size and Pages membership are checked by the operation. */
 export const PageDuplicateInputSchema = z.object({ pageItemId: canonicalUuid }).strict();
 export type PageDuplicateInput = z.infer<typeof PageDuplicateInputSchema>;
 
-/**
- * Renames the subpage `pageItemId` (issue #1725). `title` is the raw title; the operation normalizes it and refuses
- * one that is too long, so this schema sets no length.
- */
+/** The operation normalizes `title` and refuses one that is too long, so no length here. */
 export const PageRenameInputSchema = z.object({ pageItemId: canonicalUuid, title: z.string() }).strict();
 export type PageRenameInput = z.infer<typeof PageRenameInputSchema>;
 
-/** The block types a `page` block can be restyled into: every block type of the block model except `page` (docs/adr/2026-10-28-block-model-for-page-documents.md). */
+/** Every block type of the block model except `page`. */
 export const PAGE_CONVERT_TARGET_TYPES = ["text", "h1", "h2", "h3", "bullet", "number", "todo", "quote"] as const;
 export type PageConvertTargetType = (typeof PAGE_CONVERT_TARGET_TYPES)[number];
 
 /**
- * Restyles the `page` block `blockId` of the page document of `parentItemId` into a block of `type`, with the subpage
- * tree it names going to the Trash (issue #1876). `confirmedPageCount` is the number of pages the person was shown: the
- * page and every live page below it, at least 1. Whether the block is a `page` block of that document and whether the
- * count is still the current one is decided by the operation, not by this schema.
+ * Restyles a `page` block into `type`, moving its subpage tree to the Trash. `confirmedPageCount` is the number of
+ * pages the person was shown (at least 1); the operation refuses it when it is no longer current.
  */
 export const PageConvertToBlockInputSchema = z
   .object({
@@ -812,9 +756,8 @@ const PAGE_INSERT_MAX_BLOCK_IDS = 10_000;
 const PAGE_INSERT_MAX_MARKDOWN_LENGTH = 1_000_000;
 
 /**
- * Inserts Markdown into the page of `itemId` at a placement (issue #1679): at the `"start"`, at the `"end"`, or right
- * after the block `afterBlockId`. `blockIds`, when given, names the new blocks, one id per parsed block in order;
- * otherwise the ids are generated. Whether the ids are well-formed and free is decided by the operation.
+ * Inserts Markdown at `"start"`, `"end"` or after `afterBlockId`. `blockIds` optionally names the new blocks, one per
+ * parsed block in order; their validity is checked by the operation.
  */
 export const PageInsertInputSchema = z
   .object({
@@ -826,13 +769,12 @@ export const PageInsertInputSchema = z
   .strict();
 export type PageInsertInput = z.infer<typeof PageInsertInputSchema>;
 
-/** Longest `expectedEtag` a replace accepts; a page version is a 43 character base64url SHA-256, so this only bounds the edge. */
+/** A page version is a 43-character base64url SHA-256; this only bounds the edge. */
 const PAGE_REPLACE_MAX_ETAG_LENGTH = 128;
 
 /**
- * Replaces the whole body of the page of `itemId` with `markdown` (issue #1765) when the page still has the version
- * `expectedEtag`, the token `page.get` with `format: "markdown"` returns. Whether the token is current, and whether
- * every page link names a subpage of the page, is decided by the operation, not by this schema.
+ * Replaces the page body when it still has version `expectedEtag` (from `page.get` with `format: "markdown"`). Token
+ * currency and page-link validity are checked by the operation.
  */
 export const PageReplaceInputSchema = z
   .object({
@@ -843,15 +785,13 @@ export const PageReplaceInputSchema = z
   .strict();
 export type PageReplaceInput = z.infer<typeof PageReplaceInputSchema>;
 
-/** The most entries one `page.changes` call returns, and what it returns without a `limit`. */
+/** Also the default when `limit` is omitted. */
 const PAGE_CHANGES_MAX_LIMIT = 500;
 const PAGE_CHANGES_DEFAULT_LIMIT = 100;
 
 /**
- * What was written to the page of `itemId` since an instant, by one author (issue #1680): `since` is an ISO 8601
- * timestamp with an offset, `by` the stored author of the updates to list (the assistant by default) and `limit` the
- * most entries returned, oldest first. A `since` in the future or before the retained history is refused by the
- * operation, not by this schema.
+ * Writes to the page since `since` (ISO 8601 with offset) by one stored author (default: the assistant), oldest first.
+ * A future or unretained `since` is refused by the operation.
  */
 export const PageChangesInputSchema = z
   .object({
@@ -866,7 +806,7 @@ export type PageChangesInput = z.infer<typeof PageChangesInputSchema>;
 export const ValueLinkInputSchema = z.object({ itemId: canonicalUuid, propertyKey: z.string().min(1) }).strict();
 export type ValueLinkInput = z.infer<typeof ValueLinkInputSchema>;
 
-/** Restores the page of `itemId` to its state at `at` (issue #1617); a future or unretained `at` is refused by the operation, not by this schema. */
+/** A future or unretained `at` is refused by the operation. */
 export const PageRestoreVersionInputSchema = z
   .object({
     itemId: canonicalUuid,
@@ -875,7 +815,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 51 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Mapped type over every operation name; exhaustiveness is checked by `_assertInputByOperationExhaustive` below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;

@@ -16,19 +16,17 @@ import {
 } from "@semprec/data";
 import type { AiGatewayClientPort } from "@semprec/shared";
 
-/** What the extraction needs besides the pool: the gateway and the way to open the stored bytes of a blob. */
 export interface AttachmentExtractionPorts {
   gateway: AiGatewayClientPort;
   openBlob: (storageKey: string) => Promise<Readable | null>;
 }
 
-/** The extraction of one attachment of the Inbox item, in the order of the attachments' positions. */
+/** In the order of the attachments' positions. */
 export interface AttachmentDocument {
   attachmentId: string;
   extraction: AttachmentExtraction;
 }
 
-/** An attachment of the plan: its stored extraction, or the reduced copy to read. */
 type PlannedAttachment =
   | { attachmentId: string; stored: AttachmentExtraction }
   | { attachmentId: string; stored: null; image: ExtractionImage };
@@ -39,17 +37,15 @@ function textProperty(item: ItemRow, key: string): string {
 }
 
 /**
- * The document data of the image attachments of an Inbox item (issue gh-1970), for the proposal computation to hand to
- * its model call. At most `MAX_EXTRACTED_ATTACHMENTS` attachments take part: the first ones, by position, that are
- * images with a reduced copy (`classifyForExtraction`); a PDF, audio and an image the metadata job could not read take
- * none. An attachment with a stored extraction is returned as stored and makes no gateway call. Another one is read
- * through the gateway and stored once; two runs that started together keep the first stored value.
+ * At most `MAX_EXTRACTED_ATTACHMENTS` take part: the first images by position with a reduced copy;
+ * PDFs, audio and unreadable images take none. A stored extraction is returned without a gateway
+ * call; otherwise the image is read through the gateway and stored once (concurrent runs keep the
+ * first stored value).
  *
- * The attachments are listed by the Inbox item's id in the tenant in scope, so an attachment of another tenant or of
- * another item is not reachable. The plan is read in one short transaction, each gateway call runs with no transaction
- * open, and each answer is stored in a transaction of its own. A failure of a call throws, so nothing of the later
- * attachments is read and nothing is stored for the failed one; the extractions stored before it stay, and the next run
- * reuses them. An attachment deleted while the model was reading it is left out of the result.
+ * Attachments are listed by the Inbox item's id in the tenant in scope. The plan is read in one
+ * short transaction, each gateway call runs with no transaction open, and each answer is stored in
+ * its own transaction. A failed call throws: later attachments are not read, earlier extractions
+ * stay for the next run. An attachment deleted during the call is left out.
  */
 export async function resolveAttachmentDocuments(
   pool: Pool,

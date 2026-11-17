@@ -1,9 +1,6 @@
-// The writes behind the participants sheet of an Event (issue #1790): replacing the list of people on an Event and
-// inviting one linked person by email. Both run in the caller's open transaction under the Event's row lock, write the
-// edges of the `Events.people` relation through the choke point's relation functions and queue the invitation jobs of
-// issue #1774 in that same transaction, so the edges and the jobs commit or roll back together.
-// Constrained by: docs/adr/2026-11-11-event-participant-invitations-are-written-by-system-writers.md,
-// docs/adr/2026-09-10-side-effects-follow-the-commit.md
+// Writes behind an Event's participants sheet: replacing its people and inviting one linked person. Both run in
+// the caller's transaction under the Event's row lock and queue the invitation jobs in that same transaction, so
+// edges and jobs commit or roll back together.
 import type { PoolClient } from "pg";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { lockItemById } from "../chokePoint/itemsStore.js";
@@ -29,13 +26,11 @@ import {
 } from "./eventParticipantEdgeHook.js";
 import { enqueueEventInvitation, readEventInvitationSnapshot } from "./eventInvitationJob.js";
 
-/** The `code` of the 409 that the invite refuses an already invited person with. */
 const ALREADY_INVITED_CODE = "conflict";
 
-/** The user's own writes: linking and unlinking people. An invitation and the organizer edge are written as the system. */
+/** Invitations and the organizer edge are written as the system. */
 const USER_WRITER: WriterIdentity = { writerKind: "user" };
 
-/** The Event, locked, and the relation its participants are the edges of. */
 interface LockedEvent {
   event: ItemRow;
   peopleDatabaseId: string;
@@ -44,11 +39,7 @@ interface LockedEvent {
   relationDefinitionId: string;
 }
 
-/**
- * Locks the live Event `eventId` of the tenant in scope and reads the ids of the relation and databases the writes
- * need. Another tenant's Event is hidden by row-level security, so it, an unknown id, a trashed Event, an item of
- * another database and a tenant without an Events database all answer the same `not_found`.
- */
+/** Another tenant's Event is hidden by RLS, so every not-found case answers the same `not_found`. */
 async function lockLiveEvent(client: PoolClient, eventId: string): Promise<LockedEvent> {
   const events = await getDatabaseByModuleId(client, EVENTS_MODULE_ID);
   const event = events === null ? null : await lockItemById(client, events.id, eventId);
@@ -69,7 +60,6 @@ async function lockLiveEvent(client: PoolClient, eventId: string): Promise<Locke
   };
 }
 
-/** One participant edge of the Event, as stored. */
 interface StoredParticipant {
   personId: string;
   metadata: Record<string, unknown>;
@@ -86,23 +76,21 @@ async function readStoredParticipants(client: PoolClient, locked: LockedEvent): 
   }));
 }
 
-/** The `icalSequence` a `REQUEST` is keyed by: the Event's, or 0 for an Event that stores none. */
+/** 0 for an Event that stores none. */
 function eventSequence(event: ItemRow): number {
   const sequence = event.properties.icalSequence;
   return typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : 0;
 }
 
-/** The first address of a person's `emails`, in lower case, or `null` when the person has none. */
+/** Lower case. */
 function firstEmail(person: ItemRow): string | null {
   const first = parseAddressListProperty(person.properties.emails)[0];
   return first === undefined ? null : normalizeEmailAddress(first);
 }
 
 /**
- * The mailbox an invitation is sent from. `mailboxId` is required whenever an invitation is to be sent
- * (`validation_failed` on `mailboxId`) and must be a live item of the tenant's Mailboxes database (the same answer for
- * a trashed one, another tenant's and an unknown id). The mailbox row is locked, so it is not trashed between this
- * check and the commit of the jobs that name it.
+ * Required whenever an invitation is sent. The row is locked so the mailbox is not trashed before the jobs naming
+ * it commit.
  */
 async function requireLiveMailbox(
   client: PoolClient,
@@ -119,11 +107,7 @@ async function requireLiveMailbox(
   return mailbox.id;
 }
 
-/**
- * The person the Event's organizer edge is to be created for, or `null` when the Event has an organizer edge already.
- * The organizer is the person the tenant's user is linked to; a tenant whose user is linked to no person has nobody to
- * name, and the invitation cannot be sent (`validation_failed` on `sendInvites`, reason `noSelfPerson`).
- */
+/** `null` when an organizer edge exists. A tenant user linked to no person cannot send (`noSelfPerson`). */
 function organizerPersonToCreate(stored: readonly StoredParticipant[], selfPersonId: string | null): string | null {
   if (stored.some((participant) => participant.role === "organizer")) return null;
   if (selfPersonId === null) {
@@ -135,7 +119,7 @@ function organizerPersonToCreate(stored: readonly StoredParticipant[], selfPerso
   return selfPersonId;
 }
 
-/** Creates the organizer edge (role `organizer`) to `personId`, written as the system; an attendee edge of that person is replaced by it. */
+/** Written as the system; replaces an attendee edge of that person. */
 async function writeOrganizerEdge(client: PoolClient, locked: LockedEvent, personId: string): Promise<void> {
   await createRelationWithClient(
     client,
@@ -150,7 +134,6 @@ async function writeOrganizerEdge(client: PoolClient, locked: LockedEvent, perso
   );
 }
 
-/** The pending invitation metadata a new edge or a re-written edge carries. */
 function pendingInvitation(email: string, mailboxId: string): EventParticipantInvitation {
   return { status: "pending", email, mailboxId };
 }
@@ -173,7 +156,7 @@ async function enqueueRequest(
 
 export interface ReplaceEventPeopleInput {
   eventId: string;
-  /** The full list of non-organizer participants wanted, as person ids in the 8-4-4-4-12 form, in lower case. */
+  /** 8-4-4-4-12 form, lower case. */
   personIds: readonly string[];
   sendInvites: boolean;
   mailboxId?: string;
@@ -181,34 +164,24 @@ export interface ReplaceEventPeopleInput {
 }
 
 export interface ReplaceEventPeopleResult {
-  /** New people linked with a pending invitation. */
   invited: number;
-  /** New people linked without one. */
   linkedOnly: number;
 }
 
-/** A person to link, with the address they are invited at, or `null` when they are only linked. */
 interface PlannedAddition {
   personId: string;
   email: string | null;
 }
 
 /**
- * Makes the non-organizer participants of the Event the people in `personIds`, in the caller's transaction, under the
- * Event's row lock:
- * - a person who is in the list and linked keeps their edge and its metadata and is not invited again;
- * - a linked non-organizer person who is not in the list is unlinked, and one whose edge carries an invitation also
- *   gets a `CANCEL` job built from the Event as it is now;
- * - a person in the list who is not linked is linked. With `sendInvites` and an address (the first of `emails`) the edge
- *   carries a pending invitation, written as the system, and a `REQUEST` job is queued; otherwise it is a plain edge.
- * - when an invitation is sent and the Event has no organizer edge yet, the organizer edge is created first.
+ * - Listed and linked people keep their edge and are not invited again.
+ * - Linked non-organizers not listed are unlinked; one with an invitation also gets a `CANCEL`.
+ * - Listed unlinked people are linked; with `sendInvites` and an address the edge carries a pending invitation
+ *   (system writer) and a `REQUEST` is queued.
+ * - When sending and the Event has no organizer edge, it is created first.
  *
- * Refusals, all before the first write: the Event is not found (`not_found`); a person who is not a live item of
- * People, or who is the Event's organizer or the tenant's own person without being linked already as an attendee, is
- * `validation_failed` on `people`; invitations are to be sent and the mailbox is missing or not a mailbox of the tenant (`validation_failed` on `mailboxId`), or the
- * organizer edge is to be created and the tenant's user is linked to no person (`validation_failed` on `sendInvites`).
- * A later failure (a refused edge write, a participant removed by another transaction meanwhile, an Event that cannot
- * be described in a `CANCEL`) throws and the caller's transaction rolls back every edge and every job.
+ * All refusals happen before the first write. A later failure throws and the caller's transaction rolls back every
+ * edge and job.
  */
 export async function replaceEventPeople(
   client: PoolClient,
@@ -223,9 +196,8 @@ export async function replaceEventPeople(
   );
 
   const wanted = [...new Set(input.personIds)];
-  // The tenant's own person is never newly linked as a plain participant, but an attendee edge to it can be stored (the
-  // generic edge write allows one). Such an edge is listed by the read endpoint like any other, so a list that names it
-  // again is a list that stays, and one that leaves it out unlinks it.
+  // The tenant's own person is never newly linked as a plain participant, but a stored attendee edge to it is
+  // listed like any other, so naming it again keeps it and leaving it out unlinks it.
   if (
     wanted.some((personId) => organizerIds.has(personId) || (personId === selfPersonId && !storedIds.has(personId)))
   ) {
@@ -234,7 +206,7 @@ export async function replaceEventPeople(
       reason: "organizerInPeople",
     });
   }
-  // Locked in id order, so two replacements that name the same people take the rows in the same order.
+  // Locked in id order, so two replacements naming the same people take rows in the same order.
   const emailOf = new Map<string, string | null>();
   for (const personId of [...wanted].sort()) {
     const person = await lockItemById(client, locked.peopleDatabaseId, personId);
@@ -313,16 +285,10 @@ export interface InviteEventPersonInput {
 }
 
 /**
- * Invites one person who is already linked to the Event, in the caller's transaction, under the Event's row lock: the
- * person's edge gets a pending invitation to the first address of their `emails`, written as the system with the
- * edge's other metadata kept, and a `REQUEST` job is queued. When the Event has no organizer edge yet it is created
- * first.
- *
- * Refusals, all before the first write: the Event is not found, the person is not a live item of People or is not
- * linked to the Event (`not_found`); the person is the Event's organizer or the tenant's own person (who is the organizer
- * of every Event the tenant invites to, so is never invited, whatever role a stored edge to them has), has no address,
- * the mailbox is not a mailbox of the tenant or the organizer edge is to be created and the tenant's user is linked to
- * no person (`validation_failed`); the person already has an invitation (409, code `conflict`).
+ * The edge gets a pending invitation to the person's first address (other metadata kept, system writer) and a
+ * `REQUEST` is queued; a missing organizer edge is created first. All refusals happen before the first write. The
+ * tenant's own person is the organizer of every invited Event and is never invited. An existing invitation is a
+ * 409 `conflict`.
  */
 export async function inviteEventPerson(client: PoolClient, input: InviteEventPersonInput): Promise<void> {
   const locked = await lockLiveEvent(client, input.eventId);
@@ -331,7 +297,7 @@ export async function inviteEventPerson(client: PoolClient, input: InviteEventPe
   const stored = await readStoredParticipants(client, locked);
   const participant = stored.find((candidate) => candidate.personId === person.id);
   if (participant === undefined) throw new NotFoundError("The person is not linked to the Event");
-  // Read once: the tenant's own person is refused here, before any write, and names the organizer edge below.
+  // Read once: refused here before any write, and names the organizer edge below.
   const selfPersonId = await getSelfPersonId(client);
   if (participant.role === "organizer" || person.id === selfPersonId) {
     throw new ValidationError("The organizer of an Event and the tenant's own person are not invited", {

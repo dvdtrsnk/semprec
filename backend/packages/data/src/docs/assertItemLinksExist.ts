@@ -3,12 +3,8 @@ import type { Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 
 /**
- * Write guard for page Markdown that was just parsed: every `semprec://items/<uuid>` link must
- * name a live item of the caller's tenant. `client` must be tenant-scoped (row-level security
- * hides other tenants' items), so an unknown id, a soft-deleted item, an id of another tenant and
- * a malformed id all raise the same `ValidationError` (HTTP 400 `validation_failed`) with the
- * same body, which never says which of them it was. `field` is the request field that carried
- * the Markdown. Reads only; it writes no relation.
+ * `client` must be tenant-scoped (RLS hides other tenants' items), so unknown, trashed, foreign and malformed ids all
+ * raise the same `ValidationError`, which never says which it was.
  */
 export async function assertItemLinksExist(
   client: Queryable,

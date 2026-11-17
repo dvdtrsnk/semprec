@@ -114,7 +114,6 @@ describe("Areas registered write hooks", () => {
   it("validates only written keys, and leaves an explicitly cleared update position unset", async () =>
     runInTenant(tenant, async () => {
       const item = await create();
-      // Legacy data can predate the validation hooks.
       await pool.query("UPDATE items SET properties = properties || $3::jsonb WHERE database_id = $1 AND id = $2", [
         databaseId,
         item.id,

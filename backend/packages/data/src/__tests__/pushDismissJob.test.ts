@@ -18,8 +18,7 @@ import { upsertApnsSubscription, upsertWebPushSubscription } from "../push/pushS
 import * as webPushAdapter from "../push/webPushAdapter.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// Passthrough spies: every call reaches the real adapter unless a test replaces one answer, so the default
-// wiring of the job to the adapters can be observed without a network.
+// Passthrough spies: the default job-to-adapter wiring is observable without a network.
 vi.mock("../push/apnsAdapter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../push/apnsAdapter.js")>();
   return { ...actual, sendApnsBackgroundPush: vi.fn(actual.sendApnsBackgroundPush) };
@@ -48,7 +47,6 @@ function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): 
   return runInTenant(tenantId, () => withTransaction(dataPool, fn));
 }
 
-/** A new user of `tenantId` with one Web Push and one APNs registration. */
 async function addUser(tenantId: string): Promise<DismissTenant> {
   const user = await createUser(adminPool, {
     tenantId,
@@ -79,7 +77,6 @@ async function addUser(tenantId: string): Promise<DismissTenant> {
   return { tenantId, userId: user.id, webPush: { id: webPush.id, endpoint }, apns: { id: apns.id, deviceToken } };
 }
 
-/** One more active Web Push and one more active APNs registration for the user of `tenant`. */
 async function addDevices(tenant: DismissTenant) {
   const endpoint = `https://push.example/${randomUUID()}`;
   const webPush = await runInTenant(tenant.tenantId, () =>
@@ -108,10 +105,7 @@ async function newTenant(): Promise<DismissTenant> {
   return addUser(await createTestTenant(adminPool));
 }
 
-/**
- * Writes one notification for `userId` through the production writer and returns its id. The default is a
- * critical Semp problem, a kind that is pushed; `heartbeat_error` is a kind that never is.
- */
+/** Defaults to a critical Semp problem, which is pushed; `heartbeat_error` never is. */
 function writeFor(
   tenantId: string,
   userId: string,
@@ -137,7 +131,6 @@ function resolveSource(tenantId: string, sourceId: string, sourceTable = "semp_p
   return inTenant(tenantId, (client) => resolveNotificationsBySource(client, { sourceTable, sourceId }));
 }
 
-/** The queued `pushDismiss` envelopes, newest queue order, as the tenant they carry and their payload. */
 async function dismissJobs() {
   return (await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.PUSH_DISMISS))
     .map((envelope) => jobEnvelope.parse(envelope))
@@ -159,7 +152,6 @@ function runDismiss(tenantId: string, payload: unknown, dismissSenders?: PushDis
   return runInTenant(tenantId, () => handlePushDismissTask(dataPool, payload, dismissSenders));
 }
 
-/** The `revoked_at` state of every push registration of `userId`, by registration id. */
 async function revoked(tenant: DismissTenant, userId = tenant.userId): Promise<Record<string, boolean>> {
   const { rows } = await inTenant(tenant.tenantId, (client) =>
     client.query<{ id: string; revoked: boolean }>(

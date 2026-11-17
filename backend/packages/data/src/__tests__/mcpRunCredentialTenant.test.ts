@@ -19,10 +19,7 @@ let adminPool: Pool;
 let pool: Pool;
 let tenantZero: string;
 let tenantB: string;
-/**
- * Each tenant's own user, created on first use. A run's actor must be its own tenant's user
- * (`agent_runs_actor_user_id_tenant_fkey`, issue #1066), so one account cannot act in two tenants.
- */
+/** Each tenant's own user: a run's actor must belong to the run's tenant (`agent_runs_actor_user_id_tenant_fkey`). */
 const usersByTenant = new Map<string, string>();
 async function userOf(tenantId: string): Promise<string> {
   const existing = usersByTenant.get(tenantId);
@@ -54,7 +51,6 @@ describe("MCP run credentials resolve to their tenant (issue #994)", () => {
     usersByTenant.clear();
   });
 
-  /** Mints a credential inside `tenantId` for a Projects item created in that same tenant. */
   async function mintIn(tenantId: string) {
     const userId = await userOf(tenantId);
     return runInTenant(tenantId, async () => {

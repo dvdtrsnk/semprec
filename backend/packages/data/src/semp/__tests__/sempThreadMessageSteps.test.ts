@@ -28,7 +28,6 @@ const SEEDING_TEST_TIMEOUT_MS = 90_000;
 let setup: TurnSetup;
 let userId: string;
 
-/** The first page of `threadId`, read through the runtime role in the fixture tenant's scope. */
 async function readHistory(threadId: string) {
   return runInTenant(setup.tenant, () =>
     withTransaction(setup.runtime, (client) => listSempThreadMessages(client, threadId, 50, null)),
@@ -54,7 +53,6 @@ describe("the stored steps in the Semp thread message read (issue #1887)", () =>
     await setup?.admin.end();
   });
 
-  /** A turn whose delete is waiting for the approval request it created, finished with its summary. */
   async function playWaitingDelete() {
     const task = await createFixtureItem(setup, "tasks", { name: "Old task" });
     const del = { toolCallId: "del-1", name: "item_delete", operation: "item.delete", targetItemId: task.id };

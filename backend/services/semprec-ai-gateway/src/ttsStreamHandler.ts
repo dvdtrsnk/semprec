@@ -18,17 +18,13 @@ import { logger } from "./logger.js";
 
 export const TTS_STREAM_PATH = "/internal/tts/stream";
 
-/** The `ai_gateway_calls.operation` of every row of this route. */
 export const TTS_STREAM_OPERATION = "voice_synthesize";
 
 /** The most characters one request may synthesize; also below the provider's own per-request input limit. */
 export const MAX_TTS_TEXT_CHARS = 4000;
 /** A body of `MAX_TTS_TEXT_CHARS` four-byte characters plus the JSON around them fits with room to spare. */
 const MAX_BODY_BYTES = 32 * 1024;
-/**
- * Spoken characters per second used for the up-front price estimate. Deliberately below real
- * speech rates, so the reserved estimate is an upper bound and the settled cost usually lower.
- */
+/** Deliberately below real speech rates, so the reserved estimate is an upper bound. */
 const ESTIMATE_CHARS_PER_SECOND = 10;
 /** How many syntheses may run at once; each one holds a provider connection and a reserved row. */
 export const MAX_CONCURRENT_TTS_STREAMS = 8;
@@ -38,13 +34,12 @@ const DRAIN_TIMEOUT_MS = 30_000;
 export interface TtsStreamHandlerOptions {
   internalToken: string;
   provider: SpeechSynthesisProvider;
-  /** USD per hour of synthesized audio. */
   pricePerAudioHour: number;
   maxConcurrentStreams: number;
   globalCaps: GlobalAiCaps;
 }
 
-/** The turn a synthesis serves, from the optional `x-semprec-agent-run-id` and `x-semprec-semp-message-id` headers (#2020). */
+/** From the optional `x-semprec-agent-run-id` and `x-semprec-semp-message-id` headers. */
 interface TtsAttribution {
   agentRunId: string | null;
   sempMessageId: string | null;
@@ -106,14 +101,10 @@ function cutResponse(res: ServerResponse): void {
 }
 
 /**
- * Handles `POST /internal/tts/stream` (#1399): a JSON `{text, voice}` in, raw 24 kHz mono PCM s16le
- * out as a chunked response, written as the provider produces it. The price is reserved from the
- * text length before the provider is called (`synthesizeSpeech`) and the row is settled with the
- * audio actually produced; a caller that disconnects aborts the provider request and the row is
- * settled with what was produced, or failed when nothing was. The optional attribution headers
- * `x-semprec-agent-run-id` and `x-semprec-semp-message-id` are written on the reserved row, so the
- * settled row carries them too; a run or message of another tenant, or an unknown one, is refused
- * as `attribution_refused` without a row. The text is never logged.
+ * `POST /internal/tts/stream`: `{text, voice}` in, 24 kHz mono PCM s16le streamed out. Reserved from
+ * the text length, settled with the audio produced (failed when none). A disconnect aborts the
+ * provider. Attribution to an unknown or foreign-tenant run/message is refused as
+ * `attribution_refused` without a row. The text is never logged.
  */
 export function createTtsStreamRequestListener(pool: Pool, options: TtsStreamHandlerOptions) {
   const limit = createAudioConcurrencyLimit(options.maxConcurrentStreams);

@@ -66,7 +66,6 @@ export type ImapMoveStepResult =
   | { kind: "unsupportedCapability" }
   | { kind: "uncertain"; observed: unknown };
 
-/** Runs one owned, already claimed command on the selected source connection. */
 export async function executeImapMoveStep(
   client: ImapFlow,
   step: "move" | "copy" | "mark_deleted" | "expunge",
@@ -126,7 +125,7 @@ export async function executeImapMoveStep(
 
 const MOVE_RESPONSE_LIMIT = 16 * 1024;
 
-/** Reads one bounded Mail move response and closes its reader before returning. */
+/** Closes its reader before returning. */
 async function readMoveResponse(response: Response): Promise<{ body: unknown; cleanupFailures: unknown[] }> {
   if (!response.body) throw new Error("Missing Mail move response");
   const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
@@ -169,7 +168,7 @@ export type GraphMoveResult =
   | { kind: "missing" }
   | { kind: "uncertain" };
 
-/** Executes a single Graph observation or move; the access token is acquired by the caller. */
+/** The access token is acquired by the caller. */
 export async function graphMoveRequest(
   fetchImpl: typeof fetch,
   token: string,
@@ -240,7 +239,6 @@ export type GmailMoveResult =
   | { kind: "missing" }
   | { kind: "uncertain" };
 
-/** Executes one bounded Gmail observation or previously claimed mutation. */
 export async function gmailMoveRequest(
   fetchImpl: typeof fetch,
   token: string,

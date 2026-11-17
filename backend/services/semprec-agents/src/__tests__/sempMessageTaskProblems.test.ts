@@ -56,9 +56,8 @@ vi.mock("@semprec/data", async (importOriginal) => {
 });
 
 /**
- * The problem of a failed Semp reply (issue #1931), through the real turn handler, the real agent session and the
- * real problem store; only the model is a faux provider. Each turn is run by calling the handler directly, so a
- * turn that fails to store its result surfaces as the handler's rejection. Everything runs on the runtime role pool.
+ * Only the model is faux. The handler is called directly, so a turn that fails to store its result
+ * surfaces as its rejection. Runs on the runtime role pool.
  */
 
 let admin: Pool;
@@ -402,8 +401,7 @@ describe("the problem of a failed Semp reply", () => {
 
   it("raises no problem for a turn that fails before it has a message to answer", async () => {
     const turn = await send(tenant);
-    // The column is nullable and the send path always sets it; a raw UPDATE on the admin pool builds the state that
-    // makes the handler fail on a source it cannot find, which no production writer leaves on a queued reply.
+    // Raw UPDATE: no production writer leaves a queued reply without its source.
     await admin.query("UPDATE semp_messages SET reply_to_message_id = NULL WHERE id = $1", [turn.assistantMessageId]);
 
     await runTurn(turn, []);

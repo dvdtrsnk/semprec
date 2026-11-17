@@ -36,12 +36,9 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 /**
- * Recursively collects every base-table scan actually executed (`Actual Loops` > 0) anywhere in
- * an `EXPLAIN ANALYZE` plan tree, keyed by `Relation Name`. Partitions the planner statically
- * lists as candidates but the executor skips at runtime (partition pruning) report `Actual
- * Loops: 0` and are excluded — this is why the test needs ANALYZE rather than a plain EXPLAIN:
- * the `item.database_id = op.database_id` lookup value isn't known until execution, so the
- * planner can only prune at runtime, not at plan time.
+ * Collects every base-table scan executed (`Actual Loops` > 0) in an `EXPLAIN ANALYZE` plan tree, by
+ * `Relation Name`. Partitions pruned at runtime report `Actual Loops: 0`; ANALYZE is needed because the
+ * `item.database_id = op.database_id` value is only known at execution.
  */
 function collectExecutedRelationNames(plan: Record<string, unknown>, acc: Set<string>): void {
   const relationName = plan["Relation Name"];
@@ -105,9 +102,7 @@ describe("itemRelationFilter partition pruning (issue #262)", () => {
     const { rows: partitionRows } = await pool.query<{ tablename: string }>(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'items\\_p\\_%'`,
     );
-    // Every module seedSystem sets up (Folders, Emails, Files, People, Projects, ...) got its own
-    // partition — several distinct `items_p_*` tables exist here, so pruning down to one is a
-    // meaningful assertion, not a vacuous one.
+    // Every module seedSystem sets up got its own partition, so pruning down to one is meaningful.
     expect(partitionRows.length).toBeGreaterThan(1);
     const foldersPartition = `items_p_${foldersId.replace(/-/g, "")}`;
     expect(partitionRows.map((r) => r.tablename)).toContain(foldersPartition);

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
-// The production hook registrations: this file reaches the choke point by its deep path, not through the barrel.
 import "../domainWriteHooks.js";
 import { createBlob, tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -46,7 +45,6 @@ async function databaseId(tenant: string, moduleId: string): Promise<string> {
   return database.id;
 }
 
-/** A blob row of `tenant` through the blob owner's store; the hook reads the row only, so no bytes are stored. */
 async function blob(tenant: string, mimeType: string): Promise<string> {
   return inTenant(tenant, async (client) => {
     const storageKey = await tenantBlobStorageKey(client, randomUUID());
@@ -54,7 +52,6 @@ async function blob(tenant: string, mimeType: string): Promise<string> {
   });
 }
 
-/** The refusal of a write as the fields an HTTP caller sees; anything but a `ValidationError` is rethrown. */
 async function refusal(write: Promise<unknown>) {
   try {
     await write;
@@ -137,7 +134,6 @@ describe("recipe photo write hook (issue #1707)", () => {
       expect(unknown).toMatchObject({ status: 400, code: "validation_failed", details: { field: "photo" } });
       expect(otherTenant).toEqual(unknown);
       expect(await recipes()).toEqual([]);
-      // The other tenant can use its own blob.
       const otherRecipesId = await databaseId(otherTenantId, RECIPES_MODULE_ID);
       const own = await runInTenant(otherTenantId, () =>
         chokePoint.createItem({ databaseId: otherRecipesId, properties: { name: "Own", photo: { blobId: foreign } } }),
@@ -170,7 +166,6 @@ describe("recipe photo write hook (issue #1707)", () => {
       const unknown = await refusal(patchRecipe(recipe.id, { photo: { blobId: randomUUID() } }));
       expect(unknown).toMatchObject({ status: 400, details: { field: "photo" } });
       expect(await refusal(patchRecipe(recipe.id, { photo: { blobId: foreign } }))).toEqual(unknown);
-      // Every refused update rolled back: the row is the one the create wrote.
       expect(await recipes()).toEqual([created]);
 
       const untouched = await patchRecipe(recipe.id, { servings: 4 });
@@ -193,10 +188,8 @@ describe("recipe photo write hook (issue #1707)", () => {
     });
   });
 
-  // The blob reference hook registered before this one refuses an unknown, foreign or malformed blob id first,
-  // so these call the hook directly to reach each of its own branches.
+  // The blob reference hook registered earlier refuses bad blob ids first, so these call this hook directly.
   describe("called on its own", () => {
-    /** Runs the hook as a create and as an update of a recipe of `tenant` that set `photo`. */
     async function runHook(tenant: string, photo: unknown, moduleId = RECIPES_MODULE_ID): Promise<void> {
       const target = await databaseId(tenant, moduleId);
       await inTenant(tenant, async (client) => {
@@ -234,7 +227,6 @@ describe("recipe photo write hook (issue #1707)", () => {
 
       expect(await refusal(runHook(tenantId, { blobId: randomUUID() }))).toEqual(NOT_AN_IMAGE);
       expect(await refusal(runHook(tenantId, { blobId: foreign }))).toEqual(NOT_AN_IMAGE);
-      // The same id passes in the tenant that owns the blob.
       await expect(runHook(otherTenantId, { blobId: foreign })).resolves.toBeUndefined();
     });
 

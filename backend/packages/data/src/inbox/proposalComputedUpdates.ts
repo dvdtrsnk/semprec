@@ -12,11 +12,9 @@ import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.j
 import { isWorkspaceUpdateEligible } from "./proposalWorkspaceContext.js";
 
 /**
- * The tenant time zone an Inbox proposal preparation needs, read and validated with `getCalendarClock` in
- * the caller's tenant transaction (docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md).
- * A stored zone that fails validation is a settings failure, not an invalid proposal: its `ValidationError`
- * is rethrown as a plain `Error` with it as `cause`, so the callers' catches that turn a proposal's
- * `ValidationError` into a clarification or a refusal let it propagate. Every other error propagates as is.
+ * The validated tenant time zone for proposal preparation. An invalid stored zone is a settings failure, not an
+ * invalid proposal: its `ValidationError` is rethrown as a plain `Error` (with `cause`) so callers that turn a
+ * `ValidationError` into a clarification or refusal let it propagate.
  */
 export async function readProposalTimezone(client: PoolClient): Promise<string> {
   try {
@@ -27,7 +25,6 @@ export async function readProposalTimezone(client: PoolClient): Promise<string> 
   }
 }
 
-/** Forms server-owned baselines only for freshly computed multi-step proposals. */
 export async function prepareComputedUpdates(
   client: PoolClient,
   envelope: ProposalEnvelope,
@@ -42,7 +39,6 @@ export async function prepareComputedUpdates(
     seen.add(step.itemId);
   }
   const updated = new Map<string, ProposalStep>();
-  // The tenant zone for the Events preparation, read and validated once in this tenant transaction.
   let timezone: string | undefined;
   for (const step of active) {
     if (step.op !== "update" || !step.itemId) continue;

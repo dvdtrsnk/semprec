@@ -1,15 +1,7 @@
-// Where an `approval_pending` notification links (issue #1787). Both producers of that notification,
-// `preflightDestructiveApproval` and `createApprovalGatedMcpInvokeTool`, call this function, so a
-// generic-operation request and an MCP request of the same source link to the same place.
+// Shared by both `approval_pending` producers so generic and MCP requests link identically.
 import type { ApprovalRequestSourceKind } from "../mcp/approvalRequestsStore.js";
 
-/**
- * The `linkHref` of the notification about approval request `approvalRequestId`. `source` is the
- * kind of the request's source (`getApprovalRequestSourceKind`), or `null` when it is not known.
- * A request of a `chat` source links to the Semp chats page. A request of any other source, and a
- * request without a known one, links to the Inbox. Both links carry the request id, and neither
- * names a user.
- */
+/** `chat` sources link to Semp chats, everything else (including unknown) to the Inbox. */
 export function approvalNotificationLinkHref(
   source: ApprovalRequestSourceKind | null,
   approvalRequestId: string,

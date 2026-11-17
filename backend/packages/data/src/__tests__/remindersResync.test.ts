@@ -1,4 +1,3 @@
-// Issue gh-1879: the debounced reminders resync job, the writes that enqueue it and the silent push it sends.
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
@@ -37,8 +36,7 @@ import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createSeriesOccurrence, startTaskSeries } from "../testSupport/taskSeriesFixtures.js";
 
-// Passthrough spy: a call reaches the real adapter (which answers not-configured without APNS_* settings) unless a
-// test replaces one answer, so the default wiring of the handler to the adapter is observed without a network.
+// Passthrough spy: the real adapter answers not-configured without APNS_* settings, so no network is used.
 vi.mock("../push/apnsAdapter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../push/apnsAdapter.js")>();
   return { ...actual, sendApnsBackgroundPush: vi.fn(actual.sendApnsBackgroundPush) };
@@ -97,7 +95,6 @@ function chokePoint(t: ResyncTenant) {
   };
 }
 
-/** A new tenant seeded as production seeds one, with a user, so it has its calendars and the System settings item. */
 async function seededTenant(): Promise<ResyncTenant> {
   const tenantId = await createTestTenant(adminPool);
   // The user first: the seeded calendars are named in the locale of the tenant's user.
@@ -122,7 +119,6 @@ async function seededTenant(): Promise<ResyncTenant> {
   return { tenantId, userId: user.id, databases };
 }
 
-/** The pending `remindersResync` jobs, read through the public view of the queue schema. */
 async function resyncJobs(): Promise<ResyncJob[]> {
   const { rows } = await adminPool.query<ResyncJob>(
     "SELECT key, run_at FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -135,7 +131,6 @@ function resyncKey(t: ResyncTenant): string {
   return remindersResyncJobKey(t.tenantId);
 }
 
-/** Removes every pending job of the queue, so the next write is the only one that can have enqueued a resync. */
 async function clearJobs(): Promise<void> {
   await adminPool.query(
     "SELECT graphile_worker.complete_jobs(ARRAY(SELECT id FROM graphile_worker.jobs WHERE locked_at IS NULL))",
@@ -146,7 +141,7 @@ const jobEnvelope = z.object({ tenantId: z.string(), payload: z.object({ tenantI
 
 const EVENT = { name: "Workshop", date: "2026-11-20", timeFrom: "10:00", timeTo: "23:00", alertMinutes: 15 };
 
-/** A live seeded calendar of the tenant that is not the default, not a system one and not the last own one. */
+/** Live, not the default, not a system one and not the last own one. */
 async function ownCalendarId(t: ResyncTenant): Promise<string> {
   const { rows } = await runInTenant(t.tenantId, () =>
     dataPool.query<{ id: string }>(
@@ -369,7 +364,6 @@ describe("enqueueRemindersResync and the reminders write hooks (issue gh-1879)",
     await chokePoint(tenant).patch(EVENTS_MODULE_ID, event.id, { date: EVENT.date });
     expect(await resyncJobs()).toEqual([]);
 
-    // A patch that repeats one value and changes another is a change.
     await chokePoint(tenant).patch(EVENTS_MODULE_ID, event.id, { date: EVENT.date, timeFrom: "11:00" });
     expect((await resyncJobs()).map((job) => job.key)).toEqual([resyncKey(tenant)]);
   });
@@ -566,7 +560,6 @@ describe("the remindersResync handler (issue gh-1879)", () => {
     return { id: row.id, deviceToken };
   }
 
-  /** A tenant whose user has two active iOS registrations, a macOS one, a revoked iOS one and a Web Push one. */
   async function pushedTenant(): Promise<PushedTenant> {
     const t = await seededTenant();
     const ios = [await register(t, "ios", "sandbox"), await register(t, "ios", "production")];
@@ -637,7 +630,7 @@ describe("the remindersResync handler (issue gh-1879)", () => {
     const single = await seededTenant();
     const device = await register(single, "ios");
     await clearJobs();
-    // Only `Date` is faked, which puts the run time of the job in the past of the database clock: the job is due.
+    // Only `Date` is faked, so the job's run time is in the past of the database clock: it is due.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-16T10:00:00Z"));
     const event = await chokePoint(single).create(EVENTS_MODULE_ID, EVENT);

@@ -18,35 +18,26 @@ import { PayloadTooLargeError, readJsonBody, sendJson } from "./http.js";
 export { PayloadTooLargeError };
 
 /**
- * The `semprec-api` REST adapter foundation (issue #238): the one place a mounted route's
- * request is authenticated, its JSON body is parsed, its handler's result or thrown error is
- * turned into a response — shared by every route family this adapter carries, with no per-route
- * opt-out. #239 adds the ModuleRegistry manifest that actually mounts route families through
- * this; this issue ships the adapter itself plus fixture-driven contract tests, no concrete
- * generic resource routes yet.
+ * The one place a mounted route's request is authenticated, its JSON body parsed, and its result or
+ * error turned into a response, with no per-route opt-out.
  *
- * Contract evolution rule: there is no URL versioning (no `/api/v1/...`). Contract changes here
- * are additive only — a new envelope field, a new route, a new error code — never a breaking
- * change without a transition period. See
- * `docs/adr/2026-09-11-additive-only-rest-contract-no-url-versioning.md` for why.
+ * No URL versioning: contract changes are additive only
+ * (docs/architecture/edges-io-and-errors.md#rest-contract).
  *
- * `requireAuthenticatedIdentity` and `sendErrorResponse` are deliberately
- * module-private: `createAdapterRequestListener` is the only supported entry point, so a route
- * handler can never bypass its centralized auth gate or error mapping by calling one of these
- * directly.
+ * `requireAuthenticatedIdentity` and `sendErrorResponse` stay module-private so no handler can
+ * bypass the auth gate or error mapping.
  */
 
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
 
-/** Every route mounted through this adapter authenticates the same way — session cookie or `Authorization: Bearer` (issue #143) — before its handler ever runs. */
+/** Session cookie or `Authorization: Bearer`, before the handler runs. */
 async function requireAuthenticatedIdentity(pool: Pool, req: IncomingMessage): Promise<AuthenticatedIdentity> {
   return authenticateRequest(pool, req);
 }
 
 /**
- * Sends a `ChokePointError` as this adapter's `{ error: { code, details } }` body, at the status the shared
- * code→status table assigns it. A `RateLimitedError` (issue gh-1750) also gets a `Retry-After` header with
- * its whole seconds, as the bespoke auth listeners answer their own 429.
+ * A `RateLimitedError` also gets a `Retry-After` header in whole seconds, as the bespoke auth
+ * listeners answer their own 429.
  */
 function sendErrorResponse(res: ServerResponse, err: ChokePointError): void {
   const headers = err instanceof RateLimitedError ? { "Retry-After": String(err.retryAfterSeconds) } : undefined;
@@ -56,18 +47,15 @@ function sendErrorResponse(res: ServerResponse, err: ChokePointError): void {
 export interface AdapterRequestContext {
   req: IncomingMessage;
   identity: AuthenticatedIdentity;
-  /** Path parameters extracted from the mounted route's pattern (e.g. `:id`) — `{}` for a route with none. */
+  /** `{}` for a route with none. */
   params: Record<string, string>;
   body: unknown;
 }
 
 /**
- * What a handler resolves with: either the item to serialize into the #238 item envelope, or —
- * for a custom route (#239) whose response isn't shaped like an item at all (a list, a report, a
- * plain confirmation) — a raw JSON `body` sent as-is. Either way, status mapping and error
- * serialization stay the adapter's job, never the handler's. An item result may carry typed `results`, `warnings`
- * (issue #1928), `keptItems` (issue #1943) and `attachments` (issue gh-1963), each added to the item envelope as a
- * top-level field when present.
+ * Either an item to serialize into the item envelope, or a raw JSON `body` sent as-is. An item
+ * result may carry `results`, `warnings`, `keptItems` and `attachments`, each added to the envelope
+ * as a top-level field when present.
  */
 export type AdapterHandlerResult =
   | {
@@ -83,21 +71,17 @@ export type AdapterHandlerResult =
 export type AdapterHandler = (ctx: AdapterRequestContext) => Promise<AdapterHandlerResult>;
 
 export interface AdapterRequestListenerOptions {
-  /** Resolves the mounted route's path parameters for this request; omitted (or returning `{}`) for a route with none. */
   extractParams?: (req: IncomingMessage) => Record<string, string>;
   /**
-   * An admin route: a caller whose role is not `admin` is refused with 403 `admin_required` before
-   * the body is read, and the handler runs in system scope instead of the caller's tenant.
+   * A caller whose role is not `admin` is refused with 403 `admin_required` before the body is
+   * read, and the handler runs in system scope instead of the caller's tenant.
    */
   admin?: boolean;
 }
 
 /**
- * Wraps a route handler with this adapter's shared auth, JSON body parsing, and error/serialization
- * mapping — the "no third path, no per-route opt-out" auth guarantee and the "single place" status
- * mapping the issue's Task asks for. A handler either resolves with the item/body to serialize, or
- * throws; anything other than a `ChokePointError`/`PayloadTooLargeError` is an unexpected failure,
- * logged and answered with a generic 500 rather than leaking its details to the client.
+ * Anything thrown other than a `ChokePointError`/`PayloadTooLargeError` is logged and answered with
+ * a generic 500, never leaking details.
  */
 export function createAdapterRequestListener(
   pool: Pool,
@@ -114,7 +98,8 @@ export function createAdapterRequestListener(
         const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
         const params = options.extractParams?.(req) ?? {};
         const handled = await handler({ req, identity, params, body });
-        // The full item envelope — never an empty 204 — built here because the blob lookup needs the tenant scope.
+        // The full item envelope, never an empty 204; built here because the blob lookup needs the
+        // tenant scope.
         return "item" in handled
           ? {
               status: handled.status,
@@ -128,8 +113,8 @@ export function createAdapterRequestListener(
             }
           : handled;
       };
-      // The tenant comes from the authenticated session only; the handler and everything it
-      // awaits runs inside it. An admin route runs in system scope and never enters a tenant.
+      // The tenant comes from the authenticated session only. An admin route runs in system scope
+      // and never enters a tenant.
       const result = options.admin ? await runAsSystem("adminRoute", run) : await runInTenant(identity.tenantId, run);
       sendJson(res, result.status, result.body);
     } catch (err) {
@@ -147,7 +132,6 @@ export function createAdapterRequestListener(
     }
   }
 
-  // Return the request completion and attempt a fallback for an escaping error.
   // The fallback itself can reject, and HTTP listeners may ignore the returned promise.
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return handleRequest(req, res).catch((err: unknown) => {

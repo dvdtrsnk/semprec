@@ -15,10 +15,7 @@ import {
   retrySempReply,
 } from "../sempMessagesStore.js";
 
-/**
- * The adapter that raises and resolves the problem of a Semp reply (issue #1931), on the runtime role pool. The
- * turn handler that calls it is covered by `semprec-agents`' `sempMessageTaskProblems.test.ts`.
- */
+/** Reply-problem adapter on the runtime role pool; the calling turn handler is covered in `semprec-agents`. */
 
 let admin: Pool;
 let runtime: Pool;
@@ -50,7 +47,6 @@ function readProblems(tenant: string, dedupeKey: string): Promise<ProblemRow[]> 
   });
 }
 
-/** Sends a message in `tenant` and returns the ids of the user message it answers and of its queued reply. */
 async function sendMessage(tenant: string): Promise<{ threadId: string; userMessageId: string; replyId: string }> {
   return runInTenant(tenant, () =>
     withTransaction(runtime, async (client) => {
@@ -66,7 +62,6 @@ async function sendMessage(tenant: string): Promise<{ threadId: string; userMess
   );
 }
 
-/** Claims the queued attempt `replyId` and stores its final status, as the turn handler does. */
 function finishAttempt(tenant: string, threadId: string, replyId: string, status: "done" | "error"): Promise<void> {
   return runInTenant(tenant, () =>
     withTransaction(runtime, async (client) => {
@@ -90,12 +85,10 @@ function startAttempt(tenant: string, threadId: string, replyId: string): Promis
   );
 }
 
-/** Runs the startup repair of the interrupted Semp messages in `tenant` and returns how many it closed. */
 function repairInterrupted(tenant: string): Promise<number> {
   return runInTenant(tenant, () => withTransaction(runtime, (client) => repairInterruptedSempMessages(client)));
 }
 
-/** The id of the latest assistant attempt that answers `userMessageId`. */
 function latestReplyId(tenant: string, threadId: string, userMessageId: string): Promise<string | undefined> {
   return runInTenant(tenant, async () => {
     const { rows } = await runtime.query<{ id: string }>(
@@ -217,8 +210,7 @@ describe("the problem of a Semp reply (issue #1931)", () => {
 
   it("raises and resolves nothing for a message that answers no message", async () => {
     const sent = await sendMessage(tenantA);
-    // The column is nullable and the send path always sets it; a raw UPDATE on the admin pool builds the state
-    // (a reply that answers nothing) that no production writer leaves on a queued reply.
+    // Raw UPDATE: the send path always sets the column, so only this builds a reply that answers nothing.
     await admin.query("UPDATE semp_messages SET reply_to_message_id = NULL WHERE id = $1", [sent.replyId]);
 
     const raised = await runInTenant(tenantA, () =>
@@ -260,8 +252,7 @@ describe("the problem of a Semp reply (issue #1931)", () => {
     );
     const key = agentReplyProblemKey(sent.userMessageId);
 
-    // Tenant A's message id is used inside tenant B's scope: row-level security hides the message, so B can
-    // neither raise nor resolve a problem for it.
+    // RLS hides tenant A's message from tenant B, so B can neither raise nor resolve for it.
     const raisedByB = await runInTenant(tenantB, () =>
       withTransaction(runtime, (client) => raiseAgentReplyProblem(client, sent.replyId)),
     );

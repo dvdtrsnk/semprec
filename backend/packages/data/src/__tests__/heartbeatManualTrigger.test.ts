@@ -33,12 +33,11 @@ import {
 let pool: Pool;
 let trigger: ReturnType<typeof createTriggerHeartbeatRouteHandler>;
 /**
- * The person who presses Run. A tenant holds one user (`users_tenant_id_key`), so this is also the
- * tenant's fallback actor: the attribution assertions below show the actor, not which path chose it.
+ * The person who presses Run. A tenant holds one user, so this is also its fallback actor: the
+ * attribution assertions show the actor, not which path chose it.
  */
 let person: string;
 
-/** Another project's id: an agent run scoped to it must not reach a heartbeat of the seeded project. */
 const PROJECT_B = "22222222-2222-2222-2222-222222222222";
 
 interface QueuedJob {
@@ -49,8 +48,8 @@ interface QueuedJob {
 }
 
 /**
- * The jobs queued under a key, read from graphile-worker's private tables (graphile-worker 0.17.3):
- * the public `jobs` view has no `payload` column, and a test must see what the worker will read.
+ * The jobs queued under a key, read from graphile-worker's private tables: the public `jobs` view has no
+ * `payload` column.
  */
 async function jobsByKey(key: string): Promise<QueuedJob[]> {
   const { rows } = await pool.query<{
@@ -73,7 +72,7 @@ async function jobsByKey(key: string): Promise<QueuedJob[]> {
   }));
 }
 
-/** The job's own payload inside graphile-worker's `{ traceId, payload }` envelope (issue #167), as the task receives it. */
+/** The job's own payload inside graphile-worker's `{ traceId, payload }` envelope. */
 function innerPayloadOf(envelope: unknown): unknown {
   if (typeof envelope !== "object" || envelope === null || !("payload" in envelope)) {
     throw new Error("queued job has no envelope");
@@ -82,9 +81,8 @@ function innerPayloadOf(envelope: unknown): unknown {
 }
 
 /**
- * Puts a queued job into a state only a worker produces: locked by a running attempt, or with its
- * attempts exhausted by a failed one. Test-only, on graphile-worker 0.17.3's private table, because
- * no API moves a job through those states without running a worker.
+ * Puts a queued job into a state only a worker produces (locked by a running attempt, or attempts
+ * exhausted), on graphile-worker's private table.
  */
 async function forceJobState(key: string, state: { attempts: number; locked: boolean }): Promise<void> {
   await pool.query(
@@ -118,12 +116,10 @@ async function createAgentHeartbeat(): Promise<string> {
   return heartbeat.id;
 }
 
-/** `POST /api/heartbeats/:id/trigger` as the signed-in person would send it. */
 function triggerAs(heartbeatId: string) {
   return trigger({ params: { id: heartbeatId }, body: {}, identity: { user: { id: person } } });
 }
 
-/** The error a refused trigger raises; fails the test if the trigger was accepted instead. */
 async function refusalOf(heartbeatId: string): Promise<unknown> {
   try {
     await triggerAs(heartbeatId);
@@ -133,7 +129,6 @@ async function refusalOf(heartbeatId: string): Promise<unknown> {
   throw new Error("expected the trigger to be refused");
 }
 
-/** Runs the manual fire job queued for the heartbeat through the real fire task, as the agents worker does. */
 async function runQueuedFire(heartbeatId: string, registry: ActionRegistry): Promise<void> {
   const [job] = await jobsByKey(manualHeartbeatFireJobKey(heartbeatId));
   if (!job) throw new Error("no manual fire job is queued for the heartbeat");

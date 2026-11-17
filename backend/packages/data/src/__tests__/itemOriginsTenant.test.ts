@@ -4,7 +4,6 @@ import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
 
-/** Issue #1659: `item_origins` rows are tenant-owned and invisible to another tenant's runtime role. */
 let adminPool: Pool;
 let runtimePool: Pool;
 

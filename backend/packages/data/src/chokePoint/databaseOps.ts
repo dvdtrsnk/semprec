@@ -1,12 +1,6 @@
-// Owns the databases domain of the choke point: creating, archiving, restoring, renaming, reading and
-// listing databases, plus the transaction-scoped `databaseArchiveWithClient` the approved-operation
-// executor calls and its restore counterpart `databaseRestoreWithClient`. Item, property, relation and
-// view writes do not belong here, and neither does any other domain module's code — this module talks
-// only to `databasesStore` and the realtime hook, plus `propertiesStore` and the relation-property
-// creation for `createDatabaseWithProperties`.
-// Constrained by:
-// - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
-// - docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
+// The databases domain of the choke point: create, archive, restore, rename, read and list, plus the
+// transaction-scoped `databaseArchiveWithClient`/`databaseRestoreWithClient` for the approved-operation
+// executor.
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -27,7 +21,7 @@ import {
 } from "../agentGrants/agentDatabaseAccess.js";
 import { assertReaderItemPathAccess } from "./readerObjectAccess.js";
 
-/** Archive and restore change which items the rollups over this database count; recount each in the same transaction via its idempotent full job. */
+/** Archive and restore change what rollups over this database count; recount each in the same transaction. */
 async function enqueueDependentRollupRecomputes(client: PoolClient, sourceDatabaseId: string): Promise<void> {
   for (const dependency of await findDependenciesBySourceDatabase(client, sourceDatabaseId)) {
     await enqueueRollupBackfill(client, dependency.rollupPropertyId);
@@ -35,13 +29,9 @@ async function enqueueDependentRollupRecomputes(client: PoolClient, sourceDataba
 }
 
 /**
- * Transaction-scoped counterpart to `chokePoint.archiveDatabase` (issue #89): `databasesStore.archiveDatabase`
- * already takes a `client` rather than opening its own transaction, so this is a named wrapper that also
- * enqueues the dependent rollup full jobs in the same transaction (via `enqueueDependentRollupRecomputes`) —
- * one of the five approval-gated destructive `*WithClient` exports, one per operation, each exported from
- * its own operation module (`databaseOps.ts`, `viewOps.ts`, `propertyOps.ts`, `itemTrash.ts`,
- * `relationOps.ts`), so `ApprovedOperationExecutor` has one uniform naming convention to call the
- * destructive half of each operation.
+ * Transaction-scoped counterpart to `chokePoint.archiveDatabase` that also enqueues the dependent
+ * rollup full jobs in the same transaction. One of the approval-gated destructive `*WithClient`
+ * exports `ApprovedOperationExecutor` calls.
  */
 export async function databaseArchiveWithClient(
   client: PoolClient,
@@ -56,11 +46,9 @@ export async function databaseArchiveWithClient(
 }
 
 /**
- * Transaction-scoped counterpart to `chokePoint.restoreDatabase`, as `databaseArchiveWithClient` is to
- * `archiveDatabase`: `databasesStore.restoreDatabase` clears `archived_at` and `purge_at`, the dependent rollup full
- * jobs are enqueued in the same transaction and one schema invalidation follows the commit. It checks no reader's
- * access (the caller does) and takes the rollup coordination transaction assumptions as the archive does. Not
- * trashed is not an error: the database is returned unchanged but still announced, as a repeated restore does.
+ * Transaction-scoped counterpart to `chokePoint.restoreDatabase`: clears `archived_at`/`purge_at`,
+ * enqueues the dependent rollup jobs and invalidates the schema after commit. The caller checks reader
+ * access. A database that is not archived is returned unchanged but still announced.
  */
 export async function databaseRestoreWithClient(
   client: PoolClient,
@@ -90,10 +78,7 @@ const TITLE_PROPERTY_KEY = "name";
 export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedKeyRegistry">) {
   const { pool, computedKeyRegistry } = deps;
   return {
-    /**
-     * Creates a custom database, its title property (`name`) and `properties` in order in one transaction:
-     * any failure rolls back the database, its partition and every property. One schema invalidation follows the commit.
-     */
+    /** One transaction: any failure rolls back the database, its partition and every property. */
     async createDatabaseWithProperties(
       input: databasesStore.CreateDatabaseInput,
       titlePropertyName: string,
@@ -151,10 +136,7 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
       });
     },
 
-    /**
-     * An external client (a `reader`, issue #1998) is refused `forbidden` when the database would be nested under an
-     * item of a sensitive database (`parentItemId`), checked in this transaction before the database is created.
-     */
+    /** A `reader` is refused `forbidden` when `parentItemId` lies in a sensitive database, checked before creating. */
     async createDatabase(
       input: databasesStore.CreateDatabaseInput,
       actingUserId?: string,
@@ -171,14 +153,13 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
         return database;
       });
     },
-    /** An external client (a `reader`, issue #1998) needs `write` access to the database, checked first in this transaction. */
+    /** A `reader` needs `write` on the database, checked first in this transaction. */
     async archiveDatabase(id: string, actingUserId?: string, reader?: DatabaseReader): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
         if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, id, "write");
         return databaseArchiveWithClient(client, id, actingUserId);
       });
     },
-    /** As `archiveDatabase`, an external client (a `reader`) needs `write` access to the database. */
     async restoreDatabase(id: string, actingUserId?: string, reader?: DatabaseReader): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
         if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, id, "write");
@@ -186,9 +167,8 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
       });
     },
     /**
-     * Patches a database in one transaction and publishes one schema invalidation after the commit.
-     * `resolver` decides whether `patch.overviewHidden` is accepted (issue #2002); see `databasesStore.patchDatabase`.
-     * An external client (a `reader`, issue #1998) needs `write` access to the database, checked first in this transaction.
+     * `resolver` decides whether `patch.overviewHidden` is accepted. A `reader` needs `write` on the
+     * database, checked first. One schema invalidation follows the commit.
      */
     async patchDatabase(
       id: string,
@@ -215,21 +195,14 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
         return database;
       });
     },
-    /**
-     * An agent (a `reader` that is its project, issue #1810) is refused with `forbidden` for a database its project may
-     * not read, and an external client (issue #1998) for a sensitive one.
-     */
+    /** `forbidden` for a database the agent's project may not read, or a sensitive one for an external client. */
     async getDatabase(id: string, reader?: DatabaseReader): Promise<DatabaseRow | null> {
       return withTransaction(pool, async (client) => {
         if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, id, "read");
         return databasesStore.getDatabase(client, id);
       });
     },
-    /**
-     * Every non-archived database system-wide (issue #240's `GET /api/databases`) — see `databasesStore.listAllDatabases` for why this includes the ten system databases.
-     * For an agent (a `reader` that is its project, issue #1810) the databases its project may not read are left out;
-     * for an external client (issue #1998) the sensitive ones.
-     */
+    /** Every non-archived database, system ones included; for a `reader` without the databases it may not read. */
     async listDatabases(reader?: DatabaseReader): Promise<DatabaseRow[]> {
       return withTransaction(pool, async (client) => {
         const databases = await databasesStore.listAllDatabases(client);
@@ -239,7 +212,7 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
       });
     },
 
-    /** Inline database creation (issue #22, point 7): a new, independent database owned by a page. Always `system: false` — mechanically, since the input type carries no `system` field to override it. */
+    /** A new, independent database owned by a page; always `system: false`. */
     async createInlineDatabase(
       input: {
         name: string;

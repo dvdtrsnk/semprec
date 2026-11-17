@@ -17,10 +17,7 @@ import {
 
 let adminPool: Pool;
 let pool: Pool;
-/**
- * Each tenant's own user, created on first use. A run's actor must be its own tenant's user
- * (`agent_runs_actor_user_id_tenant_fkey`, issue #1066), so one account cannot act in two tenants.
- */
+/** Each tenant's own user: a run's actor must belong to the run's tenant (`agent_runs_actor_user_id_tenant_fkey`). */
 const usersByTenant = new Map<string, string>();
 async function userOf(tenantId: string): Promise<string> {
   const existing = usersByTenant.get(tenantId);
@@ -56,7 +53,6 @@ describe("handleMcpRunCredentialExpirySweepTask runs per tenant (issue #987)", (
     usersByTenant.clear();
   });
 
-  /** Mints a run + credential in `tenantId`; expired credentials are backdated. Returns the run id. */
   async function mint(tenantId: string, expired: boolean): Promise<string> {
     const userId = await userOf(tenantId);
     return runInTenant(tenantId, async () => {

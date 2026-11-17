@@ -33,7 +33,6 @@ import {
 } from "../testSupport/testDb.js";
 import type { DatabaseRow, ItemRow, PropertyRow } from "../types.js";
 
-// Seeding the system databases of a tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 180_000;
 const FORBIDDEN = { status: 403, code: "forbidden" };
 const HIDDEN_ROLLUP = { value: null, hidden: true };
@@ -66,7 +65,6 @@ function setGrant(projectItemId: string, databaseId: string, access: AgentDataba
   return inTransaction((client) => setAgentDatabaseGrant(client, { projectItemId, databaseId, access }));
 }
 
-/** The Projects item of an agent run that has no grant for any database. */
 function newAgentProject(): Promise<string> {
   return inTenant(() => createTestProjectItem(dataPool));
 }
@@ -106,7 +104,6 @@ const metadataResolver: CollectionMetadataResolver = {
 
 const relationContains = (property: string, value: string) => ({ type: "relation_contains", property, value });
 
-/** The database query of an agent run's project (`reader`) or, without one, of a person. */
 function queryDatabase(
   input: { filter?: unknown; sort?: unknown; includeCount?: boolean },
   reader?: string,
@@ -119,7 +116,7 @@ function queryView(viewId: string, input: { filter?: unknown; sort?: unknown }, 
   return inTenant(() => cp.queryViewItems(viewId, input, undefined, reader));
 }
 
-/** Records the rollup cell of an item the way the recompute job does, without running the worker. */
+/** Records the rollup cell of an item the way the recompute job does. */
 function recompute(property: PropertyRow, item: ItemRow) {
   return inTenant(() => recomputeRollupCell(dataPool, property.id, item.id));
 }
@@ -135,9 +132,8 @@ describe("filters and rollups over a sensitive database an agent cannot read (is
     health = await systemDatabase(HEALTH_RECORDS_MODULE_ID);
     projects = await systemDatabase(PROJECTS_MODULE_ID);
 
-    // A fixture the API cannot produce: the schema of a system database is locked until a code-level migration
-    // changes it, and Projects has no rollup. The superuser pool unlocks it so the rollups below are created through
-    // the choke point as a user would create them.
+    // The schema of a system database is locked and Projects has no rollup; the superuser pool unlocks it so
+    // the rollups below are created through the choke point.
     await adminPool.query("UPDATE databases SET schema_locked = false WHERE id = $1", [projects.id]);
     healthRelation = await propertyOf(projects, "healthRecords");
     tasksRelation = await propertyOf(projects, "tasks");
@@ -613,7 +609,6 @@ describe("filters and rollups over a sensitive database an agent cannot read (is
       agentProjectItemId: projectItemId,
     });
     const hidden = (item: ItemRow | null | undefined) => item?.computed[healthCount.key];
-    /** The computed values of the current item a version conflict carries. */
     const currentComputed = (error: unknown): Record<string, unknown> | undefined => {
       if (!(error instanceof ConflictError)) throw new Error("Expected a ConflictError");
       const details = error.details as { current?: { computed?: Record<string, unknown> } } | undefined;
@@ -652,7 +647,6 @@ describe("filters and rollups over a sensitive database an agent cannot read (is
       expect(patched.properties.name).toBe("Holder");
       expect(hidden(await patch())).toBe(2);
 
-      // The current item of a version conflict carries the same computed values.
       const conflict = await patch(writer, "1970-01-01T00:00:00.000Z").then(
         () => undefined,
         (err: unknown) => err,
@@ -688,7 +682,6 @@ describe("filters and rollups over a sensitive database an agent cannot read (is
       expect(healthValue(await find(project))).toEqual(HIDDEN_ROLLUP);
       expect(healthValue(await get())).toBe(2);
       expect(healthValue(await find())).toBe(2);
-      // A rollup over an open database is not touched.
       expect(taskValue(await get(project))).toBe(1);
       expect(taskValue(await find(project))).toBe(1);
 
@@ -791,9 +784,8 @@ describe("filters and rollups over a sensitive database an agent cannot read (is
       expect(closedHere.has(otherHealth.id)).toBe(false);
       await expect(queryDatabase({ filter: otherFilter }, otherAgent)).rejects.toMatchObject(FORBIDDEN);
 
-      // A project of the other tenant with no grant: its Health records are closed in its own tenant and this tenant's are
-      // not listed there, and the other tenant's database is not listed here, because the row is invisible and not
-      // because a grant opened it. These two assertions fail when the tenant scope is missing.
+      // A project of the other tenant with no grant: its Health records are closed in its own tenant and this
+      // tenant's are not listed there. These two assertions fail when the tenant scope is missing.
       const bareOtherAgent = await inOther(() => createTestProjectItem(dataPool));
       const bareClosedThere = await inOther(() =>
         withTransaction(dataPool, (client) => listClosedSensitiveDatabaseIds(client, bareOtherAgent)),

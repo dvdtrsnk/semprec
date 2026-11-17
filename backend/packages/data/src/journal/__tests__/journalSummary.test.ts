@@ -36,10 +36,7 @@ let tenant: string;
 let events: InvalidationEvent[];
 const taskName = CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT;
 
-/*
- * Tenant scope is entered per helper and never around `runOnce`: the queue drain is a system scope, and the
- * production task list enters each job's own tenant from its envelope.
- */
+/* The queue drain is a system scope and enters each job's tenant from its envelope, so tenant scope is never entered around `runOnce`. */
 function inTenant<T>(fn: () => Promise<T>): Promise<T> {
   return runInTenant(tenant, fn);
 }
@@ -54,7 +51,6 @@ async function databaseIdOf(key: string): Promise<string> {
   );
 }
 
-/** A quarter entry, created through the production Journal path (no page yet). */
 async function newQuarterEntry(journalId: string): Promise<string> {
   return inTenant(() =>
     withTransaction(pool, async (client) => {
@@ -64,10 +60,7 @@ async function newQuarterEntry(journalId: string): Promise<string> {
   );
 }
 
-/**
- * Appends blocks to an item's page through the block writer and a production doc update, as the editor does. The shared
- * page fixture takes text blocks only, and these tests need a heading as well.
- */
+/** The shared page fixture takes text blocks only; these tests also need a heading. */
 async function writePageBlocks(itemId: string, blocks: { type: "h2" | "text"; text: string }[]): Promise<void> {
   await inTenant(async () => {
     const doc = await withTransaction(pool, (client) => getOrCreateDoc(client, itemId, "page"));
@@ -77,13 +70,12 @@ async function writePageBlocks(itemId: string, blocks: { type: "h2" | "text"; te
   });
 }
 
-/** The entry's `computed` value through the choke point's read, or undefined when the item is missing or not readable. */
 async function summaryOf(databaseId: string, itemId: string): Promise<unknown> {
   const item = await inTenant(() => cp.getItem(databaseId, itemId));
   return item?.computed[JOURNAL_SUMMARY_COMPUTED_KEY];
 }
 
-/** The stored `computed` object, read with the admin pool so a soft-deleted item is still visible to the assertion. */
+/** Admin pool, so a soft-deleted item is still visible. */
 async function storedComputed(itemId: string): Promise<Record<string, unknown>> {
   const { rows } = await admin.query<{ computed: Record<string, unknown> }>(
     "SELECT computed FROM items WHERE id = $1",
@@ -97,7 +89,6 @@ function itemEvents(itemId: string): InvalidationEvent[] {
   return events.filter((event) => event.scope === "item" && event.itemId === itemId);
 }
 
-/** Drains the queue once with the production API task list. */
 async function runPageTextJobs(): Promise<void> {
   const taskList = createApiCoreTaskList(pool, createActionRegistry());
   const handler = taskList[taskName];

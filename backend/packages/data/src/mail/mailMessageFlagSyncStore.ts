@@ -47,10 +47,8 @@ export async function recordDesiredMailMessageFlags(
 }
 
 /**
- * The choke point's item-update hook for Emails (registered by `../domainWriteHooks.ts`): the
- * generic item mutation is the sole origin for user/agent triage intent, so this persists it in
- * the same transaction as the Email patch — a crash cannot leave UI state committed without a
- * restart-safe provider write to perform.
+ * The Emails item-update hook: it persists triage intent in the same transaction as the item patch, so a crash cannot
+ * commit UI state without a restart-safe provider write to perform.
  */
 export const mailMessageFlagsItemUpdateHook: ItemUpdateHook = async ({
   client,
@@ -68,15 +66,9 @@ export const mailMessageFlagsItemUpdateHook: ItemUpdateHook = async ({
 };
 
 /**
- * Records flags observed from a provider. `current_state` always takes the observed value.
- * `desired_state` follows it too, but only when the row was converged going into this call
- * (`current_state IS NOT DISTINCT FROM desired_state`, evaluated against the row as it stood
- * before this statement) — a converged pair has no pending user intent to protect, so the
- * observation becomes the new desired state as well as the new current state. A row with a
- * pending write (`current` differs from `desired`) keeps its existing `desired_state`
- * untouched, so the write-back that resolves it still runs — this is the ADR's "never replace
- * a *differing* desired value" (docs/adr/2026-09-20-desired-current-state-sync-for-provider-writebacks.md),
- * which a converged pair is not.
+ * `current_state` always takes the observed value. `desired_state` follows it only when the row was converged before
+ * this statement; a row with a pending write keeps its `desired_state` so the write-back still runs (a differing
+ * desired value is never replaced).
  */
 export async function recordObservedMailMessageFlags(
   client: PoolClient,
@@ -101,7 +93,6 @@ export async function recordObservedMailMessageFlags(
   }
 }
 
-/** Maps an IMAP flag-state write back to the persisted provider-confirmed state. */
 export async function recordConfirmedMailMessageFlag(
   client: PoolClient,
   messageItemId: string,
@@ -117,10 +108,7 @@ export async function recordConfirmedMailMessageFlag(
   requireAffectedRows(result, "mail message flag confirmation");
 }
 
-/**
- * Deletes the flag sync state of message `messageItemId` (issue gh-1691), at most one row per flag, and
- * returns how many there were; a message whose flags were never written or observed has none.
- */
+/** At most one row per flag; returns how many were deleted. */
 export async function deleteMailMessageFlagSyncStates(client: Queryable, messageItemId: string): Promise<number> {
   const result = await client.query("DELETE FROM mail_message_flag_sync_state WHERE message_item_id = $1", [
     messageItemId,

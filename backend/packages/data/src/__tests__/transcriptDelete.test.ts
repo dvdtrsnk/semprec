@@ -62,11 +62,7 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
     await admin.end();
   });
 
-  /**
-   * A recording as the pipeline leaves it: a Files item and the Transcripts item step 0 links to it
-   * (written with the transcription process's system keys), with the pairing card of the real
-   * event-match producer and the speaker cards of the real speaker-suggestion producer.
-   */
+  /** As the pipeline leaves it: Files and Transcripts items with the real pairing and speaker cards. */
   async function recording(pool: Pool = runtime) {
     const cp = createChokePoint(pool);
     const databases = await cp.listDatabases();
@@ -138,11 +134,7 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
     flags: string | null;
   }
 
-  /**
-   * Every queued job's full public state, in id order, read through graphile-worker 0.17.3's public `jobs`
-   * view. The view does not project the payload; a replacement of an existing key (`add_job`'s replace path)
-   * shows in `revision` and `updated_at`, which every replacement changes.
-   */
+  /** The public `jobs` view omits the payload; a key replacement shows in `revision` and `updated_at`. */
   async function jobs(): Promise<JobState[]> {
     const { rows } = await admin.query<JobState>(
       `SELECT id::text AS id, queue_name, task_identifier, priority, run_at::text AS run_at, attempts, max_attempts,
@@ -154,11 +146,8 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
   }
 
   /**
-   * Fault injection (R1 P3, parent D5): makes every update of exactly one card row fail, so the card
-   * owner's own reject fails inside the DELETE, which no production input can arrange. The id reaches
-   * the trigger's WHEN clause as a literal quoted by Postgres (`format('%L')` in a DO block, read from
-   * a session setting). Cleanup runs after `run` settled, on the same dedicated client; a failed
-   * cleanup discards that client and is reported with any primary failure.
+   * Makes every update of one card row fail, so the card owner's reject fails inside the DELETE. The id reaches the
+   * trigger as a `format('%L')` literal. A failed cleanup discards the client and is reported with any primary failure.
    */
   async function withCardUpdateFault(cardId: string, run: () => Promise<void>): Promise<void> {
     const client = await admin.connect();
@@ -252,9 +241,7 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
     await runInTenant(tenant, async () => {
       const f = await recording();
       await remove(f.transcript.id);
-      // Two trash transactions within one millisecond cannot be produced on demand, so after the real
-      // DELETE the two owned fixture rows' epochs are relabelled in the tenant's scope. Not a production
-      // timestamp producer.
+      // Two trashes within one millisecond cannot be produced on demand, so the fixture epochs are relabelled after the DELETE.
       await withTransaction(runtime, async (client) => {
         const relabelled = await client.query(
           `UPDATE items SET deleted_at = CASE WHEN id = $1 THEN '2026-10-16 08:00:00.123456+00'::timestamptz ELSE $3::timestamptz END
@@ -263,7 +250,6 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
         );
         expect(relabelled.rowCount).toBe(2);
       });
-      // An ItemRow keeps whole milliseconds, so both read alike there.
       expect((await f.cp.findItemIncludingDeleted(f.file.id))?.deletedAt).toBe("2026-10-16T08:00:00.123Z");
       await f.cp.restoreItem(f.db("transcripts"), f.transcript.id);
       expect((await state([f.transcript.id]))[0]?.deleted_at).toBeNull();
@@ -298,9 +284,7 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
       expect(events).toEqual([]);
       await f.cp.restoreItem(f.db("transcripts"), f.transcript.id, USER, { writerKind: "user" });
       expect((await state([f.file.id, f.transcript.id])).map((row) => row.deleted_at)).toEqual([null, null]);
-      // The later restore really replaces the job the DELETE queued under the transcript's referrers key: the
-      // same row with a new revision. The snapshot above therefore tells a replacement apart from no change,
-      // which a key-and-task listing cannot (R2-2).
+      // The restore replaces the job under the same key (new revision), which only the full snapshot can tell apart.
       const referrersKey = `item-search-reindex:referrers:${f.transcript.id}:start`;
       const queuedByDelete = jobsBefore.find((job) => job.key === referrersKey);
       const replaced = (await jobs()).find((job) => job.key === referrersKey);

@@ -19,7 +19,8 @@ import {
 } from "../testSupport/testDb.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
-// Issue gh-1980: the system-owned `Inbox.transcribedText` property of a fresh seed, and who may write it. The job that fills it is tested in `semprec-transcribe`.
+// The system-owned `Inbox.transcribedText` property of a fresh seed, and who may write it. The job that
+// fills it is tested in `semprec-transcribe`.
 
 let adminPool: Pool;
 let dataPool: Pool;
@@ -71,7 +72,6 @@ async function inboxDatabaseId(tenantId: string): Promise<string> {
   return rows[0]?.id ?? "";
 }
 
-/** The Inbox properties of a tenant in key order, read through the runtime role. */
 async function inboxShape(tenantId: string): Promise<InboxPropertyRow[]> {
   return runInTenant(tenantId, async () => {
     const { rows } = await dataPool.query<InboxPropertyRow>(
@@ -86,7 +86,6 @@ async function inboxShape(tenantId: string): Promise<InboxPropertyRow[]> {
 
 const transcribedRowsOf = (shape: InboxPropertyRow[]) => shape.filter((row) => row.key === INBOX_TRANSCRIBED_TEXT_KEY);
 
-/** The rows of the Inbox database: its properties and its items, read as the owner. */
 async function inboxSnapshot(databaseId: string): Promise<unknown[]> {
   const { rows } = await adminPool.query<{ row: unknown }>(
     `SELECT to_jsonb(t) AS row FROM properties t WHERE database_id = $1
@@ -125,7 +124,6 @@ describe("the property of a fresh seed", () => {
 });
 
 describe("who may write transcribedText", () => {
-  /** An Inbox item of a freshly seeded tenant `b`. */
   async function seededItem(): Promise<{ databaseId: string; itemId: string }> {
     await runInTenant(b, () => seedSystem(dataPool, createViewTypeRegistry()));
     const databaseId = await inboxDatabaseId(b);

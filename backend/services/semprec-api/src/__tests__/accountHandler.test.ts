@@ -68,13 +68,11 @@ function isExportSummary(value: unknown): value is ExportSummary {
   );
 }
 
-/** Checks a `{ export }` response body and returns the export. */
 function readExport(body: unknown): ExportSummary {
   if (!isRecord(body) || !isExportSummary(body.export)) throw new Error("expected an { export } body");
   return body.export;
 }
 
-/** Checks a `{ exports }` response body and returns the list. */
 function readExports(body: unknown): ExportSummary[] {
   if (!isRecord(body) || !Array.isArray(body.exports) || !body.exports.every(isExportSummary)) {
     throw new Error("expected an { exports } body");
@@ -90,7 +88,6 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<v
   }
 }
 
-/** A `BlobStorageWriter` whose read stream the test controls, to observe it being destroyed. */
 class RecordingBlobStorage implements BlobStorageWriter {
   lastReadStream: PassThrough | undefined;
 
@@ -140,7 +137,6 @@ describe("account export routes (issue #1043)", () => {
     return { status: res.status, body: Buffer.from(await res.arrayBuffer()), headers: res.headers };
   }
 
-  /** Runs every queued `tenantExport` job through the production task list, writing archives to `files`. */
   async function runExportJobs(files: BlobStorageWriter = filesStorage): Promise<void> {
     const coreTasks = createCoreTaskList(
       pool,
@@ -159,7 +155,6 @@ describe("account export routes (issue #1043)", () => {
     await runOnce({ pgPool: pool, taskList });
   }
 
-  /** A storage whose writes stop after 64 bytes, so the export job fails. */
   function failingFiles(): BlobStorageWriter {
     return {
       writeStream: (key, source) => filesStorage.writeStream(key, source, { maxBytes: 64 }),
@@ -261,7 +256,7 @@ describe("account export routes (issue #1043)", () => {
     const older = await readyExport(headersA);
     const expired = await readyExport(headersA);
     const newer = readExport((await postExport(headersA)).body).id;
-    // Nothing in production moves an expiry into the past; the expiry sweep's tests do the same.
+    // Nothing in production moves an expiry into the past.
     await adminPool.query("UPDATE tenant_exports SET expires_at = now() - interval '1 second' WHERE id = $1", [
       expired,
     ]);
@@ -339,7 +334,7 @@ describe("account export routes (issue #1043)", () => {
       const address = listener.address();
       if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
       const controller = new AbortController();
-      // The archive is larger than the one chunk the recording stream holds, so the download never completes.
+      // Larger than the one chunk the recording stream holds, so the download never completes.
       const res = await fetch(`http://127.0.0.1:${address.port}/api/account/exports/${exportId}/download`, {
         headers: headersA,
         signal: controller.signal,
@@ -509,7 +504,7 @@ describe("account summary route (issue gh-1903)", () => {
     headers: { Authorization: string };
   }
 
-  /** A tenant provisioned like a real one, with a budget row so the Semp status does not list a missing budget. */
+  /** With a budget row so the Semp status does not list a missing budget. */
   async function newTenant(): Promise<string> {
     const tenantId = await createTestTenant(adminPool);
     await provisionTenant(pool, tenantId);
@@ -523,7 +518,6 @@ describe("account summary route (issue gh-1903)", () => {
     return { userId: user.id, email, password: PASSWORD, headers: await signIn(email) };
   }
 
-  /** Another session of the same user, as a second device signs in. */
   async function signIn(email: string): Promise<{ Authorization: string }> {
     const { token } = await login(adminPool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
     return { Authorization: `Bearer ${token}` };
@@ -543,7 +537,6 @@ describe("account summary route (issue gh-1903)", () => {
     return { status: res.status, body: await res.json() };
   }
 
-  /** A 2xx answer's body, for the writes that build the fixture through the real routes. */
   async function requestOk(headers: Record<string, string>, method: string, path: string, body?: unknown) {
     const answer = await request(headers, method, path, body);
     if (answer.status < 200 || answer.status >= 300) {
@@ -562,7 +555,7 @@ describe("account summary route (issue gh-1903)", () => {
     return idBody.parse(await requestOk(headers, "POST", "/api/databases", { name })).id;
   }
 
-  /** `count` items of a new database, each moved to the trash on its own: each is the root of its deletion. */
+  /** Each trashed on its own, so each is the root of its deletion. */
   async function trashItems(headers: Record<string, string>, count: number): Promise<string[]> {
     const databaseId = await createDatabase(headers, `Trash source ${randomUUID()}`);
     const ids: string[] = [];
@@ -576,7 +569,6 @@ describe("account summary route (issue gh-1903)", () => {
     return ids;
   }
 
-  /** `count` empty user databases, each archived through the delete route. */
   async function archiveDatabases(headers: Record<string, string>, count: number): Promise<string[]> {
     const ids: string[] = [];
     for (let n = 0; n < count; n += 1) {
@@ -587,7 +579,7 @@ describe("account summary route (issue gh-1903)", () => {
     return ids;
   }
 
-  /** A Mailboxes item named `name`; `syncStatus` is written the way the sync job writes it. */
+  /** `syncStatus` is written the way the sync job writes it. */
   function createMailbox(tenantId: string, name: string, syncStatus?: "needsReauthorization"): Promise<string> {
     return runInTenant(tenantId, () =>
       withTransaction(pool, async (client) => {
@@ -608,7 +600,6 @@ describe("account summary route (issue gh-1903)", () => {
     );
   }
 
-  /** One active Semp problem of the tenant, raised through the writer the producers use. */
   function raiseSempProblem(tenantId: string, userId: string): Promise<string> {
     return runInTenant(tenantId, () =>
       withTransaction(pool, async (client) => {
@@ -683,7 +674,6 @@ describe("account summary route (issue gh-1903)", () => {
       problemCount: 0,
       aiCostMonthUsd: 0,
     });
-    // The fixture is real: the owners' lists hold the very rows the counts stand for.
     const trashList = z
       .object({ items: z.array(z.object({ item: idBody })) })
       .parse(await requestOk(member.headers, "GET", "/api/trash/items?limit=200"));
@@ -745,7 +735,6 @@ describe("account summary route (issue gh-1903)", () => {
       problemCount: semp.activeCount,
       aiCostMonthUsd: usage.spentMonthUsd,
     });
-    // The equal figures are not all zero: the data above is what they count.
     expect(summary).toEqual({
       activeSessions: 2,
       mailAccountCount: 2,

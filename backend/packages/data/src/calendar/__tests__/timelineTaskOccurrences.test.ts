@@ -70,7 +70,6 @@ function setClock(iso: string): void {
 const isOccurrence = (entry: CalendarTimelineEntry): entry is CalendarTaskOccurrence =>
   entry.kind === "task" && "seriesId" in entry;
 
-/** What an occurrence entry shows of itself in the assertions. */
 function glance(entry: CalendarTaskOccurrence) {
   return {
     date: entry.date,
@@ -84,7 +83,6 @@ function glance(entry: CalendarTaskOccurrence) {
   };
 }
 
-/** One tenant's fixture writes and timeline reads, each in that tenant's scope on the runtime-role pool. */
 function world(tenant: SeededTenant) {
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenant.id, fn);
 
@@ -97,10 +95,7 @@ function world(tenant: SeededTenant) {
       }),
     );
 
-  /**
-   * A daily task from 12 October 2026 with the given properties (7:00 to 7:15 unless they say otherwise), made the
-   * current occurrence of a new series on 12 October. Returns the series id and the id of that first occurrence.
-   */
+  /** A daily task from 12 October 2026 (7:00 to 7:15 by default), the first occurrence of a new series. */
   async function startDaily(
     name: string,
     options: {
@@ -127,7 +122,6 @@ function world(tenant: SeededTenant) {
     return { seriesId, firstId: first.id };
   }
 
-  /** The id of the stored occurrence of `seriesId` on `date`, or `null` when none is stored. */
   const occurrenceItemId = (seriesId: string, date: string): Promise<string | null> =>
     inTenant(() =>
       withTransaction(pool, async (client) => {
@@ -157,14 +151,13 @@ function world(tenant: SeededTenant) {
     );
   }
 
-  /** The route of issue #1720: materializes the occurrence of `date` and writes `body` to it. */
+  /** Materializes the occurrence of `date` through the route and writes `body` to it. */
   const writeOccurrence = (seriesId: string, date: string, body: Record<string, unknown>) =>
     inTenant(() => createTaskOccurrenceMaterializeRouteHandler(pool)({ params: { seriesId, date }, body, identity }));
 
   /**
-   * Turns the series off and starts the next one in the same row, as `PUT /api/tasks/:id/recurrence` does for a task
-   * whose recurrence was turned off: the row takes a new `series_id` anchored on `anchorDate`, and the series' current
-   * Task takes it too, while the stored occurrences of the old series keep theirs. Returns the new series id.
+   * Turns the series off and starts the next one in the same row, as `PUT /api/tasks/:id/recurrence` does; the
+   * stored occurrences of the old series keep their `series_id`. Returns the new series id.
    */
   const restartSeries = (seriesId: string, anchorDate: string): Promise<string> =>
     inTenant(() =>
@@ -225,7 +218,6 @@ function world(tenant: SeededTenant) {
   const entries = async (from: string, to: string) =>
     (await read(from, to)).items.filter((entry) => entry.kind !== "sleep");
 
-  /** The occurrences of a range, in the order of the timeline. */
   const occurrences = async (from: string, to: string) => (await entries(from, to)).filter(isOccurrence);
 
   return {
@@ -463,7 +455,6 @@ describe("calendar timeline: recurring task occurrences (issue gh-1886)", () => 
     expect(result.filter((entry) => entry.id === currentId)).toHaveLength(1);
     expect(result.filter(isOccurrence)).toHaveLength(7);
     expect(result).toHaveLength(7);
-    // The core Tasks source returns none of them.
     const core = await w.inTenant(() =>
       withTransaction(pool, async (client) => {
         const context: CalendarTimelineContext = {
@@ -512,7 +503,6 @@ describe("calendar timeline: recurring task occurrences (issue gh-1886)", () => 
     expect(found[3]?.id).toBe(currentId);
     expect(result).toHaveLength(5);
     expect(new Set(result.map((entry) => entry.id)).size).toBe(5);
-    // The compact shape tells the history apart like any occurrence.
     const compact = (await w.readCompact("2026-10-12", "2026-10-12")).items.filter((entry) => entry.kind === "task");
     expect(compact).toEqual([expect.objectContaining({ id: firstId, seriesId, occurrenceDate: "2026-10-12" })]);
   });

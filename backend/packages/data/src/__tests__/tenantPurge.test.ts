@@ -60,15 +60,12 @@ let mailStorage: LocalFsBlobStorageWriter;
 
 const countSchema = z.object({ n: z.coerce.number() });
 
-/** What one tenant's seeded data left behind, for the erasure assertions. */
 interface SeededTenant {
   tenantId: string;
   userId: string;
   email: string;
   databaseIds: string[];
-  /** Absolute paths of every blob and export file written for the tenant. */
   filePaths: string[];
-  /** The files-root path of the tenant's uploaded blob. */
   uploadPath: string;
 }
 
@@ -88,12 +85,7 @@ async function provisionedTenant(): Promise<string> {
   return tenantId;
 }
 
-/**
- * Writes items, a doc, a mail message with an attachment, an upload, an export, an agent run with an
- * MCP credential and an event, a notification with a push delivery, a credential and a tenant key,
- * plus the tenant's user with a session, a push registration, a reset token, login attempts and
- * an invite, into `tenantId`.
- */
+/** Seeds every kind of tenant row the purge must erase, including the user's sessions, tokens and invite. */
 async function seedTenant(tenantId: string): Promise<SeededTenant> {
   const email = `${randomUUID()}@example.com`;
   // The invite is addressed to the account's email; the API cannot create it once the account exists.
@@ -291,7 +283,6 @@ async function tenantTables(): Promise<string[]> {
   return rows.map((row) => row.relname);
 }
 
-/** Row counts per table for rows whose `tenant_id` is `tenantId`, read as the table owner. */
 async function rowCounts(tenantId: string): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
   for (const table of [...(await tenantTables()), "agent_run_mcp_credentials"]) {
@@ -341,13 +332,10 @@ async function unblockDeletion(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true });
 }
 
-/** The statement the purge lists a tenant's databases with: first in the partitions step, then right before `items`. */
+/** The purge lists databases with this, in the partitions step and again right before `items`. */
 const DATABASE_LISTING = "SELECT id FROM databases WHERE tenant_id = $1";
 
-/**
- * A runtime-role pool whose `query` runs `after` once the `nth` statement containing `sqlFragment`
- * has returned: the stand-in for a writer that was already running when the deletion began.
- */
+/** Runs `after` once the `nth` statement containing `sqlFragment` returned: a writer already running when deletion began. */
 async function poolRunningAfter(sqlFragment: string, nth: number, after: () => Promise<void>): Promise<Pool> {
   const hooked = await createRuntimeRolePool(adminPool, "semprec_data");
   const realQuery = hooked.query.bind(hooked) as (...args: unknown[]) => Promise<unknown>;
@@ -363,7 +351,6 @@ async function poolRunningAfter(sqlFragment: string, nth: number, after: () => P
   return hooked;
 }
 
-/** Creates a database (and so its `items` partition) in `tenantId`, optionally holding one item. */
 async function createLateDatabase(tenantId: string, withItem: boolean): Promise<string> {
   return runInTenant(tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -374,7 +361,6 @@ async function createLateDatabase(tenantId: string, withItem: boolean): Promise<
   );
 }
 
-/** A row of graphile-worker's queue table, as the purge tests compare them. */
 interface QueueRow {
   id: number;
   queue_name: string;
@@ -382,10 +368,7 @@ interface QueueRow {
   locked_by: string | null;
 }
 
-/**
- * Every row of graphile-worker's queue table. The table is private to the library, so every read of it
- * in this file goes through here; the columns were checked against graphile-worker 0.17.3.
- */
+/** The queue table is private to graphile-worker, so every read of it goes through here. */
 async function queueRows(): Promise<QueueRow[]> {
   const { rows } = await adminPool.query<QueueRow>(
     "SELECT id, queue_name, locked_at, locked_by FROM graphile_worker._private_job_queues ORDER BY queue_name",
@@ -393,17 +376,14 @@ async function queueRows(): Promise<QueueRow[]> {
   return rows;
 }
 
-/** The queue rows named `<lane>:<tenantId>`, the way `tenantLane` names them. */
 async function laneQueuesOf(tenantId: string): Promise<QueueRow[]> {
   return (await queueRows()).filter((row) => row.queue_name.endsWith(`:${tenantId}`));
 }
 
-/** Enqueues one `purgeTestJob` into `queueName` from inside `tenantId`'s scope, the way a lane producer does. */
 async function enqueueInQueue(tenantId: string, queueName: string): Promise<void> {
   await runInTenant(tenantId, () => enqueueJob(pool, "purgeTestJob", { which: queueName }, { queueName }));
 }
 
-/** Enqueues one job into the tenant's `lane` queue, named by `tenantLane`, and returns the queue's name. */
 async function enqueueInLane(tenantId: string, lane: string): Promise<string> {
   const queueName = await runInTenant(tenantId, async () => tenantLane(lane));
   if (!queueName) throw new Error("tenantLane returned no queue inside a tenant scope");
@@ -411,7 +391,6 @@ async function enqueueInLane(tenantId: string, lane: string): Promise<string> {
   return queueName;
 }
 
-/** Completes every job of `queueName` through graphile-worker's own function, which leaves the queue row behind idle. */
 async function completeJobsIn(queueName: string): Promise<number> {
   const { rows } = await adminPool.query<{ id: string }>(
     `SELECT id FROM graphile_worker.complete_jobs(ARRAY(
@@ -423,7 +402,6 @@ async function completeJobsIn(queueName: string): Promise<number> {
   return rows.length;
 }
 
-/** The number of jobs whose `job_queue_id` names a queue row that does not exist. */
 async function jobsWithoutQueue(): Promise<number> {
   const { rows } = await adminPool.query<Record<string, unknown>>(
     `SELECT count(*) AS n FROM graphile_worker._private_jobs AS j
@@ -433,7 +411,6 @@ async function jobsWithoutQueue(): Promise<number> {
   return countSchema.parse(rows[0]).n;
 }
 
-/** Runs the purge, which must fail, and returns the messages of the failures it collected. */
 async function purgeFailureMessages(using: Pool = pool): Promise<string[]> {
   const failure = await purge({}, using).then(
     () => undefined,
@@ -443,7 +420,6 @@ async function purgeFailureMessages(using: Pool = pool): Promise<string[]> {
   return failure.errors.map((err: unknown) => (err instanceof Error ? err.message : String(err)));
 }
 
-/** Gives `tenantId` a user, so a rolled-back finalisation shows in `users` as well. */
 async function addUser(tenantId: string): Promise<string> {
   const user = await createUser(adminPool, {
     email: `${randomUUID()}@example.com`,
@@ -461,7 +437,6 @@ async function userCount(tenantId: string): Promise<number> {
   return countSchema.parse(rows[0]).n;
 }
 
-/** Whether `tenantId`'s purge lock is free, checked from a session other than the purge's. */
 async function purgeLockIsFree(tenantId: string): Promise<boolean> {
   const client = await adminPool.connect();
   try {
@@ -648,7 +623,7 @@ describe("tenant purge (issue #1055)", () => {
     const tenantB = await provisionedTenant();
     await addUser(tenantB);
     const queueName = await enqueueInLane(tenantB, "purgeTestLane");
-    // A worker that runs a job locks the job and its queue; only a running task produces that state, so the test sets it directly.
+    // Only a running task locks a job and its queue, so the test sets that state directly.
     await adminPool.query(
       "UPDATE graphile_worker._private_job_queues SET locked_at = now(), locked_by = 'purge-test-worker' WHERE queue_name = $1",
       [queueName],
@@ -698,7 +673,7 @@ describe("tenant purge (issue #1055)", () => {
     const tenantB = await provisionedTenant();
     await beginDeletion(tenantB);
     let lateQueue: string | undefined;
-    // The second catalog read is the finalisation's: a lane producer that was running at deletion time enqueues just before it.
+    // The second catalog read is the finalisation's: a lane producer enqueues just before it.
     const writer = await poolRunningAfter("FROM pg_constraint", 2, async () => {
       lateQueue = await enqueueInLane(tenantB, "purgeTestLane");
     });
@@ -728,7 +703,6 @@ describe("tenant purge (issue #1055)", () => {
     const lookalikes = [`purgeTestLane:${tenantB}:${tenantA}`, `${tenantB}:purgeTestLane`, `purgeTestLane-${tenantB}`];
     for (const queueName of lookalikes) {
       await enqueueInQueue(tenantA, queueName);
-      // Idle, so that only the name decides whether the purge keeps the queue.
       expect(await completeJobsIn(queueName)).toBe(1);
     }
     const ownQueue = await enqueueInLane(tenantB, "purgeTestLane");
@@ -915,7 +889,7 @@ describe("tenant purge (issue #1055)", () => {
     try {
       const realQuery = racing.query.bind(racing) as (...args: unknown[]) => Promise<unknown>;
       let finishedElsewhere = false;
-      // Only this dedicated pool is patched: another run purges the tenant right after the listing returns.
+      // Only this dedicated pool is patched: another run purges the tenant right after the listing.
       (racing as unknown as { query: unknown }).query = async (...args: unknown[]) => {
         const result = await realQuery(...args);
         if (!finishedElsewhere && String(args[0]).includes("status = 'deleting'")) {

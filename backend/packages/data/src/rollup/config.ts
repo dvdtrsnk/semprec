@@ -1,8 +1,4 @@
-// Owns rollup property configuration: parsing and validating a rollup's config against its relation
-// and target properties, and recording the rollup's dependency row when the config is applied.
-// Recompute scheduling (rollup/recompute.ts), dependency lookups (rollup/dependencies.ts) and
-// mirror-lifecycle guards (rollup/mirror.ts) do not belong here.
-// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+// Rollup config parsing and validation, and recording the dependency row when a config is applied.
 import type { PoolClient } from "pg";
 import { ValidationError } from "../errors.js";
 import type { PropertyRow, PropertyType } from "../types.js";
@@ -76,11 +72,7 @@ export interface ValidatedRollupConfig {
   targetProperty: PropertyRow | null;
 }
 
-/**
- * Validates a rollup property's config against its own database's properties and the
- * relation's target database's properties. Does not touch `rollup_dependencies` —
- * callers persist that row themselves in the same transaction as the property write.
- */
+/** Does not write `rollup_dependencies`; callers do, in the same transaction as the property write. */
 export function validateRollupConfig(
   raw: Record<string, unknown>,
   sameDatabaseProperties: PropertyRow[],
@@ -160,10 +152,7 @@ export async function applyRollupConfig(client: PoolClient, property: PropertyRo
     });
   }
   if (!targetDatabaseId) {
-    // Should be unreachable once validateRollupConfig has passed (a relation property
-    // always carries a target database) — guarded explicitly so a data inconsistency
-    // surfaces as this message instead of a NOT NULL constraint violation on
-    // rollup_dependencies.source_database_id.
+    // Unreachable after validation; surfaces a data inconsistency here rather than as a NOT NULL violation.
     throw new ValidationError("Relation property has no targetDatabaseId in config", { field: "relationPropertyKey" });
   }
 

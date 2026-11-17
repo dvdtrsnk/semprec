@@ -44,11 +44,10 @@ import { createDispatcher } from "../app.js";
 import { createMcpRequestListener } from "../mcp/mcpHandler.js";
 
 /**
- * Issue gh-2031 through the production write paths: the generic `DELETE /api/items/:id` and the `/mcp`
- * `item.delete` of an MCP client reach the trash cascade whose delete hook refuses a Mailboxes item,
- * the `item.delete` of an agent run is refused by the approval preflight before a request is stored,
- * and `DELETE /api/mail/mailboxes/:id` passes. The data package's `mailboxDeleteHook.test.ts` covers
- * the hook and the approval projection on the runtime role with two tenants.
+ * Through the production write paths: generic `DELETE /api/items/:id` and MCP `item.delete` reach the trash cascade
+ * whose delete hook refuses a Mailboxes item, an agent run's `item.delete` is refused by the approval preflight before
+ * a request is stored, and `DELETE /api/mail/mailboxes/:id` passes. The hook itself is covered by the data package's
+ * `mailboxDeleteHook.test.ts`.
  */
 
 const testMetadataResolver: CollectionMetadataResolver = {
@@ -76,7 +75,6 @@ const restError = z.object({ error: z.object({ code: z.string(), details: z.unkn
 const mcpError = z.object({
   error: z.object({ code: z.number(), message: z.string(), data: z.unknown().optional() }).strict(),
 });
-/** The stored result of an approved request that ended as a conflict. */
 const conflictResult = z.object({
   error: z.object({
     code: z.string(),
@@ -84,7 +82,6 @@ const conflictResult = z.object({
   }),
 });
 
-/** Whether the mailbox's item is in the trash, its version, and how many rows a removal deletes exist. */
 interface MailboxRows {
   trashed: boolean | null;
   updatedAt: string | null;
@@ -109,7 +106,7 @@ function mailboxRows(mailboxItemId: string): Promise<MailboxRows[]> {
   });
 }
 
-/** A mailbox with a credential, a sync state row and server settings, written through the stores that own each row. */
+/** Each row written through the store that owns it. */
 function createConnectedMailbox(): Promise<string> {
   return inTenantZero(() =>
     withTransaction(pool, async (client) => {
@@ -130,7 +127,6 @@ function createConnectedMailbox(): Promise<string> {
   );
 }
 
-/** The rejection of `promise`, failing when it resolves. */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   try {
     await promise;
@@ -147,7 +143,6 @@ describe("a Mailboxes item is not deleted through the generic write paths (issue
   let mcpUrl: string;
   let headers: Record<string, string>;
   let agentActor: AuthenticatedActor;
-  /** The run behind `agentActor`, as an approval request names it. */
   let agentRun: { runId: string; agentProjectItemId: string; userId: string };
   const gateway = () => createGenericOperationGateway(pool, testMetadataResolver);
 
@@ -205,7 +200,7 @@ describe("a Mailboxes item is not deleted through the generic write paths (issue
     return fetch(`${baseUrl}${path}`, { method: "DELETE", headers });
   }
 
-  /** `tools/call` as an MCP client on the user's own session: an agent without a run, which no approval gates. */
+  /** An MCP client on the user's own session: an agent without a run, which no approval gates. */
   async function mcpCall(name: string, args: unknown): Promise<unknown> {
     const res = await fetch(`${mcpUrl}/mcp`, {
       method: "POST",
@@ -216,7 +211,6 @@ describe("a Mailboxes item is not deleted through the generic write paths (issue
     return res.json();
   }
 
-  /** How many approval requests and `approval_pending` notifications exist. */
   async function approvalRows(): Promise<{ requests: number; notifications: number }> {
     const { rows } = await inTenantZero(() =>
       pool.query<{ requests: number; notifications: number }>(
@@ -229,7 +223,7 @@ describe("a Mailboxes item is not deleted through the generic write paths (issue
     return counts;
   }
 
-  /** Approves request `requestId` as the run's user and answers it as the `approvalExecute` job loads it. */
+  /** Answers the request as the `approvalExecute` job loads it. */
   async function approve(requestId: string) {
     await inTenantZero(() =>
       withTransaction(pool, (client) =>
@@ -314,9 +308,8 @@ describe("a Mailboxes item is not deleted through the generic write paths (issue
   it("an approved item.delete of a mailbox that was stored before the preflight refused it ends as a conflict when it is executed, and changes nothing", async () => {
     const mailbox = await createConnectedMailbox();
     const before = await mailboxRows(mailbox);
-    // The preflight no longer stores such a request, so it is written through the approval store, as
-    // a release without the refusal left it. Its hash is not the mailbox's: the execution must end at
-    // the refusal, which it reports as the conflict's reason, before it compares any hash.
+    // The preflight never stores such a request, so it is written through the approval store. Its hash is not the
+    // mailbox's: execution must end at the refusal, reported as the conflict's reason, before any hash compare.
     const resourceSnapshot = { kind: "item_delete", resourceId: mailbox, sha256: "0".repeat(64) };
     const stored = await inTenantZero(() =>
       withTransaction(pool, (client) =>

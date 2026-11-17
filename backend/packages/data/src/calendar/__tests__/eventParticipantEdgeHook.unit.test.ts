@@ -5,7 +5,6 @@ import { parseEventParticipantMetadata, readEventParticipantMetadata } from "../
 const MAILBOX_ID = "6f1f8d0e-3c57-4a56-9d0b-2f8a3e3f4b11";
 const INVITATION = { status: "pending", email: "petr@example.com", mailboxId: MAILBOX_ID };
 
-/** The error a refused parse throws, narrowed so its code and details can be asserted. */
 function refusal(metadata: Record<string, unknown> | undefined): ValidationError {
   try {
     parseEventParticipantMetadata(metadata);

@@ -13,14 +13,12 @@ import {
 } from "./pageBlocks.js";
 
 /**
- * Multi-block edits on the shared block model. Every function validates against the current
- * state first, so a refusal changes nothing. Successful nonempty operations perform their changes
- * in one `doc.transact` carrying the optional `origin`; empty operations do not write. Within that
- * transaction `order` is tidied:
- * repeated ids keep their first occurrence, ids without a block are dropped and blocks missing
- * from `order` are appended in ascending id order, which is the order readers already see.
- * Nothing here touches the database. Page blocks can be inserted, moved and deleted; operations
- * that convert, split, merge or duplicate a page block refuse it.
+ * Multi-block edits on the shared block model. Every function validates against the current state
+ * first, so a refusal changes nothing. A nonempty operation writes in one `doc.transact` carrying
+ * the optional `origin`, inside which `order` is tidied: repeated ids keep their first occurrence,
+ * ids without a block are dropped, and blocks missing from `order` are appended in ascending id
+ * order (the order readers already see). Page blocks can be inserted, moved and deleted; converting,
+ * splitting, merging or duplicating one is refused.
  */
 
 export type BlockOperationErrorCode =
@@ -313,12 +311,11 @@ export function setType(doc: Y.Doc, ids: readonly string[], type: BlockType, ori
 }
 
 /**
- * Converts each selected block into a `page` block in place (issue #2013): the id and the position stay, the type
- * becomes `page`, `pageId` is `pageIdFor(id)` and the block's text stays as the plain-text title (inline attributes are
- * dropped; `done` goes with the old type). Refuses a repeated id (`duplicate_block_id`), an unknown id
- * (`block_not_found`) and a block that is already a page (`block_already_page`) before changing anything; the one
- * `doc.transact` then converts every block or none. This is the page layer's counterpart of `setType`, which still
- * refuses every conversion to or from `page`.
+ * Converts each selected block into a `page` block in place: id and position stay, `pageId` is
+ * `pageIdFor(id)`, and the text stays as the plain-text title (attributes and `done` are dropped).
+ * Refuses a repeated id (`duplicate_block_id`), an unknown id (`block_not_found`) and an existing
+ * page (`block_already_page`) before changing anything; one `doc.transact` then converts all.
+ * `setType` still refuses every conversion to or from `page`.
  */
 export function convertBlocksToPages(
   doc: Y.Doc,

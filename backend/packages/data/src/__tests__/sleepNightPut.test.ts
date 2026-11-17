@@ -19,9 +19,8 @@ import {
   withTenantTransaction,
 } from "../testSupport/testDb.js";
 
-// A seeded tenant has the settings item (enabled, prepReminder 30 minutes before bed) and two plans: wake days
-// mon to fri from 23:00 to 06:45 with the alarm, and sat and sun from 00:00 to 08:30 without it. Its time zone is
-// Europe/Prague, which is at +02:00 on the dates below. 2026-10-16 is a Friday, so its night is a weekend night.
+// Seeded plans in Europe/Prague (+02:00 below): weekdays mon-fri 23:00-06:45 with alarm, weekend sat-sun
+// 00:00-08:30 without. 2026-10-16 is a Friday, so its night is a weekend night.
 
 const USER = { writerKind: "user" } as const;
 const NIGHT = "2026-10-16";
@@ -70,14 +69,13 @@ function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): 
   return runInTenant(tenantId, () => withTransaction(dataPool, fn));
 }
 
-/** Calls the route handler as the adapter does: inside the tenant's scope, with the path parameter and the body. */
 function rawPut(tenantId: string, night: string, body: unknown): Promise<{ status: number; body: unknown }> {
   return runInTenant(tenantId, () =>
     sleepNightPut(dataPool)({ params: { night }, body, identity: { user: { id: randomUUID() } } }),
   );
 }
 
-/** The 200 answer of the route, parsed from what JSON carries so a value JSON cannot represent would be noticed. */
+/** Parsed from JSON so a value JSON cannot represent would be noticed. */
 async function put(tenantId: string, night: string, body: unknown): Promise<Night | null> {
   const result = await rawPut(tenantId, night, body);
   expect(result.status).toBe(200);
@@ -129,7 +127,6 @@ async function seededTenant(): Promise<SleepTenant> {
   };
 }
 
-/** Every item of the tenant's night database for `night`, trashed ones included. */
 function exceptionsOf(t: SleepTenant, night: string): Promise<ExceptionRow[]> {
   return inTenant(t.tenantId, async (client) => {
     const { rows } = await client.query<ExceptionRow>(
@@ -377,9 +374,8 @@ describe("PUT /api/sleep/nights/:night (issue gh-1835)", () => {
   });
 
   it("leaves one item when two PUTs for the same night run at once, and applies both of them", async () => {
-    // A holder takes the per-night lock; the test lets it go only after both PUTs wait for that lock, so the two
-    // requests really overlap. Without the lock in the handler the second PUT would create after the first one
-    // committed and be refused with 409 duplicate_item by the create hook, so the test requires both to succeed.
+    // A holder takes the per-night lock until both PUTs wait for it. Without the handler's lock the second PUT
+    // would be refused with 409 duplicate_item, so the test requires both to succeed.
     let release: () => void = () => undefined;
     const released = new Promise<void>((resolve) => {
       release = resolve;
@@ -424,7 +420,6 @@ describe("PUT /api/sleep/nights/:night (issue gh-1835)", () => {
   });
 
   describe("a generic update of an exception that names night", () => {
-    /** Holds the lock of `NIGHT` in an open transaction until `release` is called. */
     async function holdNightLock(): Promise<{ release: () => Promise<void> }> {
       let letGo: () => void = () => undefined;
       const gate = new Promise<void>((resolve) => {
@@ -448,7 +443,7 @@ describe("PUT /api/sleep/nights/:night (issue gh-1835)", () => {
       };
     }
 
-    /** Whether another backend can lock the row at once; a row that a transaction holds fails `NOWAIT`. */
+    /** A row held by another transaction fails `NOWAIT`. */
     async function rowIsFree(itemId: string): Promise<boolean> {
       try {
         await withTenantTransaction(adminPool, tenant.tenantId, async (client) => {
@@ -470,8 +465,8 @@ describe("PUT /api/sleep/nights/:night (issue gh-1835)", () => {
       try {
         update = patch(tenant, tenant.nightsDatabaseId, exception.id, { night: NIGHT, wakeTime: "07:30" });
         await waitFor(async () => (await sessionsWaitingForNightLock()) === 1, "the update to wait for the night lock");
-        // An update that locked the row first would hold it here while it waits for the lock, and a PUT that holds
-        // the lock and waits for the row would deadlock with it.
+        // An update that locked the row first would hold it while waiting for the lock, deadlocking a PUT that holds
+        // the lock and waits for the row.
         rowFreeWhileWaiting = await rowIsFree(exception.id);
       } finally {
         await holder.release();
@@ -589,8 +584,7 @@ describe("PUT /api/sleep/nights/:night (issue gh-1835)", () => {
   });
 
   it("rolls the write back when the night cannot be resolved afterwards", async () => {
-    // A tenant whose settings item was deleted: the read of the resolved night answers 404 after the write. The
-    // choke point refuses to delete the system-active settings item, so the state is made with SQL.
+    // The choke point refuses to delete the system-active settings item, so SQL makes the state; the resolved read then 404s.
     await withTenantTransaction(adminPool, tenant.tenantId, async (client) => {
       await client.query("UPDATE items SET deleted_at = now() WHERE id = $1", [tenant.settingsItemId]);
     });
@@ -633,7 +627,6 @@ describe("PUT /api/sleep/nights/:night (issue gh-1835)", () => {
   });
 });
 
-/** The sessions of the test database that wait for a per-night advisory lock. */
 async function sessionsWaitingForNightLock(): Promise<number> {
   const { rows } = await adminPool.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM pg_stat_activity
@@ -643,7 +636,6 @@ async function sessionsWaitingForNightLock(): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
-/** Polls `condition` until it holds, and fails with `what` after 10 seconds. */
 async function waitFor(condition: () => Promise<boolean>, what: string): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {

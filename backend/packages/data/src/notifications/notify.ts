@@ -10,19 +10,18 @@ import { getItemsByIds } from "../chokePoint/itemsStore.js";
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
-/** Lazily loaded once per process and reused — `notifications/i18n/{cs,en}.json` never changes at runtime. */
+/** Loaded once per process; the catalogs never change at runtime. */
 function getNotificationCatalogs(): Promise<ModuleCatalogs> {
   catalogsPromise ??= loadModuleCatalogs(import.meta.url);
   return catalogsPromise;
 }
 
-/** Catalog key rendered for a `null` body parameter, such as the name of an item that has none (issue #1773). */
+/** Rendered for a `null` body parameter, e.g. an item without a name. */
 const UNNAMED_LABEL_KEY = "notification.body.unnamed";
 
-/** The body catalog key of an item delete whose description carries the delete impact of its module (issue gh-1882). */
 export const ITEM_DELETE_IMPACT_BODY_KEY = "approval.itemDeleteImpact";
 
-/** Replaces each `{param}` placeholder in `template` with `params[param]`, leaving an unmatched placeholder untouched. */
+/** Leaves unmatched placeholders untouched. */
 function interpolate(template: string, params: Readonly<Record<string, string>>): string {
   return template.replace(/\{(\w+)\}/g, (placeholder, key: string) => params[key] ?? placeholder);
 }
@@ -44,70 +43,38 @@ function renderBody(
 }
 
 export interface WriteNotificationInput {
-  /** Who this notification is for. Resolved by the producer — the writer never guesses a recipient. */
+  /** Resolved by the producer; the writer never guesses a recipient. */
   userId: string;
   kind: NotificationKind;
-  /** Substituted into the `notification.<kind>.title` catalog entry (e.g. `{name}` for `heartbeat_error`). */
+  /** Substituted into `notification.<kind>.title`. */
   titleParams?: Readonly<Record<string, string>>;
-  /**
-   * Catalog key of this notification's body (issue #1773), rendered in the recipient's locale the
-   * same way as the title and stored in `notifications.body`. Absent: the stored body is NULL.
-   */
+  /** Rendered in the recipient's locale and stored; absent stores NULL. */
   bodyKey?: string;
-  /**
-   * Substituted into the body entry's `{param}` placeholders. A `null` value renders as the
-   * `notification.body.unnamed` label; a param the entry does not name is ignored.
-   */
+  /** A `null` value renders as the unnamed label. */
   bodyParams?: Readonly<Record<string, string | number | null>>;
   bodySuffixKey?: string;
-  /**
-   * Where this notification's title should link, already resolved to the app's URL scheme
-   * (e.g. `?page=agent-run&id=...`) — the writer has no per-kind routing knowledge, only the
-   * producer does. `null` when the source has no dedicated destination yet.
-   */
+  /** Resolved by the producer (e.g. `?page=agent-run&id=...`); the writer has no routing knowledge. */
   linkHref: string | null;
-  /** The durable row this notification is about, e.g. `'project_heartbeats'`. */
   sourceTable: string;
   sourceId: string;
   /**
-   * Identifies *this* state transition of `(sourceTable, sourceId, kind)` for *this recipient* —
-   * replaying the same transition for the same recipient (a redelivered/retried queue job
-   * re-running the same failure) must not duplicate the notification, while a later, independent
-   * transition on the same source must still insert a new row. `scheduler/sweep.ts`'s
-   * `heartbeat_error` producer uses the firing queue job's own `id`, which is stable across that
-   * job's retries and distinct for every new fire.
+   * Identifies this transition of the source for this recipient: stable across retries (no
+   * duplicate), distinct for every new transition (e.g. the firing queue job's id).
    */
   transitionInstance: string;
-  /**
-   * Structured data a client can render without a second round trip to the source row (issue
-   * #85's drift findings are the first producer). Defaults to `{}` (the column
-   * default) when omitted.
-   */
+  /** Data a client renders without a round trip to the source row. Defaults to `{}`. */
   payload?: Record<string, unknown>;
 }
 
 /**
- * Runs on the caller's transaction client (never opens its own transaction): rolling back the
- * caller's transaction rolls this insert back with it, and committing it exposes both together.
- * Deduplicates per tenant and recipient on `(tenant_id, userId, sourceTable, sourceId, kind,
- * transitionInstance)` via `notifications_tenant_dedupe_idx` — a replay is a
- * silent no-op, never a second row, and returns that recipient's own notification id. Two
- * recipients of the same source transition each get their own row.
+ * Runs in the caller's transaction. Deduplicates per recipient via
+ * `notifications_tenant_dedupe_idx`: a replay is a silent no-op that returns the existing id.
+ * A fresh insert enqueues the fanout job in the same transaction, so the row and its delivery
+ * attempt commit together. The realtime hook fires after commit; resolved-guidance notifications
+ * register it only in a managed transaction, which owns completion.
  *
- * On an actual (non-replay) insert, also enqueues issue #151's `notificationFanout` job in the
- * same transaction — "this notification exists" and "delivery will be attempted" land together,
- * the same commit-coupling pattern as `decideAndEnqueueApprovalRequest`. A replay enqueues
- * nothing new: the row already has a notification, and that notification's fanout job (keyed by
- * its own id) either already ran or is already queued.
- *
- * Fires issue #152's `notifyNotificationCreated` realtime hook via `runAfterCommit`. Resolved
- * guidance notifications register it only for a managed transaction; an unmanaged caller has
- * no transaction-completion owner. SQL notification and fanout remain in the caller transaction.
- *
- * Returns the notification's id in both the fresh-insert and the replayed-duplicate case (issue
- * #85's `packages/notifications` adapter needs a stable id to hand back regardless of which
- * happened) — the `ON CONFLICT ... DO UPDATE` no-op plus `xmax = 0` is the standard Postgres
- * "upsert always returns a row, and tells you whether it inserted" idiom.
+ * `ON CONFLICT ... DO UPDATE` no-op plus `xmax = 0` always returns a row and tells whether it
+ * was inserted.
  */
 export async function writeNotification(client: PoolClient, input: WriteNotificationInput): Promise<string> {
   if (input.bodyKey === undefined && input.bodySuffixKey !== undefined)

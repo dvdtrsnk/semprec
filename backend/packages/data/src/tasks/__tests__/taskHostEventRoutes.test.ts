@@ -24,20 +24,17 @@ import {
 } from "../taskHostEventRouteHandlers.js";
 import { createTaskRecurrenceClearRouteHandler, createTaskRecurrenceSetRouteHandler } from "../taskRecurrenceRoutes.js";
 
-/** A tenant with the system databases seeded. */
 interface SeededTenant {
   id: string;
   tasksId: string;
   eventsId: string;
 }
 
-/** The tenant a route is called in. */
 type Caller = Pick<SeededTenant, "id">;
 
 let admin: Pool;
 let pool: Pool;
 let cp: ChokePoint;
-/** The tenant every case uses unless it names another. */
 let home: SeededTenant;
 /** A second tenant: the caller of the isolation cases and the owner of the foreign rows. */
 let foreign: SeededTenant;
@@ -100,7 +97,6 @@ async function trash(databaseId: string, itemId: string): Promise<void> {
   if (!trashed) throw new Error(`Item ${itemId} was not trashed`);
 }
 
-/** The task as its tenant reads it: its properties and its version. */
 async function storedTask(
   taskId: string,
   tenant: SeededTenant = home,
@@ -112,7 +108,7 @@ async function storedTask(
 
 const byEventId = (a: { eventId: string }, b: { eventId: string }): number => (a.eventId < b.eventId ? -1 : 1);
 
-/** Every stored edge of the task, edges to trashed events included: the other item and the metadata, by event id. */
+/** Edges to trashed events included, by event id. */
 async function storedEdges(
   taskId: string,
   tenant: SeededTenant = home,
@@ -133,7 +129,7 @@ async function relationPropertyId(databaseId: string, key: string): Promise<stri
   return property.id;
 }
 
-/** Writes a `hostEvents` edge as the Tasks process with any metadata, the way a writer other than the routes would. */
+/** As a writer other than the routes would. */
 async function writeEdge(taskId: string, eventId: string, metadata: Record<string, unknown>): Promise<void> {
   const hostEvents = await relationPropertyId(home.tasksId, "hostEvents");
   await runInTenant(home.id, () =>
@@ -147,7 +143,6 @@ async function writeEdge(taskId: string, eventId: string, metadata: Record<strin
   );
 }
 
-/** Runs `write`: its result and the realtime frames announced while it ran. */
 async function framesOf<T>(write: () => Promise<T>): Promise<{ result: T; frames: InvalidationEvent[] }> {
   const frames: InvalidationEvent[] = [];
   setInvalidationHook((frame) => frames.push(frame));
@@ -158,7 +153,6 @@ async function framesOf<T>(write: () => Promise<T>): Promise<{ result: T; frames
   }
 }
 
-/** Runs `write`, which must be refused: the error it threw and the realtime frames announced while it ran. */
 async function refusal(write: () => Promise<unknown>): Promise<{ error: unknown; frames: InvalidationEvent[] }> {
   const { result, frames } = await framesOf(() =>
     write().then(
@@ -173,9 +167,8 @@ async function refusal(write: () => Promise<unknown>): Promise<{ error: unknown;
 type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
 /**
- * Runs `hold` in a transaction of the home tenant and keeps that transaction open until `blocked` backends wait on a
- * lock, at least one of them on this transaction. `start` begins the work that is expected to wait; it is settled
- * before this returns or throws.
+ * Keeps a home-tenant transaction running `hold` open until `blocked` backends wait, at least one on it. `start`
+ * is settled before this returns or throws.
  */
 async function whileHolding<T>(
   hold: (client: PoolClient) => Promise<void>,
@@ -247,17 +240,14 @@ function relationFrame(side: "task" | "event", itemId: string, op: "put" | "dele
   };
 }
 
-/** The announcement of a stored change of the task itself, which the recomputation of its host state makes. */
+/** The task's own change frame, made by the host state recomputation. */
 const taskItemFrame = (taskId: string) =>
   expect.objectContaining({ scope: "item", databaseId: home.tasksId, itemId: taskId, op: "update" });
 
 const eventIdsOf = (response: { body: { hostEvents: Array<{ eventId: string }> } }): string[] =>
   response.body.hostEvents.map((entry) => entry.eventId);
 
-/**
- * The three routes, each called for `taskId` with `eventId`, an event of the calling tenant, so only the task decides.
- * The removal of all events sends no new date: the item write would refuse a trashed task by itself.
- */
+/** Each route is called with an event of the calling tenant, so only the task decides. Clearing sends no new date. */
 const ROUTES: Array<[string, (taskId: string, eventId: string, caller: Caller) => Promise<unknown>]> = [
   ["PUT /api/tasks/:id/host-events/:eventId", (taskId, eventId, caller) => put(taskId, eventId, caller)],
   ["DELETE /api/tasks/:id/host-events/:eventId", (taskId, eventId, caller) => removeOne(taskId, eventId, caller)],
@@ -479,7 +469,7 @@ describe("DELETE /api/tasks/:id/host-events/:eventId (issue #1764)", () => {
     expect(eventIdsOf(await put(taskId, third))).toEqual([first, third]);
     expect((await storedEdges(taskId)).map((edge) => edge.eventId)).toEqual([first, second, third].sort());
 
-    // Issue #1819: restoring the event does not put the task back into it, and the restore removes the edge.
+    // Restoring the event does not put the task back into it; the restore removes the edge.
     await runInTenant(home.id, () => cp.restoreItem(home.eventsId, second));
     expect(eventIdsOf(await removeOne(taskId, randomUUID()))).toEqual([first, third]);
     expect((await storedEdges(taskId)).map((edge) => edge.eventId)).toEqual([first, third].sort());

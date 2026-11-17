@@ -2,20 +2,13 @@ import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 
-/**
- * Resolved problems whose `resolved_at` is older than this are deleted by
- * `handleSempProblemsPruneTask` (issue #1558). Active problems are never deleted, however old.
- */
+/** Retention of resolved problems; active problems are never deleted. */
 export const SEMP_PROBLEMS_RETENTION_DAYS = 30;
 
-/** Rows deleted per transaction, so one sweep never holds a lock or a transaction open over an unbounded row count. */
+/** Bounds the rows and lock time of each transaction. */
 const PRUNE_DELETE_BATCH_SIZE = 1000;
 
-/**
- * Deletes the resolved problems past the retention window in batches, each in its own
- * transaction. Runs in the tenant scope the caller established: row-level security and the
- * `app_tenant_default()` filter narrow every delete to that tenant.
- */
+/** One transaction per batch; RLS and `app_tenant_default()` narrow every delete to the caller's tenant. */
 async function pruneResolvedProblemsInScope(pool: Pool): Promise<number> {
   let deleted = 0;
   for (;;) {
@@ -38,12 +31,7 @@ async function pruneResolvedProblemsInScope(pool: Pool): Promise<number> {
   }
 }
 
-/**
- * The `sempProblemsPrune` daily core task (issue #1558): for every active tenant, deletes the
- * tenant's problems resolved more than `SEMP_PROBLEMS_RETENTION_DAYS` days ago. Returns the total
- * deleted across tenants; when any tenant fails, rejects after every tenant was attempted (see
- * `forEachActiveTenant`).
- */
+/** Rejects after all tenants were attempted if any failed. */
 export async function handleSempProblemsPruneTask(pool: Pool): Promise<{ deleted: number }> {
   let deleted = 0;
   await forEachActiveTenant(pool, async () => {

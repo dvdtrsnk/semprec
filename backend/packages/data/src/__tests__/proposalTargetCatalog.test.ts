@@ -47,7 +47,6 @@ async function setup(): Promise<Fixture> {
   });
 }
 
-/** Reads the catalog through the runtime role pool in a read-only transaction, so a statement that writes fails the test. */
 function catalogOf(
   fixture: Fixture,
   databaseId: string,
@@ -314,8 +313,7 @@ describe("buildTargetCatalog (issue gh-1990)", () => {
 
       const catalog = await catalogOf(f, database.id, "en");
 
-      // 26 distinct values are stored and the facet lists the 20 most frequent; the long text is one of them and is
-      // dropped from the answer, so 19 remain: the count-1 places in byte order after the three that are repeated.
+      // 26 values stored, the facet lists the 20 most frequent; the long text among them is dropped, leaving 19.
       expect(MAX_CATALOG_TEXT_VALUES).toBe(20);
       expect(catalog.textValues).toEqual([
         {

@@ -48,7 +48,6 @@ const identity = { user: { id: randomUUID() } };
 /** The server clock of most cases: 10 October 2026, 10:00 in the seeded zone (Europe/Prague, UTC+2 that day). */
 const START = "2026-10-10T08:00:00.000Z";
 
-/** The task's own date in every case. */
 const OWN_DATE = "2026-10-12";
 
 /** Set by a case to make the next Tasks write or the next relation edge deletion fail; reset after each case. */
@@ -81,7 +80,7 @@ async function event(properties: Record<string, unknown> = {}, tenant = home): P
   return item.id;
 }
 
-/** Puts the task into the event through the route of issue #1764, which stamps the edge's `addedAt` from the clock. */
+/** Through the host-event route, which stamps `addedAt` from the clock. */
 function put(taskId: string, eventId: string, tenant = home) {
   return runInTenant(tenant.id, () =>
     createTaskHostEventPutRouteHandler(pool)({ params: { id: taskId, eventId }, body: {}, identity }),
@@ -100,13 +99,11 @@ async function stored(databaseId: string, itemId: string, tenant = home) {
   return item;
 }
 
-/** The host state a task stores: the two properties the recomputation writes. */
 async function hostState(taskId: string): Promise<{ hiddenUntil: unknown; effectiveDate: unknown }> {
   const { properties } = await stored(home.tasksId, taskId);
   return { hiddenUntil: properties.hiddenUntil ?? null, effectiveDate: properties.effectiveDate ?? null };
 }
 
-/** The events a task has an edge to on a relation of Tasks, by the relation's key, as its own tenant reads them. */
 async function edgeTargets(taskId: string, key: "hostEvents" | "completedInEvent"): Promise<string[]> {
   const edges = await runInTenant(home.id, () =>
     withTransaction(pool, async (client) => {
@@ -119,7 +116,7 @@ async function edgeTargets(taskId: string, key: "hostEvents" | "completedInEvent
   return edges.map((edge) => relationsStore.otherSide(edge, taskId)).sort();
 }
 
-/** Runs `write`: its outcome and the realtime frames announced while it ran (none are announced for a rolled-back write). */
+/** The outcome of `write` and the frames it announced (none for a rolled-back write). */
 async function framesOf<T>(
   write: () => Promise<T>,
 ): Promise<{ outcome: PromiseSettledResult<T>; frames: InvalidationEvent[] }> {
@@ -136,13 +133,11 @@ async function framesOf<T>(
 const itemUpdates = (frames: InvalidationEvent[], databaseId: string) =>
   frames.filter((frame) => frame.scope === "item" && frame.op === "update" && frame.databaseId === databaseId);
 
-/** A client whose queries are counted; the pooled client itself is not patched. */
 function counting(client: PoolClient): { client: PoolClient; queries: () => number } {
   let queries = 0;
   const wrapped: PoolClient = new Proxy(client, {
     get(target, property) {
       if (property !== "query") return Reflect.get(target, property);
-      // The hooks under test pass SQL text and a parameter array only.
       return (text: string, values?: unknown[]) => {
         queries += 1;
         return target.query(text, values);
@@ -404,7 +399,7 @@ describe("a tenant whose Events database lacks the hostedTasks property (issue #
     const [taskId, eventId] = [await task({}, bare), await event({}, bare)];
     await put(taskId, eventId, bare);
     await runInTenant(bare.id, () => cp.softDeleteItem(bare.eventsId, eventId));
-    // Raw SQL on the superuser pool: no write path removes a system relation property, and the case needs a tenant that lacks it.
+    // Raw SQL: no write path removes a system relation property.
     await admin.query(
       "UPDATE relation_definitions SET property_id_b = NULL WHERE tenant_id = $1 AND property_id_b IN (SELECT id FROM properties WHERE tenant_id = $1 AND key = 'hostedTasks')",
       [bare.id],
@@ -463,7 +458,7 @@ describe("countTasksReturningFromEvent (issue #1819)", () => {
 });
 
 describe("the hooks act on the Events database only (issue #1819)", () => {
-  /** Calls `hook` for the Tasks database, for a user database named like Events, and for Events itself; counts queries. */
+  /** Calls `hook` for Tasks, a user database named like Events, and Events itself; counts queries. */
   async function queriesOf(which: "delete" | "restore", database: "tasks" | "notSystem" | "events"): Promise<number> {
     return runInTenant(home.id, () =>
       withTransaction(pool, async (client) => {

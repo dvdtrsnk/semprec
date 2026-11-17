@@ -35,7 +35,6 @@ const unusedStorage: BlobStorageWriter = {
   },
 };
 
-/** The databases and relation properties one Mailbox ingests into, read from the tenant's own seed. */
 interface MailFixture {
   emailsId: string;
   filesId: string;
@@ -56,9 +55,6 @@ async function seedTenant(tenantId: string): Promise<void> {
   await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
 }
 
-/**
- * Creates a Mailbox with its INBOX folder through the production writers, in the tenant's scope.
- */
 async function setUpMail(tenantId: string): Promise<MailFixture> {
   return runInTenant(tenantId, () =>
     withTransaction(dataPool, async (client) => {
@@ -100,7 +96,6 @@ async function setUpMail(tenantId: string): Promise<MailFixture> {
   );
 }
 
-/** Creates a Person with one address and indexes the address the way its People heartbeat does. */
 async function createPerson(tenantId: string, mail: MailFixture, name: string, address: string): Promise<string> {
   return runInTenant(tenantId, async () => {
     const person = await chokePoint.createItem({ databaseId: mail.peopleId, properties: { name, emails: address } });
@@ -109,7 +104,6 @@ async function createPerson(tenantId: string, mail: MailFixture, name: string, a
   });
 }
 
-/** Ingests one message from `fromAddress` into the Mailbox, as the sync pass does, and returns its Emails item id. */
 async function ingestFrom(
   tenantId: string,
   mail: MailFixture,
@@ -138,7 +132,6 @@ async function ingestFrom(
   );
 }
 
-/** Runs the production `mail.linkPeopleByEmail` action for one email, as its onItemEvent heartbeat does. */
 async function linkEmail(tenantId: string, mail: MailFixture, emailItemId: string): Promise<void> {
   await runInTenant(tenantId, () =>
     createLinkEmailToPeopleAction(dataPool)(
@@ -148,7 +141,6 @@ async function linkEmail(tenantId: string, mail: MailFixture, emailItemId: strin
   );
 }
 
-/** The Person item ids joined to an email through the senderPeople relation, sorted. */
 async function senderPersonIds(tenantId: string, mail: MailFixture, emailItemId: string): Promise<string[]> {
   return runInTenant(tenantId, async () => {
     const { rows } = await dataPool.query<{ person_id: string }>(

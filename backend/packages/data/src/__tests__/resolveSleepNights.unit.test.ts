@@ -30,7 +30,6 @@ const WEEKEND: SleepPlan = {
 };
 const DEFAULT_PLANS = [WEEKDAYS, WEEKEND];
 
-/** Resolves with the default settings (a reminder 30 minutes before bedtime), the default plans and no exception unless overridden. */
 function resolve(overrides: Partial<ResolveSleepNightsInput> & { from: string; to?: string }) {
   return resolveSleepNights({
     settings: { prepReminder: true, prepReminderMinutes: 30 },
@@ -341,10 +340,8 @@ describe("resolveSleepNights (issue #1792)", () => {
     ["from", { from: "2026-02-30", to: "2026-10-16" }],
     ["to", { from: "2026-10-16", to: "2026-10-1" }],
     ["to", { from: "2026-10-16", to: "2026-13-01" }],
-    // Other ISO 8601 forms of a real day are not `YYYY-MM-DD`.
     ["from", { from: "2026-W42-5", to: "2026-10-16" }],
     ["to", { from: "2026-10-16", to: "2026-10-16T00:00" }],
-    // `from` after `to`.
     ["from", { from: "2026-10-17", to: "2026-10-16" }],
     ["timezone", { from: "2026-10-16", to: "2026-10-16", timezone: "Europe/Nowhere" }],
     // A range that resolves no night still refuses the zone.

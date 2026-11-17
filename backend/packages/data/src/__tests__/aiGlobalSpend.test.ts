@@ -13,7 +13,7 @@ import { getGatewaySpend, getGlobalGatewaySpend } from "../aiGateway/aiGatewayCa
 let pool: Pool;
 let sidePool: Pool;
 
-/** Raw SQL: a row's `at` must be controlled to sit on either side of a window boundary. */
+/** Raw SQL: the test controls `at` to sit on either side of a window boundary. */
 async function insertCall(tenantId: string, costUsd: number, at: string = "now()"): Promise<void> {
   await pool.query(
     `INSERT INTO ai_gateway_calls (tenant_id, provider, model, input_tokens, output_tokens, cost_usd, at)

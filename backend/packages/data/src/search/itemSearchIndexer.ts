@@ -56,10 +56,7 @@ async function relatedTitles(
   return rows;
 }
 
-/**
- * Read in its own statement after the item lock, not joined into the locking query: a join read taken before the
- * lock could miss a page-text write that committed while this call was waiting for the lock.
- */
+/** Read after the item lock, not joined into the locking query, which could miss a page-text write committed meanwhile. */
 async function storedProjection(
   client: PoolClient,
   itemId: string,
@@ -72,9 +69,8 @@ async function storedProjection(
 }
 
 /**
- * Called inside a write transaction. Locks the item before reading its text, including during backfills.
- * `pageText` is passed only by the page-text job, the sole writer of `page_text`; without it the stored page text
- * is kept, so an item write rebuilds the vector and `body` from the text already converted.
+ * Locks the item before reading its text. Only the page-text job (sole writer of `page_text`) passes `pageText`;
+ * otherwise the stored page text is reused.
  */
 export async function indexItem(
   client: PoolClient,
@@ -132,8 +128,7 @@ export async function indexItem(
   });
   const searchDocument = options.preserveBody && stored.body ? `${document} ${stored.body}` : document;
   const body = buildItemSearchBody({ item: itemInput, databaseKey: item.owner_module_id, pageText });
-  // SEARCH_VECTOR_SQL is a closed SQL constant; all values, including the missing-only guard, are bound.
-  // An item write leaves the stored `page_text` column as it is; only the page-text job (`$7`) replaces it.
+  // A closed SQL constant; every value is bound. Only the page-text job (`$7`) replaces `page_text`.
   const result = await client.query(
     `INSERT INTO item_search_index (item_id, database_id, search_vector, body, page_text, updated_at)
      VALUES ($1, $2, ${SEARCH_VECTOR_SQL}, $4, $5, now())

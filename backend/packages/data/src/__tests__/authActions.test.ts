@@ -198,7 +198,7 @@ describe("auth actions (issue #140)", () => {
 
     it("login and verifySessionToken return the displayName stored on the account", async () => {
       const user = await makeUser();
-      // Nothing writes the name yet (#1513 does, at account creation), so the test sets the column directly.
+      // Nothing writes the name yet, so the test sets the column directly.
       await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
 
       const result = await login(pool, {
@@ -247,7 +247,7 @@ describe("auth actions (issue #140)", () => {
       );
     }
 
-    /** Pushes every recorded attempt for this email+IP pair back by `seconds`, simulating the lockout window elapsing without a real-time sleep in the test. */
+    /** Ages every recorded attempt for this email+IP pair by `seconds`, instead of sleeping. */
     async function backdateAttempts(email: string, ip: string, seconds: number) {
       await pool.query(
         `UPDATE login_attempts SET attempted_at = attempted_at - make_interval(secs => $3) WHERE email = $1 AND ip = $2`,

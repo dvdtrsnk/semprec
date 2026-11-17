@@ -6,7 +6,7 @@ export interface ObservabilityCheckTransition {
   id: string;
   previousStatus: ObservabilityCheckStatus | null;
   status: ObservabilityCheckStatus;
-  /** True only on a genuine ok/missing -> alerting flip — the caller's one signal to notify. */
+  /** True only on an ok/missing -> alerting flip: the caller's one signal to notify. */
   transitionedToAlerting: boolean;
 }
 
@@ -24,13 +24,8 @@ type ComputeCheck = (previousStatus: ObservabilityCheckStatus | null) => {
 };
 
 /**
- * Reads `check_key`'s current status under `FOR UPDATE` (serializing concurrent callers of the
- * same check, though `observability.checkSystem` only ever runs one tick at a time), lets
- * `compute` decide the new status/detail from that previous status — this is where a caller
- * implements hysteresis, e.g. the queue-backlog check entering `alerting` at a higher threshold
- * than it requires to recover back to `ok` — then upserts. `changed_at` only advances on an
- * actual status flip, never on a same-status detail refresh, so "how long has this been alerting"
- * stays meaningful across many ticks that all reconfirm the same fault.
+ * Reads the previous status `FOR UPDATE` and lets `compute` decide (where hysteresis lives).
+ * `changed_at` advances only on a status flip, so "alerting since" stays meaningful.
  */
 export function transitionObservabilityCheck(
   client: PoolClient,
@@ -40,7 +35,7 @@ export function transitionObservabilityCheck(
   return transitionCheckIn(client, "observability_checks", checkKey, compute);
 }
 
-/** `transitionObservabilityCheck` on the tenant table; the tenant comes from RLS and the column default, so it must run in a tenant scope. */
+/** Tenant-table variant; must run in a tenant scope. */
 export function transitionTenantObservabilityCheck(
   client: PoolClient,
   checkKey: string,
@@ -84,11 +79,7 @@ async function transitionCheckIn(
   };
 }
 
-/**
- * Drops `observability_checks` rows whose `check_key` starts with `checkKeyPrefix` but is not in
- * `currentCheckKeys` — the check's own source (e.g. a deleted mail account) is gone, so the row
- * would otherwise never be re-evaluated and would sit `alerting` forever with no path back to `ok`.
- */
+/** Rows whose source is gone would never be re-evaluated and could sit `alerting` forever. */
 export function deleteOrphanedObservabilityChecks(
   client: PoolClient,
   checkKeyPrefix: string,
@@ -97,7 +88,7 @@ export function deleteOrphanedObservabilityChecks(
   return deleteOrphansIn(client, "observability_checks", checkKeyPrefix, currentCheckKeys);
 }
 
-/** `deleteOrphanedObservabilityChecks` on the tenant table; RLS limits it to the caller's tenant's rows. */
+/** Tenant-table variant; RLS limits it to the caller's tenant. */
 export function deleteOrphanedTenantObservabilityChecks(
   client: PoolClient,
   checkKeyPrefix: string,
@@ -116,7 +107,5 @@ async function deleteOrphansIn(
     `DELETE FROM ${table} WHERE check_key LIKE $1 AND NOT (check_key = ANY($2::text[]))`,
     [`${checkKeyPrefix}%`, currentCheckKeys],
   );
-  // Zero is the common case (no orphans this tick) — there is nothing to act on beyond returning
-  // the count, which exists so a caller could log or assert on it if it ever needed to.
   return result.rowCount ?? 0;
 }

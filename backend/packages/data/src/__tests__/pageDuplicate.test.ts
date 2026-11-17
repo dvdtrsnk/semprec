@@ -110,7 +110,6 @@ async function readBlocks(itemId: string): Promise<PageBlock[]> {
   });
 }
 
-/** Appends `blocks` to the page document of `itemId` through the docs module's own write. */
 async function appendBlocks(itemId: string, blocks: NewBlockInput[]): Promise<string[]> {
   const docId = await docIdOf(itemId);
   return runInTenant(tenant, () =>
@@ -123,10 +122,7 @@ async function appendBlocks(itemId: string, blocks: NewBlockInput[]): Promise<st
   );
 }
 
-/**
- * Writes `text` as the caption of the page block of `page` in the document of `parentItemId`, as an edit of the title
- * in the parent does. The mirror job does not run in this file, so the item of `page` keeps the title it had.
- */
+/** Edits the caption in the parent as the editor does; the mirror job does not run here, so the item keeps its title. */
 async function retitleInParent(parentItemId: string, page: Subpage, text: string): Promise<void> {
   const parentDocId = await docIdOf(parentItemId);
   await runInTenant(tenant, () =>
@@ -136,7 +132,6 @@ async function retitleInParent(parentItemId: string, page: Subpage, text: string
   );
 }
 
-/** A block as it must survive a copy: everything but its id and the page it names. */
 function content(block: PageBlock): Omit<PageBlock, "id" | "pageId"> {
   const { id: _id, pageId: _pageId, ...rest } = block;
   return rest;
@@ -149,7 +144,7 @@ async function propertiesOf(itemId: string): Promise<Record<string, unknown> | u
   return rows[0]?.properties;
 }
 
-/** Every stored row of the given items and of their documents, bytes included, for a byte-for-byte comparison. */
+/** For a byte-for-byte comparison. */
 async function storedRows(itemIds: string[]): Promise<Record<string, unknown[]>> {
   return inTenant(async (client) => {
     const read = async (sql: string): Promise<unknown[]> =>
@@ -175,7 +170,6 @@ interface WriteCounts {
   docUpdates: number;
 }
 
-/** What a refused call must leave exactly as it found it, read inside the tenant. */
 async function writeCounts(tenantId = tenant): Promise<WriteCounts> {
   return inTenant(async (client) => {
     const { rows } = await client.query<WriteCounts>(
@@ -199,7 +193,6 @@ async function databaseIdOf(itemId: string): Promise<string> {
   return databaseId;
 }
 
-/** Resolves once a statement on this test database waits for a lock, and fails after ten seconds. */
 async function lockWait(): Promise<void> {
   const deadline = Date.now() + 10_000;
   for (;;) {
@@ -213,10 +206,7 @@ async function lockWait(): Promise<void> {
   }
 }
 
-/**
- * Runs `body` while a transaction of its own on a dedicated connection, scoped to the tenant, is open. `body` commits
- * it through `commit`; a transaction still open afterwards is rolled back.
- */
+/** `body` commits through `commit`; a transaction still open afterwards is rolled back. */
 async function withOpenTransaction(
   body: (holder: PoolClient, commit: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
@@ -248,7 +238,6 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   throw new Error("Expected the call to be rejected");
 }
 
-/** Expects `pageItemId` to be refused as not found, with nothing written. */
 async function expectNotFoundUnchanged(pageItemId: string): Promise<NotFoundError> {
   const before = await writeCounts();
   const error = await rejection(duplicate(pageItemId));
@@ -272,16 +261,13 @@ async function isInTrash(itemId: string): Promise<boolean> {
   return row.trashed;
 }
 
-/** The ids the `page` blocks of the document of `itemId` name, in document order. */
 async function namedPageIds(itemId: string): Promise<Array<string | null>> {
   return (await readBlocks(itemId)).filter((block) => block.type === "page").map((block) => block.pageId);
 }
 
 /**
- * An instant of the database clock that a document's history places after every write made so far and before every
- * write made once this returns. The history dates an update by the start of its transaction and keeps that start in
- * whole milliseconds, so the instant is the whole millisecond after the current one, and it is returned once the
- * database clock has left that millisecond.
+ * The history dates an update by its transaction start in whole milliseconds, so this returns the next
+ * millisecond once the database clock has left the current one.
  */
 async function instantAfterWrites(): Promise<Date> {
   const { rows } = await admin.query<{ at: Date }>(
@@ -300,7 +286,6 @@ async function instantAfterWrites(): Promise<Date> {
   }
 }
 
-/** A project whose page holds "first", the page block of "Release checklist" and "last", in that order. */
 async function projectWithChecklist(): Promise<{
   project: string;
   checklist: Subpage;
@@ -330,7 +315,6 @@ describe("page.duplicate (issue #1722)", () => {
 
     const copy = await duplicate(checklist.pageItemId);
 
-    // The copy stands right after the original in the parent, titled with the Czech suffix.
     const parentBlocks = await readBlocks(project);
     expect(parentBlocks.map((block) => block.id)).toEqual([firstId, checklist.blockId, copy.blockId, lastId]);
     expect(parentBlocks[2]).toMatchObject({
@@ -342,7 +326,6 @@ describe("page.duplicate (issue #1722)", () => {
     expect(await propertiesOf(copy.pageItemId)).toEqual({ title: "Release checklist (kopie)", parentItemId: project });
     expect(await docIdOf(copy.pageItemId)).toBe(copy.docId);
 
-    // The copy holds the same blocks in the same order under new ids, and its own copy of the nested page.
     const copyBlocks = await readBlocks(copy.pageItemId);
     expect(copyBlocks.map(content)).toEqual(originalChecklistBlocks.map(content));
     const nestedCopyId = copyBlocks[1]?.pageId;
@@ -352,7 +335,6 @@ describe("page.duplicate (issue #1722)", () => {
     const nestedCopyBlocks = await readBlocks(nestedCopyId);
     expect(nestedCopyBlocks.map(content)).toEqual(originalNotesBlocks.map(content));
 
-    // Every page item id, document id and block id of the copy is new.
     const copiedIds = [
       copy.pageItemId,
       nestedCopyId,
@@ -371,7 +353,6 @@ describe("page.duplicate (issue #1722)", () => {
     expect(copiedIds.filter((id) => originalIds.has(id))).toEqual([]);
     expect(new Set(copiedIds).size).toBe(copiedIds.length);
 
-    // Two pages and two documents were created; the originals' rows and document bytes are what they were.
     const after = await writeCounts();
     expect(after.pagesItems).toBe(before.pagesItems + 2);
     expect(after.docs).toBe(before.docs + 2);
@@ -456,14 +437,13 @@ describe("page.duplicate (issue #1722)", () => {
     const trashed = await subpage(checklist.pageItemId, "Trashed");
     const beforeTrash = await instantAfterWrites();
     await trash(trashed.pageItemId);
-    // The trash takes the block of the page out of its parent's document (issue #1723). Restoring that document to
-    // its version from before the trash (page.restoreVersion) writes the block again, and the page stays in the Trash.
+    // The trash takes the page's block out of the parent's document; restoring that document's older version
+    // writes the block again while the page stays in the Trash.
     expect(await namedPageIds(checklist.pageItemId)).toEqual([kept.pageItemId]);
     await runInTenant(tenant, () => createDocStore(runtime).restoreVersion(checklist.pageItemId, beforeTrash));
     expect(await namedPageIds(checklist.pageItemId)).toEqual([kept.pageItemId, trashed.pageItemId]);
     expect(await isInTrash(trashed.pageItemId)).toBe(true);
-    // The sync socket can store any page block: one naming an id no item has (a purged page), one naming a host item,
-    // and one whose pageId is not an id at all.
+    // The sync socket can store any page block: a purged id, a host item's id, or not an id at all.
     await appendBlocks(checklist.pageItemId, [
       { type: "page", pageId: randomUUID(), text: "Purged" },
       { type: "page", pageId: project, text: "A host, not a page" },
@@ -488,15 +468,13 @@ describe("page.duplicate (issue #1722)", () => {
       ["text", [{ insert: "Last line" }]],
     ]);
     expect(copied[0]?.pageId).not.toBe(kept.pageItemId);
-    // Only the root of the copy and the copy of the one live nested page were created.
     expect((await writeCounts()).pagesItems).toBe(before.pagesItems + 2);
   });
 
   it("copies a nested page that has no document as an empty page", async () => {
     const { checklist } = await projectWithChecklist();
     const bare = await subpage(checklist.pageItemId, "Without a document");
-    // No production write leaves a Pages item without its document; this superuser delete stands in for hand-edited
-    // data.
+    // Superuser delete: no production write leaves a Pages item without its document.
     await admin.query(`DELETE FROM docs WHERE item_id = $1`, [bare.pageItemId]);
     const before = await writeCounts();
 
@@ -507,7 +485,6 @@ describe("page.duplicate (issue #1722)", () => {
     const bareCopyId = copied[0]?.pageId;
     if (!bareCopyId) throw new Error("Missing nested copy");
     expect(await propertiesOf(bareCopyId)).toEqual({ title: "Without a document", parentItemId: copy.pageItemId });
-    // The copy of the page has a document of its own, without blocks.
     expect(await readBlocks(bareCopyId)).toEqual([]);
     const after = await writeCounts();
     expect(after.pagesItems).toBe(before.pagesItems + 2);
@@ -566,8 +543,7 @@ describe("page.duplicate (issue #1722)", () => {
 
   it("refuses a tree of 501 pages with nothing written, and copies a tree of exactly 500", async () => {
     const { project, checklist } = await projectWithChecklist();
-    // The root gets 500 text blocks, and conversions make each of them a nested page with its own document, 200 at a
-    // time, the most one page.createSubpage call names. The tree is then the root plus 500 pages.
+    // 500 text blocks converted to nested pages 200 at a time (page.createSubpage's maximum).
     const blockIds = await appendBlocks(
       checklist.pageItemId,
       Array.from({ length: MAX_DUPLICATE_PAGES }, (_, index) => ({ type: "text", text: `p${index + 1}` })),
@@ -594,7 +570,6 @@ describe("page.duplicate (issue #1722)", () => {
     expect(await writeCounts()).toEqual(before);
     expect(await readBlocks(project)).toEqual(parentBefore);
 
-    // One page fewer is exactly the cap: the root and 499 nested pages, each copied with a document of its own.
     const lastNested = nested.at(-1);
     if (!lastNested) throw new Error("Missing nested page");
     await trash(lastNested);
@@ -688,7 +663,6 @@ describe("page.duplicate (issue #1722)", () => {
     const captions = new Map((await readBlocks(project)).map((block) => [block.id, block.text]));
     expect(captions.get(copy.blockId)).toEqual([{ insert: "Release plan (kopie)" }]);
     expect(captions.get(draftCopy.blockId)).toEqual([{ insert: "Typed after creation (copy)" }]);
-    // The originals are not written: their blocks keep what was typed and their items wait for the mirror job.
     expect(captions.get(checklist.blockId)).toEqual([{ insert: "Release plan" }]);
     expect(captions.get(draft.blockId)).toEqual([{ insert: "Typed after creation" }]);
     expect((await propertiesOf(checklist.pageItemId))?.title).toBe("Release checklist");
@@ -746,14 +720,12 @@ describe("page.duplicate (issue #1722)", () => {
       const started: Array<Promise<PromiseSettledResult<PageDuplicateOutput>[]>> = [];
       try {
         await inTenant(async (client) => {
-          // This transaction has renamed the page and holds the parent's row and the page's row. The duplicate that
-          // starts now still finds the old title on the item, and waits for the parent's row.
+          // The rename holds the parent's and the page's rows; the duplicate still sees the old title and waits for the parent.
           await renamePageWithClient(client, { pageItemId: checklist.pageItemId, title: "Release plan" }, "user");
           started.push(Promise.allSettled([duplicate(checklist.pageItemId)]));
           await lockWait();
         });
       } finally {
-        // The duplicate is settled before the test goes on, also when the wait failed and rolled the rename back.
         await Promise.all(started);
       }
 
@@ -798,8 +770,7 @@ describe("page.duplicate (issue #1722)", () => {
 
     const trashedParent = await projectWithChecklist();
     await trash(trashedParent.project);
-    // The project's trash took the page with it (issue #1763). Restored on its own, the page is live below the
-    // trashed project.
+    // The project's trash took the page with it; restored on its own, the page is live below the trashed project.
     const pagesDatabaseId = await databaseIdOf(trashedParent.checklist.pageItemId);
     await runInTenant(tenant, () =>
       createChokePoint(runtime).restoreItem(pagesDatabaseId, trashedParent.checklist.pageItemId),
@@ -809,14 +780,14 @@ describe("page.duplicate (issue #1722)", () => {
     await expectNotFoundUnchanged(trashedParent.checklist.pageItemId);
 
     const unusableParent = await projectWithChecklist();
-    // No operation removes parentItemId; this superuser write stands in for hand-edited data.
+    // Superuser write standing in for hand-edited data.
     await admin.query(`UPDATE items SET properties = properties - 'parentItemId' WHERE id = $1`, [
       unusableParent.checklist.pageItemId,
     ]);
     await expectNotFoundUnchanged(unusableParent.checklist.pageItemId);
 
     const malformedParent = await projectWithChecklist();
-    // No operation stores a parentItemId that is not an id; this superuser write stands in for hand-edited data.
+    // Superuser write standing in for hand-edited data.
     await admin.query(
       `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
       [malformedParent.checklist.pageItemId, "not-an-id"],
@@ -834,18 +805,17 @@ describe("page.duplicate (issue #1722)", () => {
 
   it("keeps the suffix whole on a title at the length limit, and suffixes an empty or missing title alone", async () => {
     const project = await runInTenant(tenant, () => createTestProjectItem(runtime));
-    // " (kopie)" takes eight of the 500 places, so the original's title is cut to 492: once inside a word, once
-    // right after a space, which is then dropped as well.
+    // " (kopie)" takes eight of the 500 places: the title is cut inside a word once, after a space once.
     const cutInWord = await subpage(project, "x".repeat(PAGE_TITLE_MAX_LENGTH));
     const cutAfterSpace = await subpage(project, `${"x".repeat(PAGE_TITLE_MAX_LENGTH - 9)} ${"y".repeat(8)}`);
     const empty = await subpage(project, "");
-    // The item's title is read only for a page no block names, so this one loses its block as well as its title.
+    // The item's title is read only for a page no block names.
     const untitled = await subpage(project, "Soon without a title");
     const parentDocId = await docIdOf(project);
     await runInTenant(tenant, () =>
       mutateDoc(runtime, parentDocId, "user", (doc) => deleteBlocks(doc, [untitled.blockId])),
     );
-    // No operation removes a title; this superuser write stands in for hand-edited data.
+    // Superuser write standing in for hand-edited data.
     await admin.query(`UPDATE items SET properties = properties - 'title' WHERE id = $1`, [untitled.pageItemId]);
 
     const cutInWordCopy = await duplicate(cutInWord.pageItemId);
@@ -861,7 +831,6 @@ describe("page.duplicate (issue #1722)", () => {
     );
     expect((await propertiesOf(emptyCopy.pageItemId))?.title).toBe("(kopie)");
     expect((await propertiesOf(untitledCopy.pageItemId))?.title).toBe("(copy)");
-    // The block of each copy carries the same title as its item.
     const parentTexts = (await readBlocks(project)).map((block) => block.text);
     expect(parentTexts).toContainEqual([{ insert: cutInWordTitle }]);
     expect(parentTexts).toContainEqual([{ insert: "(kopie)" }]);
@@ -898,8 +867,7 @@ describe("page.duplicate (issue #1722)", () => {
     const before = await writeCounts();
     const databaseId = await databaseIdOf(checklist.pageItemId);
     await withOpenTransaction(async (holder, commit) => {
-      // The open transaction has trashed the page and holds its row; the duplicate still reads it as live. The store
-      // function runs on the held connection, because the choke point's trash commits in a transaction of its own.
+      // The trash runs on the held connection because the choke point's trash commits in its own transaction.
       await softDeleteItem(holder, databaseId, checklist.pageItemId);
       const settled = Promise.allSettled([duplicate(checklist.pageItemId)]);
       await lockWait();

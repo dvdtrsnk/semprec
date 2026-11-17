@@ -70,7 +70,7 @@ import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 
-/** Confirming a proposal is a person's decision, so every write in its transaction is a `user` write. */
+/** Confirming is a person's decision, so every write in its transaction is a `user` write. */
 const CONFIRMING_USER_WRITER: WriterIdentity = { writerKind: "user" };
 
 export interface ProposalActionConfig {
@@ -78,24 +78,22 @@ export interface ProposalActionConfig {
 }
 
 /**
- * A logged-in human's separately-supplied secret for an MCP server proposal (issue #123) —
- * never part of the envelope's `properties`, and only ever accepted by `confirmProposalWithClient`
- * itself, never `revise` (a chat-driven, AI-visible correction). Optional: not every MCP server
- * needs a credential (e.g. a local `stdio` command with no auth of its own).
+ * A human-supplied secret for an MCP server proposal: never part of the envelope, accepted only by confirm (never by
+ * an AI-visible revise). Optional, since not every server needs one.
  */
 export interface ConfirmProposalCredentialInput {
   credentialType: CredentialType;
   plaintext: string;
 }
 
-/** Row-locks the proposal (serializing concurrent confirm/reject/revise on the same row) and rejects a missing or soft-deleted one. */
+/** Row-locks the proposal (serializing confirm/reject/revise on the same row) and rejects a missing or deleted one. */
 export async function lockLiveProposal(client: PoolClient, databaseId: string, proposalId: string): Promise<ItemRow> {
   const proposal = await itemsStore.lockItemById(client, databaseId, proposalId);
   if (!proposal || proposal.deletedAt) throw new NotFoundError(`Processing proposal ${proposalId} not found`);
   return proposal;
 }
 
-/** The target item's own title-property value, for `resultLabel` — falls back to the item id when the target database declares no title property or the value is empty. */
+/** The target item's title, falling back to its id when there is no title property or value. */
 async function resolveResultLabel(client: PoolClient, databaseId: string, item: ItemRow): Promise<string> {
   const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
   const titleProperty = properties.find((property) => property.type === "title");
@@ -117,23 +115,18 @@ export const confirmationResultSchema = z.object({
 });
 export type ConfirmationResult = z.infer<typeof confirmationResultSchema>;
 
-/** Validates the stored JSON before returning it across the API boundary. */
 export function readConfirmationResults(properties: Record<string, unknown>): ConfirmationResult[] {
   return z.array(confirmationResultSchema).parse(properties.results ?? []);
 }
 
-/** The Transcripts `event` relation property: the Transcription<->Event edge a transcript card's confirm writes. */
 const TRANSCRIPT_EVENT_PROPERTY_KEY = "event";
 
 /**
- * What a `kind = 'transcript'` card proposes (issue #185): either the transcript's Event (create a
- * new one, or link an existing one through Transcripts `event`), or one speaker-to-person mapping
- * (a link through Transcripts `speakers` whose metadata names the speaker key). A card keeps its
- * role for life — `revise` may change the Event or the person, never turn one role into the other.
+ * A transcript card proposes the transcript's Event (create, or link via Transcripts `event`) or one speaker-to-person
+ * mapping (via `speakers`, metadata naming the speaker key). A card keeps its role for life.
  */
 type TranscriptCardRole = "event" | "speaker";
 
-/** What a transcript card's confirm writes: an edge from its source transcript through `relationPropertyId`. */
 interface TranscriptCardEdge {
   role: TranscriptCardRole;
   transcriptId: string;
@@ -141,13 +134,6 @@ interface TranscriptCardEdge {
   speaker?: string;
 }
 
-/**
- * What `assertValidEnvelopeForCard` resolved on the caller's behalf: the transcript-card edge
- * (`null` for a non-transcript card), and the envelope's target database row for a `'database'`
- * envelope (`null` for `'relation'`/`'pageContent'`) — `confirmProposalWithClient`'s credential
- * guard reuses that row instead of re-fetching it (issue #735).
- */
-/** Whether `error` is the v2 page-content check's refusal of a heading that is no longer on the page. */
 function isHeadingUnavailable(error: ValidationError): boolean {
   const details: unknown = error.details;
   return (
@@ -155,12 +141,13 @@ function isHeadingUnavailable(error: ValidationError): boolean {
   );
 }
 
+/** What `assertValidEnvelopeForCard` resolved; confirm's credential guard reuses `targetDatabase` instead of re-reading it. */
 export interface EnvelopeForCard {
   transcriptCardEdge: TranscriptCardEdge | null;
   targetDatabase: DatabaseRow | null;
-  /** The Threads item of a `kind = 'mailThread'` card's `sourceThread` edge; absent for any other card. */
+  /** A `mailThread` card's `sourceThread` Threads item. */
   mailThreadItemId?: string;
-  /** What a `transcription` envelope's card resolved (issue gh-1978): its source Inbox item and the validated parameters; absent for any other envelope. */
+  /** A `transcription` card's source Inbox item and validated parameters. */
   recording?: { sourceInboxItemId: string; properties: RecordingCardProperties };
 }
 
@@ -185,10 +172,8 @@ async function requireDatabaseIdByModuleId(client: PoolClient, moduleId: string)
 }
 
 /**
- * Before a pairing card (role `event`) writes its transcript's edge to the Event it confirms: deletes that
- * transcript's edge to an Event in the Trash, in the confirm transaction, as the confirming user's write
- * (issue #1743). The relation allows a transcript one Event, so the new edge would otherwise fail with
- * `cardinality_violation`. A speaker card writes through `speakers` and removes nothing.
+ * Before a pairing card writes its transcript's Event edge, deletes that transcript's edge to a trashed Event, as the
+ * confirming user. The relation allows one Event, so the new edge would otherwise be a `cardinality_violation`.
  */
 async function releaseTrashedEventOfPairingCard(
   client: PoolClient,
@@ -204,7 +189,7 @@ async function releaseTrashedEventOfPairingCard(
   );
 }
 
-/** The transcript a `kind = 'transcript'` card was created for, via its `sourceTranscript` edge (written with the card by the match step). */
+/** The transcript of a transcript card, via its `sourceTranscript` edge. */
 export async function requireSourceTranscriptId(
   client: PoolClient,
   config: ProposalActionConfig,
@@ -224,22 +209,12 @@ export async function requireSourceTranscriptId(
 }
 
 /**
- * Validates an envelope against the card it is for (issue #184), on top of the envelope's own
- * shape (`assertValidProposalEnvelope`). A `'relation'` envelope needs a source item to link from,
- * which only a `kind = 'transcript'` card has. A transcript card can:
- * create a new Event (`'database'` targeting Events), link its transcript to an existing Event
- * (`'relation'` through the Transcripts `event` property), or map one of its speaker keys to a
- * person (`'relation'` through `speakers`, issue #185), or create a person for a speaker card —
- * and never switches between an Event shape
- * and a speaker mapping (`transcriptCardRole`). A link is checked against the relation's
- * integrity, ownership and edge-metadata rules now, with the same canonical errors the write
- * itself would raise. A create-Event envelope also has to pass the Events create rules on its times
- * (`assertEventCreateRules`, issue #1818). Returns the edge confirm must write for a transcript card (`null` for any
- * other card) alongside the envelope's target database row (`null` for a non-`'database'`
- * envelope). A `journalEntry` envelope (issue gh-1975) is valid on an inbox card; a transcript card and a `mailThread` card
- * refuse it, each with a `ValidationError` on `entityKind`. A `kind = 'mailThread'` card (issue gh-2034) must carry a Tasks `database`
- * envelope with only a `name` and an optional `date` (`assertValidMailThreadCard`, whose own rules are checked before the generic validation) and a `sourceThread` edge;
- * it returns that edge's Threads item as `mailThreadItemId`.
+ * Validates an envelope against its card, on top of `assertValidProposalEnvelope`. A `'relation'` envelope needs a
+ * source item, which only transcript cards have. A transcript card may create or link an Event, map a speaker to a
+ * person or create a person, but never switch role (`transcriptCardRole`). Links are checked against relation
+ * integrity, ownership and metadata rules with the write's own errors; a create-Event envelope must pass
+ * `assertEventCreateRules`. `journalEntry` is valid only on inbox cards. A `mailThread` card must carry a Tasks
+ * `database` envelope (`assertValidMailThreadCard`, checked first) and a `sourceThread` edge.
  */
 export async function assertValidEnvelopeForCard(
   client: PoolClient,
@@ -303,11 +278,10 @@ export async function assertValidEnvelopeForCard(
       if (envelope.target !== expectedDatabaseId) {
         throw new ValidationError("Invalid transcript proposal target", { field: "target" });
       }
-      // The Event the confirm creates must pass the Events rules, so a revised start and end that confirm would
-      // refuse are refused now (issue #1818). The Events time transform runs first, as it does on the write.
+      // The Event the confirm creates must pass the Events rules, so a start and end confirm would refuse are refused
+      // now. The Events time transform runs first, as on the write.
       if (role === "event") {
-        // The zone is read as every Inbox proposal preparation reads it: an invalid stored zone is a settings failure
-        // and propagates, it is not a 400 on the date the user entered (docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md).
+        // An invalid stored zone is a settings failure and propagates, not a 400 on the user's date.
         const zone = eventDateIsInstant(envelope.properties.date) ? await readProposalTimezone(client) : undefined;
         assertEventCreateRules(deriveEventTimeProperties(null, envelope.properties, zone));
       }
@@ -320,9 +294,8 @@ export async function assertValidEnvelopeForCard(
           { field: "properties" },
         );
       }
-      // An occurrence that has no item yet cannot be checked as a target. `assertValidProposalEnvelope` has checked
-      // that its series exists, and the item the confirm creates is a copy of the series Event with its edges, so the
-      // series Event stands in for the relation's checks (issue gh-1850).
+      // An occurrence with no item yet cannot be checked as a target; its series Event stands in, since the created
+      // item copies it with its edges.
       await assertRelationCreatableWithClient(client, {
         relationPropertyId,
         callerItemId: transcriptId,
@@ -358,114 +331,20 @@ export async function assertValidEnvelopeForCard(
 }
 
 /**
- * `POST /api/proposals/:id/confirm` (issue #105): the sole cross-destination write path —
- * an agent proposes via `processingProposals`, only a user-context confirm may ever create
- * or amend a target database item or page block. Idempotent under retry: an
- * already-`confirmed` proposal is returned as-is rather than re-executing the destination
- * write (which would otherwise double-create a `database` item, or duplicate wall-clock
- * history entries on a `pageContent` block).
+ * `POST /api/proposals/:id/confirm`: the only path by which an agent's proposal becomes a destination write, always
+ * in user context. An already `confirmed` card is returned as is (whatever `ifVersion` says), so retries never write
+ * twice. The envelope is re-validated against current destination state. Everything runs in the caller's
+ * transaction, so any failure leaves nothing written and the card `proposed`.
  *
- * `envelope.target` is re-validated against current destination state (issue #104's
- * `assertValidProposalEnvelope`) rather than trusting whatever passed validation when the
- * proposal was computed — the target database/page could have been deleted or had its
- * schema changed since.
+ * - Old-shape `pageContent` uses the proposal id as block id, so a retried confirm overwrites instead of duplicating.
+ * - `credential` is accepted only for `mcpServers` and stored with the item, so both persist or neither; with an
+ *   acting user the confirm also enqueues `mcpServerSync`.
+ * - A transcript card's Event edge first deletes the transcript's edge to a trashed Event (one Event allowed); a
+ *   created Event first gets its relations and `people` edges for mapped speakers except the tenant's own person.
+ * - `newOptions` are created before the item, so options, item and card commit together.
+ * - Edges written or deleted on existing items are recorded in the confirmation entry, so undo reverses only those.
  *
- * A v2 `pageContent` envelope (a Markdown `{ markdown, placement, heading? }`, issue #1681) is written by
- * `insertProposalPageContent` in this same transaction, before the card is locked `confirmed`: the page document is
- * created when the target has none, the placement is resolved on the page as it stands, and the blocks (the optional
- * heading first) get ids derived from the proposal id. A chosen heading that is gone is a `ConflictError` (409) and the
- * card stays `proposed`. Its blocks are authored `user`, like the old shape's.
- *
- * For an old-shape `pageContent`, the appended block's `id` is the proposal's own id, not a freshly
- * generated one: `putBlockWithClient`'s block upsert is itself idempotent on a given id, so
- * a confirm retried after a crash between the block write and the `confirmed` lock below
- * (both in the same transaction here, but a caller retrying after an earlier failed attempt
- * could still see this ordering) overwrites the same block rather than leaving an orphaned
- * duplicate.
- *
- * `credential` (issue #123) is the confirming human's separately-supplied secret for an MCP
- * server proposal — accepted only when `envelope.target` is the `mcpServers` database (a
- * `ValidationError` otherwise, so a credential can never land against an unrelated target by
- * mistake), and stored via `storeCredential` in the same transaction as the item create,
- * immediately before the row is locked `confirmed` below: since `createItemWithClient` and
- * `storeCredential` both run inside this function's caller-supplied transaction, either both
- * persist or neither does — a `storeCredential` failure rolls back the item create too,
- * satisfying "stores server and encrypted credential or neither." Not every server needs one
- * (e.g. a local `stdio` command with no auth), so a proposal with no `credential` argument at
- * all is confirmed normally, item-only.
- *
- * An MCP server confirm also enqueues the `mcpServerSync` job of the new item (issue gh-1976,
- * `enqueueMcpServerSync`), with or without a credential, right after the credential is stored and in this same
- * transaction: the job exists once the transaction commits and a rollback leaves none. The result of the step that
- * created the server then reports `followUp: "mcpSyncQueued"`; a replay of a card that is already `confirmed` returns
- * its stored results and enqueues nothing. A confirm without `actingUserId` enqueues no job, and its results report
- * `followUp: null`.
- *
- * For `'relation'` (issue #184) the write is the generic relation write behind
- * `PUT /api/items/:id/relations/:propertyKey/:targetItemId`, from the card's source item to
- * `envelope.target`, and the result is that existing item. When `envelope.target` is a synthetic occurrence id
- * (`<seriesId>@<date>`, issue gh-1850), the confirm first materializes it (`materializeEventOccurrence`) in the same
- * transaction, and the edge and the result are the occurrence's item, the new one or the one that already existed,
- * not `envelope.target`. A `kind = 'transcript'` card also
- * gets its Transcription<->Event edge: for `'relation'` that edge is the relation write itself;
- * for `'database'` it is written last, after the Event's envelope relations and its participants. Both run in the caller's one
- * transaction, so a failed edge write (e.g. `cardinality_violation` when the transcript is already
- * linked to another Event that is not in the Trash; an Event may hold many transcripts) leaves no Event, no
- * edge and the card still `proposed`. An edge from the transcript to an Event in the Trash is deleted in this
- * transaction right before the pairing edge is written (issue #1743, `releaseTrashedEventOfPairingCard`), so
- * it does not fail that write and comes back when the confirm rolls back.
- * A `'database'` envelope's `relations` (issue #1476) are written the same way, right after
- * the item, one edge per target id with the new item as caller; any failing edge aborts the item
- * and the earlier edges, and its error carries `details.field` = the relation key. An Event created
- * by a transcript card also gets, before the transcript edge, an Events `people` edge for every person
- * the transcript's `speakers` edges map at that moment except the tenant's own person
- * (`addSpeakersAsEventParticipants`, issue #1818); a failing write there rolls everything back too. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
- * envelope's `{ speaker }` metadata as the relation write itself — the user-owned mapping only
- * ever exists once a human confirmed it. A `fileFromAttachment` step (issue #1703) moves an attachment
- * of the card's source Inbox item into Files inside the same transaction; `executeProposalSteps` does it.
- *
- * A visible required field of the card's editor schema that has no value (issue #1928, `assertRequiredFieldsHaveValues`)
- * is a `ValidationError` naming it, raised after the envelope validation and before any write; a card whose base
- * kind has no schema is not checked.
- *
- * What is written is what the card's editor shows (issue #1934, `normalizeEnvelopeForWrite`): the properties of the
- * fields the schema hides are left out of the created item (the time part of an all-day card as `timeFrom` and
- * `timeTo`, which an Event stores as null, and the time of day inside its `date`), and an MCP server card is written as `{ transport, url }`. A card whose
- * MCP server connection is `stdio` is a `ValidationError` on `transport`, raised before the envelope validation.
- *
- * A `kind = 'mailThread'` card (issue gh-2034) does not create its task with `createItemWithClient`: it calls
- * `confirmMailThreadCard`, which writes the task, its `Threads.tasks` edge and the thread's project and people through
- * `createThreadTask` in this same transaction. It writes no item origin and no origin note, because the card has no
- * Inbox item or transcript to take them from. A source Threads item that is in the Trash is a 409 `conflict` with
- * nothing written, and the card stays `proposed`.
- *
- * A `journalEntry` envelope (issue gh-1981) is written by `confirmJournalEntry` in this same transaction: the day and
- * its page are created when missing, the entry is inserted at the end of the page authored `user` with block ids derived
- * from the proposal id, and the day gets the `project` edge, or only the `area` edge when no project is named; that
- * edge is recorded like any other (`writtenRelations`), so reopening the card reverses it. The result
- * is the day (`resultItemId`) labelled with its key (`resultLabel`), and the primary result lists the inserted block ids.
- * A Journal database, area or project that no longer resolves (a trashed one, or an archived project) is a 409 `conflict` (`assertJournalEntryReferencesLive`),
- * raised before any write; the card stays `proposed`.
- *
- * The reference hooks leave this card alone while its steps run (`runWhileConfirmingCard`, issue #1916).
- *
- * The edges the confirm writes between items that already existed (a link step, the edges an update step adds, the
- * edge of a transcript card, the edge of a journal day) and the edges an update step deletes are recorded in the history entry of the confirmation
- * (`writtenRelations`, `removedRelations`; `proposalEdgeRecording.ts`), so the undo reverses only those
- * (`docs/adr/2026-11-14-the-undo-of-a-confirmation-reverses-only-the-edges-it-recorded.md`).
- *
- * A single-step `database` envelope's `newOptions` (issue gh-1994) are created before its item: each option that a
- * `{ newOption }` value names is added to its property in this transaction (`createEnvelopeNewOptions`, the option-add
- * of issue #1699) and the key it gets replaces the value, so an option, the item and the confirmed card commit together
- * and any failure after the option is added, the item write's included, rolls the option back. A card that is rejected,
- * or confirmed a second time (answered from the card as it is), creates none.
- * A card that is reopened after its confirmation uses the option it created by key (`adoptCreatedNewOptions`), so
- * confirming it again creates none either.
- *
- * `ifVersion` (issue #1852) is the `updatedAt` the caller last saw. It is checked after the card is locked, after
- * the answer for a card that is already `confirmed` (returned unchanged, whatever `ifVersion` says, so a replayed
- * decision succeeds) and after the refusal of any status other than `proposed`: an `ifVersion` that is not the
- * locked card's `updatedAt` throws the 409 `version_conflict` and nothing is written. Without it nothing is checked.
+ * `ifVersion` is checked after the lock, the `confirmed` answer and the refusal of other statuses (409).
  */
 export async function confirmProposalWithClient(
   client: PoolClient,
@@ -497,8 +376,7 @@ export async function confirmProposalWithClient(
     try {
       validated = await assertValidEnvelopeForCard(client, config, proposal, envelope);
     } catch (error) {
-      // A heading removed since the card was computed is a conflict the client can answer with a new choice, not a
-      // malformed proposal: 409, the card stays `proposed` and nothing is written.
+      // A heading removed since computation is a 409 the client can answer with a new choice; nothing is written.
       if (markdownPageContent && error instanceof ValidationError && isHeadingUnavailable(error)) {
         throw new ConflictError("The chosen heading no longer exists on the page", { field: "placement" });
       }
@@ -510,7 +388,7 @@ export async function confirmProposalWithClient(
 
     let resultItemId: string;
     let resultLabel: string;
-    /** The `ref` of the result whose `followUp` is `transcriptionQueued`: set only by a confirm whose enqueue the intake made. */
+    /** The `ref` of the result whose `followUp` is `transcriptionQueued`, set only when the intake enqueued it. */
     let transcriptionQueuedRef: string | null = null;
     let stepResults: Array<{ ref: string; itemId: string; databaseId: string }> = [];
     let blockIds: string[] = [];
@@ -520,12 +398,12 @@ export async function confirmProposalWithClient(
       callerItemId: string;
       targetItemId: string;
     }> = [];
-    /** The edges between existing items this confirm writes or deletes, stored in its history entry for the undo. */
+    /** Edges between existing items this confirm writes or deletes, stored in its history entry for the undo. */
     const recorder = createEdgeRecorder();
     const reusedFileRefs = new Set<string>();
     /** The item a `'relation'` envelope linked: its `target`, or the item its synthetic occurrence id became. */
     let linkedTargetId: string | null = null;
-    /** The MCP server item whose `mcpServerSync` job this confirm enqueued; its result reports `mcpSyncQueued`. */
+    /** The MCP server item whose `mcpServerSync` job this confirm enqueued. */
     let queuedMcpSyncItemId: string | null = null;
     if (mailThreadItemId !== undefined) {
       if (credential) {
@@ -590,7 +468,7 @@ export async function confirmProposalWithClient(
         recorder.written.push(...executed.recordedEdges.written);
         recorder.removed.push(...executed.recordedEdges.removed);
       } else {
-        // Issue gh-1994: the options the card proposes are created first, in this transaction, and their keys replace the labels.
+        // The proposed options are created first, in this transaction, and their keys replace the labels.
         const properties = await createEnvelopeNewOptions(client, envelope, written.properties, actingUserId);
         created = await createItemWithClient(
           client,
@@ -601,7 +479,7 @@ export async function confirmProposalWithClient(
       }
       await insertItemOrigins(client, createdItemIds, origin);
       await insertInboxOriginNotes(client, createdItemIds, origin.inboxItemId, actingUserId);
-      // Issue gh-1974: the sections of the created item's page, in this transaction like the item.
+      // The created item's page sections, in this transaction like the item.
       if (envelope.pageSections) {
         blockIds = await insertProposalPageSections(client, proposal.id, created.id, envelope.pageSections);
       }
@@ -615,13 +493,11 @@ export async function confirmProposalWithClient(
           plaintext: credential.plaintext,
         });
       }
-      // The server item and its credential are written: queue the load of its tools, which runs once this transaction
-      // has committed. With or without a credential (a server that authorizes in the browser has none). Without an
-      // acting user the sync has nobody to attribute its connection to, so nothing is queued.
+      // Queue the tool load, which runs after commit, with or without a credential. Without an acting user nothing is
+      // queued: the sync would have nobody to attribute its connection to.
       queuedMcpSyncItemId = await enqueueMcpServerSyncForConfirm(client, targetDatabase, created.id, actingUserId);
-      // A 'database' envelope on a transcript card is its create-Event shape, or a new person for a speaker card.
-      // The Event gets its envelope relations and its participants before the transcript's own edge (issue #1818).
-      // A multi-step envelope's relations live on its steps and were written by them.
+      // A 'database' envelope on a transcript card creates an Event (or a person for a speaker card). The Event gets
+      // its envelope relations and participants before the transcript's own edge. Multi-step relations live on steps.
       if (!envelope.operations) {
         await writeEnvelopeRelations(
           client,
@@ -658,12 +534,10 @@ export async function confirmProposalWithClient(
         );
       }
     } else if (envelope.entityKind === "relation") {
-      // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
-      // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`
-      // names this write.
+      // `assertValidEnvelopeForCard` accepts a 'relation' envelope only on a transcript card, so this edge names it.
       if (!transcriptCardEdge) throw new Error(`Relation proposal ${proposal.id} has no source item to link from`);
-      // A synthetic occurrence id becomes its Events item here, in the confirm's own transaction (issue gh-1850); a
-      // repeat finds the item the first call created, and a cancelled occurrence's item refuses the link below.
+      // A synthetic occurrence id becomes its Events item here, in this transaction; a repeat finds the item the first
+      // call created, and a cancelled occurrence's item refuses the link below.
       const occurrence = parseOccurrenceId(envelope.target);
       linkedTargetId = occurrence
         ? (
@@ -698,10 +572,7 @@ export async function confirmProposalWithClient(
         const content = pageContentV2Schema.parse(envelope.properties);
         blockIds = await insertProposalPageContent(client, proposal.id, envelope.target, content);
       } else {
-        // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
-        // above already rejects a 'pageContent' envelope whose `flavour` isn't a non-empty
-        // string, or whose `fields`/`children` (if present) aren't a plain object / string
-        // array respectively.
+        // `assertValidProposalEnvelope` already checked `flavour`, `fields` and `children`, so the cast is safe.
         const { flavour, fields, children } = envelope.properties as {
           flavour: string;
           fields?: Record<string, unknown>;
@@ -870,21 +741,17 @@ export async function confirmProposalWithClient(
       },
     );
     publishInboxCardChange(client, proposal.id, "closed");
-    // Issue #106's "proposal transition" invalidation trigger: confirm/reject/revise change
-    // the source Inbox item's displayed status but never touch the Inbox item itself, so
-    // nothing else would invalidate its Journal day's cached list.
+    // Confirm/reject/revise change the source Inbox item's displayed status without touching the item, so nothing
+    // else would invalidate its Journal day's cached list.
     await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
     return updated;
   });
 }
 
 /**
- * `POST /api/proposals/:id/reject` (issue #105): locks the proposal as `rejected` without
- * ever writing a destination. Idempotent under retry (an already-`rejected` proposal is
- * returned as-is); rejecting a `confirmed` proposal is refused, since its destination write
- * already happened and rejecting now could not undo it. `ifVersion` (issue #1852) is checked as in
- * `confirmProposalWithClient`: after the lock, the `rejected` answer and the `confirmed` refusal, and
- * before anything is written.
+ * `POST /api/proposals/:id/reject`: marks the card `rejected` without writing a destination. An already `rejected`
+ * card is returned as is; a `confirmed` one is refused, since its write cannot be undone by rejecting. `ifVersion` is
+ * checked as in `confirmProposalWithClient`.
  */
 export async function rejectProposalWithClient(
   client: PoolClient,
@@ -920,13 +787,11 @@ export async function rejectProposalWithClient(
   return updated;
 }
 
-/** The start of the history message of a card that `settleSpeakerCardWithClient` closed. Only the text of the entry: nothing reads it back. */
+/** Only the text of the entry: nothing reads it back. */
 const MANUAL_SETTLEMENT_MESSAGE_PREFIX = "Settled by a manual assignment";
 
-/** What `settleSpeakerCardWithClient` did with the card: closed it as `confirmed` or `rejected`, or left it `untouched`. */
 export type SpeakerCardSettlement = "confirmed" | "rejected" | "untouched";
 
-/** A manual speaker assignment: `speaker` of `transcriptId` was assigned to `personId` by the user. */
 export interface SpeakerAssignment {
   transcriptId: string;
   speaker: string;
@@ -934,18 +799,8 @@ export interface SpeakerAssignment {
 }
 
 /**
- * Settles the card that asks who a transcript's speaker is after the user assigned that speaker to a
- * person by hand (issue #1770). Runs in the caller's transaction. It row-locks the card, which
- * serializes it with a concurrent confirm, reject or revise of the same card, and settles it only while its status is
- * `proposed` or `needsClarification`. A card that is `confirmed`, `rejected` or `invalid`, one in the
- * Trash and one that no longer exists are left untouched and answered `untouched`.
- *
- * A card whose stored proposal is exactly this person for this speaker key becomes `confirmed`, with
- * the person as its result in the shape `confirmProposalWithClient` stores for a speaker card; any other
- * open card becomes `rejected`. Either way the card's history gains an entry saying that a manual
- * assignment settled it. No edge is written here: the caller has written the `speakers` edge, and
- * the Event participant edge a confirm adds is the caller's as well. Throws when the stored
- * proposal is malformed, as `confirmProposalWithClient` does.
+ * Settles a speaker card after a manual speaker assignment, under its row lock. Only `proposed`/`needsClarification`
+ * cards change: an exact match becomes `confirmed`, anything else `rejected`. The caller writes the edges.
  */
 export async function settleSpeakerCardWithClient(
   client: PoolClient,
@@ -1037,20 +892,12 @@ export async function settleSpeakerCardWithClient(
   return "confirmed";
 }
 
-/** The history entry text of a revise that carries no `message`, by who revised. */
 const DEFAULT_REVISE_MESSAGES = { user: "Revised by user.", ai: "Revised by assistant." } as const;
 
-/**
- * Who a revise is recorded as in the card's history. A `user` revise is the route's. An `ai` revise is a revision by
- * the assistant in an Inbox item thread (issue #1906): its entry has kind `threadRevision` and names the thread and
- * the assistant message whose turn made the revision.
- */
+/** A `user` revise is the route's; an `ai` revise comes from an Inbox item thread and names its thread and message. */
 export type ProposalRevisionAuthor = { author: "user" } | { author: "ai"; threadId: string; messageId: string };
 
-/**
- * `history` followed by the entry of a revise by `revisedBy`; `message` is its text, the default of that author when
- * absent. `reviseProposalFromThreadWithClient` (issue #1938) writes its entry the same way.
- */
+/** `history` plus a revise entry by `revisedBy`; `message` defaults per author. */
 export function appendRevisionEntry(history: unknown, message: string | undefined, revisedBy: ProposalRevisionAuthor) {
   return appendHistoryEntry(
     history,
@@ -1063,9 +910,8 @@ export function appendRevisionEntry(history: unknown, message: string | undefine
 }
 
 /**
- * What `reviseProposalWithClient` takes: either a complete replacement envelope (all of `entityKind`, `target` and
- * `properties`, with an optional `message` for the history), or a `message` alone, which only a transcript card
- * accepts. A partial envelope does not type-check. `ifVersion` is the card's `updatedAt` as the caller read it.
+ * A complete replacement envelope (with an optional history `message`), or a `message` alone, which only a transcript
+ * card accepts. A partial envelope does not type-check.
  */
 export type ReviseProposalInput = { ifVersion?: string } & (
   | {
@@ -1085,49 +931,12 @@ export type ReviseProposalInput = { ifVersion?: string } & (
 );
 
 /**
- * `POST /api/proposals/:id/revise` (issue #105): a chat-driven correction. With an envelope it always replaces
- * the complete envelope — including `entityKind`, so a revise can switch a proposal from
- * `database` to `pageContent` or vice versa atomically, or a transcript card from creating a
- * new Event to linking an existing one and back (issue #184) — never a partial patch onto the
- * existing one, since a partial merge of `target`/`properties` across different
- * `entityKind`s would produce a nonsensical envelope. The new envelope is checked against the
- * card as confirm would check it (`assertValidEnvelopeForCard`), so an invalid link target is
- * refused here with its canonical error rather than only at confirm. Refused on a locked (`confirmed`/
- * `rejected`) proposal, per the epic's "a locked card is never recomputed again"; allowed
- * from `needsClarification`/`invalid` as well as `proposed`, since a user resolving one of
- * those into a valid envelope is exactly how a proposal is meant to leave that state. An `invalid`
- * card whose `invalidReason` is `sourceDeleted` is refused (issue #1482): it can only be discarded,
- * or reopened by the tick once its source is restored (issue #1604). A fixable `invalid` card is
- * revised like any other, and its `invalidReason` is cleared in the same write.
- *
- * Without an envelope (issue #1870) only a `kind = 'transcript'` card accepts the call: the `message` is appended
- * to its history as an entry of the revising author (`revisedBy`: the user, or the assistant of an item thread) and
- * nothing else on the card changes (`recordTranscriptCardInstruction`); acting on the instruction is not done here,
- * but in `semprec-transcribe`, to which the same transaction enqueues the `transcriptCardRecompute` job (issue
- * gh-1940). A card that is locked, whose source Inbox item was deleted or whose stored `entityKind` this release
- * does not support is refused as above and enqueues nothing. Any other card is refused with `validation_failed` on `message`.
- *
- * `input.ifVersion` is handed to the card's update, so a card whose `updatedAt` differs is answered
- * `version_conflict` and nothing is written. The envelope is validated before that update, so an invalid
- * envelope on a stale card is refused as invalid. `actingUserId` addresses the realtime invalidation of the write.
- * `revisedBy` says who the history entry of the revise names (`ProposalRevisionAuthor`): the user by default, as for
- * the route, or the assistant of an item thread (issue #1906), whose entry has author `ai`, kind `threadRevision`
- * and the ids of its thread and message. The `reset` entry that lists dropped manual values keeps the author `user`
- * in both cases, and nothing else about the revise differs.
- *
- * The user's manual values (`userOverrides`, `userEditedKeys`, issue #1892) only fit the destination they were
- * typed for (issue #1924, `retainOverridesForEnvelope`): when the new envelope's `entityKind` or `target` differs
- * from the assistant's previous one they are all cleared. Otherwise only the values of the envelope's own
- * destination stay (`primary`, or the primary step of a multi-step envelope) whose key is a property of the target;
- * the values of any other step are dropped, and a value equal to the new assistant value leaves the overrides
- * without an entry. When a value was dropped, a history entry of kind `reset` listing the dropped `ref.key`s follows
- * the revise entry. The new envelope is stored as the assistant's output (`aiProposal`), and `proposal` holds the
- * effective envelope: the new envelope with the values that stay laid over it, validated as confirm validates it,
- * so a kept value is what confirm writes. The envelope's `pageSections` and `newOptions` are not inputs: those of the
- * card's previous assistant envelope are carried over when the revision keeps its destination (`carryPageSections`,
- * issue gh-1974; `carryNewOptions`, issue gh-1994, only the options a value of the revision still names).
- * A revision made in an Inbox item thread has rules of its own
- * (`reviseProposalFromThreadWithClient`, issue #1938).
+ * `POST /api/proposals/:id/revise`: replaces the complete envelope (including `entityKind`), never a partial patch,
+ * since merging across kinds would be nonsensical; checked as confirm checks it. Refused on locked cards and on
+ * `sourceDeleted` cards; a fixable `invalid` card's reason is cleared in the same write. Without an envelope only a
+ * transcript card accepts the call (`recordTranscriptCardInstruction`). A stale `ifVersion` is `version_conflict`,
+ * checked after validation. Manual values follow `retainOverridesForEnvelope` (dropped ones get a `reset` entry,
+ * always authored `user`); the new envelope becomes `aiProposal` and `proposal` the effective one.
  */
 export async function reviseProposalWithClient(
   client: PoolClient,
@@ -1158,8 +967,7 @@ export async function reviseProposalWithClient(
     return recordTranscriptCardInstruction(client, config, proposal, input, revisedBy, actingUserId);
   }
 
-  // The caller supplies properties and relations only, so the card's page sections (issue gh-1974) and the new
-  // options its values still name (issue gh-1994) are carried over.
+  // The caller supplies properties and relations only, so page sections and still-named new options are carried over.
   const previousEnvelope = proposal.properties.aiProposal ?? proposal.properties.proposal;
   const envelope = carryNewOptions(
     previousEnvelope,
@@ -1172,7 +980,6 @@ export async function reviseProposalWithClient(
   );
   await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
-  // The user's manual values only fit the destination they were typed for (issue #1924).
   const retained = await retainValuesForRevise(client, proposal, envelope);
   const effective = retained.effective;
   if (retained.userEditedKeys.length > 0) await assertValidEnvelopeForCard(client, config, proposal, effective);

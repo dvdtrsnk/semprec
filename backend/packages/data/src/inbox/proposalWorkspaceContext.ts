@@ -22,24 +22,20 @@ export interface ProposalWorkspaceEntry {
 }
 export interface ProposalWorkspaceProject extends ProposalWorkspaceEntry {
   status: string;
-  /** The Areas item the project belongs to; absent when it has none or the Areas database is closed to the project. */
+  /** Absent when none or the Areas database is closed to the project. */
   areaId?: string;
 }
 export interface ProposalWorkspacePerson extends ProposalWorkspaceEntry {
   relationship?: string;
 }
 export interface ProposalWorkspaceCompany extends ProposalWorkspaceEntry {
-  /** The company's `ico` property. */
   registrationNumber?: string;
 }
 export interface ProposalWorkspaceEvent extends ProposalWorkspaceEntry {
   type?: string;
   date: string;
 }
-/**
- * One kind of the context, with the id of its database. A kind whose database the reading project may not read
- * (a sensitive database without a grant) is absent altogether, not present as an empty group.
- */
+/** One kind of the context. A kind whose database the project may not read is absent, not an empty group. */
 export type ProposalWorkspaceGroup =
   | { moduleId: "projects"; databaseId: string; items: ProposalWorkspaceProject[] }
   | { moduleId: "areas"; databaseId: string; items: ProposalWorkspaceEntry[] }
@@ -131,7 +127,7 @@ export async function isWorkspaceUpdateEligible(
   return z.object({ eligible: z.boolean().nullable() }).parse(result.rows[0]).eligible === true;
 }
 
-/** `properties->'key'` when it is a JSON string, cut at `MAX_VALUE_LENGTH` characters; `key` is a constant of this module. */
+/** `properties->'key'` as a JSON string cut at `length`; `key` is a module constant, never input. */
 function textValueSql(key: string, length: number = MAX_VALUE_LENGTH): string {
   return `CASE WHEN jsonb_typeof(properties->'${key}') = 'string' THEN left(properties->>'${key}', ${length}) END`;
 }
@@ -143,7 +139,7 @@ const ITEM_COLUMNS_SQL = `id, left(properties->>'name', ${MAX_VALUE_LENGTH}) AS 
   ${textValueSql("type")} AS type,
   ${textValueSql("date", 10)} AS date`;
 
-/** The area of each of `projectIds`, for the areas that are live and in a database the reader may read. */
+/** The area of each project, for live areas in a database the reader may read. */
 async function readProjectAreaIds(
   client: PoolClient,
   projectsDatabaseId: string,
@@ -175,19 +171,17 @@ async function readProjectAreaIds(
 }
 
 export interface ReadProposalWorkspaceContextInput {
-  /** The Projects item the context is read for; a database it may not read contributes nothing (issue #1810). */
+  /** A database this project may not read contributes nothing. */
   projectItemId: string;
-  /** The capture date of the Inbox item; an invalid one leaves the Events list empty. */
+  /** An invalid date leaves the Events list empty. */
   captureDate: unknown;
-  /** At most this many entries per kind; a positive integer. */
+  /** A positive integer. */
   limitPerKind: number;
 }
 
 /**
- * Reads only the fixed, bounded built-in workspace context under the active tenant transaction, as the project
- * `projectItemId` (issue gh-1987): a database that project may not read (`listUnreadableDatabaseIds`, the decision of
- * the per-database agent grants, issue #1810) contributes no group, so a sensitive database without a grant leaves
- * nothing behind, not even an empty list. The read writes nothing.
+ * Reads the bounded built-in workspace context in the active tenant transaction, as project `projectItemId`: a
+ * database it may not read (`listUnreadableDatabaseIds`) contributes no group at all, not even an empty one.
  */
 export async function readProposalWorkspaceContext(
   client: PoolClient,

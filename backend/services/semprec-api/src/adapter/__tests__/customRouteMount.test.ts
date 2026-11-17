@@ -40,7 +40,7 @@ async function tokenFor(email: string): Promise<string> {
   return result.token;
 }
 
-/** Mounts `definitions` with `dependencies` on a real in-memory server; a path matching none of them answers 404. */
+/** A path matching none of them answers 404. */
 async function listen(
   definitions: ModuleCustomRouteDefinition[],
   dependencies: CustomRouteDependencies,
@@ -60,7 +60,6 @@ function baseUrlOf(server: Server): string {
   return `http://127.0.0.1:${address.port}`;
 }
 
-/** A fixture handler factory echoing the extracted `:id` path parameter back as the response body. */
 const echoIdHandlerFactory: CustomRouteHandlerFactory = () => async (ctx) => ({
   status: 200,
   body: { id: ctx.params.id },
@@ -303,7 +302,7 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(seen.dependencies).not.toBe(container);
     expect(seen.dependencies?.oauth).toBe(container.oauth);
     expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
-    // The container carried no limiter, so the dispatcher added its own to the copy (issue gh-1750).
+    // The container carried no limiter, so the dispatcher added its own to the copy.
     expect(seen.dependencies?.throttle?.tryAcquire("mailboxCredentialVerification", "user-fixture").granted).toBe(true);
     expect(container.oauth).toEqual({ redirectBaseUrl: "https://app.example.test" });
     expect(Object.keys(container).sort()).toEqual(["heartbeatRuleKinds", "oauth"]);
@@ -349,7 +348,6 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     await inTenantZero(() => seedSystem(pool));
     const token = await tokenFor("password-connect@example.com");
     const moduleRegistry = await loadFullModuleRegistry();
-    /** Serves the real custom routes of every module with `customRouteDependencies`, or with no container. */
     const serve = async (customRouteDependencies?: CustomRouteDependencies): Promise<string> => {
       const dispatcher = await createDispatcher(pool, {
         passwordResetMailer: noopPasswordResetMailer,
@@ -383,7 +381,6 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(unconfigured.status).toBe(500);
     expect(await unconfigured.json()).toEqual({ error: { code: "internal_error" } });
 
-    // The same request creates the mailbox once a root configures the member, so nothing else refused it above.
     const configured = await connect(
       await serve({
         mailServerClients: {
@@ -412,7 +409,7 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
         };
       },
     };
-    /** Mounts the real custom routes of every module with `dependencies` and nothing else, as no dispatcher does. */
+    /** As no dispatcher does. */
     const connect = async (dependencies: CustomRouteDependencies): Promise<Response> => {
       const server = await listen(definitions, dependencies);
       openServers.push(server);
@@ -435,7 +432,6 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(await unconfigured.json()).toEqual({ error: { code: "internal_error" } });
     expect(verifications).toBe(0);
 
-    // The same request creates the mailbox once the mount has a limiter, so nothing else refused it above.
     const configured = await connect({ mailServerClients, throttle: createClientIpThrottle() });
 
     expect(configured.status).toBe(201);
@@ -523,14 +519,14 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
       "maxFileSizeBytes",
       "throttle",
     ]);
-    // The send route's transports and attachment storage (issue gh-1896); no verification client, which only the root has.
+    // No verification client, which only the root has.
     expect(Object.keys(seen.dependencies?.mailServerClients ?? {})).toEqual(["send"]);
     expect(Object.keys(seen.dependencies?.mailServerClients?.send ?? {}).sort()).toEqual([
       "attachmentStorage",
       "transports",
     ]);
     expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
-    // The upload cap of the dispatcher (issue gh-1895): the draft attachment limit of a mailbox without a provider limit.
+    // The draft attachment limit of a mailbox without a provider limit.
     expect(seen.dependencies?.maxFileSizeBytes).toBe(1024);
     expect(seen.dependencies?.throttle?.tryAcquire("mailboxCredentialVerification", "user-fixture").granted).toBe(true);
     expect(registryRules).not.toHaveBeenCalled();

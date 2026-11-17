@@ -103,7 +103,7 @@ async function failedAttempts(email: string): Promise<{ ip: string }[]> {
   return rows;
 }
 
-/** Writes a `tenant` credential the way #1032's tests do: tenant key, sealSecret, raw insert (the API cannot yet seal under a tenant key). */
+/** Writes a `tenant` credential directly: the API cannot yet seal under a tenant key. */
 async function seedTenantCredential(tenantId: string): Promise<string> {
   const itemId = randomUUID();
   await runInTenant(tenantId, () =>
@@ -142,7 +142,6 @@ function deleteAsAdmin(actor: Account, target: Account) {
   );
 }
 
-/** The tenant ids of the deactivation notifications received so far. */
 function notifiedTenants(): string[] {
   return notified.map((payload) => {
     const parsed: unknown = JSON.parse(payload);

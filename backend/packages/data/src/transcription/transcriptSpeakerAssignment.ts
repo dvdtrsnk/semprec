@@ -1,8 +1,6 @@
-// Issue #1770: a user assigns, replaces or clears the person of one speaker key of a transcript in one
-// transaction, which also settles the Inbox card that asks who the speaker is, and the people a client
-// can offer for a speaker.
-// Constrained by: docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md,
-// docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+// A user assigns, replaces or clears the person of one speaker key of a transcript in one
+// transaction, settling the Inbox card that asks who the speaker is; and the people a client can
+// offer for a speaker.
 import { DatabaseError, type PoolClient } from "pg";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -30,15 +28,13 @@ import {
   type TranscriptSpeaker,
 } from "./transcriptionSpeakerEdges.js";
 
-/** Every write of the assignment is the signed-in user's. */
 const USER_WRITER: WriterIdentity = { writerKind: "user" };
 
-/** The same error for an unknown transcript, another tenant's, one in the Trash and an unknown or foreign person. */
+/** One error for unknown, other-tenant and trashed transcripts and unknown or foreign people, so none is distinguishable. */
 function speakerNotFound(): NotFoundError {
   return new NotFoundError("Transcript or person not found", { resource: "transcriptSpeaker" });
 }
 
-/** The Transcripts database, the Transcripts `speakers` property and its relation definition. */
 async function requireSpeakersRelation(
   client: PoolClient,
 ): Promise<{ transcriptsDatabaseId: string; property: PropertyRow; definition: RelationDefinitionRow }> {
@@ -52,12 +48,12 @@ async function requireSpeakersRelation(
   return { transcriptsDatabaseId: transcripts.id, property, definition };
 }
 
-/** The speaker key a `speakers` edge maps, or `null` for an edge whose metadata names none. */
+/** `null` for an edge whose metadata names none. */
 function edgeSpeaker(metadata: Record<string, unknown>): string | null {
   return typeof metadata.speaker === "string" ? metadata.speaker : null;
 }
 
-/** The input of {@link assignTranscriptSpeaker}: the signed-in user assigns `speaker` of the transcript to a person, or clears it with `personId: null`. */
+/** `personId: null` clears the key. */
 export interface AssignTranscriptSpeakerInput {
   transcriptId: string;
   speaker: string;
@@ -66,39 +62,18 @@ export interface AssignTranscriptSpeakerInput {
 }
 
 /**
- * Assigns, replaces or clears the person of one speaker key of a transcript (issue #1770) and returns
- * the transcript's speakers as they read afterwards. Runs in the caller's transaction.
+ * Runs in the caller's transaction; returns the transcript's speakers afterwards.
  *
- * Lock order is the one the confirm of a speaker card uses: the open card of the key (found by its
- * idempotency key `transcript-speaker-suggestion:<transcriptId>:<speaker>`), then the transcript's item
- * row. The Event participant write takes no Event lock: it is insert-only and carries no invitation, so
- * the participant hook locks nothing (see `assertParticipantEdgeWritable`), and no lock order with the
- * Event exists to follow. A card that a concurrent `proposeSpeakerMappings` created while this call
- * waited for the transcript lock is looked up again once the transcript is locked, and is locked
- * without waiting, because the card comes after the transcript there and waiting could deadlock with a
- * confirm of that card (a busy card answers `409 version_conflict`, retryable). See
- * [[2026-11-12-a-manual-speaker-assignment-settles-the-key-card-in-the-confirm-lock-order]]. With the transcript locked it
+ * Lock order is the speaker-card confirm's: the key's open card, then the transcript row. The Event
+ * participant write is insert-only with no invitation, so it takes no Event lock. A card that
+ * `proposeSpeakerMappings` created while this call waited for the transcript lock is found again
+ * afterwards and locked without waiting (there the card follows the transcript, so waiting could
+ * deadlock with its confirm; a busy card answers a retryable `409 version_conflict`).
  *
- * 1. refuses a key that no segment of the transcript carries (`validation_failed`, reason
- *    `unknownSpeaker`, field `speaker`) and a person who is not a live People item (the not-found error
- *    that an unknown transcript gets);
- * 2. refuses a person who another key of this transcript already maps (`validation_failed`, field
- *    `personId`, reason `personAlreadyMapped`, `speaker` naming the key they hold) and changes nothing;
- * 3. deletes the key's `speakers` edge when it points to another person, or when `personId` is `null`,
- *    and writes the edge to `personId` with the metadata `{ speaker }` through the choke point, so the
- *    edge validation of `transcriptionSpeakerEdges.ts` runs. An edge that already maps the key to
- *    this person is not written again;
- * 4. for a person, adds them to the `people` of the transcript's live linked Event unless they are
- *    on it, whatever the edge stores (`createRelationIfAbsentWithClient`, as the confirm of a speaker card
- *    does). No path of this function removes an Event participant;
- * 5. for a person, settles the open card of the key with `settleSpeakerCardWithClient`. Clearing a key
- *    leaves its card as it is.
- *
- * The person is read without a lock. A person moved to the Trash between that read and the edge write
- * fails the write with `validation_failed`, and nothing of the assignment is kept; an assignment that
- * writes no edge (the key already maps this person) does not check again. Every write is the user's and
- * carries their id, so the edge writes publish their relation invalidations to that user's sockets
- * after the commit.
+ * Refuses a key no segment carries (`unknownSpeaker`), a non-live person, and a person another key
+ * already maps (`personAlreadyMapped`). For a person it also adds them to the live linked Event's
+ * `people` if absent and settles the key's open card; clearing leaves the card. The person is read
+ * without a lock: one trashed before the edge write fails it and rolls the assignment back.
  */
 export async function assignTranscriptSpeaker(
   client: PoolClient,
@@ -161,8 +136,8 @@ export async function assignTranscriptSpeaker(
   if (personId !== null) {
     await addToEventParticipants(client, transcript, personId, userId);
     if (proposals && !card) {
-      // `proposeSpeakerMappings` locks the transcript before it creates the cards, so a card it created while
-      // this call waited for the transcript lock was invisible to the first lookup and is visible now.
+      // `proposeSpeakerMappings` locks the transcript before creating cards, so a card it created while
+      // this call waited was invisible to the first lookup.
       card = await findCard();
       if (card) await lockCreatedCard(client, proposals.id, card.id);
     }
@@ -180,9 +155,8 @@ export async function assignTranscriptSpeaker(
 }
 
 /**
- * Locks a card that was found only after the transcript was locked, which is the reverse of the order a
- * confirm of the card takes. Waiting could deadlock with that confirm, so a card that is busy is answered with a
- * retryable conflict and the whole assignment rolls back.
+ * Found only after the transcript lock, the reverse of the confirm's order: waiting could deadlock,
+ * so a busy card is a retryable conflict and the whole assignment rolls back.
  */
 async function lockCreatedCard(client: PoolClient, proposalsDatabaseId: string, cardId: string): Promise<void> {
   try {
@@ -195,14 +169,13 @@ async function lockCreatedCard(client: PoolClient, proposalsDatabaseId: string, 
   }
 }
 
-/** Throws the not-found error of an assignment unless `personId` is a live People item of the tenant in scope. */
 async function requireLivePerson(client: PoolClient, personId: string): Promise<void> {
   const people = await getDatabaseByModuleId(client, PEOPLE_MODULE_ID);
   const person = people && (await itemsStore.getItemById(client, people.id, personId));
   if (!person || person.deletedAt) throw speakerNotFound();
 }
 
-/** Adds the person to the `people` of the transcript's live linked Event as an attendee without an invitation; a person already on it keeps their edge as it is. */
+/** As an attendee without an invitation; an existing edge is kept as it is. */
 async function addToEventParticipants(
   client: PoolClient,
   transcript: ItemRow,
@@ -223,40 +196,34 @@ async function addToEventParticipants(
   );
 }
 
-/** One person a client can offer for a speaker of a transcript. */
 export interface SpeakerCandidateParticipant {
   personId: string;
   name: string | null;
-  /** Always `null`: People has no job title property in v1. */
+  /** People has no job title property yet. */
   title: null;
   relationship: string | null;
-  /** The status of the invitation stored on the participant edge, or `null` for a person linked without an invitation. */
+  /** `null` for a person linked without an invitation. */
   invitationStatus: "pending" | "accepted" | "tentative" | "declined" | null;
-  /** The speaker key of this transcript the person is mapped to, or `null`. */
   mappedSpeaker: string | null;
 }
 
 export interface SpeakerCandidates {
   participants: SpeakerCandidateParticipant[];
-  /** The tenant's own person, or `null` when System settings `selfPerson` names none. */
+  /** `null` when System settings `selfPerson` names none. */
   self: { personId: string; name: string | null; mappedSpeaker: string | null } | null;
 }
 
-/** The text property `key` of a person, or `null` when it is missing or empty. */
+/** `null` when missing or empty. */
 function textProperty(person: ItemRow, key: string): string | null {
   const value = person.properties[key];
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /**
- * The people a client can offer for the speakers of a transcript (issue #1770). `participants` are
- * the live people on the `people` edges of the transcript's live linked Event, in the order
- * `listRelationsForItem` returns the edges (the edges carry no position), without the tenant's own
- * person; a transcript without such an Event has none. Every participant is returned, whether or not they
- * are mapped to a speaker already and whatever their invitation: the server applies no filter, `mappedSpeaker` lets a
- * client hide the mapped ones. `self` is the tenant's own person, mapped or not, or `null`.
- * Throws the not-found error of an assignment for a transcript that is unknown, another tenant's or in the
- * Trash.
+ * `participants`: the live people on the live linked Event's `people` edges, in edge order, without
+ * the tenant's own person. No filter on mapping or invitation: `mappedSpeaker` lets a client hide
+ * mapped ones. Throws the assignment's not-found error for an unknown, other-tenant or trashed
+ * transcript.
  */
 export async function listSpeakerCandidates(client: PoolClient, transcriptId: string): Promise<SpeakerCandidates> {
   const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);

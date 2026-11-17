@@ -71,10 +71,8 @@ const countResult = z.object({ rows: z.tuple([z.object({ n: z.number() })]) });
 const queryText = z.union([z.string(), z.object({ text: z.string() }).transform((query) => query.text)]);
 
 /**
- * A dedicated runtime-role pool for one participant of a concurrency test. Each client it hands out reads its own
- * backend PID once (`pg_backend_pid()`) and runs `before` ahead of every statement; every statement is still sent to
- * the server unchanged and its real result returned. The client's own `query` is restored before the pool takes it
- * back.
+ * A dedicated runtime-role pool per participant. Each client reads its backend PID once and runs `before` ahead
+ * of every statement; the client's own `query` is restored before the pool takes it back.
  */
 async function observedPool(
   before?: (sql: string, values: readonly unknown[]) => Promise<void>,
@@ -110,7 +108,6 @@ async function observedPool(
   return { pool: observed, pids };
 }
 
-/** Rejects when `promise` has not settled within `ms`, naming what the test waited for. */
 async function bounded<T>(promise: Promise<T>, label: string, ms = 10_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -125,10 +122,7 @@ async function bounded<T>(promise: Promise<T>, label: string, ms = 10_000): Prom
   }
 }
 
-/**
- * Polls, at most 200 times 25 ms apart, until every participant has a backend whose blocking PIDs are not empty and
- * all belong to this test (`owned`). Waits are matched by PID, never by a role-wide count.
- */
+/** Polls (200 × 25 ms) until every participant is blocked only by backends this test owns; matched by PID. */
 async function waitUntilBlocked(participants: ReadonlyArray<ReadonlySet<number>>, owned: () => ReadonlySet<number>) {
   for (let attempt = 0; attempt < 200; attempt++) {
     const ours = owned();
@@ -149,7 +143,6 @@ async function waitUntilBlocked(participants: ReadonlyArray<ReadonlySet<number>>
   throw new Error("The test's participants did not all wait on the test's own backends");
 }
 
-/** Waits for every started participant and ends every owned pool; the test's own failure is rethrown first. */
 async function settle(failure: { error: unknown } | undefined, started: Promise<unknown>[], pools: Pool[]) {
   await Promise.allSettled(started);
   const cleanup: unknown[] = [];
@@ -165,7 +158,6 @@ async function settle(failure: { error: unknown } | undefined, started: Promise<
   if (cleanup.length > 0) throw new AggregateError(cleanup, "Owned pool cleanup failed");
 }
 
-/** The count of every core queue task, by identifier: a complete view of the jobs a write may have enqueued. */
 async function jobCounts(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
   for (const identifier of Object.values(CORE_TASK_NAMES))
@@ -191,7 +183,6 @@ describe("recurring task series (issues #1605, #1670)", () => {
     other = await createTestTenant(admin);
     for (const id of [tenant, other]) await runInTenant(id, () => seedSystem(pool));
     vi.useFakeTimers({ toFake: ["Date"] });
-    // Friday 16 October 2026, 12:00 in the default tenant time zone Europe/Prague.
     vi.setSystemTime(new Date("2026-10-16T10:00:00Z"));
   });
   afterEach(() => {
@@ -378,7 +369,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
 
     it("an occurrence without a valid occurrenceDate fails the completion and writes nothing", async () => {
       const task = await recurringTask("2026-10-12", "fixed", weeklyMonday);
-      // A corrupt system-owned value no writer produces; written past the choke point on purpose.
+      // A corrupt system-owned value no writer produces.
       await runInTenant(tenant, () =>
         pool.query("UPDATE items SET properties = properties - 'occurrenceDate' WHERE id = $1", [task.id]),
       );
@@ -472,7 +463,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
       const next = (await occurrencesOf(tenant, seriesId)).find((o) => o.id !== task.id);
       if (!next) throw new Error("No next occurrence");
       const nextProperties = (await runInTenant(tenant, () => cp.getItem(tasks, next.id)))?.properties;
-      // The legacy template's `persistent: true` is not copied: the Tasks property is gone (issue #2009).
+      // The legacy template's `persistent: true` is not copied.
       expect(nextProperties && Object.hasOwn(nextProperties, "persistent")).toBe(false);
       expect(nextProperties).toMatchObject({
         name: "Template name",
@@ -488,7 +479,6 @@ describe("recurring task series (issues #1605, #1670)", () => {
     });
 
     describe("an older occurrence written again on a later day", () => {
-      /** A recurring task with a project edge and a file whose value link is sourced from the task. */
       async function linkedRecurringTask(date: string) {
         const task = await recurringTask(date, "fixed", weeklyMonday);
         const databaseOf = async (moduleId: string) => {
@@ -514,7 +504,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
         const file = await runInTenant(tenant, () =>
           cp.createItem({ databaseId: files, properties: { name: "Plan.pdf" } }),
         );
-        // The value-link store's own write; no manifest declares a Tasks-sourced link rule yet.
+        // No manifest declares a Tasks-sourced link rule yet, so the value-link store writes it.
         await runInTenant(tenant, () =>
           withTransaction(pool, (client) =>
             insertValueLink(client, {
@@ -528,7 +518,6 @@ describe("recurring task series (issues #1605, #1670)", () => {
         return { ...task, fileId: file.id };
       }
 
-      /** Every occurrence, the series row, every edge of every occurrence and the file's value-link sources. */
       async function seriesState(seriesId: string, fileId: string) {
         const occurrences = await occurrencesOf(tenant, seriesId);
         const recurrence = (await recurrenceRows(tenant)).filter((row) => row.series_id === seriesId);

@@ -4,17 +4,13 @@ import { requireSingleRow, withTransaction } from "../db/pool.js";
 import { mailThreadCopyCtes } from "./mailThreadListQuery.js";
 import { mailThreadPredicates } from "./mailThreadPredicates.js";
 
-/** The counts the Overview, the Profile and the mailbox sidebar show (issue gh-1688). */
+/** The counts the Overview, the Profile and the mailbox sidebar show. */
 interface MailSummary {
   /** Threads the default list shows with `unread=true`: in an inbox folder and unread. */
   unreadInbox: number;
-  /** Threads the list shows with `box=flagged`. */
   flagged: number;
-  /** Threads the list shows with `box=sempDrafts` (issue gh-1694). */
   sempDrafts: number;
-  /** Non-deleted Mailboxes items. */
   accounts: number;
-  /** The non-deleted mailboxes whose `syncStatus` is `needsReauthorization`, by id. */
   accountsNeedingReauth: Array<{ id: string; name: string }>;
 }
 
@@ -27,11 +23,8 @@ const summaryRow = z.object({
 });
 
 /**
- * One statement, so every count reads the same snapshot. The thread counts run over the thread
- * list's own `copies` and `copy_stats` (`mailThreadCopyCtes`, with `$1` null: the list mode, which
- * leaves drafts out) and filter with the list's own predicates, so each equals the number of threads
- * the list returns for the same filter. `l` gives the predicates the thread id they expect from the
- * list's `latest` row; `copy_stats` has one row for every thread the list can show.
+ * One statement, so every count reads the same snapshot. Thread counts use the thread list's own CTEs (`$1` null:
+ * list mode, drafts left out) and predicates, so each equals what the list returns for the same filter.
  */
 const MAIL_SUMMARY_SQL = `
 WITH ${mailThreadCopyCtes(1)}, thread_counts AS (
@@ -52,7 +45,7 @@ SELECT tc.unread_inbox AS "unreadInbox", tc.flagged, tc.semp_drafts AS "sempDraf
 FROM thread_counts tc
 `;
 
-/** The mail summary of the caller's tenant; row-level security and the tenant filters confine every count to it. */
+/** Row-level security and the tenant filters confine every count to the caller's tenant. */
 export async function getMailSummary(client: PoolClient): Promise<MailSummary> {
   const { rows } = await client.query<Record<string, unknown>>(MAIL_SUMMARY_SQL, [null]);
   const row = summaryRow.parse(requireSingleRow(rows, "mail summary"));
@@ -65,7 +58,7 @@ export async function getMailSummary(client: PoolClient): Promise<MailSummary> {
   };
 }
 
-/** `GET /api/mail/summary` (issue gh-1688), mounted by the authenticated custom-route adapter in the session's tenant scope. */
+/** `GET /api/mail/summary`. */
 export function createMailSummaryRouteHandler(pool: Pool) {
   return async (): Promise<{ status: number; body: MailSummary }> => ({
     status: 200,

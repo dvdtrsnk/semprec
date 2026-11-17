@@ -43,24 +43,19 @@ async function subpage(parent: string, title: string, afterBlockId?: string): Pr
   return page;
 }
 
-/** The blocks of the notes of `itemId` as tenant A reads them, in document order. */
 async function notesOf(itemId: string): Promise<Array<{ id: string; type: string; pageId?: string }>> {
   const response = await call("GET", `/api/items/${itemId}/page`, harness.headersA);
   expect(response.status).toBe(200);
   return pageBody.parse(await response.json()).blocks;
 }
 
-/** The status of `GET /api/items/:id` for each id, as tenant A. */
 async function readStatuses(...itemIds: string[]): Promise<number[]> {
   const statuses: number[] = [];
   for (const itemId of itemIds) statuses.push((await call("GET", `/api/items/${itemId}`, harness.headersA)).status);
   return statuses;
 }
 
-/**
- * A host of tenant A whose notes read `Intro`, the page block of "Release checklist", `Outro`, with one page nested
- * under the checklist.
- */
+/** Notes read `Intro`, the page block of "Release checklist", `Outro`, with one page nested under the checklist. */
 async function hostWithNestedSubpage(): Promise<{
   host: string;
   intro: string;
@@ -81,7 +76,6 @@ async function hostWithNestedSubpage(): Promise<{
   return { host, intro, outro, checklist, nested };
 }
 
-/** A response with its status and its body, where every occurrence of `itemId` is replaced by a placeholder. */
 async function anonymized(response: Response, itemId: string): Promise<{ status: number; body: string }> {
   return { status: response.status, body: (await response.text()).replaceAll(itemId, "<id>") };
 }
@@ -126,7 +120,6 @@ describe("trash and restore of a page with its subpages (issue #1723)", () => {
     expect(await readStatuses(checklist.pageItemId, nested.pageItemId)).toEqual([200, 200]);
     expect((await notesOf(host)).map((block) => block.id)).toEqual([intro, checklist.blockId, outro]);
 
-    // The owner trashes the page; the other tenant cannot bring it back either.
     expect((await call("DELETE", `/api/items/${checklist.pageItemId}`, harness.headersA)).status).toBe(200);
     const foreignRestore = await call("POST", `/api/items/${checklist.pageItemId}/restore`, harness.headersB);
     const unknownRestore = await call("POST", `/api/items/${unknown}/restore`, harness.headersB);
@@ -166,7 +159,6 @@ describe("trash and restore of a page with its subpages (issue #1723)", () => {
     expect(await requests()).toEqual([
       { id: approvalRequestId, tool_name: "item.delete", status: "pending", execution_status: "not_approved" },
     ]);
-    // Nothing is trashed while the request waits.
     expect(await readStatuses(checklist.pageItemId, nested.pageItemId)).toEqual([200, 200]);
     expect((await notesOf(host)).map((block) => block.id)).toEqual([intro, checklist.blockId, outro]);
 
@@ -194,7 +186,6 @@ describe("trash and restore of a page with its subpages (issue #1723)", () => {
     ]);
     expect(await readStatuses(checklist.pageItemId, nested.pageItemId)).toEqual([404, 404]);
     expect((await notesOf(host)).map((block) => block.id)).toEqual([intro, outro]);
-    // The block left the host's notes as the agent's write.
     const { rows } = await runInTenant(harness.tenantA, () =>
       harness.runtime.query<{ created_by: string }>(
         `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1

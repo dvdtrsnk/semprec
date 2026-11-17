@@ -5,15 +5,9 @@ type Intersect<Parts extends readonly object[]> = Parts extends readonly [
   ? Head & Intersect<Rest>
   : unknown;
 
-/** Intersection of every part's type; `Record<never, never>` for zero parts. */
 type MergedOps<Parts extends readonly object[]> = Parts extends readonly [] ? Record<never, never> : Intersect<Parts>;
 
-/**
- * Merges section objects into one, like `{ ...a, ...b }`, except that an own
- * enumerable key present in more than one part throws instead of letting the
- * later part silently overwrite the earlier one. Returns a new object and never
- * mutates a part.
- */
+/** Like `{ ...a, ...b }`, but a key present in more than one part throws instead of being overwritten. */
 export function mergeOps<Parts extends readonly object[]>(...parts: Parts): MergedOps<Parts> {
   const seen = new Set<PropertyKey>();
   for (const part of parts) {
@@ -25,7 +19,6 @@ export function mergeOps<Parts extends readonly object[]>(...parts: Parts): Merg
       seen.add(key);
     }
   }
-  // Safe: the keys are pairwise disjoint (checked above), so the merged object
-  // carries every part's properties unchanged, which is exactly the intersection.
+  // Safe: the keys are pairwise disjoint (checked above).
   return Object.assign({}, ...parts) as MergedOps<Parts>;
 }

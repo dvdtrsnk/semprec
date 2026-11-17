@@ -1,8 +1,5 @@
-// Issue #1801: what happened to a task in relation to one Event it sits in. The state is decided by the pure
-// `taskStateInEvent`; `readEventTasks` and `eventTaskCounts` read the rows of one or several Events in a fixed number
-// of queries and apply it. The edges come from `Tasks.hostEvents` (issue #1764) and `Tasks.completedInEvent` (issue
-// #1781), the Event end from `calendarTime.ts` (issue #1418). The route `GET /api/events/:id/tasks` is in
-// `eventTasksRouteHandler.ts`.
+// What happened to a task in relation to one Event it sits in: decided by the pure `taskStateInEvent`, applied by
+// readers that load one or several Events in a fixed number of queries.
 import type { PoolClient } from "pg";
 import { eventEnd, getCalendarClock } from "../calendarTime.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -20,20 +17,17 @@ import {
   type TaskHostEvent,
 } from "./taskHostEventState.js";
 
-/** The Tasks-side key of the relation that records where a task was completed; its inverse is `completedTasks`. */
+/** Its inverse is `completedTasks`. */
 const COMPLETED_IN_EVENT_KEY = "completedInEvent";
 
-/**
- * The state of a task in an Event. `doneElsewhere` carries either the day the task was completed on (completed from
- * the list on another day) or the name of the other Event it was completed in.
- */
+/** `doneElsewhere` carries the completion day (completed from the list) or the other Event's name. */
 export type EventTaskState =
   | { kind: "open" | "missed" | "done" }
   | { kind: "doneElsewhere"; completedOn: string }
   | { kind: "doneElsewhere"; eventName: string }
   | { kind: "moved"; lastEventName: string };
 
-/** `open` counts the rows whose state is `open` or `missed`; `total` counts all rows. */
+/** `open` counts `open` and `missed` rows; `total` counts all. */
 export interface EventTaskCounts {
   open: number;
   total: number;
@@ -51,43 +45,36 @@ export interface EventTasks {
   counts: EventTaskCounts;
 }
 
-/** A live Event a task sits in, with the name the `moved` state reports. A missing name reads as `""`. */
+/** A missing name reads as `""`. */
 export interface NamedHostEvent extends TaskHostEvent {
   name: string;
 }
 
 export interface TaskStateInEventInput {
   task: {
-    /** The task's stored `status`. */
     status: string | null;
-    /** The task's stored `completedOn`, a calendar day; `null` when it stores none. */
     completedOn: string | null;
-    /** The Event the task's `completedInEvent` edge points to, `null` when it has no edge. */
+    /** `null` without a `completedInEvent` edge. */
     completedIn: { eventId: string; eventName: string } | null;
   };
-  /** The Event the state is read in. */
   event: TaskHostEvent;
-  /** The task's live host events, ordered by the edge's `addedAt`, the one added last at the end. */
+  /** Ordered by `addedAt`, the last added at the end. */
   hostEvents: readonly NamedHostEvent[];
   now: Date;
-  /** The tenant's IANA zone. */
   timezone: string;
 }
 
 /**
- * The state of a task in `event`, the first of these that applies:
+ * The state of a task in `event`, the first that applies:
  *
- * 1. The task is `done`, has no `completedInEvent` edge and its `completedOn` differs from the Event's `date`:
- *    `doneElsewhere` with that `completedOn`.
- * 2. Its edge points to this Event, or it is `done` without an edge and `completedOn` equals the Event's `date` (or
- *    the task stores no `completedOn`, so nothing places the completion on another day): `done`.
- * 3. Its edge points to another Event: `doneElsewhere` with that Event's name.
- * 4. The Event is not the last of `hostEvents`: `moved` with the name of the last one.
- * 5. The Event has ended (its end is at or before `now`; an Event without a `date` has none): `missed`.
+ * 1. `done`, no `completedInEvent` edge, `completedOn` differs from the Event's `date`: `doneElsewhere` (that day).
+ * 2. The edge points here, or `done` without an edge on the Event's `date` (or with no `completedOn`): `done`.
+ * 3. The edge points to another Event: `doneElsewhere` with its name.
+ * 4. Not the last of `hostEvents`: `moved` to the last one.
+ * 5. The Event has ended (end at or before `now`; no `date` means no end): `missed`.
  * 6. Otherwise `open`.
  *
- * A task that reaches step 5 is not `done`, whatever else its status is: a `done` task has either an edge or none,
- * and steps 1 to 3 answer both. Its status may be `notDone`, `wontDo` or `missed`.
+ * Steps 1-3 answer every `done` task, so from step 5 on the status is `notDone`, `wontDo` or `missed`.
  */
 export function taskStateInEvent({ task, event, hostEvents, now, timezone }: TaskStateInEventInput): EventTaskState {
   const done = task.status === "done";
@@ -119,7 +106,6 @@ function countRows(rows: readonly EventTaskRow[]): EventTaskCounts {
   };
 }
 
-/** The Tasks `completedInEvent` relation of the caller's tenant, and which side of its definition the task is. */
 interface CompletedInEventRelation {
   definitionId: string;
   taskIsItemA: boolean;
@@ -135,23 +121,19 @@ async function loadCompletedInEventRelation(
   return { definitionId: definition.id, taskIsItemA: definition.propertyIdA === property.id };
 }
 
-/** The task and the Event of one edge of a relation whose task side is `taskIsItemA`. */
 function edgeEnds(edge: ItemRelationRow, taskIsItemA: boolean): { taskId: string; eventId: string } {
   return taskIsItemA ? { taskId: edge.itemA, eventId: edge.itemB } : { taskId: edge.itemB, eventId: edge.itemA };
 }
 
-/** A live task that sits in an Event, with the Events its `completedInEvent` edges point to. */
 export interface HostedTask {
   task: ItemRow;
-  /** The `addedAt` of the task's edge to the Event this row belongs to, `""` for an edge that stores none. */
   addedAt: string;
   completedInEventIds: string[];
 }
 
 /**
- * The live tasks of each Event in `eventIds` (a trashed task is left out), in the order of the Event's edges: `addedAt`
- * ascending, then task id, in a fixed number of queries however many Events and tasks there are. An Event need not be live: the edges
- * of an Event in the Trash stay stored. A tenant without the `hostEvents` relation has no hosted tasks.
+ * Live tasks of each Event, in edge order (`addedAt`, then task id), in a fixed number of queries. The Event need
+ * not be live: a trashed Event keeps its edges. A tenant without `hostEvents` has none.
  */
 export async function readHostedTasks(
   client: PoolClient,
@@ -183,7 +165,6 @@ export async function readHostedTasks(
   return hosted;
 }
 
-/** The Events each of `taskIds` has a `completedInEvent` edge to, in event id order. */
 async function readCompletedInEventIds(
   client: PoolClient,
   tasksDatabaseId: string,
@@ -199,11 +180,6 @@ async function readCompletedInEventIds(
   return byTask;
 }
 
-/**
- * The tasks of each Event in `events` with their states and counts, keyed by Event id. The queries are batched: the
- * edges of all Events, their tasks, the host edges and `completedInEvent` edges of those tasks, and the Events those
- * edges name, so the number of queries does not depend on the number of rows.
- */
 async function buildEventTasks(
   client: PoolClient,
   events: readonly ItemRow[],
@@ -227,7 +203,7 @@ async function buildEventTasks(
     ...hostEdges.map((edge) => edge.eventId),
     ...[...hosted.values()].flatMap((rows) => rows.flatMap((row) => row.completedInEventIds)),
   ]);
-  // Events in the Trash are read too: the name of the Event a task was completed in is still true after its trash.
+  // Trashed Events are read too: the name of the Event a task was completed in stays true after its trash.
   const known = new Map(
     (await itemsStore.getItemsByIdsIncludingDeleted(client, [...namedEventIds])).map((event) => [event.id, event]),
   );
@@ -246,7 +222,7 @@ async function buildEventTasks(
   return new Map(
     events.map((event) => {
       const rows = (hosted.get(event.id) ?? []).map(({ task, completedInEventIds }): EventTaskRow => {
-        // The edge to this Event wins; a task has one edge, so the second choice is only a fallback for stray data.
+        // A task has one edge; the fallback is only for stray data.
         const completedInId = completedInEventIds.includes(event.id) ? event.id : completedInEventIds[0];
         const completedInEvent = completedInId === undefined ? undefined : known.get(completedInId);
         return {
@@ -282,10 +258,8 @@ async function liveEvents(client: PoolClient, eventIds: readonly string[]): Prom
 }
 
 /**
- * The tasks that sit in a live Event with their per-event state and the counts, in the order of the Event's edges
- * by `addedAt` ascending. A trashed task and a trashed host event do not count. `null` when `eventId` names no live
- * Event: an unknown id, an item of another database, an Event in the Trash and another tenant's Event (row-level
- * security hides it) all answer alike.
+ * Tasks of a live Event with states and counts, in edge order. Trashed tasks and host events do not count.
+ * `null` for an unknown id, another database's item, a trashed Event or another tenant's (RLS) alike.
  */
 export async function readEventTasks(client: PoolClient, eventId: string): Promise<EventTasks | null> {
   const [event] = await liveEvents(client, [eventId]);
@@ -294,10 +268,8 @@ export async function readEventTasks(client: PoolClient, eventId: string): Promi
 }
 
 /**
- * The tasks, states and counts of every live Event in `eventIds`, keyed by Event id, as `readEventTasks` reads them
- * for one Event, in the same fixed number of queries however many Events there are (issue gh-1880). The states are
- * evaluated at `now`, so a caller that compares other instants with it sees one clock. An id that names no live Event
- * is absent from the result.
+ * As `readEventTasks` for many Events, in the same fixed number of queries. States are evaluated at one `now`.
+ * Ids naming no live Event are absent.
  */
 export async function readEventsTasks(
   client: PoolClient,
@@ -307,10 +279,7 @@ export async function readEventsTasks(
   return buildEventTasks(client, await liveEvents(client, [...new Set(eventIds)]), now);
 }
 
-/**
- * The counts of the tasks of each live Event in `eventIds`, keyed by Event id, as `readEventTasks` counts them; an Event
- * with no tasks has `{ open: 0, total: 0 }`. An id that names no live Event is absent from the result.
- */
+/** An Event without tasks has `{ open: 0, total: 0 }`; ids naming no live Event are absent. */
 export async function eventTaskCounts(
   client: PoolClient,
   eventIds: readonly string[],

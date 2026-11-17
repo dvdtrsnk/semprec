@@ -61,7 +61,6 @@ const TICK_TASK = CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE;
 const RECOMPUTE_TASK = CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE;
 const DAY = "2026-10-16";
 
-/** The writers of issue #1718: the REST relation endpoint, an agent run's `relation.put` and the MCP tool. */
 const TRANSPORTS = ["rest", "agent", "mcp"] as const;
 type Transport = (typeof TRANSPORTS)[number];
 
@@ -178,7 +177,6 @@ describe("an Inbox type edge re-runs the tick and the day summary for every writ
     return type.id;
   }
 
-  /** Captures one Inbox item of `DAY` through the production Inbox writer, with its type edge when `typeId` is given. */
   async function capture(text: string, typeId?: string): Promise<string> {
     const item = await inTenantZero(() =>
       withTransaction(pool, (client) =>
@@ -188,7 +186,6 @@ describe("an Inbox type edge re-runs the tick and the day summary for every writ
     return item.id;
   }
 
-  /** The Journal day the Inbox item's `journalDay` edge points at. */
   async function dayOf(inboxItemId: string): Promise<string> {
     const relations = await inTenantZero(() => chokePoint.listItemRelations(inboxItemId));
     const day = relations?.find((relation) => relation.propertyKey === "journalDay");
@@ -196,7 +193,6 @@ describe("an Inbox type edge re-runs the tick and the day summary for every writ
     return day.targetItemId;
   }
 
-  /** The type the day's cached Inbox summary shows for one Inbox item. */
   async function summaryTypeOf(journalDayItemId: string, inboxItemId: string) {
     const day = await inTenantZero(() => chokePoint.getItem(journalId, journalDayItemId));
     const entry = daySummary.parse(day?.computed.inboxItems).find((candidate) => candidate.id === inboxItemId);
@@ -204,7 +200,6 @@ describe("an Inbox type edge re-runs the tick and the day summary for every writ
     return entry.type;
   }
 
-  /** Every queued job of `task`: the tenant its producer stamped and its business payload. */
   async function queued(task: string): Promise<Array<z.infer<typeof jobEnvelope>>> {
     return (await readJobPayloadsByIdentifier(pool, task)).map((raw) => {
       const { tenantId, payload } = jobEnvelope.parse(raw);
@@ -216,7 +211,7 @@ describe("an Inbox type edge re-runs the tick and the day summary for every writ
     return { tick: await queued(TICK_TASK), recompute: await queued(RECOMPUTE_TASK) };
   }
 
-  /** What an accepted change of `inboxItemId`'s type edge enqueues: the item's update tick and its day's recompute. */
+  /** The item's update tick and its day's recompute. */
   function jobsFor(inboxItemId: string, journalDayItemId: string) {
     const tenantId = getTenantZeroId();
     return {
@@ -226,10 +221,8 @@ describe("an Inbox type edge re-runs the tick and the day summary for every writ
   }
 
   /**
-   * Empties the queue through the worker: every queued job runs a handler that does nothing. A job enqueued
-   * afterwards is then a new row, where a keyed enqueue would otherwise only update the queued job of the same
-   * key that the fixture's capture left behind. One run may leave jobs of a serialized lane for the next one, so
-   * it repeats while it makes progress.
+   * Runs every queued job with a no-op handler, so a later enqueue is a new row instead of a keyed update of the
+   * fixture's job. Repeats while it makes progress, since one run may leave a serialized lane's jobs for the next.
    */
   async function discardQueuedJobs(): Promise<void> {
     let remaining = Number.POSITIVE_INFINITY;
@@ -245,7 +238,6 @@ describe("an Inbox type edge re-runs the tick and the day summary for every writ
     }
   }
 
-  /** Runs the queued day recomputes with the handler of the production API task list. */
   async function runRecomputeJobs(): Promise<void> {
     const handler = createApiCoreTaskList(pool, createActionRegistry())[RECOMPUTE_TASK];
     if (!handler) throw new Error("The Journal Inbox recompute handler is missing from the API task list");
@@ -315,7 +307,6 @@ describe("an Inbox type edge re-runs the tick and the day summary for every writ
   it("an agent run's relation.put and the MCP tool enqueue the same jobs for the type edge as the REST endpoint", async () => {
     const typeId = await createType("Note", "N");
     for (const transport of TRANSPORTS) {
-      // Each writer links an Inbox item of its own, so every one of them starts from an item without a type.
       const itemId = await capture(`Written through ${transport}`);
       const dayId = await dayOf(itemId);
       await discardQueuedJobs();

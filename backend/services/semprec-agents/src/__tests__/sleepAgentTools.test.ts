@@ -22,9 +22,8 @@ import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
 import * as piSession from "../piAgentSession.js";
 import type { PiAgentSessionFactoryOptions } from "../piAgentSession.js";
 
-// A seeded tenant has the Sleep system project, which owns the three sleep databases, and the Semprec project, which
-// owns the Inbox. A session of the Sleep project is offered the two sleep tools; the user's grants on the sensitive
-// sleep databases decide whether a call may read or write. 2026-10-16 is a Friday, so its night is a weekend night.
+// The Sleep project owns the sleep databases and is offered the sleep tools; the user's grants on those sensitive
+// databases decide whether a call may read or write. 2026-10-16 is a Friday, so its night is a weekend night.
 
 const NIGHT = "2026-10-16";
 

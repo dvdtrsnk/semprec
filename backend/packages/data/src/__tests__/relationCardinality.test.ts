@@ -138,11 +138,8 @@ describe("relation cardinality enforcement (issue #82)", () => {
   });
 
   /**
-   * Drives the exact race the trigger's advisory lock exists to prevent: two overlapping
-   * transactions each inserting a conflicting edge for the same relation definition. Ordering
-   * is made deterministic by holding the trigger's existing advisory lock in X and observing
-   * Y's backend blocked by X before allowing X to insert and commit. Both transactions use the
-   * managed owner required by after-commit effects.
+   * Two overlapping transactions insert conflicting edges for one relation definition. Holding the trigger's
+   * advisory lock in X until Y is seen blocked makes the order deterministic.
    */
   async function assertLosesRaceOnConflict(input: {
     relationDefinitionId: string;

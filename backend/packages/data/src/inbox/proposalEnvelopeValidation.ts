@@ -81,7 +81,7 @@ export async function assertValidV2PageContent(
   }
 }
 
-/** Checks a `'database'` envelope's `relations`: each key a relation property of the target database, unique target ids, every target linkable. */
+/** `relations` keys must be relation properties of the target, with unique, linkable target ids. */
 export async function assertValidEnvelopeRelations(
   client: PoolClient,
   targetDatabaseId: string,
@@ -110,7 +110,6 @@ export async function assertValidEnvelopeRelations(
   }
 }
 
-/** Checks that every key of `properties` is a writable, user-owned, non-relation, non-rollup property of the database. */
 function assertWritableProposalPropertyKeys(
   properties: Record<string, unknown>,
   propertiesByKey: ReadonlyMap<string, PropertyRow>,
@@ -137,11 +136,8 @@ function assertWritableProposalPropertyKeys(
 }
 
 /**
- * Checks that every `select` and `multi_select` value of a proposed write names an option of the target's
- * catalog, by the rule an item write by the user follows. The write is made at confirm as the user, so refusing
- * a wrong key here keeps it off a card that would otherwise show as a normal proposal. `stored` is the
- * properties of the item an `update` step rewrites, so a value the item already holds is accepted as an item
- * update accepts it; it is `null` for a `create` step and for a database envelope, where nothing is stored.
+ * Every `select`/`multi_select` value must name a catalog option, as for a user item write (confirm writes as the
+ * user). `stored` is the updated item's properties, so a value it already holds is accepted; `null` for creates.
  */
 function assertProposalSelectValuesKnown(
   properties: Record<string, unknown>,
@@ -151,7 +147,6 @@ function assertProposalSelectValuesKnown(
   assertSelectValuesKnown([...propertiesByKey.values()], properties, stored, { writerKind: "user" });
 }
 
-/** What one step of a multi-step envelope must satisfy about its `properties`: writable keys and known options. */
 export function assertValidStepProperties(
   properties: Record<string, unknown>,
   propertiesByKey: ReadonlyMap<string, PropertyRow>,
@@ -163,10 +158,8 @@ export function assertValidStepProperties(
 }
 
 /**
- * What a `database` envelope's top-level `properties` must satisfy: writable keys and, for a single-step envelope,
- * known options. A multi-step envelope's top-level properties mirror its primary step, which
- * `assertValidStepProperties` checked against the stored item when that step updates one, so a value the item
- * keeps is not refused here.
+ * A `database` envelope's top-level `properties`: writable keys and, single-step only, known options. Multi-step top
+ * level mirrors the primary step, already checked against the stored item.
  */
 export function assertValidEnvelopeProperties(
   envelope: { properties: Record<string, unknown>; operations?: readonly unknown[] },
@@ -181,10 +174,7 @@ function errorDetails(err: { details?: unknown }): Record<string, unknown> {
   return typeof err.details === "object" && err.details !== null ? { ...err.details } : {};
 }
 
-/**
- * Runs a check that was written for one item and re-raises its validation, permission and
- * cardinality failures with the step's `ref` added to their `details`; any other error propagates untouched.
- */
+/** Re-raises validation, permission and cardinality failures of a single-item check with the step's `ref` in `details`. */
 export async function withStepRef<T>(ref: string, run: () => Promise<T>): Promise<T> {
   try {
     return await run();
@@ -198,7 +188,7 @@ export async function withStepRef<T>(ref: string, run: () => Promise<T>): Promis
   }
 }
 
-/** A step's relations with the `{ ref }` targets dropped (they name items that do not exist yet); a key holding only refs stays, as an empty list. */
+/** A step's relations without `{ ref }` targets (not yet created items); a key holding only refs stays, empty. */
 export function existingItemRelations(step: ProposalStep): Record<string, string[]> {
   return Object.fromEntries(
     Object.entries(effectiveStepRelations(step)).map(([key, list]) => [
@@ -208,7 +198,6 @@ export function existingItemRelations(step: ProposalStep): Record<string, string
   );
 }
 
-/** The database a step writes to must exist, be unarchived, and not be one of the read-only modules'. */
 export function assertStepDatabaseWritable(
   step: ProposalStep,
   database: DatabaseRow | null,
@@ -221,7 +210,6 @@ export function assertStepDatabaseWritable(
   return database;
 }
 
-/** Checks that update representations and their before/after keys agree. */
 export function assertUpdateStepShape(
   step: ProposalStep,
   prepared: { patch: Record<string, unknown>; deferredKeys: string[] },
@@ -302,12 +290,7 @@ export function assertUpdateStepShape(
   }
 }
 
-/**
- * Refuses a `pageSections` list on an envelope that cannot carry one (issue gh-1974): only a single-step `database`
- * envelope creates an item whose page the sections are written to. A multi-step envelope names several created items,
- * and every other kind writes to an existing page or to no item at all. Each refusal is a `ValidationError` on
- * `pageSections`. The shape of the sections themselves is the envelope schema's.
- */
+/** Only a single-step `database` envelope may carry `pageSections`; any other is a `ValidationError` on it. */
 export function assertValidEnvelopePageSections(envelope: ProposalEnvelope): void {
   if (envelope.pageSections === undefined) return;
   if (envelope.entityKind !== "database") {

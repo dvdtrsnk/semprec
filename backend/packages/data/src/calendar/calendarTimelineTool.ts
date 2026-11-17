@@ -1,21 +1,10 @@
-// Issue gh-1952: the read tool of the calendar module, declared in `calendarModuleManifest.ts`. `calendar.timeline`
-// answers what `GET /api/calendar/timeline` answers for the same range, so Semp and an external client over `/mcp` read
-// the user's days and weeks from the function the app uses (`readCalendarTimeline`,
-// docs/adr/2026-11-10-calendar-timeline-merges-a-list-of-sources.md). It only reads, so the manifest declares it
-// without approval (docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md), and with `mcp` like the other
-// calendar tools
-// (docs/adr/2026-11-14-calendar-tools-over-mcp-are-gated-for-a-run-credential-and-run-as-the-user-for-a-session.md).
+// `calendar.timeline` answers what `GET /api/calendar/timeline` answers for the same range, through
+// `readCalendarTimeline`. The resolver offers it only to a run whose project owns the calendar databases (over
+// `/mcp`, only to a credential naming `calendar.read`) and validates the arguments, so a handler gets a valid range.
 //
-// Who may call it is decided before a handler runs: the resolver offers the tool only to a run whose project owns the
-// calendar databases (and, over `/mcp`, only to a credential whose list names `calendar.read`), and it validates the
-// arguments with the schema below, so a handler is called with a valid range. The handler reads in the tenant scope
-// the caller established.
-//
-// The sleep nights of the timeline are derived from the sensitive sleep databases, so the tool does not answer them
-// to everyone who may read the calendar (docs/adr/2026-11-14-the-calendar-timeline-tool-leaves-out-sleep-nights-the-caller-may-not-read.md):
-// a run gets them only when its project holds read access to the three sleep databases, checked in the transaction of
-// the read, and the answer is then marked `sensitive`; a human `/mcp` session is an external AI client and never gets
-// them.
+// Sleep nights derive from the sensitive sleep databases: a run gets them only when its project can read all
+// three, checked in the read's transaction, and the answer is then marked `sensitive`; a human `/mcp` session is
+// an external AI client and never gets them.
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
@@ -35,15 +24,12 @@ import { MAX_RANGE_DAYS } from "./timelineRouteHandler.js";
 
 const calendarDate = z.string().refine(isCalendarDate, "Must be a calendar date YYYY-MM-DD");
 
-/** The days of the range `from`..`to`, both included, for two calendar dates. */
+/** Both days included. */
 function rangeDays(from: string, to: string): number {
   return DateTime.fromISO(to, { zone: "utc" }).diff(DateTime.fromISO(from, { zone: "utc" }), "days").days + 1;
 }
 
-/**
- * The arguments of `calendar.timeline`: the range rules of the route (calendar dates, `to` not before `from`, at most
- * `MAX_RANGE_DAYS` days with both days included). The description is what the model reads of the tool.
- */
+/** The description is what the model reads of the tool. */
 export const calendarTimelineArgsSchema = z
   .strictObject({
     from: calendarDate.describe("The first day of the range, YYYY-MM-DD."),
@@ -67,9 +53,8 @@ export const calendarTimelineArgsSchema = z
 export type CalendarTimelineArgs = z.infer<typeof calendarTimelineArgsSchema>;
 
 /**
- * Whether the project holds read access to the three sleep databases, the check of the sleep tools
- * (`assertSleepAccess`). A refusal (403) or a tenant without the sleep module (404) means no sleep nights; any other
- * failure is not an answer and propagates.
+ * Same check as the sleep tools (`assertSleepAccess`). A 403 or 404 means no sleep nights; any other failure
+ * propagates.
  */
 async function mayReadSleep(client: PoolClient, agentProjectItemId: string): Promise<boolean> {
   try {
@@ -81,10 +66,7 @@ async function mayReadSleep(client: PoolClient, agentProjectItemId: string): Pro
   }
 }
 
-/**
- * The timeline of the range as JSON: the body `GET /api/calendar/timeline` answers in its full shape, with the sleep
- * nights only when `includeSleep` says the caller may read them. The answer is marked `sensitive` when it holds one.
- */
+/** Marked `sensitive` when the answer holds a sleep night. */
 async function timelineResult(
   client: PoolClient,
   args: CalendarTimelineArgs,
@@ -99,10 +81,8 @@ async function timelineResult(
 }
 
 /**
- * `calendar.timeline { from, to }`: `GET /api/calendar/timeline?from=&to=` in the full shape for the tenant of the
- * caller, as JSON. It writes nothing and does not leave out the items of hidden calendars: hiding is a display
- * preference. The run's project is read from the stored run, never from an argument; it decides the sleep nights in
- * the transaction of the read. A run that is unknown or has no project gets the refusal of the other calendar tools.
+ * Does not leave out hidden calendars: hiding is a display preference. The run's project is read from the stored
+ * run, never from an argument.
  */
 export function createCalendarTimelineTool(pool: Pool): CalendarAgentTool<CalendarTimelineArgs> {
   return async (runId, args) => {
@@ -123,10 +103,8 @@ export function createCalendarTimelineTool(pool: Pool): CalendarAgentTool<Calend
 }
 
 /**
- * The human `/mcp` session's `calendar.timeline`: the same read for the session's user, who has no run. A session is
- * an external AI client, which no grant can open the sensitive sleep databases for
- * (docs/adr/2026-11-13-an-external-ai-client-on-mcp-is-refused-sensitive-databases.md), so its answer has no sleep
- * night and is never marked sensitive.
+ * A session is an external AI client, which no grant opens the sleep databases for, so its answer has no sleep
+ * night and is never sensitive.
  */
 export function createCalendarTimelineUserTool(pool: Pool): CalendarUserTool<CalendarTimelineArgs> {
   return (_userId, args) => withTransaction(pool, (client) => timelineResult(client, args, false));

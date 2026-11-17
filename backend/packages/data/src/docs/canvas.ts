@@ -1,11 +1,6 @@
 import * as Y from "yjs";
 
-/**
- * A canvas element is structured, typed data — a type, `xywh` (position/size), and a
- * fractional-indexing `index` for z-order — never a pixel bitmap, so an agent can read
- * and write it through this same generic API exactly as it would a database row
- * (issue #23, point 4).
- */
+/** Elements are structured data, never bitmaps, so agents read and write them like database rows. */
 const ELEMENTS_MAP_NAME = "elements";
 
 export const CANVAS_ELEMENT_TYPES = ["shape", "connector", "text", "drawing"] as const;
@@ -16,7 +11,7 @@ export interface CanvasElementInput {
   type: CanvasElementType;
   /** [x, y, width, height] */
   xywh: [number, number, number, number];
-  /** Fractional index for z-order — lets an element be inserted between two others without renumbering the layer. */
+  /** Fractional z-order index: insert between two elements without renumbering. */
   index: string;
   fields?: Record<string, unknown>;
 }
@@ -39,9 +34,7 @@ export function putCanvasElement(doc: Y.Doc, input: CanvasElementInput): void {
     element = new Y.Map();
     elements.set(input.id, element);
   }
-  // fields first, required fields last — a caller-supplied field must never be able to
-  // overwrite id/type/xywh/index (e.g. fields: { id: "wrong" }), or the element's
-  // identity stops matching its own map key.
+  // Required fields last, so a caller field can never override id/type/xywh/index.
   for (const [key, value] of Object.entries(input.fields ?? {})) {
     element.set(key, value);
   }

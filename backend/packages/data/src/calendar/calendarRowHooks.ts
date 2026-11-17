@@ -1,12 +1,6 @@
-// The rules of a calendar row (issue #1778): the choke point's item create and update hooks for the Calendars
-// system database. They keep the name of a system or subscription calendar, judge a written colour, and keep
-// a create or an update from adding a second `isDefault` mark or removing the only one. Both run inside the
-// write's transaction after the row is written, so a refusal rolls the write back. A third hook, the update
-// pre-lock hook, takes the lock of the default mark before the update locks the written row.
-// Constrained by: docs/adr/2026-11-12-calendar-rows-keep-one-default-under-an-advisory-lock.md,
-// docs/adr/2026-11-12-an-update-takes-the-module-locks-before-it-locks-the-row.md,
-// docs/adr/2026-10-09-item-create-domain-hooks.md,
-// docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
+// Calendar row rules: keep the name of a system or subscription calendar, judge `color`, and keep exactly one
+// `isDefault` mark. The create/update hooks run in the write's transaction after the row is written, so a refusal
+// rolls back. The update pre-lock hook takes the default-mark lock before the update locks the row.
 import type { PoolClient } from "pg";
 import type { ItemCreateHook, ItemUpdateHook, ItemUpdatePreLockHook } from "../chokePoint/hooks.js";
 import { updateItemWithClient, type UpdateItemWithClientOptions } from "../chokePoint/itemWrites.js";
@@ -20,16 +14,12 @@ export function isCalendarsDatabase(database: DatabaseRow): boolean {
   return database.system && database.ownerModuleId === CALENDARS_MODULE_ID;
 }
 
-/** Whether `kind` is `system` or `subscription`. Every other value, an absent one included, is one of the user's own calendars. */
+/** Every other value, absent included, is one of the user's own calendars. */
 export function isSystemOrSubscription(kind: unknown): boolean {
   return kind === "system" || kind === "subscription";
 }
 
-/**
- * Judges `color` when `values` names it: the value must be a string of the form `#RRGGBB`, six hexadecimal
- * digits in either case. `null` is refused too, so a write cannot remove a calendar's colour. A write that
- * does not name `color` is not judged.
- */
+/** `null` is refused too, so a write cannot remove a calendar's colour. */
 function assertCalendarColor(values: Record<string, unknown>): void {
   if (!Object.hasOwn(values, "color")) return;
   const color = values.color;
@@ -39,9 +29,8 @@ function assertCalendarColor(values: Record<string, unknown>): void {
 }
 
 /**
- * Takes the transaction-scoped advisory lock of the tenant's default mark, keyed by the calendars database
- * id, and holds it until the caller's transaction ends. Taking it again in the same transaction returns at
- * once. The statement text is the one the tests look for in `pg_stat_activity`.
+ * Transaction-scoped advisory lock of the tenant's default mark, keyed by the calendars database id. The
+ * statement text is the one the tests look for in `pg_stat_activity`.
  */
 export async function lockDefaultMark(client: PoolClient, calendarsDatabaseId: string): Promise<void> {
   await client.query("SELECT pg_advisory_xact_lock(hashtextextended('calendars-default:' || $1::text, 0))", [
@@ -49,11 +38,7 @@ export async function lockDefaultMark(client: PoolClient, calendarsDatabaseId: s
   ]);
 }
 
-/**
- * Takes the lock of the default mark (`lockDefaultMark`) and returns the live calendars other than
- * `calendarId` whose `isDefault` is true, in id order, each row locked `FOR UPDATE`. Both locks are held
- * until the caller's transaction ends.
- */
+/** Rows locked `FOR UPDATE` in id order, after the advisory lock. */
 async function lockOtherDefaultCalendars(
   client: PoolClient,
   calendarsDatabaseId: string,
@@ -71,11 +56,8 @@ async function lockOtherDefaultCalendars(
 }
 
 /**
- * Makes `calendar`, whose row already holds `isDefault` true, the one default: clears the mark on every other
- * live calendar that holds it, each through `updateItemWithClient` with the writer of the outer write. A
- * system or subscription calendar is refused with `validation_failed` on `isDefault` before another calendar
- * is read. An update has taken the advisory lock already (`calendarItemUpdatePreLockHook`); a create takes it
- * here, when it reads the other marks.
+ * Clears the mark on every other default calendar with the outer write's writer. An update already holds the
+ * advisory lock (`calendarItemUpdatePreLockHook`); a create takes it here.
  */
 async function makeDefaultCalendar(
   client: PoolClient,
@@ -96,12 +78,7 @@ async function makeDefaultCalendar(
   }
 }
 
-/**
- * The Calendars create rule, registered by `../domainWriteHooks.ts`. It runs after a real insert, judges the
- * stored properties and does nothing for another database: a named `color` must be `#RRGGBB`, and a calendar
- * created with `isDefault` true becomes the one default (`makeDefaultCalendar`). A calendar created without
- * that mark changes no other calendar and takes no lock.
- */
+/** A calendar created without `isDefault` changes no other calendar and takes no lock. */
 export const calendarItemCreateHook: ItemCreateHook = async ({
   client,
   database,
@@ -116,11 +93,8 @@ export const calendarItemCreateHook: ItemCreateHook = async ({
 };
 
 /**
- * The Calendars update pre-lock rule, registered by `../domainWriteHooks.ts` under the Calendars module id.
- * An update whose patch names `isDefault` takes the lock of the default mark before the choke point locks or
- * changes the written calendar's row, so every writer of the mark orders its locks as the advisory lock first
- * and the rows after, and two such writes cannot wait for each other. The later `calendarItemUpdateHook`
- * takes the same lock again, which returns at once. An update that does not name `isDefault` takes no lock.
+ * Takes the default-mark advisory lock before the choke point locks the row, so every writer of the mark locks
+ * advisory-first, rows-after and two such writes cannot deadlock. The later update hook re-takes it at once.
  */
 export const calendarItemUpdatePreLockHook: ItemUpdatePreLockHook = async ({ client, database, patch }) => {
   if (!isCalendarsDatabase(database)) return;
@@ -128,17 +102,10 @@ export const calendarItemUpdatePreLockHook: ItemUpdatePreLockHook = async ({ cli
 };
 
 /**
- * The Calendars update rule, registered by `../domainWriteHooks.ts`. It runs after the update, judges the
- * written patch against the row as the update left it, and does nothing for another database.
- *
- * - A patch that names `name` on a system or subscription calendar is refused with 403 `forbidden` on
- *   `name`, for every writer kind. The hook does not receive the row as it was before the update, so a patch
- *   that sends the stored name again is refused as well.
- * - A named `color` must be `#RRGGBB`.
- * - A patch that names `isDefault` with true makes the calendar the one default (`makeDefaultCalendar`). With
- *   any other value it is refused with `validation_failed` on `isDefault` unless another live own calendar
- *   holds the mark, whether or not this calendar held it before. The clearing that `makeDefaultCalendar`
- *   writes passes this check because the new default's row is written before it.
+ * - `name` on a system or subscription calendar is a 403 for every writer kind. The hook does not see the old
+ *   row, so resending the stored name is refused too.
+ * - `isDefault: true` makes the calendar the one default. Any other value is refused unless another live own
+ *   calendar holds the mark; `makeDefaultCalendar`'s clearing passes because the new default is written first.
  */
 export const calendarItemUpdateHook: ItemUpdateHook = async ({
   client,

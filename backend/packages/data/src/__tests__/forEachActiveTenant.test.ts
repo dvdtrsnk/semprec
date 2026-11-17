@@ -8,7 +8,6 @@ import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from ".
 
 let pool: Pool;
 
-/** Tenant zero plus two more active tenants, in the order `forEachActiveTenant` sorts them. */
 async function threeActiveTenants(): Promise<string[]> {
   const ids = [getTenantZeroId(), await createTestTenant(pool), await createTestTenant(pool)];
   return ids.sort();

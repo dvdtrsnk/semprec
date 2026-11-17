@@ -30,10 +30,6 @@ async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
-/**
- * Issue #239's `schemaCore`-owned `GET /api/ai-usage` custom-route handler, exercised directly
- * against the real function it thinly wraps (#121's `getAiUsageReport`).
- */
 describe("ai usage custom route handler (issue #239)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();

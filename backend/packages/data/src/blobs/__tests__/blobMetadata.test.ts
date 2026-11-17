@@ -13,7 +13,6 @@ import { filenameFromStorageKey, loadBlobMetadataForItems } from "../blobMetadat
 let pool: Pool;
 let runtimePool: Pool | undefined;
 
-/** Counts the queries a callee sends that read the `blobs` table. */
 function countBlobQueries(client: PoolClient): { client: PoolClient; count: () => number } {
   let blobQueries = 0;
   const counted = new Proxy(client, {

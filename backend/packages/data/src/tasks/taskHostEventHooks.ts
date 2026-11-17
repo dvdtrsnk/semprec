@@ -1,20 +1,14 @@
-// Issue #1780: the write hooks that keep a task's stored host state (`hiddenUntil`, `effectiveDate`) current. Each
-// runs inside the triggering write's transaction. The third trigger, a write of the task's own `date` and the
-// create, is the Tasks pre-write transform (`taskPreWriteTransform.ts`). Registered in `../domainWriteHooks.ts`
-// (docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md). See
-// docs/adr/2026-11-12-task-host-state-is-recomputed-in-the-writing-transaction.md.
+// Write hooks keeping a task's stored host state current, each inside the triggering write's transaction. The
+// third trigger (create and writes of the task's own `date`) is the Tasks pre-write transform.
 import type { ItemUpdateHook, RelationEdgeChangedHook } from "../chokePoint/hooks.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { loadHostEventsRelation, recomputeTaskHostState } from "./taskHostEventState.js";
 
-/** The Events properties the end and the day of an Event come from: its start and end day and times, and the derived `time`. */
+/** The Event properties its end and day come from. */
 const EVENT_SCHEDULE_KEYS = ["date", "endDate", "timeFrom", "timeTo", "time"] as const;
 
-/**
- * After a `Tasks.hostEvents` / `Events.hostedTasks` edge was created, updated or removed (issue #1530's hook): the
- * task on that edge is recomputed. An edge of another relation is left alone.
- */
+/** Recomputes the task on a created, updated or removed host-event edge; other relations are ignored. */
 export const taskHostEventEdgeChangedHook: RelationEdgeChangedHook = async (context) => {
   const relation = await loadHostEventsRelation(context.client);
   if (!relation || relation.definitionId !== context.relationDefinitionId) return;
@@ -22,9 +16,8 @@ export const taskHostEventEdgeChangedHook: RelationEdgeChangedHook = async (cont
 };
 
 /**
- * After a write of an Event that names `date`, `endDate`, `timeFrom`, `timeTo` or the derived `time`: every task
- * that sits in the Event is recomputed, in the order of the task ids. A task in the Trash is left alone. The hook
- * does not look at whether the value changed; a recomputation that finds nothing to change writes nothing.
+ * Recomputes every live task in the Event, in task id order, when a schedule key is named. Whether the value
+ * changed is not checked; a recomputation with nothing to change writes nothing.
  */
 export const taskHostEventScheduleItemUpdateHook: ItemUpdateHook = async ({
   client,

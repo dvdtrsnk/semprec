@@ -58,7 +58,7 @@ function mcpUse(call: McpCall, atMs: number): EventSpec {
   };
 }
 
-/** The result of an MCP call as `agentSessionComposition` stores it: a failure is `details.error` with `isError` false. */
+/** As `agentSessionComposition` stores it: a failure is `details.error` with `isError` false. */
 function mcpResult(call: McpCall, atMs: number, failure?: Record<string, unknown>): EventSpec {
   return {
     kind: "tool_result",
@@ -109,7 +109,6 @@ function operationResult(call: { toolCallId: string }, atMs: number, failed: boo
 const TIMEOUT = { failureKind: "timeout", mcpServerItemId: SERVER, timeoutMs: 60000 };
 const UNAVAILABLE = { failureKind: "unavailable" };
 
-/** A turn whose reply ended `done` after the given tool events. */
 function replyAfter(toolEvents: EventSpec[]): EventSpec[] {
   return [
     userMessageEvent(),
@@ -120,7 +119,6 @@ function replyAfter(toolEvents: EventSpec[]): EventSpec[] {
   ];
 }
 
-/** A run of the current tenant in a fresh chat thread, as a heartbeat tick's run is. */
 async function createRunInThread(input: { triggeredBy: AgentRunRow["triggeredBy"] }): Promise<{
   threadId: string;
   run: AgentRunRow;

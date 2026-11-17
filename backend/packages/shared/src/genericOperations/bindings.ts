@@ -57,28 +57,22 @@ import {
 } from "./schemas.js";
 
 /**
- * One binding per operation (issue #252): the strict input schema that validates a raw payload
- * into `I`, plus `invoke`, which always calls the injected port's named method as
- * `service[method](actor, input)` — never a different argument order, never a different method.
- * `OperationBinding` itself depends only on `GenericApplicationPort`; the REST composition root
- * injects the REST implementation (#219), the AgentTool/MCP composition roots inject theirs
- * (#220) — this file never imports an implementation.
+ * One binding per operation: the strict input schema plus `invoke`, which always calls the injected port as
+ * `service[method](actor, input)`. Depends only on `GenericApplicationPort`; this file never imports an implementation.
  */
 export interface OperationBinding<I, O> {
   input: z.ZodType<I>;
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 51 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over every operation name; see `GENERIC_OPERATION_BINDINGS`. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
 
 /**
- * The canonical binding table. Assigning this object literal directly to `GenericOperationBindings`
- * (rather than through an intermediate variable) is what makes both a missing operation and an
- * extra/misspelled one a compile error: TypeScript excess-property-checks a fresh object literal
- * against its target type in both directions.
+ * Assigned directly as an object literal (not through a variable) so excess-property checking makes both a missing and
+ * an extra/misspelled operation a compile error.
  */
 export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "page.ensure": { input: PageEnsureInputSchema, invoke: (service, actor, input) => service.ensurePage(actor, input) },

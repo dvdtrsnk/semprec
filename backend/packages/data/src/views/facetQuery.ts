@@ -1,7 +1,5 @@
-// The facets of one database (issue #1759): for each requested property, or relation path, its choices with
-// the number of items that hold each one. It owns the exclude-self rewrite of the caller's filter and the one
-// counting statement per facet. It does not own the filter grammar (filterTree.ts), the compilation of a
-// filter to SQL (filterCompiler.ts) or the transaction it runs in (chokePoint/itemReads.ts).
+// Facets of one database: per requested property or relation path, its choices with item counts. Owns the
+// exclude-self filter rewrite and one counting statement per facet.
 import type { PoolClient } from "pg";
 import type { AreaFilterTemplate } from "@semprec/module-registry";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
@@ -34,33 +32,29 @@ import {
   type FilterNode,
 } from "./filterTree.js";
 
-/** A requested facet: the key of a property of the database, or a relation of it and then a relation of the items that one reaches. */
+/** A property key, or a relation of the database and then a relation of the items that one reaches. */
 export type FacetRequest = string | { path: [string, string] };
 
 export interface DatabaseFacetsInput {
   databaseId: string;
-  /** A filter tree (filterTree.ts), validated here. */
   filter?: unknown;
   facets: FacetRequest[];
-  /** `open` is a second filter tree, validated here; each facet then also reports how many of its items match it. */
+  /** A second filter tree; each facet then also reports how many of its items match it. */
   extra?: { open: unknown };
 }
 
 export interface DatabaseFacetsOptions {
-  /** The caller's `users.locale`. A label that is not stored is read from the catalog of this language; English without one. */
+  /** Missing stored labels are read from this language's catalog; English without one. */
   locale?: string;
-  /** The clock relative dates are evaluated at; defaults to the current time. */
   now?: Date;
   /**
-   * The Projects item of an agent's run (issue #2000): a filter, a relation facet or a path facet that reaches a
-   * sensitive database this project may not read, through a relation property or a rollup, is refused with a
-   * `ForbiddenError`. Set by the application layer from the run credential, never read from a request. This does not
-   * decide the access to the faceted database itself.
+   * An agent run's Projects item: a filter or facet that reaches, through a relation or rollup, a sensitive database
+   * this project may not read is refused with `ForbiddenError`. Set from the run credential, never from a request.
    */
   agentProjectItemId?: string;
 }
 
-/** One choice of a facet. `null` is the choice of the items without a value. */
+/** `null` is the choice of the items without a value. */
 export interface DatabaseFacetValue {
   value: string | number | boolean | null;
   label?: string;
@@ -68,26 +62,24 @@ export interface DatabaseFacetValue {
   count: number;
 }
 
-/** The answer to one requested facet; `open` is present exactly when the call carried `extra.open`. */
+/** `open` is present exactly when the call carried `extra.open`. */
 export type DatabaseFacet = ({ property: string } | { path: [string, string] }) & {
   all: number;
   open?: number;
   values: DatabaseFacetValue[];
 };
 
-/** What the facets read from the module manifests. */
 export interface FacetMetadata {
   catalogResolver: CatalogResolver;
-  /** The declared area filter of each system database that has one, by database key (issue #1597). */
+  /** By database key. */
   areaFilters: ReadonlyMap<string, AreaFilterTemplate>;
 }
 
 let facetMetadataPromise: Promise<FacetMetadata> | undefined;
 
 /**
- * The catalogs and the declared area filters the facets read, built once per process from a module registry
- * that `loadFullModuleRegistry` builds: the choke point is constructed from a pool alone and has no registry of
- * a composition root. A failed load is not cached, so the next call retries.
+ * Built once per process from `loadFullModuleRegistry`, because the choke point is constructed from a pool alone.
+ * A failed load is not cached, so the next call retries.
  */
 export function loadFacetMetadata(): Promise<FacetMetadata> {
   facetMetadataPromise ??= loadFullModuleRegistry()
@@ -105,19 +97,13 @@ export function loadFacetMetadata(): Promise<FacetMetadata> {
   return facetMetadataPromise;
 }
 
-/** Most choices a text facet lists, and most related items a relation or path facet lists. */
 const FACET_TOP_VALUES = 20;
 
-/**
- * The keys of the status-like select properties (issue #1759 calls them group selects). A facet of a select
- * property with one of these keys lists every option, also one that no item holds.
- */
+/** Status-like select keys: their facet lists every option, also one no item holds. */
 const GROUP_SELECT_KEYS: ReadonlySet<string> = new Set(["status", "type", "relationship"]);
 
-/** What a facet is counted over: one property of the database, or the items reached through two relations. */
 export type FacetTarget = { kind: "property"; key: string } | { kind: "path"; path: [string, string] };
 
-/** A `relation_path_contains` condition is on a path facet with the same two keys; any other condition is on the property facet of its `property`. */
 function isFacetCondition(node: FilterCondition, facet: FacetTarget): boolean {
   if (node.type === "relation_path_contains") {
     return facet.kind === "path" && node.path[0] === facet.path[0] && node.path[1] === facet.path[1];
@@ -138,11 +124,9 @@ function containsFacetCondition(node: FilterNode, facet: FacetTarget): boolean {
 }
 
 /**
- * The filter a facet is counted under: `filter` without the conditions on the facet itself. A condition is left
- * out when it is the root or is reached from the root through `and` nodes alone, which includes every direct
- * child of a top-level `and`; an `and` that loses all its children is left out with them, and `undefined` means
- * that nothing remains. A condition on the facet inside an `or` or a `not` cannot be left out without changing
- * what the rest of that node matches, so it is refused on `filter`.
+ * `filter` without its conditions on the facet itself; `undefined` when nothing remains. Only conditions reached
+ * from the root through `and` nodes are removed; one inside an `or` or `not` cannot be removed without changing
+ * what the rest matches, so it is refused.
  */
 export function excludeFacetConditions(filter: FilterNode, facet: FacetTarget): FilterNode | undefined {
   switch (filter.type) {
@@ -166,7 +150,6 @@ export function excludeFacetConditions(filter: FilterNode, facet: FacetTarget): 
   }
 }
 
-/** Whether the declared area filter takes the area through this property or path. */
 function areaFilterNames(template: AreaFilterTemplate, facet: FacetTarget): boolean {
   switch (template.type) {
     case "and":
@@ -181,37 +164,30 @@ function areaFilterNames(template: AreaFilterTemplate, facet: FacetTarget): bool
   }
 }
 
-/** A requested facet with the property a property facet names. */
 type RequestedFacet =
   { kind: "path"; path: [string, string] } | { kind: "property"; key: string; property: PropertyRow };
 
-/** What every facet of one call shares, and the filter of the one facet being counted. */
 interface FacetScope {
   databaseId: string;
   filterProperties: FilterProperties;
   context: FilterCompileContext | undefined;
   /** The caller's filter without its conditions on the facet itself. */
   filter: FilterNode | undefined;
-  /** The `extra.open` filter. */
   open: FilterNode | undefined;
-  /** The sensitive databases the agent's project may not read (issue #2000); `undefined` for a person. */
+  /** `undefined` for a person. */
   closedDatabaseIds: ReadonlySet<string> | undefined;
 }
 
 interface FacetStatement {
   params: unknown[];
-  /** Binds one more parameter and returns its placeholder. */
   bind: (value: unknown) => string;
-  /** Matches the live items of the database under the scope's filter, and no item of an archived database. */
+  /** Live items of the database under the scope's filter; no item of an archived database. */
   where: string;
-  /** Whether an item matches `extra.open`; `false` when the call has none. */
+  /** `false` when the call has no `extra.open`. */
   openSql: string;
 }
 
-/**
- * Starts the one statement of a facet. The items table is read under its own name, because a compiled filter
- * refers to `items.id` and to the bare `properties` and `computed` columns.
- */
+/** The items table keeps its own name because a compiled filter refers to `items.id`, `properties` and `computed`. */
 function startStatement(scope: FacetScope): FacetStatement {
   const params: unknown[] = [scope.databaseId];
   const conditions = [
@@ -238,13 +214,10 @@ function startStatement(scope: FacetScope): FacetStatement {
   };
 }
 
-/** The counts of a facet whose choices are values: stored ones or related items. */
 interface CountedValues {
   all: number;
   open: number;
-  /** The items without a value. */
   none: number;
-  /** The values in the order the statement returned them. */
   values: { value: string; count: number; label: string | null; color: string | null }[];
 }
 
@@ -258,10 +231,8 @@ interface CountedValueRow {
 }
 
 /**
- * The common table expressions of a value facet. `matched` holds the counted items with `storedSql` as `stored`,
- * `source` is a subquery over one `matched` row that returns its values as `value`, and `counted` has one row per
- * value, one row with a NULL value for the items without one, and the total row, which the empty grouping set
- * yields whatever the input. An item with several values is counted in each of them and once in the total.
+ * `counted` has one row per value, one NULL-value row for items without one, and the total row from the empty
+ * grouping set (present whatever the input). An item with several values counts in each and once in the total.
  */
 function countedValuesSql(statement: FacetStatement, storedSql: string, source: string): string {
   return `WITH matched AS (
@@ -295,11 +266,8 @@ function readCountedValues(rows: CountedValueRow[]): CountedValues {
 }
 
 /**
- * Counts the stored values of one property in one statement. A `multiple` property stores a JSON array and an
- * item counts in each distinct non-empty text of it; anything else stores one value. A missing value, JSON null
- * and the empty string are no value, and so is, for a `multiple` property, an array without a non-empty text and
- * a value that is not an array. With `top` only the `top` most frequent values are returned, the most frequent
- * first and equal counts in byte order; without it every value, in byte order.
+ * A `multiple` property counts each distinct non-empty text of its JSON array. Missing, JSON null and the empty
+ * string are no value. With `top`, the most frequent first (ties in byte order); otherwise all, in byte order.
  */
 async function countStoredValues(
   client: PoolClient,
@@ -333,7 +301,6 @@ async function countStoredValues(
   return readCountedValues(rows);
 }
 
-/** One relation step: the definition, the sides of its edges and the database of the items it reaches. */
 interface RelationHop {
   definitionId: string;
   ownColumn: "item_a" | "item_b";
@@ -359,25 +326,15 @@ function relationHop(property: FilterProperty | undefined): RelationHop | undefi
   };
 }
 
-/** Refuses a facet over a relation into a sensitive database the agent's project may not read (issue #2000). */
 function assertHopNotClosed(key: string, hop: RelationHop, closedDatabaseIds: ReadonlySet<string> | undefined): void {
   if (closedDatabaseIds?.has(hop.targetDatabaseId)) throw closedDatabaseRefusal(key, hop.targetDatabaseId);
 }
 
 /**
- * Counts the items a relation, or a path of two relations, reaches, in one statement. A reached item counts
- * while it is not soft-deleted and its database is not archived, and on a path the same holds for the item in
- * between; an item of the faceted database whose every edge ends elsewhere has no value.
- *
- * With `everyTarget` every live item of the reached database is returned, also one with count 0; without it the
- * `FACET_TOP_VALUES` most frequent ones. Either way the most frequent comes first and equal counts are ordered
- * by id. `label` is the reached item's value of the title property of its database. `color` is, for an item of
- * the Projects system database, the `color` of the live area its `area` relation points at, and for an item of
- * any other database that has a `color` property its own value of it.
- *
- * Only the `item_a`/`item_b` column names of the hops are interpolated, and `relationHop` picks them from those
- * two fixed identifiers by the side of the registered definition. Every id is a bound parameter; the `title`
- * type and the `area` and `color` keys are constants of the statement.
+ * Counts the live items a relation or two-relation path reaches (the middle item must be live too), most frequent
+ * first, ties by id; `everyTarget` returns every live item of the reached database, also with count 0. `color` is
+ * the area color for a Projects item, otherwise the item's own `color`. Only the fixed `item_a`/`item_b` column
+ * names are interpolated; every id is a bound parameter.
  */
 async function countRelationTargets(
   client: PoolClient,
@@ -485,15 +442,10 @@ async function countRelationTargets(
 interface MatchCounts {
   all: number;
   open: number;
-  /** How many of the facet's items match the condition at `index`. */
   at(index: number): number;
 }
 
-/**
- * How many of the facet's items match each of `conditions`, in one statement: every item is paired with one
- * probe per condition, and the probes that hold are counted by name. A probe no item matches has no row and
- * counts 0.
- */
+/** One statement: every item is paired with one probe per condition; a probe no item matches counts 0. */
 async function countMatches(client: PoolClient, scope: FacetScope, conditions: FilterNode[]): Promise<MatchCounts> {
   const statement = startStatement(scope);
   const probes = [
@@ -524,10 +476,7 @@ async function countMatches(client: PoolClient, scope: FacetScope, conditions: F
 
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 
-/**
- * The related items as facet choices, then the items that reach none. An item without a title is labelled with
- * the empty string, and a stored color that is not `#RRGGBB` is left out.
- */
+/** An item without a title gets the empty label; a stored color that is not `#RRGGBB` is dropped. */
 function relationValues(counted: CountedValues): DatabaseFacetValue[] {
   return [
     ...counted.values.map((entry) => ({
@@ -540,11 +489,7 @@ function relationValues(counted: CountedValues): DatabaseFacetValue[] {
   ];
 }
 
-/**
- * The choices of a select or multi-select property: its options in `config.options` order with their label and
- * color (every option when `everyOption`, otherwise the ones an item holds), then any other stored value in byte
- * order without a label, then the items without a value.
- */
+/** Options in `config.options` order, then other stored values in byte order unlabelled, then the items without a value. */
 function optionValues(resolved: ResolvedProperty, counted: CountedValues, everyOption: boolean): DatabaseFacetValue[] {
   const options = resolved.options ?? [];
   const optionKeys = new Set(options.map((option) => option.key));
@@ -565,7 +510,6 @@ function optionValues(resolved: ResolvedProperty, counted: CountedValues, everyO
   ];
 }
 
-/** The filter an empty number preset stands for: no value, and with `matchZero` also the number 0. */
 function emptyNumberCondition(propertyKey: string, matchZero: boolean): FilterNode {
   const empty: FilterNode = { type: "is_empty", property: propertyKey };
   if (!matchZero) return empty;
@@ -580,25 +524,11 @@ function emptyNumberCondition(propertyKey: string, matchZero: boolean): FilterNo
 }
 
 /**
- * Computes the requested facets of `database` in the caller's transaction, in request order, one counting
- * statement per facet. Every facet is counted over the live items of the database under the caller's filter
- * without its conditions on the facet itself (`excludeFacetConditions`); `all` is their number and `open` the
- * number of those that also match `extra.open`. An archived database has no such item, so every count is 0.
- *
- * What a facet lists depends on the property:
- * - a select: the options an item holds, or every option for a status-like key (`GROUP_SELECT_KEYS`), then the
- *   items without a value; a multi-select: the options an item holds, then the items without a value;
- * - a text: the 20 most frequent values;
- * - a checkbox: `true`, then `false`, which also holds the items without a value;
- * - a date: each named relative-date preset that an item matches, then `null` when an item has no date;
- * - a number: each valid stored filter preset with its label, counted by the preset's comparison, then the
- *   stored empty preset as `null`;
- * - a relation or a path: the 20 related items most items reach, then the items that reach none. When the
- *   area filter the database's module manifest declares (issue #1597) takes the area through that relation or
- *   path, every item of the reached database is listed instead, also one no item reaches.
- *
- * An unknown key, a property of another type and a relation or path that cannot be resolved are refused on
- * `facets`.
+ * Computes the requested facets in the caller's transaction, one statement per facet, each counted under the
+ * caller's filter minus its own conditions. Selects list held options (every option for `GROUP_SELECT_KEYS`), text
+ * the top 20 values, checkbox `true`/`false` (false includes no value), date the matching relative presets, number
+ * its stored presets, and a relation or path the top 20 reached items, or every reached item when the module's
+ * declared area filter goes through it. Unresolvable keys are refused on `facets`.
  */
 export async function computeDatabaseFacets(
   client: PoolClient,
@@ -625,7 +555,7 @@ export async function computeDatabaseFacets(
     return { kind: "property", key: request, property };
   });
 
-  // One read of the tenant zone for the whole call, and only when a filter or a date facet needs the clock.
+  // The tenant zone is read once, and only when a filter or date facet needs the clock.
   const clocked: FilterNode[] = [filter, open].filter((node) => node !== undefined);
   for (const facet of requested) {
     if (facet.kind === "property" && facet.property.type === "date") {
@@ -661,8 +591,7 @@ export async function computeDatabaseFacets(
 
     if (facet.kind === "path") {
       const first = relationHop(filterProperties.get(facet.path[0]));
-      // Either hop can reach a closed database: it would list its records (issue #2000). The first is checked before
-      // the properties of its database are read for the second.
+      // Either hop can reach a closed database; the first is checked before the second's properties are read.
       if (first) assertHopNotClosed(facet.path[0], first, closedDatabaseIds);
       const second = first
         ? relationHop(

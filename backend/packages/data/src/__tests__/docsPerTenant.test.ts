@@ -9,7 +9,6 @@ import { ConflictError, NotFoundError } from "../errors.js";
 
 let pool: Pool;
 
-/** Runs `fn` in a transaction on the owner role that is always rolled back. */
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
   let primary: unknown;
@@ -49,7 +48,6 @@ async function countDocs(client: PoolClient, itemId: string): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
-/** Adds a second tenant with one database each, and runs as `semprec_data`. */
 async function twoTenants(client: PoolClient) {
   await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
   const { rows } = await client.query<{ id: string }>("SELECT id FROM tenants");
@@ -78,16 +76,14 @@ interface RaceClient {
 }
 
 interface FirstWriteRace<C> {
-  /** Starts the loser on its own client; its settlement is observed immediately, never left unhandled. */
   startLoser: <T>(start: (client: C) => Promise<T>) => Promise<T>;
   commitWinner: () => Promise<void>;
 }
 
 /**
- * Owns both clients of the concurrent-first-write race. `scenario` runs inside the winner's open
- * transaction. On any failure the winner is rolled back unless it already committed - that releases
- * the lock the loser waits on - then the loser's settlement is awaited, and only then are the winner
- * and the loser released, in that order. The scenario's own error is the one rethrown.
+ * Owns both clients of the concurrent-first-write race; `scenario` runs inside the winner's open
+ * transaction. On failure the winner is rolled back unless committed (releasing the loser's lock), the
+ * loser's settlement is awaited, then both are released. The scenario's own error is rethrown.
  */
 async function runFirstWriteRace<C extends RaceClient>(
   winner: C,
@@ -101,8 +97,7 @@ async function runFirstWriteRace<C extends RaceClient>(
     await scenario({
       startLoser: (start) => {
         const pending = start(loser);
-        // Both outcomes are observed here, so a loser rejection is never unhandled and
-        // cleanup can wait for it without the scenario having awaited it.
+        // Both outcomes are observed here, so a loser rejection is never unhandled.
         loserSettled = pending.then(
           () => undefined,
           () => undefined,
@@ -193,17 +188,15 @@ describe("docs are per tenant", () => {
     type LoserOutcome = "resolves" | "rejects";
 
     /**
-     * Fake clients that log every step. The loser stays pending until the winner's ROLLBACK or
-     * COMMIT, as a real writer blocked on the winner's row lock would; a cleanup that awaited the
-     * loser before rolling back would never see it settle.
+     * Fake clients that log every step. The loser stays pending until the winner's ROLLBACK or COMMIT, as a
+     * writer blocked on the winner's row lock would.
      */
     function fakeRace(outcome: LoserOutcome, rollbackFails: boolean) {
       const events: string[] = [];
       let settleLoser: () => void = () => undefined;
       const loserResult = new Promise<string>((resolve, reject) => {
-        // Settles on a later macrotask, as a writer that wakes after the lock is gone would, so a
-        // cleanup that released the clients without awaiting the loser logs the releases first.
-        // No handler is attached here: only runFirstWriteRace's observer keeps a rejection handled.
+        // Settles on a later macrotask, so a cleanup that released the clients without awaiting the loser logs
+        // the releases first. Only runFirstWriteRace's observer keeps a rejection handled.
         settleLoser = () => {
           setTimeout(() => {
             events.push(`loser ${outcome}`);

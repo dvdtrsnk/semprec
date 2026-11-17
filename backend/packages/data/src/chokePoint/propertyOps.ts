@@ -1,13 +1,7 @@
-// Owns the properties domain of the choke point: listing, reading and resolving properties, creating,
-// renaming, reconfiguring, retyping and deleting them, adding and changing the options of a select
-// property, plus the transaction-scoped
-// `propertyDeleteWithClient` the approved-operation executor calls. Relation-definition writes (the
-// paired relation properties themselves), item, view and database writes do not belong here, and
-// neither does any other domain module's code.
-// Constrained by:
-// - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
-// - docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
-// - docs/adr/2026-11-10-select-options-change-on-a-schema-locked-database.md
+// The properties domain of the choke point: list, read, resolve, create, rename, reconfigure, retype
+// and delete properties, add and change select options, and the transaction-scoped
+// `propertyDeleteWithClient` for the approved-operation executor. Relation-definition writes are not
+// here.
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -41,12 +35,10 @@ import {
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
 /**
- * Issue #1652: after a property is created, changed or deleted, the search documents of its
- * database are rebuilt by issue #1397's backfill with `onlyMissing: false`, queued in this
- * transaction, so existing values of the property become searchable or stop being. The backfill's
- * key names the database, so repeated property writes collapse into one queued job. Emails are not
- * reindexed (mail owns their rows). Outside a tenant scope (only the transitional `warn` mode lets a
- * write run there) the per-tenant backfill cannot be keyed, so nothing is queued.
+ * After a property changes, its database's search documents are rebuilt by the backfill
+ * (`onlyMissing: false`) queued in this transaction, so existing values become searchable or stop
+ * being. The job key names the database, so repeated writes collapse. Emails are not reindexed (mail
+ * owns their rows). Outside a tenant scope the job cannot be keyed, so nothing is queued.
  */
 async function enqueuePropertySearchReindex(client: PoolClient, databaseIds: Iterable<string>): Promise<void> {
   if (currentTenantScope()?.kind !== "tenant") return;
@@ -60,9 +52,8 @@ async function enqueuePropertySearchReindex(client: PoolClient, databaseIds: Ite
 let optionCatalogResolverPromise: Promise<CatalogResolver> | undefined;
 
 /**
- * The catalog resolver the option writes of issue #1699 read option labels through, built once per process from a
- * module registry that `loadFullModuleRegistry` builds: the choke point is constructed from a pool alone and has no
- * registry of a composition root. A failed load is not cached, so the next call retries.
+ * Built once per process from `loadFullModuleRegistry`, since the choke point is constructed from a
+ * pool alone. A failed load is not cached, so the next call retries.
  */
 function getOptionCatalogResolver(): Promise<CatalogResolver> {
   optionCatalogResolverPromise ??= loadFullModuleRegistry()
@@ -75,9 +66,8 @@ function getOptionCatalogResolver(): Promise<CatalogResolver> {
 }
 
 /**
- * What both option writes of issue #1699 do after the store wrote the option, in the same transaction: queue the
- * search reindex of the database, register the schema invalidation for after the commit, and return the written
- * option as the schema projection shows it (`resolveProperty`), with its label in `locale`.
+ * In the option write's transaction: queue the search reindex, register the schema invalidation for
+ * after commit, and return the option as `resolveProperty` projects it, labelled in `locale`.
  */
 async function finishOptionWrite(
   client: PoolClient,
@@ -102,11 +92,7 @@ async function finishOptionWrite(
   return option;
 }
 
-/**
- * Transaction-scoped counterpart to `chokePoint.deleteProperty` (issue #89), factored out so
- * `ApprovedOperationExecutor` can run it against the same locked transaction as its own
- * revalidation instead of `chokePoint.deleteProperty` opening a second, independent one.
- */
+/** Transaction-scoped counterpart to `chokePoint.deleteProperty`, for `ApprovedOperationExecutor`'s locked transaction. */
 export async function propertyDeleteWithClient(
   client: PoolClient,
   id: string,
@@ -142,11 +128,7 @@ export async function propertyDeleteWithClient(
   return property;
 }
 
-/**
- * The config-update logic shared by `chokePoint.updatePropertyConfig` and `chokePoint.updateProperty`
- * (issue #240), factored out so `updateProperty` can run it against the same client/transaction as
- * a sibling rename/type-change instead of opening its own.
- */
+/** Shared by `updatePropertyConfig` and `updateProperty`, so the latter runs it in one transaction with a rename/retype. */
 async function updatePropertyConfigWithClient(
   client: PoolClient,
   id: string,
@@ -160,10 +142,7 @@ async function updatePropertyConfigWithClient(
   return property;
 }
 
-/**
- * The type-change logic shared by `chokePoint.changePropertyType` and `chokePoint.updateProperty`
- * (issue #240), factored out for the same reason as `updatePropertyConfigWithClient` above.
- */
+/** Shared by `changePropertyType` and `updateProperty`, as `updatePropertyConfigWithClient`. */
 async function changePropertyTypeWithClient(
   client: PoolClient,
   id: string,
@@ -192,11 +171,7 @@ async function changePropertyTypeWithClient(
   return updated;
 }
 
-/**
- * Transaction-scoped counterpart to `chokePoint.updateProperty`, factored out so
- * `updatePropertyWithDatabase` can resolve the property's owning `Database` row against the same
- * transaction client this applies the patch in, instead of each caller opening its own.
- */
+/** Lets `updatePropertyWithDatabase` read the owning database in the same transaction as the patch. */
 async function updatePropertyWithClient(
   client: PoolClient,
   id: string,
@@ -205,17 +180,14 @@ async function updatePropertyWithClient(
   let property = await propertiesStore.getPropertyForUpdate(client, id);
   if (!property) throw new NotFoundError(`Property ${id} not found`);
 
-  // Issue #219: checked here, inside the same transaction as the existence check above,
-  // so an unknown id is always 404 regardless of patch shape — a caller-side pre-check for
-  // this would itself be an out-of-transaction read the existence check above already makes
-  // redundant.
+  // Checked inside the transaction after the existence check, so an unknown id is always 404
+  // whatever the patch shape.
   if (input.name === undefined && input.config === undefined && input.type === undefined) {
     throw new ValidationError("Patch must include at least one field", { reason: "empty_patch" });
   }
 
-  // Issue #219: re-checked against the row this same transaction just fetched, not a
-  // caller-supplied snapshot — a concurrent type change between an outer read and this
-  // write can't slip a type/config patch past a relation property this way.
+  // Re-checked against the row this transaction fetched, so a concurrent type change cannot slip a
+  // patch past a relation property.
   if (property.type === "relation" && (input.type !== undefined || input.config !== undefined)) {
     const field = input.type !== undefined ? "type" : "config";
     throw new ValidationError(`Property ${id} is a relation; ${field} is changed only via its relation definition`, {
@@ -238,8 +210,8 @@ async function updatePropertyWithClient(
 }
 
 /**
- * An external client's check (issue #1998) for a property it reads or changes by id: the property's own database and,
- * for a relation property, the database of its paired side, which a change or a delete of this side reaches as well.
+ * An external client's check: the property's database and, for a relation property, the paired
+ * side's database, which a change or delete of this side also reaches.
  */
 async function assertReaderPropertyPairAccess(
   client: PoolClient,
@@ -257,8 +229,8 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
   const { pool, computedKeyRegistry } = deps;
   return {
     /**
-     * The reads and writes below that take a `reader` are an external client's (issue #1998): it needs `read` (reads)
-     * or `write` (writes) access to the property's database, checked first in the transaction of the operation.
+     * Operations below that take a `reader` need `read` (reads) or `write` (writes) on the property's
+     * database, checked first in the operation's transaction.
      */
     async listProperties(databaseId: string, reader?: DatabaseReader): Promise<PropertyRow[]> {
       return withTransaction(pool, async (client) => {
@@ -273,12 +245,12 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
       });
     },
 
-    /** Resolves a relation route's `:propertyKey` path segment (issue #157) — the choke-point's edge calls take a property id, never a key, so a REST caller must go through this first. */
+    /** Resolves a relation route's `:propertyKey`; edge calls take a property id, never a key. */
     async getPropertyByKey(databaseId: string, key: string): Promise<PropertyRow | null> {
       return withTransaction(pool, (client) => propertiesStore.getPropertyByKey(client, databaseId, key));
     },
 
-    /** Backs the `property.getByKey` generic operation (issue #432) — see `propertiesStore.findPropertiesByKey`. */
+    /** See `propertiesStore.findPropertiesByKey`. */
     async findPropertiesByKey(
       databaseId: string,
       key: string,
@@ -364,11 +336,8 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     },
 
     /**
-     * The single entry point for `PATCH /api/properties/:id` (issue #240): applies whichever of
-     * `name`/`config`/`type` were sent in one transaction, so a 403 from the locked-schema checks
-     * inside `updatePropertyConfigWithClient`/`changePropertyTypeWithClient` rolls back a rename
-     * requested in the same call instead of leaving it silently committed against the caller's
-     * expectation that a 403 response means nothing changed.
+     * `PATCH /api/properties/:id`: applies `name`/`config`/`type` in one transaction, so a 403 from the
+     * locked-schema checks also rolls back a rename in the same call.
      */
     async updateProperty(
       id: string,
@@ -388,11 +357,9 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     },
 
     /**
-     * REST-only counterpart to `updateProperty` (issue #789), for `PATCH /api/properties/:id`'s
-     * catalog/locale resolution: reads the property's owning `Database` row inside the same
-     * transaction `updateProperty` applies the patch in, so a database deleted between the patch
-     * and a separate `database.get` call can no longer surface as a second, independent
-     * not-found failure for an update that already succeeded.
+     * `updateProperty` that also reads the owning database in the same transaction, for the REST
+     * response's catalog/locale resolution, so a concurrently deleted database cannot fail an update that
+     * already succeeded.
      */
     async updatePropertyWithDatabase(
       id: string,
@@ -412,10 +379,9 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     },
 
     /**
-     * `property.option.add` (issue #1699): appends an option to a select or multi_select property, also on a
-     * schema-locked database, and returns it with its generated key. An added option stores its label, so the
-     * locale of the returned projection is never read; the reference locale is passed. The catalog resolver is
-     * obtained before the transaction opens, so the transaction never waits for the module manifests to load.
+     * Appends an option to a select or multi_select property, also on a schema-locked database, and
+     * returns it with its generated key. The stored label makes the locale irrelevant. The catalog
+     * resolver is obtained before the transaction so it never waits on manifest loading.
      */
     async addPropertyOption(
       propertyId: string,
@@ -430,9 +396,8 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     },
 
     /**
-     * `property.option.update` (issue #1699): writes the label, the color or both of one option, also on a
-     * schema-locked database, and returns the option; its key never changes. `locale` picks the catalog language of
-     * the returned label when the option stores none. The catalog resolver as for `addPropertyOption`.
+     * Writes the label, color or both of one option, also on a schema-locked database; the key never
+     * changes. `locale` picks the catalog language when the option stores no label.
      */
     async updatePropertyOption(
       propertyId: string,
@@ -455,10 +420,8 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     },
 
     /**
-     * Returns the row as it stood immediately before deletion (issue #219): fetched by this same
-     * transaction, not a caller-supplied snapshot from a separate `getProperty` call — a rename
-     * landing between a pre-check and this call could otherwise make a REST response describe a
-     * state the deleted row never actually had at the moment it was deleted.
+     * Returns the row as this transaction read it immediately before deletion, so a concurrent rename
+     * cannot make the response describe a state the deleted row never had.
      */
     async deleteProperty(id: string, actingUserId?: string, reader?: DatabaseReader): Promise<PropertyRow> {
       return withTransaction(pool, async (client) => {

@@ -6,7 +6,6 @@ export interface TenantDataKey {
   dataKey: Buffer;
 }
 
-/** The master key version new tenant keys are wrapped under. */
 const CURRENT_MASTER_KEY_VERSION = 1;
 
 interface TenantKeyRow {
@@ -17,9 +16,8 @@ interface TenantKeyRow {
 }
 
 /**
- * The current tenant's data key, or null when it has none yet. The explicit `app_tenant_default()`
- * filter sits on top of row-level security so a superuser connection cannot pick another tenant's
- * row either. An unwrap failure propagates.
+ * `null` when the tenant has no key yet. The explicit `app_tenant_default()` filter on top of RLS keeps even a
+ * superuser connection on its own tenant's row.
  */
 export async function getTenantDataKey(client: Queryable): Promise<TenantDataKey | null> {
   const { rows } = await client.query<TenantKeyRow>(
@@ -33,11 +31,7 @@ export async function getTenantDataKey(client: Queryable): Promise<TenantDataKey
   return { tenantId: row.tenant_id, dataKey };
 }
 
-/**
- * The current tenant's data key, creating it on first use. Concurrent creators converge on one
- * key: the insert is `ON CONFLICT DO NOTHING` and the row is read back afterwards. Works on a pool
- * and inside a transaction.
- */
+/** Concurrent creators converge on one key: insert `ON CONFLICT DO NOTHING`, then read back. */
 export async function getOrCreateTenantDataKey(client: Queryable): Promise<TenantDataKey> {
   const existing = await getTenantDataKey(client);
   if (existing) return existing;

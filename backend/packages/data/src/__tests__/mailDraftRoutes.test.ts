@@ -55,10 +55,9 @@ const JANA = { name: "", address: "jana@example.test" };
 
 interface Fixture {
   mailboxId: string;
-  /** A mailbox with the same address list and no Drafts folder: no sync pass has discovered one yet. */
+  /** A mailbox with the same address list and no Drafts folder (no sync pass has discovered one yet). */
   mailboxWithoutDraftsId: string;
   draftsFolderId: string;
-  /** The thread of one received message, and the received message itself. */
   threadId: string;
   receivedId: string;
 }
@@ -88,7 +87,6 @@ describe("the mail draft routes (issue gh-1867)", () => {
     await rm(storageRoot, { recursive: true, force: true });
   });
 
-  /** Two mailboxes of the tenant in scope (the first with a Drafts folder) and a received message with its thread. */
   async function setup(): Promise<Fixture> {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -177,7 +175,6 @@ describe("the mail draft routes (issue gh-1867)", () => {
     return runInTenant(inTenant, () => createMailDraftDiscardRouteHandler(runtime)(ctx({ id }, undefined)));
   }
 
-  /** A complete create body: the draft the compose window autosaves once the user has typed a recipient and a subject. */
   const newDraft = (f: Fixture, overrides: Record<string, unknown> = {}) => ({
     mailboxId: f.mailboxId,
     from: OWN_ADDRESS,
@@ -206,7 +203,6 @@ describe("the mail draft routes (issue gh-1867)", () => {
     return rows[0]?.n ?? -1;
   }
 
-  /** The folders an Emails item is linked to, by special purpose. */
   async function folderPurposesOf(itemId: string): Promise<(string | null)[]> {
     const { rows } = await runtime.query<{ purpose: string | null }>(
       `SELECT folder.properties->>'specialPurpose' AS purpose
@@ -598,8 +594,8 @@ describe("the mail draft routes (issue gh-1867)", () => {
   });
 
   /**
-   * Runs `edit` in a transaction that stays open until the returned `commit` runs, starts `request` while it is
-   * open, and checks that `request` waits for it. Returns what `request` settled with, after the commit.
+   * Runs `edit` in a transaction left open until the returned `commit` runs, starts `request` meanwhile and
+   * checks that it waits. Returns what `request` settled with, after the commit.
    */
   async function requestWaitingForOpenTransaction<T>(
     edit: (client: PoolClient) => Promise<void>,

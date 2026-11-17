@@ -10,43 +10,30 @@ import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 import { PAGES_MODULE_ID } from "./pagesDatabase.js";
 
-// Which database a page belongs to, for the per-database grant of an agent's project
-// (docs/adr/2026-11-13-page-operations-follow-the-owner-database-grant.md).
+// Which database a page belongs to, for per-database reader grants.
 
-/** A parent chain of subpages is at most this long; a longer one cannot be walked to its host (docs/adr/2026-11-09-subpage-parent-chains-are-bounded-while-walked.md). */
+/** Bounds every walk of a subpage parent chain. */
 export const MAX_SUBPAGE_CHAIN = 1000;
 
-/** The shape of an item id as the `parentItemId` text property of a Pages item stores it. */
+/** Validates the free-text `parentItemId` property of a Pages item. */
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** The item behind `itemId`, trashed or not; an unknown id and an id of another tenant are one `NotFoundError`. */
 async function requireItemIncludingDeleted(client: PoolClient, itemId: string): Promise<ItemRow> {
   const [item] = await getItemsByIdsIncludingDeleted(client, [itemId]);
   if (!item) throw new NotFoundError("Item not found", { resource: "item", itemId });
   return item;
 }
 
-/** The item that hosts a page and the database that owns it. */
 export interface PageOwner {
-  /** The database whose grant decides who may read or write the page. */
   databaseId: string;
-  /** The item the page belongs to: `itemId` itself, or for a subpage the first ancestor that is not a Pages item. */
+  /** `itemId` itself, or for a subpage the first ancestor that is not a Pages item. */
   hostItemId: string;
 }
 
 /**
- * The owner of the page of `itemId`:
- * - an item of the hidden Pages database (a subpage) belongs to its root host, so the walk follows `parentItemId`
- *   through Pages items, trashed ones included, and answers the first item that is not a Pages item and its database;
- * - every other item, a Journal day among them, belongs to itself and its own database.
- *
- * The host item is what an agent's check names (docs/adr/2026-11-13-items-linked-to-a-sensitive-record-inherit-its-sensitivity.md):
- * a file linked to a sensitive record keeps its page closed to a project without the matching access, and so do the
- * subpages under it.
- *
- * It only reads. An item or an ancestor that does not exist (a host that was purged) is a `NotFoundError`, so a page
- * without a reachable host is closed to an agent; a stored cycle or a chain longer than `MAX_SUBPAGE_CHAIN` is a
- * `ValidationError` on `itemId`.
+ * A subpage belongs to its root host, found through trashed ancestors too; the host item is what sensitivity checks
+ * name, so subpages of a sensitive-linked file stay closed. A missing ancestor (purged host) is `NotFoundError`, so a
+ * page without a reachable host is closed to an agent.
  */
 export async function resolvePageOwner(client: PoolClient, itemId: string): Promise<PageOwner> {
   const visited = new Set<string>();
@@ -74,21 +61,14 @@ export async function resolvePageOwner(client: PoolClient, itemId: string): Prom
   }
 }
 
-/** The database whose grant decides who may read or write the page of `itemId` (`resolvePageOwner`). */
 export async function resolvePageOwnerDatabase(client: PoolClient, itemId: string): Promise<string> {
   return (await resolvePageOwner(client, itemId)).databaseId;
 }
 
 /**
- * Refuses with a `ForbiddenError` (403 `forbidden`) when the reader lacks `access` to the database that owns the page
- * of `itemId` (`resolvePageOwner`), in the transaction of the read or write it guards. The reader is an agent's
- * project (a string; it takes the same share lock on the grant row as `assertAgentDatabaseAccess`) or an external AI
- * client on `/mcp` (issue #1998; it has no grant, a sensitive database is closed to it). It is the one page check of
- * both: an external client does not walk the path of the item by another resolver. An agent's project also needs
- * `access` on every sensitive database the host item of the page is linked to when the host belongs to a
- * sensitivity-inheriting database (Files, Transcripts, Inbox; issue #1999), so the page of a linked file is as closed as
- * the file; an external client is decided by the database alone. Without a reader (a person, the
- * system) nothing is checked, as for every other path of the per-database grants.
+ * The single page access check for agents' projects and external `/mcp` clients; must run in the transaction of the
+ * guarded read or write. An agent also needs access to sensitive databases its host item is linked to. No reader (a
+ * person or the system) means no check.
  */
 export async function assertAgentPageAccess(
   client: PoolClient,

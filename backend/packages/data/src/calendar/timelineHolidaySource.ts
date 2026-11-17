@@ -4,16 +4,9 @@ import { czechPublicHolidays, type CzechPublicHoliday } from "./czechPublicHolid
 import { readSystemCalendarId } from "./systemCalendar.js";
 import type { CalendarHolidayTimelineItem, CalendarTimelineContext } from "./timelineSources.js";
 
-/** The Czech public holidays calendar's system key (`seed/seedCalendars.ts`). */
 const HOLIDAYS_SYSTEM_KEY = "holidaysCz";
 
-/**
- * The public holiday source of the calendar timeline (issue #1804): one all-day, read-only entry for every
- * Czech public holiday that falls inside the range, in every year the range touches. The holidays come from
- * `czechPublicHolidays`, which knows the years 2016 to 2100; nothing is stored or downloaded. The title is the
- * `calendar.holiday.<key>` entry of the tenant user's language; the `holidaysCz` calendar's id is `calendarId`,
- * `null` when the tenant has none. A range without a holiday reads nothing from the database.
- */
+/** Computed, never stored or downloaded. A range without a holiday reads nothing from the database. */
 export async function readHolidayTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,

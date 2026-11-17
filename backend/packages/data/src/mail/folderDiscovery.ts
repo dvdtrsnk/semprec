@@ -19,10 +19,8 @@ export interface EnsureFolderItemInput {
 const FOLDER_ALLOWED_SYSTEM_KEYS = ["name", "behavior", "specialPurpose", "providerId"];
 
 /**
- * Finds the Folder item this mailbox already has for `providerId` (an IMAP path, Gmail
- * label id, or Graph folder id), or creates one — folder discovery/creation shared by all
- * three adapters. Scoped per-mailbox (not just by `providerId` alone): two accounts can each
- * have a folder whose IMAP path is literally "INBOX".
+ * Finds or creates this mailbox's Folder for `providerId` (IMAP path, Gmail label id or Graph
+ * folder id). Scoped per mailbox: two accounts can both have an "INBOX".
  */
 export async function ensureFolderItem(client: PoolClient, input: EnsureFolderItemInput): Promise<string> {
   const { rows } = await client.query<{ id: string }>(
@@ -66,11 +64,8 @@ export interface FindFolderBySpecialPurposeInput {
 }
 
 /**
- * The Sent/Drafts counterpart to `ensureFolderItem`'s providerId lookup (mail/send.ts,
- * mail/draft.ts) — finds this mailbox's folder for a well-known `specialPurpose`, or `null` if
- * the sync worker hasn't discovered/created one yet. Read-only, unlike `ensureFolderItem`: a
- * Sent/Drafts folder's `providerId` is provider-specific information only a real sync pass can
- * supply, so there is nothing sensible to create here.
+ * Returns `null` until sync has discovered the folder. Read-only because only a sync pass can
+ * supply the provider-specific `providerId`.
  */
 export async function findFolderBySpecialPurpose(
   client: PoolClient,

@@ -18,17 +18,11 @@ export type { TaskList, Task, Runner } from "graphile-worker";
 type Queryable = Pool | PoolClient;
 
 /**
- * Issue #167's one queue envelope: every job `enqueueJob` sends is wrapped in this shape, with
- * `traceId` stamped from the enqueuing process's own active trace (minting one if it isn't
- * already inside one). A public producer only ever supplies the business `payload` — it has no
- * way to set the top-level `traceId` itself, so it can neither omit nor spoof the queue trace.
- * `payload` stays `unknown` here (validated against each task's own shape once `registerTask`
- * unwraps it), matching how `mergeModuleTaskList` already re-validates module task payloads.
- *
- * `tenantId` is stamped the same way, from the producer's tenant scope: the tenant id for work
- * enqueued inside a tenant, `null` for system work or an unscoped producer. `.optional()` lets a
- * legacy envelope without the key parse, and the schema stays non-strict so the previous release
- * ignores the extra key (rollback safety).
+ * The envelope every `enqueueJob` job is wrapped in. `traceId` and `tenantId` are stamped from the
+ * producer's own trace and tenant scope (`null` for system work), so a producer supplies only
+ * `payload` and can neither omit nor spoof them. `payload` is validated per task once
+ * `registerTask` unwraps it. `tenantId` is optional and the schema non-strict so an envelope
+ * without the key still parses.
  */
 export const queueJobEnvelopeSchema = z.object({
   traceId: z.string().uuid(),
@@ -37,141 +31,108 @@ export const queueJobEnvelopeSchema = z.object({
 });
 export type QueueJobEnvelope = z.infer<typeof queueJobEnvelopeSchema>;
 
-/**
- * Task identifiers this issue's core registers. The runtime merge of CORE +
- * module-manifest task names happens in the module-system issue (#29), not here.
- */
+/** Task identifiers owned by core; module task names are merged in at runtime by the module registry. */
 export const CORE_TASK_NAMES = {
   ITEM_SEARCH_BACKFILL: "itemSearchBackfill",
-  // Issue #1652: rebuilds the search documents that quote another item's text after an edge, title, trash
-  // state or Inbox entry change, looking the dependents up when it runs, in committed chunks.
+  // Rebuilds the search documents that quote another item's text, in committed chunks.
   ITEM_SEARCH_REINDEX_DEPENDENTS: "itemSearchReindexDependents",
-  // Issue #1658: converts one page's blocks to plain text for the item search index, enqueued by a page edit
-  // with a 30-second debounce (`preserve_run_at`).
+  // Page blocks to plain text for the search index; enqueued with a 30-second debounce (`preserve_run_at`).
   ITEM_SEARCH_PAGE_TEXT: "itemSearchPageText",
-  // Issue #1715: copies the text of a parent document's `page` blocks onto the `title` of their Pages items, enqueued by
-  // a page edit with a 10-second debounce (`preserve_run_at`).
+  // Copies `page` block text onto the Pages item titles; enqueued with a 10-second debounce.
   PAGE_TITLE_MIRROR: "pageTitleMirror",
   MAIL_LINK_PERSON_EMAILS: "mailLinkPersonEmails",
-  // Issue gh-2029: soft-deletes a removed mailbox's Folders and Emails in committed chunks, enqueued by the removal
-  // transaction under the job key `mailbox-removal-<mailboxItemId>`.
+  // Soft-deletes a removed mailbox's Folders and Emails in chunks; job key `mailbox-removal-<mailboxItemId>`.
   MAILBOX_REMOVAL: "mailboxRemoval",
   HEARTBEAT_SWEEP: "heartbeatSweep",
-  // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
-  // heartbeat action (including library processing); the agent-session half is
-  // `AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT`.
+  // The deterministic heartbeat actions; agent-session actions run as `AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT`.
   HEARTBEAT_FIRE_CORE: "heartbeatFireCore",
   ROLLUP_RECOMPUTE: "rollupRecompute",
   ROLLUP_RECOMPUTE_FULL: "rollupRecomputeFull",
   PROPERTY_TYPE_MIGRATION: "propertyTypeMigration",
   DOC_COMPACTION_SWEEP: "docCompactionSweep",
-  // Issue #221: the closed API-set name for the block-doc history squash job; declared here so
-  // the affinity catalog is complete, but its handler and enqueue routing are delivered later.
+  // Declared so the affinity catalog is complete; no handler or enqueue routing exists yet.
   DOC_HISTORY_SQUASH: "docHistorySquash",
   DOC_HISTORY_CLEANUP: "docHistoryCleanup",
-  // Issue #25: the library module's per-item cover/metadata processing job.
   LIBRARY_METADATA_PROCESS: "processLibraryMetadata",
-  // Issue #26: the mail sync core's per-account reconcile job and its periodic due-account sweep.
   MAIL_ACCOUNT_SYNC: "mailAccountSync",
   MAIL_ACCOUNT_SYNC_SWEEP: "mailAccountSyncSweep",
-  // Issue #26: periodic safety net for Emails items whose search index write was skipped
-  // (a direct-DB write outside ingestEmailMessage's own standard path).
+  // Safety net for Emails items whose search index write was skipped.
   MAIL_SEARCH_REINDEX_SWEEP: "mailSearchReindexSweep",
-  // Issue #106: recomputes one Journal day item's cached `items.computed` Inbox-item list.
+  // Recomputes one Journal day item's cached `items.computed` Inbox-item list.
   JOURNAL_INBOX_RECOMPUTE: "journalInboxRecompute",
-  // Issue #131: the reserved execution job an approval decision enqueues once (and only once)
-  // a pending `approval_requests` row is atomically decided `approved`.
+  // Enqueued once when a pending `approval_requests` row is decided `approved`.
   APPROVAL_REQUEST_EXECUTE: "approvalExecute",
-  // Issue #151: fans out one committed notification to every active Web Push/APNs registration
-  // for its user.
+  // Fans out one notification to every active Web Push/APNs registration of its user.
   NOTIFICATION_FANOUT: "notificationFanout",
-  // Issue #1826: tells the devices of one user to remove notifications that were resolved, with a silent push per
-  // registration. Best effort: it keeps no delivery record.
+  // Silent push that removes resolved notifications from a user's devices; best effort, no delivery record.
   PUSH_DISMISS: "pushDismiss",
-  // Issue #1891: sends the user's current app icon badge to their iOS devices in a badge-only push. Enqueued
-  // debounced per user when a count or a badge switch changes; it keeps no delivery record.
+  // Badge-only push to a user's iOS devices, debounced per user; no delivery record.
   PUSH_BADGE_REFRESH: "pushBadgeRefresh",
-  // Issue #156: permanently deletes trashed items (and their cascade subtree) whose
-  // `deleted_at` is older than the 30-day retention window.
+  // Permanently deletes trashed items (and their subtree) past the 30-day retention window.
   ITEM_TRASH_PURGE_SWEEP: "itemTrashPurgeSweep",
-  // Issue #169: the every-minute internal-degradation check (process staleness, queue backlog,
-  // permanently-failed jobs, per-mailbox sync staleness).
+  // Every-minute internal-degradation check (process staleness, backlog, failed jobs, mailbox sync staleness).
   OBSERVABILITY_CHECK_SYSTEM: "observabilityCheckSystem",
-  // Issue #221: the closed API-set name for the daily trash purge crontab entry, distinct from
-  // the existing `itemTrashPurgeSweep` job it schedules alongside.
+  // The daily trash purge crontab entry, scheduled alongside `itemTrashPurgeSweep`.
   TRASH_PURGE: "trashPurge",
-  // Issue #180: enqueued for a standalone audio Files item (the Files onItemEvent:create
-  // trigger) or an explicit `POST /api/transcriptions` request. Its actual processing (the
-  // paid transcription pipeline) is out of this issue's scope — see transcriptionJob.ts.
+  // Enqueued for a standalone audio Files item or `POST /api/transcriptions`.
   TRANSCRIPTION_JOB: "transcriptionJob",
   TRANSCRIPTION_CREATE: "transcriptionCreate",
-  // Issue gh-1940: recomputes one transcript card from a user's instruction (one gateway call), run by the
-  // short-model-task runner of `semprec-transcribe`.
+  // Recomputes one transcript card from a user's instruction (one gateway call).
   TRANSCRIPT_CARD_RECOMPUTE: "transcriptCardRecompute",
-  // Issue gh-1942: asks the unmapped speakers of one transcript again after its Event or the Event's participants
-  // changed, on the same short-model-task runner of `semprec-transcribe`.
+  // Re-asks a transcript's unmapped speakers after its Event or the Event's participants changed.
   TRANSCRIPT_SPEAKER_SUGGESTION: "transcriptSpeakerSuggestion",
-  // Issue gh-1965: computes the size, preview and reduced copy of one Inbox photo, or the length and kind of one Inbox
-  // audio note, with `ffprobe`/`ffmpeg` in `semprec-transcribe`, under the job key `inbox-attachment-metadata:<attachmentId>`.
+  // Size/preview of an Inbox photo or length/kind of an audio note via `ffprobe`/`ffmpeg`; job key
+  // `inbox-attachment-metadata:<attachmentId>`.
   INBOX_ATTACHMENT_METADATA: "inboxAttachmentMetadata",
-  // Issue gh-1980: transcribes the short voice notes of one Inbox item into its system-owned `transcribedText`, in
-  // `semprec-transcribe`, under the job key `inbox-voice-note:<inboxItemId>`. The metadata job enqueues it.
+  // Transcribes an Inbox item's voice notes into `transcribedText`; job key `inbox-voice-note:<inboxItemId>`,
+  // enqueued by the metadata job.
   INBOX_VOICE_NOTE_TRANSCRIBE: "inboxVoiceNoteTranscribe",
   VALUE_LINKS_PROPAGATE: "valueLinksPropagate",
-  // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
+  // Closes every MCP-triggered run whose run-credential expired.
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
-  // Issue gh-1976: loads the tools of one MCP server item the confirmation of an Inbox card created, under the job key
-  // `mcp-server-sync-<mcpServerItemId>`. It runs the same sync as the human route and is not retried.
+  // Syncs one MCP server item's tools (same sync as the human route); job key `mcp-server-sync-<mcpServerItemId>`,
+  // not retried.
   MCP_SERVER_SYNC: "mcpServerSync",
-  // Issue #1483: the sweep that deletes expired and used mailbox OAuth states.
   MAIL_OAUTH_STATES_SWEEP: "mailOauthStatesSweep",
-  // Issue #692: the daily sweep that deletes pre-checkpoint agent_run_events rows past retention.
+  // Deletes pre-checkpoint agent_run_events rows past retention.
   AGENT_RUN_EVENTS_RETENTION: "agentRunEventsRetention",
   SEMP_PROBLEMS_PRUNE: "sempProblemsPrune",
   SEMP_THREAD_TITLE: "sempThreadTitle",
-  // Issue #706: the daily sweep that deletes permanently-failed graphile_worker.jobs rows past retention.
+  // Deletes permanently-failed graphile_worker.jobs rows past retention.
   QUEUE_FAILED_JOBS_PRUNE: "queueFailedJobsPrune",
-  // Issue #1043: builds one requested tenant export archive, and the daily sweep that removes
-  // expired exports' rows and files.
+  // Builds one tenant export archive; the sweep removes expired exports' rows and files.
   TENANT_EXPORT: "tenantExport",
   TENANT_EXPORT_EXPIRY_SWEEP: "tenantExportExpirySweep",
-  // Issue #1055: the per-minute sweep that erases every `deleting` tenant and records a tombstone.
+  // Erases every `deleting` tenant and records a tombstone.
   TENANT_PURGE: "tenantPurge",
-  // Issue #1401: the daily sweep that deletes standalone upload blobs nothing references 24 hours after creation.
+  // Deletes standalone upload blobs nothing references 24 hours after creation.
   BLOBS_UNREFERENCED_SWEEP: "blobsUnreferencedSweep",
-  // Issue #1660: recomputes one person's derived People `lastContact`, and the daily sweep that queues a
-  // recompute for every person whose linked source's date fell within the last 24 hours.
+  // Recomputes one person's derived `lastContact`; the sweep queues people whose linked source's date fell in
+  // the last 24 hours.
   PEOPLE_LAST_CONTACT_RECOMPUTE: "peopleLastContactRecompute",
   PEOPLE_LAST_CONTACT_SWEEP: "peopleLastContactSweep",
-  // Issue #1710: announces the items of one project after its area or company edge changed, since they
-  // show that area or company as a derived value.
+  // Announces a project's items after its area or company edge changed (they show it as a derived value).
   DERIVED_VALUES_INVALIDATE: "derivedValuesInvalidate",
-  // Issue #1749: the daily sweep that sends the Pages items no document references any more to the Trash.
+  // Sends Pages items no document references any more to the Trash.
   PAGE_ORPHAN_SWEEP: "pageOrphanSweep",
-  // Issue #1782: recomputes the host state of one task when the last Event it sits in ends, which writes the task
-  // and so announces that it is visible again.
+  // Recomputes a task's host state when the last Event it sits in ends.
   TASK_HOST_EVENT_ENDED: "taskHostEventEnded",
-  // Issue gh-2024: announces a changed Semp status at the instant a tenant's exhausted AI budget window resets, enqueued by
-  // the AI gateway with the first tenant-cap refusal of that window under the job key `aiBudgetReset:<tenantId>:<resetsAt>`.
+  // Announces a changed Semp status when a tenant's exhausted AI budget window resets; job key
+  // `aiBudgetReset:<tenantId>:<resetsAt>`.
   AI_BUDGET_RESET: "aiBudgetReset",
-  // Issue gh-1879: sends the silent push that makes the phone read the reminders feed again, enqueued by every write that
-  // can change a fire time under the job key `reminders-resync:<tenantId>` with a 30-second debounce.
+  // Silent push that makes the phone re-read the reminders feed; job key `reminders-resync:<tenantId>`, 30-second
+  // debounce.
   REMINDERS_RESYNC: "remindersResync",
-  // Issue gh-1960: the hourly sweep that requests the feed of every subscription calendar, once per run, with the validators
-  // of the last feed a consumer took over.
+  // Requests every subscription calendar's feed once per run, with the last consumed feed's validators.
   CALENDAR_SUBSCRIPTION_SWEEP: "calendarSubscriptionSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
-/** Which long-lived runtime (issue #91's two composition roots) owns a queue task. */
+/** Which long-lived runtime owns a queue task. */
 export const TASK_AFFINITIES = ["api", "agents", "transcribe"] as const;
 export type TaskAffinity = (typeof TASK_AFFINITIES)[number];
 
-/**
- * Every `CORE_TASK_NAMES` entry's runtime affinity — the exhaustive API-set data issue #221
- * requires, keyed by task name rather than folded into `CORE_TASK_NAMES` itself so every
- * existing `CORE_TASK_NAMES.X` reference across the codebase keeps working unchanged.
- */
+/** Every `CORE_TASK_NAMES` entry's runtime affinity. */
 export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "api",
   [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "api",
@@ -227,12 +188,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP]: "api",
 };
 
-/**
- * The closed set of task names the agents runtime (issue #91's second composition root) may
- * run. `heartbeatFireAgent`'s handler and enqueue routing ship with #222, for the heartbeat
- * actions that start or continue an agent session (`core.agentRun` and `core.journalWeeklyCleanup`);
- * `agentRun`/`delegatedAgentRun`'s handlers ship with #91 — this issue only closes the name catalog for them.
- */
+/** The closed set of task names the agents runtime may run. */
 export const AGENT_TASK_NAMES = {
   HEARTBEAT_FIRE_AGENT: "heartbeatFireAgent",
   AGENT_RUN: "agentRun",
@@ -245,9 +201,8 @@ export type AgentTaskName = (typeof AGENT_TASK_NAMES)[keyof typeof AGENT_TASK_NA
 export type TaskTenancy = "tenant" | "system";
 
 /**
- * Every core and agent task's tenancy, keyed like `CORE_TASK_AFFINITY`. The `system` tasks are the
- * periodic sweeps and retention jobs that belong to no tenant; every other task, and any task name
- * outside this catalog (a module task), is a `tenant` task.
+ * Every core and agent task's tenancy. `system` tasks are sweeps and retention jobs that belong to
+ * no tenant; any task name outside this catalog (a module task) is a `tenant` task.
  */
 export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: "tenant",
@@ -309,9 +264,9 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
 };
 
 /**
- * The item-search tasks whose enqueues a managed transaction adds at its pre-commit flush, in
- * code-unit order (docs/adr/2026-11-08-search-lane-enqueues-flush-in-order-under-a-tenant-lock-before-commit.md).
- * `ensureQueueSchema` registers exactly these identifiers.
+ * The item-search tasks whose enqueues a managed transaction flushes before commit, in code-unit
+ * order (docs/architecture/tenancy-and-security.md#queue-lanes-and-job-keys). `ensureQueueSchema`
+ * registers exactly these identifiers.
  */
 export const SEARCH_TASK_IDENTIFIERS = [
   CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL,
@@ -321,10 +276,9 @@ export const SEARCH_TASK_IDENTIFIERS = [
 export type SearchTaskIdentifier = (typeof SEARCH_TASK_IDENTIFIERS)[number];
 
 /**
- * graphile-worker 0.17.3's own registration statement (`dist/taskIdentifiers.js`): one idempotent
- * insert of the identifier rows, committed on its own, creating no job and no queue. The ADR above
- * grants this package alone this one write to graphile-worker's private metadata; it depends on that
- * version's `_private_tasks` shape.
+ * graphile-worker 0.17.3's own registration statement (`dist/taskIdentifiers.js`): an idempotent
+ * insert of the identifier rows, creating no job and no queue. This package alone may write this
+ * graphile-worker private table; it depends on that version's `_private_tasks` shape.
  */
 const REGISTER_SEARCH_TASK_IDENTIFIERS_SQL = `INSERT INTO graphile_worker._private_tasks AS tasks (identifier)
   SELECT unnest($1::text[]) ON CONFLICT DO NOTHING`;
@@ -366,23 +320,14 @@ export async function assertSearchTaskIdentifiersRegistered(client: Queryable): 
 }
 
 /**
- * Grants the runtime least-privilege roles (issue #243: `semprec_data`/`semprec_side`, created
- * by packages/data's baseline migration) full access to graphile-worker's own
- * `graphile_worker` schema — its tables can't be listed in that migration because
- * `ensureQueueSchema` (graphile-worker's own migration runner) is what creates them, and it
- * hasn't run yet at that point. Call this once, immediately after `ensureQueueSchema`, as
- * whichever role owns/migrates the schema (that role's `ALTER DEFAULT PRIVILEGES` below covers
- * any table a later graphile-worker version adds on a future `ensureQueueSchema` call under the
- * same role, without needing this function to enumerate them).
+ * Grants `semprec_side` access to the `graphile_worker` schema, which `ensureQueueSchema` creates
+ * after the data baseline migration has run. Call once right after `ensureQueueSchema` as the role
+ * that owns the schema; its `ALTER DEFAULT PRIVILEGES` covers tables a later graphile-worker adds.
  *
- * graphile-worker enables row-level security on its own private tables
- * (`_private_jobs`, `_private_job_queues`, `_private_tasks`, `_private_known_crontabs`) but
- * ships no policies, so an ordinary GRANT is not enough — Postgres blocks every non-owner role's
- * DML on them regardless of table privileges. `add_job`/`add_jobs` are not `SECURITY DEFINER`
- * either, so calling them as `semprec_side` still runs under `semprec_side`'s own RLS context.
- * A permissive policy per table (scoped to `semprec_side` only, not a role-wide `BYPASSRLS`)
- * is the least-privilege fix; it must be re-added here if a future graphile-worker version
- * renames or adds an RLS-enabled table.
+ * graphile-worker enables RLS on its private tables without policies, and `add_job`/`add_jobs` are
+ * not `SECURITY DEFINER`, so a GRANT alone is not enough: a permissive policy per table, scoped to
+ * `semprec_side` (not a role-wide `BYPASSRLS`), is added. Re-add it here if a graphile-worker
+ * version renames or adds an RLS-enabled table.
  */
 export async function grantQueueSchemaPrivileges(pool: Pool): Promise<void> {
   await runAsSystem("queue-schema", () => pool.query(GRANT_QUEUE_SCHEMA_PRIVILEGES_SQL));
@@ -422,7 +367,7 @@ const GRANT_QUEUE_SCHEMA_PRIVILEGES_SQL = `
   `;
 
 export interface EnqueueJobOptions {
-  /** Deduplicates: a repeat enqueue with the same key updates/collapses onto the existing job instead of adding a second one. */
+  /** A repeat enqueue with the same key collapses onto the existing job. */
   jobKey?: string;
   jobKeyMode?: "replace" | "preserve_run_at" | "unsafe_dedupe";
   maxAttempts?: number;
@@ -432,11 +377,8 @@ export interface EnqueueJobOptions {
 }
 
 /**
- * Enqueues a job via the `graphile_worker.add_job` SQL function on the given
- * client/pool. Passing a `PoolClient` that is already inside a transaction makes
- * the enqueue transactional with whatever else that transaction does — the
- * standard graphile-worker pattern for "enqueue in the same transaction as the
- * write that caused it" (heartbeat onItemEvent triggers, rollup recompute).
+ * Enqueues through `graphile_worker.add_job`. On a `PoolClient` inside a transaction the enqueue
+ * commits or rolls back with that transaction.
  */
 export async function enqueueJob(
   client: Queryable,
@@ -444,8 +386,8 @@ export async function enqueueJob(
   payload: Record<string, unknown>,
   options: EnqueueJobOptions = {},
 ): Promise<void> {
-  // The tenant comes only from the producer's own scope — never from `payload`, which is business
-  // data. Resolved before any SQL, so strict mode rejects an unscoped producer without a query.
+  // The tenant comes only from the producer's scope, never from `payload`; resolved before any SQL so strict
+  // mode rejects an unscoped producer without a query.
   const scope = currentTenantScope() ?? enforceTenantScope("enqueueJob");
   const envelope: QueueJobEnvelope = {
     traceId: getTraceId() ?? mintTraceId(),
@@ -465,12 +407,10 @@ export async function enqueueJob(
 }
 
 /**
- * The inverse of `enqueueJob` for a keyed job, through `graphile_worker.remove_job`: on a `PoolClient` that is inside a
- * transaction the removal commits or rolls back with whatever else that transaction does. A job no worker has locked
- * is deleted. A job a worker is running keeps running, but its key is cleared and its attempts are used up, so a
- * failure of that run is not retried (graphile-worker 0.17.3, `sql/000018.sql`; `registerTask` completes such a run
- * instead of failing it). A key that names no job removes nothing. The caller builds `jobKey` from ids of its own
- * tenant, as the producer of the job did: the job table is not partitioned by tenant.
+ * Removes a keyed job through `graphile_worker.remove_job`, transactionally on a `PoolClient`. An
+ * unlocked job is deleted; a running job keeps running with its key cleared and attempts used up,
+ * so its failure is not retried (graphile-worker 0.17.3, `sql/000018.sql`; `registerTask` completes
+ * such a run). Build `jobKey` from your own tenant's ids: the job table is not partitioned by tenant.
  */
 export async function cancelJob(client: Queryable, jobKey: string): Promise<void> {
   await client.query("SELECT graphile_worker.remove_job($1)", [jobKey]);
@@ -517,10 +457,7 @@ const preparedJobOptionsSchema = z
 /** A prepared enqueue is always keyed, and only in the two modes whose same-key calls replay in order. */
 export type PreparedJobOptions = z.input<typeof preparedJobOptionsSchema>;
 
-/**
- * An enqueue call captured when it was prepared: its identifier, key and the tenant stamped into its
- * envelope. The handle is opaque: `addPreparedJob` accepts only a handle `prepareJob` returned.
- */
+/** An enqueue captured by `prepareJob`; opaque, `addPreparedJob` accepts only a handle `prepareJob` returned. */
 export interface PreparedJob {
   readonly identifier: string;
   readonly jobKey: string;
@@ -540,10 +477,9 @@ interface CapturedJob {
 const capturedJobs = new WeakMap<PreparedJob, CapturedJob>();
 
 /**
- * Captures one keyed `enqueueJob` call to be added later with `addPreparedJob`. The envelope is
- * stamped and serialized now, exactly as `enqueueJob` stamps it (the producer's tenant scope and
- * trace), and the options are copied, so nothing a caller or the ambient scope does afterwards
- * changes the job.
+ * Captures one keyed `enqueueJob` call for `addPreparedJob`. The envelope is stamped and serialized
+ * now and the options copied, so later changes to the caller's objects or ambient scope do not
+ * affect the job.
  */
 export function prepareJob(
   identifier: CoreTaskName | (string & {}),
@@ -587,11 +523,9 @@ export async function addPreparedJob(client: Queryable, job: PreparedJob): Promi
 }
 
 /**
- * Returns true when the job's row has had its `key` cleared while it was running — the
- * signature `add_jobs` (issue #700's `sql/000018.sql` lines 104-116) leaves on a job that is
- * currently locked when a keyed re-enqueue supersedes it, and that `remove_job` leaves the
- * same way on a running job it can no longer cancel outright. Both are "do not retry" cases,
- * not "do not retry" bugs.
+ * True when the job's `key` was cleared while it ran: `add_jobs` does this to a locked job a keyed
+ * re-enqueue supersedes (graphile-worker `sql/000018.sql`), and `remove_job` to a running job it
+ * cannot cancel. Neither should be retried.
  */
 async function jobKeyWasCleared(helpers: JobHelpers): Promise<boolean> {
   const { rows } = await helpers.query<{ key: string | null }>("SELECT key FROM graphile_worker.jobs WHERE id = $1", [
@@ -604,15 +538,10 @@ const tenantStatusRowSchema = z.object({ status: z.enum(["provisioning", "active
 
 /**
  * Runs `handler` in the scope its task's tenancy calls for. A system task runs as system whatever
- * the envelope says. A tenant task runs in the envelope's tenant and is a completed no-op when
- * that tenant is missing, suspended or deleting.
- *
- * A tenant task whose envelope has no string `tenantId` (a legacy envelope from before the tenant
- * stamp, a `null`, or a raw payload) is refused: it logs `tenant_task_without_tenant` at error
- * level with the job name, id and trace id (never the payload) and throws
- * `TenantScopeMissingError`, without a query and without calling the handler. graphile-worker
- * records the failure and retries until the job is permanently failed, where
- * `observabilityCheckSystem`'s failed-jobs check reports it.
+ * the envelope says. A tenant task runs in the envelope's tenant and completes as a no-op when that
+ * tenant is missing, suspended or deleting. A tenant task without a string `tenantId` is refused:
+ * it logs `tenant_task_without_tenant` (never the payload) and throws `TenantScopeMissingError`, so
+ * graphile-worker retries until the job permanently fails and `observabilityCheckSystem` reports it.
  */
 async function runInTaskScope(
   name: string,
@@ -647,27 +576,15 @@ async function runInTaskScope(
 }
 
 /**
- * Wraps a task handler so it restores the trace context its `enqueueJob` producer stamped,
- * instead of the handler seeing that envelope shape directly. A payload that isn't a valid
- * envelope (graphile-worker's own `crontab` calls a task with its raw configured payload, e.g.
- * `{}` for a sweep — there is no `enqueueJob` producer to have stamped one) mints a fresh trace
- * for that tick instead of rejecting it: crontab-fired jobs are themselves trace entry points
- * (issue #167's "scheduler ticks"), not queue producers subject to the envelope contract.
+ * Wraps a task handler so it runs in the trace context its producer stamped. A payload that is not
+ * an envelope (crontab calls a task with its raw configured payload) mints a fresh trace instead.
  *
- * This is also the only path that swallows a handler's thrown error, and it does so for one
- * narrow reason: `enqueueJob`'s default `job_key_mode: 'replace'` (and `preserve_run_at`) route
- * through `add_jobs`, whose first statement clears a *currently locked* (running) job's `key`
- * and inserts the replacement under that key instead of waiting for the row to finish — "in the
- * case of locked existing job create a new job instead as it must have already started
- * executing". If that superseded run then throws, graphile-worker's normal `failJob` would leave
- * `attempts = max_attempts` on a row whose failure is not actually a permanent one: the
- * replacement job, already queued under the same key, redoes the work. So when the handler
- * rejects and the job's own row shows its key was cleared while it ran, the rejection is
- * swallowed and the job is left to complete normally instead — graphile-worker's `complete_job`
- * then deletes the superseded row, and the replacement runs the current state of the world.
- * `remove_job` on a running job clears the key the same way, and is correctly caught by the same
- * check: a cancelled run should not be retried either. If the lookup itself throws, the
- * *original* handler error is what propagates — a broken check must never hide a real failure.
+ * This is the only path that swallows a handler error. Keyed `replace`/`preserve_run_at` enqueues
+ * go through `add_jobs`, which clears a running job's key and inserts the replacement under it. If
+ * the superseded run then throws, a normal failure would be retried although the replacement
+ * already redoes the work, so a rejection on a job whose key was cleared while it ran is swallowed
+ * and the job completes. `remove_job` on a running job is caught by the same check. If the lookup
+ * itself throws, the original handler error propagates.
  */
 export function registerTask(name: string, handler: Task): Task {
   return async (rawPayload, helpers) => {
@@ -711,10 +628,8 @@ export function registerTask(name: string, handler: Task): Task {
 export const QUEUE_CONCURRENCY_DEFAULT = 4;
 
 /**
- * Parses `QUEUE_CONCURRENCY` for `runWorker`'s default `concurrency`. Unset or empty falls back
- * to `QUEUE_CONCURRENCY_DEFAULT`; anything else must be a positive integer string, or startup
- * fails naming the offending value rather than silently running with graphile-worker's own
- * default of 1.
+ * Parses `QUEUE_CONCURRENCY`. Unset or empty falls back to `QUEUE_CONCURRENCY_DEFAULT`; anything
+ * else must be a positive integer, or startup fails instead of running with graphile-worker's 1.
  */
 export function resolveQueueConcurrency(env: NodeJS.ProcessEnv): number {
   const raw = env.QUEUE_CONCURRENCY;
@@ -744,13 +659,10 @@ export async function runWorker(options: RunnerOptions): Promise<Runner> {
 }
 
 /**
- * Processes all currently-available jobs once and returns — used by tests and one-off drains.
- * Resolves only after every job it ran has been released: graphile-worker's worker fires a job's
- * `complete_job`/`fail_job` statement without awaiting it and, with its default unbatched release,
- * nothing else awaits it either, so its own `runOnce` can resolve while that statement is still in
- * flight — the job still locked (a next drain skips it), its retry backoff not yet applied, or a
- * completed job's row not yet deleted. Routing both through graphile-worker's release batchers
- * (a delay of `0` flushes on the next tick) makes the pool's shutdown await them first.
+ * Processes all currently available jobs once (tests and one-off drains). Resolves only after
+ * every job it ran is released: graphile-worker fires `complete_job`/`fail_job` without awaiting
+ * them, so its own `runOnce` can resolve with a job still locked or its backoff not yet applied.
+ * Routing both through the release batchers (delay `0`) makes pool shutdown await them.
  */
 export async function runOnce(options: RunnerOptions, overrideTaskList?: TaskList): Promise<void> {
   await runAsSystem("queue-worker", () =>

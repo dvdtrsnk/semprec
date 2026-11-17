@@ -20,9 +20,9 @@ import {
 import { createMcpRequestListener } from "../mcpHandler.js";
 
 /**
- * The read tool `calendar.timeline` over `POST /mcp` (issue gh-1952): a run credential whose list names `calendar.read`
- * in a project that owns the calendar databases lists and calls it, and a human session does too. Every other caller
- * gets the -32601 of an unknown tool. The handler itself is tested in `packages/data` (`calendarTimelineTool.test.ts`).
+ * A run credential naming `calendar.read` in a project that owns the calendar databases, and a
+ * human session, list and call it; every other caller gets -32601. The handler itself is tested in
+ * `packages/data`.
  */
 
 const calendarManifestHref = new URL(
@@ -66,9 +66,8 @@ interface Tenant {
   email: string;
   eventsId: string;
   /**
-   * Tokens of run credentials. In the project that owns the calendar databases: one that names `calendar.read`, one
-   * that names `calendar.write` but not `calendar.read`, and one that names neither. In another project: one that names
-   * `calendar.read`.
+   * In the calendar-owning project: one naming `calendar.read`, one naming `calendar.write` only,
+   * one naming neither. In another project: one naming `calendar.read`.
    */
   readToken: string;
   writeOnlyToken: string;
@@ -154,7 +153,7 @@ async function event(tenant: Tenant, name: string): Promise<string> {
   ).id;
 }
 
-/** The items of the route for `DAY`, sleep nights included: the route answers the user, who may read them. */
+/** Sleep nights included: the route answers the user, who may read them. */
 async function routeItems(tenant: Tenant) {
   const { body } = await runInTenant(tenant.id, () =>
     createCalendarTimelineRouteHandler(pool)({ req: { url: `/api/calendar/timeline?from=${DAY}&to=${DAY}` } }),
@@ -163,10 +162,8 @@ async function routeItems(tenant: Tenant) {
 }
 
 /**
- * The items of the route that the tool answers a credential without a grant on the sleep databases and a human session:
- * the route's, without the sleep nights, which are sensitive
- * (docs/adr/2026-11-14-the-calendar-timeline-tool-leaves-out-sleep-nights-the-caller-may-not-read.md). A seeded
- * tenant shows them in its calendar, so the route holds some and the filter leaves something out.
+ * Without the sleep nights, which are sensitive. A seeded tenant shows them in its calendar, so the
+ * filter leaves something out.
  */
 async function routeItemsWithoutSleep(tenant: Tenant) {
   const all = await routeItems(tenant);
@@ -174,7 +171,6 @@ async function routeItemsWithoutSleep(tenant: Tenant) {
   return all.filter((item) => item.kind !== "sleep");
 }
 
-/** The timeline a successful call answers, parsed from the text content of the tool result. */
 function timelineOf(answer: z.infer<typeof rpcBodySchema>) {
   expect(answer.error).toBeUndefined();
   const result = toolResultSchema.parse(answer.result);

@@ -144,7 +144,7 @@ function ageBlob(blobId: string, hours: number): Promise<unknown> {
   ]);
 }
 
-/** The bytes of a PDF that carries `text`: `POST /api/blobs` stores only bytes whose type it recognises (issue gh-1963). */
+/** `POST /api/blobs` stores only bytes whose type it recognises. */
 function pdfBytes(text: string): Buffer {
   return Buffer.from(`%PDF-1.7 ${text}`);
 }

@@ -29,12 +29,10 @@ const USER: WriterIdentity = { writerKind: "user" };
 const AGENT: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: randomUUID() };
 const PENDING = { status: "pending", email: "petr@example.com", mailboxId: randomUUID() };
 
-/** A refused participant edge write: `validation_failed` on `metadata` with the stable `reason`. */
 function refusedWith(reason: string) {
   return { status: 400, code: "validation_failed", details: { field: "metadata", reason } };
 }
 
-/** A participant edge write refused for the text form of an item id: `validation_failed` on the end that carries it. */
 function refusedItemId(field: "callerItemId" | "targetItemId") {
   return { status: 400, code: "validation_failed", details: { field, reason: "nonCanonicalItemId" } };
 }
@@ -56,7 +54,6 @@ describe("Event participant edge write hook (issue #1757)", () => {
     await admin.end();
   });
 
-  /** The fixture of one test, built in the tenant in scope through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -87,14 +84,12 @@ describe("Event participant edge write hook (issue #1757)", () => {
       callerItemId: event,
       targetItemId: personId,
     });
-    /** The metadata of the Event's stored edge to `personId`, or `null` when there is none. */
     const stored = async (personId: string, eventId = event) => {
       const edges = (await cp.listItemRelations(eventId, eventsPeople)) ?? [];
       return edges.find((entry) => entry.targetItemId === personId)?.metadata ?? null;
     };
     const setSelf = (personId: string | null) =>
       withTransaction(runtime, (client) => setSelfPersonId(client, personId));
-    /** The two public write operations of an edge: add or replace, and replace the metadata of an existing edge. */
     const writesBy = (writer: WriterIdentity) => [
       (input: UpdateRelationInput) => cp.createRelation(input, writer),
       (input: UpdateRelationInput) => cp.updateRelation(input, writer),
@@ -209,7 +204,6 @@ describe("Event participant edge write hook (issue #1757)", () => {
         const first = await f.item("people", "Me before");
         await f.setSelf(first);
         await f.cp.createRelation({ ...f.edge(first), metadata }, USER);
-        // The linked person changes, so a second person passes the self check on the same Event.
         await f.setSelf(f.petr);
         for (const writer of [USER, SYSTEM_WRITER]) {
           await expect(f.cp.createRelation({ ...f.edge(f.petr), metadata }, writer)).rejects.toMatchObject(
@@ -613,18 +607,13 @@ describe("Event participant edge write hook (issue #1757)", () => {
           });
           expect(added).toMatchObject({ inserted: true });
         } finally {
-          // After the holder ended, a write that did wait ends too; it is settled before the test does.
           await insert?.catch(() => undefined);
         }
         expect(await f.stored(f.petr)).toEqual({});
       }));
   });
 
-  /**
-   * The value of `work`, or the string `"still waiting"` when it has not settled after `milliseconds`. The
-   * limit only ends a wait that would otherwise last as long as a lock is held; a write that does not wait
-   * settles long before it.
-   */
+  /** The value of `work`, or `"still waiting"` after `milliseconds`: the limit only ends a wait on a held lock. */
   async function settledWithin<T>(work: Promise<T>, milliseconds = 10_000): Promise<T | "still waiting"> {
     let timer: NodeJS.Timeout | undefined;
     const limit = new Promise<"still waiting">((resolve) => {
@@ -637,7 +626,6 @@ describe("Event participant edge write hook (issue #1757)", () => {
     }
   }
 
-  /** Resolves once a backend of this database waits for a row lock taken with `FOR UPDATE`; read through `pg_stat_activity`. */
   async function waitForRowLockWaiter(): Promise<void> {
     for (let attempt = 0; attempt < 250; attempt += 1) {
       const { rows } = await admin.query<{ waiting: number }>(

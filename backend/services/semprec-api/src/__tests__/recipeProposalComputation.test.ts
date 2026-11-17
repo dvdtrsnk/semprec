@@ -26,8 +26,8 @@ import { runInTenant } from "@semprec/shared";
 import type { AresClient } from "../aresClient.js";
 import { createProposalComputation } from "../proposalComputation.js";
 
-// Issue gh-1974: the recipe proposal writer is registered in the composition root of the Inbox's proposal computation:
-// an item computed for the Recipes database is read as a recipe first, and any other outcome goes on as before.
+// The recipe proposal writer is registered in the Inbox proposal computation's composition root: an item computed for
+// the Recipes database is read as a recipe first, and any other outcome goes on unchanged.
 
 const SEEDING_HOOK_TIMEOUT_MS = 90_000;
 const PAGE_URL = "https://recipes.example.com/goulash";
@@ -35,7 +35,6 @@ const PHOTO: PhotoFixture = {
   reduced: { bytes: Buffer.from("\xff\xd8\xff composition photo", "latin1"), mimeType: "image/jpeg" },
 };
 const GENERIC_ANSWER = { properties: { name: "A generic proposal" } };
-/** A register that knows no company; no item of these tests leads to a Companies proposal. */
 const knowsNoCompany: AresClient = {
   async lookupCompanyByIco() {
     return null;

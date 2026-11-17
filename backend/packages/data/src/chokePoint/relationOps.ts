@@ -1,17 +1,9 @@
-// Owns the choke point's relation edge writes: linking, re-linking (metadata replacement) and
-// unlinking two items, the endpoint checks those writes run, and the transaction-scoped
-// `*RelationWithClient` functions that internal callers and the approved-operation executor use.
-// Successful writes through these functions, including REST, agent and internal callers, run
-// changed-edge hooks in the same transaction after rollup work is enqueued.
-// A domain's own edge-metadata rule (e.g. the Transcripts speaker-edge rule) runs through
-// `runRelationEdgeWriteHooks` (./hooks.ts), never a direct import of the domain — relation
-// property and relation definition management does not belong here, and neither does any other
-// domain module's code.
-// Constrained by:
-// - docs/adr/2026-09-23-speaker-mappings-are-edges-proposed-on-transcript-cards.md
-// - docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
-// - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
-// - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
+// The choke point's relation edge writes: link, re-link (metadata replacement) and unlink, their
+// endpoint checks, and the transaction-scoped `*RelationWithClient` functions. Successful writes run
+// changed-edge hooks in the same transaction after rollup work is enqueued. Domain edge-metadata
+// rules (e.g. Transcripts speakers, see
+// docs/adr/2026-09-23-speaker-mappings-are-edges-proposed-on-transcript-cards.md) run through
+// `runRelationEdgeWriteHooks`, never a direct domain import.
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { currentTenantScope } from "@semprec/shared";
@@ -57,7 +49,7 @@ import { assertNotDerivedValueWrite } from "./derivedValueGuard.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** The normalized public shape of a stored edge — same fields as `relationsStore.ItemRelationRow`, named here to match the choke-point's own edge contract. */
+/** Same fields as `relationsStore.ItemRelationRow`, named for the choke point's edge contract. */
 export type RelationEdge = ItemRelationRow;
 
 export interface CreateRelationInput {
@@ -69,7 +61,7 @@ export interface CreateRelationInput {
 }
 
 export interface CreateRelationOptions {
-  /** Set only by `setRelationWithClient`, which has already asked for approval for the whole replacement. */
+  /** Set only by `setRelationWithClient`, which already asked for approval for the whole replacement. */
   linkApprovalDecided?: boolean;
 }
 
@@ -122,7 +114,7 @@ async function announceRelation(
   }
 }
 
-/** Rejects a dangling, soft-deleted, or wrong-database endpoint with `validation_failed` — PostgreSQL foreign keys cannot enforce this because `items` has a partitioned composite primary key. */
+/** Rejects a dangling, soft-deleted, or wrong-database endpoint with `validation_failed`; partitioned `items` cannot carry the FK. */
 async function assertRelationEndpointValid(
   client: PoolClient,
   databaseId: string,
@@ -148,7 +140,7 @@ async function assertRelationEndpointsValid(
   await assertRelationEndpointValid(client, context.targetDatabaseId, targetItemId, "targetItemId");
 }
 
-/** An edge joins two databases, so an agent's project needs `write` access to both of them (issue #1810). */
+/** An edge joins two databases, so an agent's project needs `write` on both. */
 async function assertWriterRelationAccess(
   client: PoolClient,
   writer: WriterIdentity,
@@ -158,7 +150,7 @@ async function assertWriterRelationAccess(
   await assertWriterDatabaseAccess(client, writer, edgeContext.targetDatabaseId, "write");
 }
 
-/** The edge context and the guards every edge write shares: the writer's access to both databases, both databases unarchived and the caller's relation property writable by this caller. */
+/** Shared edge-write guards: writer access to both databases, both unarchived, and the caller's property writable. */
 async function loadWritableRelationEdgeContext(
   client: PoolClient,
   relationPropertyId: string,
@@ -172,7 +164,7 @@ async function loadWritableRelationEdgeContext(
   return edgeContext;
 }
 
-/** Every check `createRelationWithClient` runs before its write, in the same order, so both raise the same canonical error for the same input. */
+/** Every check `createRelationWithClient` runs before its write, in the same order, so both raise the same error. */
 async function loadCreatableRelationEdgeContext(
   client: PoolClient,
   input: CreateRelationInput,
@@ -235,9 +227,8 @@ async function runRelationMutation<T>(
 }
 
 /**
- * Runs the before-link-break hooks for an edge a user or an agent just inserted or deleted. Called right after the
- * edge row was written, before anything in the write locks a value link row (the approval check of an agent write
- * and `breakValueLinksForRelationEdge`). A `system` writer never ends a link, so it runs none.
+ * Right after the edge row was written and before anything locks a value link row (agent approval
+ * check, `breakValueLinksForRelationEdge`). A `system` writer never ends a link, so it runs none.
  */
 async function runBeforeLinkBreakHooks(
   client: PoolClient,
@@ -259,7 +250,7 @@ async function runBeforeLinkBreakHooks(
   });
 }
 
-/** Stands in for the caller of an edge whose item is only proposed and has no id yet; the nil UUID matches no item. */
+/** The caller of an edge whose item is only proposed; the nil UUID matches no item. */
 const PROPOSED_CALLER_ITEM_ID = "00000000-0000-0000-0000-000000000000";
 
 export interface LinkableRelationTargetInput {
@@ -270,16 +261,13 @@ export interface LinkableRelationTargetInput {
 }
 
 /**
- * Rejects a relation target an edge could not point at. A proposed new item has no caller yet;
- * an existing caller may instead be supplied and its own persisted edge is not a cardinality collision.
- * Target-validation failures carry `details.field` = the relation property key:
- * - the target is missing from the relation's other database (another tenant's item is missing
- *   too), `code: 'targetNotFound'`; soft-deleted, `code: 'targetDeleted'`; a project whose
- *   `status` is `archived`, `code: 'targetArchived'` (a `done` project stays linkable);
- * - `database_archived` / `owner_violation` and edge-metadata hook failures retain the shared edge guards' error details and status;
- * - `CardinalityViolationError` when the target already holds the only edge the relation allows:
- *   any edge for `one_to_one`, any edge on the side of a `one_to_many` whose item may have only one counterpart.
- * The cardinality check only reports; the write at confirm time stays enforced by the database trigger.
+ * Rejects a target an edge could not point at. An existing caller may be supplied; its own edge is
+ * then no cardinality collision. Failures carry `details.field` = the relation property key:
+ * - missing (another tenant's too) `targetNotFound`; soft-deleted `targetDeleted`; a project with
+ *   `status` `archived` `targetArchived` (a `done` project stays linkable);
+ * - `database_archived` / `owner_violation` and edge-metadata hook failures keep their details and status;
+ * - `CardinalityViolationError` when the target already holds the only edge the relation allows.
+ * The cardinality check only reports; the database trigger still enforces it at write time.
  */
 export async function assertRelationTargetLinkableWithClient(
   client: PoolClient,
@@ -306,7 +294,7 @@ export async function assertRelationTargetLinkableWithClient(
       { field, code: "targetNotFound" },
     );
   }
-  // The owner module is read only when `status` is `archived`, the one case `relationTargetBlock` needs it for.
+  // Only an `archived` status needs the owner module.
   const targetOwnerModuleId =
     target.properties.status === "archived"
       ? ((await databasesStore.getDatabase(client, edgeContext.targetDatabaseId))?.ownerModuleId ?? null)
@@ -327,7 +315,7 @@ export async function assertRelationTargetLinkableWithClient(
     writer,
   });
 
-  // The proposed item is the (unknown) caller, so the target is item B exactly when the caller's property is side A.
+  // The proposed item is the caller, so the target is item B exactly when the caller's property is side A.
   const targetIsSideB = edgeContext.reldef.propertyIdA === input.relationPropertyId;
   const { cardinality } = edgeContext.reldef;
   if (cardinality === "one_to_one" || (cardinality === "one_to_many" && targetIsSideB)) {
@@ -346,11 +334,8 @@ export async function assertRelationTargetLinkableWithClient(
 }
 
 /**
- * Rejects an edge `createRelationWithClient` would reject for authorization or integrity —
- * `database_archived`, `owner_violation`, `validation_failed` (including its edge-metadata rules,
- * issue #185) — without writing it (issue #184: a revised link-existing proposal is refused when
- * it is made, not only when it is confirmed). Cardinality is not checked here: that is enforced by
- * the write itself, at confirm time.
+ * Rejects what `createRelationWithClient` would reject for authorization or integrity, without
+ * writing, so a revised link-existing proposal is refused when made. Cardinality is left to the write.
  */
 export async function assertRelationCreatableWithClient(
   client: PoolClient,
@@ -370,13 +355,9 @@ export async function assertRelationCreatableWithClient(
 }
 
 /**
- * The relation-linking logic, factored out for the same reason as `createItemWithClient` above.
- * Idempotent on the normalized `(relationDefinitionId, itemA, itemB)` tuple: a repeat create
- * replaces the entire metadata object (never merges), including back to `{}` when the caller
- * omits it — `relationsStore.createItemRelation`'s `ON CONFLICT ... DO UPDATE` is what makes
- * this atomic against a concurrent create of the same edge. `context` is never supplied by the
- * public facade (see `createChokePoint`'s `createRelation` below) — only a protected internal
- * caller passes one.
+ * Idempotent on the normalized `(relationDefinitionId, itemA, itemB)` tuple: a repeat replaces the
+ * whole metadata (never merges, `{}` when omitted), atomically via `ON CONFLICT ... DO UPDATE`.
+ * `context` is passed only by protected internal callers, never the public facade.
  */
 export async function createRelationWithClient(
   client: PoolClient,
@@ -413,8 +394,8 @@ export async function createRelationWithClient(
     });
     if (inserted) {
       await runBeforeLinkBreakHooks(client, "create", edgeContext, edge, writer);
-      // An agent under a run asks for approval before the edge ends a link (issue #1758); a replacement
-      // made by `setRelationWithClient` has decided that already.
+      // An agent under a run asks for approval before the edge ends a link; `setRelationWithClient` has
+      // decided that already.
       if (!options.linkApprovalDecided) {
         await requireApprovalForInsertedEdgeLinks(client, writer, { reldef: edgeContext.reldef, itemA, itemB });
       }
@@ -442,7 +423,7 @@ export async function createRelationWithClient(
   });
 }
 
-/** Insert an absent edge using the ordinary relation guards, leaving existing metadata intact. */
+/** Inserts an absent edge with the ordinary guards, leaving existing metadata intact. */
 export async function createRelationIfAbsentWithClient(
   client: PoolClient,
   input: CreateRelationInput,
@@ -504,7 +485,7 @@ export async function createRelationIfAbsentWithClient(
   });
 }
 
-/** The metadata-replacement counterpart to `createRelationWithClient`: requires an existing normalized edge (endpoints are immutable — moving one is delete plus create), and rejects a missing edge with a `404 not_found`. Same `context` contract as `createRelationWithClient`. */
+/** Replaces an existing edge's metadata; endpoints are immutable (move = delete + create). A missing edge is `404 not_found`. */
 export async function updateRelationWithClient(
   client: PoolClient,
   input: UpdateRelationInput,
@@ -571,9 +552,8 @@ export async function updateRelationWithClient(
 export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
 
 /**
- * Transfer only existing edges from one canonical Threads item to another in the caller's managed transaction.
- * The winner keeps its own `project` and `company` edge unless the key is in `loserValueWins`: then the loser's edge
- * of that key replaces the winner's (issue gh-1869).
+ * Transfers existing edges between canonical Threads items in the caller's transaction. The winner
+ * keeps its own `project`/`company` edge unless the key is in `loserValueWins`.
  */
 export async function transferMailThreadRelationsWithClient(
   client: PoolClient,
@@ -722,7 +702,7 @@ export interface SetRelationInput {
   targetItemId: string | null;
 }
 
-/** Replace the single-valued side of a relation within the caller's transaction. */
+/** Replaces the single-valued side of a relation within the caller's transaction. */
 export async function setRelationWithClient(
   client: PoolClient,
   input: SetRelationInput,
@@ -774,8 +754,8 @@ export async function setRelationWithClient(
     );
   }
   if (existing && oldTarget !== null) {
-    // Replacing or clearing an edge changes the value a link may feed: an agent under a run asks for approval
-    // first (issue #1758). Writing onto an empty relation removes no value and is not asked about.
+    // Replacing or clearing an edge changes a value a link may feed, so an agent under a run asks first.
+    // Writing onto an empty relation removes no value.
     const added =
       input.targetItemId === null
         ? null
@@ -799,16 +779,9 @@ export async function setRelationWithClient(
 }
 
 /**
- * The relation-unlinking counterpart to `createRelationWithClient` above, factored out for the
- * same reason (issue #26: the IMAP adapter's VANISHED/UID-diff handling removes a
- * folder-membership edge inside its own larger sync transaction). Idempotent: returns
- * regardless of whether the edge existed — deliberately skips `assertRelationEndpointsValid`
- * (unlike create/update), because a real cleanup caller routinely deletes an edge *after* one
- * of its endpoints was soft-deleted (`inboxTypesStore`'s `deleteInboxTypeWithClient`, and the
- * Gmail/Graph/IMAP reconcilers dropping folder edges for an already-removed message) — endpoint
- * validity only matters for creating or moving an edge, never for tearing one down. The
- * normalized `(relationDefinitionId, itemA, itemB)` lookup in `deleteItemRelation` is safe
- * regardless of endpoint state. Same `context` contract as `createRelationWithClient`.
+ * Idempotent whether or not the edge existed. Skips endpoint validation on purpose: cleanup callers
+ * (Inbox type deletion, mail reconcilers) routinely delete an edge after an endpoint was soft-deleted,
+ * and endpoint validity matters only for creating or moving an edge.
  */
 export async function deleteRelationWithClient(
   client: PoolClient,
@@ -829,7 +802,7 @@ export async function deleteRelationWithClient(
     input.callerItemId,
     input.targetItemId,
   );
-  // Edge-delete hooks, not the write hooks: those validate metadata and must not run on a removal.
+  // Edge-delete hooks, not write hooks: those validate metadata and must not run on a removal.
   const hooks = (lockMode?: "nowait") =>
     runRelationEdgeDeleteHooks({
       client,
@@ -869,7 +842,7 @@ export async function deleteRelationWithClient(
 }
 
 export interface MoveRelationEdgesInput {
-  /** The relation property the edges are written through; it governs who may write them. */
+  /** Governs who may write the edges. */
   relationPropertyId: string;
   /** The side of `relationPropertyId` that `fromItemId` and `toItemId` are on. */
   side: "caller" | "target";
@@ -878,45 +851,38 @@ export interface MoveRelationEdgesInput {
 }
 
 /**
- * An edge `moveRelationEdgesWithClient` left on `fromItemId`, because the choke point refuses it for `toItemId`. An
- * edge `toItemId` already holds is never one of these, whatever state its other item is in: it is deleted from
- * `fromItemId` and nothing is refused.
+ * An edge left on `fromItemId` because the choke point refuses it for `toItemId`. An edge `toItemId`
+ * already holds is never refused: it is deleted from `fromItemId`.
  */
 export interface RefusedRelationEdge {
-  /** The relation property the move was asked for. */
   relationPropertyId: string;
-  /** The item at the other end of the edge; it is still linked to `fromItemId`. */
+  /** Still linked to `fromItemId`. */
   otherItemId: string;
-  /** The `code` of the `ValidationError` that refuses the edge for `toItemId`. */
   code: string;
   /**
-   * The `details.field` of that error, or `null` when it names none: `callerItemId` or `targetItemId` for an endpoint
-   * that is in the trash or missing, the property key for a value derived from the item's project.
+   * `null` when the error names none: `callerItemId`/`targetItemId` for a trashed or missing endpoint,
+   * the property key for a value derived from the item's project.
    */
   field: string | null;
 }
 
 export interface MoveRelationEdgesResult {
-  /** How many edges the call deleted from `fromItemId`. */
+  /** Edges deleted from `fromItemId`. */
   moved: number;
-  /** The edges the call left on `fromItemId`; empty when the choke point refused none. */
+  /** Edges left on `fromItemId`. */
   refused: RefusedRelationEdge[];
 }
 
 const errorDetailsWithField = z.object({ field: z.string() });
 
-/** The `details.field` of a choke-point error, or `null` when its details carry none. */
 function errorField(details: unknown): string | null {
   const parsed = errorDetailsWithField.safeParse(details);
   return parsed.success ? parsed.data.field : null;
 }
 
 /**
- * The `ValidationError` with which the checks `createRelationWithClient` runs before its write refuse the edge
- * (`assertRelationCreatableWithClient`: authorization, endpoints, derived values, edge metadata), or `null` when they
- * pass. Such an error names an edge that cannot exist as things stand (an endpoint in the trash or missing, a value
- * derived from the item's project, metadata a domain rule refuses). Every other error propagates. Cardinality is not
- * part of the answer: only the write enforces it, so `null` does not promise that the create succeeds.
+ * The `ValidationError` the pre-write checks of `createRelationWithClient` refuse the edge with, or
+ * `null`. Every other error propagates. Cardinality is not checked, so `null` does not promise success.
  */
 async function relationCreationRefusal(
   client: PoolClient,
@@ -933,22 +899,14 @@ async function relationCreationRefusal(
 }
 
 /**
- * Moves the edges of one relation property from `fromItemId` to `toItemId` (issue #1726), each as a delete plus a
- * create through `deleteRelationWithClient` and `createRelationIfAbsentWithClient`, with their guards, hooks and
- * announcements. Three kinds of edge are not moved:
- * - an edge `toItemId` already holds (the same relation definition, the same two items, the same orientation) is
- *   checked first: it keeps its own metadata there, the one of `fromItemId` is only deleted and counted in `moved`,
- *   and nothing is written on `toItemId`. Such an edge is never refused, whatever state its other item is in, because
- *   nothing is lost by deleting the copy;
- * - any other edge `createRelationWithClient` would refuse for `toItemId` with a `ValidationError`
- *   (`relationCreationRefusal`) stays on `fromItemId` untouched and is returned in `refused`, so the caller decides
- *   what a move that left edges behind means and reports it;
- * - an edge that is no longer stored when its delete runs is not created on `toItemId`.
- * Cardinality is not among them: only the write checks it. When `toItemId` already holds the only edge a `one_to_one`
- * or `one_to_many` relation allows it, the move fails with the `CardinalityViolationError` of the insert, which runs
- * after that edge was deleted from `fromItemId`.
- * Returns how many edges this call deleted from `fromItemId` and the edges it left there. Same `context` contract as
- * `createRelationWithClient`.
+ * Moves one property's edges from `fromItemId` to `toItemId`, each as a delete plus
+ * `createRelationIfAbsentWithClient`, with their guards, hooks and announcements. Not moved:
+ * - an edge `toItemId` already holds keeps its own metadata; the copy is only deleted (counted in
+ *   `moved`) and never refused;
+ * - an edge `relationCreationRefusal` refuses stays on `fromItemId` and is returned in `refused`;
+ * - an edge no longer stored when its delete runs.
+ * Cardinality is checked only by the insert, so a full `one_to_one`/`one_to_many` target fails the
+ * move with `CardinalityViolationError` after the delete from `fromItemId`.
  */
 export async function moveRelationEdgesWithClient(
   client: PoolClient,
@@ -968,8 +926,8 @@ export async function moveRelationEdgesWithClient(
   for (const edge of edges) {
     const otherItemId = relationsStore.otherSide(edge, input.fromItemId);
     const target = edgeOf(input.toItemId, otherItemId);
-    // The read takes no lock. A concurrent delete of the edge `toItemId` holds that commits between this read and the
-    // delete below leaves the same state as that delete running after this move, so the order is not observable.
+    // No lock: a concurrent delete of the held edge committing in between is indistinguishable from it
+    // running after this move.
     const held = normalizeRelationSides(reldef, input.relationPropertyId, target.callerItemId, target.targetItemId);
     if (await relationsStore.getItemRelationByTuple(client, reldef.id, held.itemA, held.itemB)) {
       if (await deleteRelationWithClient(client, edgeOf(input.fromItemId, otherItemId), context)) result.moved++;

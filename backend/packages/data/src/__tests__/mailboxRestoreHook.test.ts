@@ -51,7 +51,6 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 
-/** The seeded ids every fixture shares, read per tenant. */
 interface MailIds {
   mailboxes: string;
   folders: string;
@@ -64,10 +63,8 @@ interface MailIds {
 
 type FolderPurpose = "inbox" | "archive" | "junk";
 
-/** A Mailboxes item with the three Folders a test files mail into. */
 type TestMailbox = { id: string } & Record<FolderPurpose, string>;
 
-/** What one restore hook call of a test saw, recorded by the hook this file registers. */
 interface RestoreCall {
   itemId: string;
   rootItemId: string;
@@ -107,7 +104,6 @@ const storage: BlobStorageWriter = {
   },
 };
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -134,10 +130,7 @@ async function loadIds(client: PoolClient): Promise<MailIds> {
   };
 }
 
-/**
- * A Mailboxes item with `syncStatus` `ok` and its folders, each created by the production folder
- * discovery. `provider` `null` leaves the property unset. It has no sync state and no credential.
- */
+/** `provider` `null` leaves the property unset. No sync state, no credential. */
 async function createMailbox(
   client: PoolClient,
   ids: MailIds,
@@ -162,11 +155,7 @@ async function createMailbox(
   return { id: mailbox.id, inbox: await folder("inbox"), archive: await folder("archive"), junk: await folder("junk") };
 }
 
-/**
- * Connects `mailboxId` as a Gmail account that has synced before: an OAuth credential and a sync state
- * that holds a history cursor, an activity record and the account's address, none of which a default
- * row has.
- */
+/** A Gmail account that has synced before: a credential and a sync state richer than a default row. */
 async function connect(client: PoolClient, mailboxId: string): Promise<void> {
   await storeCredential(client, {
     itemId: mailboxId,
@@ -182,7 +171,7 @@ async function connect(client: PoolClient, mailboxId: string): Promise<void> {
   });
 }
 
-/** One message through the production ingest writer. A repeated `messageId` in the same mailbox joins the same Email, as sync does. */
+/** A repeated `messageId` in the same mailbox joins the same Email, as sync does. */
 function ingest(
   client: PoolClient,
   ids: MailIds,
@@ -206,13 +195,11 @@ function ingest(
   }).then((result) => result.itemId);
 }
 
-/** Soft-deletes one item through the choke point, at a time of its own, and fails if nothing was deleted. */
 async function softDelete(databaseId: string, itemId: string, tenantId = tenant): Promise<void> {
   const deleted = await runInTenant(tenantId, () => chokePoint.softDeleteItem(databaseId, itemId));
   if (deleted === null) throw new Error(`item ${itemId} was not soft-deleted`);
 }
 
-/** Removes the mailbox through the production removal and fails if it removed nothing. */
 async function remove(mailboxItemId: string, tenantId = tenant): Promise<void> {
   const removed = await runInTenant(tenantId, () =>
     removeMailbox(runtime, mailboxItemId, { queueAffinity: createActionQueueAffinity() }),
@@ -220,18 +207,15 @@ async function remove(mailboxItemId: string, tenantId = tenant): Promise<void> {
   if (!removed) throw new Error(`mailbox ${mailboxItemId} was not removed`);
 }
 
-/** The `mailboxRemoval` job of the removed mailbox, as the worker runs it. */
 function runRemovalJob(mailboxItemId: string, options: { chunkSize?: number } = {}, tenantId = tenant): Promise<void> {
   return runInTenant(tenantId, () => handleMailboxRemovalTask(runtime, { mailboxItemId }, options));
 }
 
-/** The removal and its whole job: the mailbox, its live folders and their live messages are in the trash afterwards. */
 async function removeWithMail(mailboxItemId: string, tenantId = tenant): Promise<void> {
   await remove(mailboxItemId, tenantId);
   await runRemovalJob(mailboxItemId, {}, tenantId);
 }
 
-/** Restores the mailbox through the choke point's restore, the write `POST /api/items/:id/restore` makes. */
 function restore(
   ids: MailIds,
   mailboxItemId: string,
@@ -242,7 +226,7 @@ function restore(
   );
 }
 
-/** Each item's `deleted_at` as stored, `null` for a live item, read in `tenantId`'s scope; an item that scope cannot see is absent. */
+/** `deleted_at` per item, `null` when live; an item invisible to `tenantId` is absent. */
 function trashTimes(itemIds: string[], tenantId = tenant): Promise<Record<string, string | null>> {
   return inTenant(async (client) => {
     const { rows } = await client.query<{ id: string; deleted_at: string | null }>(
@@ -259,7 +243,6 @@ function allLive(itemIds: string[]): Record<string, null> {
 
 const syncStateRowSchema = z.record(z.string(), z.unknown());
 
-/** Every column of the mailbox's `mail_account_sync_state` rows, as stored, read in `tenantId`'s scope. */
 function syncStateRows(mailboxItemId: string, tenantId = tenant): Promise<Array<Record<string, unknown>>> {
   return inTenant(async (client) => {
     const { rows } = await client.query<{ state: unknown }>(
@@ -271,9 +254,8 @@ function syncStateRows(mailboxItemId: string, tenantId = tenant): Promise<Array<
 }
 
 /**
- * Asserts that the mailbox has exactly one sync state row and that it is a default one: the row
- * `ensureMailAccountSyncState` inserts for a new mailbox sets the mailbox, the tenant and the sync mode
- * and leaves every other column null.
+ * A default row as `ensureMailAccountSyncState` inserts it: mailbox, tenant and sync mode set, every
+ * other column null.
  */
 async function expectDefaultSyncState(mailboxItemId: string, syncMode: string, tenantId = tenant): Promise<void> {
   const rows = await syncStateRows(mailboxItemId, tenantId);
@@ -290,7 +272,6 @@ async function expectDefaultSyncState(mailboxItemId: string, syncMode: string, t
   expect(set.sort()).toEqual(["item_id", "sync_mode", "tenant_id"]);
 }
 
-/** The mailbox's stored `syncStatus`, read in `tenantId`'s scope. */
 function syncStatusOf(mailboxItemId: string, tenantId = tenant): Promise<unknown> {
   return inTenant(async (client) => {
     const { rows } = await client.query<{ properties: Record<string, unknown> }>(
@@ -301,7 +282,6 @@ function syncStatusOf(mailboxItemId: string, tenantId = tenant): Promise<unknown
   }, tenantId);
 }
 
-/** The ids the generic list of `databaseId` returns, which leaves trashed items out. */
 function listedItemIds(databaseId: string, tenantId = tenant): Promise<string[]> {
   return inTenant(async (client) => {
     const page = await listItems(client, databaseId, { limit: 200 });
@@ -310,7 +290,6 @@ function listedItemIds(databaseId: string, tenantId = tenant): Promise<string[]>
   }, tenantId);
 }
 
-/** How many threads the inbox thread list returns, as the route reads it. */
 function listedThreadCount(tenantId = tenant): Promise<number> {
   return inTenant(async (client) => {
     const threads = await listMailThreads(client, 200, null, {
@@ -323,7 +302,6 @@ function listedThreadCount(tenantId = tenant): Promise<number> {
   }, tenantId);
 }
 
-/** The ids of every Folders item related to the mailbox, live or trashed. */
 function folderIdsOf(ids: MailIds, mailboxItemId: string): Promise<string[]> {
   return inTenant(async (client) => {
     const { rows } = await client.query<{ id: string }>(
@@ -338,7 +316,6 @@ function folderIdsOf(ids: MailIds, mailboxItemId: string): Promise<string[]> {
   });
 }
 
-/** The mailbox's messages as sync knows them: the provider's message id and the Emails item it is stored as. */
 function messagesOf(mailboxItemId: string): Promise<Array<{ providerMessageId: string | null; itemId: string }>> {
   return inTenant(async (client) => {
     const { rows } = await client.query<{ providerMessageId: string | null; itemId: string }>(
@@ -383,7 +360,6 @@ function gmailAccount(messageIds: string[]): { client: GmailMailClient; calls: s
   return { client, calls };
 }
 
-/** One `mailAccountSync` pass through the production handler; returns the credentials it presented to the provider. */
 async function syncPass(mailboxItemId: string, gmail: GmailMailClient): Promise<string[]> {
   const presented: string[] = [];
   await runInTenant(tenant, async () => {
@@ -406,19 +382,12 @@ async function syncPass(mailboxItemId: string, gmail: GmailMailClient): Promise<
 
 /** A transaction of the tenant that has run its first statements and stays open until `release()`. */
 interface OpenTransaction {
-  /** The transaction's backend, for `pg_blocking_pids`. */
   pid: number;
-  /** Lets the transaction run its last statements and commit. */
   release: () => void;
-  /** Settles when the transaction has ended, with its error when it failed. */
   ended: Promise<void>;
 }
 
-/**
- * Runs `hold` in a transaction of the tenant and resolves once those statements have run, with the
- * transaction still open. After `release()` it runs `afterRelease` and commits. A `hold` that fails
- * rejects this call with its error.
- */
+/** Resolves once `hold` has run, with the transaction still open; `release()` runs `afterRelease` and commits. */
 async function holdTransactionOpen(
   hold: (client: PoolClient) => Promise<void>,
   afterRelease: (client: PoolClient) => Promise<void> = async () => {},
@@ -449,10 +418,7 @@ async function holdTransactionOpen(
   return { pid, release, ended };
 }
 
-/**
- * Whether an operation in flight waits for a lock of backend `pid`: `false` as soon as `settled()` says the
- * operation has ended, `true` as soon as one backend shows up as blocked by `pid`.
- */
+/** `false` once `settled()`, `true` once some backend is blocked by `pid`. */
 function waitsForBackend(pid: number, settled: () => boolean): Promise<boolean> {
   return vi.waitFor(
     async () => {
@@ -468,7 +434,6 @@ function waitsForBackend(pid: number, settled: () => boolean): Promise<boolean> 
   );
 }
 
-/** The kinds of the notifications written about the mailbox. */
 function notificationKindsOf(mailboxItemId: string): Promise<string[]> {
   return inTenant(async (client) => {
     const { rows } = await client.query<{ kind: string }>(
@@ -479,7 +444,7 @@ function notificationKindsOf(mailboxItemId: string): Promise<string[]> {
   });
 }
 
-/** The mailbox's Semp problem (issue #1506): its severity, how many passes reported it and whether it is resolved. */
+/** The mailbox's Semp problem: severity, pass count and resolution. */
 function mailProblemsOf(
   mailboxItemId: string,
 ): Promise<Array<{ severity: string; occurrences: number; resolved: boolean }>> {
@@ -497,7 +462,6 @@ function json(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
-/** Google answering a sign-in of `GOOGLE_ACCOUNT` with `NEW_REFRESH_TOKEN`. */
 const googleSignIn: typeof fetch = async (input) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
   if (url === GOOGLE_TOKEN_URL) {
@@ -514,9 +478,8 @@ const googleSignIn: typeof fetch = async (input) => {
 };
 
 /**
- * The reauthorization of issue gh-1742 as the two routes run it: `POST /api/mail/mailboxes/:id/reauthorize`,
- * then `POST /api/mail/mailboxes/oauth/complete` with the state of the answered URL. Returns the
- * completion's answer and the mailboxes whose live-sync lifecycle it restarted.
+ * `POST /api/mail/mailboxes/:id/reauthorize` then `POST /api/mail/mailboxes/oauth/complete`; returns the
+ * completion's answer and the mailboxes whose live-sync lifecycle restarted.
  */
 async function reauthorize(
   mailboxItemId: string,
@@ -628,7 +591,6 @@ describe("mailbox restore hook (gh-2032)", () => {
     // The credential is not restored: the user signs in again.
     expect(await inTenant((client) => hasCredential(client, work.id))).toBe(false);
 
-    // The mailbox, its folders and its messages are live and listed again.
     const after = await trashTimes([work.id, ...members, ...trashedOnTheirOwn, seeded.inTrashedFolder]);
     expect(after).toEqual({
       ...allLive([work.id, ...members, seeded.inTrashedFolder]),
@@ -695,7 +657,6 @@ describe("mailbox restore hook (gh-2032)", () => {
     await inTenant((client) => recordProviderAccountAddress(client, mailbox.id, GOOGLE_ACCOUNT));
     const afterFirst = await syncStateRows(mailbox.id);
 
-    // The mailbox is live, so a second restore changes nothing.
     expect((await restore(ids, mailbox.id))?.deletedAt).toBeNull();
     expect(await syncStateRows(mailbox.id)).toEqual(afterFirst);
     expect(afterFirst).toHaveLength(1);
@@ -811,7 +772,6 @@ describe("mailbox restore hook (gh-2032)", () => {
       expect(await syncStateRows(mailbox.id)).toEqual([]);
       expect(await syncStatusOf(mailbox.id)).toBe("needsReauthorization");
       expect((await listedItemIds(ids.mailboxes)).includes(mailbox.id)).toBe(false);
-      // The rolled-back restore announced nothing.
       expect(events).toEqual([]);
 
       // With the failure gone the same restore succeeds, so the rollback left nothing half-done.
@@ -828,7 +788,6 @@ describe("mailbox restore hook (gh-2032)", () => {
       await expect(restore(ids, mailbox.id)).rejects.toThrow("restore refused");
       vetoedRestore = null;
 
-      // The hook had created the sync state and restored the folders and the first message by then.
       // Its nested restores ran before the mailbox's own call of the recording hook, which it never reached.
       expect(restoreCalls.map((call) => call.itemId)).toEqual([
         ...[mailbox.inbox, mailbox.archive, mailbox.junk].sort(),
@@ -875,7 +834,6 @@ describe("mailbox restore hook (gh-2032)", () => {
       [mailbox.id, ...nested].sort().map((itemId) => ({ itemId, op: "update", userId: actingUserId })),
     );
 
-    // A restore that names no writer and no user restores them as the system.
     await removeWithMail(mailbox.id);
     restoreCalls = [];
     await restore(ids, mailbox.id);
@@ -907,7 +865,6 @@ describe("mailbox restore hook (gh-2032)", () => {
     expect((await runInTenant(tenant, () => chokePoint.restoreItem(ids.folders, mailbox.junk)))?.deletedAt).toBeNull();
     expect((await runInTenant(tenant, () => chokePoint.restoreItem(userDatabase.id, note.id)))?.deletedAt).toBeNull();
 
-    // The restore hooks ran for both items, and the tenant still has no sync state row at all.
     expect(restoreCalls.map((call) => call.itemId)).toEqual([mailbox.junk, note.id]);
     const { rows } = await inTenant((client) =>
       client.query<{ n: number }>("SELECT count(*)::int AS n FROM mail_account_sync_state"),

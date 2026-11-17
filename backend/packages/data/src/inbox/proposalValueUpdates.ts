@@ -26,32 +26,27 @@ import { buildEditorValues, toProposalWarnings, visibleKeys, type ProposalWarnin
 import { loadCardEditorRules } from "./proposalEditorRules.js";
 import { selectActiveSteps } from "./proposalStepGraph.js";
 
-/**
- * The user's edit of the values on a proposal card (issue #1892), split out of `proposalActions.ts` to keep that
- * file under the ESLint line cap. `proposalActions.ts` re-exports `updateProposalValuesWithClient` and
- * `UpdateProposalValuesInput`, so callers import them from there. The shared helpers this module takes from
- * `proposalActions.ts` (`lockLiveProposal`, `assertValidEnvelopeForCard`, `unsupportedEntityKindError`) are used only
- * inside functions, so the import cycle does not matter at module load.
- */
+// The user's edit of a card's values; re-exported from `proposalActions.ts`. Helpers taken from `proposalActions.ts`
+// are used only inside functions, so the import cycle is harmless at module load.
 
 export interface UpdateProposalValuesInput {
-  /** The values to set, as step ref -> property key -> value. A single-step envelope has the one ref `primary`. */
+  /** Step ref -> property key -> value (`primary` for a single-step envelope). */
   set?: UserOverrides;
-  /** The relation lists to replace (issue #1920), as step ref -> relation property key -> the full list of target item ids. */
+  /** Step ref -> relation property key -> full replacement list of target item ids. */
   relations?: Record<string, RelationOverrides>;
-  /** The steps to switch on or off (issue #1920), as step ref -> `{ enabled }`. The primary step cannot be switched off. */
+  /** Step ref -> `{ enabled }`. The primary step cannot be switched off. */
   steps?: Record<string, { enabled: boolean }>;
-  /** The card's `updatedAt` as the client read it; a different current value refuses the edit with a `ConflictError`. */
+  /** A value other than the card's `updatedAt` refuses the edit with a `ConflictError`. */
   ifVersion?: string;
 }
 
-/** What a values edit answers: the saved card and the required fields it still lacks (issue #1928). */
+/** The saved card and the required fields it still lacks. */
 export interface UpdateProposalValuesResult {
   item: ItemRow;
   warnings: ProposalWarning[];
 }
 
-/** The request as `userOverrides`-shaped edits: each ref's `set` values, its `relations` under the reserved key `relations` and its step switch under `enabled`. */
+/** The request as `userOverrides`-shaped edits, with relation lists under `relations` and step switches under `enabled`. */
 function requestedOverrides(input: UpdateProposalValuesInput): UserOverrides {
   const refs = new Set([
     ...Object.keys(input.set ?? {}),
@@ -75,40 +70,16 @@ function requestedOverrides(input: UpdateProposalValuesInput): UserOverrides {
 }
 
 /**
- * `PATCH /api/proposals/:id/values` (issue #1892): the user types values over the assistant's proposal. The
- * assistant's output stays in `aiProposal` (a legacy card without one gets it from `proposal` in this same
- * write), the user's values in `userOverrides`, the keys that differ from the assistant's in `userEditedKeys`, and
- * `proposal` holds the effective envelope, so confirm reads it as it is. A value set back to the assistant's own
- * leaves `userOverrides` and `userEditedKeys`.
+ * `PATCH /api/proposals/:id/values`: the user types values over the assistant's proposal. The assistant's output
+ * stays in `aiProposal`, the user's values go to `userOverrides`, differing keys to `userEditedKeys`, and `proposal`
+ * holds the effective envelope that confirm reads.
  *
- * `set` may also hold the pseudo fields of the card's editor schema (issue #1928: an editor field that is no
- * property of the destination, such as `allDay` or `followupTask`). They are stored in `userOverrides` and counted
- * in `userEditedKeys` like any value, are kept out of the effective envelope and are never written to the created
- * item. A field the schema hides under a condition (`when`) is not counted in `userEditedKeys`, though its value
- * stays in `userOverrides` for when the condition holds again. The result carries a `required` warning for every
- * visible required field the card still has no value for; such an edit is saved all the same.
+ * Editor pseudo fields are stored but never written to the item; fields hidden by a `when` condition are not counted.
+ * Missing required fields are warnings, not refusals. `relations` and `steps` are stored under the reserved keys; a
+ * value for an inactive step is refused, since validation would skip it.
  *
- * `relations` and `steps` (issue #1920) are edited in the same request, validated and written with `set` or not at
- * all. A relation list replaces the whole list of its relation property on that step, a step switch turns the step
- * on or off; both are stored in `userOverrides` beside the field values under the reserved keys `relations` and
- * `enabled`, and counted in `userEditedKeys` as `ref.relations.<propertyKey>` and `ref.enabled` while they differ
- * from the assistant's envelope. A switched-off step's fields and relations are not counted. `set` may not use a
- * reserved key. The primary step cannot be switched off, a relation or switch of an unknown ref is refused like a
- * value of one, and the validation of the effective envelope is the one confirm runs, so a target that does not
- * exist or a relation the target database does not allow is the same `ValidationError`.
- *
- * Runs in the caller's transaction under the proposal's row lock. Allowed from `proposed`, `needsClarification` and
- * `invalid` while the card has an envelope to edit; a `confirmed` or `rejected` card, a final `invalid` one
- * (`sourceDeleted`, issue #1482) and a card in any other status are refused with a `ValidationError`, as is a card
- * with no envelope. A `ConflictError` carrying the current card answers an `ifVersion` that is no longer the card's
- * `updatedAt`. The effective envelope is validated as confirm validates it (`assertValidEnvelopeForCard`), so an
- * unknown ref or key, a credential key of an MCP server and every other rejected value are `ValidationError`s that
- * name the field. Because that validation skips a step the proposal does not carry out (disabled, or optional and
- * referred to by no active step), a value or a relation list for such a step is refused with a `ValidationError`
- * naming its ref instead of being stored unchecked; a step is switched on in the request that first sets
- * something on it, or before. A successful edit sets the status to `proposed`, clears the
- * `invalidReason` of an `invalid` card and adds a history entry of kind `userEdit` listing the key of every value,
- * relation list and step switch of the request: `ref.key`, `ref.relations.<propertyKey>` and `ref.enabled`.
+ * Runs under the card's row lock. A stale `ifVersion` is a `ConflictError`. Success sets `proposed`, clears
+ * `invalidReason` and appends a `userEdit` entry.
  */
 export async function updateProposalValuesWithClient(
   client: PoolClient,
@@ -179,8 +150,8 @@ export async function updateProposalValuesWithClient(
   const rules = await loadCardEditorRules(client, proposal.properties.kind, aiEnvelope);
   const effective = composeEffectiveEnvelope(aiEnvelope, userOverrides, rules?.pseudoKeys);
   await assertValidEnvelopeForCard(client, config, proposal, effective);
-  // The validation above skips a disabled step and an optional step that nothing active refers to, so it would not
-  // check a value typed into one (a credential of an MCP server, an unknown key). Such a step cannot be edited.
+  // The validation above skips inactive steps, so it would not check a value typed into one (an MCP credential, an
+  // unknown key). Such a step cannot be edited.
   if (effective.operations) {
     const active = new Set(selectActiveSteps(effective.operations).map((step) => step.ref));
     const skipped = [...Object.keys(set), ...Object.keys(input.relations ?? {})].find((ref) => !active.has(ref));
@@ -190,8 +161,8 @@ export async function updateProposalValuesWithClient(
     }
   }
 
-  // The editor schema's rules (issue #1928): a field hidden by a condition is not counted as edited, and a visible
-  // required field without a value is a warning, never a refusal, so a half-filled card can be saved.
+  // A field hidden by a condition is not counted as edited, and a visible required field without a value is a warning,
+  // never a refusal, so a half-filled card can be saved.
   const editorValues = buildEditorValues(effective, userOverrides);
   const visible = new Set(rules ? visibleKeys(rules.schema, editorValues) : []);
   const hiddenKeys = new Set(

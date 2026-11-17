@@ -1,4 +1,4 @@
-/** Error categories the choke-point raises; a later HTTP layer maps `status` to a response code. */
+/** Error categories the choke point raises; the HTTP layer maps `status` to a response code. */
 export class ChokePointError extends Error {
   readonly status: number;
   readonly code: string;
@@ -21,9 +21,8 @@ export class ValidationError extends ChokePointError {
 }
 
 /**
- * An external host the request depended on could not be reached or did not answer with a success status (issue
- * gh-1812: the host of a library cover candidate). Distinct from `ValidationError`: the caller sent nothing wrong
- * and may try again. `details` is flat and holds only a reason keyword, never a URL or host.
+ * An external host the request depended on was unreachable or answered with a failure; the caller may retry.
+ * `details` holds only a reason keyword, never a URL or host.
  */
 export class UpstreamUnavailableError extends ChokePointError {
   constructor(message: string, details?: unknown) {
@@ -32,11 +31,7 @@ export class UpstreamUnavailableError extends ChokePointError {
   }
 }
 
-/**
- * The `unsupported_media_type` code of the REST error contract (issue gh-1963) — `POST /api/blobs` stored the body's
- * bytes, detected their type from the first bytes, and found it outside the types a blob may have. The bytes are
- * removed again before the error surfaces.
- */
+/** The detected type of uploaded blob bytes is not allowed; the bytes are removed before this surfaces. */
 export class UnsupportedMediaTypeError extends ChokePointError {
   constructor(message: string, details?: unknown) {
     super(415, "unsupported_media_type", message, details);
@@ -44,11 +39,7 @@ export class UnsupportedMediaTypeError extends ChokePointError {
   }
 }
 
-/**
- * The `unsupported_attachment_type` code of the REST error contract (issue gh-1963) — the blob a capture names exists
- * in the caller's tenant but its stored mime type is not one an Inbox attachment may have. `details` carries the blob's
- * id and its mime type so the client can say what was refused.
- */
+/** The blob's stored mime type cannot be attached to an Inbox item. */
 export class UnsupportedAttachmentTypeError extends ChokePointError {
   declare readonly details: { blobId: string; mimeType: string };
 
@@ -93,7 +84,7 @@ export class ValueLinkBusyError extends ChokePointError {
   }
 }
 
-/** Raised when an edge write would violate its relation definition's declared cardinality (see item_relations' `enforce_relation_cardinality` trigger). */
+/** An edge write would violate the relation's cardinality (`enforce_relation_cardinality` trigger). */
 export class CardinalityViolationError extends ChokePointError {
   constructor(message: string, details?: unknown) {
     super(409, "cardinality_violation", message, details);
@@ -108,12 +99,7 @@ export class NotFoundError extends ChokePointError {
   }
 }
 
-/**
- * Raised by `openDocVersionAt` (issue #216) for a nonfuture timestamp that is nonetheless
- * outside retained history — before the doc's `history_available_from` baseline, or before
- * the configured retention cutoff. A stable, explicit "not retained" result rather than a
- * misleading partial reconstruction.
- */
+/** `openDocVersionAt` was asked for a past timestamp outside retained history; never a partial reconstruction. */
 export class HistoryNotRetainedError extends ChokePointError {
   constructor(docId: string, at: Date) {
     super(410, "history_not_retained", `Doc ${docId} has no retained history at ${at.toISOString()}`, {
@@ -125,10 +111,8 @@ export class HistoryNotRetainedError extends ChokePointError {
 }
 
 /**
- * Raised for every login/session-verification failure — bad password, unknown email, missing
- * token, expired session, revoked session — all with the same generic message. Issue #140's
- * requirement is a single public 401 contract that never reveals which of those conditions
- * applied, so callers must not attach a more specific `details` payload here.
+ * Every login/session failure uses this same generic 401 so the response never reveals which check
+ * failed; do not attach `details`.
  */
 export class UnauthorizedError extends ChokePointError {
   constructor(message = "Invalid or missing credentials") {
@@ -137,12 +121,7 @@ export class UnauthorizedError extends ChokePointError {
   }
 }
 
-/**
- * The `rate_limited` code (issue gh-1750): the caller made more attempts than a throttle grants inside its
- * window. `retryAfterSeconds` is the whole number of seconds until an attempt can be granted again. The REST
- * adapter of `semprec-api` sends it as the `Retry-After` header (`adapter/adapterRoute.ts`); it is not in
- * the body.
- */
+/** `retryAfterSeconds` is sent as the `Retry-After` header by the REST adapter, not in the body. */
 export class RateLimitedError extends ChokePointError {
   readonly retryAfterSeconds: number;
 
@@ -154,11 +133,7 @@ export class RateLimitedError extends ChokePointError {
 }
 
 /**
- * The `schema_locked` code of the REST error contract (issue #238) — a write rejected because
- * the owning database's schema is locked (`databases.schema_locked`), raised by
- * `assertDatabaseSchemaUnlocked` in `chokePoint/propertiesStore.ts` (issue #240). Extends
- * `ForbiddenError` rather than `ChokePointError` directly so existing `instanceof ForbiddenError`
- * call sites (`chokePoint.test.ts`) keep matching it — only its `code` changed, not its category.
+ * The owning database's schema is locked. Extends `ForbiddenError` so `instanceof ForbiddenError` still matches.
  */
 export class SchemaLockedError extends ForbiddenError {
   constructor(message: string, details?: unknown) {
@@ -167,11 +142,6 @@ export class SchemaLockedError extends ForbiddenError {
   }
 }
 
-/**
- * The `property_locked` code of the REST error contract (issue #238) — a schema change rejected
- * because the individual property is itself locked (`properties.locked`), raised by
- * `assertPropertySchemaMutable` in `chokePoint/propertiesStore.ts` (issue #240).
- */
 export class PropertyLockedError extends ForbiddenError {
   constructor(message: string, details?: unknown) {
     super(message, details, "property_locked");
@@ -180,9 +150,8 @@ export class PropertyLockedError extends ForbiddenError {
 }
 
 /**
- * The `option_label_exists` code of the REST error contract (issue #1699) — an option was to be added or renamed
- * to a label that another option of the same property already has, as its stored label or as its Czech or English
- * catalog label. `details.key` is that option's key, so the caller can use the existing option instead.
+ * Another option of the property already has this label (stored, or as its Czech or English catalog label).
+ * `details.key` is that option's key.
  */
 export class OptionLabelExistsError extends ChokePointError {
   declare readonly details: { key: string };
@@ -194,9 +163,8 @@ export class OptionLabelExistsError extends ChokePointError {
 }
 
 /**
- * The `duplicate_item` code of the REST error contract (issue gh-1784) — a write would leave a second non-deleted
- * item where a database allows one per key (the sleep settings, a night exception). `details.field` names the
- * key: `sleepSettings` for the settings item, `night` for an exception.
+ * A write would leave a second live item where a database allows one per key. `details.field` names the key
+ * (`sleepSettings`, `night`).
  */
 export class DuplicateItemError extends ChokePointError {
   declare readonly details: { field: string };
@@ -208,16 +176,10 @@ export class DuplicateItemError extends ChokePointError {
 }
 
 /**
- * The `approval_required` code of the REST error contract (issue #238) — raised in place of
- * performing an agent-originated write that the module contract flags as approval-gated (see
- * `docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`). `details` links the
- * caller to the approval request the write was turned into instead, so a REST caller can poll or
- * navigate to it. The in-process AgentTool adapter takes a different path for the same situation —
- * it queues the same approval request and reports a synthetic success back to the model instead
- * of surfacing this error.
+ * An agent-originated, approval-gated write was turned into an approval request instead; `details` links to it.
+ * The in-process AgentTool adapter queues the same request but reports success to the model instead of this error.
  */
 export class ApprovalRequiredError extends ChokePointError {
-  /** Narrows the base class's `unknown` `details` to what this error's constructor always sets, so a catcher reads it typed instead of casting blind. */
   declare readonly details: { approvalRequestId: string; link: string };
 
   constructor(message: string, details: { approvalRequestId: string; link: string }) {
@@ -239,13 +201,8 @@ export class ApprovalRequiredForWrite extends Error {
 }
 
 /**
- * The `heartbeat_event_triggered` code of the REST error contract (issue #238) — a manual trigger
- * of an `onItemEvent` heartbeat, which only ever fires from the write that produced the event,
- * never on demand. The AgentTool surface for the same rejection already exists as the plain
- * string constant `HEARTBEAT_EVENT_TRIGGERED_ERROR` in `scheduler/heartbeatAgentTools.ts`; this
- * class is the equivalent for a REST caller that wants to raise or match on this specific code.
- * Kept distinct from `validation_failed` so a client can offer a specific "this heartbeat fires
- * automatically" message instead of a generic bad-request one.
+ * Manual trigger of an `onItemEvent` heartbeat, which only fires from the write that produced the event.
+ * The AgentTool counterpart is `HEARTBEAT_EVENT_TRIGGERED_ERROR` in `scheduler/heartbeatAgentTools.ts`.
  */
 export class HeartbeatEventTriggeredError extends ChokePointError {
   constructor(message: string, details?: unknown) {
@@ -254,11 +211,6 @@ export class HeartbeatEventTriggeredError extends ChokePointError {
   }
 }
 
-/**
- * The `heartbeat_disabled` code of the REST error contract (issue #1453) — a manual trigger of a
- * heartbeat the user disabled. Kept distinct from `heartbeat_event_triggered` and `validation_failed`
- * so a client can offer "enable it first" instead of a generic bad-request message.
- */
 export class HeartbeatDisabledError extends ChokePointError {
   constructor(message: string, details?: unknown) {
     super(409, "heartbeat_disabled", message, details);
@@ -266,10 +218,7 @@ export class HeartbeatDisabledError extends ChokePointError {
   }
 }
 
-/**
- * The run of a heartbeat that is still active, as the REST error contract shows it: ids, status and
- * timestamps only. The run's task text and result stay out of an error response.
- */
+/** An active heartbeat run as error details show it; task text and result stay out. */
 export interface ActiveHeartbeatRunSummary {
   id: string;
   status: string;
@@ -279,9 +228,8 @@ export interface ActiveHeartbeatRunSummary {
 }
 
 /**
- * The `heartbeat_running` code of the REST error contract (issue #1453) — a manual trigger while a
- * run of the heartbeat is running or a fire job of it is already waiting. `details.activeRun` is the
- * running run, or `null` while only a job is waiting for a worker to create the run.
+ * Manual trigger while a run is active or a fire job is waiting. `details.activeRun` is `null` while only
+ * a job is waiting.
  */
 export class HeartbeatRunningError extends ChokePointError {
   declare readonly details: { activeRun: ActiveHeartbeatRunSummary | null };
@@ -293,9 +241,8 @@ export class HeartbeatRunningError extends ChokePointError {
 }
 
 /**
- * The `not_retryable` code of the REST error contract (issue #1908) — a retry of an agent run that can never be
- * retried: it did not fail, it is not a run of a scheduled heartbeat occurrence, or it was retried already.
- * Distinct from `retry_pending`, which means a later attempt may still make the run retryable.
+ * The run can never be retried (not failed, not a scheduled heartbeat occurrence, or already retried).
+ * Unlike `retry_pending`, which means a later attempt may still make it retryable.
  */
 export class NotRetryableError extends ChokePointError {
   constructor(message: string, details?: unknown) {
@@ -304,10 +251,7 @@ export class NotRetryableError extends ChokePointError {
   }
 }
 
-/**
- * The `retry_pending` code of the REST error contract (issue #1908) — a retry of a failed run whose heartbeat
- * occurrence is still queued or running, so an automatic attempt may still run. The caller can try again later.
- */
+/** The failed run's heartbeat occurrence is still queued or running; try again later. */
 export class RetryPendingError extends ChokePointError {
   constructor(message: string, details?: unknown) {
     super(409, "retry_pending", message, details);
@@ -324,10 +268,8 @@ const PASSWORD_RESET_TOKEN_ERROR_MESSAGES = {
 export type PasswordResetTokenErrorReason = keyof typeof PASSWORD_RESET_TOKEN_ERROR_MESSAGES;
 
 /**
- * Raised by `resetPassword` (issue #142) when a presented token doesn't identify a live,
- * unconsumed, unexpired `password_reset_tokens` row. Unlike `UnauthorizedError`, the issue's
- * Task explicitly asks for "deterministic invalid/expired/consumed responses" here — so, unlike
- * login, `reason` (and thus `code`) is allowed to tell the three apart.
+ * A reset token that is not live, unconsumed and unexpired. Unlike login, `reason` (and `code`) deliberately
+ * distinguishes invalid, expired and consumed.
  */
 export class PasswordResetTokenError extends ChokePointError {
   readonly reason: PasswordResetTokenErrorReason;

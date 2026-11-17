@@ -12,18 +12,14 @@ import {
 /** Carries the caller's own tenant scope across the loopback hop; the gateway validates it and enters that tenant. */
 const TENANT_ID_HEADER = "x-semprec-tenant-id";
 
-/** The headers that attribute a speech synthesis to the agent run and the Semp message it serves (issue #2020). */
+/** The headers that attribute a speech synthesis to the agent run and the Semp message it serves. */
 const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
 const SEMP_MESSAGE_ID_HEADER = "x-semprec-semp-message-id";
 
-/** #215's 60-second budget for the whole round trip to `semprec-ai-gateway`. */
+/** The budget for the whole round trip to `semprec-ai-gateway`. */
 const REQUEST_TIMEOUT_MS = 60_000;
 
-/**
- * This is a loopback round trip to a process whose own request cap (`MAX_BODY_BYTES` in
- * `completeHandler.ts`) is 1 MiB, so the response can't legitimately exceed that either — cap it
- * the same way rather than buffering an unbounded or malformed response into memory.
- */
+/** The gateway caps its own request bodies at 1 MiB (`completeHandler.ts`), so a larger response is refused rather than buffered. */
 const MAX_RESPONSE_BODY_BYTES = 1024 * 1024;
 
 export interface HttpAiGatewayClientConfig {
@@ -40,11 +36,7 @@ function tenantHeader(): Record<string, string> {
 
 class ResponseTooLargeError extends Error {}
 
-/**
- * Reads the response body with a hard byte cap, independent of any (absent, wrong, or
- * adversarial) `Content-Length` header, so a malformed or oversized response can't be buffered
- * into memory wholesale before it's even parsed.
- */
+/** Reads the body with a hard byte cap, independent of any `Content-Length` header. */
 async function readJsonBodyWithSizeCap(res: Response, maxBytes: number): Promise<unknown> {
   const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = res.body?.getReader();
   if (!reader) throw new ResponseTooLargeError("Response body stream was unavailable");
@@ -78,9 +70,8 @@ function isCompletionResult(value: unknown): value is AiGatewayCompletionResult 
 }
 
 /**
- * Whether a non-2xx response is the gateway's own budget rejection (`403` with
- * `code: "budget_exceeded"`, as `completeHandler.ts` sends it). A body that can't be read or
- * parsed is just not one: the caller still reports the response as a plain `http` failure.
+ * Whether a non-2xx response is the gateway's budget rejection (`403`, `code: "budget_exceeded"`).
+ * An unreadable body is not one and is reported as a plain `http` failure.
  */
 async function isBudgetRejection(res: Response): Promise<boolean> {
   if (res.status !== 403) return false;
@@ -94,11 +85,10 @@ async function isBudgetRejection(res: Response): Promise<boolean> {
 }
 
 /**
- * `packages/ai-gateway-client`'s only implementation of `AiGatewayClientPort` (#215): a plain
- * `fetch` against `semprec-ai-gateway`'s `POST /internal/complete`, with a 60s timeout and
- * strict response validation. Every failure mode — timeout, non-2xx (`budget_exceeded` for the
- * gateway's budget rejection), invalid JSON, schema mismatch — collapses to `AiGatewayFailedError` with only a `reason`, never the provider's own
- * error body, a response snippet, or the bearer token.
+ * `AiGatewayClientPort` over `fetch` to `POST /internal/complete`, with a 60s timeout and strict
+ * response validation. Every failure collapses to `AiGatewayFailedError` with only a `reason`
+ * (`budget_exceeded` for the budget rejection), never the provider's error body, a response
+ * snippet or the bearer token.
  */
 export function createHttpAiGatewayClient(config: HttpAiGatewayClientConfig): AiGatewayClientPort {
   return {
@@ -110,9 +100,7 @@ export function createHttpAiGatewayClient(config: HttpAiGatewayClientConfig): Ai
           headers: {
             "content-type": "application/json",
             authorization: `Bearer ${config.token}`,
-            // Issue #167: carries this call's trace across the loopback hop so the gateway's own
-            // logs correlate with the caller's. Minting a fallback here (rather than requiring an
-            // active trace) keeps this client usable from a caller that hasn't set one up.
+            // Correlates the gateway's logs with the caller's; minted when the caller has no active trace.
             "x-trace-id": getTraceId() ?? mintTraceId(),
             // Taken only from the ambient scope, never from input; no header outside a tenant scope.
             ...tenantHeader(),
@@ -181,7 +169,7 @@ export interface SttStream {
   end(): void;
   /**
    * Attributes every chunk row the gateway reserved on this stream since it opened, or since the previous call,
-   * to the Semp assistant message of the turn the speech started (issue #2020). Speech never attributed stays
+   * to the Semp assistant message of the turn the speech started. Speech never attributed stays
    * unattributed. Returns false when the stream is not open, in which case nothing was sent.
    */
   attribute(sempMessageId: string): boolean;
@@ -217,12 +205,10 @@ function parseSttMessage(raw: string): SttMessage | null {
 }
 
 /**
- * Opens `semprec-ai-gateway`'s streaming speech-to-text route (`/internal/stt/stream`, #1396) over
- * loopback with the same bearer token and ambient tenant header as {@link createHttpAiGatewayClient}.
- * The tenant must be in scope: the gateway refuses a stream without one. Rejects with
- * `AiGatewayFailedError` when the connection cannot be opened (`timeout` or `http`); once open,
- * every outcome is reported through `events`, and an unparseable gateway message ends the stream
- * as a `provider_error`.
+ * Opens `/internal/stt/stream` over loopback with the same token and ambient tenant header as
+ * {@link createHttpAiGatewayClient}; the gateway refuses a stream without a tenant. Rejects with
+ * `AiGatewayFailedError` (`timeout` or `http`) when it cannot open; once open every outcome goes
+ * through `events`, and an unparseable gateway message ends the stream as `provider_error`.
  */
 export function openSttStream(
   config: HttpAiGatewayClientConfig,
@@ -314,9 +300,9 @@ export interface SynthesizeSpeechOptions {
   voice: string;
   /** Aborting it ends the request; the gateway aborts the provider and settles the audio produced so far. */
   signal?: AbortSignal;
-  /** The agent run whose turn is spoken (`x-semprec-agent-run-id`); omit when the speech serves no run (issue #2020). */
+  /** The agent run whose turn is spoken (`x-semprec-agent-run-id`); omit when the speech serves no run. */
   agentRunId?: string;
-  /** The Semp assistant message that is spoken (`x-semprec-semp-message-id`); omit when the speech serves none (issue #2020). */
+  /** The Semp assistant message that is spoken (`x-semprec-semp-message-id`); omit when the speech serves none. */
   sempMessageId?: string;
 }
 
@@ -346,14 +332,12 @@ async function isSpeechCapacityRejection(res: Response): Promise<boolean> {
 }
 
 /**
- * Calls `semprec-ai-gateway`'s `POST /internal/tts/stream` (#1399) over loopback with the same
- * bearer token and ambient tenant header as {@link createHttpAiGatewayClient} and resolves once
- * the response headers have arrived, with the audio as an async iterable of raw PCM chunks
- * (signed 16-bit little-endian, mono, 24000 Hz) that can be played while the rest is synthesized.
- * Rejects with `AiGatewayFailedError` when the request fails: `budget_exceeded` for the gateway's
- * budget refusal, `timeout`, or `http` for any other non-2xx answer. Reading the iterable throws
- * `AiGatewayFailedError("http")` when the stream breaks, `timeout` at the deadline and
- * `invalid_response` when it exceeds the audio cap. A reader that stops early cancels the request.
+ * Calls `POST /internal/tts/stream` over loopback (same token and tenant header as
+ * {@link createHttpAiGatewayClient}) and resolves once headers arrive, with the audio as raw PCM
+ * chunks (s16le, mono, 24000 Hz) playable while the rest is synthesized. Rejects with
+ * `AiGatewayFailedError`: `budget_exceeded`, `timeout`, or `http` for another non-2xx. Reading
+ * throws `http` when the stream breaks, `timeout` at the deadline and `invalid_response` past the
+ * audio cap. A reader that stops early cancels the request.
  */
 export async function synthesizeSpeech(
   config: HttpAiGatewayClientConfig,

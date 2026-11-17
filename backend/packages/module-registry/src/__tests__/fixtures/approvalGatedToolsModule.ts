@@ -66,10 +66,9 @@ interface FixturePool {
 }
 
 /**
- * The source of every tool in this module is the title of the chat thread of the requesting run. The
- * handler appends `+<value>` to it, so the title shows how often, and with what, the handler ran; the
- * snapshot is the title, and reading it fails while the title is `boom`. Raw SQL: this is a test fixture
- * that needs a source a test can change and a side effect a test can count, in a module with no database.
+ * Every tool's source is the title of the requesting run's chat thread: the handler appends
+ * `+<value>`, the snapshot is the title, and reading it fails while the title is `boom`. Raw SQL,
+ * since this module has no database.
  */
 export function createApplyTool(pool: FixturePool) {
   return async (runId: string, args: ApplyArgs) => {

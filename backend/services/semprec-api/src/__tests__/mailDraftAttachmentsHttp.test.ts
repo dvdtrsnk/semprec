@@ -29,10 +29,9 @@ import {
 import { createDispatcher } from "../app.js";
 
 /**
- * Issue gh-1895 through the production composition path: the real dispatcher mounts the draft attachment routes of
- * the mail module, and the limit of a mailbox without a provider limit is the `maxFileSizeBytes` the dispatcher was
- * given, the cap `POST /api/files` enforces. The data package's `mailDraftAttachments.test.ts` covers every branch
- * of the operations; this file covers the wiring from the HTTP request to the limit and the answer's status.
+ * Draft attachments through the production composition: a mailbox without a provider limit is limited by the
+ * dispatcher's `maxFileSizeBytes`, the cap `POST /api/files` enforces. Operation branches are covered by the data
+ * package's `mailDraftAttachments.test.ts`.
  */
 
 const UPLOAD_LIMIT_BYTES = 1000;
@@ -66,12 +65,11 @@ async function request(
   return { status: res.status, body: isJson ? JSON.parse(text) : text };
 }
 
-/** A file of `size` bytes uploaded through `POST /api/files`, as the compose window does; answers its Files item id. */
 async function upload(size: number): Promise<string> {
   const res = await fetch(`${baseUrl}/api/files`, {
     method: "POST",
     headers: { ...bearer, "Content-Type": "application/octet-stream", "X-Filename": `file-${randomUUID()}.bin` },
-    // Content that differs per call: an identical upload would answer the Files item of the first.
+    // Distinct per call: an identical upload would answer the first one's Files item.
     body: Buffer.from(
       randomUUID()
         .repeat(Math.ceil(size / 36))
@@ -82,7 +80,6 @@ async function upload(size: number): Promise<string> {
   return z.object({ id: z.uuid() }).parse(await res.json()).id;
 }
 
-/** A mailbox of `provider` with an address and a Drafts folder, written the way the connect flow and folder discovery do. */
 async function mailboxWithDrafts(provider: string): Promise<string> {
   const address = `${randomUUID()}@example.test`;
   const mailboxId = await runInTenant(tenantId, () =>

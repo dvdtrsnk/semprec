@@ -43,19 +43,17 @@ const calendarRowSchema = z.object({
   properties: z.object({ systemKey: z.string().optional() }),
 });
 
-/** A tenant seeded the way a new one is, with one user of `locale` unless it is `null`. */
 async function newTenant(locale: string | null = "cs"): Promise<string> {
   const tenantId = await createTestTenant(adminPool);
   if (locale !== null) {
     await createUser(adminPool, { tenantId, email: `${randomUUID()}@example.com`, passwordHash: "unused", locale });
   }
   await runInTenant(tenantId, () => seedSystem(dataPool));
-  // The sleep nights of a seeded tenant have their own tests (issue #1806); these keep to their own entries.
+  // The sleep nights of a seeded tenant have their own tests; these keep to their own entries.
   await hideSleepInCalendar(dataPool, tenantId);
   return tenantId;
 }
 
-/** One tenant's fixture writes and timeline reads, each in that tenant's scope on the runtime-role pool. */
 function world(tenantId: string) {
   const chokePoint = createChokePoint(dataPool);
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenantId, fn);
@@ -86,10 +84,7 @@ function world(tenantId: string) {
     return { id: row.id, databaseId: id };
   }
 
-  /**
-   * Puts the holidays calendar in the Trash with a raw write: the delete hook of issue gh-1803 refuses to trash a
-   * system calendar, so a trashed one is a state only a write that skips the hooks reaches.
-   */
+  /** A raw write: the delete hook refuses to trash a system calendar. */
   async function trashHolidaysCalendar(): Promise<void> {
     const calendar = await holidaysCalendar();
     await withTenantTransaction(adminPool, tenantId, async (client) => {
@@ -104,7 +99,6 @@ function world(tenantId: string) {
   const read = (from: string, to: string = from, shape: "full" | "compact" = "full") =>
     inTenant(() => withTransaction(dataPool, (client) => readCalendarTimeline(client, { from, to, shape })));
 
-  /** The holiday entries of a range, each checked to carry exactly the documented fields. */
   const holidays = async (from: string, to: string = from) =>
     z.array(holidaySchema).parse((await read(from, to)).items.filter((item) => item.kind === "holiday"));
 

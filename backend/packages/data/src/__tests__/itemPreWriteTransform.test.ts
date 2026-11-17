@@ -44,9 +44,9 @@ async function countItems(databaseId: string): Promise<number> {
 }
 
 /**
- * A database owned by the probe module. `link` is an owner:'system' key whose ownerProcess is another
- * module (a refused add), `stamp` is owner:'system' with the probe module as its ownerProcess (an
- * accepted add), and `derived` is owner:'system' with no ownerProcess (an accepted add).
+ * A database owned by the probe module. `link` is owner:'system' with another module as ownerProcess (a
+ * refused add), `stamp` is owner:'system' with the probe module (accepted), and `derived` is owner:'system'
+ * with no ownerProcess (accepted).
  */
 async function makeProbeDatabase(): Promise<string> {
   const db = await chokePoint.createDatabase({ name: "Probe", ownerModuleId: PROBE_MODULE });
@@ -994,8 +994,8 @@ describe("choke-point item pre-write transforms (issue #1422)", () => {
   it("leaves Tasks time untouched on an update that names neither timeFrom nor timeTo", async () => {
     registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform);
     const tasksId = await databaseIdFor(TASKS_MODULE_ID);
-    // insertItem bypasses the transform on purpose: it stores a stale derived value, so the update below
-    // proves the Tasks transform did not recompute `time` for a patch that names neither source.
+    // insertItem bypasses the transform: it stores a stale derived value, so the update proves the Tasks
+    // transform did not recompute `time` for a patch naming neither source.
     const stale = await itemsStore.insertItem(pool, {
       databaseId: tasksId,
       properties: { name: "Plan", timeFrom: "09:00", timeTo: "10:00", time: "stale" },

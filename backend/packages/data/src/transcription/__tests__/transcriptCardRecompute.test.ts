@@ -39,7 +39,6 @@ const historyRowSchema = z.array(
   z.looseObject({ id: z.string().optional(), author: z.string(), message: z.string(), kind: z.string().optional() }),
 );
 
-/** Message-only revise enqueues the instruction's recompute job in its own transaction (issue gh-1940). */
 describe("enqueueing the recompute of a transcript card (issue gh-1940)", () => {
   let proposalsId: string;
   let transcriptsId: string;
@@ -58,7 +57,7 @@ describe("enqueueing the recompute of a transcript card (issue gh-1940)", () => 
     await pool?.end();
   });
 
-  /** A `kind = 'transcript'` card as the match step emits it when no Event overlaps the recording: a new-meeting proposal. */
+  /** A new-meeting card, as the match step emits it when no Event overlaps the recording. */
   async function createTranscriptCard(): Promise<string> {
     const transcript = await withTransaction(pool, (client) =>
       createItemWithClient(
@@ -111,7 +110,7 @@ describe("enqueueing the recompute of a transcript card (issue gh-1940)", () => 
     const instruction = entries.at(-1);
     expect(instruction).toMatchObject({ author: "user", message: "it is the accountant call" });
     const instructionEntryId = z.uuid().parse(instruction?.id);
-    // The payload `{ proposalId, instructionEntryId }` and the tenant stamp are proven by running the job in the worker's test.
+    // The payload and tenant stamp are proven by running the job in the worker's test.
     expect(await jobs()).toEqual([
       {
         key: `transcript-card-recompute:${cardId}:${instructionEntryId}`,
@@ -151,7 +150,6 @@ describe("enqueueing the recompute of a transcript card (issue gh-1940)", () => 
 
   it.each(["confirmed", "rejected"])("refuses an instruction to a %s card and enqueues nothing", async (status) => {
     const cardId = await createTranscriptCard();
-    // The decision's own writer is not under test: the locked status is what the instruction meets.
     await withTransaction(pool, (client) =>
       updateItemWithClient(
         client,

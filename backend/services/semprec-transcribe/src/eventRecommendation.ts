@@ -29,12 +29,7 @@ function describeCandidate(candidate: RecommendationCandidate): string {
   ].join("\n");
 }
 
-/**
- * The gateway request asks which of the Events that overlapped a recording it belongs to, judging
- * by the recording's meeting notes (title, summary and short summary, speaker tokens already
- * replaced). The model answers with a candidate's id, or `null` when it cannot tell, and gives one
- * short reason sentence in the user's language (`locale`).
- */
+/** Picks one overlapping Event from the meeting notes, or `null`, with a short reason in `locale`. */
 export function buildEventRecommendationRequest(
   notes: EventRecommendationContext["notes"],
   candidates: readonly RecommendationCandidate[],
@@ -62,10 +57,7 @@ export function buildEventRecommendationRequest(
   };
 }
 
-/**
- * Validates the gateway's structured content: it crossed a process boundary, so it is checked, not
- * cast. Whether `eventId` is one of the candidates is decided later, where the card is created.
- */
+/** Checked, not cast. Whether `eventId` is a candidate is decided where the card is created. */
 export function parseEventRecommendationContent(content: unknown): EventRecommendation {
   return eventRecommendationSchema.parse(content);
 }

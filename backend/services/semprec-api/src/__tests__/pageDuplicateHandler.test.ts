@@ -43,7 +43,6 @@ async function request(
   return { status: response.status, text: await response.text() };
 }
 
-/** A project-like host with a title property named `name`, in tenant A. */
 async function titledHost(title: string): Promise<string> {
   return runInTenant(harness.tenantA, async () => {
     const chokePoint = createChokePoint(harness.runtime);
@@ -73,16 +72,14 @@ async function pageOf(itemId: string): Promise<z.infer<typeof pageBody>> {
   return pageBody.parse(JSON.parse(read.text));
 }
 
-/** The page ids the blocks of the page of `itemId` name, in document order. */
 async function namedPageIds(itemId: string): Promise<Array<string | undefined>> {
   return (await pageOf(itemId)).blocks.map((block) => block.pageId);
 }
 
 /**
- * An instant of the database clock, as ISO 8601, that a page's history places after every write made so far and before
- * every write made once this returns. The history dates an update by the start of its transaction and keeps that start
- * in whole milliseconds, so the instant is the whole millisecond after the current one, and it is returned once the
- * database clock has left that millisecond.
+ * An ISO instant the page history places after every write so far and before every later one. History dates an
+ * update by its transaction start in whole milliseconds, so this is the next millisecond, returned once the database
+ * clock has passed it.
  */
 async function instantAfterWrites(): Promise<string> {
   const { rows } = await harness.admin.query<{ at: Date }>(
@@ -111,7 +108,7 @@ interface Stored {
   docUpdates: number;
 }
 
-/** Everything a duplicate creates, counted in tenant A: what a refused call must leave as it found it. */
+/** What a refused call must leave as it found it. */
 async function stored(): Promise<Stored> {
   const { rows } = await runInTenant(harness.tenantA, () =>
     harness.runtime.query<Stored>(
@@ -151,7 +148,7 @@ describe("POST /api/items/:id/page/duplicate (issue #1722)", () => {
 
     expect(answer.status, answer.text).toBe(201);
     const copy = copyBody.parse(JSON.parse(answer.text));
-    // New users have the locale `cs`, so the root of the copy carries the Czech suffix.
+    // New users have the locale `cs`, so the copy's root carries the Czech suffix.
     const parent = await pageOf(project);
     expect(parent.subpageCount).toBe(2);
     expect(parent.blocks).toEqual([
@@ -171,7 +168,6 @@ describe("POST /api/items/:id/page/duplicate (issue #1722)", () => {
       [copy.pageItemId, "Release checklist (kopie)"],
       [nestedCopyId, "Notes for 0.4"],
     ]);
-    // The original pages, their documents and their items read exactly as before.
     expect(await readOriginals()).toEqual(before);
   });
 
@@ -199,7 +195,7 @@ describe("POST /api/items/:id/page/duplicate (issue #1722)", () => {
   it("answers 400 and creates nothing when the tree has more than 500 pages", async () => {
     const project = await titledHost("Large project");
     const root = await subpage(project, "Large page");
-    // 500 nested pages: 500 text blocks of the root, converted into subpages 200 at a time (the most one call takes).
+    // 500 text blocks converted into subpages 200 at a time, the most one call takes.
     const blockIds = await insertMarkdown(
       root.pageItemId,
       Array.from({ length: 500 }, (_, index) => `Page ${index + 1}`).join("\n\n"),
@@ -233,8 +229,8 @@ describe("POST /api/items/:id/page/duplicate (issue #1722)", () => {
     const trashed = await subpage(checklist.pageItemId, "In the trash");
     const beforeTrash = await instantAfterWrites();
     expect((await request("DELETE", `/api/items/${trashed.pageItemId}`)).status).toBe(200);
-    // The trash takes the page's block out of the original (issue #1723). Restoring the original to its version from
-    // before the trash writes the block again, and the page stays in the trash.
+    // The trash takes the page's block out of the original; restoring the original's pre-trash version writes the
+    // block again, and the page stays in the trash.
     expect(await namedPageIds(checklist.pageItemId)).toEqual([kept.pageItemId]);
     const restored = await request("POST", `/api/items/${checklist.pageItemId}/page/restore`, {
       body: { at: beforeTrash },
@@ -250,7 +246,6 @@ describe("POST /api/items/:id/page/duplicate (issue #1722)", () => {
     expect(copied.blocks).toMatchObject([{ type: "page", text: "Kept" }]);
     expect(copied.subpageCount).toBe(1);
     expect(copied.blocks[0]?.pageId).not.toBe(kept.pageItemId);
-    // The original still names both of its pages.
     expect(await namedPageIds(checklist.pageItemId)).toEqual([kept.pageItemId, trashed.pageItemId]);
   });
 

@@ -130,7 +130,7 @@ describe("enforceTenantScope", () => {
     );
   });
 
-  // Unset and empty default to strict (issue #1067); only an explicit `warn` keeps warn mode.
+  // Unset and empty default to strict; only an explicit `warn` keeps warn mode.
   it.each([undefined, "", "strict"])(
     "throws TenantScopeMissingError naming the site with SEMPREC_TENANT_SCOPE=%j",
     (mode) => {

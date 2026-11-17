@@ -18,14 +18,12 @@ import { createTaskOccurrenceMaterializeRouteHandler } from "../taskOccurrenceRo
 import { createTaskRecurrenceSetRouteHandler } from "../taskRecurrenceRoutes.js";
 import { getTaskRecurrenceBySeriesId, type TaskRecurrence } from "../taskRecurrenceStore.js";
 
-/** A tenant with the system databases seeded. */
 interface SeededTenant {
   id: string;
   tasksId: string;
   eventsId: string;
 }
 
-/** A stored occurrence of a series as its tenant reads it. */
 interface StoredOccurrence {
   id: string;
   properties: Record<string, unknown>;
@@ -35,7 +33,6 @@ interface StoredOccurrence {
 let admin: Pool;
 let pool: Pool;
 let cp: ChokePoint;
-/** The tenant every case uses unless it names another. */
 let home: SeededTenant;
 /** A second tenant: the caller of the isolation cases and the owner of the foreign rows. */
 let foreign: SeededTenant;
@@ -43,7 +40,7 @@ let foreign: SeededTenant;
 const userId = randomUUID();
 const identity = { user: { id: userId } };
 
-/** The server's clock in every case: 10:00 UTC on Friday 16 October 2026, which is noon of that day in the seeded zone. */
+/** 10:00 UTC on Friday 16 October 2026, noon in the seeded zone. */
 const NOW = Date.UTC(2026, 9, 16, 10, 0, 0);
 const TODAY = "2026-10-16";
 /** The end of the all-day events of `TODAY` in Europe/Prague (UTC+2), the `hiddenUntil` of a task placed in one. */
@@ -76,10 +73,7 @@ async function event(tenant: SeededTenant = home): Promise<string> {
   return item.id;
 }
 
-/**
- * A daily series started through the recurrence route (issue #1665) on a task dated today: the series id and its
- * current instance, the occurrence of 16 October.
- */
+/** A daily series started through the recurrence route on a task dated today, with its current instance. */
 async function dailySeries(tenant: SeededTenant = home): Promise<{ seriesId: string; currentId: string }> {
   const created = await runInTenant(tenant.id, () =>
     cp.createItem({ databaseId: tenant.tasksId, properties: { name: "Stretch", date: TODAY } }),
@@ -92,7 +86,7 @@ async function dailySeries(tenant: SeededTenant = home): Promise<{ seriesId: str
   return { seriesId, currentId: created.id };
 }
 
-/** Stores the occurrence of `date` through the materialize route (issue #1720) and returns the new item's id. */
+/** Through the materialize route; returns the new item's id. */
 async function materialize(seriesId: string, date: string, tenant: SeededTenant = home): Promise<string> {
   const response = await runInTenant(tenant.id, () =>
     createTaskOccurrenceMaterializeRouteHandler(pool)({ params: { seriesId, date }, body: {}, identity }),
@@ -112,12 +106,10 @@ async function trash(databaseId: string, itemId: string): Promise<void> {
   if (!trashed) throw new Error(`Item ${itemId} was not trashed`);
 }
 
-/** The series row as the Tasks store reads it: its current instance, rule, anchor date, template and `active`. */
 async function seriesRow(seriesId: string, tenant: SeededTenant = home): Promise<TaskRecurrence | null> {
   return runInTenant(tenant.id, () => withTransaction(pool, (client) => getTaskRecurrenceBySeriesId(client, seriesId)));
 }
 
-/** Every live item that carries `seriesId`, read in `tenant`, by occurrence date. */
 async function seriesItems(seriesId: string, tenant: SeededTenant = home): Promise<StoredOccurrence[]> {
   return runInTenant(tenant.id, async () => {
     const { rows } = await pool.query<{ id: string; properties: Record<string, unknown>; updated_at: string }>(
@@ -132,7 +124,6 @@ async function seriesItems(seriesId: string, tenant: SeededTenant = home): Promi
 
 const byEventId = (a: { eventId: string }, b: { eventId: string }): number => (a.eventId < b.eventId ? -1 : 1);
 
-/** Every stored edge of the item as `tenant` reads it: the other item and the metadata, by the other item's id. */
 async function storedEdges(
   itemId: string,
   tenant: SeededTenant = home,
@@ -145,10 +136,7 @@ async function storedEdges(
     .sort(byEventId);
 }
 
-/**
- * One line per occurrence of `seriesId` the projection (issue #1672) returns for the range: its date, then the stored
- * item's id or `virtual:<status>`.
- */
+/** One line per projected occurrence: its date, then the stored id or `virtual:<status>`. */
 async function projected(seriesId: string, from: string, to: string): Promise<string[]> {
   const result = await runInTenant(home.id, () =>
     withTransaction(pool, (client) => projectTaskOccurrences(client, { from, to, today: TODAY })),
@@ -162,7 +150,6 @@ async function projected(seriesId: string, from: string, to: string): Promise<st
     );
 }
 
-/** Runs `write`, which must be refused, and returns the error it threw. */
 async function refusal(write: () => Promise<unknown>): Promise<unknown> {
   const outcome = await write().then(
     () => null,
@@ -172,10 +159,7 @@ async function refusal(write: () => Promise<unknown>): Promise<unknown> {
   return outcome.error;
 }
 
-/**
- * The two kinds of occurrence the route places. Each starts a daily series of its own in `tenant` and returns the item
- * to place: the series' current instance, or the occurrence of 17 October stored through the materialize route.
- */
+/** Each starts its own daily series and returns the current instance or the materialized 17 October occurrence. */
 const OCCURRENCES: Array<[string, (tenant?: SeededTenant) => Promise<{ seriesId: string; occurrenceId: string }>]> = [
   [
     "the current instance",
@@ -316,7 +300,7 @@ describe("PUT /api/tasks/:id/host-events/:eventId for an occurrence of a recurri
     const nextId = items[1]?.id;
     if (nextId === undefined) throw new Error("The series did not advance");
     expect(await seriesRow(seriesId)).toEqual({ ...row, itemId: nextId });
-    // The event of today has not ended: the completion is a completion in it (issue #1781), and the next instance is not.
+    // Today's event has not ended, so the completion is made in it; the next instance is not.
     const hostEdge = { eventId, metadata: { addedAt: iso(NOW) } };
     const completedEdge = { eventId, metadata: {} };
     expect(await storedEdges(currentId)).toEqual(expect.arrayContaining([hostEdge, completedEdge]));
@@ -369,7 +353,7 @@ describe.each(OCCURRENCES)(
       const callerEvent = await event(foreign);
       const before = { row: await seriesRow(seriesId), items: await seriesItems(seriesId) };
       expect(before.items.map((item) => item.id)).toContain(occurrenceId);
-      // The edges the caller's event got when it was created, its calendar among them (issue #1761).
+      // The edges the caller's event got at creation, its calendar among them.
       const callerEventEdges = await storedEdges(callerEvent, foreign);
 
       const asForeign = await refusal(() => put(occurrenceId, callerEvent, foreign));
@@ -393,7 +377,7 @@ describe.each(OCCURRENCES)(
       const { seriesId, occurrenceId } = await occurrence();
       const foreignEvent = await event(foreign);
       const before = { row: await seriesRow(seriesId), items: await seriesItems(seriesId) };
-      // The edges the other tenant's event got when it was created, its calendar among them (issue #1761).
+      // The edges the other tenant's event got at creation, its calendar among them.
       const foreignEventEdges = await storedEdges(foreignEvent, foreign);
 
       const error = await refusal(() => put(occurrenceId, foreignEvent));

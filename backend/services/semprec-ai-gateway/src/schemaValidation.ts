@@ -2,11 +2,8 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ValidateFunction } from "ajv";
 
 /**
- * Issue #215: caller-supplied `responseSchema` is bounded at 64 KiB (arbitrary caller-controlled
- * JSON validated on every request; unbounded would make this route a cheap way to burn CPU on
- * a pathologically large schema) and forbidden from resolving a remote `$ref` (this process has
- * no business making an outbound fetch to satisfy a caller's schema, and a local ref that only
- * points inside the same document, `#/...`, is the only kind that's ever needed).
+ * Bounded so a huge schema cannot burn CPU, and no remote `$ref` so a caller's schema never causes an
+ * outbound fetch (only `#/...` refs are needed).
  */
 export const MAX_RESPONSE_SCHEMA_BYTES = 64 * 1024;
 
@@ -34,11 +31,7 @@ function assertNoRemoteRef(node: unknown, path: string): void {
 
 const ajv = new Ajv2020({ strict: false });
 
-/**
- * Enforces size and remote-`$ref` constraints, then compiles the schema as Draft 2020-12.
- * Throws `InvalidResponseSchemaError` for any failure — the route handler maps this to
- * `400 validation_failed`.
- */
+/** Draft 2020-12. Any failure is an `InvalidResponseSchemaError` (`400 validation_failed`). */
 export function compileResponseSchema(schema: unknown): ValidateFunction {
   if (schema === null || typeof schema !== "object") {
     throw new InvalidResponseSchemaError("responseSchema must be a JSON object");

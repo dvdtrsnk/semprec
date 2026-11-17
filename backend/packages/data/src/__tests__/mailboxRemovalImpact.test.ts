@@ -31,21 +31,16 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 
-/** The seeded ids every fixture shares, read once per test from the tenant under test. */
 interface MailIds {
   mailboxes: string;
   folders: string;
   emails: string;
   files: string;
-  /** Emails.folder, the Email side of the folder edge. */
   emailFolderProperty: string;
-  /** Emails.attachments, the relation a Files item hangs off. */
   emailAttachmentsProperty: string;
-  /** Folders.mailbox, the Folder side of the mailbox edge. */
   folderMailboxProperty: string;
 }
 
-/** A Mailboxes item with the three Folders a test files mail into. */
 interface TestMailbox {
   id: string;
   inbox: string;
@@ -72,7 +67,6 @@ const storage: BlobStorageWriter = {
   },
 };
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -99,7 +93,6 @@ async function loadIds(client: PoolClient): Promise<MailIds> {
   };
 }
 
-/** A Mailboxes item and its inbox, archive and drafts folders, each linked to it through the production folder edge. */
 async function createMailbox(client: PoolClient, name: string): Promise<TestMailbox> {
   const mailbox = await createItemWithClient(client, {
     databaseId: ids.mailboxes,
@@ -136,7 +129,10 @@ function attachment(filename: string): ClassifiedAttachment {
   };
 }
 
-/** One message through the production ingest writer. A repeated `messageId` in the same mailbox joins the same Email, as sync does. */
+/**
+ * One message through the production ingest writer. A repeated `messageId` in the same mailbox joins the
+ * same Email, as sync does.
+ */
 function ingest(
   client: PoolClient,
   input: { mailboxId: string; folder: string; messageId: string; references?: string[]; attachments?: string[] },
@@ -161,9 +157,8 @@ function ingest(
 }
 
 /**
- * The Threads item an `ingestAttachments` call for a draft hangs its files on. A draft has no thread, and no production
- * caller ingests attachments for one, so this stands for the thread item of the message the fixture models: a bare
- * Threads item with no `mail_threads` row, which no thread count or thread cleanup sees.
+ * The Threads item an `ingestAttachments` call for a draft hangs its files on. A draft has no thread, so
+ * this is a bare Threads item with no `mail_threads` row, which no thread count or cleanup sees.
  */
 async function newThreadsItemFor(client: PoolClient): Promise<string> {
   const threads = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
@@ -176,7 +171,7 @@ async function newThreadsItemFor(client: PoolClient): Promise<string> {
   return item.id;
 }
 
-/** A draft through the production draft writer, with no Message-ID and so no `mail_message_meta` row, as an unsent draft has. */
+/** A draft through the production draft writer, with no Message-ID and so no `mail_message_meta` row. */
 async function createDraft(client: PoolClient, draftsFolder: string, attachments: string[] = []): Promise<string> {
   const draft = await createEmailDraft(client, {
     emailsDatabaseId: ids.emails,
@@ -199,7 +194,6 @@ async function createDraft(client: PoolClient, draftsFolder: string, attachments
   return draft.id;
 }
 
-/** Soft-deletes one item through the choke point, after its fixture committed, and fails if nothing was deleted. */
 async function softDelete(databaseId: string, itemId: string): Promise<void> {
   const deleted = await runInTenant(tenant, () => chokePoint.softDeleteItem(databaseId, itemId));
   if (deleted === null) throw new Error(`item ${itemId} was not soft-deleted`);

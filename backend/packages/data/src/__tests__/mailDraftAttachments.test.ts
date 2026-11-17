@@ -54,9 +54,7 @@ interface Fixture {
   mailboxId: string;
   draftsFolderId: string;
   threadId: string;
-  /** Creates a Files item over a new blob of `byteSize` bytes, as an upload does. */
   upload: (name: string, byteSize: number) => Promise<string>;
-  /** Creates a mailbox of `provider` with an address and a Drafts folder; no provider is a mailbox without the property. */
   mailbox: (provider: string | null) => Promise<string>;
 }
 
@@ -85,7 +83,6 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
     await rm(storageRoot, { recursive: true, force: true });
   });
 
-  /** A Gmail mailbox with a Drafts folder, a received message with its thread, and the upload and mailbox helpers. */
   async function setup(): Promise<Fixture> {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -236,7 +233,6 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
     });
   }
 
-  /** The Files items an email holds through `Emails.attachments`, as the relation stores them, trashed ones included. */
   async function attachmentEdgesOf(emailItemId: string): Promise<string[]> {
     const { rows } = await runtime.query<{ file_item_id: string }>(
       `SELECT r.item_b::text AS file_item_id
@@ -250,7 +246,6 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
     return rows.map((row) => row.file_item_id);
   }
 
-  /** Every Files item of the tenant in scope: its id, whether it is in the Trash, and the blob it holds. */
   async function filesOfTenant(): Promise<{ id: string; trashed: boolean; blobId: string | null }[]> {
     const { rows } = await runtime.query<{ id: string; trashed: boolean; blob_id: string | null }>(
       `SELECT i.id::text, i.deleted_at IS NOT NULL AS trashed, i.properties->'file'->>'blobId' AS blob_id
@@ -265,7 +260,7 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
     return fileIds.map((id) => files.get(id) ?? false);
   }
 
-  /** A received message with an attachment, ingested the way sync does: its own Files item over a stored blob. */
+  /** A received message with an attachment, ingested as sync does: its own Files item over a stored blob. */
   async function messageWithAttachment(f: Fixture, name: string): Promise<{ emailId: string; fileId: string }> {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -486,7 +481,6 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
         const filesBefore = await filesOfTenant();
         recordThreadAnnouncements();
 
-        // The total reaches the limit exactly, which is allowed.
         expect((await attach(draft.id, exact)).body.attachments).toHaveLength(2);
         const refusal = await attach(draft.id, over).catch((error: unknown) => error);
 

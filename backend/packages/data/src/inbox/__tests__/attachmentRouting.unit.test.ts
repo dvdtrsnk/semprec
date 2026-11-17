@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { audioKindForDuration, type InboxAttachmentMetadata } from "../inboxAttachmentMetadata.js";
 import { routeInboxAttachments } from "../attachmentRouting.js";
 
-// Issue gh-1985: the decision of the Inbox tick, from an item's attachments alone.
+// The decision of the Inbox tick, from an item's attachments alone.
 
 function audio(attachmentId: string, metadata: InboxAttachmentMetadata | null, mimeType = "audio/mp4") {
   return { attachmentId, mimeType, metadata };

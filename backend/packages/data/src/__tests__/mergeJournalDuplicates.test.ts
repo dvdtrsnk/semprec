@@ -66,17 +66,14 @@ let invalidations: InvalidationEvent[];
 let refusedEdgeLog: MockInstance<typeof logger.info>;
 const REFUSED_EDGE_MESSAGE = "Journal duplicate merge left a refused edge on the merged entry";
 
-// Fault injection through the choke point's hook registries, which have no unregister: the four hooks are registered
-// once for this file and do nothing until a test arms one; `beforeEach` disarms them all.
-/** The item delete hook rejects the trash of this item. */
+// The choke point's hook registries have no unregister: the hooks are registered once and armed per test.
 let failTrashOf: string | null = null;
-/** The edge-changed hook rejects the first edge created on this item. */
 let failEdgeCreatedOn: string | null = null;
 /** The edge write hook, which also runs when an edge is only checked, fails for an edge whose caller is this item. */
 let failEdgeCheckOf: string | null = null;
-/** The same hook refuses an edge whose caller is this item, as a domain rule does: a `ValidationError` without details. */
+/** Refuses as a domain rule does: a `ValidationError` without details. */
 let refuseEdgeCheckOf: string | null = null;
-/** The edge delete hook removes this edge on another connection, right before the caller's own delete of it runs. */
+/** The edge delete hook removes this edge on another connection right before the caller's own delete. */
 let removeConcurrently: { relationPropertyId: string; callerItemId: string; targetItemId: string } | null = null;
 
 async function databaseIds(tenantId: string): Promise<DatabaseIds> {
@@ -100,7 +97,6 @@ async function databaseIds(tenantId: string): Promise<DatabaseIds> {
   };
 }
 
-/** The period's entry through the lazy create, which takes the period reservation for it. */
 function reservedEntry(tenantId = tenant, databases = ids): Promise<string> {
   return runInTenant(tenantId, () =>
     withTransaction(
@@ -110,7 +106,6 @@ function reservedEntry(tenantId = tenant, databases = ids): Promise<string> {
   );
 }
 
-/** One more live entry of a period, created on `client` through the choke point's create without the reservation. */
 async function createUnreservedEntry(
   client: PoolClient,
   journalId: string,
@@ -125,10 +120,7 @@ async function createUnreservedEntry(
   return entry.id;
 }
 
-/**
- * A further live entry of a day. The lazy create never makes one while the period has a live entry: two live entries
- * are what earlier data left behind (restores before issue #1666), so the fixture creates the entry directly.
- */
+/** Two live entries of a day are legacy data the lazy create never makes, so the fixture creates one directly. */
 function unreservedEntry(period = DAY, tenantId = tenant, databases = ids): Promise<string> {
   return runInTenant(tenantId, () =>
     withTransaction(pool, (client) => createUnreservedEntry(client, databases.journal, period)),
@@ -152,7 +144,6 @@ function merge(
   );
 }
 
-/** Appends Markdown to an entry's page as the user, through the production insertion. */
 async function write(itemId: string, markdown: string, tenantId = tenant): Promise<void> {
   await runInTenant(tenantId, () =>
     withTransaction(pool, (client) =>
@@ -178,7 +169,6 @@ async function relationProperty(databaseId: string, key: string, tenantId = tena
   );
 }
 
-/** Links a Journal entry to an item through one of the entry's user-owned relation properties, as a user write does. */
 async function link(
   key: "area" | "project",
   entryId: string,
@@ -193,7 +183,6 @@ async function link(
   );
 }
 
-/** The items `itemId` is linked to through the relation `key` of `databaseId`, with each edge's metadata, by item id. */
 async function related(
   databaseId: string,
   key: string,
@@ -219,7 +208,6 @@ function createNamed(databaseId: string, name: string, tenantId = tenant): Promi
   return runInTenant(tenantId, async () => (await cp.createItem({ databaseId, properties: { name } })).id);
 }
 
-/** Captures one Inbox item of `DAY` through the production Inbox writer; its create hook links it to the day's entry. */
 function capture(text: string, tenantId = tenant, databases = ids): Promise<string> {
   return runInTenant(tenantId, () =>
     withTransaction(
@@ -231,7 +219,6 @@ function capture(text: string, tenantId = tenant, databases = ids): Promise<stri
   );
 }
 
-/** The entries of a period, live and trashed, in id order. */
 async function periodEntries(period = DAY, tenantId = tenant, databases = ids) {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ id: string; live: boolean }>(
@@ -247,7 +234,6 @@ function reservationKey(period = DAY, databases = ids): string {
   return `journal:${databases.journal}:day:${period}`;
 }
 
-/** The item the period's reservation points at, or null when there is none. */
 async function reservation(period = DAY, tenantId = tenant, databases = ids): Promise<string | null> {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ item_id: string }>("SELECT item_id FROM idempotency_keys WHERE key = $1", [
@@ -257,14 +243,12 @@ async function reservation(period = DAY, tenantId = tenant, databases = ids): Pr
   });
 }
 
-/** The queued jobs of every core task, counted over the whole queue. */
 async function queued(): Promise<Record<string, number>> {
   const jobs: Record<string, number> = {};
   for (const task of Object.values(CORE_TASK_NAMES)) jobs[task] = await countJobsByIdentifier(admin, task);
   return jobs;
 }
 
-/** Everything a merge writes, as stored for one tenant. */
 async function stored(tenantId = tenant) {
   return runInTenant(tenantId, async () => ({
     items: (
@@ -308,7 +292,6 @@ async function everything() {
   return { stored: await stored(), queued: await queued() };
 }
 
-/** Drains the queued Inbox recompute jobs with the production API task list. */
 async function runRecomputeJobs(): Promise<void> {
   const handler = createApiCoreTaskList(pool, createActionRegistry())[recomputeTask];
   if (!handler) throw new Error("Journal Inbox recompute handler missing from production API task list");
@@ -317,7 +300,6 @@ async function runRecomputeJobs(): Promise<void> {
 
 const cachedInboxItems = z.object({ inboxItems: z.array(z.object({ id: z.string() })) });
 
-/** The ids in an entry's cached Inbox list (`computed.inboxItems`), sorted; the entry may be in the Trash. */
 async function cachedInboxItemIds(itemId: string): Promise<string[]> {
   const { rows } = await runInTenant(tenant, () =>
     pool.query<{ computed: unknown }>("SELECT computed FROM items WHERE id = $1", [itemId]),
@@ -328,7 +310,6 @@ async function cachedInboxItemIds(itemId: string): Promise<string[]> {
     .sort();
 }
 
-/** The error `work` rejects with; a `work` that fulfils fails the test. */
 async function rejection(work: Promise<unknown>): Promise<unknown> {
   return work.then(
     () => {
@@ -366,7 +347,7 @@ async function backendPid(client: PoolClient): Promise<number> {
   return pid;
 }
 
-/** Polls (bounded) until `waiter`'s statement is blocked by `holder`, read through the admin pool; stops when aborted. */
+/** Polls (bounded) until `waiter` is blocked by `holder`; stops when aborted. */
 async function untilBlocked(waiter: number, holder: number, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
@@ -381,7 +362,6 @@ async function untilBlocked(waiter: number, holder: number, signal: AbortSignal)
   }
 }
 
-/** Rejects as soon as `write` settles: a write that should still be waiting has finished, or it failed. */
 function settledEarly(write: Promise<unknown>, label: string): Promise<never> {
   return write.then((): never => {
     throw new Error(`${label} finished before it was expected to`);
@@ -389,10 +369,8 @@ function settledEarly(write: Promise<unknown>, label: string): Promise<never> {
 }
 
 /**
- * Runs `first` in a transaction that stays open until the second writer is observed waiting on it, then commits it
- * and settles both (the harness of `journal/__tests__/journalRestore.test.ts`). `whileWaiting` runs once the second
- * writer waits and before the first commits. The gate is opened on every path, and both transactions are awaited
- * before this returns, so a failing case leaves no open transaction behind.
+ * Runs `first` in a transaction that commits once the second writer is seen waiting on it;
+ * `whileWaiting` runs in between. Both transactions are awaited on every path.
  */
 async function contended<A, B>(
   first: (client: PoolClient) => Promise<A>,

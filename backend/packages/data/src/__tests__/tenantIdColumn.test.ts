@@ -4,12 +4,9 @@ import type { Pool, PoolClient } from "pg";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-/**
- * Issue #972: every tenant-owned table carries `tenant_id uuid NOT NULL DEFAULT app_tenant_default()`
- * referencing tenants(id).
- */
+/** Every tenant-owned table carries `tenant_id uuid NOT NULL DEFAULT app_tenant_default()` referencing tenants(id). */
 
-/** A notification may only name its own tenant's user (`notifications_user_id_tenant_fkey`, #1066), hence `tenantId`. */
+/** A notification may only name its own tenant's user (`notifications_user_id_tenant_fkey`). */
 async function insertUser(db: Pick<Pool | PoolClient, "query">, tenantId: string | null): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id`,
@@ -111,7 +108,7 @@ describe("tenant_id on every tenant-owned table", () => {
         const secondId = second[0]?.id;
         if (!secondId) throw new Error("second tenant insert returned no row");
         const userId = await insertUser(client, secondId);
-        // `getTestPool` connections start in tenant zero (#1067); this case is the scope-less one.
+        // `getTestPool` connections start in tenant zero; this case is the scope-less one.
         await client.query("SELECT set_config('app.tenant_id', '', true)");
 
         const [text, values] = notificationInsert(userId);

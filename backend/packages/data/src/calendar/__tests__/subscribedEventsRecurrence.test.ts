@@ -25,10 +25,8 @@ import { readCalendarTimeline } from "../timelineRead.js";
 import { hideSleepInCalendar } from "./hideSleepInCalendar.js";
 
 /**
- * Recurring subscribed events (issue gh-1966): the import stores the rule, the exceptions and the overrides of a feed,
- * and the calendar timeline expands them. Fixtures are the import's own writes; every read goes through
- * `readCalendarTimeline` on the runtime role pool, in tenants of their own. Tenant A is in the default zone
- * `Europe/Prague`, tenant B in `Asia/Tokyo`.
+ * The import's own writes are the fixtures, and every read goes through `readCalendarTimeline` on the runtime
+ * role pool. Tenant A is in the default zone `Europe/Prague`, tenant B in `Asia/Tokyo`.
  */
 
 const SKIP_MESSAGE = "Calendar timeline left out an item with an invalid stored value";
@@ -67,7 +65,6 @@ const entry = z.object({
 });
 type Entry = z.infer<typeof entry>;
 
-/** A feed of the events in `vevents` (each the text between BEGIN:VEVENT and END:VEVENT, without those lines). */
 function feed(...vevents: string[]): string {
   const body = vevents.map((lines) => `BEGIN:VEVENT\r\n${lines}\r\nEND:VEVENT\r\n`).join("");
   return `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n${body}END:VCALENDAR\r\n`;
@@ -78,7 +75,6 @@ function weekly(extra = "", rule = "FREQ=WEEKLY"): string {
   return `UID:weekly@example.test\r\nSUMMARY:Weekly\r\nDTSTART:20261020T090000\r\nDTEND:20261020T100000\r\nRRULE:${rule}${extra === "" ? "" : `\r\n${extra}`}`;
 }
 
-/** The override of the occurrence of `weekly` on `original`, moved to `start` and renamed. */
 function override(original: string, start: string, title = "Moved"): string {
   return `UID:weekly@example.test\r\nSUMMARY:${title}\r\nRECURRENCE-ID:${original}\r\nDTSTART:${start}\r\nDTEND:${start.slice(0, 9)}${String(Number(start.slice(9, 11)) + 1).padStart(2, "0")}${start.slice(11)}`;
 }
@@ -132,7 +128,6 @@ function runImport(tenant: Tenant, calendarItemId: string, body: string) {
   );
 }
 
-/** Every row of the calendar's subscribed events, trashed ones included, oldest first. */
 async function storedRows(tenant: Tenant, calendarItemId: string): Promise<StoredRow[]> {
   const { rows } = await runInTenant(tenant.id, () =>
     withTransaction(runtime, (client) =>
@@ -149,7 +144,6 @@ async function storedRows(tenant: Tenant, calendarItemId: string): Promise<Store
   return rows.map((row) => storedRow.parse(row));
 }
 
-/** The master row of a UID: the live row with a rule or without a `recurrenceId`. */
 function masterOf(rows: StoredRow[], uid = "weekly@example.test"): StoredRow {
   const row = rows.find(
     (candidate) =>
@@ -176,7 +170,6 @@ function timelineOf(tenant: Tenant, from: string, to: string, calendarItemId?: s
   });
 }
 
-/** `date` and the start and end times of each entry, the shape of the cases below. */
 function shown(entries: Entry[]): string[] {
   return entries.map((item) => `${item.date} ${item.timeFrom}-${item.timeTo} ${item.title}`);
 }
@@ -217,7 +210,6 @@ describe("recurring subscribed events (issue gh-1966)", () => {
       for (const item of inRange) {
         expect(item).toMatchObject({ readOnly: true, calendarId, databaseId: tenantA.subscribedEventsId });
       }
-      // Before the first occurrence, the series is not there; far after it, it still is, on its weekday.
       expect(await timelineOf(tenantA, "2026-10-01", "2026-10-19", calendarId)).toEqual([]);
       expect(shown(await timelineOf(tenantA, "2030-06-04", "2030-06-10", calendarId))).toEqual([
         "2030-06-04 09:00-10:00 Weekly",
@@ -641,7 +633,6 @@ describe("recurring subscribed events (issue gh-1966)", () => {
 
     it("gives a row stored before the series was read its rule in one update, and then writes nothing", async () => {
       const calendarId = await subscription(tenantA);
-      // The feed as an earlier import saw it: the same event without a rule.
       await runImport(
         tenantA,
         calendarId,
@@ -776,7 +767,6 @@ describe("recurring subscribed events (issue gh-1966)", () => {
       const calendarB = await subscription(second);
       await runImport(first, calendarA, feed(weekly(), override("20261103T090000", "20261104T103000")));
       await runImport(second, calendarB, feed(weekly()));
-      // The second tenant has no override of its own, so its 3 November occurrence is not replaced by the first's.
       expect(shown(await timelineOf(second, "2026-11-01", "2026-11-08"))).toEqual(["2026-11-03 09:00-10:00 Weekly"]);
       expect(shown(await timelineOf(first, "2026-11-01", "2026-11-08"))).toEqual(["2026-11-04 10:30-11:30 Moved"]);
       expect((await timelineOf(second, "2026-10-01", "2026-12-31")).map((item) => item.calendarId)).toEqual(

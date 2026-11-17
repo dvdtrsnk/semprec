@@ -44,8 +44,7 @@ describe("assertRuntimeRole", () => {
     await adminPool.end();
   });
 
-  // Creates a role with the given attributes and returns its name. The password is a UUID, so it
-  // is safe inside the statement (ALTER ROLE accepts no bind parameters).
+  // The password is a UUID, so it is safe inline (ALTER ROLE accepts no bind parameters).
   async function createRole(attributes: string): Promise<{ name: string; password: string }> {
     const name = generatedName("rra");
     const password = randomUUID();
@@ -73,8 +72,7 @@ describe("assertRuntimeRole", () => {
     expect(error.message).toContain(`"${error.role}"`);
     const connectionString = process.env.TEST_DATABASE_URL ?? "";
     expect(error.message).not.toContain(connectionString);
-    // The superuser of the test database has a password equal to its role name, so the password check
-    // only means something when the two differ.
+    // The test superuser's password equals its role name, so the check only means something when they differ.
     const password = new URL(connectionString).password;
     if (password && password !== error.role) expect(error.message).not.toContain(password);
   });
@@ -159,8 +157,7 @@ describe("assertRuntimeRole", () => {
   });
 
   it("throws a plain Error when the catalog query returns no row", async () => {
-    // current_user always has a row, so the no-row branch is reached only through a stub pool whose
-    // query returns none. The stub implements only the one method the assertion calls.
+    // current_user always has a row, so the no-row branch needs a stub pool.
     const stubPool = { query: () => Promise.resolve({ rows: [] }) } as unknown as Pool;
 
     const error = await assertRuntimeRole(stubPool).then(
@@ -191,8 +188,8 @@ describe("assertRuntimeRole", () => {
     });
 
     it("logs no tenant_scope_missing under warn scope", async () => {
-      // This stdout-observing fixture needs warn output despite the tier's error default (#1199).
-      // Reload both consumers so they share a fresh tenant-scope logger that reads this override.
+      // This stdout-observing fixture needs warn output despite the tier's error default; both consumers are
+      // reloaded to share a fresh logger that reads the override.
       vi.stubEnv("LOG_LEVEL", "warn");
       vi.resetModules();
       const freshTestDb = await import("../testSupport/testDb.js");
@@ -210,9 +207,8 @@ describe("assertRuntimeRole", () => {
       // sonic-boom flushes asynchronously; give it a tick before reading the capture.
       const flush = () => new Promise((resolve) => setTimeout(resolve, 50));
 
-      // Positive control: an unscoped query through a createPool pool under warn logs
-      // tenant_scope_missing, so the capture would see it if the assertion had emitted it. getTestPool
-      // is a plain pg Pool with no scope hook, so it cannot serve as the control.
+      // Positive control: an unscoped query through a createPool pool logs tenant_scope_missing at warn.
+      // getTestPool has no scope hook, so it cannot serve as the control.
       await pool.query("SELECT 1");
       await flush();
       expect(writes.join("")).toContain("tenant_scope_missing");

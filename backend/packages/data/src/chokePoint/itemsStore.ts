@@ -4,7 +4,6 @@ import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/poo
 import { ConflictError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
-/** The raw `items` row shape this module reads back from Postgres. */
 type ItemDbRow = {
   id: string;
   database_id: string;
@@ -16,8 +15,8 @@ type ItemDbRow = {
 };
 
 /**
- * An item's system timestamps at full PostgreSQL precision, as UTC text with six fractional digits
- * (`YYYY-MM-DDTHH:MM:SS.ffffffZ`). Read only for a keyset cursor: an `ItemRow` keeps whole milliseconds.
+ * System timestamps at full precision (`YYYY-MM-DDTHH:MM:SS.ffffffZ`), read only for a keyset cursor:
+ * an `ItemRow` keeps whole milliseconds.
  */
 export interface ExactItemTimestamps {
   createdAt: string;
@@ -41,9 +40,8 @@ function mapItemRow(row: ItemDbRow): ItemRow {
 }
 
 /**
- * The ids of every database visible to the current connection. Under row-level security that is
- * exactly the current tenant's databases, archived ones included. Bound as an array parameter it
- * lets the planner prune `items` partitions, which a `= ANY(ARRAY(SELECT ...))` sub-plan does not.
+ * Every database visible under RLS (the current tenant's, archived included). Bound as an array
+ * parameter it lets the planner prune `items` partitions, which `= ANY(ARRAY(SELECT ...))` does not.
  */
 export async function visibleDatabaseIds(client: Queryable): Promise<string[]> {
   const { rows } = await client.query<{ ids: string[] }>(`SELECT coalesce(array_agg(id), '{}') AS ids FROM databases`);
@@ -59,7 +57,6 @@ export async function getItemById(client: Queryable, databaseId: string, itemId:
   return rows[0] ? mapItemRow(rows[0]) : null;
 }
 
-/** Row-locking read used before a mutation, inside the caller's transaction. */
 export async function lockItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
@@ -70,11 +67,9 @@ export async function lockItemById(client: Queryable, databaseId: string, itemId
 }
 
 /**
- * Row-locking read of a row that is trashed and was trashed strictly before `cutoff`: the permanent purge's read of
- * a row it is about to remove. The predicate is part of the locking statement, so a row that does not qualify (gone,
- * live, or trashed at or after `cutoff`) is not locked and the call returns `null`. A row another transaction
- * changes while the statement waits for its lock is rechecked against its latest committed version, and that version
- * is what is returned and locked.
+ * Locks a row only if it is trashed strictly before `cutoff` (the purge's read). The predicate is in
+ * the locking statement, so a non-qualifying row is not locked and `null` is returned; a row changed
+ * while waiting is rechecked against its latest committed version.
  */
 export async function lockTrashedItemBefore(
   client: Queryable,
@@ -90,7 +85,7 @@ export async function lockTrashedItemBefore(
   return rows[0] ? mapItemRow(rows[0]) : null;
 }
 
-/** Row-locking read that reports a contended row through PostgreSQL's lock-not-available error. */
+/** Reports a contended row through PostgreSQL's lock-not-available error. */
 export async function lockItemByIdNowait(
   client: Queryable,
   databaseId: string,
@@ -125,27 +120,18 @@ export interface InsertItemInput {
 
 export interface InsertItemResult {
   item: ItemRow;
-  /** `false` when this call returned an existing row via idempotency-key replay and wrote nothing. */
+  /** `false` when an idempotency-key replay returned an existing row and wrote nothing. */
   created: boolean;
 }
 
 /**
- * Inserts a new item, honoring an optional Idempotency-Key: a repeat call with the
- * same key returns the row created by the first call instead of inserting a second
- * one. Must run inside a transaction (the reservation race is only safe because the
- * idempotency_keys row and the items row commit atomically together). `created` tells
- * the caller which of those two outcomes happened, so a replay can skip create-only
- * side effects (heartbeats, invalidations) that must fire at most once per item.
+ * Inserts an item, honoring an optional Idempotency-Key: a repeat with the same key returns the first
+ * call's row. Must run in a transaction so the `idempotency_keys` row and the item commit together.
+ * `created` lets a replay skip create-only side effects.
  *
- * A reservation whose item has since been purged (row gone) or trashed (soft-deleted)
- * is treated as free: it is released and the key is reserved again for a freshly
- * generated item, which this call then creates and returns as `created: true`.
- *
- * A reservation is per tenant: row-level security confines every read and write of
- * `idempotency_keys` to the caller's tenant, so the same key in another tenant is a
- * different reservation. The reservation insert names no conflict target, so every
- * unique index on `idempotency_keys` is an arbiter. The only one is the tenant-leading primary
- * key `idempotency_keys_pkey (tenant_id, key)`.
+ * A reservation whose item was purged or trashed is released and reserved again for a fresh item.
+ * Reservations are per tenant under RLS; the insert names no conflict target, so the only unique
+ * index, `idempotency_keys_pkey (tenant_id, key)`, is the arbiter.
  */
 export async function insertItemWithReplay(
   client: Queryable,
@@ -167,8 +153,7 @@ export async function insertItemWithReplay(
         `SELECT item_id, database_id FROM idempotency_keys WHERE key = $1 FOR UPDATE`,
         [input.idempotencyKey],
       );
-      // The INSERT above hit ON CONFLICT DO NOTHING, so the conflicting row exists and this
-      // SELECT finds it — unless a concurrent transaction deleted the reservation in between.
+      // ON CONFLICT DO NOTHING hit, so the row exists, unless a concurrent transaction deleted it since.
       const reserved = rows[0];
       if (reserved === undefined) {
         throw new ConflictError(
@@ -186,12 +171,9 @@ export async function insertItemWithReplay(
       const existing = await getItemById(client, input.databaseId, reserved.item_id);
       if (existing && existing.deletedAt === null) return { item: existing, created: false };
 
-      // The reserved item is gone (purged) or trashed (soft-deleted): the reservation no
-      // longer protects a live item, so release it and reserve the same key again for a
-      // fresh item below. Holding the row FOR UPDATE means a concurrent transaction racing
-      // the same key is either already blocked behind this one and will find the row gone
-      // once it commits (falling into the `reserved === undefined` branch above), or ran
-      // this same release-and-reserve first and this DELETE affects zero rows.
+      // The reserved item is gone or trashed: release and re-reserve the key for a fresh item. Holding
+      // the row FOR UPDATE means a racing transaction either blocks and then finds it gone (the
+      // `reserved === undefined` branch) or already did this, and this DELETE affects zero rows.
       requireAffectedRows(
         await client.query(`DELETE FROM idempotency_keys WHERE key = $1`, [input.idempotencyKey]),
         `idempotency_keys row for key '${input.idempotencyKey}'`,
@@ -202,9 +184,7 @@ export async function insertItemWithReplay(
          RETURNING item_id`,
         [input.idempotencyKey, input.databaseId, generatedId],
       );
-      // Guaranteed to succeed: the DELETE above ran in this same transaction, so the key is
-      // free for this transaction's own re-insert regardless of what any other transaction is
-      // doing. Kept as a defensive guard rather than trusted silently.
+      // Cannot fail after the DELETE in this same transaction; kept as a defensive guard.
       requireAffectedRows(reReserve, `idempotency_keys row for key '${input.idempotencyKey}'`);
     }
   }
@@ -219,32 +199,19 @@ export async function insertItemWithReplay(
   return { item: mapItemRow(requireSingleRow(rows, "items row")), created: true };
 }
 
-/** `insertItemWithReplay` for the many callers (seeds, tests) that don't need to distinguish a replay from a fresh insert. */
+/** For callers (seeds, tests) that need not distinguish a replay from a fresh insert. */
 export async function insertItem(client: Queryable, input: InsertItemInput): Promise<ItemRow> {
   return (await insertItemWithReplay(client, input)).item;
 }
 
 /**
- * Looks up the item already committed for an idempotency key reserved against `databaseId`,
- * without reserving a new key or writing anything — the read half of `insertItem`'s replay
- * path, split out so the archived-database guard can decide whether a create is an allowed
- * no-write replay *before* calling `insertItem` at all. Returns null when no reservation exists
- * for this exact key+database (including a key reserved for a *different* database, which is a
- * new key as far as this database is concerned), or when the reservation's item row is missing
- * (purged).
+ * The item already committed for an idempotency key reserved against `databaseId`, without writing:
+ * lets the archived-database guard decide whether a create is an allowed no-write replay before
+ * inserting. `null` when there is no reservation for this key and database or its item was purged.
  *
- * `requireLive: true` additionally returns null for a soft-deleted (trashed) item, matching
- * `insertItemWithReplay`'s own treatment of that reservation as stale and due for replacement —
- * used by the archived-database create-guard, which must not let a trashed item stand in for a
- * satisfied replay. Other callers (a suggestion/proposal card's own idempotency key) default to
- * `false`: a trashed card there is still the earlier run's completed work and must not be
- * recreated, regardless of the user having since deleted it.
- *
- * The lookup is per tenant: row-level security confines the read to the caller's tenant, so
- * a key reserved in another tenant is invisible here and yields null. The reservation itself is
- * per tenant for the same reason on the write side: every unique index on `idempotency_keys`
- * acts as the arbiter of `insertItemWithReplay`'s `ON CONFLICT DO NOTHING`, so a key collides
- * only within the tenant that reserved it.
+ * `requireLive: true` also returns `null` for a trashed item, as `insertItemWithReplay` treats it as
+ * stale. Other callers (a proposal card's key) keep the default: a trashed card is still the earlier
+ * run's completed work and must not be recreated. Per tenant under RLS.
  */
 export async function findIdempotentReplay(
   client: Queryable,
@@ -268,7 +235,7 @@ export interface UpdateItemInput {
   databaseId: string;
   itemId: string;
   propertiesPatch: Record<string, unknown>;
-  /** the `updated_at` the client last held; a mismatch is a conflict, not a silent overwrite */
+  /** The `updated_at` the client last held; a mismatch is a conflict, not a silent overwrite. */
   ifVersion?: string;
 }
 
@@ -303,9 +270,8 @@ export async function updateItemProperties(client: Queryable, input: UpdateItemI
 }
 
 /**
- * Soft-deletes a live row. Its `deleted_at` is the transaction's `now()`, or `deletedAtExact` when given:
- * UTC text with six fraction digits, cast by Postgres, so the row joins that trash epoch at the column's
- * full precision (issue gh-2029).
+ * `deleted_at` is the transaction's `now()`, or `deletedAtExact` (six-digit UTC text) so the row joins
+ * that trash epoch at full precision.
  */
 export async function softDeleteItem(
   client: Queryable,
@@ -323,10 +289,8 @@ export async function softDeleteItem(
 }
 
 /**
- * Locks one item `FOR SHARE` and returns its trash epoch: `deleted_at` as UTC text with six fraction
- * digits (`YYYY-MM-DDTHH:MI:SS.ffffffZ`), the format of the restore hooks' `deletedAtExact`. Returns
- * `null` when the item is live or there is no such row. The share lock makes a trash or a restore of the
- * item, which lock it `FOR UPDATE`, wait until the caller's transaction ends (issue gh-2029).
+ * Locks one item `FOR SHARE` and returns its `deleted_at` in the format of `deletedAtExact`; `null`
+ * when live or missing. The share lock makes a trash or restore (`FOR UPDATE`) wait for the caller.
  */
 export async function lockItemTrashEpoch(
   client: Queryable,
@@ -350,11 +314,7 @@ export async function restoreItem(client: Queryable, databaseId: string, itemId:
   return rows[0] ? mapItemRow(rows[0]) : null;
 }
 
-/**
- * Every row in a database regardless of `deleted_at` — the cascade traversal (issue #156's
- * transactional trash) needs to see a live row exactly as readily as an already-trashed one,
- * since a page's inline database can itself contain a mix of both after independent edits.
- */
+/** Every row regardless of `deleted_at`: the cascade traversal must see live and trashed rows alike. */
 export async function getAllItemsInDatabase(client: Queryable, databaseId: string): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items WHERE database_id = $1`,
@@ -364,9 +324,8 @@ export async function getAllItemsInDatabase(client: Queryable, databaseId: strin
 }
 
 /**
- * `getAllItemsInDatabase` with a `FOR SHARE` lock on every row, taken in id order: until the caller's
- * transaction ends, no other transaction can update a row or lock it `FOR UPDATE`, and this call waits
- * for one that already has. For a database of a few rows, such as a singleton (issue #1697).
+ * `getAllItemsInDatabase` with `FOR SHARE` on every row in id order. For a database of a few rows,
+ * such as a singleton.
  */
 export async function lockAllItemsInDatabaseForShare(client: Queryable, databaseId: string): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(
@@ -378,9 +337,8 @@ export async function lockAllItemsInDatabaseForShare(client: Queryable, database
 }
 
 /**
- * Every row of the database, trashed or live, whose text property `propertyKey` equals `value`, in id order (issue
- * gh-1882: the instances of a recurring task series). With `lock` it reads them `FOR UPDATE`, in that order, and waits
- * for a row another transaction holds; rows another transaction inserts while it waits are not in the result.
+ * Every row, trashed or live, whose text property equals `value`, in id order. With `lock`, `FOR
+ * UPDATE` in that order; rows inserted while it waits are not in the result.
  */
 export async function listItemsByTextProperty(
   client: Queryable,
@@ -398,13 +356,8 @@ export async function listItemsByTextProperty(
 }
 
 /**
- * The lowest-id (deterministic, since item ids are random UUIDs with no creation-order meaning)
- * live Files item whose `file` property points at `blobId` — issue #158's convergence rule for
- * concurrent identical uploads: every caller streaming the same bytes ends up dedup'd onto one
- * `blobs` row (`findOrCreateBlob`'s unique-index insert), and this is the query that lets a second
- * caller reuse the Files item the first one already created for it instead of creating a
- * duplicate. Also used to resolve a download filename for `GET /api/blobs/:id`, which only knows
- * a blob id, not an item.
+ * The lowest-id live Files item whose `file` points at `blobId`: concurrent identical uploads dedupe
+ * onto one blob and reuse the first Files item. Also resolves a download filename from a blob id.
  */
 export async function findFileItemByBlobId(
   client: Queryable,
@@ -421,15 +374,10 @@ export async function findFileItemByBlobId(
 }
 
 /**
- * One page of items, across the databases of the current tenant that are not archived, trashed longer ago than
- * `olderThan` — the 30-day purge sweep's entry point into the subtree roots it must consider. An item of an archived
- * database is never a candidate: the database is in the trash itself and is deleted with all its items by the purge
- * of archived databases (issue gh-1878; `trash/purgeArchivedDatabases.ts`), and the item purge refuses to touch it.
- * Queried against the partitioned parent table directly (same pattern as `getItemsByIds`), so it
- * isn't scoped to one database the way most of this module's reads are; it is confined to the
- * current tenant's partitions by a database-id list resolved under RLS. Keyset-paged on the composite primary key
- * (issue #675): `after` is the last row of the previous page, and at most `limit` rows come back,
- * so the sweep never holds more than one page of candidates in memory.
+ * One keyset page (on the composite primary key) of items trashed before `olderThan`, in non-archived
+ * databases of the current tenant: the purge sweep's subtree roots. Items of an archived database go
+ * with that database's own purge. Queries the partitioned parent, confined to the tenant by a
+ * database-id list resolved under RLS.
  */
 export async function findItemsDeletedBefore(
   client: Queryable,
@@ -455,13 +403,9 @@ export async function findItemsDeletedBefore(
 }
 
 /**
- * Permanently removes one row — the purge sweep's only caller; never reachable from a request
- * handler. Guarded by `deleted_at IS NOT NULL` so a row a concurrent `restoreItem` un-deletes
- * between the purge's eligibility scan and this call is silently skipped rather than destroyed
- * while live — the purge's own subtree snapshot has no lock on any of these rows, so this is the
- * only thing standing between a race and permanently losing a freshly-restored item. Returns
- * whether a row was actually removed, so a caller counting what it purged doesn't count a row
- * this guard skipped.
+ * Permanently removes one row; only the purge sweep calls it. `deleted_at IS NOT NULL` guards against
+ * a concurrent restore between the eligibility scan and this call, since the sweep's snapshot holds no
+ * lock. Returns whether a row was removed.
  */
 export async function hardDeleteItem(client: Queryable, databaseId: string, itemId: string): Promise<boolean> {
   const result = await client.query(`DELETE FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL`, [
@@ -471,7 +415,7 @@ export async function hardDeleteItem(client: Queryable, databaseId: string, item
   return (result.rowCount ?? 0) > 0;
 }
 
-/** The ids of the first `limit` rows of the database's partition by id, deleted rows included; empty when it holds none. */
+/** Deleted rows included. */
 export async function listItemIdsForPurge(client: Queryable, databaseId: string, limit: number): Promise<string[]> {
   const { rows } = await client.query<{ id: string }>(
     "SELECT id FROM items WHERE database_id = $1 ORDER BY id LIMIT $2",
@@ -481,9 +425,8 @@ export async function listItemIdsForPurge(client: Queryable, databaseId: string,
 }
 
 /**
- * Permanently deletes the named rows of one database, live or trashed, and returns each as it was removed. The
- * purge of an archived database (issue gh-1875) is the only caller; `hardDeleteItem` serves the trash sweep and
- * refuses a live row. A row another transaction removed first is not returned.
+ * Permanently deletes the named rows, live or trashed, returning each as removed; only the purge of an
+ * archived database calls it. A row another transaction removed first is not returned.
  */
 export async function hardDeleteItemsOfDatabase(
   client: Queryable,
@@ -503,20 +446,16 @@ export interface ListItemsOptions {
   cursor?: string;
   includeDeleted?: boolean;
   /**
-   * Views-layer pushdown hooks (issue #22): each is called with the same `params` array
-   * this function is already building, so a compiled filter/sort predicate's bind
-   * parameters land at the correct offset alongside `database_id`/`cursor`/`limit`.
-   * `cursor` pages via `id > cursor`, which only resumes correctly under the default
-   * `id ASC` order; a custom order pages through `keyset`.
+   * Views-layer pushdown: called with the `params` array being built so bind offsets line up.
+   * `cursor` pages via `id > cursor`, correct only under the default `id ASC` order; a custom order
+   * uses `keyset`.
    */
   buildFilterSql?: (params: unknown[]) => string | undefined;
   buildOrderBySql?: (params: unknown[]) => string | undefined;
   /**
-   * Keyset paging for a custom order (issue #664): `buildAfterSql` replaces the `id > cursor`
-   * predicate with "rows after the previous page's last row" under that order (or returns
-   * `undefined` on the first page), and `encodeCursor` turns a page's last row into the
-   * `nextCursor` that feeds it next time, given also that row's exact system timestamps. When set,
-   * `cursor` is ignored.
+   * Keyset paging for a custom order: `buildAfterSql` replaces `id > cursor` (or returns `undefined` on
+   * the first page) and `encodeCursor` turns a page's last row into `nextCursor`. When set, `cursor` is
+   * ignored.
    */
   keyset?: {
     buildAfterSql: (params: unknown[]) => string | undefined;
@@ -574,11 +513,7 @@ export async function listItems(
   return { items, nextCursor };
 }
 
-/**
- * Counts the items a filter matches, without paging them in. Shares `buildFilterSql` with
- * `listItems` so a count and its list always agree on what "matching" means; used for the
- * per-folder unread counts in issue #96, where the count is needed but the rows are not.
- */
+/** Shares `buildFilterSql` with `listItems` so a count and its list agree on what matches. */
 export async function countItems(
   client: Queryable,
   databaseId: string,
@@ -597,18 +532,17 @@ export async function countItems(
   return Number(requireSingleRow(rows, "items count").count);
 }
 
-/** How `countItemsGrouped` splits the items it counts. */
 export type ItemCountGrouping =
   | {
       kind: "select";
       propertyKey: string;
-      /** The property's declared option keys in display order; they decide the order of the groups. */
+      /** Display order; decides the order of the groups. */
       optionKeys: string[];
     }
   | {
       kind: "relation";
       relationDefinitionId: string;
-      /** The side of the definition the counted items sit on; the other side holds the targets. */
+      /** The side the counted items sit on; the other side holds the targets. */
       ownSide: "a" | "b";
       targetDatabaseId: string;
     };
@@ -625,23 +559,18 @@ export interface GroupedItemCount {
 }
 
 /**
- * Counts the live items of `databaseId` that `buildFilterSql` matches and, with `grouping`, splits them
- * into groups, in one statement (issue #1709). `count` is the number of matching items whatever the
- * grouping. Soft-deleted items are never counted, and a database whose `archived_at` is set counts
- * nothing: `count` is 0 and there is no group.
+ * Counts live items `buildFilterSql` matches and optionally groups them, in one statement. An archived
+ * database counts nothing.
  *
- * A `select` grouping has one group per stored value of the property that occurs: the declared options
- * first, in `optionKeys` order, then any other stored value in byte order, then `null` for the items
- * whose value is missing, JSON null or the empty string.
+ * `select`: one group per occurring stored value, declared options first in `optionKeys` order, then
+ * other values in byte order, then `null` for missing, JSON null or empty string.
  *
- * A `relation` grouping has one group per target item that occurs, ordered by target id, then `null` for
- * the items without a target. A target is an item of `targetDatabaseId` at the other end of an edge of
- * the definition; it counts while it is not soft-deleted and that database is not archived. An item whose
- * every edge ends at a trashed item or in an archived database is therefore in the `null` group. An item
- * with several targets is in each of their groups and once in `count`.
+ * `relation`: one group per occurring target item by id, then `null`. A target counts while live and
+ * its database is not archived, so an item whose every edge ends at a trashed or archived target is
+ * in `null`. An item with several targets is in each group and once in `count`.
  *
- * The items table is read under its own name, as `listItems` reads it, because a compiled filter refers
- * to `items.id` and to the bare `properties` and `computed` columns.
+ * Reads `items` under its own name because a compiled filter refers to `items.id`, `properties` and
+ * `computed`.
  */
 export async function countItemsGrouped(
   client: Queryable,
@@ -675,7 +604,7 @@ export async function countItemsGrouped(
     params.push(grouping.optionKeys);
     orderBySql = `(group_key IS NULL), array_position($${params.length}::text[], group_key) NULLS LAST, group_key COLLATE "C"`;
   } else {
-    // The two column names are chosen from these fixed identifiers by the definition's side, never from input.
+    // Chosen from fixed identifiers by the definition's side, never from input.
     const ownColumn = grouping.ownSide === "a" ? "item_a" : "item_b";
     const targetColumn = grouping.ownSide === "a" ? "item_b" : "item_a";
     params.push(grouping.relationDefinitionId);
@@ -720,11 +649,8 @@ export async function countItemsGrouped(
 }
 
 /**
- * Looks up items by id alone, with no `database_id` predicate — needed for curated
- * views (`view_items`), which can mix items from multiple databases and therefore
- * cannot supply the partition key (see the `view_items` migration's header note on why
- * `item_id` carries no Postgres FK to pin down a single partition). The read is confined to the
- * current tenant's partitions by a database-id list resolved under RLS.
+ * By id alone, without `database_id`: curated views mix databases and cannot supply the partition key.
+ * Confined to the tenant's partitions by a database-id list resolved under RLS.
  */
 export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
@@ -737,13 +663,8 @@ export async function getItemsByIds(client: Queryable, itemIds: string[]): Promi
 }
 
 /**
- * `getItemsByIds`'s counterpart that doesn't filter out a trashed row — needed wherever a caller
- * has an item id but no `database_id` to route a partition-scoped lookup through, and the item
- * being soft-deleted is an expected, not exceptional, case: `DELETE /api/items/:id` (idempotent
- * replay against an already-trashed item) and `POST /api/items/:id/restore` (issue #156), both of
- * which must resolve the item's `databaseId` before calling into `softDeleteItem`/`restoreItem`.
- * Like `getItemsByIds`, it is confined to the current tenant's partitions by a database-id list
- * resolved under RLS.
+ * `getItemsByIds` including trashed rows, for callers that must resolve a possibly trashed item's
+ * `databaseId` first (idempotent delete, restore).
  */
 export async function getItemsByIdsIncludingDeleted(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
@@ -756,14 +677,8 @@ export async function getItemsByIdsIncludingDeleted(client: Queryable, itemIds: 
 }
 
 /**
- * The batched form of `getItemById`, scoped to a single database like it, but for a whole
- * set of ids in one query — used where a caller would otherwise fetch one item per id in a
- * loop (e.g. inbox/inboxTypesStore.ts's proposal-status lookups). The `IncludingDeleted` in
- * the name is load-bearing, not decorative: unlike `getItemsByIds`, this has no `deleted_at`
- * filter, because a soft-deleted proposal card still recorded a real `confirmed`/`rejected`
- * outcome, and a caller judging whether that outcome locks something else must see it
- * exactly as it would have via `getItemById`, which also never filters on `deleted_at`. Pick
- * `getItemsByIds` instead if the caller actually wants deleted rows excluded.
+ * Batched `getItemById` within one database. No `deleted_at` filter on purpose: a trashed proposal
+ * card still recorded a real outcome its callers must see.
  */
 export async function getItemsByIdsInDatabaseIncludingDeleted(
   client: Queryable,
@@ -780,11 +695,9 @@ export async function getItemsByIdsInDatabaseIncludingDeleted(
 }
 
 /**
- * Writes exclusively to `items.computed`, never to `properties`, and never advances
- * `updated_at`/the ifVersion token — a background rollup recompute must not cause a
- * spurious 409 on the client's next properties write. Not reachable from the generic
- * update path; only the rollup recompute worker and declared module cache writers may
- * call this. Returns the row's `updated_at` as read back by the same statement.
+ * Writes only `items.computed`, never `properties`, and never advances `updated_at`, so a background
+ * recompute cannot cause a spurious 409. Only the rollup worker and declared module cache writers call
+ * it. Returns the row's `updated_at`.
  */
 export async function writeComputed(
   client: Queryable,

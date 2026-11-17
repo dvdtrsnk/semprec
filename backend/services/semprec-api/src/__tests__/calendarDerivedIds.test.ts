@@ -84,7 +84,7 @@ describe("derived calendar timeline ids on the item routes (issues #1800, #1804 
     await pool?.end();
   });
 
-  /** The stored person and every People row, to compare before and after a refused request. */
+  /** To compare before and after a refused request. */
   async function snapshot() {
     const person = await chokePoint.getItem(peopleId, personId);
     const people = await chokePoint.listItems(peopleId, { limit: 50 });

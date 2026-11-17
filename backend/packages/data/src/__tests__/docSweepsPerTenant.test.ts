@@ -18,7 +18,6 @@ import {
 let adminPool: Pool;
 let pool: Pool;
 
-/** `count` valid Yjs updates, each one inserting a character. */
 function validUpdates(count: number): Buffer[] {
   const doc = new Y.Doc();
   const updates: Buffer[] = [];
@@ -27,7 +26,6 @@ function validUpdates(count: number): Buffer[] {
   return updates;
 }
 
-/** Inserts a doc with the given update rows into `tenantId`; returns the doc id. */
 async function seedDocWithUpdates(tenantId: string, updates: Buffer[]): Promise<string> {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ id: string }>("INSERT INTO docs (item_id) VALUES ($1) RETURNING id", [

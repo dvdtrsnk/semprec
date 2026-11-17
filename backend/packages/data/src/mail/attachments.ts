@@ -14,60 +14,34 @@ import { AttachmentCapExceededError } from "./providerTypes.js";
 import { logger } from "./logger.js";
 
 /**
- * The shape every provider adapter (imap/gmail/graph) normalizes an attachment part down to.
- * "Belongs in Files" (issue #26) is the combination of `Content-Disposition: attachment` (has
- * a filename, meant to be downloaded) vs. `inline`, *together with* whether the part is
- * actually referenced via `cid:` inside the HTML body — an inline part with a matching `cid:`
- * reference is a rendering asset (a signature logo), not a document. Each adapter applies that
- * same rule itself while walking its own provider-specific MIME/part tree (imapFlowClient.ts's
- * `classifyAttachmentParts`, gmailRestClient.ts's `classifyGmailAttachmentParts`,
- * graphRestClient.ts's equivalent) — there is no shared parsed-message representation across
- * all three providers to classify generically from.
+ * An attachment part as every provider adapter normalizes it. An inline part referenced via
+ * `cid:` from the HTML body is a rendering asset (e.g. a signature logo), not a file; each
+ * adapter applies that rule while walking its own MIME tree.
  */
 export interface ClassifiedAttachment {
   filename: string;
   contentType: string;
   contentId: string | null;
   disposition: "attachment" | "inline";
-  /**
-   * Lazily opens the attachment's decoded byte stream — never a whole-message or whole-set-of-
-   * attachments buffer already sitting in memory (issue #26: memory-safe attachment
-   * processing). `ingestAttachments` below is the only caller, and calls this exactly once per
-   * attachment, immediately before streaming it to storage.
-   */
+  /** Lazily opens the decoded byte stream, so attachments are never buffered up front. Called once. */
   openStream(): Promise<Readable> | Readable;
 }
 
 export interface IngestAttachmentsInput {
   messageItemId: string;
-  /** The Threads item of the message's thread (`mail_threads.item_id`): the file gets a `Threads.attachments` edge from it. */
+  /** `mail_threads.item_id`; the file gets a `Threads.attachments` edge from it. */
   threadItemId: string;
   filesDatabaseId: string;
-  /** The Emails item's `attachments` relation property id — see seedEmailModule.ts. */
   attachmentsRelationPropertyId: string;
   attachments: ClassifiedAttachment[];
   storage: BlobStorageWriter;
-  /** Namespacing prefix for storage keys, e.g. the mailbox item id — keeps different accounts' attachments from colliding on disk. */
+  /** Storage key prefix (e.g. the mailbox item id) so accounts do not collide on disk. */
   storageKeyPrefix: string;
 }
 
 /**
- * For every real attachment: writes its bytes through `storage` (streamed, see
- * blobStorage.ts), dedups the resulting blob by content hash, records a `mail_attachments`
- * row, and creates a Files item for it — "exactly like the mock already does today in
- * `sendEmailReply` for outgoing attachments," linked through the Emails `attachments`
- * relation so it shows up in the Files DB like any other file. Every Files item it creates also gets an
- * edge from the thread's Threads item (`Threads.attachments`), written in the same transaction; the link rule
- * `fileProjectFromThread` of the mail manifest then links the file's `Files.projects` to the thread's project, also
- * while the thread has none (issue gh-1898). Must run inside the same transaction as the rest of message ingest
- * (see mail/ingest.ts).
- */
-/**
- * `attachment.filename` is attacker-controlled MIME header content — used verbatim as the
- * DB `filename`/display text (just rendered text, harmless), but a storage *key* becomes a
- * filesystem path component (see `LocalFsBlobStorageWriter`), where a name like
- * `../../etc/passwd` would escape the storage root. Strips path separators and traversal
- * sequences down to a safe basename before it ever reaches a storage key.
+ * `filename` is attacker-controlled. It is fine as display text, but a storage key becomes a
+ * filesystem path component, so separators and traversal sequences are stripped.
  */
 export function safeStorageFilename(filename: string): string {
   const base = filename.replace(/^.*[/\\]/, "");
@@ -82,7 +56,7 @@ async function bufferStream(source: Readable): Promise<Buffer> {
 }
 
 export interface IngestAttachmentsResult {
-  /** One entry per PDF/DOCX attachment that extraction actually produced text for (issue #26: "the output goes into the same index table") — folded into the message's own search text by ingest.ts, not indexed as a separate item. */
+  /** Folded into the message's own search text, not indexed as separate items. */
   extractedTexts: string[];
 }
 
@@ -93,6 +67,11 @@ async function requireThreadAttachmentsPropertyId(client: PoolClient): Promise<s
   return property.id;
 }
 
+/**
+ * Streams each attachment to storage, dedups the blob by content hash, records a
+ * `mail_attachments` row and creates a Files item linked from the Email (`attachments`) and the
+ * Thread (`Threads.attachments`). Must run in the message-ingest transaction.
+ */
 export async function ingestAttachments(
   client: PoolClient,
   input: IngestAttachmentsInput,
@@ -110,15 +89,9 @@ export async function ingestAttachments(
     try {
       let source = await attachment.openStream();
       if (isTextExtractableContentType(attachment.contentType)) {
-        // The one case this issue buffers an attachment's bytes in memory rather than pure-
-        // streaming through to storage — extracting text needs the whole file, and every
-        // attachment reaching here already passed the adapter's own MAX_ATTACHMENT_BYTES cap
-        // (imapFlowClient.ts/gmailRestClient.ts/graphRestClient.ts), so this is bounded by the
-        // same limit, not unbounded. Re-wrapped into a fresh stream afterward so the storage
-        // write below still goes through the same `writeStream` path as every other attachment.
+        // Extraction needs the whole file in memory; bounded by the adapters' MAX_ATTACHMENT_BYTES.
         const buffered = await bufferStream(source);
-        // Best-effort: a corrupt/password-protected/malformed file must not fail the whole
-        // message ingest over a search-indexing nicety.
+        // Best-effort: a corrupt or encrypted file must not fail the ingest.
         const extractedText = await extractAttachmentText(attachment.contentType, buffered).catch(() => null);
         if (extractedText) extractedTexts.push(extractedText);
         source = Readable.from(buffered);
@@ -132,8 +105,7 @@ export async function ingestAttachments(
         storageKey,
         contentHash,
       });
-      // A content-hash dedup hit means `blob` already existed under a different storageKey —
-      // the bytes just streamed above are an unneeded duplicate on disk, not the ones kept.
+      // Dedup hit: the bytes just written are a duplicate of an existing blob.
       if (blob.storageKey !== storageKey) {
         await input.storage.delete(storageKey);
       }
@@ -176,14 +148,8 @@ export async function ingestAttachments(
         EMAILS_RELATION_CONTEXT,
       );
     } catch (err) {
-      // The IMAP fallback partial-fetch path throws this when the server keeps sending bytes
-      // past MAX_ATTACHMENT_BYTES — a hostile/oversized attachment, not a transient failure. It
-      // can surface either synchronously from openStream() or, for the real IMAP adapter (whose
-      // openStream() returns a lazy Readable that never throws synchronously), as a stream
-      // 'error' during bufferStream()'s/writeStream()'s consumption below — this try wraps the
-      // whole per-attachment block so both cases are caught here, not just the open call.
-      // Best-effort: skip just this one attachment rather than failing the whole message ingest
-      // over it, matching the text-extraction fallback above.
+      // An oversized attachment can surface from openStream() or as a stream error while it is
+      // consumed, hence the wide try. Skip just this attachment.
       if (err instanceof AttachmentCapExceededError) {
         logger.warn(
           { messageItemId: input.messageItemId, contentType: attachment.contentType },
@@ -197,11 +163,7 @@ export async function ingestAttachments(
   return { extractedTexts };
 }
 
-/**
- * Deletes the `mail_attachments` rows of message `messageItemId` (issue gh-1691) and returns how many
- * there were; a message without attachments has none. The `blobs` rows they named and the Files items
- * `ingestAttachments` created for them are not touched.
- */
+/** Returns the number of rows deleted. Leaves the `blobs` rows and Files items in place. */
 export async function deleteMailAttachmentsOfMessage(client: PoolClient, messageItemId: string): Promise<number> {
   const result = await client.query("DELETE FROM mail_attachments WHERE message_item_id = $1", [messageItemId]);
   return result.rowCount ?? 0;

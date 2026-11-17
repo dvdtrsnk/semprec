@@ -49,7 +49,6 @@ describe("the series' nextOccurrenceDate follows its occurrence items (issue gh-
 
   const createStandup = () => createEvent({ name: "Standup", date: "2026-10-12", recurrence: WEEKDAYS });
 
-  /** The occurrence item of `occurrenceDate`, created as the materialization route creates it. */
   const occurrence = async (seriesId: string, occurrenceDate: string) =>
     (
       await withTransaction(pool, (client) =>

@@ -7,10 +7,8 @@ import { Pool } from "pg";
 import { runMigrations } from "../db/migrate.js";
 
 /**
- * Runs `fn` against a scratch schema (its own `search_path`) on the shared test database,
- * rather than the real migrations directory already applied by `globalSetup.ts` — fixture
- * `.sql` files here aren't idempotent (no `IF NOT EXISTS`), so replaying them against the
- * real schema would collide with what's already there.
+ * Uses a scratch schema (its own `search_path`): the fixture `.sql` files are not idempotent and would
+ * collide with the schema `globalSetup.ts` applied.
  */
 async function withScratchSchema(fn: (pool: Pool) => Promise<void>): Promise<void> {
   const schema = `migrate_test_${randomUUID().replaceAll("-", "")}`;
@@ -63,8 +61,7 @@ describe("runMigrations", () => {
           );
           expect(columns.map((c) => c.column_name)).toEqual(["id", "label"]);
 
-          // Re-running against an up-to-date database is a no-op: 0001's CREATE TABLE has no
-          // IF NOT EXISTS, so a second application would throw if the file were replayed.
+          // 0001 has no IF NOT EXISTS, so a replay would throw.
           await expect(runMigrations(pool, dir)).resolves.toBeUndefined();
           const { rows: appliedAgain } = await pool.query<{ id: string }>("SELECT id FROM schema_migrations");
           expect(appliedAgain).toHaveLength(2);
@@ -95,7 +92,6 @@ describe("runMigrations", () => {
           expect(tableNames).not.toContain("partial_table");
           expect(tableNames).not.toContain("never_table");
 
-          // The failed file is retried, and succeeds once fixed, on the next run.
           await writeFile(
             path.join(dir, "0002_fails_partway.sql"),
             "CREATE TABLE partial_table (id int PRIMARY KEY)",

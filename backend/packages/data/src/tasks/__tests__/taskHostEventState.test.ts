@@ -101,7 +101,6 @@ async function stored(databaseId: string, itemId: string, tenant: SeededTenant =
   return item;
 }
 
-/** The host state of a task and its first planned day, as stored. */
 async function hostState(taskId: string, tenant: SeededTenant = home) {
   const { properties } = await stored(tenant.tasksId, taskId, tenant);
   return {
@@ -115,10 +114,7 @@ async function hostState(taskId: string, tenant: SeededTenant = home) {
 /** The pair a stale state holds in the tests of a gate: a value no recomputation of these events and dates gives. */
 const STALE = { hiddenUntil: "2026-10-01T00:00:00.000Z", effectiveDate: "2026-10-01" };
 
-/**
- * Synthetic stale state: a writer other than the triggers (an older release) stored a different pair. A test of a
- * trigger's gate stores it first, so the case fails when the gate is missing and the unrelated write recomputes.
- */
+/** A pair no trigger writes, stored first so a missing gate fails the case when an unrelated write recomputes. */
 async function storeStaleState(taskId: string): Promise<void> {
   await runInTenant(home.id, () =>
     pool.query("UPDATE items SET properties = properties || $2::jsonb WHERE id = $1", [taskId, JSON.stringify(STALE)]),
@@ -139,7 +135,7 @@ async function relationPropertyId(databaseId: string, key: string): Promise<stri
   return property.id;
 }
 
-/** Writes an edge of a relation as the Tasks process with any metadata, the way a writer other than the routes would. */
+/** As a writer other than the routes would. */
 async function writeEdge(
   databaseId: string,
   key: string,
@@ -282,7 +278,7 @@ describe("the host state follows the edges of Tasks.hostEvents (issue #1780)", (
     await put(taskId, trashed);
     expect(await hostState(taskId)).toMatchObject({ hiddenUntil: END_OF_20, effectiveDate: "2026-10-20" });
     await trash(home.eventsId, trashed);
-    // Trashing an event is no trigger of this issue; the next trigger finds the event trashed.
+    // Trashing an event is no trigger; the next trigger finds the event trashed.
     await updateEvent(live, { timeTo: "23:00" });
     expect(await hostState(taskId)).toMatchObject({
       hiddenUntil: "2026-10-18T21:00:00.000Z",
@@ -302,8 +298,8 @@ describe("the host state follows the edges of Tasks.hostEvents (issue #1780)", (
   });
 
   it("does not recompute for an edge of another relation that has the task on the same side as hostEvents", async () => {
-    // Tasks.hostEvents has the task as its first item, as Tasks.people has: the hook would pick the task of the edge
-    // by the side of hostEvents, so only an edge with the task on that side shows that the relation is checked.
+    // `Tasks.hostEvents` has the task as item A, as `Tasks.people` has, so only an edge with the task on that side
+    // shows the relation is checked.
     const taskId = await task({ date: "2026-10-12" });
     const person = await runInTenant(home.id, () =>
       cp.createItem({ databaseId: home.peopleId, properties: { name: "Person" } }),
@@ -509,7 +505,7 @@ describe("the first planned day on a change of the effective day (issue #1780)",
 
   it("does not record it when the task has a since already", async () => {
     const taskId = await task({ date: "2026-10-05" });
-    // Moving the date on is the write that records the first planned day (issue #1602).
+    // Moving the date on records the first planned day.
     await updateTask(taskId, { date: "2026-10-06" });
     expect(await hostState(taskId)).toMatchObject({ since: "2026-10-05" });
     await put(taskId, await event({ date: "2026-10-14" }));
@@ -602,7 +598,7 @@ describe("a recomputation that has nothing to do (issue #1780)", () => {
   it("repairs a stored state that does not match the events", async () => {
     const taskId = await task({ date: "2026-10-12" });
     await put(taskId, await event({ date: "2026-10-18" }));
-    // Synthetic stale state: a writer other than the triggers (an older release) stored a different pair.
+    // Synthetic stale state: a writer other than the triggers stored a different pair.
     await runInTenant(home.id, () =>
       pool.query("UPDATE items SET properties = properties || $2::jsonb WHERE id = $1", [
         taskId,

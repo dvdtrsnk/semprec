@@ -39,10 +39,8 @@ const realDrainSteps: DrainSteps = {
 };
 
 /**
- * Jobs on one per-tenant lane run one at a time, and a single `runOnce` pass stops when the only
- * jobs left are behind a lane that was busy, so pass until the queue is empty. Throws when the
- * queue is still non-empty after the last pass, so a caller never asserts against a partial drain.
- * `steps` is replaced only by the drainQueue boundary checks below.
+ * Jobs on one per-tenant lane run one at a time and a `runOnce` pass stops behind a busy lane, so this passes
+ * until the queue is empty and throws if it is not, so no caller asserts on a partial drain.
  */
 async function drainQueue(steps: DrainSteps = realDrainSteps, passLimit = DRAIN_PASS_LIMIT) {
   let remaining: string | undefined;
@@ -514,8 +512,8 @@ describe("rollup engine", () => {
       type: "rollup",
       config: { relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" },
     });
-    await drainQueue(); // backfill enqueue
-    await drainQueue(); // per-cell recompute enqueued by the backfill
+    await drainQueue();
+    await drainQueue();
 
     const item = await chokePoint.getItem(projects.id, project.id);
     expect(item?.computed[sumProp.key]).toBe(5);
@@ -538,7 +536,7 @@ describe("rollup engine", () => {
       type: "rollup",
       config: { relationPropertyKey: "tasks", aggregation: "latest", targetPropertyKey: "due" },
     });
-    await drainQueue(); // backfill over an empty database
+    await drainQueue();
     const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
     for (const due of ["2026-01-05", "2026-03-10T12:00:00Z", "tomorrow"]) {
       const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { due } });

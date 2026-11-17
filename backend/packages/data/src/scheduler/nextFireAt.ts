@@ -14,23 +14,15 @@ function atLocalTime(day: DateTime, at: string): DateTime {
 }
 
 /**
- * Computes the next `next_fire_at` for a heartbeat rule.
+ * `after` is the instant the result must be strictly later than: "now" for fixed rules
+ * (dailyTime/weekly) and the actual run time for floating ones (everyNDays/interval). `onItemEvent`
+ * returns null, invisible to the sweep.
  *
- * `after` is the point in time the result must be strictly later than — "now" for a
- * fixed rule (dailyTime/weekly: always computed from the rule against real time,
- * regardless of when a catch-up run happened) or the actual run time for a floating
- * rule (everyNDays/interval: computed from when it actually last ran). `onItemEvent`
- * has no next_fire_at at all (null) — it is invisible to the sweep by design.
+ * DST is left to luxon: a nonexistent local time moves to the next valid instant, an ambiguous one
+ * resolves to its first occurrence.
  *
- * DST is handled entirely by luxon (never manual offset arithmetic): a nonexistent
- * local time (spring-forward) resolves to the next valid instant, an ambiguous one
- * (fall-back) resolves to its first occurrence — luxon's default `DateTime.fromObject`
- * behavior for both cases.
- *
- * A rule whose `kind` isn't core-owned dispatches to the matching entry of
- * `moduleRuleKinds` (issue #109) — the module's own `nextFireAtExport`. A `kind` that is
- * neither core nor present in `moduleRuleKinds` (its module was deactivated, or never
- * registered it) throws rather than silently never firing again.
+ * Non-core kinds dispatch to `moduleRuleKinds`; a kind in neither throws rather than silently never
+ * firing again.
  */
 export function computeNextFireAt(
   rule: AnyHeartbeatRule,

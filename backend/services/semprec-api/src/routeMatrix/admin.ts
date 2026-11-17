@@ -1,6 +1,5 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/admin` path family. */
 export const ADMIN_ROUTES: RouteMatrixEntry[] = [
   {
     name: "admin account list",

@@ -18,12 +18,9 @@ import { mintMcpRunCredential, resolveMcpRunCredential } from "../mcp/mcpRunCred
 import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
 
 /**
- * Issue #243: the baseline schema (migrated once by `globalSetup.ts` for the whole test run)
- * creates `semprec_data`/`semprec_side` with no password —
- * real deployments set one out-of-band (issue #175). These tests need to actually log in as
- * each role against the shared embedded-Postgres instance, so they set a test-only password
- * here, once, using the admin pool's superuser privileges. Generated at run time (not a literal)
- * so no credential-shaped string is committed to source control.
+ * The baseline schema creates `semprec_data`/`semprec_side` without a password; deployments set one
+ * out-of-band. These tests log in as each role, so a run-time generated test password is set here with
+ * the admin pool (no credential-shaped literal in source).
  */
 const TEST_ROLE_PASSWORD = randomUUID();
 
@@ -39,7 +36,6 @@ function roleConnectionString(role: string): string {
   return url.toString();
 }
 
-/** Expects `statement` to be refused for a missing privilege on `table` (SQLSTATE 42501). */
 async function expectPermissionDenied(statement: Promise<unknown>, table: string): Promise<void> {
   await expect(statement).rejects.toMatchObject({
     code: "42501",
@@ -58,8 +54,8 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     adminPool = getTestPool();
     await adminPool.query(`ALTER ROLE semprec_data WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
     await adminPool.query(`ALTER ROLE semprec_side WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
-    // This suite checks grants, not isolation: like `getTestPool`'s, every connection starts in
-    // tenant zero, which strict `app_tenant_default()` (#1067) no longer falls back to.
+    // This suite checks grants, not isolation: every connection starts in tenant zero, which strict
+    // `app_tenant_default()` does not fall back to.
     const inTenantZeroOptions = tenantZeroSessionOptions();
     dataPool = new Pool({ connectionString: roleConnectionString("semprec_data"), options: inTenantZeroOptions });
     sidePool = new Pool({ connectionString: roleConnectionString("semprec_side"), options: inTenantZeroOptions });
@@ -118,10 +114,9 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     });
 
     it("can insert into a bigserial-keyed side table created after the baseline ran", async () => {
-      // A table the migrating role creates later, granted the way a migration adding a side table
-      // would grant it: table DML only. Its sequence must be covered by the schema's default privileges.
-      // Interpolated because DDL cannot take a bind parameter; safe only because the name is
-      // built here from hex UUID characters, never from input.
+      // A table created later and granted the way a migration adding a side table would (table DML only): its
+      // sequence must be covered by the schema's default privileges. Interpolated because DDL takes no bind
+      // parameter; the name is built from hex UUID characters only.
       const table = `least_privilege_late_${randomUUID().replaceAll("-", "")}`;
       await adminPool.query(`CREATE TABLE ${table} (id bigserial PRIMARY KEY, note text)`);
       try {
@@ -213,20 +208,19 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     // orphan every credential sealed under it, so a key is only ever inserted or deleted (crypto-shred).
     const NO_UPDATE_TABLES = new Set(["tenant_keys", "admin_audit_log", "tenant_deletions"]);
 
-    // Operator configuration written only by semprec-api: the gateway's semprec_side
-    // may read it but never raise its own caps, and nobody deletes a row (it goes with its tenant).
-    // transcript_action_item_states (issue #1754) is written by the API's transcript route and the trash purge:
-    // semprec_side reads it, semprec_data runs DML.
-    // agent_runs and approval_requests create or retarget an actor: the AI gateway reads
-    // agent_runs to attribute a call, semprec_data runs the DML.
+    // Operator configuration written only by semprec-api: the gateway's semprec_side may read it but never
+    // raise its own caps, and no row is deleted (it goes with its tenant).
+    // transcript_action_item_states: semprec_side reads it, semprec_data runs DML.
+    // agent_runs and approval_requests: the AI gateway reads agent_runs to attribute a call, semprec_data runs
+    // the DML.
     const READ_ONLY_FOR_SIDE_TABLES = new Set([
       "tenant_ai_budgets",
       "transcript_action_item_states",
       "agent_runs",
       "approval_requests",
     ]);
-    // Bearer credentials, session secrets, delivery endpoints and admin-plane rows no side process needs: semprec_side holds no privilege on them, semprec_data holds DML directly.
-    // admin_audit_log is append-only and tenant_deletions is the purge
+    // Bearer credentials, session secrets, delivery endpoints and admin-plane rows: semprec_side holds no
+    // privilege, semprec_data holds DML. admin_audit_log is append-only and tenant_deletions is the purge
     // tombstone: semprec_data only inserts. invites is written by the admin routes only.
     const NO_ACCESS_FOR_SIDE_TABLES = new Set([
       "agent_run_mcp_credentials",
@@ -349,7 +343,6 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
 
     it("refuses semprec_side every statement on agent_run_mcp_credentials", async () => {
       const passwordHash = await hashPassword("s3cret-password");
-      // The run's actor must be the run's own tenant's user (agent_runs_actor_user_id_tenant_fkey).
       const user = await createUser(adminPool, {
         email: `owner-${randomUUID()}@example.test`,
         passwordHash,
@@ -387,7 +380,6 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
 
     it("semprec_side cannot mint an MCP run credential", async () => {
       const passwordHash = await hashPassword("s3cret-password");
-      // The run's actor must be the run's own tenant's user (agent_runs_actor_user_id_tenant_fkey).
       const user = await createUser(adminPool, {
         email: `owner-${randomUUID()}@example.test`,
         passwordHash,
@@ -407,7 +399,7 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       );
       const rogueToken = `rogue-${randomUUID()}`;
 
-      // Every statement runs in tenant zero's scope, where the minted run lives, as the review's sequence did.
+      // Every statement runs in tenant zero's scope, where the minted run lives.
       await expectPermissionDenied(
         sidePool.query(
           `INSERT INTO agent_runs (project_item_id, triggered_by, unit, task, actor_user_id)

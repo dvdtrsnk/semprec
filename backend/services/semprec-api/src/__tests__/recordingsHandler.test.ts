@@ -50,7 +50,7 @@ async function session(tenantId: string): Promise<string> {
   return `Bearer ${result.token}`;
 }
 
-/** A date-only Event, which has no start, so no transcript is matched to it by time (issue #1663 requires a date). */
+/** A date-only Event has no start, so no transcript is matched to it by time. */
 async function event(tenantId: string, name: string): Promise<string> {
   return runInTenant(tenantId, async () => {
     const database = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "events"));

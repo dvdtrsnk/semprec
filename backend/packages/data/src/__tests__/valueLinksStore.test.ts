@@ -18,7 +18,6 @@ import {
   moveValueLinkItemSources,
 } from "../chokePoint/valueLinksStore.js";
 
-/** Issue #1403: the two tables' constraints and the store's batched lists. */
 let pool: Pool;
 
 async function countRows(table: "value_links" | "value_link_sources"): Promise<number> {
@@ -153,7 +152,6 @@ describe("value links store (issue #1403)", () => {
         }),
       ),
     ).rejects.toMatchObject({ code: "23505", constraint: "value_link_sources_domain_uq" });
-    // Each failed insert ran in one transaction, so no link was left behind without its sources.
     expect(await countRows("value_links")).toBe(0);
   });
 
@@ -324,11 +322,7 @@ describe("value links store (issue #1403)", () => {
   });
 
   describe("the order the source detach locks and returns the links in", () => {
-    /**
-     * One Event that feeds a `project` and a `people` link of each of two items. Their ids are rewritten so
-     * that the link-id order (itemTwo people, itemOne people, itemTwo project, itemOne project) differs from the
-     * item order and the rule order, and within one item `people` has the smaller id.
-     */
+    /** Link ids are rewritten so link-id order differs from item and rule order; within an item `people` sorts first. */
     async function seedDetach(runtimePool: Pool, tenant: string) {
       const [itemOne, itemTwo] = [randomUUID(), randomUUID()].sort();
       if (!itemOne || !itemTwo) throw new Error("Two item ids are expected");
@@ -354,9 +348,7 @@ describe("value links store (issue #1403)", () => {
         twoProject: "00000000-0000-4000-8000-000000000003",
         twoPeople: "00000000-0000-4000-8000-000000000001",
       };
-      // Raw SQL for a state the store cannot produce, since it generates the link ids: the ids are rewritten on the
-      // admin pool, with foreign keys off, in `value_links` and in `value_link_sources` together (the foreign key has no
-      // ON UPDATE CASCADE).
+      // Raw SQL: the store generates link ids. Rewritten with foreign keys off in both tables (no ON UPDATE CASCADE).
       const client = await pool.connect();
       try {
         await client.query("BEGIN");

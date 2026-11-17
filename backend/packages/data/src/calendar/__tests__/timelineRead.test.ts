@@ -79,12 +79,11 @@ async function newTenant(locale: string | null = "cs"): Promise<string> {
     await createUser(adminPool, { tenantId, email: `${randomUUID()}@example.com`, passwordHash: "unused", locale });
   }
   await runInTenant(tenantId, () => seedSystem(dataPool));
-  // The sleep nights of a seeded tenant have their own tests (issue #1806); these keep to Events and Tasks.
+  // The sleep nights of a seeded tenant have their own tests; these keep to Events and Tasks.
   await hideSleepInCalendar(dataPool, tenantId);
   return tenantId;
 }
 
-/** One tenant's fixture writes and timeline reads, each in that tenant's scope on the runtime-role pool. */
 function world(tenantId: string) {
   const chokePoint = createChokePoint(dataPool);
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenantId, fn);
@@ -153,10 +152,6 @@ function world(tenantId: string) {
     return item.id;
   }
 
-  /**
-   * Moves an Event to `calendarId`, or with `null` removes its calendar edge: the user's single-valued set.
-   * A new Event is linked to the default calendar by its create hook (issue #1761).
-   */
   async function setCalendar(eventId: string, calendarId: string | null): Promise<void> {
     const id = await databaseId("events");
     await inTenant(async () => {
@@ -169,10 +164,7 @@ function world(tenantId: string) {
     });
   }
 
-  /**
-   * Overwrites stored properties with values the write rules refuse (issues #1536 and #1663) or no longer
-   * produce, so raw SQL is the only way to store them. Runs on the admin pool inside the tenant.
-   */
+  /** Raw SQL on the admin pool inside the tenant: the write rules refuse or never produce these values. */
   async function storeRaw(moduleId: string, itemId: string, patch: Record<string, unknown>): Promise<void> {
     const id = await databaseId(moduleId);
     await withTenantTransaction(adminPool, tenantId, async (client) => {
@@ -201,7 +193,6 @@ function world(tenantId: string) {
     return { defaultId, tasksId, workId };
   }
 
-  /** The number of relation edges the tenant has, and the number `itemId` sits on. */
   async function edgeCounts(itemId: string): Promise<{ all: number; ofItem: number }> {
     const { rows } = await inTenant(() =>
       dataPool.query<{ all: number; of_item: number }>(
@@ -225,11 +216,6 @@ function world(tenantId: string) {
   const read = (from: string, to: string = from, shape: "full" | "compact" = "full") =>
     inTenant(() => withTransaction(dataPool, (client) => readCalendarTimeline(client, { from, to, shape })));
 
-  /**
-   * The stored Events and Tasks of a range, each checked to carry exactly the documented fields. The derived
-   * entries of the birthday and holiday sources (issues #1800 and #1804) have their own tests; a range of these
-   * tests can hold a public holiday.
-   */
   const items = async (from: string, to: string = from) =>
     z
       .array(fullItemSchema)
@@ -455,7 +441,6 @@ describe("calendar timeline read (issue #1717)", () => {
       await w.create("events", { name: "Early event", date: DAY, timeFrom: "09:00" }),
       await w.create("events", { name: "Early event", date: DAY, timeFrom: "09:00" }),
     ].sort();
-    // Later than its twins by title only.
     const laterTitle = await w.create("events", { name: "Early meeting", date: DAY, timeFrom: "09:00" });
     const untimedTask = await w.create("tasks", { name: "Untimed task", date: DAY });
     const zeta = await w.create("events", { name: "Zeta all-day", date: DAY });
@@ -585,9 +570,8 @@ describe("calendar timeline read (issue #1717)", () => {
     const calendarsId = await w.databaseId(CALENDARS_MODULE_ID);
     const eventsId = await w.databaseId("events");
     const projectsId = await w.databaseId("projects");
-    // The shape of a tenant seeded before issue #1600, as `calendars.test.ts` builds it: the calendars database
-    // is locked and system-owned and no public path removes it or the locked Events relation, so this is raw
-    // SQL on the admin pool in the tenant's scope; the database and its partition go through the store's drop.
+    // A tenant without a calendars database. It is locked and system-owned and no public path removes it, so this is
+    // raw SQL on the admin pool in the tenant's scope; the database and its partition go through the store's drop.
     await withTenantTransaction(adminPool, tenantId, async (client) => {
       const calendarsDatabase = await databasesStore.getDatabase(client, calendarsId);
       if (!calendarsDatabase) throw new Error("Calendars database missing");
@@ -632,8 +616,7 @@ describe("calendar timeline read (issue #1717)", () => {
     const event = await w.create("events", { name: "Event", date: DAY });
     await w.setCalendar(event, null);
     const task = await w.create("tasks", { name: "Task", date: DAY });
-    // Raw SQL: which calendars may be deleted is decided by later calendar issues, so the trashed default and
-    // system calendar are stored directly instead of through a delete those issues may refuse.
+    // Raw SQL: the trashed default and system calendar are stored directly, without the calendar delete hooks.
     await withTenantTransaction(adminPool, tenantId, async (client) => {
       const result = await client.query("UPDATE items SET deleted_at = now() WHERE id = ANY($1::uuid[])", [
         [defaultId, tasksId],
@@ -674,7 +657,6 @@ describe("calendar timeline read (issue #1717)", () => {
     const done = await w.createTranscript({ name: "Recording", status: "done" });
     const processing = await w.createTranscript({ name: "Being transcribed", status: "processing" });
     await w.link("events", "transcript", recorded, done);
-    // The same relation written from its other side, `Transcripts.event`.
     await w.link("transcripts", "event", processing, running);
 
     expect((await w.items(DAY)).map((item) => [item.id, item.transcript])).toEqual([
@@ -826,7 +808,7 @@ describe("calendar timeline read (issue #1717)", () => {
       timeTo: "02:00",
     });
     const withoutEnd = await w.create("events", { name: "Without an end", date: DAY, timeFrom: "10:00" });
-    // An Event stored before the default end of issue #1598: every write now stores an end for a timed Event.
+    // Every write stores an end for a timed Event, so an Event without one takes a raw write.
     await w.storeRaw("events", withoutEnd, { timeTo: null });
     const boundedTask = await w.create("tasks", { name: "Bounded", date: DAY, timeFrom: "15:00", timeTo: "15:45" });
 
@@ -985,7 +967,6 @@ describe("calendar timeline read (issue #1717)", () => {
     await seedDay(DAY, 1);
     await seedDay(busyDay, 6);
 
-    /** The number of statements one read sends and the number of items it returns. */
     const count = (date: string) =>
       w.inTenant(() =>
         withTransaction(dataPool, async (client) => {
@@ -1028,7 +1009,6 @@ describe("calendar timeline read (issue #1717)", () => {
     await seedDay(DAY, 1);
     await seedDay(busyDay, 6);
 
-    /** The text of every statement one read sends, and the items it returns. */
     const observe = (date: string) =>
       w.inTenant(() =>
         withTransaction(dataPool, async (client) => {

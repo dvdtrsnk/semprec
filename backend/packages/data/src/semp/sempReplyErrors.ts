@@ -7,10 +7,8 @@ import { toManifestLocale } from "../manifest/catalogResolution.js";
 import type { SempReplyStep } from "./sempReplySteps.js";
 
 /**
- * What is stored next to the `error_code` of a failed Semp reply (`semp_messages.error_params`, issue #1907): ids
- * and counters only, never a user's content and never the text of an exception. `failedStep` is the label of the
- * last step of the reply that failed (an `agentStep.title.*` key with the platform's own params), `connectorName`
- * and `timeoutMs` are those of that step when it was an MCP tool call.
+ * `semp_messages.error_params`: ids and counters only, never user content or exception text. `failedStep` is the
+ * label of the last failed step; `connectorName` and `timeoutMs` are set when that step was an MCP tool call.
  */
 export interface SempReplyErrorParams {
   connectorName?: string;
@@ -18,7 +16,7 @@ export interface SempReplyErrorParams {
   timeoutMs?: number;
 }
 
-/** The checked reader of the `error_params` column, which is JSONB and so a boundary. */
+/** JSONB column, so it is checked as a boundary. */
 const sempReplyErrorParamsSchema = z.strictObject({
   connectorName: z.string().optional(),
   failedStep: z
@@ -35,7 +33,7 @@ export function parseSempReplyErrorParams(value: unknown): SempReplyErrorParams 
   return parsed.data;
 }
 
-/** `semp_messages.error_code` as the driver returns it; a failed message that stored no code (a legacy row) reads `internal`. */
+/** A failed legacy row with no stored code reads `internal`. */
 export function parseSempReplyErrorCode(value: unknown): AgentRunErrorCode {
   if (value === null || value === undefined) return "internal";
   const code = AGENT_RUN_ERROR_CODES.find((known) => known === value);
@@ -44,15 +42,11 @@ export function parseSempReplyErrorCode(value: unknown): AgentRunErrorCode {
 }
 
 /**
- * The error of a failed Semp turn: the code and params stored on its message. The code is the one the run was
- * closed with (`agentRunErrorCodeOf`: `budgetExceeded` from the typed budget refusal, `modelError` from a model
- * stop reason `error`, `cancelled`, anything else `internal`), never derived from the text of the error. An abort
- * by the user or a tenant deactivation is `cancelled` however the abort surfaced; an abort of the shutdown
- * (`signal.reason` `shutdown`) is `interrupted`. A turn that failed with an `AggregateError` whose `cause` is the
- * turn's own error (the turn error kept next to a cleanup failure) is classified by that cause.
+ * The code is the one the run was closed with (`agentRunErrorCodeOf`), never derived from the error text. A user
+ * abort or tenant deactivation is `cancelled`; a shutdown abort is `interrupted`. An `AggregateError` whose
+ * `cause` is the turn's own error (kept next to a cleanup failure) is classified by that cause.
  *
- * `steps` is the summary of the turn up to the failure, if it could be read. Nothing of `error` itself is stored:
- * not its message, and not its properties.
+ * Nothing of `error` itself is stored.
  */
 export function classifySempTurnFailure(input: {
   error: unknown;
@@ -85,7 +79,7 @@ export type SempReplyFailureCode = AgentRunErrorCode | ReplyIncompleteReason;
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
-/** The Semp catalogs (`semp/i18n`), loaded once per process; a failed load is not cached. */
+/** Loaded once per process; a failed load is not cached. */
 function getSempCatalogs(): Promise<ModuleCatalogs> {
   catalogsPromise ??= loadModuleCatalogs(import.meta.url).catch((error: unknown) => {
     catalogsPromise = undefined;
@@ -95,13 +89,9 @@ function getSempCatalogs(): Promise<ModuleCatalogs> {
 }
 
 /**
- * The text of a reply failure, in `locale` (a `users.locale`; any locale but `cs` reads the English entry), from
- * the `reply.failure.*` entries of the Semp catalog. It is rendered on every read and nothing localized is stored,
- * so a locale change applies to replies that failed earlier too.
- *
- * The text of a run error code is the same whatever `params` hold. The text of an incomplete reason names the
- * connector (`params.connectorName`, else a generic word) and a timeout names its seconds (`params.timeoutMs`,
- * to a tenth of a second); a timeout with no stored `timeoutMs` reads as a tool error.
+ * Rendered on every read in `locale` (any but `cs` reads English), so a locale change applies to old failures.
+ * Incomplete reasons name the connector (or a generic word) and a timeout its seconds to a tenth; a timeout
+ * without `timeoutMs` reads as a tool error.
  */
 export async function renderSempReplyFailure(
   code: SempReplyFailureCode,

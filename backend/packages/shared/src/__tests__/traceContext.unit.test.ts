@@ -60,8 +60,7 @@ describe("withTraceContext", () => {
       return withTraceContext({}, async () => {
         const traceId = getTraceId();
         await new Promise((resolve) => setTimeout(resolve, delayMs));
-        // The delay above interleaves with the other flow's execution; the traceId observed
-        // after resuming must still be this flow's own, not one it raced with.
+        // The delay interleaves with the other flow; the traceId after resuming must still be this flow's.
         expect(getTraceId()).toBe(traceId);
         return { label, traceId };
       });

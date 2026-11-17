@@ -43,7 +43,6 @@ async function request(
   return { status: response.status, text: await response.text() };
 }
 
-/** A project-like host with a title property named `name`, in tenant A. */
 async function titledHost(title: string): Promise<string> {
   return runInTenant(harness.tenantA, async () => {
     const chokePoint = createChokePoint(harness.runtime);
@@ -77,7 +76,7 @@ async function itemOf(itemId: string): Promise<z.infer<typeof itemBody>> {
   return itemBody.parse(JSON.parse(read.text));
 }
 
-/** The number of stored document updates of tenant A: a rename that writes a block adds exactly one. */
+/** A rename that writes a block adds exactly one. */
 async function documentUpdates(): Promise<number> {
   const { rows } = await runInTenant(harness.tenantA, () =>
     harness.runtime.query<{ n: number }>(`SELECT count(*)::int AS n FROM doc_updates`),
@@ -85,7 +84,7 @@ async function documentUpdates(): Promise<number> {
   return rows[0]?.n ?? -1;
 }
 
-/** What a refused or repeated rename must leave as it found it: the item, the parent's page and the update count. */
+/** What a refused or repeated rename must leave as it found it. */
 async function written(pageItemId: string, parentItemId: string): Promise<unknown> {
   return {
     item: await itemOf(pageItemId),
@@ -120,7 +119,6 @@ describe("PATCH /api/items/:id/page/title (issue #1725)", () => {
     });
     expect(await documentUpdates()).toBe(updatesBefore + 1);
 
-    // From here on every statement that reads a document table is recorded, with its parameters.
     const statements: string[] = [];
     // eslint-disable-next-line @typescript-eslint/unbound-method
     const original: (this: pg.Client, ...args: unknown[]) => unknown = pg.Client.prototype.query;
@@ -148,7 +146,7 @@ describe("PATCH /api/items/:id/page/title (issue #1725)", () => {
       [checklist.pageItemId, "Release checklist"],
     ]);
     expect(nestedTrail?.map((crumb) => crumb.title)).toEqual(["Notes", "Release checklist", "Steps"]);
-    // Each read loaded the document of the page it was asked for, and no statement names a document or an item above it.
+    // No statement names a document or an item above the page.
     expect(ownStatements.length).toBeGreaterThan(0);
     expect(nestedStatements.length).toBeGreaterThan(0);
     for (const statement of ownStatements) {
@@ -178,7 +176,7 @@ describe("PATCH /api/items/:id/page/title (issue #1725)", () => {
     const kept = await subpage(notes, "Kept");
     const checklist = await subpage(notes, "Checklist");
     const notesDocId = await harness.docIdOf(harness.tenantA, notes);
-    // The block is removed the way an editor removes it over the sync socket, which leaves the page an orphan.
+    // Removed as an editor removes it over the sync socket, which leaves the page an orphan.
     await runInTenant(harness.tenantA, () =>
       mutateYDoc(harness.runtime, notesDocId, "user", (ydoc) => {
         const order = ydoc.getArray<string>("order");
@@ -225,7 +223,7 @@ describe("PATCH /api/items/:id/page/title (issue #1725)", () => {
     const path = `/api/items/${checklist.pageItemId}/page/title`;
 
     const cases: Array<[string, Answer, string | undefined]> = [
-      // The adapter reads an absent body as an empty object, so it is a missing title.
+      // The adapter reads an absent body as an empty object.
       ["no body", await request("PATCH", path), "title"],
       ["an array", await request("PATCH", path, { body: ["Release checklist"] }), undefined],
       ["a missing title", await request("PATCH", path, { body: {} }), "title"],

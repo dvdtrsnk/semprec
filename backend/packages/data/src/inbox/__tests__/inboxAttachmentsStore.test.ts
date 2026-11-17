@@ -77,7 +77,6 @@ function derivedImage(label: string, contentHash = randomUUID().replaceAll("-", 
 
 const tickJobSchema = z.object({ payload: z.object({ heartbeatId: z.string(), itemId: z.string() }) });
 
-/** The `onItemEvent` heartbeat jobs queued for `itemId` and the Inbox `update` event, as heartbeat ids. */
 async function updateTicksFor(itemId: string): Promise<string[]> {
   const heartbeats = await pool.query<{ id: string }>(
     "SELECT id FROM project_heartbeats WHERE rule ->> 'databaseId' = $1 AND rule ->> 'event' = 'update'",

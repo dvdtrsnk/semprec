@@ -25,9 +25,8 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 
-// A search over groups that the test registers itself (`clearSearchGroupsForTests` first), on the runtime-role pool
-// with two tenants. The groups of the composition root are exercised by `searchItemsQuery.test.ts` and
-// `sempThreadSearch.test.ts`; this file proves the seam they stand on.
+// Search over groups this file registers itself, on the runtime-role pool with two tenants. The composition
+// root's groups are covered by `searchItemsQuery.test.ts` and `sempThreadSearch.test.ts`.
 
 let admin: Pool;
 let pool: Pool;
@@ -37,7 +36,6 @@ let other: string;
 
 const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"];
 
-/** What a fixture thread group saw: the token `prepare` got and the request each run got. */
 interface Recorder {
   prepared: Array<string | undefined>;
   requests: ThreadSearchRequest[];
@@ -57,10 +55,7 @@ function fixtureThreads(prefix: string, count: number): SearchThreadResult[] {
   }));
 }
 
-/**
- * A thread group over fixed entries. Its cursor is `offset:<n>`: `prepare` refuses any other token with the
- * `ValidationError` a real group throws, and the run it returns lists the entries from the parsed offset.
- */
+/** Cursor `offset:<n>`: `prepare` refuses any other token with a `ValidationError`, as a real group does. */
 function fixtureGroup(
   type: ThreadSearchGroup["type"],
   entries: readonly SearchThreadResult[],

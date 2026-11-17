@@ -15,32 +15,24 @@ import {
 import { matchesSearch } from "./mailThreadPredicates.js";
 import { parseMailSearchQuery, type ParsedMailSearchQuery } from "./search.js";
 
-// The `mail` group of global search (issue #1864): the tenant's mail threads that match the search text, one entry per
-// thread however many of its messages match. The matching is the thread search of `GET /api/mail/threads?q=`
-// (`matchesSearch`, issue #1639), so the text, `from:`, `has:attachment`, `before:`, `after:` and `is:` operators of the
-// group's text mean what they mean there. It registers as a thread group (`search/searchGroupRegistry.ts`), which the
-// composition root `domainWriteHooks.ts` does.
+// The `mail` group of global search: one entry per matching thread. Matching is the thread list's `matchesSearch`, so
+// the text and operators mean what they mean in `GET /api/mail/threads?q=`.
 
 const emptyPage = (): ThreadSearchPage => ({ total: 0, items: [], nextCursor: null });
 
-/** The longest `snippet` of a search result, in characters (the contract of `SearchOutputSchema`). */
+/** The contract of `SearchOutputSchema`. */
 const SNIPPET_MAX_CHARS = 160;
 
-/**
- * How much of a message body is read to build an excerpt, in characters from its start. A body is not bounded by
- * anything short, and only the page's threads are read.
- */
+/** Bodies are unbounded; only this much of each is read to build an excerpt. */
 const SNIPPET_SOURCE_MAX_CHARS = 200_000;
 
 /**
- * How many messages of one thread are read as candidates for its excerpt, newest first. A candidate is a message whose
- * body holds the words as stored; only a body whose markup holds a word that its plain text does not (a search for
- * `style` or `href`) fails the second test, so the first candidate yields the excerpt in practice, and the bound keeps
- * a thread of hundreds of messages from reading all of their bodies.
+ * Bounds how many messages per thread (newest first) are read as excerpt candidates. Only a word found in markup but
+ * not in the plain text (`style`, `href`) fails the second test, so the first candidate wins in practice.
  */
 const SNIPPET_CANDIDATES_PER_THREAD = 5;
 
-/** The timestamp format of the thread list's `lastMessageAt` and of its cursor: UTC with microseconds. */
+/** The thread list's `lastMessageAt` and cursor format: UTC with microseconds. */
 const INSTANT_SQL = `'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'`;
 
 interface EmailsDatabaseDbRow {
@@ -76,9 +68,8 @@ interface SnippetDbRow {
 }
 
 /**
- * True when the query carries nothing to match on: no text and no operator that is a condition. `has:` with a value
- * other than `attachment` is removed from the text and is no condition, and `matchesSearch` of such a query would match
- * every message.
+ * `has:` with a value other than `attachment` is removed and is no condition; `matchesSearch` of such a query would
+ * match every message.
  */
 function hasNoCondition(search: ParsedMailSearchQuery): boolean {
   return (
@@ -92,10 +83,7 @@ function hasNoCondition(search: ParsedMailSearchQuery): boolean {
   );
 }
 
-/**
- * The first `SNIPPET_MAX_CHARS` code points of the text with its whitespace collapsed, or null when nothing is left. A
- * code point is never split, so a result never ends in half a surrogate pair.
- */
+/** Splits by code points, so a result never ends in half a surrogate pair. */
 function toSnippet(text: string | null): string | null {
   const collapsed = (text ?? "").replace(/\s+/g, " ").trim();
   if (collapsed === "") return null;
@@ -103,10 +91,9 @@ function toSnippet(text: string | null): string | null {
 }
 
 /**
- * The statement prefix both reads share: the thread list's copy CTEs and search messages, then `matched`, one row per
- * matching thread, which is the thread's last message (the newest live copy, drafts left out as the list does). A
- * thread is searched when it has a message outside Junk and Trash, the rule of the flagged box, and when any of its
- * live messages satisfies the search. `$1` is the thread filter of the copy CTEs and is always null here.
+ * `matched` is one row per matching thread: its last message (newest live copy, drafts left out as the list does).
+ * A thread qualifies when it has a message outside Junk and Trash and any live message satisfies the search. `$1`,
+ * the copy CTEs' thread filter, is always null here.
  */
 function matchedThreadsSql(searchSql: string): string {
   return `WITH ${mailThreadCopyCtes(1)}, ${MAIL_SEARCH_MESSAGES_CTE}, latest AS (
@@ -120,8 +107,8 @@ function matchedThreadsSql(searchSql: string): string {
 }
 
 /**
- * The Emails database of the tenant, unless it is archived or the actor may not read it, as the item groups decide, and
- * the databases the actor may not read, which the sender part must not link into. A person has none unreadable.
+ * The Emails database unless archived or unreadable to the actor, and the databases the actor may not read (the
+ * sender part must not link into them). A person has none unreadable.
  */
 async function readableEmailsDatabase(
   client: PoolClient,
@@ -140,13 +127,9 @@ async function readableEmailsDatabase(
 }
 
 /**
- * The excerpt of each listed thread: the fragment, around the words of the search text, of the newest live message
- * whose body itself contains those words (`buildSearchSnippetSql`, the rule of the item groups: no excerpt when the
- * body does not contain the words). A message that is in the search index only through its subject, its sender or an
- * attachment is no source, however new it is. The candidates are the thread's messages whose stored body holds the
- * words, newest first and at most `SNIPPET_CANDIDATES_PER_THREAD` of them; their bodies are converted to plain text,
- * and the first whose plain text holds the words gives the excerpt. A thread without such a message has no entry in the
- * answer.
+ * The excerpt of each thread, from the newest live message whose body itself contains the words; a match only via
+ * subject, sender or attachment is no source. Candidates are bodies holding the words as stored, converted to plain
+ * text and checked again. A thread without such a message has no entry.
  */
 async function readMatchingFragments(
   client: PoolClient,
@@ -194,11 +177,7 @@ async function readMatchingFragments(
   return fragments;
 }
 
-/**
- * One page of the tenant's mail threads that match `search`, newest last message first (the order of the thread list),
- * with the real `total`, in the caller's transaction and tenant scope. Writes nothing. `cursor` is the parsed
- * `nextCursor` of an earlier page.
- */
+/** One page of matching threads in the thread list's order, with the real `total`. Read-only. */
 async function searchMailThreads(
   client: PoolClient,
   emails: EmailsDatabaseDbRow,
@@ -278,23 +257,13 @@ async function searchMailThreads(
 }
 
 /**
- * The `mail` group as the search registry holds it. `prepare` parses a token with `parseMailThreadListCursor`, the
- * token of the thread list's `nextCursor`, which refuses a malformed one with a `ValidationError` naming `cursor`.
+ * The text is parsed as the thread list parses `q`. A query with no condition, and a `before:`/`after:` that is not
+ * an ISO date, match nothing here where the thread list answers 400: a search over every group must not fail for one
+ * group's operator. Agent runs get the group only when their project may read Emails; an archived Emails database
+ * gives an empty group.
  *
- * The group's text is parsed as the thread list parses `q`, with the contradictory operators (`is:read is:unread`)
- * matching nothing. A text that is no condition (`has:` with another value than `attachment` and nothing else) and a
- * `before:` or `after:` that is not an ISO date or date-time match nothing too, where the thread list answers the
- * second with a 400: a search over every group must not fail as a whole for the operator of one of them. An agent run
- * is given the group only when its project may read the Emails database, and the group is empty for an archived Emails
- * database, as the item groups are.
- *
- * An entry is one thread, represented by the Emails item of its last message. The thread's `snippet` is the fragment of
- * the newest message whose own text contains the words of the search text (not one that is found only through its
- * subject or sender), or the preview of the last message when no message does (or the search has no words, only
- * operators). The date part is the thread's `lastMessageAt`, the instant of the thread list. The sender part carries the
- * People item of the sender as `itemId` only when the actor may read the People database: an agent run whose project
- * may not has the sender's name from the Emails envelope and no link, as the item groups show no link into an
- * unreadable database.
+ * An entry is one thread, represented by its last message. `snippet` falls back to the last message's preview. The
+ * sender links to its People item only when the actor may read People.
  */
 export const mailGlobalSearchGroup: ThreadSearchGroup = {
   type: "mail",

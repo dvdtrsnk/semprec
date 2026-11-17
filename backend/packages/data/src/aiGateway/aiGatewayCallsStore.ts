@@ -5,8 +5,8 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 /**
- * #620: a row is `reserved` at the caller's estimate before the provider call, then either
- * `settled` with the real usage or `failed` at cost 0 when the call rejects.
+ * `reserved` at the caller's estimate before the provider call, then `settled` with real usage or
+ * `failed` at cost 0.
  */
 export type AiGatewayCallStatus = "reserved" | "settled" | "failed";
 
@@ -23,7 +23,7 @@ export interface AiGatewayCallRow {
   costUsd: number;
   agentRunId: string | null;
   sempMessageId: string | null;
-  /** Set only by #215's `POST /internal/complete` route; null for every other caller. */
+  /** Set only by the `POST /internal/complete` route. */
   projectItemId: string | null;
   operation: string | null;
   status: AiGatewayCallStatus;
@@ -36,12 +36,12 @@ export interface RecordTokenCallInput {
   outputTokens: number;
   costUsd: number;
   agentRunId?: string | null;
-  /** #215: always set together, or not at all — the structured-completion route sets both. */
+  /** Set together with `operation`, or not at all. */
   projectItemId?: string | null;
   operation?: string | null;
 }
 
-/** Audio calls never carry an agent_run_id — there is no agent-run attribution for transcription/diarization. */
+/** Audio calls carry no agent-run attribution. */
 export interface RecordAudioCallInput {
   provider: string;
   model: string;
@@ -49,7 +49,6 @@ export interface RecordAudioCallInput {
   costUsd: number;
 }
 
-/** The raw `ai_gateway_calls` row shape this module reads back from Postgres. */
 type AiGatewayCallDbRow = {
   id: string;
   at: Date;
@@ -84,7 +83,7 @@ function mapRow(row: AiGatewayCallDbRow): AiGatewayCallRow {
   };
 }
 
-/** complete()/embed() accounting: native unit is tokens, audio_seconds stays NULL (not 0 — no audio concept applies). */
+/** Token accounting; `audio_seconds` stays NULL (not 0) because no audio concept applies. */
 export async function recordTokenGatewayCall(
   client: Pool | PoolClient,
   input: RecordTokenCallInput,
@@ -107,7 +106,7 @@ export async function recordTokenGatewayCall(
   return mapRow(requireSingleRow(rows, "ai_gateway_calls row"));
 }
 
-/** transcribe()/diarize() accounting: native unit is audio seconds, both token columns stay NULL (not 0 — no token concept applies). */
+/** Audio accounting; token columns stay NULL (not 0) because no token concept applies. */
 export async function recordAudioGatewayCall(
   client: Pool | PoolClient,
   input: RecordAudioCallInput,
@@ -124,7 +123,7 @@ export async function recordAudioGatewayCall(
 export interface ReserveGatewayCallInput {
   provider: string;
   model: string;
-  /** The caller's upper-bound estimate; counted against the budget until the row is settled or failed. */
+  /** Upper-bound estimate; counts against the budget until settled or failed. */
   estimatedCostUsd: number;
   agentRunId?: string | null;
   sempMessageId?: string | null;
@@ -132,7 +131,7 @@ export interface ReserveGatewayCallInput {
   operation?: string | null;
 }
 
-/** The one refusal for a call that cannot be attributed to an active tenant: no details, so no case is told apart. */
+/** One detail-free refusal, so callers cannot tell the unattributable cases apart. */
 function attributionRefused(): ForbiddenError {
   return new ForbiddenError(
     "AI gateway call is not attributable to the caller's tenant",
@@ -142,13 +141,9 @@ function attributionRefused(): ForbiddenError {
 }
 
 /**
- * Refuses the ambient tenant (`app_tenant_default()`) unless it exists and is `active`, with the
- * same `attribution_refused` error `reserveGatewayCall` throws. The gateway runs it before its
- * budget check so that an inactive tenant and an unknown tenant get one refusal. Without it, an
- * unknown tenant has no `tenant_ai_budgets` row and is refused as `budget_exceeded`, while a
- * suspended tenant keeps its row, passes the budget check and is refused only by the insert, so the
- * two answers tell a caller which tenant ids exist. `reserveGatewayCall` keeps its own
- * `status = 'active'` predicate as the write-time guard.
+ * Runs before the budget check so unknown and inactive tenants get the same refusal; otherwise
+ * `budget_exceeded` vs `attribution_refused` would reveal which tenant ids exist.
+ * `reserveGatewayCall` keeps its own `status = 'active'` predicate as the write-time guard.
  */
 export async function assertGatewayTenantActive(client: Pool | PoolClient): Promise<void> {
   const { rows } = await client.query<{ active: boolean }>(
@@ -158,16 +153,9 @@ export async function assertGatewayTenantActive(client: Pool | PoolClient): Prom
 }
 
 /**
- * Inserts a `reserved` row at the estimate, with every usage column NULL until it is settled.
- *
- * The insert is one conditional statement, so the check and the write cannot be separated by a
- * concurrent change: it only produces a row when the ambient tenant (`app_tenant_default()`, the
- * scope's tenant) is `active`, any `agentRunId` is visible in that tenant, and any `projectItemId`
- * is a visible item of that tenant's system Projects database (`owner_module_id` =
- * `PROJECTS_MODULE_ID`); RLS makes every probe tenant-local.
- * Otherwise it throws `ForbiddenError` `attribution_refused` with no details, so a foreign id, an
- * unknown id and an item outside the Projects database answer identically; no row is written and
- * the caller never reaches the provider.
+ * One conditional INSERT so check and write cannot race: a row is produced only when the ambient
+ * tenant is active and every referenced run/message/Projects item is visible under RLS. Otherwise
+ * `attribution_refused` with no details, so foreign and unknown ids answer identically.
  */
 export async function reserveGatewayCall(
   client: Pool | PoolClient,
@@ -201,14 +189,9 @@ export async function reserveGatewayCall(
 }
 
 /**
- * Sets `semp_message_id` on the given rows, whatever their status: the chunk rows of one speech-to-text stream are
- * attributed while the open chunk is still `reserved` and the earlier ones are already settled (issue #2020).
- * The update is one conditional statement, so the checks and the write cannot be separated by a concurrent change:
- * it writes only when the message is visible in the ambient tenant and every given id is a row visible in that
- * tenant, and then it writes all of them. Row-level security makes both probes tenant-local, so a foreign message,
- * an unknown message and a foreign or unknown row all end in the one `attribution_refused` error of
- * `reserveGatewayCall`, without detail and with no row changed. No ids means nothing to write and no statement.
- * The ids must be distinct.
+ * Sets `semp_message_id` regardless of status (a speech-to-text stream has settled chunks and one
+ * open `reserved` chunk). One conditional UPDATE: all-or-nothing, refused with
+ * `attribution_refused` when the message or any row is not visible under RLS. Ids must be distinct.
  */
 export async function attributeGatewayCallsToSempMessage(
   client: Pool | PoolClient,
@@ -226,10 +209,7 @@ export async function attributeGatewayCallsToSempMessage(
   if (result.rowCount !== callIds.length) throw attributionRefused();
 }
 
-/**
- * Replaces a `reserved` row's estimate with the real token usage. Returns `null` when no `reserved`
- * row matched (already settled or failed, or gone) — the caller decides what that means.
- */
+/** Returns `null` when no `reserved` row matched; the caller decides what that means. */
 export async function settleTokenGatewayCall(
   client: Pool | PoolClient,
   id: string,
@@ -245,10 +225,7 @@ export async function settleTokenGatewayCall(
   return mapRow(requireSingleRow(result.rows, `reserved ai_gateway_calls row ${id}`));
 }
 
-/**
- * Replaces a `reserved` row's estimate with the real audio usage; the token columns stay NULL.
- * Returns `null` when no `reserved` row matched.
- */
+/** Returns `null` when no `reserved` row matched. */
 export async function settleAudioGatewayCall(
   client: Pool | PoolClient,
   id: string,
@@ -265,11 +242,9 @@ export async function settleAudioGatewayCall(
 }
 
 /**
- * Marks a `reserved` row `failed` at cost 0, so every `SUM(cost_usd)` (budget, usage report)
- * excludes it without a status filter. Throws when the row is not `reserved`. Auto-committed on
- * the `Pool` (docs/adr/2026-09-27-auto-committed-writes-for-records-that-must-survive-a-failure.md):
- * the failure record must survive whatever the failed call's caller rolls back, or the row would
- * keep its estimate against the budget.
+ * Cost 0 lets every `SUM(cost_usd)` exclude failed rows without a status filter. Auto-committed on
+ * the `Pool` so the record survives the caller's rollback; otherwise the estimate would keep
+ * counting against the budget.
  */
 export async function failGatewayCall(pool: Pool, id: string): Promise<void> {
   const result = await pool.query(
@@ -279,11 +254,7 @@ export async function failGatewayCall(pool: Pool, id: string): Promise<void> {
   requireAffectedRows(result, `failing reserved ai_gateway_calls row ${id}`);
 }
 
-/**
- * The tokens the settled gateway calls attributed to one Semp message used (issue #1860). A `reserved` call has
- * only an estimate and a `failed` one used nothing, so neither counts; a call without a token concept (audio)
- * has NULL columns and adds nothing. A message with no settled call has `{ input: 0, output: 0 }`.
- */
+/** Only `settled` calls count: a reserved call has only an estimate, a failed one used nothing. */
 export async function sumSettledSempMessageTokens(
   client: Pool | PoolClient,
   sempMessageId: string,
@@ -298,12 +269,8 @@ export async function sumSettledSempMessageTokens(
 }
 
 /**
- * The AI spend of each of the runs `agentRunIds`, in one statement however many ids there are (issue gh-1909):
- * the sum of `cost_usd` over the run's calls, a reserved call counting at its estimate and a failed call at 0
- * (`failGatewayCall` zeroes its cost), which is the `totalCostUsd` of `getAgentRunUsage` (issue #1822). Only calls
- * recorded with the run's own id count, so the calls of runs it delegated to are not included. The result holds an
- * entry for every id given: a run without such calls, and a run of another tenant whose calls row-level security
- * hides, cost `0`.
+ * Same total as `getAgentRunUsage.totalCostUsd`, batched. Delegated runs are not included; every id
+ * gets an entry, `0` when it has no visible calls.
  */
 export async function getAgentRunCosts(
   client: Pool | PoolClient,
@@ -311,7 +278,6 @@ export async function getAgentRunCosts(
 ): Promise<Map<string, number>> {
   const costs = new Map<string, number>(agentRunIds.map((id) => [id, 0]));
   if (agentRunIds.length === 0) return costs;
-  // The sum arrives as a decimal string, so the conversion to a number happens once per run.
   const { rows } = await client.query<{ agent_run_id: string; cost_usd: string }>(
     `SELECT agent_run_id, SUM(cost_usd)::text AS cost_usd
      FROM ai_gateway_calls
@@ -323,13 +289,7 @@ export async function getAgentRunCosts(
   return costs;
 }
 
-/**
- * The cost in USD of the calls attributed to each of the Semp messages `sempMessageIds` (`ai_gateway_calls.semp_message_id`,
- * issue gh-1932), in one statement however many messages there are: the sum of `cost_usd`, which counts a `reserved`
- * call at its estimate and a `failed` one at 0, as `getAgentRunCosts` does. A call counts whichever run it names.
- * The result holds an entry for every id given: a message without such calls, and a message of another tenant whose
- * calls row-level security hides, cost `0`. No ids means no statement.
- */
+/** Batched per-message cost, whichever run a call names; every id gets an entry, `0` when none visible. */
 export async function getSempMessageCosts(
   client: Pool | PoolClient,
   sempMessageIds: readonly string[],
@@ -353,16 +313,9 @@ export interface GatewaySpend {
 }
 
 /**
- * Calendar-day and calendar-month spend in one query, per #120's budget check. Inside a tenant
- * scope (the gateway's `semprec_side` connection under row-level security) it returns only that
- * tenant's spend; the all-tenant total is `getGlobalGatewaySpend`. Boundaries are computed in the
- * given `timezone` (not the Postgres session timezone, typically UTC), so a daily budget resets
- * at local midnight rather than UTC midnight: `now() AT TIME ZONE timezone` shifts "now" onto that
- * zone's wall clock, `date_trunc` truncates it there, and the second `AT TIME ZONE timezone`
- * converts the local midnight back into the UTC instant that `ai_gateway_calls.at` (timestamptz)
- * is compared against. Every row counts at its `cost_usd`:
- * a `reserved` row at the caller's estimate (so in-flight calls count against the cap), a
- * `settled` row at its real cost, and a `failed` row at 0.
+ * Day and month spend of the RLS-scoped tenant. Boundaries are local midnight in `timezone`, not
+ * the session timezone: the double `AT TIME ZONE` truncates on the local wall clock and converts
+ * back to an instant. Reserved rows count at their estimate so in-flight calls count against caps.
  */
 export async function getGatewaySpend(client: Pool | PoolClient, timezone: string): Promise<GatewaySpend> {
   const { rows } = await client.query<{ spent_today: string; spent_month: string }>(
@@ -378,10 +331,8 @@ export async function getGatewaySpend(client: Pool | PoolClient, timezone: strin
 }
 
 /**
- * Spend over every tenant, in UTC: since UTC midnight and since the first of the current UTC
- * month. Reads through `ai_global_spend()`, the `semprec_router` function that sees past
- * row-level security and returns only these two sums. Every row counts at its `cost_usd`, as in
- * `getGatewaySpend`.
+ * All-tenant spend in UTC via `ai_global_spend()`, a `semprec_router` function that bypasses RLS
+ * and exposes only these two sums.
  */
 export async function getGlobalGatewaySpend(client: Queryable): Promise<GatewaySpend> {
   const { rows } = await client.query<{ spent_today: string; spent_month: string }>(

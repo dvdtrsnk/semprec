@@ -19,9 +19,8 @@ export interface DecideAndEnqueueResult {
 }
 
 /**
- * A decided mail send request closes the other pending requests of its draft as superseded (issue gh-1913,
- * `supersedePendingMailSendApprovalRequests`), whichever way it was decided: each one is told to its thread as
- * rejected, loses its notification and is announced to its owner. Any other kind of request closes nothing.
+ * Whichever way a mail send request was decided, the draft's other pending requests are closed as superseded: each
+ * is told to its thread as rejected, loses its notification and is announced to its owner.
  */
 async function closeSupersededMailSendRequests(client: PoolClient, decided: ApprovalRequest): Promise<void> {
   if (!isMailSendApprovalRequestPayload(decided.payload)) return;
@@ -44,28 +43,15 @@ export interface DecideApprovalRequestInput {
 }
 
 /**
- * The only path from a human-facing route handler to `approvalRequestsStore.ts`'s
- * `decideApprovalRequest` — that function is not re-exported from this package's `index.ts`,
- * mirroring `mcpGrantsAdminStore.ts`'s convention: an agent has no write path to decide its own
- * approval request, only an authenticated user-facing handler does.
+ * The only route-facing path to `decideApprovalRequest` (which `index.ts` does not export), so an agent cannot
+ * decide its own request.
  *
- * Composes the atomic decision with enqueueing the reserved `approvalExecute` job in the same
- * transaction, so "this request is approved" and "execution will happen" land together —
- * rejection enqueues nothing, per the issue's "rejected requests never execute" criterion. The
- * `jobKey` is derived from the request id, so a retried enqueue collapses onto the same job
- * instead of scheduling a second one.
- *
- * Decide and re-read run in the same transaction, so the outcome cannot race another decision:
- * - `decided`: this call made the transition (and enqueued, on approval), and resolved the
- *   request's notifications in the same transaction, and announced the change to its owner through
- *   `publishApprovalRequestChange` once the transaction commits, and enqueued the debounced badge refresh of
- *   the owner (issue #1891); a decided mail send request also closes the other pending requests of its draft as
- *   superseded (issue gh-1913);
- * - `unchanged`: the caller owns the request's run but it is no longer pending — whoever recorded
- *   that decision (the owner, or a system path such as a migration that left `decided_by` NULL) —
- *   so the update matched nothing, the current state is returned and nothing is announced;
- * - `null`: the id is unknown, not owned by `decidedByUserId` (issue #1028), or in another tenant.
- *   The caller answers all three identically.
+ * Decision and `approvalExecute` enqueue share one transaction, so approval and scheduled execution land together;
+ * rejection enqueues nothing. The `jobKey` derives from the request id, so a retried enqueue collapses.
+ * - `decided`: this call made the transition, resolved the notifications, announces after commit and refreshes
+ *   the owner's badge; a mail send also supersedes the draft's other pending requests.
+ * - `unchanged`: the caller owns the run but the request is no longer pending; nothing is announced.
+ * - `null`: unknown, not owned by `decidedByUserId`, or another tenant; the caller answers all three alike.
  */
 export async function decideAndEnqueueApprovalRequest(
   client: PoolClient,
@@ -90,7 +76,6 @@ export async function decideAndEnqueueApprovalRequest(
 
   await resolveNotificationsBySource(client, { sourceTable: "approval_requests", sourceId: request.id });
   await publishApprovalRequestChange(client, request);
-  // The decided request leaves the pending count, so the badge of its owner changes (issue #1891).
   await enqueueBadgeRefresh(client, input.decidedByUserId);
 
   return { outcome: "decided", request };

@@ -20,7 +20,6 @@ const EASTER: [number, string][] = [
   [2100, "2100-03-28"],
 ];
 
-/** `YYYY-MM-DD` shifted by whole days, computed on the UTC calendar. */
 function shifted(date: string, days: number): string {
   const moved = new Date(`${date}T00:00:00Z`);
   moved.setUTCDate(moved.getUTCDate() + days);

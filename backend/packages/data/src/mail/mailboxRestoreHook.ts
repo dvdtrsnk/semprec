@@ -1,9 +1,5 @@
-// Owns the mail module's item restore hook (issue gh-2032): a Mailboxes item that returns from the trash
-// without a sync state gets a default one, and its Folders and Emails of its deletion epoch return with it.
-// Constrained by: docs/adr/2026-11-12-a-restored-mailbox-gets-its-sync-state-and-its-mail-back-in-the-restore-transaction.md,
-// docs/adr/2026-11-10-a-mailbox-removal-job-joins-the-mailbox-trash-epoch.md,
-// docs/adr/2026-11-08-restore-hooks-carry-exact-deletion-epochs.md,
-// docs/adr/2026-11-11-mailbox-reauthorization-restarts-the-hosted-lifecycle-in-the-live-sync-roots-context.md
+// A Mailboxes item that returns from the trash without a sync state gets a default one, and its Folders
+// and Emails of its deletion epoch return with it, in the restore transaction.
 import type { PoolClient } from "pg";
 import type { ItemRestoreHook } from "../chokePoint/hooks.js";
 import { restoreItemWithClient } from "../chokePoint/itemTrash.js";
@@ -16,13 +12,7 @@ import {
 } from "./mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 
-/**
- * The leading CTE of the two statements below: the Folders items related to mailbox `$1` through
- * `Folders.mailbox`, live or trashed; `$2` is the Folders database id. The relation definition is found
- * by the property key on the module-owned database, as `MAILBOX_REMOVAL_MEMBERS_CTE_SQL`
- * (`mailboxRemovalImpact.ts`) finds it. That text selects the live members a removal trashes and is not
- * reused here, because a restore selects by deletion epoch.
- */
+/** Live or trashed Folders of mailbox `$1`; a restore selects by deletion epoch, so the removal CTE is not reused. */
 const MAILBOX_FOLDERS_CTE_SQL = `
 WITH mailbox_folders AS (
   SELECT f.id
@@ -36,7 +26,6 @@ WITH mailbox_folders AS (
     AND (r.item_a = $1::uuid OR r.item_b = $1::uuid)
 )`;
 
-/** The mailbox's Folders that are in the trash with exactly the deletion epoch `$3`, locked in id order. */
 const MAILBOX_FOLDERS_OF_EPOCH_SQL = `${MAILBOX_FOLDERS_CTE_SQL}
 SELECT f.id
 FROM items f
@@ -46,11 +35,7 @@ WHERE f.database_id = $2::uuid
 ORDER BY f.id
 FOR UPDATE OF f`;
 
-/**
- * The Emails that are in the trash with exactly the deletion epoch `$4` and are related through
- * `Emails.folder` to one of the mailbox's Folders, whatever that folder's own trash state, locked in id
- * order; `$3` is the Emails database id.
- */
+/** Matched through any of the mailbox's Folders, whatever that folder's own trash state. */
 const MAILBOX_EMAILS_OF_EPOCH_SQL = `${MAILBOX_FOLDERS_CTE_SQL},
 email_folder_relations AS (
   SELECT rd.id
@@ -99,38 +84,20 @@ async function lockMailboxEmailIdsOfEpoch(
 }
 
 /**
- * The mail module's item restore hook (issue gh-2032), registered by `../domainWriteHooks.ts`. It runs
- * inside the restore cascade's transaction, after the row's own restore, and acts on an item of the
- * tenant's system Mailboxes database; for an item of any other database it returns before its first
- * statement.
+ * Runs inside the restore cascade's transaction, only for the tenant's system Mailboxes database.
  *
- * 1. A mailbox that has no sync state row gets the one a newly connected mailbox of its `provider` gets
- *    (`ensureMailAccountSyncState` with `defaultSyncModeForProvider`; a `provider` that is not a string
- *    counts as `generic`, as in the live-sync root's discovery). A mailbox that still has a row keeps
- *    it as it is: the hook reads the row first, without a lock, and writes nothing when there is one.
- * 2. The mailbox's Folders that are in the trash with exactly the mailbox's deletion epoch
- *    (`deletedAtExact`, compared by Postgres) are restored, and then its Emails of that epoch. That is
- *    the epoch the `mailboxRemoval` job gives the rows it trashes (`mailboxRemovalJob.ts`); a folder or
- *    message trashed at another instant stays in the trash. Each kind is selected and locked
- *    `FOR UPDATE` in one statement, in id order, and each row is restored through the choke point's
- *    `restoreItemWithClient` with this restore's queue routing, writer and acting user, so the restore
- *    hooks, heartbeats and invalidations of every row run as for any restore.
+ * 1. A mailbox without a sync state row gets the default for its `provider`; an existing row is kept.
+ * 2. Folders, then Emails, trashed with exactly the mailbox's deletion epoch (the epoch the removal job
+ *    uses) are locked `FOR UPDATE` in id order and restored through the choke point. Rows trashed at
+ *    another instant stay in the trash.
  *
- * The hook writes nothing on the Mailboxes item. A removed mailbox was trashed with `syncStatus`
- * `needsReauthorization` (`mailboxRemoval.ts`) and returns with it. The credential, the folder sync
- * state and the server settings the removal deleted are not written again.
+ * The mailbox returns with `syncStatus` `needsReauthorization`; deleted credentials and settings are not
+ * recreated.
  *
- * It takes no mailbox sync guard: the cascade locked the Mailboxes item before this hook runs, and the
- * guard comes before every row lock. For the same reason it never waits for a sync state row that
- * exists. The paths that take both rows take that row first and the Mailboxes item second (the sync
- * job's failure record and completed pass, the removal, the reauthorization), so a wait for it here
- * could close a deadlock with one of them. The unlocked read is enough: the hook changes nothing on a
- * row that exists, and that row cannot be deleted before this transaction ends, because the removal
- * and the purge hook, the only callers of `deleteMailAccountSyncState`, delete it while they hold the
- * Mailboxes item. With no row, the insert waits only for another transaction's uncommitted insert of
- * the same row.
- *
- * An error from any statement rolls the whole restore back, so the mailbox stays in the trash.
+ * It takes no sync guard, because the cascade already locked the Mailboxes item and the guard comes
+ * before every row lock. For the same reason the sync state row is read without a lock: other paths lock
+ * that row first and the Mailboxes item second, so waiting here could deadlock. The unlocked read is
+ * enough, since the row is only deleted by holders of the Mailboxes item lock.
  */
 export const mailboxItemRestoreHook: ItemRestoreHook = async (context) => {
   const { client, database, item } = context;

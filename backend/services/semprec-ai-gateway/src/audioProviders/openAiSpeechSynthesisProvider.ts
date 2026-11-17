@@ -30,7 +30,7 @@ const OPENAI_VOICES = [
   "verse",
 ] as const;
 
-/** OpenAI text-to-speech (`gpt-4o-mini-tts`) asking for raw 24 kHz mono PCM, the format of the voice ADR. */
+/** OpenAI text-to-speech (`gpt-4o-mini-tts`) as raw 24 kHz mono PCM. */
 export function createOpenAiSpeechSynthesisProvider(apiKey: string): SpeechSynthesisProvider {
   return {
     id: "openai",

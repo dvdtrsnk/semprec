@@ -38,7 +38,6 @@ import { enqueueRollupRecompute, rollupRecomputeJobKey } from "../rollup/recompu
 import { executeProposalSteps } from "../inbox/proposalSteps.js";
 import { withValueLinkRelationAdmission } from "../chokePoint/valueLinkRelationAdmission.js";
 
-/** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
 const AGENT: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: "00000000-0000-4000-8000-000000000003" };
 const VALUE_LINKS = { ownerProcess: VALUE_LINKS_OWNER_PROCESS };
@@ -47,8 +46,7 @@ let pool: Pool;
 let chokePoint: ChokePoint;
 
 async function graphileJobHeldBy(jobKey: string, holderPid: number | undefined): Promise<boolean> {
-  // Graphile Worker 0.17.3's public jobs view does not expose the tuple xmax
-  // needed to connect this exact queued row to its transaction lock holder.
+  // The public jobs view does not expose xmax, needed to tie this queued row to its lock holder.
   const result = await pool.query<{ held: boolean }>(
     `SELECT EXISTS (SELECT 1 FROM graphile_worker._private_jobs j JOIN pg_locks l
        ON l.transactionid::text = j.xmax::text
@@ -181,7 +179,6 @@ interface RuntimeOperations {
   consume(operation: Promise<unknown>, expected: unknown): void;
 }
 
-// Local to these serial fixtures: every barrier is released if any owning pool closes early.
 const fixtureCancellations = new Set<Set<() => void>>();
 
 async function withRuntimePool<T>(body: (runtime: Pool, operations: RuntimeOperations) => Promise<T>): Promise<T> {
@@ -373,7 +370,6 @@ async function settleParticipants<T extends ParticipantOutcome>(
   });
 }
 
-/** Polls a participant's own progress flag (observation only; locks and barriers create the order). */
 async function waitUntil(condition: () => boolean): Promise<void> {
   const deadline = Date.now() + 3000;
   while (!condition()) {
@@ -1330,7 +1326,7 @@ describe("value link state on writes (issue #1516)", () => {
               expect(persistedProperties).toEqual({
                 name: "Old",
                 date: "2026-10-14",
-                // Issue #1780: a write that names `date` stores the effective day; with no host event it is the date.
+                // A write that names `date` stores the effective day; with no host event it is the date.
                 effectiveDate: "2026-10-14",
                 timeFrom: "09:00",
                 timeTo: key === "timeTo" ? null : "10:00",
@@ -1668,9 +1664,8 @@ describe("value link state on writes (issue #1516)", () => {
         const links = await withTenantTransaction(runtime, tenant, (client) =>
           listValueLinksByItemIds(client, [fixture.item.id]),
         );
-        // Issue #1656: the purge removes the purged item's own link rows, so the value-link process no
-        // longer holds the `type` handoff and is refused before the item is looked up. A user write still
-        // gets the missing-source error.
+        // The purge removes the item's own link rows, so the value-link process no longer holds the `type` handoff and is
+        // refused before lookup; a user write still gets the missing-source error.
         expect(links).toEqual([]);
         const events: InvalidationEvent[] = [];
         setInvalidationHook((event) => events.push(event));
@@ -3249,7 +3244,7 @@ describe("value link state on writes (issue #1516)", () => {
                       { writer: USER },
                     );
                     await enqueueRollupRecompute(client, rollup.id, unrelated.id);
-                    // Registered for the pre-commit flush (R1 D1), which the caught busy below must prevent.
+                    // Registered for the pre-commit flush, which the caught busy below must prevent.
                     await enqueueItemSearchReindex(client, { kind: "item", itemId: unrelated.id });
                     const queued = await client.query<{ key: string }>(
                       "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[])",
@@ -3312,10 +3307,9 @@ describe("value link state on writes (issue #1516)", () => {
     }, 30000);
 
     /*
-     * R1 D1: a protected valueLinks relation and an ordinary relation that share an endpoint both queue that
-     * endpoint's search job. The protected write registers it in its 1 ms body and adds it at its pre-commit
-     * flush, after the body restored the session's lock timeout and while its lease stays held. A scratch holder
-     * of the tenant's search-flush lock (released and awaited below) makes that flush wait observably.
+     * A protected valueLinks relation and an ordinary relation sharing an endpoint both queue its search job. The
+     * protected write adds it at its pre-commit flush, after restoring the lock timeout and while its lease is held;
+     * a scratch holder of the tenant's search-flush lock makes that flush wait observably.
      */
     it("adds a protected relation's search jobs at its flush, waiting there without value_link_busy beside an ordinary writer", async () => {
       const tenant = await createTestTenant(pool);

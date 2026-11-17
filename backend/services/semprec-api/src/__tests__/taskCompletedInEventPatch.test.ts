@@ -35,7 +35,7 @@ const noopMailer: PasswordResetMailer = {
 const moduleRegistry = await loadFullModuleRegistry();
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 
-/** A calendar day `days` from the server's day, far enough from today that midnight cannot change a case. */
+/** Far enough from today that midnight cannot change a case. */
 const dayFromNow = (days: number): string => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
 
 const completedTargets = z.object({
@@ -108,10 +108,7 @@ describe("completing a task in an event through PATCH /api/items/:id (issue #178
     await admin?.end();
   });
 
-  /**
-   * A task of tenant zero placed, through the route of issue #1764, in an event on `eventDay` (with the times of
-   * `eventTimes`, none for an event of the whole day).
-   */
+  /** `eventTimes` absent means an all-day event. */
   async function taskInEvent(
     eventDay: string,
     eventTimes: { timeFrom: string; timeTo: string } | null = null,
@@ -128,7 +125,6 @@ describe("completing a task in an event through PATCH /api/items/:id (issue #178
     return { taskId: task.id, eventId: event.id };
   }
 
-  /** The version token a PATCH of the task must carry, read by the owner. */
   async function versionOf(taskId: string): Promise<string> {
     const response = await fetch(`${base}/api/items/${taskId}`, { headers });
     expect(response.status).toBe(200);
@@ -176,7 +172,7 @@ describe("completing a task in an event through PATCH /api/items/:id (issue #178
   describe("a timed event of 15 October 13:00 to 14:00 in Europe/Prague, with only the clock controlled", () => {
     const TIMES = { timeFrom: "13:00", timeTo: "14:00" };
 
-    // Only `Date` is faked, so the timers of the HTTP stack and the pool keep running.
+    // Only `Date` is faked, so the HTTP stack's and the pool's timers keep running.
     const setClock = (iso: string): void => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(new Date(iso));

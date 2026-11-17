@@ -29,7 +29,6 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
   }
 }
 
-/** Observes one production statement on its actual client; the holder pauses after it succeeds. */
 function observe(
   pool: Pool,
   matches: (text: string, values: unknown) => boolean,

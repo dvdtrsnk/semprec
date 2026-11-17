@@ -64,7 +64,6 @@ describe("transcription requeue sweep and rerun route (issue #186)", () => {
     transcriptsId = await databaseIdFor("transcripts");
   });
 
-  /** A Transcriptions row as the pipeline's step 0 leaves it, with its `item_automation` set to `status`. */
   async function createTranscription(
     status: ItemAutomationStatus,
     link: string = transcriptionSourceLink(randomUUID()),

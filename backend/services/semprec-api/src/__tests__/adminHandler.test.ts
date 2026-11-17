@@ -44,7 +44,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Checks a response body's `field` is an array of objects, so a test can read its entries' fields. */
 function readRecordArray(body: unknown, field: string): Record<string, unknown>[] {
   if (!isRecord(body)) throw new Error("expected a JSON object body");
   const value = body[field];
@@ -52,7 +51,6 @@ function readRecordArray(body: unknown, field: string): Record<string, unknown>[
   return value;
 }
 
-/** Checks a response body's `field` is an object, so a test can read its fields. */
 function readRecord(body: unknown, field: string): Record<string, unknown> {
   if (!isRecord(body)) throw new Error("expected a JSON object body");
   const value = body[field];
@@ -129,7 +127,7 @@ describe("admin routes (issue #1037)", () => {
       passwordHash: await hashPassword(PASSWORD),
       tenantId: tenantC,
     });
-    // The member's second session (the admin's own requests touch its session, so it cannot be asserted exactly); explicit timestamps make "newer" unambiguous.
+    // The admin's own requests touch its own session, so it cannot be asserted exactly; explicit timestamps make "newer" unambiguous.
     await login(pool, { email: secondEmail, password: PASSWORD, platform: "ios", ip: "1.2.3.4" });
     // Raw SQL: login refuses a suspended tenant, so the status is set after the sessions exist.
     await pool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantB]);
@@ -159,8 +157,6 @@ describe("admin routes (issue #1037)", () => {
   it("answers an admin's operations health with counts and no tenant content", async () => {
     const tenantId = await createTestTenant(pool);
     const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantId, "admin");
-    // Tenant content through production writers: a live Mailbox with its sync state, and a
-    // Projects item, both inside the tenant on a runtime-role pool.
     const dataPool = await createRuntimeRolePool(pool, "semprec_data");
     let mailboxItemId: string;
     let projectItemId: string;
@@ -186,8 +182,8 @@ describe("admin routes (issue #1037)", () => {
       { process: mailSyncProcessName(mailboxItemId), pid: 1, version: "1.0.0" },
       new Date(),
     );
-    // Raw SQL on the superuser pool with an explicit tenant id: no production writer records these
-    // error states from a fixture, and each carries tenant content the operator report must never echo.
+    // No production writer records these error states from a fixture; each carries tenant content the operator
+    // report must never echo.
     await pool.query(
       `INSERT INTO tenant_observability_checks (tenant_id, check_key, status, detail) VALUES ($1, $2, 'alerting', $3)`,
       [tenantId, `mail:${mailboxItemId}`, JSON.stringify({ mailboxItemId, lastError: "SECRET-TENANT-TEXT" })],
@@ -196,7 +192,7 @@ describe("admin routes (issue #1037)", () => {
       `INSERT INTO item_automation (tenant_id, item_id, status, error) VALUES ($1, $2, 'error', 'SECRET-TENANT-TEXT')`,
       [tenantId, projectItemId],
     );
-    // A legacy global per-mailbox row, as left behind until the check-system tick purges it.
+    // A global per-mailbox row, as left until the check-system tick purges it.
     await pool.query(`INSERT INTO observability_checks (check_key, status, detail) VALUES ($1, 'alerting', $2)`, [
       `mail:${mailboxItemId}`,
       JSON.stringify({ mailboxItemId, lastError: "SECRET-TENANT-TEXT" }),
@@ -253,7 +249,7 @@ describe("admin routes (issue #1037)", () => {
       return rows;
     }
 
-    /** Raw SQL: a call's `at` and `status` must be controlled to sit on either side of a UTC window boundary. */
+    /** Raw SQL: `at` and `status` must sit on either side of a UTC window boundary. */
     async function insertCall(tenantId: string, costUsd: number, at: Date, status = "settled"): Promise<void> {
       await pool.query(
         `INSERT INTO ai_gateway_calls (tenant_id, provider, model, input_tokens, output_tokens, cost_usd, at, status)
@@ -277,7 +273,6 @@ describe("admin routes (issue #1037)", () => {
       const tenantB = await createTestTenant(pool);
       const admin = await signIn(`admin-${randomUUID()}@example.test`, tenantA, "admin");
       const target = await signIn(`target-${randomUUID()}@example.test`, tenantB, "member");
-      // Tenant A already has caps of its own; writing B's must leave them untouched.
       await withTransaction(pool, (client) =>
         setTenantAiBudget(client, { tenantId: tenantA, dailyCapUsd: 1, monthlyCapUsd: 10, updatedBy: admin.id }),
       );
@@ -357,7 +352,7 @@ describe("admin routes (issue #1037)", () => {
         const tenantId = await createTestTenant(pool);
         const admin = await signIn(`admin-${randomUUID()}@example.test`, await createTestTenant(pool), "admin");
         const target = await signIn(`target-${randomUUID()}@example.test`, tenantId, "member");
-        // Raw JSON text: JSON.stringify(Infinity) yields null, so the literal 1e309 is the only way to send it.
+        // JSON.stringify(Infinity) yields null, so the literal 1e309 is the only way to send it.
         const rawBody =
           field === "dailyCapUsd"
             ? '{"dailyCapUsd": 1e309, "monthlyCapUsd": 40}'
@@ -388,8 +383,8 @@ describe("admin routes (issue #1037)", () => {
       expect((await put({ dailyCapUsd: 5, monthlyCapUsd: 40 })).status).toBe(200);
       const before = await budgetRow(tenantId);
 
-      // The audit insert fails only for the sentinel monthly cap 777, which no other test sends, and
-      // only after setTenantAiBudget has already upserted the row in the same transaction.
+      // Fails only for the sentinel monthly cap 777, and only after setTenantAiBudget upserted the row in the same
+      // transaction.
       await pool.query(
         `CREATE OR REPLACE FUNCTION test_fail_budget_audit() RETURNS trigger AS $$
          BEGIN
@@ -436,8 +431,8 @@ describe("admin routes (issue #1037)", () => {
       );
       const windows = rows[0];
       if (!windows) throw new Error("expected one row of UTC windows");
-      // The 2.00 call sits one second before today's UTC midnight: an earlier day of this month,
-      // except on the 1st, when it falls in the previous month and counts toward neither sum.
+      // One second before today's UTC midnight: earlier this month, except on the 1st, when it counts toward neither
+      // sum.
       const beforeToday = new Date(windows.day_start.getTime() - 1000);
       const beforeTodayIsThisMonth = beforeToday.getTime() >= windows.month_start.getTime();
 
@@ -785,7 +780,6 @@ describe("admin routes (issue #1037)", () => {
       });
       expect(allowedDemote.status).toBe(200);
       const allowedSuspend = await authed(second.token, "POST", `/api/admin/accounts/${second.id}/suspend`);
-      // The second admin is now the only active admin again.
       expect(allowedSuspend.status).toBe(409);
       expect(await auditActions()).toEqual(["accountRoleChanged"]);
     });

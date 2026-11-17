@@ -73,10 +73,8 @@ describe("issue #235: databases.key and nullable system names", () => {
         expect(row.name).toBeNull();
       }
 
-      // Only the properties seedTenDatabasesInTransaction itself creates are asserted here —
-      // other module seeds (e.g. seedEmailModule.ts) add further built-in properties onto
-      // these same ten databases after unlocking them, and those are out of this issue's
-      // scope, so they keep a non-null name.
+      // Only the properties seedTenDatabasesInTransaction itself creates are asserted: other module seeds add
+      // further built-in properties to these databases, and those keep a non-null name.
       const { rows: propertyRows } = await client.query<{ name: string | null }>(
         `SELECT p.name FROM properties p
          JOIN databases d ON d.id = p.database_id

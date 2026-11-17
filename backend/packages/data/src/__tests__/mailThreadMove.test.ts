@@ -66,10 +66,9 @@ describe("POST /api/mail/threads/:threadId/archive and /trash (issue gh-1917)", 
   });
 
   /**
-   * The conversation "Re: Nabídka na web" in two accounts: a Gmail API mailbox `gmail` and an IMAP mailbox `imap`.
-   * `inboxGmail` is an incoming message of the Gmail mailbox's Inbox, delivered to the IMAP mailbox as `inboxImap`
-   * (UID 11); `archived` is incoming mail already in Archive, `sentOwn` the user's own mail in Sent and `junk` incoming
-   * mail in Junk.
+   * The conversation "Re: Nabídka na web" in a Gmail API mailbox `gmail` and an IMAP mailbox `imap`.
+   * `inboxGmail` is incoming in the Gmail Inbox, delivered to IMAP as `inboxImap` (UID 11); `archived` is
+   * already in Archive, `sentOwn` the user's own mail in Sent and `junk` incoming mail in Junk.
    */
   async function offerThread(options: { omitImap?: readonly ("archive" | "trash" | "inbox")[] } = {}) {
     const gmail = await createMoveFixtureMailbox(runtime, {
@@ -121,7 +120,6 @@ describe("POST /api/mail/threads/:threadId/archive and /trash (issue gh-1917)", 
 
   const jobKeys = moveFixtureJobKeys;
 
-  /** The thread ids of `box=inbox`, as the thread list answers them. */
   async function inboxBox(): Promise<string[]> {
     const { body } = await runInTenant(tenant, () =>
       createMailThreadListRouteHandler(runtime)({ req: { url: "/api/mail/threads?box=inbox" } }),
@@ -129,13 +127,12 @@ describe("POST /api/mail/threads/:threadId/archive and /trash (issue gh-1917)", 
     return body.threads.map((thread) => thread.threadId);
   }
 
-  /** Calls the route handler in the tenant of the session. */
   function post(kind: MoveKind, threadId: string, inTenant = tenant) {
     const handler = kind === "archive" ? createMailThreadArchiveRouteHandler : createMailThreadTrashRouteHandler;
     return runInTenant(inTenant, () => handler(runtime)({ params: { threadId } }));
   }
 
-  /** From here on the fixture is built, so only the announcements of the call under test are recorded. */
+  /** The fixture is built, so only announcements of the call under test are recorded from here on. */
   function recordThreadAnnouncements(): void {
     events = [];
     setInvalidationHook((event) => {
@@ -143,7 +140,6 @@ describe("POST /api/mail/threads/:threadId/archive and /trash (issue gh-1917)", 
     });
   }
 
-  /** Expects the call to be refused with a 409 of `code`, and every table the route writes to to be as it was. */
   async function expectRefusedUnchanged(
     kind: MoveKind,
     threadId: string,
@@ -328,8 +324,8 @@ describe("POST /api/mail/threads/:threadId/archive and /trash (issue gh-1917)", 
       });
     });
 
-    // The thread list counts a copy in Inbox and Drafts (it leaves out only copies whose every folder is Drafts), but a
-    // copy with a Drafts folder is a draft for the move routes (`MailThreadMoveCopy.draft`) and stays where it is.
+    // The thread list counts a copy in Inbox and Drafts, but a copy with a Drafts folder is a draft for the
+    // move routes (`MailThreadMoveCopy.draft`) and stays where it is.
     it("never moves a copy that has a Drafts folder edge, also one in an Inbox", async () => {
       await runInTenant(tenant, async () => {
         const t = await offerThread();
@@ -352,7 +348,6 @@ describe("POST /api/mail/threads/:threadId/archive and /trash (issue gh-1917)", 
   });
 
   describe("trash", () => {
-    /** Adds incoming mail that is already in Trash and a draft, which trash must leave alone. */
     async function withTrashedAndDraft(t: Awaited<ReturnType<typeof offerThread>>) {
       const trashed = await t.ingest({
         id: "<trashed@example.test>",
@@ -639,7 +634,7 @@ describe("POST /api/mail/threads/:threadId/archive and /trash (issue gh-1917)", 
         const before = await snapshotOf(all);
         recordThreadAnnouncements();
 
-        // A trigger is the only way to fail the second write of the call; no production code exposes that seam.
+        // A trigger is the only way to fail the second write of the call.
         await admin.query(`CREATE FUNCTION test_mail_thread_move_fail() RETURNS trigger LANGUAGE plpgsql AS $$
           BEGIN
             IF EXISTS (SELECT 1 FROM mail_message_move_sync_state) THEN

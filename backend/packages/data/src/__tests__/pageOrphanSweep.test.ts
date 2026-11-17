@@ -37,7 +37,7 @@ interface RecordedDelete {
   actingUserId: string | undefined;
 }
 
-// Hooks cannot be unregistered; this recorder is emptied before each test and registered after the domain hooks.
+// Hooks cannot be unregistered: emptied before each test, registered after the domain hooks.
 const deleteRuns: RecordedDelete[] = [];
 registerItemDeleteHook(async ({ item, rootItemId, writerKind, actingUserId }) => {
   deleteRuns.push({ itemId: item.id, rootItemId, writerKind, actingUserId });
@@ -70,7 +70,6 @@ function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant):
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
-/** A new Projects item written through the choke point; it hosts the pages of a test. */
 async function createProject(name = "Launch", tenantId = tenant): Promise<string> {
   return runInTenant(tenantId, async () => {
     const database = (await chokePoint.listDatabases()).find(
@@ -86,7 +85,6 @@ interface Subpage {
   blockId: string;
 }
 
-/** A subpage of `parentItemId`, created with its block in the parent's document by the page operation. */
 async function createSubpage(parentItemId: string, title: string, tenantId = tenant): Promise<Subpage> {
   const created = await inTenant(
     (client) => createSubpageWithClient(client, { parent: { itemId: parentItemId }, title }, "user"),
@@ -103,21 +101,16 @@ async function docIdOf(itemId: string, tenantId = tenant): Promise<string> {
   return doc.id;
 }
 
-/** An edit of an item's page as an editor makes it over the sync socket, outside the page operations. */
 async function editDocument(itemId: string, edit: (doc: Y.Doc) => void, tenantId = tenant): Promise<void> {
   const docId = await docIdOf(itemId, tenantId);
   await runInTenant(tenantId, () => mutateDoc(runtime, docId, "user", edit));
 }
 
-/** Removes the `page` block of `page` from the document of `parentItemId` the way an editor deletes it. */
 function removePageBlock(parentItemId: string, page: Subpage, tenantId = tenant): Promise<void> {
   return editDocument(parentItemId, (doc) => deleteBlocks(doc, [page.blockId]), tenantId);
 }
 
-/**
- * Makes every document of `tenantId` look last edited two hours ago. Documents only age in real time and no production
- * writer back-dates them, so the sweep's idle window is passed by a direct update on the admin pool.
- */
+/** No production writer back-dates documents, so the idle window is passed by a direct admin update. */
 async function makeDocumentsIdle(tenantId = tenant): Promise<void> {
   await admin.query("UPDATE docs SET last_edited_at = now() - interval '2 hours' WHERE tenant_id = $1", [tenantId]);
 }
@@ -126,7 +119,6 @@ function sweep(): ReturnType<typeof sweepOrphanedPages> {
   return runAsSystem("test", () => sweepOrphanedPages(runtime));
 }
 
-/** Whether each item is live, in the order given, read inside `tenantId`; a missing row fails the test. */
 async function liveStates(tenantId: string, ...itemIds: string[]): Promise<boolean[]> {
   return runInTenant(tenantId, async () => {
     const states: boolean[] = [];
@@ -147,7 +139,6 @@ async function restore(itemId: string, tenantId = tenant): Promise<void> {
   });
 }
 
-/** The `page` blocks of an item's document as `[pageId, text]` pairs in document order. */
 async function pageBlocksOf(itemId: string, tenantId = tenant): Promise<Array<[string | null, string]>> {
   const docId = await docIdOf(itemId, tenantId);
   return inTenant(async (client) => {
@@ -162,7 +153,6 @@ async function pageBlocksOf(itemId: string, tenantId = tenant): Promise<Array<[s
   }, tenantId);
 }
 
-/** Every Pages item of `tenantId` as stored and the number of stored document updates: what a sweep may change. */
 async function pagesAndUpdates(tenantId = tenant): Promise<unknown> {
   return inTenant(async (client) => {
     const pages = await client.query<{ row: unknown }>(
@@ -175,10 +165,8 @@ async function pagesAndUpdates(tenantId = tenant): Promise<unknown> {
   }, tenantId);
 }
 
-/** Makes the trash of the given Pages items fail inside the database. */
 async function failTrashOf(...itemIds: string[]): Promise<void> {
-  // Fault injection inside the soft delete itself: no production input makes the trash of one page fail. The item ids
-  // reach the trigger through a scratch table, not interpolated into its body.
+  // No production input makes one page's trash fail; ids reach the trigger through a scratch table.
   await admin.query("CREATE TABLE fail_page_orphan_sweep_test_items (item_id uuid PRIMARY KEY)");
   await admin.query("INSERT INTO fail_page_orphan_sweep_test_items (item_id) SELECT unnest($1::uuid[])", [itemIds]);
   await admin.query("GRANT SELECT ON fail_page_orphan_sweep_test_items TO PUBLIC");
@@ -194,7 +182,6 @@ async function failTrashOf(...itemIds: string[]): Promise<void> {
     FOR EACH ROW EXECUTE FUNCTION fail_page_orphan_sweep_test()`);
 }
 
-/** Waits until some statement of the database waits for a lock, which is where the sweep under test stops. */
 async function waitForPendingLock(): Promise<void> {
   for (let waited = 0; ; waited += 25) {
     const { rows } = await admin.query<{ n: number }>("SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted");
@@ -204,10 +191,7 @@ async function waitForPendingLock(): Promise<void> {
   }
 }
 
-/**
- * Runs the sweep while a transaction of its own holds the row of `pageItemId`, so the sweep has listed the page and
- * waits for its row. `changeWhileHeld` then runs inside that transaction, which commits afterwards.
- */
+/** The sweep runs while another transaction holds the page's row; `changeWhileHeld` runs there, then it commits. */
 async function sweepWhileHoldingPageRow(
   pageItemId: string,
   changeWhileHeld: (holder: PoolClient) => Promise<void>,
@@ -242,8 +226,7 @@ describe("sweepOrphanedPages (issue #1749)", () => {
 
     expect(result).toEqual({ trashed: 1, failed: 0 });
     expect(await liveStates(tenant, orphan.pageItemId, nested.pageItemId)).toEqual([false, false]);
-    // The trash ran as the system writer, once for the page below (the recorder runs after the hook that trashes it,
-    // so it is recorded first) and once for the orphan.
+    // The recorder runs after the hook that trashes the page below, so that one is recorded first.
     expect(
       deleteRuns.map(({ itemId, rootItemId, writerKind, actingUserId }) => ({
         itemId,
@@ -259,8 +242,7 @@ describe("sweepOrphanedPages (issue #1749)", () => {
     await restore(orphan.pageItemId);
 
     expect(await liveStates(tenant, orphan.pageItemId, nested.pageItemId)).toEqual([true, true]);
-    // The block returns to the parent's document (at its end, since no position was recorded) and the nested page
-    // keeps its own block in the restored page's document.
+    // No position was recorded, so the block returns at the end of the parent's document.
     expect(await pageBlocksOf(project)).toEqual([[orphan.pageItemId, "Release checklist"]]);
     expect(await pageBlocksOf(orphan.pageItemId)).toEqual([[nested.pageItemId, "Notes for version 0.4"]]);
   });
@@ -299,7 +281,6 @@ describe("sweepOrphanedPages (issue #1749)", () => {
     const project = await createProject();
     const orphan = await createSubpage(project, "Orphan");
     await removePageBlock(project, orphan);
-    // The removal above is the latest edit of the parent's document: seconds old.
     const before = await pagesAndUpdates();
 
     expect(await sweep()).toEqual({ trashed: 0, failed: 0 });
@@ -393,9 +374,8 @@ describe("sweepOrphanedPages (issue #1749)", () => {
   });
 
   it("continues in the next parent when a chunk ends inside the parent that sorts first", async () => {
-    // The sweep lists pages ordered by (parent, id) and resumes after the last page of the previous chunk, so a chunk
-    // that ends inside the first parent must still reach every page of the later parents, whose ids may be lower than
-    // the cursor's page id. The parent whose id sorts first gets more pages than one chunk holds.
+    // The sweep pages by (parent, id) with a cursor; a chunk ending inside the first parent must still reach
+    // later parents whose ids sort lower. The first parent gets more pages than one chunk holds.
     const [firstParent, secondParent] = [await createProject("Alpha"), await createProject("Beta")].sort((a, b) =>
       a < b ? -1 : 1,
     ) as [string, string];
@@ -472,7 +452,6 @@ describe("sweepOrphanedPages (issue #1749)", () => {
     const orphanB = await createSubpage(projectB, "Orphan B", tenantB);
     await removePageBlock(projectA, orphanA, tenant);
     await removePageBlock(projectB, orphanB, tenantB);
-    // Only tenant A's documents are idle; tenant B's were edited seconds ago.
     await makeDocumentsIdle(tenant);
 
     expect(await sweep()).toEqual({ trashed: 1, failed: 0 });
@@ -570,7 +549,6 @@ describe("sweepOrphanedPages (issue #1749)", () => {
     try {
       await isHolding;
       swept = sweep();
-      // The sweep has examined the page and now waits for the document.
       await waitForPendingLock();
     } finally {
       release();

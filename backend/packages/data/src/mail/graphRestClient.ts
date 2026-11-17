@@ -41,7 +41,6 @@ interface GraphMessageResource {
   ["@removed"]?: { reason: string };
 }
 
-/** `/messages/{id}/attachments` resource. */
 interface GraphAttachmentResource {
   ["@odata.type"]: unknown;
   id: string;
@@ -71,7 +70,7 @@ function header(resource: GraphMessageResource, name: string): string | undefine
   return resource.internetMessageHeaders?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
 }
 
-/** Every occurrence of a header on this message (`internetMessageHeaders` preserves repeats, unlike `header`'s single-match lookup above) — needed for "highest Delivered-To occurrence" (mail/deliveredTo.ts, issue #93). */
+/** Every occurrence of a header, in order; Delivered-To resolution needs repeats. */
 function headerValues(resource: GraphMessageResource, name: string): string[] {
   return (resource.internetMessageHeaders ?? [])
     .filter((h) => h.name.toLowerCase() === name.toLowerCase())
@@ -79,8 +78,7 @@ function headerValues(resource: GraphMessageResource, name: string): string[] {
 }
 
 function safeAttachmentLabel(name: unknown): string {
-  // Graph attachment names are untrusted input. Remove control characters so the text form
-  // cannot forge extra annotations, and escape the HTML form before it joins the stored body.
+  // Untrusted: strip control characters so the text form cannot forge extra annotations.
   const withoutControls = Array.from(typeof name === "string" ? name : "")
     .map((character) => {
       const code = character.charCodeAt(0);
@@ -136,12 +134,7 @@ function appendGraphNonFileAttachmentAnnotations(
   return [body, ...annotations].filter((part): part is string => Boolean(part)).join(separator);
 }
 
-/**
- * Builds each candidate attachment's lazy byte source over Graph's `/attachments/{id}/$value`
- * — unlike the Gmail REST API (gmailRestClient.ts), Graph's `$value` is a true streamed byte
- * response (not a JSON-wrapped base64 blob), so `openStream` here never buffers the whole part
- * either, the same as the IMAP adapter's `download()`-backed streams.
- */
+/** Lazy byte sources over `/attachments/{id}/$value`, a true streamed response. */
 function classifyGraphAttachments(
   fetchAttachmentStream: (attachmentId: string) => Promise<Readable>,
   metas: GraphAttachmentResource[],
@@ -156,17 +149,15 @@ function classifyGraphAttachments(
       disposition: m.isInline ? "inline" : "attachment",
       openStream: () => fetchAttachmentStream(m.id),
     }));
-  // Same "inline part actually referenced via cid: in the HTML body is a rendering asset, not
-  // a document" rule the other two adapters apply (attachments.ts / imapFlowClient.ts).
+  // An inline part referenced via cid: in the HTML is a rendering asset, not a document.
   return candidates.filter(
     (a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))),
   );
 }
 
 /**
- * Graph has no bytes to stream for item/reference attachments. They are retained as literal
- * body annotations rather than synthesized Files rows, so repeated delta reconciliation
- * converges through ingestEmailMessage's message identity deduplication just like the body.
+ * Item/reference attachments have no bytes, so they become body annotations rather than Files
+ * rows; repeated delta passes then converge through message dedup like the body.
  */
 export async function toFetchedGraphMessage(
   resource: GraphMessageResource,
@@ -220,9 +211,8 @@ export async function toFetchedGraphMessage(
       autoSubmitted: header(resource, "Auto-Submitted") ?? null,
     },
     isDsn: isDeliveryStatusReport(contentType?.type, contentType?.params),
-    // Delta links created before `isRead` was added to our `$select` do not carry that field.
-    // Preserve the stored observation in that case instead of treating the incomplete payload
-    // as an explicit unread state and scheduling a spurious provider write-back.
+    // A payload without `isRead` keeps the stored flags instead of implying unread (and a
+    // spurious write-back).
     flags:
       resource.isRead === undefined
         ? undefined
@@ -236,15 +226,11 @@ class GraphApiError extends Error {
   }
 }
 
-/** A Graph recipient in the `emailAddress` shape that `createDraft` takes. */
 export interface GraphRecipient {
   emailAddress: { address: string; name?: string };
 }
 
-/**
- * The draft `createDraft` posts: the message without its attachments, which follow through upload sessions.
- * `internetMessageId` and the reply headers are set on the draft so that the sent copy keeps them.
- */
+/** Attachments follow via upload sessions; Message-ID and reply headers are set so the sent copy keeps them. */
 export interface GraphDraft {
   subject: string;
   body: { contentType: "html" | "text"; content: string };
@@ -255,7 +241,6 @@ export interface GraphDraft {
   internetMessageHeaders: { name: string; value: string }[];
 }
 
-/** One attachment of a draft, as `createUploadSession` describes it. */
 export interface GraphUploadAttachment {
   name: string;
   contentType: string;
@@ -265,41 +250,24 @@ export interface GraphUploadAttachment {
 }
 
 /**
- * The largest raw MIME `sendMime` takes. `sendMail` carries the MIME base64 encoded in a request of at most 4 MB.
- * Read as 4 000 000 bytes, the stricter of the two readings, and since base64 turns every 3 raw bytes into 4
- * characters, the largest raw message is 3 000 000 bytes. Larger messages take the draft path (graphTransport.ts).
+ * `sendMail` takes base64 MIME in a request of at most 4 MB (read strictly as 4 000 000 bytes), so
+ * raw MIME is capped at 3 000 000 bytes. Larger messages take the draft path.
  */
 export const GRAPH_SEND_MAIL_MAX_RAW_BYTES = 3_000_000;
 
 const WRITE_REQUEST_TIMEOUT_MS = 30_000;
-/** An upload chunk is larger than a metadata call, so its deadline is longer. */
 const UPLOAD_CHUNK_TIMEOUT_MS = 120_000;
-/** The most of a failed write's body that is read. It is read only to tell a refused recipient apart from other refusals. */
 const WRITE_ERROR_BODY_READ_LIMIT = 4_096;
-/**
- * The most of a successful write's JSON body that is read. A create response may carry the created message, body
- * included, so this limit sits well above what a draft id needs. A response over it fails the call instead of being cut short.
- */
+/** A create response may carry the whole created message; over this limit the call fails. */
 const WRITE_JSON_RESPONSE_LIMIT = 32 * 1024 * 1024;
-/**
- * Graph text that names a refused recipient. The wording is inferred from Graph's error codes; no live refusal has
- * been captured to confirm it, so a refusal worded differently is an ordinary failure.
- */
+/** Inferred wording (not confirmed against a live refusal); other wording is an ordinary failure. */
 const RECIPIENT_REFUSAL = /ErrorInvalidRecipients|invalid recipient/i;
 
-/**
- * Reads at most `limit` bytes of a response body and then releases the stream. Releasing is cleanup: its failure is
- * dropped, because the outcome of the read is what the caller needs.
- */
 async function readBodyUpTo(response: Response, limit: number): Promise<{ text: string; truncated: boolean }> {
   return privateSendOperation(() => readSendBody(response, limit));
 }
 
-/**
- * The error a refused Graph write with a bearer token becomes. A refusal that names an invalid recipient is
- * `MailRecipientRejectedError` whatever its status. Otherwise a 400 or 401 is `MailReauthorizationRequiredError`, and
- * any other status is an ordinary failure. The messages name neither the body nor any token.
- */
+/** Invalid recipient wins over status; 400/401 means reauthorization. Messages never include body or token. */
 async function writeFailure(response: Response): Promise<Error> {
   const { text } = await readBodyUpTo(response, WRITE_ERROR_BODY_READ_LIMIT);
   if (RECIPIENT_REFUSAL.test(text)) return new MailRecipientRejectedError();
@@ -309,7 +277,6 @@ async function writeFailure(response: Response): Promise<Error> {
   return new Error(`Microsoft Graph request failed with status ${response.status}`);
 }
 
-/** Parses the JSON object of a successful write. A body over the limit fails the call instead of being parsed short. */
 async function jsonObjectOf(response: Response, context: string): Promise<Record<string, unknown>> {
   const { text, truncated } = await readBodyUpTo(response, WRITE_JSON_RESPONSE_LIMIT);
   if (truncated) throw new Error(`${context} is over the ${WRITE_JSON_RESPONSE_LIMIT}-byte cap`);
@@ -331,13 +298,8 @@ function isHttpsUrl(value: string): boolean {
 }
 
 /**
- * Real `GraphMailClient` (graphReconcile.ts) over the Microsoft Graph REST API. CI never reaches
- * Microsoft: the semprec-api tests in `mailSyncAdapters.test.ts` run it against a fake Graph server
- * through `fetchImpl`, and the reconcile logic itself is tested against a fake client. `fetchImpl`
- * defaults to the global `fetch`. `internetMessageHeaders` is requested via `$select` (Graph has no
- * separate "which headers" query parameter — it must be a selected property, same as any
- * other field) specifically to recover `References`/`In-Reply-To`, which Graph doesn't
- * surface as first-class fields.
+ * `GraphMailClient` over Microsoft Graph. `internetMessageHeaders` is `$select`ed to recover
+ * `References`/`In-Reply-To`, which Graph does not expose as fields.
  */
 export class GraphRestClient implements GraphMailClient {
   constructor(
@@ -413,13 +375,7 @@ export class GraphRestClient implements GraphMailClient {
     return page?.value ?? [];
   }
 
-  /**
-   * Streams raw bytes directly from the response body — never materializes the attachment as
-   * one in-memory buffer, the same memory-safety property imapflow's `download()` gives the
-   * IMAP adapter. Unlike `download()`, `fetch`'s web stream has no built-in byte cap of its
-   * own, so a `MAX_ATTACHMENT_BYTES`-counting `Transform` is spliced into the returned stream
-   * — the same backstop the IMAP/Gmail adapters get from their own transports.
-   */
+  /** Streams the body without buffering; a counting `Transform` enforces `MAX_ATTACHMENT_BYTES`. */
   private async fetchAttachmentStream(messageId: string, attachmentId: string): Promise<Readable> {
     const token = await this.getAccessToken();
     let response: Response;
@@ -480,10 +436,7 @@ export class GraphRestClient implements GraphMailClient {
         });
       },
     });
-    // Plain `.pipe()` does not forward the source's own 'error' event to the destination — a
-    // dropped connection mid-transfer would otherwise leave `limiter` (and whatever later
-    // consumes it, e.g. blobStorage.ts's `pipeline()`) waiting forever instead of erroring out,
-    // the same class of bug this codebase already documents for imapflow's own download() path.
+    // `.pipe()` does not forward source errors; without this a dropped connection would hang consumers.
     source.on("error", (error: unknown) => {
       observed.push(error);
       limiter.destroy(new Error("Graph sync provider response could not be read"));
@@ -491,13 +444,7 @@ export class GraphRestClient implements GraphMailClient {
     return limiter;
   }
 
-  /**
-   * Graph's `/mailFolders` (and `/childFolders`) only ever return one level — nested folders
-   * need an explicit recursive walk, not a single `$expand`. `depth` bounds that walk: a real
-   * mailbox's folder tree is at most a handful of levels deep, so this is a defensive cap
-   * against a malformed/adversarial API response reporting `childFolderCount > 0` on every
-   * node, not a limit expected to ever bind in practice.
-   */
+  /** `/mailFolders` returns one level, so nesting needs a recursive walk; `depth` caps a malformed response. */
   private async listFoldersUnder(url: string, wellKnownIds: Map<string, string>, depth = 0): Promise<GraphFolderRef[]> {
     if (depth > 50) throw new Error("Graph mailFolders tree exceeded depth 50");
     const folders: GraphFolderRef[] = [];
@@ -585,7 +532,6 @@ export class GraphRestClient implements GraphMailClient {
     await response.body?.cancel();
   }
 
-  /** A write with a bearer token. A failed status becomes the error `writeFailure` classifies; a success returns the response. */
   private async writeRequest(
     url: string,
     init: { method: "POST" | "DELETE"; body?: string; contentType?: string },
@@ -606,10 +552,7 @@ export class GraphRestClient implements GraphMailClient {
     return response;
   }
 
-  /**
-   * Sends a complete RFC 5322 message with `POST /me/sendMail`, base64 encoded as Graph requires for MIME. Graph files
-   * the Sent copy itself and answers 202 with no body. The caller keeps `raw` within GRAPH_SEND_MAIL_MAX_RAW_BYTES.
-   */
+  /** Graph files the Sent copy itself and answers 202 with no body. */
   async sendMime(raw: Buffer): Promise<void> {
     if (raw.byteLength > GRAPH_SEND_MAIL_MAX_RAW_BYTES) throw new Error("Graph MIME exceeds the send body budget");
     const response = await this.writeRequest(`${BASE_URL}/sendMail`, {
@@ -625,7 +568,6 @@ export class GraphRestClient implements GraphMailClient {
     }
   }
 
-  /** Creates a draft that carries the Message-ID and the reply headers. Returns the draft's id. */
   async createDraft(draft: GraphDraft): Promise<{ id: string }> {
     const response = await this.writeRequest(`${BASE_URL}/messages`, {
       method: "POST",
@@ -637,10 +579,7 @@ export class GraphRestClient implements GraphMailClient {
     return { id: json.id };
   }
 
-  /**
-   * Opens an upload session for one attachment of a draft. Returns its upload URL. The URL must be HTTPS. One that is
-   * not is refused before any byte is sent to it.
-   */
+  /** A non-HTTPS upload URL is refused before any byte is sent to it. */
   async createUploadSession(draftId: string, attachment: GraphUploadAttachment): Promise<{ uploadUrl: string }> {
     const response = await this.writeRequest(
       `${BASE_URL}/messages/${encodeURIComponent(draftId)}/attachments/createUploadSession`,
@@ -666,11 +605,7 @@ export class GraphRestClient implements GraphMailClient {
     return { uploadUrl: json.uploadUrl };
   }
 
-  /**
-   * Writes one chunk of an upload session with `PUT`. `start` is the chunk's offset in the attachment and `total` is the
-   * attachment's size. An upload URL is pre-authenticated, so no bearer token is sent to it, and a refusal is an ordinary
-   * failure rather than a credential one.
-   */
+  /** Upload URLs are pre-authenticated: no bearer token is sent, and a refusal is not a credential failure. */
   async uploadChunk(uploadUrl: string, chunk: Buffer, start: number, total: number): Promise<void> {
     const response = await privateSendOperation(() =>
       this.fetchImpl(uploadUrl, {
@@ -694,7 +629,6 @@ export class GraphRestClient implements GraphMailClient {
     });
   }
 
-  /** Sends a draft with `POST /me/messages/{id}/send`. Graph files the sent copy itself. */
   async sendDraft(draftId: string): Promise<void> {
     const response = await this.writeRequest(`${BASE_URL}/messages/${encodeURIComponent(draftId)}/send`, {
       method: "POST",
@@ -707,7 +641,6 @@ export class GraphRestClient implements GraphMailClient {
     }
   }
 
-  /** Deletes a message, here a draft that a failed large send left behind. */
   async deleteMessage(messageId: string): Promise<void> {
     const response = await this.writeRequest(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
       method: "DELETE",

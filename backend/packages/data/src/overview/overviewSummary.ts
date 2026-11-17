@@ -1,6 +1,4 @@
-// Owns the assembly of the Overview summary: one read that calls the counting function of each owner and counts
-// nothing itself. It does not own any of those rules (Inbox, Mail, Tasks, Areas, Semp status, collection counts),
-// the creation of today's Journal entry, or the realtime invalidation of the summary.
+// Assembles the Overview summary from each owner's counting function; counts nothing itself.
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { currentTenantScope } from "@semprec/shared";
@@ -20,53 +18,41 @@ import { getSystemTimezone } from "../systemSettings.js";
 import { countTasksToday } from "../tasks/todayView.js";
 import { assertValidTimezone } from "../timezone.js";
 
-/** The number of active projects of one area, as the grouped `item.count` of issue gh-1760 reports it. */
 interface OverviewArea {
   id: string;
   activeProjectCount: number;
 }
 
-/** The item count of one collection database, with the module that owns the database. */
 interface OverviewCollection {
   databaseId: string;
   ownerModuleId: string;
   itemCount: number;
 }
 
-/** What `GET /api/overview` answers (issue gh-1837). */
+/** `GET /api/overview`. */
 export interface OverviewSummary {
-  /** `total` of `GET /api/inbox/cards/count`. */
   inboxPending: number;
-  /** `unreadInbox` of `GET /api/mail/summary`. */
   mailUnread: number;
-  /** The open tasks of the Tasks `today` view, as `countTasksToday` counts them. */
   tasksToday: number;
-  /**
-   * The areas with at least one active project, ordered by area id; an area without one has no entry, as it has no
-   * group in the grouped count this reads.
-   */
+  /** Only areas with at least one active project, ordered by area id. */
   areas: OverviewArea[];
-  /** The client-visible system databases, each counted with its collection filter. */
   collections: OverviewCollection[];
-  /** `activeCount` of `GET /api/semp-status/summary`. */
   problemCount: number;
-  /** The live Journal day item of today in the tenant time zone, `null` while it does not exist. */
+  /** `null` until today's Journal day item exists; this read never creates it. */
   journalTodayItemId: string | null;
 }
 
 export interface OverviewSummaryInput {
-  /** The signed-in user, whose pending approvals the Inbox count includes. It comes from the session. */
+  /** From the session; the Inbox count includes this user's pending approvals. */
   ownerUserId: string;
-  /** The clock the day, the relative dates and the Journal key are read at; defaults to the current time. */
   now?: Date;
 }
 
 let collectionMetadataResolverPromise: Promise<CollectionMetadataResolver> | undefined;
 
 /**
- * The resolver that tells which databases are collections, built once per process from the module registry that
- * `loadFullModuleRegistry` builds. The custom-route factory receives only the pool, so a handler cannot take the
- * composition root's registry. A failed build is not cached, so the next request retries.
+ * Built once per process because the custom-route factory receives only the pool, not the composition root's
+ * registry. A failed build is not cached, so the next request retries.
  */
 function getCollectionMetadataResolver(): Promise<CollectionMetadataResolver> {
   collectionMetadataResolverPromise ??= loadFullModuleRegistry()
@@ -78,12 +64,7 @@ function getCollectionMetadataResolver(): Promise<CollectionMetadataResolver> {
   return collectionMetadataResolverPromise;
 }
 
-/**
- * The id of the live Journal day item whose period key is today's date in the tenant time zone, or `null` when the
- * day has no entry yet. It only looks the item up, through the read the Journal routes use (which prefers the item
- * that the period's reservation points at when a duplicate exists); `getOrCreateJournalItem` stays the only path that
- * creates one.
- */
+/** Lookup only, via the Journal routes' read (which resolves duplicates); `getOrCreateJournalItem` alone creates. */
 async function findJournalTodayItemId(client: PoolClient, now: Date): Promise<string | null> {
   const journal = await getDatabaseByModuleId(client, JOURNAL_MODULE_ID);
   if (!journal) throw new Error("The Journal database is missing");
@@ -94,7 +75,7 @@ async function findJournalTodayItemId(client: PoolClient, now: Date): Promise<st
   return entries.get(period)?.item.id ?? null;
 }
 
-/** The answer for the entry at `index`; `countItemsBatch` answers every entry in input order, so a gap is a defect. */
+/** `countItemsBatch` answers every entry in input order, so a gap is a defect. */
 function countAt(counts: readonly ItemCountEntry[], index: number): ItemCountEntry {
   const count = counts[index];
   if (count === undefined) throw new Error(`item.count answered no entry for position ${index}`);
@@ -102,17 +83,9 @@ function countAt(counts: readonly ItemCountEntry[], index: number): ItemCountEnt
 }
 
 /**
- * The Overview summary of the tenant in scope. Every number is the result of the function its owner's own route
- * calls: the Inbox, Mail, Tasks and Semp status counts, the grouped `item.count` of the active projects, and one
- * batched `item.count` over the collections. The reads run in several transactions, one after the other, so two
- * numbers may be read at slightly different moments.
- *
- * A collection is a client-visible system database (one with an owning module), counted with its collection filter,
- * so the Projects collection leaves out the system projects. The areas are the groups of the Projects count grouped
- * by its `area` relation, restricted to the active projects of issue gh-1760. A tenant whose Journal, Tasks or
- * Projects database is missing has a broken seed: that is an error, not an empty Overview.
- *
- * It throws without a tenant scope, so an unscoped call can never look like an empty tenant.
+ * Each number comes from the same function its owner's route calls. Reads span several transactions, so numbers may
+ * be read at slightly different moments. A missing seeded database is an error, not an empty Overview, and an
+ * unscoped call throws so it can never look like an empty tenant.
  */
 export async function getOverviewSummary(pool: Pool, input: OverviewSummaryInput): Promise<OverviewSummary> {
   if (currentTenantScope()?.kind !== "tenant") throw new Error("getOverviewSummary requires an active tenant scope");
@@ -137,7 +110,7 @@ export async function getOverviewSummary(pool: Pool, input: OverviewSummaryInput
     };
   });
 
-  // The areas entry comes last, so the collection entries keep their positions.
+  // Areas entry last, so collection entries keep their indices.
   const entries: ItemCountEntryInput[] = [
     ...read.collections.map(({ databaseId }) => ({ databaseId, collection: true })),
     { databaseId: read.projectsDatabaseId, filter: ACTIVE_PROJECTS_FILTER, groupBy: "area" },

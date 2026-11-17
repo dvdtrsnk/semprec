@@ -1,17 +1,8 @@
 import type { Queryable } from "../db/pool.js";
 
 /**
- * `project_mcp_grants` (issue #124): whether a given project may invoke a given registered
- * MCP tool. New pairs default to `granted = false` — availability (`mcp_tool_registrations`)
- * and per-project visibility are independent facts, so registering a tool never implicitly
- * grants it anywhere.
- *
- * The user-only `setProjectMcpGrant` mutation lives in `mcpGrantsAdminStore.ts`, not here, and
- * is deliberately not re-exported from this package's `index.ts`: per this issue's acceptance
- * criteria, agents — including proposal confirmation — must have no write path to grants.
- * `agent-runtime` already depends on `@semprec/data`, so keeping the mutation off this
- * package's public surface (rather than relying on a doc comment alone) is what actually makes
- * it unreachable from there.
+ * New pairs default to `granted = false`: registering a tool never grants it anywhere. The mutation lives in
+ * `mcpGrantsAdminStore.ts`, off the public surface, so agents have no write path to grants.
  */
 export interface ProjectMcpGrant {
   projectItemId: string;
@@ -29,7 +20,7 @@ export interface ProjectMcpGrantRow {
   updated_at: string;
 }
 
-/** Exported for `mcpGrantsAdminStore.ts` only — not part of this package's public `index.ts` surface. */
+/** For `mcpGrantsAdminStore.ts` only; not exported from `index.ts`. */
 export function rowToGrant(row: ProjectMcpGrantRow): ProjectMcpGrant {
   return {
     projectItemId: row.project_item_id,

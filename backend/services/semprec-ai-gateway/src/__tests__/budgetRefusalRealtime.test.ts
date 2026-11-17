@@ -16,11 +16,9 @@ import { resolveStartupConfig, type StartupConfig } from "../startupConfig.js";
 import type { StructuredCompletionProvider } from "../structuredProviders/types.js";
 
 /**
- * Issue gh-2023: the gateway process announces the first refusal of a tenant's budget window as a Semp status
- * invalidation on the realtime channel. The process is composed by `createGatewayServer`, the function `serve.ts`
- * builds its server with, over a `semprec_side` pool, so a suite that fails to see a frame also fails when that
- * composition stops wiring the realtime hooks. NOTIFYs are read on a separate listener connection, and the order of
- * the statements a client sends is read at `Client.prototype.query`, which every pool path ends at.
+ * The first refusal of a budget window is announced as a Semp status invalidation. Composed through
+ * `createGatewayServer`, as `serve.ts` does, so this also fails if that stops wiring realtime hooks.
+ * Statement order is read at `Client.prototype.query`, which every pool path ends at.
  */
 
 const TOKEN = "test-internal-token";
@@ -41,7 +39,6 @@ let gateway: GatewayServer | undefined;
 let baseUrl: string;
 let providerCalls: number;
 
-/** The startup config of a deployment whose structured provider is a fake that counts its calls. */
 function startupConfig(): StartupConfig {
   const provider: StructuredCompletionProvider = {
     id: "anthropic",
@@ -124,7 +121,6 @@ async function completeFor(tenantId: string): Promise<{ status: number; body: un
   return { status: res.status, body };
 }
 
-/** A tenant whose daily cap is 1 USD, `spentUsd` of which is used. */
 async function tenantWithDailyCap(spentUsd: number): Promise<string> {
   const tenantId = await createTestTenant(adminPool);
   await setTenantAiBudget(adminPool, tenantId, { dailyCapUsd: 1 });
@@ -171,10 +167,7 @@ function recordStatements(): { texts: string[]; stop: () => void } {
   return { texts, stop: () => spy.mockRestore() };
 }
 
-/**
- * Makes the next `failures` NOTIFYs sent through the pool the realtime hooks were wired over fail the way a dropped
- * connection does, and counts every NOTIFY the pool is asked to send. Every other statement passes through.
- */
+/** Fails the next `failures` NOTIFYs like a dropped connection and counts every NOTIFY. */
 function failNextNotifies(failures: number): { attempts: () => number } {
   let attempts = 0;
   let remaining = failures;

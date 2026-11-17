@@ -30,13 +30,9 @@ export const manifest: ModuleManifest = {
   databases: [],
   capabilities: [],
   agentTools: [],
-  // The union cases use the real `fileCompaniesFromProjects` rule of the systemDatabases manifest (issue #1653),
-  // which replaced the fixture rule over the same three properties. The conflict case uses the real
-  // `taskProjectFromEvent` rule (issue #1724): the fixture rule it replaced ran the other way over the same edge,
-  // from `Tasks.project` to `Events.project`, and the two together would be a cycle. The single-value case runs
-  // from the many-valued `Files.area` into the one-valued `Events.area`: the fixture rule it replaced ran from
-  // `Files.projects` into `Tasks.project` over `Tasks.files`, the other way of the real rule
-  // `fileProjectsFromTasks` (issue #1702), and the two together would be a cycle.
+  // The union cases use the real `fileCompaniesFromProjects` rule. The conflict case uses the real
+  // `taskProjectFromEvent` rule. The single-value case runs from the many-valued `Files.area` into the
+  // one-valued `Events.area`, avoiding a cycle with the real `fileProjectsFromTasks` rule.
   linkRules: [
     {
       key: "fixtureProposal.eventName",
@@ -167,8 +163,8 @@ describe("value link via-edge union", () => {
         sourceItemId: firstProject.id,
         hop: 1,
       });
-      // Issue #1656: the trash detached the first project only. The link keeps the second project as
-      // its source, the inherited companies stay, and the queued propagation reaches no link.
+      // The trash detached the first project only. The link keeps the second project as its source, the
+      // inherited companies stay, and the queued propagation reaches no link.
       const remaining = (await cp.listItemRelations(otherFile.id))
         ?.filter((edge) => edge.relationPropertyId === targetProperty)
         .map((edge) => edge.targetItemId)
@@ -182,7 +178,7 @@ describe("value link via-edge union", () => {
         ),
       );
       expect(sources.rows).toEqual([{ source_item_id: secondProject.id, state: "on" }]);
-      // R1 P6: a later propagation from the remaining source recomputes the link from that source alone.
+      // A later propagation from the remaining source recomputes the link from that source alone.
       await handleLinkPropagation(data, {
         ruleKey: "fileCompaniesFromProjects",
         sourceItemId: secondProject.id,
@@ -272,7 +268,7 @@ describe("value link via-edge union", () => {
         return db.id;
       });
       const items = [];
-      // Index 3 is Events, whose create requires a date (issue #1663).
+      // Index 3 is Events, whose create requires a date.
       for (const [index, databaseId] of ids.entries())
         items.push(
           await cp.createItem({

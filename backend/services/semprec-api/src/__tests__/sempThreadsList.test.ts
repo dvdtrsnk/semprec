@@ -67,7 +67,7 @@ interface Session {
   headers: Record<string, string>;
 }
 
-/** A tenant with its user and that user's bearer session; `seed` adds the system databases. */
+/** `seed` adds the system databases. */
 async function tenantSession(options: { locale?: string; seed?: boolean } = {}): Promise<Session> {
   const tenant = await createTestTenant(admin);
   const email = `${randomUUID()}@example.test`;
@@ -102,7 +102,6 @@ function byId(rows: readonly ListRow[], id: string): ListRow {
   return row;
 }
 
-/** Sends the first message of a new thread through the production route and returns the thread id. */
 async function startThread(session: Session, text: string, inboxItemId?: string): Promise<string> {
   const response = await fetch(`${baseUrl}/api/semp/threads`, {
     method: "POST",
@@ -139,7 +138,6 @@ async function createProject(session: Session, properties: Record<string, unknow
   });
 }
 
-/** A heartbeat of `projectItemId` and its tick thread, both through their production writers. */
 async function createTickThread(
   session: Session,
   projectItemId: string,
@@ -159,7 +157,7 @@ async function createTickThread(
   );
 }
 
-/** The stored title of a thread and its row version: `xmin` changes with every write to the row. */
+/** `xmin` changes with every write to the row. */
 async function storedThread(session: Session, threadId: string): Promise<{ title: string | null; version: string }> {
   const { rows } = await runInTenant(session.tenant, () =>
     pool.query<{ title: string | null; version: string }>(
@@ -181,7 +179,6 @@ async function decide(session: Session, approvalRequestId: string, decision: "ap
   expect(response.status).toBe(200);
 }
 
-/** Every page of the list for `filter`, read with `limit` by following `nextCursor` until it is null. */
 async function drain(session: Session, limit: number, filter = ""): Promise<ListRow[][]> {
   const pages: ListRow[][] = [];
   let cursor: string | null = null;
@@ -204,7 +201,6 @@ async function setChatTitle(session: Session, threadId: string, title: string): 
   expect(updated.rowCount).toBe(1);
 }
 
-/** Sends a further message to a thread through the production route. */
 async function sendMessage(session: Session, threadId: string, text: string): Promise<void> {
   const response = await fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, {
     method: "POST",
@@ -214,7 +210,6 @@ async function sendMessage(session: Session, threadId: string, text: string): Pr
   expect(response.status).toBe(202);
 }
 
-/** The ids of the threads the list returns for `q`, in list order. */
 async function search(session: Session, q: string, filter = ""): Promise<string[]> {
   return (await list(session, `?q=${encodeURIComponent(q)}${filter}`)).rows.map((row) => row.id);
 }
@@ -337,7 +332,7 @@ describe("GET /api/semp/threads (issue #1729)", () => {
     });
     expect(byId(withGeneric.rows, quietId)).toMatchObject({ hasPendingApproval: false, pendingApproval: null });
 
-    // A request of an outside MCP tool, created later and without a description, as before issue #1683.
+    // An outside MCP tool request, created later and without a description.
     const mcpId = await runInTenant(session.tenant, async () => {
       const request = await createPendingApprovalRequest(pool, {
         agentRunId: requests.delegatedRunId,
@@ -353,7 +348,6 @@ describe("GET /api/semp/threads (issue #1729)", () => {
       pendingApproval: { description: null, sourceKind: "mcpInvoke" },
     });
 
-    // A request of a module agent tool (issue #1791), created last and so the newest.
     const moduleToolDescription = { key: "approval.moduleTool", params: { toolName: "gated.apply" } };
     const moduleToolId = await runInTenant(session.tenant, async () => {
       const request = await createPendingApprovalRequest(pool, {
@@ -371,7 +365,7 @@ describe("GET /api/semp/threads (issue #1729)", () => {
       pendingApproval: { description: moduleToolDescription, sourceKind: "moduleTool" },
     });
 
-    // A request of an agent's mail send (issue gh-1913), created last: a request of the module tool family too.
+    // An agent's mail send, created last: also a request of the module tool family.
     const mailSendDescription = { key: "approval.emailSend", params: { mailboxName: "Personal", recipientCount: 2 } };
     const mailSendId = await runInTenant(session.tenant, async () => {
       const request = await createPendingApprovalRequest(pool, {
@@ -417,7 +411,6 @@ describe("GET /api/semp/threads (issue #1729)", () => {
     await decide(session, requests.genericId, "rejected");
     const decided = byId((await list(session)).rows, threadId);
     expect(decided).toMatchObject({ hasPendingApproval: false, pendingApproval: null });
-    // The rejection wrote its outcome into the thread as a system message, which is now the last one.
     expect(decided.preview).toEqual({ key: "approval.outcome.rejected", params: description.params });
   });
 
@@ -432,7 +425,6 @@ describe("GET /api/semp/threads (issue #1729)", () => {
     expect(before.item.title).toBeNull();
 
     expect(byId((await list(session, "?kind=tick")).rows, tick.threadId).title).toBe("Morning check");
-    // The user's locale is the column default, cs.
     expect(byId((await list(session)).rows, itemId).title).toBe("Úprava: Buy milk");
 
     await runInTenant(session.tenant, async () => {
@@ -526,7 +518,7 @@ describe("GET /api/semp/threads (issue #1729)", () => {
       session,
       "# Shopping **list**\n- [ ] buy *milk*\n- see [the note](https://example.test/note) and `code`",
     );
-    // The link ends inside the 1000 code points the list reads, so what is visible of them is short; the text goes on.
+    // The link ends inside the 1000 code points the list reads, so what is visible of them is short.
     const hiddenLink = `[doc](https://example.test/${"a".repeat(900)})`;
     const cutId = await startThread(session, `${hiddenLink} ${"word ".repeat(100)}`);
 
@@ -544,7 +536,7 @@ describe("GET /api/semp/threads (issue #1729)", () => {
     const third = await startThread(session, "three");
     const fourth = await startThread(session, "four");
     const fifth = await startThread(session, "five");
-    // Raw SQL: no production write gives two threads the same activity instant, or instants one microsecond apart.
+    // Raw SQL: no production write gives two threads the same instant, or instants one microsecond apart.
     const instants = new Map([
       [first, "2026-03-01T10:00:00.000002Z"],
       [second, "2026-03-01T10:00:00.000001Z"],
@@ -561,11 +553,10 @@ describe("GET /api/semp/threads (issue #1729)", () => {
         expect(updated.rowCount).toBe(1);
       }
     });
-    // Equal instants are ordered by id descending; Postgres compares uuids as their hex text compares.
+    // Equal instants are ordered by id descending, as Postgres compares uuids as hex text.
     const tied = [third, fourth].sort().reverse();
     const expected = [first, second, ...tied, fifth];
 
-    // Limit 1 puts a page boundary between the two instants one microsecond apart, limits 1 and 3 between the tied rows.
     for (const [limit, pageSizes] of [
       [1, [1, 1, 1, 1, 1]],
       [2, [2, 2, 1]],
@@ -585,7 +576,6 @@ describe("GET /api/semp/threads (issue #1729)", () => {
       expect(times).toEqual([...times].sort((left, right) => right - left));
     }
 
-    // A page that ends exactly at the last row has no cursor; one row short of it has one.
     expect((await list(session, "?limit=5")).nextCursor).toBeNull();
     const four = await list(session, "?limit=4");
     expect(four.rows.map((row) => row.id)).toEqual(expected.slice(0, 4));
@@ -612,7 +602,6 @@ describe("GET /api/semp/threads (issue #1729)", () => {
     expect(all.rows).toHaveLength(51);
     expect([...firstPage.rows, ...secondPage.rows].map((row) => row.id)).toEqual(all.rows.map((row) => row.id));
     expect(new Set(all.rows.map((row) => row.id)).size).toBe(51);
-    // A thread without a message has no preview.
     expect(all.rows.every((row) => row.preview === null && row.title === null)).toBe(true);
   });
 
@@ -628,7 +617,6 @@ describe("GET /api/semp/threads (issue #1729)", () => {
     expect(found.rows.map((row) => row.id)).toEqual([firstThread]);
     expect(found.rows[0]?.subject).toEqual({ inboxItemId: firstItem, proposalId: null, exists: true });
     expect((await list(session, `?subjectInboxItemId=${randomUUID()}`)).rows).toEqual([]);
-    // The filters combine: the item thread is not a chat.
     expect((await list(session, `?kind=chat&subjectInboxItemId=${firstItem}`)).rows).toEqual([]);
   });
 
@@ -665,7 +653,6 @@ describe("GET /api/semp/threads (issue #1729)", () => {
       expect(response.status, query).toBe(400);
       expect(await response.json(), query).toMatchObject({ error: { code: "validation_failed", details: { field } } });
     }
-    // A well-formed cursor of a position that holds no row is an empty page, not an error.
     const valid = await list(session, `?cursor=${encodeCursor(`2026-03-01T10:00:00.000000Z|${id}`)}`);
     expect(valid).toEqual({ rows: [], nextCursor: null });
   });
@@ -726,11 +713,9 @@ describe("GET /api/semp/threads (issue #1729)", () => {
     const otherRows = (await list(other, "?kind=chat,item,tick")).rows;
     expect(otherRows.map((row) => row.id).sort()).toEqual([otherChat, otherTick.threadId].sort());
     expect(otherRows.every((row) => !row.hasPendingApproval)).toBe(true);
-    // The owner's Inbox item answers the other tenant exactly as an id that does not exist.
     expect(await list(other, `?subjectInboxItemId=${ownerInboxItem}`)).toEqual(
       await list(other, `?subjectInboxItemId=${randomUUID()}`),
     );
-    // A cursor taken from the owner's list positions the other tenant's list and reveals nothing.
     const ownerPage = await list(owner, "?kind=chat,item,tick&limit=1");
     expect(ownerPage.nextCursor).not.toBeNull();
     const continued = await list(other, `?kind=chat,item,tick&cursor=${ownerPage.nextCursor}`);
@@ -761,11 +746,10 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     const itemThread = await startThread(session, "Zpracuj to", inboxItemId);
 
     expect(await search(session, "ranni", "&kind=tick")).toEqual([tick.threadId]);
-    // Without `kind` the list holds chats and item threads only.
     expect(await search(session, "ranni")).toEqual([]);
     expect(await search(session, "fakturu")).toEqual([itemThread]);
     expect(await search(session, "fakturu", "&kind=tick")).toEqual([]);
-    // The item title is "Úprava: Zaplatit fakturu"; the words of the template are not what is searched.
+    // The template's words are not what is searched.
     expect(byId((await list(session)).rows, itemThread).title).toBe("Úprava: Zaplatit fakturu");
     expect(await search(session, "uprava")).toEqual([]);
 
@@ -782,7 +766,6 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     expect(await search(session, "listky")).toEqual([itemThread]);
     expect(await search(session, "fakturu")).toEqual([]);
 
-    // An Inbox item in the trash gives the thread no title, so its text no longer matches.
     await runInTenant(session.tenant, async () =>
       createChokePoint(pool).softDeleteItem(await inboxDatabaseId(session), inboxItemId),
     );
@@ -795,11 +778,10 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     const inside = await startThread(session, `${"😀".repeat(135)}zebra and the rest`);
     await startThread(session, `${"😀".repeat(136)}zebra and the rest`);
     await startThread(session, `${"word ".repeat(40)}zebra`);
-    // An earlier message of a thread is not its preview.
     const earlier = await startThread(session, "zebra at the start");
     await sendMessage(session, earlier, "a later message without it");
 
-    // "ebra" is no word and no word start, so only the substring rule of the title and the preview applies.
+    // "ebra" is no word and no word start, so only the substring rule applies.
     expect(await search(session, "ebra")).toEqual([inside]);
     expect(await search(session, "later message")).toEqual([earlier]);
   });
@@ -837,20 +819,19 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     const backslash = await startThread(session, "Cesta C:\\temp");
     await startThread(session, "Cesta C:/temp");
 
-    // A q with no word has no word rule (issue #1783), so only the substring rule can match it.
+    // A q with no word has no word rule, so only the substring rule can match it.
     expect(await search(session, "%")).toEqual([percent]);
     expect(await search(session, "_")).toEqual([underscore]);
     expect(await search(session, "\\")).toEqual([backslash]);
-    // A q with words also finds the threads that hold them (issue #1783): "100" is a word of both
-    // Sleva threads. The text parser reads "C:/temp" as a path, so the word "temp" is not in the second
-    // Cesta thread. The pattern of the substring rule treats % and the backslash as themselves, which
-    // the symbol-only q above prove.
+    // A q with words also finds threads holding them: "100" is a word of both Sleva threads. The text parser
+    // reads "C:/temp" as a path, so "temp" is not a word of the second Cesta thread. The substring pattern treats
+    // % and the backslash as themselves.
     expect(await search(session, "100%")).toEqual([percentDecoy, percent]);
     expect(await search(session, "snake_case")).toEqual([underscore]);
     expect(await search(session, "C:\\temp")).toEqual([backslash]);
 
-    // unaccent folds these fullwidth and small forms to %, _ and a backslash. The folded character is
-    // matched as itself too, never as a wildcard or as an escape of the character after it.
+    // unaccent folds these fullwidth and small forms to %, _ and a backslash, matched as themselves, never as a
+    // wildcard or an escape.
     for (const q of ["\uFF05", "\uFE6A"]) expect(await search(session, q), q).toEqual([percent]);
     expect(await search(session, "100\uFF05")).toEqual([percentDecoy, percent]);
     expect(await search(session, "\uFF3F")).toEqual([underscore]);
@@ -863,16 +844,14 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     const session = await tenantSession({ seed: false });
     const cafe = await startThread(session, "Kavárna u nádraží");
     await startThread(session, "Knihovna u parku");
-    // A thread without a title or a text preview: a filter that matches every text would drop it.
+    // A filter that matches every text would drop a thread without a title or preview.
     await runInTenant(session.tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
     const withoutQ = await list(session);
     expect(withoutQ.rows).toHaveLength(3);
 
-    // unaccent removes a combining mark, so nothing of these values is left to search for.
     for (const q of ["\u0301", "\u0301\u030C"]) {
       expect(await list(session, `?q=${encodeURIComponent(q)}`), q).toEqual(withoutQ);
     }
-    // A combining mark next to a letter leaves the letter, and that is searched.
     expect(await search(session, "kava\u0301rna")).toEqual([cafe]);
   });
 
@@ -905,7 +884,7 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     expect(await search(session, "report", `&subjectInboxItemId=${firstItem}`)).toEqual([firstItemThread]);
     expect(await search(session, "cesty", `&subjectInboxItemId=${firstItem}`)).toEqual([]);
 
-    // The filter is applied before the page is cut: every page is full until the matches run out.
+    // The filter is applied before the page is cut.
     for (const [limit, pageSizes] of [
       [1, [1, 1, 1, 1, 1, 1]],
       [4, [4, 2]],
@@ -965,7 +944,7 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     const session = await tenantSession({ seed: false });
     await startThread(session, "První");
     await startThread(session, "Druhý");
-    // A thread without a title or a text preview: a blank q read as a filter that matches every text would drop it.
+    // A blank q read as a filter matching every text would drop a thread without a title or preview.
     await runInTenant(session.tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
     const withoutQ = await list(session);
     expect(withoutQ.rows.map((row) => [row.title, row.preview])).toEqual([
@@ -977,7 +956,7 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
       expect(await list(session, query), query).toEqual(withoutQ);
     }
 
-    // The cap counts code points of the trimmed text: 100 astral characters pass, with or without blanks around them.
+    // The cap counts code points of the trimmed text.
     const longest = "😀".repeat(100);
     expect(await list(session, `?q=${encodeURIComponent(longest)}`)).toEqual({ rows: [], nextCursor: null });
     expect(await list(session, `?q=${encodeURIComponent(`  ${longest}  `)}`)).toEqual({ rows: [], nextCursor: null });
@@ -1018,14 +997,13 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     });
     expect(await search(session, "uklid")).toEqual([threadId]);
 
-    // The rejection writes a system message, which becomes the preview: its key and parameters are not searched.
+    // The rejection's system message becomes the preview; its key and parameters are not searched.
     await decide(session, requestId, "rejected");
     expect(byId((await list(session)).rows, threadId).preview).toEqual({
       key: "approval.outcome.rejected",
       params: { serverName: "Zebra mail", toolName: "send_email" },
     });
     for (const q of ["zebra", "rejected", "approval"]) expect(await search(session, q), q).toEqual([]);
-    // The user message before it is still searched, as a message and no longer as the preview.
     expect(await search(session, "uklid")).toEqual([threadId]);
   });
 

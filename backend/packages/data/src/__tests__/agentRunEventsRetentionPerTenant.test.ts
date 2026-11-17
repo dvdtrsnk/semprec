@@ -17,10 +17,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 let adminPool: Pool;
 let pool: Pool;
-/**
- * Each tenant's own user, created on first use. A run's actor must be its own tenant's user
- * (`agent_runs_actor_user_id_tenant_fkey`, issue #1066), so one account cannot act in two tenants.
- */
+/** Each tenant's own user, created on first use: a run's actor must be its own tenant's user. */
 const usersByTenant = new Map<string, string>();
 async function userOf(tenantId: string): Promise<string> {
   const existing = usersByTenant.get(tenantId);
@@ -36,7 +33,6 @@ async function userOf(tenantId: string): Promise<string> {
 
 type Conversation = { runId: string; pre: string[]; checkpoint: string; post: string[] };
 
-/** All event ids of `runId`, read inside `tenantId` so row-level security applies. */
 async function eventIds(tenantId: string, runId: string): Promise<string[]> {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ id: string }>(

@@ -14,15 +14,12 @@ import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
 /**
- * Handles `GET /api/schema` for issue #147: the localized, system-wide projection of every
- * database/property/option, view type, and module-declared agent tool — the API-response
- * counterpart to `generatePermissionManifest`'s per-project manifest, sharing the same
- * `catalogResolution.ts` resolver so both projections resolve labels identically.
+ * The localized, system-wide projection of every database, property, option, view type and module
+ * agent tool, sharing `catalogResolution.ts` with `generatePermissionManifest` so both resolve
+ * labels identically.
  *
- * Locale comes strictly from the authenticated caller's `users.locale` (`identity.user.locale`)
- * — there is deliberately no query or body parameter to override it, so a caller can never see
- * another user's locale by asking for it, and a client always gets back the same language its
- * account is configured for.
+ * Locale comes only from the caller's `users.locale`; there is deliberately no parameter to
+ * override it.
  */
 export function createSchemaRequestListener(
   pool: Pool,
@@ -41,7 +38,7 @@ export function createSchemaRequestListener(
 
       await runInTenant(identity.tenantId, async () => {
         if (req.method !== "GET") {
-          // RFC 7231 §6.5.5: a 405 response MUST include an Allow header listing the permitted methods.
+          // RFC 7231 §6.5.5: a 405 response must include an Allow header.
           res.setHeader("Allow", "GET");
           sendJson(res, 405, { error: "Method not allowed" });
           return;
@@ -49,11 +46,10 @@ export function createSchemaRequestListener(
 
         const locale = toManifestLocale(identity.user.locale);
 
-        // Issue #1597: each system database's declared area filter template, so a client substitutes an
-        // area id instead of assembling the per-database rule itself. A template is published only once the
-        // filter compiler accepted it against this tenant's schema, in the projection's own transaction; a
-        // refused one fails the whole request (500) rather than being published or silently dropped.
-        // Omitted for a database without one.
+        // Each system database's declared area filter template, so a client substitutes an area id
+        // instead of assembling the rule. A template is published only once the filter compiler
+        // accepted it against this tenant's schema in the projection's transaction; a refused one
+        // fails the request (500) rather than being published or dropped.
         const { projection, areaFilters } = await withTransaction(pool, async (client) => ({
           projection: await generateSchemaProjection(client, moduleRegistry, { locale }),
           areaFilters: await resolveDatabaseAreaFilters(client, await moduleRegistry.getDatabases()),
@@ -77,9 +73,8 @@ export function createSchemaRequestListener(
   }
 
   /**
-   * Same reasoning as `authHandler.ts`'s wrapper: an `async` listener handed straight to
-   * `http.createServer` turns any rejection escaping the try/catch above into an unhandled
-   * rejection, which Node answers by exiting the whole process over one bad request.
+   * `http.createServer` discards the listener's return value, so an async rejection would exit the
+   * process over one bad request.
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {

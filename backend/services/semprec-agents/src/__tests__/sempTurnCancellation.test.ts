@@ -53,11 +53,7 @@ vi.mock("@semprec/agent-runtime", async (importOriginal) => {
   };
 });
 
-/**
- * Cancelling one running Semp turn (issue #2019), through the real notification, the real listener wiring of
- * `serve.ts`, the real queue runtime, the real turn handler and the real agent session; only the model is a faux
- * provider. Everything runs on the runtime role pool.
- */
+/** Everything is real except the faux model; runs on the runtime role pool. */
 
 let admin: Pool;
 let pool: Pool;
@@ -402,8 +398,7 @@ describe("cancelling one running Semp turn", () => {
     };
     const fixture = await createMcpFixture(tenantA, userA, "events");
     const prompts: string[] = [];
-    // The aborted turn may still ask the model once more for the failed tool result before it notices the abort, so
-    // every later call is answered by the same step, and only the calls that carry the next request are recorded.
+    // The aborted turn may call the model once more before noticing; only calls carrying the next request are recorded.
     const answer: FauxResponseStep = (context) => {
       const serialized = JSON.stringify(context.messages);
       if (serialized.includes("ask again")) prompts.push(serialized);

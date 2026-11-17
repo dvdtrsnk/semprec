@@ -14,29 +14,22 @@ import type { PushSubscriptionRow } from "../push/types.js";
 
 const logger = createLogger("sleep");
 
-/** The name of the job this module declares in `sleepModuleManifest.ts` (issue gh-1838). */
 export const SLEEP_RESYNC_TASK_NAME = "sleep.resync";
 
-/** How long after a sleep change the push is sent; a change inside the window moves the push to its own end. */
+/** A change inside the window moves the push to the window's end. */
 export const SLEEP_RESYNC_DELAY_MS = 30_000;
 
-/** The silent push the iOS registrations receive: the device then reads `GET /api/sleep/nights` again. */
+/** The device then reads `GET /api/sleep/nights` again. */
 const SLEEP_RESYNC_PUSH_DATA = { kind: "sleepResync" } as const;
 
-/**
- * The payload of a `sleep.resync` job: the tenant whose sleep data changed, and nothing else. The handler does not
- * take its tenant from it; it runs in the tenant of the job's envelope and checks that the payload names that one.
- */
+/** The handler runs in the envelope's tenant and only checks the payload names that one. */
 export const sleepResyncPayloadSchema = z.strictObject({ tenantId: z.uuid() });
 
 type SleepResyncPayload = z.infer<typeof sleepResyncPayloadSchema>;
 
 /**
- * Enqueues the `sleep.resync` job of `tenantId` on `client`, so it commits or rolls back with the write that
- * changed the sleep data. The job key is `sleep-resync:<tenantId>` with `jobKeyMode: "replace"` and a run time
- * `SLEEP_RESYNC_DELAY_MS` from now, so a job still waiting is replaced and its run time moves: any number of
- * changes inside the window leave one pending job, and one push goes out `SLEEP_RESYNC_DELAY_MS` after the last.
- * A job that is running when the next change arrives is not replaced; the change queues a second job.
+ * Enqueued on the write's client, so it commits or rolls back with it. `jobKeyMode: "replace"` debounces: changes
+ * inside the window leave one pending job; a job already running is not replaced, so a second one queues.
  */
 export async function enqueueSleepResync(client: PoolClient, tenantId: string): Promise<void> {
   await enqueueJob(client, SLEEP_RESYNC_TASK_NAME, { tenantId } satisfies SleepResyncPayload, {
@@ -46,32 +39,22 @@ export async function enqueueSleepResync(client: PoolClient, tenantId: string): 
   });
 }
 
-/** Runs `fn` on a pooled client of the job's tenant scope and releases the client afterwards. */
 type SleepResyncClientRunner = <T>(fn: (client: PoolClient) => Promise<T>) => Promise<T>;
 
-/** Sends the silent push to one iOS registration; the seam that tests replace. */
+/** Test seam. */
 export type SleepResyncSender = (target: ApnsTarget, data: typeof SLEEP_RESYNC_PUSH_DATA) => Promise<PushSendResult>;
 
-/** An active registration of an iPhone or iPad: an APNs registration on platform `ios` that is not revoked. */
 function isActiveIosRegistration(registration: PushSubscriptionRow): boolean {
   return registration.channel === "apns" && registration.platform === "ios" && registration.revokedAt === null;
 }
 
 /**
- * The job's work (issue gh-1838): one silent background push `{ kind: "sleepResync" }` to every active iOS APNs
- * registration of the user of the job's tenant. A macOS, a Web Push and a revoked registration get nothing, and a
- * tenant without a user or without a registration is a successful no-op. The registrations are read first and
- * the sends run on no client, so no connection is held across a network call.
+ * Silent push to every active iOS APNs registration of the tenant's user. Registrations are read first and sends
+ * run on no client, so no connection is held across a network call. No `notifications`/`push_deliveries` row.
  *
- * Every registration is tried. A `permanent-failure` revokes that registration through
- * `revokePushSubscriptionByProviderInvalidation`. `not-configured` neither revokes nor retries, because the gap is
- * the server's; it is logged once. A `transient-failure` is thrown after the other registrations were tried, so
- * the queue runs the job again and the retry sends to every active registration again; a repeated silent push is
- * harmless to the device. No `notifications` and no `push_deliveries` row is written.
- *
- * `payload` must name the tenant of the job's own scope (`currentTenantScope()`), which is the tenant the queue
- * stamped at enqueue. A payload that names another tenant, or a run outside a tenant scope, sends nothing and
- * is logged with ids only. A payload that is not `{ tenantId }` fails the job.
+ * `permanent-failure` revokes the registration; `not-configured` is the server's gap and is logged once without
+ * revoke or retry; transient failures are thrown after all were tried so the job retries (a repeated silent push
+ * is harmless). A payload naming a tenant other than the job's scope sends nothing.
  */
 export async function runSleepResync(
   payload: unknown,
@@ -126,11 +109,7 @@ export async function runSleepResync(
   }
 }
 
-/**
- * The handler of the `sleep.resync` module task (`sleepModuleManifest.ts`): `runSleepResync` on the clients of
- * the queue worker's pool, which `registerTask` has put in the tenant scope of the job's envelope. The queue
- * passes the payload already parsed with `sleepResyncPayloadSchema`; `runSleepResync` parses it again.
- */
+/** The worker has put the client in the envelope's tenant scope; `runSleepResync` re-parses the payload. */
 export const handleSleepResync: Task = async (payload, helpers) => {
   await runSleepResync(payload, (fn) => helpers.withPgClient(fn));
 };

@@ -50,7 +50,6 @@ async function itemCount(databaseId: string): Promise<number> {
   return rows[0].n;
 }
 
-/** The Journal day items an Inbox item is linked to through its `journalDay` edges, one entry per edge. */
 async function journalDayIdsOf(itemId: string): Promise<string[]> {
   return inTenantZero(() =>
     withTransaction(pool, async (client) => {
@@ -64,7 +63,7 @@ async function journalDayIdsOf(itemId: string): Promise<string[]> {
   );
 }
 
-/** Keys of the pending Journal-day recompute jobs, read from graphile-worker's private job tables as `inboxTickRecompute.test.ts` does. */
+/** Keys of the pending Journal-day recompute jobs, read from graphile-worker's private job tables. */
 async function pendingRecomputeJobKeys(): Promise<string[]> {
   const { rows } = await pool.query<{ key: string }>(
     `SELECT j.key
@@ -76,7 +75,6 @@ async function pendingRecomputeJobKeys(): Promise<string[]> {
   return rows.map((row) => row.key).sort();
 }
 
-/** The hook's refusal: a 400 `validation_failed` that names the failing field. */
 function refusalFor(field: "date" | "time") {
   return { status: 400, code: "validation_failed", details: { field } };
 }

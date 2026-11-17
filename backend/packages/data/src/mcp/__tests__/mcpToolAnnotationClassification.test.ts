@@ -25,9 +25,8 @@ describe("classifyMcpToolFromAnnotations (issue gh-1979)", () => {
     ],
     ["an annotations object with no hint at all: the MCP default is destructive", {}, DESTRUCTIVE],
     [
-      // The first acceptance criterion of gh-1979 words this case as "only openWorldHint: true gives outbound". The
-      // ordered mapping of its Context decides otherwise: rule 2 comes before rule 3, and an absent destructiveHint
-      // is the MCP default true. Outbound needs destructiveHint explicitly false (the row after the next).
+      // Rule 2 precedes rule 3 and an absent destructiveHint is the MCP default true, so outbound needs destructiveHint
+      // explicitly false (the row after the next).
       "only openWorldHint true: the MCP default of destructiveHint (true) wins over it",
       { openWorldHint: true },
       DESTRUCTIVE,

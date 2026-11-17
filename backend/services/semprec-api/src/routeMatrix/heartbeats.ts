@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/heartbeats` path family. */
 export const HEARTBEATS_ROUTES: RouteMatrixEntry[] = [
   {
     name: "trigger heartbeat",

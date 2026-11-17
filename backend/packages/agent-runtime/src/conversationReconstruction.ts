@@ -11,10 +11,7 @@ import type { CompactionAdapter } from "./compaction.js";
 import { redactReplayedToolCalls } from "./sensitiveMessageRedaction.js";
 import type { AgentMessage, AgentMessageKind, ConversationEntry } from "./types.js";
 
-/**
- * Lifecycle bookkeeping only, never conversation content pi-agent-core needs to resume — the
- * live realtime channel (`pushRunStatus`) is `run_status`'s only real consumer.
- */
+/** Lifecycle bookkeeping, never conversation content; `run_status` is consumed only by the realtime channel. */
 const NON_CONVERSATIONAL_KINDS: ReadonlySet<string> = new Set(["run_status"]);
 
 const AGENT_MESSAGE_KINDS: ReadonlySet<string> = new Set<AgentMessageKind>([
@@ -44,10 +41,8 @@ function isAgentMessage(value: unknown): value is AgentMessage {
 }
 
 /**
- * `agent_run_events.payload` is only ever written by this codebase's own turn loop, but this is
- * the first code to read it back as structured data rather than replay it verbatim — a payload
- * from a stale writer version or a hand-edited row must fail loudly here rather than silently
- * corrupt the `Entry[]` tree handed to pi-agent-core.
+ * A payload from a stale writer version or a hand-edited row must fail loudly here rather than corrupt the `Entry[]`
+ * tree handed to pi-agent-core.
  */
 function parseStoredAgentMessage(payload: unknown, eventId: string): AgentMessage {
   if (!isAgentMessage(payload)) {
@@ -72,7 +67,6 @@ function isConversationEntry(value: unknown): value is ConversationEntry {
   );
 }
 
-/** Same rationale as {@link parseStoredAgentMessage}, for a `'compaction'` checkpoint's payload. */
 function parseCompactionPayload(payload: unknown, agentRunId: string): ConversationEntry[] {
   if (!Array.isArray(payload) || !payload.every(isConversationEntry)) {
     throw new Error(
@@ -87,12 +81,9 @@ function parseCompactionPayload(payload: unknown, agentRunId: string): Conversat
 }
 
 /**
- * Protocol validation for the reconstructed tree: every `tool_use` must be followed, in order,
- * by its own `tool_result` (matched on `toolCallId`), and nothing may end mid-call. A dormant
- * conversation's history is expected to already satisfy this — `repairInterruptedRuns` (#117)
- * closes out any run left with a trailing unmatched `tool_use` before reconstruction ever sees
- * it — so a violation here means the stored history itself is unsound, and pi-agent-core must
- * not be handed it.
+ * Every `tool_use` must be followed, in order, by its own `tool_result` (by `toolCallId`), and nothing may end
+ * mid-call. `repairInterruptedRuns` already closes trailing unmatched calls, so a violation means the stored history is
+ * unsound and must not reach pi-agent-core.
  */
 function validateProtocolInvariants(entries: ConversationEntry[]): void {
   const pendingToolCallIds: string[] = [];
@@ -122,21 +113,13 @@ function validateProtocolInvariants(entries: ConversationEntry[]): void {
 }
 
 /**
- * Reconstructs one dormant conversation's `Entry[]` chain by walking only the tail of
- * `agent_run_events` after its latest `compaction` checkpoint — everything before that
- * checkpoint was already folded into its payload, so it never needs to be read again.
- * `listSessionAgentRunEventsFromLastCompaction` returns that tail (starting with the checkpoint
- * row itself, when one exists) in `(wake_seq, id)` order across the conversation's session runs.
- * A stored `'compaction'` event's payload *is* the continuation state as of that point —
- * encountering one resets the walk to it (rather than appending to it) so a restart replays the
- * same checkpoint instead of re-deriving, and potentially re-compacting, the full raw history all
- * over again. Every consumer of the walk, a compaction included, gets the redacted form of the stored
- * history (issue #2001: `redactReplayedToolCalls`), never the live session.
+ * Rebuilds a dormant conversation's `Entry[]` chain from only the tail of `agent_run_events` after its latest
+ * `compaction` checkpoint, in `(wake_seq, id)` order across the session runs. A checkpoint's payload is the
+ * continuation state, so meeting one resets the walk to it: a restart replays the checkpoint instead of re-compacting.
+ * Consumers, compaction included, get the redacted form of the stored history (`redactReplayedToolCalls`).
  *
- * For a thread, the events listed leave out the turn of every reply that a regeneration replaced, whole, with its
- * tool calls and their results (issue gh-1930; `listSessionAgentRunEventsFromLastCompaction`). Both callers then
- * run `validateProtocolInvariants`, so a range that cut a tool call from its result would fail the reconstruction
- * and never reach the model as half a call.
+ * The listed events leave out every turn a regeneration replaced, whole, with its tool calls and results. Callers run
+ * `validateProtocolInvariants`, so a range that split a call from its result fails instead of reaching the model.
  */
 async function walkStoredEntries(
   pool: Pool,
@@ -194,16 +177,13 @@ export async function reconstructBoundedThreadHistory(
 
 export interface ReconstructedHistory {
   entries: ConversationEntry[];
-  /** True when this history was too large as reconstructed and `compaction` replaced it — the caller's cue to persist the checkpoint via `persistCompaction`. */
+  /** The caller's cue to persist the checkpoint via `persistCompaction`. */
   compacted: boolean;
 }
 
 /**
- * The full #119 reconstruction: rebuilds the `Entry[]` tree from `agent_run_events`, sizes it
- * with pi-agent-core's public `estimateContextTokens`/`shouldCompact` before ever handing it to
- * a provider, and — only when required — reduces it through the public, low-level
- * `prepareCompaction`/`compact` pair. Returns null on a conversation's very first-ever wake (no
- * prior rows), same as #118's stub.
+ * Rebuilds the tree, sizes it with pi-agent-core's `estimateContextTokens`/`shouldCompact` before it reaches a
+ * provider, and compacts through `prepareCompaction`/`compact` only when required. Null on a conversation's first wake.
  */
 export async function reconstructConversationHistory(
   pool: Pool,
@@ -221,17 +201,14 @@ export async function reconstructConversationHistory(
 
   const prepared = compaction.prepareCompaction(entries, compaction.settings);
   const compacted = await compaction.compact(prepared);
-  // A non-conforming CompactionAdapter is just as capable of handing pi-agent-core a broken
-  // transcript as a corrupted stored payload is — validate its output the same way.
+  // A non-conforming CompactionAdapter can break a transcript as well as a corrupted payload can.
   validateProtocolInvariants(compacted);
   return { entries: compacted, compacted: true };
 }
 
 /**
- * Persists a compaction's result onto the wake run it seeds, as the single source of truth a
- * later restart's `walkStoredEntries` resumes from — the "repeated restart remains
- * deterministic" half of #119's Task, without which every restart would redo the same
- * (possibly expensive, and not guaranteed idempotent) compaction from scratch.
+ * Persists the compaction on the wake run it seeds, so restarts resume from it deterministically instead of redoing a
+ * possibly expensive, non-idempotent compaction.
  */
 export async function persistCompaction(
   pool: Pool,

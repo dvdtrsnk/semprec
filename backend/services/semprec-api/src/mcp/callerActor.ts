@@ -2,29 +2,31 @@ import type { Pool } from "pg";
 import { resolveMcpRunCredential } from "@semprec/data";
 import { CAPABILITY_IDS, runAsSystem, type AuthenticatedActor, type CapabilityId } from "@semprec/shared";
 
-/** A caller authenticated by a restricted MCP run credential, with what it may do and the tenant it belongs to. */
 export interface RunCredentialCaller {
   actor: AuthenticatedActor;
-  /** The credential's own capabilities intersected with the process's granted set: a credential only ever narrows it. */
+  /**
+   * The credential's capabilities intersected with the process's granted set: a credential only
+   * ever narrows it.
+   */
   capabilities: ReadonlySet<CapabilityId>;
   /**
-   * The module capability ids the credential lists (issue gh-1956): what it lists that is not a core id. They are not
-   * intersected with the process's set, which holds core ids only; the module tool resolver intersects them with what
-   * the credential's project holds, so a credential never gets the tools of a module capability it does not list.
+   * What the credential lists that is not a core id. Not intersected with the process's set (core
+   * ids only); the module tool resolver intersects them with the project's grants, so a credential
+   * never gets tools of a module capability it does not list.
    */
   moduleCapabilities: ReadonlySet<string>;
   tenantId: string;
 }
 
 /**
- * Resolves a bearer token to its run-credential caller, or `null` when the token is no run credential (a session
- * token, an expired or unknown value). The token is resolved to its tenant in the global plane before any tenant is
- * known, inside the one scoped system lookup `resolveMcpRunCredential` exists for; the credential itself is then
- * read under row-level security inside that tenant. The actor carries `runId` and `agentProjectItemId`, never a
- * `restSession` flag, so the gateway applies its approval gate and the writer is an agent run.
+ * `null` when the token is no run credential (a session token, an expired or unknown value). The
+ * token is resolved to its tenant in the global plane inside the one scoped system lookup
+ * `resolveMcpRunCredential` exists for; the credential is then read under RLS in that tenant. The
+ * actor carries `runId` and `agentProjectItemId`, never `restSession`, so the gateway applies its
+ * approval gate.
  *
- * Shared by `POST /mcp` and the one REST route that also accepts a run credential (`POST /api/items/:id/page/insert`);
- * what to do when this returns `null` (a session, or a refusal) stays with each caller.
+ * Shared by `POST /mcp` and `POST /api/items/:id/page/insert`; each caller decides what `null`
+ * means.
  */
 export async function resolveRunCredentialCaller(
   pool: Pool,

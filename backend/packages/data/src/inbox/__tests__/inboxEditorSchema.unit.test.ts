@@ -5,8 +5,8 @@ const INBOX_MANIFEST_PATH = new URL("../inboxModuleManifest.js", import.meta.url
 const INBOX_MODULE_ID = "inboxPipeline";
 
 describe("Inbox MCP card editor schema (issue #1417)", () => {
-  // Warms the manifest's cold module-graph import once, so the first test's cost does not depend on
-  // order or `-t` filtering (#1237, as in `libraryMailInboxModuleManifests.unit.test.ts`).
+  // Warms the manifest's cold module-graph import once, so the first test's cost does not depend on order or `-t`
+  // filtering.
   beforeAll(async () => {
     await import(INBOX_MANIFEST_PATH);
   }, 30_000);

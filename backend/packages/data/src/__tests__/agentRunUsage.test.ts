@@ -26,7 +26,6 @@ import { claimSempMessage, startSempMessageTurn } from "../semp/sempMessagesStor
 
 const EMPTY_USAGE = { totalCostUsd: 0, estimated: false, perModel: [] };
 
-/** A settled token call of the run. */
 function recordCall(
   pool: Pool,
   agentRunId: string | null,

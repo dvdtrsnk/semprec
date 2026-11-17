@@ -28,9 +28,8 @@ import {
 import { createDispatcher } from "../app.js";
 
 /**
- * Batch 34 entry-point contracts (gh-1605, gh-1609, gh-2016, gh-1622) through the production dispatcher: real
- * session authentication, the generic REST routes, the application service and the choke point, on a runtime-role
- * pool that row-level security applies to, with two tenants.
+ * Entry-point contracts through the production dispatcher: real session authentication, the generic REST routes, the
+ * application service and the choke point, on a runtime-role pool under row-level security, with two tenants.
  */
 
 const PASSWORD = "s3cret-password";
@@ -176,7 +175,7 @@ describe("batch 34 entry-point contracts", () => {
         databaseId: databaseOf(own, "tasks"),
         properties: { name: "Weekly review", date: "2026-10-12" },
       });
-      // Create a legacy series through the Tasks store and its system choke-point projection.
+      // A series written through the Tasks store and its system choke-point projection.
       await withTransaction(runtime, async (client) => {
         const series = await createTaskRecurrence(client, {
           itemId: created.id,
@@ -295,7 +294,7 @@ describe("batch 34 entry-point contracts", () => {
         properties: { name: "Retro", date: "2026-10-16" },
       });
       const project = await cp.createItem({ databaseId: databaseOf(own, "projects"), properties: { name: "Project" } });
-      // The derived edge as its owning process writes it (the event-link sync), through the system choke point.
+      // As its owning process (the event-link sync) writes it, through the system choke point.
       await withTransaction(runtime, (client) =>
         createRelationWithClient(
           client,

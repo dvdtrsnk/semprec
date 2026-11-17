@@ -1,9 +1,6 @@
-// Issue #1660: People's derived `lastContact` — the calendar date, in the tenant time zone, of the latest
-// past Event, Email or Transcript a person took part in. Only `recomputePersonLastContact` writes it,
-// through the choke point as the declared `people` owner process; the hooks in `lastContactHooks.ts`,
-// and the daily sweep only queue that recompute.
-// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md and
-// docs/adr/2026-09-10-single-writer-ownership-model.md
+// People's derived `lastContact`: the tenant-zone date of the latest past Event, Email or Transcript a person
+// took part in. Only `recomputePersonLastContact` writes it (as the `people` owner process); the hooks and the
+// daily sweep only queue that recompute.
 import type { Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
 import { z } from "zod";
@@ -22,12 +19,10 @@ import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { EVENTS_MODULE_ID, PEOPLE_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
-/** The People property this module owns. */
 export const LAST_CONTACT_PROPERTY_KEY = "lastContact";
 
 const LAST_CONTACT_LANE = "people-last-contact";
 
-/** The relation properties whose edges make a person a participant of their item, each on its source database. */
 const SOURCE_RELATIONS: ReadonlyArray<{ moduleId: string; key: string }> = [
   { moduleId: EVENTS_MODULE_ID, key: "people" },
   { moduleId: EMAILS_MODULE_ID, key: "senderPeople" },
@@ -35,7 +30,6 @@ const SOURCE_RELATIONS: ReadonlyArray<{ moduleId: string; key: string }> = [
   { moduleId: TRANSCRIPTS_MODULE_ID, key: "speakers" },
 ];
 
-/** A source relation resolved in the current tenant: which end of its edges is the person. */
 export interface SourceRelation {
   relationDefinitionId: string;
   sourceDatabaseId: string;
@@ -57,12 +51,7 @@ const SOURCE_RELATION_ROW = z.object({
   source_is_a: z.boolean(),
 });
 
-/**
- * The current tenant's source relations whose relation property points at its system People database, or
- * only the one with id `relationDefinitionId`. A source whose database or relation property does not exist
- * (a tenant without the mail module) is simply absent. Row-level security and the explicit tenant filter
- * confine the read to the current tenant.
- */
+/** Without `relationDefinitionId`, all of them; a source whose database or property is missing is absent. */
 async function querySourceRelations(client: Queryable, relationDefinitionId: string | null): Promise<SourceRelation[]> {
   const { rows } = await client.query<Record<string, unknown>>(
     `SELECT rd.id AS relation_definition_id, d.id AS source_database_id, d.owner_module_id AS source_module_id,
@@ -94,7 +83,6 @@ async function querySourceRelations(client: Queryable, relationDefinitionId: str
   });
 }
 
-/** The source relation with id `relationDefinitionId` in the current tenant; `null` for any other relation. */
 export async function findLastContactSourceRelation(
   client: Queryable,
   relationDefinitionId: string,
@@ -102,7 +90,6 @@ export async function findLastContactSourceRelation(
   return (await querySourceRelations(client, relationDefinitionId))[0] ?? null;
 }
 
-/** The current tenant's People and Events databases and its source relations; `null` without a People database. */
 async function resolveLastContactSources(client: PoolClient): Promise<LastContactSources | null> {
   const people = await getDatabaseByModuleId(client, PEOPLE_MODULE_ID);
   if (!people) return null;
@@ -118,7 +105,7 @@ export function peopleLastContactJobKey(personId: string): string {
   return `people-last-contact:${personId}`;
 }
 
-/** Queues one person's recompute; called in the same transaction as the write that triggered it. */
+/** Called in the same transaction as the write that triggered it. */
 export async function enqueuePersonLastContactRecompute(client: Queryable, personId: string): Promise<void> {
   await enqueueJob(
     client,
@@ -128,7 +115,6 @@ export async function enqueuePersonLastContactRecompute(client: Queryable, perso
   );
 }
 
-/** The people (trashed ones included) linked to `itemId` through a source relation, in id order. */
 async function listLinkedPersonIds(client: Queryable, sources: LastContactSources, itemId: string): Promise<string[]> {
   const { personB, personA } = definitionsBySide(sources);
   if (personB.length === 0 && personA.length === 0) return [];
@@ -144,7 +130,6 @@ async function listLinkedPersonIds(client: Queryable, sources: LastContactSource
   return rows.map((row) => row.person_id);
 }
 
-/** Enqueues a recompute for every person linked to `itemId` through a source relation. */
 export async function enqueueLinkedPeopleLastContactRecompute(client: PoolClient, itemId: string): Promise<void> {
   const sources = await resolveLastContactSources(client);
   if (!sources) return;
@@ -164,19 +149,14 @@ const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 const TIME_OF_DAY_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-/** When a source took place and the calendar date it counts as, in the tenant zone. */
 export interface ContactMoment {
   instantMs: number;
   date: string;
 }
 
 /**
- * The moment a source is dated, read with the calendar owners (`calendarTime.ts`) in `zone`; `null` for a
- * value that is not a readable date. A date-only `date` (every Event since issue #1598) starts at its
- * `timeFrom` wall-clock time when the source is an Event with a valid `HH:MM` start, otherwise at the start
- * of that day, and counts as that date. A date with a time of day (an Email, a Transcript, an Event written
- * before #1598) is an instant when it carries an offset and wall-clock time in `zone` when it does not; it
- * counts as its date in `zone`.
+ * `null` for an unreadable value. A date-only `date` starts at an Event's valid `HH:MM` `timeFrom`, else at the
+ * start of the day. A date-time is an instant when it has an offset, otherwise wall-clock time in `zone`.
  */
 export function readContactMoment(date: unknown, timeFrom: unknown, zone: string): ContactMoment | null {
   if (typeof date !== "string") return null;
@@ -206,7 +186,6 @@ interface SourceDateRow {
   time_from: string | null;
 }
 
-/** The latest moment at or before `nowMs` among the live sources linked to `personId`; `null` when none qualifies. */
 async function latestContact(
   client: PoolClient,
   sources: LastContactSources,
@@ -247,15 +226,13 @@ async function readTenantZone(client: Queryable): Promise<string> {
 }
 
 export interface LastContactClockOptions {
-  /** The current moment; defaults to the time of the call. A test seam for the clock. */
+  /** Test seam for the clock. */
   now?: Date;
 }
 
 /**
- * Recomputes one person's `lastContact` in one transaction: locks the person row, computes the latest
- * qualifying date from the linked Events, Emails and Transcripts (live, dated at or before now), and writes
- * it through the choke point only when it differs from the stored value, clearing it when no source
- * qualifies. A missing or trashed person is a no-op; a People database without the property is an error.
+ * One transaction under the person row lock; writes only when the value changes. A missing or trashed person is
+ * a no-op; a People database without the property is an error.
  */
 export async function recomputePersonLastContact(
   pool: Pool,
@@ -291,7 +268,6 @@ export async function recomputePersonLastContact(
 
 const recomputePayloadSchema = z.object({ personId: z.uuid() }).strict();
 
-/** `peopleLastContactRecompute`: runs in the job envelope's tenant. */
 export async function handlePeopleLastContactRecomputeTask(pool: Pool, payload: unknown): Promise<void> {
   const { personId } = recomputePayloadSchema.parse(payload);
   await recomputePersonLastContact(pool, personId);
@@ -313,10 +289,8 @@ function utcDay(ms: number, shiftDays: number): string {
 }
 
 /**
- * One committed batch of the sweep in the current tenant: the next `SWEEP_BATCH_SIZE` source edges after
- * `afterEdgeId`, and a recompute queued for each person whose linked live source is dated within
- * `(now - 24 h, now]`. The text prefilter widens the window by a day on each side, because a stored instant's
- * written date can differ from its date in the tenant zone; the exact window is checked with the calendar owners.
+ * One committed batch. The text prefilter widens the window by a day on each side because a stored instant's
+ * written date can differ from its tenant-zone date; the exact window `(now - 24 h, now]` is checked afterwards.
  */
 async function sweepBatch(
   pool: Pool,
@@ -367,10 +341,8 @@ async function sweepBatch(
 }
 
 /**
- * `peopleLastContactSweep` (daily): for every active tenant, in its own scope and in committed batches,
- * queues a recompute for each person linked to a live source whose date fell within the last 24 hours, so a
- * future Event that has since passed reaches `lastContact` without any other write. One tenant's failure
- * does not skip the others (`forEachActiveTenant`).
+ * Daily, so a future Event that has since passed reaches `lastContact` without another write. One tenant's
+ * failure does not skip the others.
  */
 export async function handlePeopleLastContactSweep(pool: Pool, options: LastContactClockOptions = {}): Promise<void> {
   const nowMs = (options.now ?? new Date()).getTime();

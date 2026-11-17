@@ -1,6 +1,5 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/semp-status` path family. */
 export const SEMP_STATUS_ROUTES: RouteMatrixEntry[] = [
   {
     name: "semp status",

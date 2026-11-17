@@ -4,10 +4,7 @@ import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { readEventTasks, type EventTasks } from "./taskStateInEvent.js";
 
-/**
- * Duck-typed the same way `eventParticipantsRouteHandlers.ts` is: matches `semprec-api`'s `AdapterRequestContext`
- * structurally, with no dependency on that service's HTTP types.
- */
+/** Structurally matches `semprec-api`'s `AdapterRequestContext`, without depending on its HTTP types. */
 interface EventTasksRouteRequestContext {
   params: Record<string, string>;
 }
@@ -15,10 +12,8 @@ interface EventTasksRouteRequestContext {
 const eventIdSchema = z.uuid();
 
 /**
- * `GET /api/events/:id/tasks` (issue #1801): the tasks that sit in a live Event of the caller's tenant as
- * `{ eventId, tasks: [{ taskId, title, state }], counts: { open, total } }`, in the order of the Event's edges by
- * `addedAt`. The read runs in the caller's tenant scope, so an Event that is missing, in the Trash or another
- * tenant's answers with the same `not_found` body. An `id` that is not a UUID is `validation_failed` on `id`.
+ * `GET /api/events/:id/tasks`: `{ eventId, tasks: [{ taskId, title, state }], counts: { open, total } }` in edge
+ * order. Missing, trashed and foreign Events answer the same `not_found`; a non-UUID `id` is `validation_failed`.
  */
 export function createEventTasksRouteHandler(pool: Pool) {
   return async (ctx: EventTasksRouteRequestContext): Promise<{ status: number; body: EventTasks }> => {

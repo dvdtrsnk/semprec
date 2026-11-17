@@ -412,7 +412,7 @@ describe("module agent tools under project ownership", () => {
         isError: false,
         result: { content: [{ type: "text", text: expectedList.result }] },
       });
-      // Historical system databases can be archived in storage, but the public API refuses it.
+      // System databases can be archived in storage, but the public API refuses it.
       const archived = await pool.query("UPDATE databases SET archived_at=now() WHERE id=$1", [one.id]);
       expect(archived.rowCount).toBe(1);
       expect(await granted()).not.toContain("owned.read");

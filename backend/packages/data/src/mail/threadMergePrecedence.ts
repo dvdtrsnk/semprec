@@ -12,33 +12,26 @@ import {
 import { scheduleDownstream } from "../valueLinks/linkPropagation.js";
 import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 
-/** The thread properties a merge decides between the two threads' values. */
 const THREAD_VALUE_KEYS = ["company", "project"] as const;
 
 export interface ThreadMergeIds {
-  /** The Threads items of the two threads. */
   winnerItemId: string;
   loserItemId: string;
-  /** The `mail_threads` ids of the two threads. */
   winnerThreadId: string;
   loserThreadId: string;
 }
 
-/** What `planThreadValueMerge` decided, for `transferMailThreadRelationsWithClient` and `finishThreadValueMerge`. */
 export interface ThreadValueMergePlan {
-  /** The keys whose value the loser's edge takes over from the winner's edge. */
+  /** Keys where the loser's edge takes over from the winner's. */
   loserValueWins: Set<string>;
-  /** The keys whose loser link moves to the winner: those whose loser value ends up on the winner. */
+  /** Keys whose loser link moves to the winner. */
   adopted: string[];
 }
 
 /**
- * Decides, for the `company` and for the `project` of two threads about to merge, whose value the merged thread
- * holds. A value is inherited when the thread's link for that property is `on`, and its own otherwise (a
- * `broken` link, or no link). The winner keeps its value, except that the loser's value replaces it when:
- * - the loser's is its own and the winner's is inherited, or
- * - both are of the same kind and the loser's `mail_threads.created_at` is older than the winner's.
- * A loser without a value decides nothing, and a winner without a value takes the loser's.
+ * A value is inherited when its link is `on`, otherwise the thread's own. The loser's value replaces
+ * the winner's when the loser's is own and the winner's inherited, or both are of the same kind and the
+ * loser thread is older. A winner without a value takes the loser's.
  */
 export async function planThreadValueMerge(client: PoolClient, ids: ThreadMergeIds): Promise<ThreadValueMergePlan> {
   const threads = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
@@ -80,9 +73,8 @@ export async function planThreadValueMerge(client: PoolClient, ids: ThreadMergeI
 }
 
 /**
- * After the edges were transferred: the loser's links of the adopted keys move to the winner (replacing the winner's
- * own link for the key), every other link of the loser is deleted with it, and the rules that follow the winner's
- * project are queued through the propagation job, so what the winner's attachments inherit is recomputed.
+ * Runs after the edges were transferred. The loser's other links are deleted, and propagation is queued
+ * so what the winner's attachments inherit is recomputed.
  */
 export async function finishThreadValueMerge(
   client: PoolClient,

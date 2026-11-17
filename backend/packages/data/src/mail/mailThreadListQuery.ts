@@ -30,10 +30,7 @@ const thread = z.object({
   hasSempDraft: z.boolean(),
 });
 
-/**
- * The lowercased, trimmed addresses of the tenant's live mailboxes (their `addresses` property): a
- * message whose sender is one of them is the user's own. Fixed SQL over the query's `schema_ids`.
- */
+/** The tenant's live mailbox addresses, lowercased: a message from one of them is the user's own. */
 export const MAIL_OWN_ADDRESSES_SQL = `
   SELECT DISTINCT lower(btrim(a.address, E' \\t\\n\\r')) AS address
   FROM items i CROSS JOIN LATERAL regexp_split_to_table(
@@ -44,12 +41,8 @@ export const MAIL_OWN_ADDRESSES_SQL = `
 `;
 
 /**
- * The CTEs the thread list and the mail summary (`mailSummary.ts`) both start from, so a count reads
- * the same copies the list shows: `schema_ids`, `folder_definition`, `own_addresses`, `copies` (one
- * row per live copy of a threaded message; drafts are left out unless the bind parameter numbered
- * `threadIdParameter` names one thread) and `copy_stats` (one row per thread of `copies`). The
- * fragments of `mailThreadPredicates.ts` refer to `schema_ids`, `copies` and `copy_stats`. The text
- * is fixed SQL except for that parameter number, which is a `number` the caller chooses.
+ * The CTEs the thread list and the mail summary share, so a count reads the same copies the list
+ * shows. Drafts are left out unless the bind parameter numbered `threadIdParameter` names one thread.
  */
 export function mailThreadCopyCtes(threadIdParameter: number): string {
   const threadId = `$${threadIdParameter}`;
@@ -102,12 +95,7 @@ export function mailThreadCopyCtes(threadIdParameter: number): string {
 )`;
 }
 
-/**
- * The `search_messages` CTE that the fragments of `matchesSearch` (`mailThreadPredicates.ts`) read: every live message of
- * the Emails database that has a thread, with the columns the search operators compare. It reads the query's `schema_ids`
- * and `folder_definition`, which `mailThreadCopyCtes` defines, and is fixed SQL. The thread list and the mail group of
- * global search (`mailGlobalSearchGroup.ts`) both put it in their `WITH` list.
- */
+/** The `search_messages` CTE the `matchesSearch` fragments read; needs `mailThreadCopyCtes` in scope. */
 export const MAIL_SEARCH_MESSAGES_CTE = `search_messages AS (
   SELECT m.thread_id, m.item_id, m.envelope,
     NULLIF(i.properties->>'date', '')::timestamptz AS message_date,
@@ -124,22 +112,17 @@ export const MAIL_SEARCH_MESSAGES_CTE = `search_messages AS (
   WHERE m.tenant_id = app_tenant_default() AND m.thread_id IS NOT NULL AND i.deleted_at IS NULL
 )`;
 
-/** The value-link entries of a thread's `company` and `project`, only for a property that has a value-link row. */
 export interface MailThreadLinks {
   company?: ValueLinkEntry;
   project?: ValueLinkEntry;
 }
 
-/** The Threads properties whose link state the thread list and the detail report (issue gh-1897). */
 const THREAD_LINK_KEYS = ["company", "project"] as const;
 
 /**
- * The lateral join that names the one live item a relation property of the Threads item holds (issue gh-1897): the
- * `{ id, name }` of the Projects or Companies item the thread's `propertyKey` edge reaches, or no row when it has no
- * edge or the item is in the Trash, which reads as `null`. The lookup of the target item is pinned to the system
- * database `ownerModuleId`. Both arguments are a literal union and never input, which is why they are interpolated
- * into the fixed SQL. `p.thread_id` is the thread of the page row `p`. A thread that holds several edges (the property
- * is many-valued, but the thread value edge hook admits one) answers the one with the lowest item id.
+ * Names the one live item the thread's `propertyKey` edge reaches, or no row (`null`) when there is
+ * no edge or the item is in the Trash. Both arguments are literal unions, never input, which is why
+ * they are interpolated. With several edges the lowest item id wins.
  */
 function threadRelationNameJoin(propertyKey: "project" | "company", ownerModuleId: "projects" | "companies"): string {
   return `LEFT JOIN LATERAL (
@@ -159,11 +142,7 @@ function threadRelationNameJoin(propertyKey: "project" | "company", ownerModuleI
 
 const cursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }), id: z.uuid() }).strict();
 
-/**
- * The position of a thread in the list order, as the list's `nextCursor` encodes it: base64url of a JSON object with
- * the `lastMessageAt` and the `threadId` of the last listed thread. Throws a `ValidationError` naming `cursor` for a
- * token that is too long, is not canonical base64url, is not JSON or is not that object.
- */
+/** Decodes the base64url JSON `nextCursor`; throws a `ValidationError` naming `cursor` when malformed. */
 export function parseMailThreadListCursor(rawCursor: string): { at: string; id: string } {
   if (rawCursor.length > 256 || !/^[A-Za-z0-9_-]+$/.test(rawCursor))
     throw new ValidationError("Invalid cursor", { field: "cursor" });
@@ -180,7 +159,7 @@ export function parseMailThreadListCursor(rawCursor: string): { at: string; id: 
   return parsed.data;
 }
 
-/** True when a `before:` or `after:` operand is neither an ISO date nor an ISO date-time with an offset, which Postgres would read differently or refuse. */
+/** Rejects operands that are not ISO dates or offset date-times, which Postgres would misread or refuse. */
 export function hasInvalidMailSearchDate(search: ParsedMailSearchQuery): boolean {
   return [search.before, search.after].some(
     (date) =>
@@ -198,10 +177,7 @@ export async function listMailThreads(
     projectId?: string | null;
     areaId?: string | null;
     personId?: string | null;
-    /**
-     * Detail-only mode (issue #1632): one thread, in any box or folder, aggregated over every live copy
-     * of it, drafts included. The list itself never sets it and keeps leaving drafts out.
-     */
+    /** Detail-only mode: one thread in any box or folder, drafts included. The list never sets it. */
     threadId?: string | null;
   } = {
     box: "inbox",
@@ -340,7 +316,6 @@ ORDER BY p.activity DESC NULLS LAST, p.thread_id DESC
     thread: thread.parse(row.thread),
     itemId: z.uuid().nullable().parse(row.thread_item_id),
   }));
-  // One batched read for the whole page (`getValueLinksForItems`), whatever the number of threads.
   const linksByItem = await getValueLinksForItems(
     client,
     rows.flatMap((row) => (row.itemId === null ? [] : [row.itemId])),

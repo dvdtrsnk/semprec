@@ -5,7 +5,10 @@ import { runAsSystem } from "@semprec/shared";
 import { NO_STORE, PayloadTooLargeError, readRawBody, sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
 
-/** Generous for a real Graph delivery (Graph itself caps a single batch around 20 notifications), but bounds a misbehaving or malicious POST from buffering an unbounded body before this handler ever looks at it — same discipline as `setupHandler.ts`'s `MAX_BODY_BYTES`. */
+/**
+ * Generous for a real Graph delivery (Graph caps a batch around 20 notifications), but bounds a
+ * malicious POST.
+ */
 const MAX_BODY_BYTES = 256 * 1024;
 
 interface RawNotification {
@@ -13,7 +16,7 @@ interface RawNotification {
   clientState?: string;
 }
 
-/** Validates only the two fields this receiver reads — a Graph notification carries several other fields (`resourceData`, `changeType`, `tenantId`, ...) this issue's Task never asks this endpoint to act on beyond handing off to the existing reconcile job. */
+/** A Graph notification carries other fields this receiver does not act on. */
 function parseNotification(value: unknown): RawNotification | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
@@ -25,17 +28,13 @@ function parseNotification(value: unknown): RawNotification | undefined {
 }
 
 /**
- * Handles `POST /api/mail/graph/webhook` (issue #198) — Microsoft Graph's single combined
- * validation-handshake and change-notification endpoint. Unauthenticated by design: Graph itself
- * is the only caller, and there is no session to require here — safety instead comes from each
- * notification's `clientState` (checked in constant time by `handleGraphChangeNotification`), not
- * a bearer token. `routeMatrix.ts` (issue #143) lists it among the documented public exceptions.
+ * Unauthenticated by design: Graph is the only caller, and each notification's `clientState`
+ * (checked in constant time by `handleGraphChangeNotification`) is the safeguard. Listed among the
+ * public exceptions in `routeMatrix.ts`.
  *
- * Graph's validation handshake ("echo validation token within three seconds," this issue's
- * acceptance criteria — Graph's own spec allows up to 10s) is handled first and unconditionally:
- * a subscription create/renew POSTs `?validationToken=<token>` with a body that is not the JSON
- * notification batch shape, so it must never fall through to body parsing below. The response is
- * the literal token text as `text/plain`, nothing else — Graph matches it byte-for-byte.
+ * The validation handshake (`?validationToken=`, body not a notification batch) is handled first
+ * and unconditionally, answering the literal token as `text/plain`, which Graph matches
+ * byte-for-byte.
  */
 export function createGraphWebhookRequestListener(pool: Pool) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -84,10 +83,9 @@ export function createGraphWebhookRequestListener(pool: Pool) {
         }
       });
 
-      // 202 regardless of individual notification outcomes: Graph disables (and eventually stops
-      // retrying) a subscription whose endpoint doesn't answer promptly with a 2xx — a rejected
-      // notification is this receiver's own problem to log and drop, not something that should
-      // make Graph think delivery itself failed and needs to be redelivered.
+      // 202 regardless of individual outcomes: Graph disables a subscription whose endpoint does
+      // not answer promptly with a 2xx, so a rejected notification is logged and dropped rather
+      // than redelivered.
       res.writeHead(202, { "Cache-Control": NO_STORE });
       res.end();
     } catch (err) {
@@ -100,7 +98,10 @@ export function createGraphWebhookRequestListener(pool: Pool) {
     }
   }
 
-  /** Same rationale as `setupHandler.ts`'s `handleRequestSafely`: keeps a rejection that escapes the try/catch above confined to a 500 for that one request instead of an unhandled rejection taking the whole process down. */
+  /**
+   * Confines an escaped rejection to a 500 for this request instead of an unhandled rejection
+   * ending the process.
+   */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the Graph webhook request listener");

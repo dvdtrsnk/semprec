@@ -11,9 +11,8 @@ export const manifest: ModuleManifest = {
   agentTools: [],
   taskNames: [
     {
-      // Deliberately the same task name as apiDuplicateTaskModuleA.ts, so loading both into one
-      // registry proves the shared ModuleRegistry (issue #221) rejects a duplicate task name
-      // across two modules before either of #91's composition roots ever run.
+      // The same task name as apiDuplicateTaskModuleA.ts: the shared ModuleRegistry must reject the duplicate
+      // across two modules before either composition root runs.
       name: "apiFixture.dupThing",
       payloadSchemaExport: "dupThingPayloadSchema",
       handlerExport: "handleDupThing",

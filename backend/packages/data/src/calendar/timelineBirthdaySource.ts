@@ -8,7 +8,6 @@ import { logger } from "./logger.js";
 import { readSystemCalendarId } from "./systemCalendar.js";
 import type { CalendarBirthdayTimelineItem, CalendarTimelineContext } from "./timelineSources.js";
 
-/** The Birthdays calendar's system key (`seed/seedCalendars.ts`). */
 const BIRTHDAYS_SYSTEM_KEY = "birthdays";
 
 interface PersonRow {
@@ -17,7 +16,6 @@ interface PersonRow {
   birthday: unknown;
 }
 
-/** Every live person with a stored birthday, in one statement; a `null` birthday is no birthday. */
 const PEOPLE_WITH_BIRTHDAY_SQL = `
   SELECT id, properties->'name' AS name, properties->'birthday' AS birthday
     FROM items
@@ -25,29 +23,17 @@ const PEOPLE_WITH_BIRTHDAY_SQL = `
      AND properties->'birthday' IS NOT NULL AND properties->'birthday' <> 'null'::jsonb
    ORDER BY id`;
 
-/**
- * The day of `monthDay` (`MM-DD`) in `year`. A 29 February falls on 28 February in a year that is not a leap
- * year. Only the month and day of a stored birthday matter, whatever its year.
- */
+/** A 29 February falls on 28 February in a non-leap year. */
 function birthdayInYear(year: number, monthDay: string): string {
   const day = monthDay === "02-29" && !DateTime.utc(year).isInLeapYear ? "02-28" : monthDay;
   return `${String(year).padStart(4, "0")}-${day}`;
 }
 
-/** A person's given name: the first word of the name, the whole value when it has one word. */
 function givenName(name: string): string {
   return name.trim().split(/\s+/)[0] ?? "";
 }
 
-/**
- * The birthday source of the calendar timeline (issue #1800): one all-day, read-only entry in every year the
- * range touches for every live person whose stored `birthday` is a calendar date and falls inside the range
- * that year. The entries are derived on read and no Events row exists for them. A person whose stored
- * birthday is not a calendar date is left out, with one log line that carries the person's id. The title is
- * the `calendar.birthday.title` template of the tenant user's language with the person's given name; the
- * Birthdays calendar's id is `calendarId`, `null` when the tenant has none. A tenant without a People database
- * has none.
- */
+/** Derived on read; no Events row exists for these entries. An unreadable birthday is logged and left out. */
 export async function readBirthdayTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,

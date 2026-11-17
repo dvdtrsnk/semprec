@@ -1,10 +1,7 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/**
- * `ROUTE_MATRIX` slice for the `/api/views` path family, together with view creation under
- * `/api/databases/:id/views`. The view query entry is in `items.ts`.
- */
+/** Also view creation under `/api/databases/:id/views`. The view query entry is in `items.ts`. */
 export const VIEWS_ROUTES: RouteMatrixEntry[] = [
   {
     name: "list views",

@@ -1,6 +1,3 @@
-// The writes that take a Semprec mail draft out of use, shared by the discard route's operation (mail/draft.ts, issue
-// gh-1867) and the retirement of an outdated Semp draft (mail/draftRetirement.ts, issue gh-1902).
-// Constrained by: docs/adr/2026-11-13-a-discarded-mail-draft-loses-its-row-and-draft-writers-lock-the-item-before-the-row.md
 import type { PoolClient } from "pg";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
@@ -10,12 +7,9 @@ import { deleteMailDraft } from "./mailDraftsStore.js";
 import type { MailModuleIds } from "./mailModuleIds.js";
 
 /**
- * The writes that take a draft out of use, for a draft whose Emails item and `mail_drafts` row the caller holds
- * locked, the item first and then the row: the files attached to it that were made for it and belong to it alone go to the trash
- * (`deleteFilesOfDiscardedDraft`, issue gh-1895; a file that is older than the draft stays), the Emails item goes to
- * the trash and its `mail_drafts` row is deleted, which frees the thread for a new agent draft
- * ([[2026-11-13-a-discarded-mail-draft-loses-its-row-and-draft-writers-lock-the-item-before-the-row]]). It announces
- * nothing; the caller does.
+ * Takes a draft out of use; the caller holds its Emails item and then its `mail_drafts` row locked. Trashes the files
+ * that belong to this draft alone (an older file stays), trashes the item and deletes the row, which frees the thread
+ * for a new agent draft. Announces nothing; the caller does.
  */
 export async function trashLockedDraft(
   client: PoolClient,

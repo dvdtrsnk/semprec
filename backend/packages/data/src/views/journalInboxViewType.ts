@@ -3,25 +3,16 @@ import { registerViewType, type ViewTypeRegistry } from "../chokePoint/viewTypeR
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
 
 /**
- * Journal's Inbox-list view type (issue #106): renders each Journal day's related Inbox
- * items as an ordinary list, reading the cached, pre-rendered array off the day item's
- * `computed[computedKey]` (see inbox/journalInboxCompute.ts) rather than the client running
- * its own live filter query over Inbox — the whole point of caching the derived state.
+ * Lists each Journal day's Inbox items from the day's cached `computed[computedKey]` instead of a live client query
+ * over Inbox.
  */
 export const JOURNAL_INBOX_VIEW_TYPE = "journal-inbox";
 
 const journalInboxConfigSchema = z.object({
   inboxDatabaseId: z.string().uuid(),
-  /**
-   * The one Journal day item this view instance renders — "everything the client needs
-   * to read [this view] is in this config" (mailboxClientViewType.ts's own rule): there is
-   * no live "current day" context this generic view/operations surface could resolve on
-   * its own, so the day is named directly rather than left to be inferred client-side.
-   */
+  /** Named directly: the generic view surface has no "current day" context to resolve it from. */
   journalDayItemId: z.string().uuid(),
-  /** Relation property on Inbox pointing back at the Journal day item — the grouping this view renders by. */
   journalDayRelationKey: z.string().min(1).default("journalDay"),
-  /** `items.computed` key on each Journal day item holding the cached list this view renders. */
   computedKey: z.string().min(1).default(JOURNAL_INBOX_COMPUTED_KEY),
 });
 

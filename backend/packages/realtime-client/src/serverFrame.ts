@@ -7,7 +7,7 @@ function isNonNullObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Structural check, not a re-validation of every business rule `@semprec/data` enforces server-side — this boundary only needs to know the row is shaped like one before it's handed to caller code. */
+/** A structural check only; business rules are enforced server-side. */
 function isNotificationRow(value: unknown): value is NotificationRow {
   return (
     isNonNullObject(value) &&
@@ -47,11 +47,9 @@ function isAgentDeltaChunk(value: unknown): value is AgentDeltaChunk {
 }
 
 /**
- * Validates and parses one text frame received off `WS /api/sync` into protocol-v1's
- * `OutboundFrame` catalog — the client-side mirror of `parseInboundFrame`'s server-side boundary.
- * A frame off a socket is untrusted input crossing a boundary the same way a NOTIFY payload or an
- * API response body is: `JSON.parse` alone, cast with `as`, is never enough. Returns `null` for
- * anything outside the closed catalog so a caller drops it without crashing this connection.
+ * Parses one untrusted text frame from `WS /api/sync` into the `OutboundFrame` catalog, the client
+ * mirror of `parseInboundFrame`. Returns `null` for anything outside the catalog so the caller drops
+ * it without breaking the connection.
  */
 export function parseServerFrame(raw: string): OutboundFrame | null {
   let parsed: unknown;

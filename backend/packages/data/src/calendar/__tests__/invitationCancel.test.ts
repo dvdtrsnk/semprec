@@ -19,8 +19,6 @@ import {
   type MailTenant,
 } from "./invitationMailFixtures.js";
 
-/** The organizer's `CANCEL` of an incoming invitation (issue gh-2006): its status, its Event and its notification. */
-
 let admin: Pool;
 let runtime: Pool;
 let mail: InvitationMail;
@@ -36,7 +34,6 @@ const itemRow = z.object({
 });
 type ItemRow = z.infer<typeof itemRow>;
 
-/** Every row of one database of the tenant, trashed ones included, in id order. */
 async function rowsOf(world: World, moduleKey: string): Promise<ItemRow[]> {
   const { rows } = await admin.query(
     "SELECT id, properties, deleted_at, updated_at FROM items WHERE database_id = $1 ORDER BY id",
@@ -61,7 +58,6 @@ const notificationRow = z.object({
   resolved_at: z.date().nullable(),
 });
 
-/** The notifications of the tenant, read as the runtime role inside that tenant, oldest first. */
 async function notificationsOf(tenantId: string): Promise<Array<z.infer<typeof notificationRow>>> {
   return withTenantTransaction(runtime, tenantId, async (client) => {
     const { rows } = await client.query(
@@ -71,7 +67,6 @@ async function notificationsOf(tenantId: string): Promise<Array<z.infer<typeof n
   });
 }
 
-/** `pendingInvites` of `GET /api/badge-counts` for the session user of the tenant. */
 async function pendingInvitesOf(tenant: MailTenant): Promise<number> {
   const answer = await runInTenant(tenant.world.tenantId, () =>
     createBadgeCountsRouteHandler(runtime)({ identity: { user: { id: tenant.userId } } }),
@@ -80,7 +75,6 @@ async function pendingInvitesOf(tenant: MailTenant): Promise<number> {
   return z.object({ pendingInvites: z.number() }).parse(answer.body).pendingInvites;
 }
 
-/** Every argument that the spied logger methods were called with, as text. */
 function loggedText(...spies: Array<{ mock: { calls: unknown[][] } }>): string {
   return JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
 }
@@ -90,7 +84,6 @@ describe("an organizer's CANCEL of an invitation (issue gh-2006)", () => {
   let world: World;
   let other: MailTenant;
 
-  /** A pending "Sprint review" arrives from the organizer; returns its invitation row. */
   async function receiveInvitation(options: { sequence?: number } = {}): Promise<ItemRow> {
     await mail.deliver(world, "<request@example.test>", ics({ sequence: options.sequence, summary: SECRET }));
     return onlyRow(invitationsOf(world));
@@ -103,7 +96,6 @@ describe("an organizer's CANCEL of an invitation (issue gh-2006)", () => {
     return onlyRow(invitationsOf(world));
   }
 
-  /** A `CANCEL` message arrives and is ingested; returns the Emails item id. */
   function cancel(
     options: { from?: string | null; sequence?: number; uid?: string; id?: string } = {},
   ): Promise<string> {
@@ -223,7 +215,6 @@ describe("an organizer's CANCEL of an invitation (issue gh-2006)", () => {
   });
 
   describe("a CANCEL that changes nothing", () => {
-    /** The invitation, its Event and its notification as they are, to be compared after the message. */
     async function snapshot() {
       return {
         invitations: await invitationsOf(world),

@@ -42,7 +42,6 @@ export interface HeartbeatRow {
   origin: HeartbeatOrigin;
 }
 
-/** The raw `project_heartbeats` row shape this module reads back from Postgres. */
 type HeartbeatDbRow = {
   id: string;
   project_item_id: string;
@@ -66,8 +65,7 @@ function mapRow(
   try {
     rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
   } catch (err) {
-    // Some callers (disabling a heartbeat) only need the row to exist, not its rule to
-    // still resolve — a heartbeat whose module was deactivated must stay disable-able.
+    // Disabling only needs the row to exist; a heartbeat whose module was deactivated must stay disable-able.
     if (!options.tolerateUnknownRuleKind) throw err;
     rule = row.rule as AnyHeartbeatRule;
   }
@@ -100,7 +98,7 @@ export interface CreateHeartbeatInput {
   origin?: HeartbeatOrigin;
 }
 
-/** An `onItemEvent` rule must name a database visible in the caller's tenant; a foreign id fails like a missing one. */
+/** A foreign tenant's database id fails like a missing one. */
 async function assertOnItemEventDatabaseExists(client: PoolClient, rule: AnyHeartbeatRule): Promise<void> {
   if (!isOnItemEventRule(rule)) return;
   if (!(await getDatabase(client, (rule as OnItemEventRule).databaseId))) {
@@ -110,11 +108,7 @@ async function assertOnItemEventDatabaseExists(client: PoolClient, rule: AnyHear
   }
 }
 
-/**
- * Announces the change of a user heartbeat to its project's agent setup, once the transaction on
- * `client` has committed. A `system` heartbeat (a seed, an internal upsert) is not part of what a
- * person set up and announces nothing.
- */
+/** Announced after commit; `system` heartbeats (seeds, internal upserts) announce nothing. */
 function announceUserHeartbeatChange(client: PoolClient, heartbeat: HeartbeatRow): HeartbeatRow {
   if (heartbeat.origin === "user") publishProjectAgentInvalidation(client, heartbeat.projectItemId);
   return heartbeat;
@@ -177,12 +171,7 @@ async function requireHeartbeat(
   return heartbeat;
 }
 
-/**
- * All of a project's heartbeats, agent-triggered and deterministic alike (issue #135's
- * `heartbeat.list`), or only those of one `origin` when it is given (issue #1910) — a rule whose
- * kind's module was deactivated still lists (matching `setHeartbeatEnabled`'s disable path) rather
- * than failing the whole call for one bad row.
- */
+/** Optionally filtered by `origin`. A rule of a deactivated module still lists instead of failing the call. */
 export async function listHeartbeatsByProject(
   client: Pool | PoolClient,
   projectItemId: string,
@@ -198,22 +187,17 @@ export async function listHeartbeatsByProject(
   return rows.map((row) => mapRow(row, moduleRuleKinds, { tolerateUnknownRuleKind: true }));
 }
 
-/** The latest scheduled occurrence of a heartbeat whose run has finished, and that run (issue #1910). */
 export interface LastFinishedOccurrenceRun {
   heartbeatId: string;
-  /** The due time the occurrence was scheduled for, an ISO timestamp. */
+  /** ISO timestamp. */
   scheduledFor: string;
-  /** The run of the occurrence with the highest `attempt` (the one `getLatestRunOfOccurrence` returns). */
+  /** The run with the highest `attempt` (as `getLatestRunOfOccurrence` returns). */
   runId: string;
 }
 
 /**
- * For each of `heartbeatIds` that has one, its latest occurrence (by `scheduled_for`) whose latest run
- * is no longer `running` (issue #1910). An occurrence with no run (queued, cancelled, or failed before
- * its run was created) and an occurrence whose run still runs are passed over for the one before it.
- * The occurrence's own `status` is not read: it says the fire task succeeded, not how the run ended.
- * One statement for all heartbeats; per heartbeat it walks `heartbeat_occurrences` newest first and
- * stops at the first match. A heartbeat with no such occurrence is absent from the result.
+ * Per heartbeat, the latest occurrence whose latest run is no longer `running` (occurrence `status` only
+ * says the fire task succeeded). Heartbeats without one are absent.
  */
 export async function listLastFinishedOccurrenceRuns(
   client: Pool | PoolClient,
@@ -245,12 +229,7 @@ export async function listLastFinishedOccurrenceRuns(
   }));
 }
 
-/**
- * Scoped lookup for `heartbeat.history`'s ownership check: a single `WHERE` on both
- * `id` and `project_item_id`, so a `heartbeatId` that exists but belongs to another
- * project produces the exact same empty result as an unknown id (issue #135's "cross-project
- * ids are indistinguishable from unknown ids") — never a two-step exists-then-owns check.
- */
+/** One `WHERE` on id and project, so another project's id is indistinguishable from an unknown one. */
 export async function getHeartbeatForProject(
   client: Pool | PoolClient,
   projectItemId: string,
@@ -265,13 +244,8 @@ export async function getHeartbeatForProject(
 }
 
 /**
- * The condition of the tenant-wide heartbeat reads of a Semp chat run (issue #2018), over `project_heartbeats h`;
- * `$1` is the calling run's project. A heartbeat is left out when its project holds a `read` or `write` grant on
- * a database flagged `sensitive` and the calling project holds none on that database: the heartbeat's run
- * results could reveal that data. A `none` row is a refusal, not a grant, so it neither excludes a heartbeat
- * nor lets a caller through. The grant model is `agent_database_grants` (issue #1810); a grant on a database
- * that is not sensitive is not counted. The decision and its semantics are recorded in
- * docs/adr/2026-11-13-a-semp-chat-run-reads-the-heartbeats-of-every-project.md.
+ * `$1` is the calling run's project. Excludes heartbeats of a project holding a `read`/`write` grant on a
+ * `sensitive` database the caller lacks (their results could reveal it). `none` rows are refusals, not grants.
  */
 const SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION = `NOT EXISTS (
   SELECT 1 FROM agent_database_grants own_grant
@@ -282,12 +256,7 @@ const SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION = `NOT EXISTS (
       WHERE caller_grant.project_item_id = $1 AND caller_grant.database_id = own_grant.database_id
         AND caller_grant.access IN ('read', 'write')))`;
 
-/**
- * The heartbeats of every project of the tenant that a Semp chat run whose project is `callingProjectItemId` may
- * read (issue #2018), oldest first: all of them except those of a project with a sensitive-database grant the
- * calling project lacks (`SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION`). Like `listHeartbeatsByProject`, a rule whose
- * kind's module was deactivated still lists. Tenant isolation is the row-level security of `project_heartbeats`.
- */
+/** Oldest first, minus the sensitive exclusion; tenant isolation is the table's RLS. */
 export async function listHeartbeatsVisibleToChatRun(
   client: Pool | PoolClient,
   callingProjectItemId: string,
@@ -302,10 +271,7 @@ export async function listHeartbeatsVisibleToChatRun(
   return rows.map((row) => mapRow(row, moduleRuleKinds, { tolerateUnknownRuleKind: true }));
 }
 
-/**
- * One heartbeat by id from the set `listHeartbeatsVisibleToChatRun` returns, in one statement: an id that is
- * unknown, belongs to another tenant or is excluded by the sensitive rule gives the same `null` (issue #2018).
- */
+/** One statement; unknown, other-tenant and excluded ids all give `null`. */
 export async function getHeartbeatVisibleToChatRun(
   client: Pool | PoolClient,
   callingProjectItemId: string,
@@ -320,12 +286,7 @@ export async function getHeartbeatVisibleToChatRun(
   return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
 }
 
-/**
- * Whether a Semp chat run whose project is `callingProjectItemId` may reach the heartbeats of `targetProjectItemId`
- * (issue #1846): `false` when the target project holds a sensitive-database grant the calling project lacks, the
- * same `SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION` that hides its heartbeats from the chat run's reads. The write tools
- * ask it before they create an automation in a project that has no heartbeat yet to look up.
- */
+/** Same sensitive exclusion, for a project that has no heartbeat to look up yet. */
 export async function isProjectReachableByChatRun(
   client: Pool | PoolClient,
   callingProjectItemId: string,
@@ -341,12 +302,8 @@ export async function isProjectReachableByChatRun(
 }
 
 /**
- * The manual-fire lookup (issue #1453): the heartbeat by id, scoped to one project when
- * `projectItemId` is given and to the tenant alone when it is `null`, row-locked with
- * `FOR UPDATE`. The lock is what makes the enabled check and the enqueue that follow it in the
- * same transaction hold against a concurrent `setHeartbeatEnabled`, which takes the same row lock
- * to update it. Must run on a `PoolClient` inside `withTransaction`: `FOR UPDATE` on a bare pool
- * releases its lock after the one statement.
+ * `FOR UPDATE`, scoped to `projectItemId` or (when `null`) the tenant, so the enabled check and enqueue hold
+ * against `setHeartbeatEnabled`. Must run inside `withTransaction`.
  */
 export async function lockHeartbeatForManualFire(
   client: PoolClient,
@@ -363,12 +320,7 @@ export async function lockHeartbeatForManualFire(
   return rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
 }
 
-/**
- * Recomputes next_fire_at using the same pure function as the sweep — deterministic at write
- * time. Only the row's `enabled` flag is needed from the *current* state — never its current
- * rule — so replacing a heartbeat whose existing rule kind's module was deactivated (e.g. to
- * point it at a different, working rule) isn't itself blocked by that old rule failing to parse.
- */
+/** Reads only the current `enabled` flag, never the old rule, so replacing a rule of a deactivated module works. */
 export async function updateHeartbeatRule(
   client: PoolClient,
   id: string,
@@ -397,12 +349,7 @@ export async function updateHeartbeatRule(
 export const HEARTBEAT_NAME_MAX_LENGTH = 200;
 export const HEARTBEAT_TASK_MAX_LENGTH = 4000;
 
-/**
- * Renames a heartbeat (`project_heartbeats.name`, the title of an automation). Touches nothing
- * else: `rule`, `enabled` and `next_fire_at` are left as they are, so a rule whose module was
- * deactivated does not block a rename. Returns null when no heartbeat with this id is visible
- * to the caller's tenant.
- */
+/** Touches only `name`, so a deactivated module's rule does not block a rename. `null` when not visible. */
 export async function updateHeartbeatName(
   client: Pool | PoolClient,
   id: string,
@@ -419,15 +366,10 @@ export async function updateHeartbeatName(
     `UPDATE project_heartbeats SET name = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
     [id, trimmed],
   );
-  // Zero rows is a valid outcome: no heartbeat with this id is visible to the caller's tenant.
   return rowCount && rows[0] ? mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }) : null;
 }
 
-/**
- * Sets `action_config.task` of a `core.agentRun` heartbeat, keeping every other `action_config`
- * key. Returns null when no heartbeat with this id is visible to the caller's tenant; a heartbeat
- * with another action is a validation error, because this edit is defined for `core.agentRun` only.
- */
+/** Keeps other `action_config` keys. `null` when not visible; a non-`core.agentRun` heartbeat is a validation error. */
 export async function updateHeartbeatTask(
   client: Pool | PoolClient,
   id: string,
@@ -439,8 +381,7 @@ export async function updateHeartbeatTask(
       field: "task",
     });
   }
-  // The action check is part of the UPDATE's WHERE, so a concurrent action change cannot slip
-  // between a check and the write.
+  // The action check is part of the UPDATE's WHERE, so a concurrent action change cannot slip in between.
   const { rows, rowCount } = await client.query<HeartbeatDbRow>(
     `UPDATE project_heartbeats
      SET action_config = jsonb_set(action_config, '{task}', to_jsonb($2::text))
@@ -448,7 +389,6 @@ export async function updateHeartbeatTask(
      RETURNING ${COLUMNS}`,
     [id, task, CORE_AGENT_RUN_ACTION_ID],
   );
-  // Zero rows is a valid outcome: the heartbeat is invisible to the tenant or has another action.
   if (rowCount && rows[0]) return mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true });
   const { rows: existing } = await client.query<{ action_id: string }>(
     `SELECT action_id FROM project_heartbeats WHERE id = $1`,
@@ -460,10 +400,7 @@ export async function updateHeartbeatTask(
   });
 }
 
-/**
- * Disabling is a plain flag flip; re-enabling recomputes from now — occurrences missed while paused are not caught up.
- * Enabling or disabling a user heartbeat announces the change of its project's agent setup after the commit.
- */
+/** Re-enabling recomputes from now (missed occurrences are not caught up). User heartbeats announce after commit. */
 export async function setHeartbeatEnabled(
   client: PoolClient,
   id: string,
@@ -471,9 +408,7 @@ export async function setHeartbeatEnabled(
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
 ): Promise<HeartbeatRow> {
   if (!enabled) {
-    // Disabling must never depend on the rule still being parseable: a heartbeat whose rule
-    // kind's module was deactivated needs to be disable-able precisely because it can no
-    // longer be scheduled, not stuck enabled forever for the same reason.
+    // Disabling must not depend on the rule parsing: a heartbeat of a deactivated module must be disable-able.
     const { rows } = await client.query<HeartbeatDbRow>(
       `UPDATE project_heartbeats SET enabled = false, next_fire_at = NULL WHERE id = $1 RETURNING ${COLUMNS}`,
       [id],
@@ -482,8 +417,7 @@ export async function setHeartbeatEnabled(
     return announceUserHeartbeatChange(client, mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }));
   }
 
-  // Re-enabling does need the rule: computing next_fire_at requires knowing which calculator
-  // (core or module) applies, so this still throws if the owning module is inactive.
+  // Re-enabling needs the rule to pick a calculator, so this throws while the owning module is inactive.
   const heartbeat = await requireHeartbeat(client, id, moduleRuleKinds);
   const nextFireAt = !isOnItemEventRule(heartbeat.rule)
     ? await computeNextFireAtNow(client, heartbeat.rule, moduleRuleKinds)
@@ -506,9 +440,7 @@ export async function recomputeAllForTimezoneChange(
     `SELECT id, rule FROM project_heartbeats WHERE enabled AND next_fire_at IS NOT NULL FOR UPDATE`,
   );
   for (const row of rows) {
-    // Same deactivated-module guard as sweepDueHeartbeats: one row whose rule kind no longer
-    // resolves must not abort the whole batch (and the whole timezone-change transaction) —
-    // record the failure and move on, leaving that row's next_fire_at as-is.
+    // One unresolvable rule must not abort the batch (and the timezone transaction): record it, keep its next_fire_at.
     let rule: AnyHeartbeatRule;
     let nextFireAt: Date | null;
     try {
@@ -531,37 +463,22 @@ export async function recordHeartbeatFailure(client: Pool | PoolClient, id: stri
   await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [id, error]);
 }
 
-/** `suffix` is an `itemId` for an `onItemEvent` fire; distinct suffixes never collapse onto or replace each other's job. */
+/** `suffix` is an `itemId` for an `onItemEvent` fire; distinct suffixes never replace each other's job. */
 export function heartbeatFireJobKey(heartbeatId: string, suffix?: string): string {
   return suffix ? `heartbeat-fire:${heartbeatId}:${suffix}` : `heartbeat-fire:${heartbeatId}`;
 }
 
-/**
- * The scheduled-occurrence job key (issue #84's generation protocol, superseding #213's plain
- * `heartbeat-fire:${heartbeatId}:${occurrenceId}`). Every generation of the same occurrence gets
- * a distinct key, so reactivating a cancelled or stale-queued occurrence never collapses onto —
- * or is mistaken for — the job an old, still-finishing handler was enqueued for.
- */
+/** One key per generation, so a reactivated occurrence is never mistaken for an old handler's job. */
 export function occurrenceFireJobKey(heartbeatId: string, occurrenceId: string, generation: number): string {
   return `heartbeat-fire:${heartbeatId}:${occurrenceId}:${generation}`;
 }
 
-/**
- * The manual-trigger dedup key (issue #136's `heartbeat.trigger`) — deliberately distinct from
- * `heartbeatFireJobKey`'s scheduler key so a pending manual fire can never collapse onto (and
- * thus silently steal the attribution of) a pending scheduled one, or vice versa. Two manual
- * triggers for the same heartbeat before the first has started running do collapse onto one
- * job, same replace semantics as the scheduler key.
- */
+/** Distinct from scheduler keys so manual and scheduled fires never steal attribution; repeats collapse. */
 export function manualHeartbeatFireJobKey(heartbeatId: string): string {
   return `heartbeat-fire:manual:${heartbeatId}`;
 }
 
-/**
- * The dedup key of the retry of one failed heartbeat run (issue #1908). Two requests to retry the same run
- * collapse onto one job, and the key is distinct from `manualHeartbeatFireJobKey` and from the scheduler keys, so
- * a retry never replaces the attribution of a pending manual or scheduled fire.
- */
+/** Repeated retries of one run collapse; distinct from manual and scheduler keys. */
 export function retryHeartbeatFireJobKey(runId: string): string {
   return `heartbeat-fire:retry:${runId}`;
 }
@@ -569,11 +486,7 @@ export function retryHeartbeatFireJobKey(runId: string): string {
 const HEARTBEAT_OCCURRENCE_STATUSES = ["queued", "running", "succeeded", "failed", "cancelled"] as const;
 export type HeartbeatOccurrenceStatus = (typeof HEARTBEAT_OCCURRENCE_STATUSES)[number];
 
-/**
- * The status of one heartbeat occurrence in the current tenant (issue #1908). An occurrence is expected to exist
- * for the caller's id, because `agent_runs.heartbeat_occurrence_id` is a foreign key; a missing one is a broken
- * invariant and throws, as does a status the table's check constraint does not allow.
- */
+/** A missing occurrence (FK from `agent_runs`) or unknown status throws. */
 export async function getHeartbeatOccurrenceStatus(
   client: Pool | PoolClient,
   occurrenceId: string,
@@ -589,14 +502,8 @@ export async function getHeartbeatOccurrenceStatus(
 }
 
 /**
- * Whether a fire job of this heartbeat is waiting for a worker or running on one (issue #1453's
- * manual trigger refuses while one is). Matches the manual key and the scheduler keys the fire paths
- * build (`occurrenceFireJobKey`, and `heartbeatFireJobKey` with an item suffix), which all start with
- * `heartbeatFireJobKey(id)` followed by `:`. A job counts only
- * while it can still run: locked, or with attempts left. A permanently failed job keeps its key
- * until `queueFailedJobsPrune` deletes it, and a keyed enqueue revives it, so it must not block.
- * Reads the `jobs` view of graphile-worker 0.17.3 (`key`, `locked_at`, `attempts`, `max_attempts`),
- * the same read `findTranscriptionJobId` makes.
+ * Matches every key starting `heartbeatFireJobKey(id)` + `:`. Only runnable jobs count (locked or attempts
+ * left): a permanently failed job keeps its key until pruned. Reads graphile-worker 0.17.3's `jobs` view.
  */
 export async function hasWaitingHeartbeatFireJob(client: Pool | PoolClient, heartbeatId: string): Promise<boolean> {
   const { rows } = await client.query<{ waiting: boolean }>(
@@ -610,11 +517,7 @@ export async function hasWaitingHeartbeatFireJob(client: Pool | PoolClient, hear
   return requireSingleRow(rows, "heartbeat fire job lookup").waiting;
 }
 
-/**
- * The onItemEvent write path: called from the choke-point, in the same transaction as
- * the item write that just happened, for every enabled onItemEvent heartbeat watching
- * this database+event. `next_fire_at` stays NULL for these — they are invisible to the sweep.
- */
+/** Runs in the item write's transaction. These heartbeats keep `next_fire_at` NULL, invisible to the sweep. */
 export async function triggerOnItemEventHeartbeats(
   client: PoolClient,
   databaseId: string,
@@ -622,7 +525,7 @@ export async function triggerOnItemEventHeartbeats(
   itemId: string,
   queueAffinity: ActionQueueAffinity = createActionQueueAffinity(),
 ): Promise<void> {
-  // Served by project_heartbeats_on_item_event_idx (0052): its partial predicate must match this WHERE verbatim.
+  // Served by project_heartbeats_on_item_event_idx: its partial predicate must match this WHERE verbatim.
   const { rows } = await client.query<{ id: string; action_id: string }>(
     `SELECT id, action_id FROM project_heartbeats
      WHERE enabled
@@ -652,14 +555,14 @@ export interface SweptHeartbeat {
   id: string;
 }
 
-/** One chunk's outcome from {@link sweepDueHeartbeats} — see its docstring for `lastId`/`exhausted`. */
+/** See {@link sweepDueHeartbeats} for `lastId`/`exhausted`. */
 export interface SweepChunkResult {
   fired: SweptHeartbeat[];
   lastId: string | null;
   exhausted: boolean;
 }
 
-/** Keyset page size for `sweepDueHeartbeats` — one transaction per chunk, this many rows each. */
+/** Keyset page size; one transaction per chunk. */
 const SWEEP_CHUNK_SIZE = 100;
 
 export interface OccurrenceInsertResult {
@@ -669,25 +572,10 @@ export interface OccurrenceInsertResult {
 }
 
 /**
- * Inserts the `queued` occurrence for one due fire, or reactivates an existing one for the same
- * `(heartbeat_id, scheduled_for)` (issue #84's generation protocol, superseding #213's plain
- * conflict-is-always-a-no-op rule). `scheduled_for` is the row's *old* `next_fire_at` — the due
- * time this sweep is firing for, not any newly computed one.
- *
- * A conflicting `cancelled` row means edit-away/edit-back or disable/re-enable recomputed the
- * schedule back onto a timestamp whose occurrence was already cancelled: reactivate it in place
- * (new `rule_snapshot`, `status` back to `queued`, cleared `first_started_at`/`last_error`,
- * incremented `generation`) and treat it like a fresh occurrence.
- *
- * A conflicting `queued` row whose `rule_snapshot` no longer matches the rule the sweep just saw
- * means the still-pending occurrence's snapshot went stale (the rule was edited since it was
- * queued): replace the snapshot and bump `generation` in place, preserving the occurrence's id and
- * `queued` status — a concurrently starting handler blocks on this same row lock and, once
- * released, sees the fresh snapshot.
- *
- * Every other conflict (`queued` with a matching snapshot, or `running`/`succeeded`/`failed`) is
- * an idempotent no-op: `null` tells the caller not to enqueue a job or advance the schedule again.
- * `running`/`succeeded`/`failed` occurrences are never reactivatable, matching or not.
+ * Inserts the `queued` occurrence (`scheduled_for` = old `next_fire_at`) or handles the conflict:
+ * - `cancelled`: reactivate with a new snapshot and bumped `generation`;
+ * - `queued` with a stale snapshot: replace it and bump `generation` (a starting handler waits on the lock);
+ * - otherwise a no-op returning `null` (no enqueue, no schedule advance).
  */
 async function insertHeartbeatOccurrence(
   client: PoolClient,
@@ -707,16 +595,15 @@ async function insertHeartbeatOccurrence(
     return { occurrenceId: inserted[0].id, generation: inserted[0].generation, jobKeyMode: "replace" };
   }
 
-  // Lock the existing row under the same locks the sweep already holds on the heartbeat, so a
-  // concurrent handler-start (prepareHeartbeatOccurrenceFire's own FOR UPDATE on this row) waits
-  // for whichever reactivation below commits, then re-reads the fresh snapshot/generation.
+  // Same locks the sweep holds, so a concurrent handler start (its FOR UPDATE on this row) waits for the
+  // reactivation and then re-reads snapshot and generation.
   const { rows: existingRows } = await client.query<{ id: string; status: string; snapshot_matches: boolean }>(
     `SELECT id, status, (rule_snapshot = $3::jsonb) AS snapshot_matches
      FROM heartbeat_occurrences WHERE heartbeat_id = $1 AND scheduled_for = $2 FOR UPDATE`,
     [heartbeatId, scheduledFor, snapshotJson],
   );
   const existing = existingRows[0];
-  if (!existing) return null; // the conflicting row vanished (heartbeat/occurrence cascade) between the insert and this lock
+  if (!existing) return null; // vanished by cascade between the insert and this lock
 
   if (existing.status === "cancelled") {
     const { rows } = await client.query<{ generation: number }>(
@@ -749,39 +636,16 @@ async function insertHeartbeatOccurrence(
     };
   }
 
-  return null; // queued-with-matching-snapshot, running, succeeded, or failed: never reactivatable
+  return null; // never reactivatable
 }
 
 /**
- * The minute-granularity sweep: `FOR UPDATE SKIP LOCKED` is what guarantees "exactly
- * once", not transaction atomicity nor jobKey — two overlapping sweeps could otherwise
- * both select the same row under READ COMMITTED. This same query and update also *is*
- * the catch-up policy: a row whose next_fire_at fell in the past while the server was
- * down is picked up on the first sweep after restart and fired exactly once.
+ * One chunk of the minute sweep. `FOR UPDATE SKIP LOCKED` gives exactly-once firing across overlapping
+ * sweeps and is the catch-up policy: a time missed while down fires once after restart.
  *
- * `next_fire_at` only moves here for a *fixed* rule (`dailyTime`/`weekly`), immediately to its
- * next calendar occurrence — queue delay can never shift a calendar-anchored rule. A *floating*
- * rule (`interval`/`everyNDays`) is set to `NULL` instead: it stays scheduling-less until the
- * fire task's first attempt actually starts and computes the next occurrence from that real
- * execution time, not from this enqueue time (issue #213's fix for the delay-shifts-schedule
- * bug). `last_fired_at` is no longer touched here either — the first attempt sets it, for both
- * fixed and floating rules, to `first_started_at`.
- *
- * One chunk of at most `SWEEP_CHUNK_SIZE` due rows of the current scope (row-level security narrows
- * the query to the current tenant), keyset-paginated by `id` via `afterId` — the caller
- * (`handleHeartbeatSweepTask`) runs it once per tenant, each chunk in its own transaction, looping until
- * `exhausted`, so a failure partway through a sweep leaves earlier chunks committed instead of
- * rolling back the whole tick. Pagination is by `id`, not by `next_fire_at`: a row this sweep
- * deliberately leaves due (an unparseable rule, or a non-reactivatable occurrence conflict —
- * both `continue` below without changing `next_fire_at`) must be visited at most once per sweep.
- * `ORDER BY next_fire_at` would instead put such a row first in every subsequent chunk's page,
- * since its `next_fire_at` never advances past `now()`.
- *
- * The next fire time is computed from each row's own `db_now` (Postgres' `now()` at select time),
- * never the application clock — an application clock that lags the database clock must not
- * recompute a fixed rule's next occurrence as still due, which would re-select the row next sweep
- * and hit the `(heartbeat_id, scheduled_for)` conflict `insertHeartbeatOccurrence` treats as an
- * idempotent no-op, permanently stalling that heartbeat.
+ * Fixed rules move to their next calendar time here; floating rules get `NULL` until the first attempt
+ * computes it from the real start. Paginated by `id`, not `next_fire_at`, so rows deliberately left due
+ * do not head every page. Times use the row's `db_now`, never the app clock, which could lag and stall a rule.
  */
 export async function sweepDueHeartbeats(
   client: PoolClient,
@@ -808,10 +672,8 @@ export async function sweepDueHeartbeats(
   const timezone = await getSystemTimezone(client);
   const fired: SweptHeartbeat[] = [];
   for (const row of rows) {
-    // A row whose rule kind belongs to a module deactivated since it was last scheduled must
-    // not be newly dispatched: record the failure and leave next_fire_at as-is (still due) so
-    // reactivating the module lets the next sweep pick it back up, instead of enqueueing a
-    // heartbeat fire job for a rule core can no longer even parse.
+    // A rule of a module deactivated since last scheduling is not dispatched: record the failure and keep
+    // next_fire_at due, so reactivating the module lets a later sweep pick it up.
     let rule: AnyHeartbeatRule;
     let calendarNextFireAt: Date | null;
     try {
@@ -824,7 +686,7 @@ export async function sweepDueHeartbeats(
     }
 
     const reactivation = await insertHeartbeatOccurrence(client, row.id, row.next_fire_at, rule);
-    if (!reactivation) continue; // idempotent no-op: a non-reactivatable occurrence for this exact due time already exists
+    if (!reactivation) continue; // a non-reactivatable occurrence for this due time already exists
     const { occurrenceId, generation, jobKeyMode } = reactivation;
 
     const nextFireAt = isFloatingRuleKind(rule.kind) ? null : calendarNextFireAt;
@@ -854,32 +716,10 @@ export type OccurrenceFirePreparation =
   | { outcome: "proceed"; heartbeat: HeartbeatRow };
 
 /**
- * The occurrence fire task's "first attempt, lock and decide" step (issue #213, extended by #84's
- * generation protocol). Locks the heartbeat and occurrence row together.
- *
- * The very first check is `generation`: the payload's generation must equal the row's current
- * generation, or this job was enqueued for a generation that a reactivation (cancelled-occurrence
- * or stale-queued-snapshot replace, see `insertHeartbeatOccurrence`) has since superseded. A stale
- * generation is a successful no-op — it never touches status, `rule_snapshot`, or heartbeat
- * scheduling — so an old handler can only finish or remove its own generation's job, never the
- * reactivated one.
- *
- * With a matching generation, it compares the heartbeat's *current* `rule` against the
- * occurrence's `rule_snapshot` with plain PostgreSQL `jsonb` equality — never by re-parsing either
- * side, so a disabled heartbeat or one whose rule kind's module went inactive since the sweep
- * still compares correctly. A disabled heartbeat or a rule that no longer matches its snapshot
- * cancels the occurrence and executes nothing; the disable/rule-edit transaction that caused the
- * mismatch already owns recomputing or clearing `next_fire_at`, so this never touches heartbeat
- * scheduling.
- *
- * Only a genuine first attempt (`first_started_at` still `NULL`) sets `first_started_at`,
- * `status = 'running'`, `project_heartbeats.last_fired_at`, and — for a floating rule only — the
- * freshly computed `next_fire_at`. A retry (the job was re-attempted after a failure) finds
- * `first_started_at` already set and skips straight to `"proceed"` without touching any of that
- * state again, reusing the same occurrence and timestamp.
- *
- * Runs as its own short transaction, separate from the (possibly long) handler execution that
- * follows a `"proceed"` result — the row locks here must never be held across that call.
+ * The fire task's first step, in its own short transaction (never held across the handler):
+ * 1. a stale `generation` is a no-op, so an old handler never touches a reactivated occurrence;
+ * 2. `rule` vs `rule_snapshot` by `jsonb` equality; disabled or mismatched cancels the occurrence;
+ * 3. only a first attempt sets the start, `running`, `last_fired_at` and a floating `next_fire_at`.
  */
 export async function prepareHeartbeatOccurrenceFire(
   pool: Pool,
@@ -915,19 +755,16 @@ export async function prepareHeartbeatOccurrenceFire(
       [occurrenceId, heartbeatId],
     );
     const row = rows[0];
-    if (!row) return { outcome: "missing" }; // heartbeat/occurrence deleted (cascade) since enqueue
+    if (!row) return { outcome: "missing" }; // deleted (cascade) since enqueue
 
-    if (row.generation !== generation) return { outcome: "stale" }; // superseded by a reactivation; this job's generation is dead
+    if (row.generation !== generation) return { outcome: "stale" }; // superseded by a reactivation
 
     if (!row.enabled || !row.rules_match) {
       await client.query(`UPDATE heartbeat_occurrences SET status = 'cancelled' WHERE id = $1`, [occurrenceId]);
       return { outcome: "cancelled" };
     }
 
-    // Same deactivated-module guard as the sweep and the non-occurrence fire path: a rule kind
-    // whose owning module went inactive between the sweep enqueuing this job and it running now
-    // must degrade (record the failure, don't execute) instead of throwing and retrying up to
-    // max_attempts against a module that retrying can't reactivate.
+    // The rule's module went inactive since enqueue: degrade (record, do not execute) instead of retrying.
     let rule: AnyHeartbeatRule;
     try {
       rule = parseHeartbeatRule(row.rule, moduleRuleKinds);
@@ -962,11 +799,8 @@ export async function prepareHeartbeatOccurrenceFire(
       }
     }
 
-    // Built from the row already locked above, tolerating an unparseable rule (its module may
-    // have gone inactive between the sweep and this fire) — the handler dispatch that follows
-    // only needs `actionId`/`actionConfig`/`projectItemId`, never the parsed `rule` itself, so
-    // this must degrade the same way `listHeartbeatsByProject`/`setHeartbeatEnabled`'s disable
-    // path do rather than throw and turn a graceful skip into a retriable job error.
+    // Tolerates an unparseable rule: dispatch only needs action, config and project, so this degrades
+    // instead of becoming a retriable job error.
     const heartbeat = mapRow(row, moduleRuleKinds, { tolerateUnknownRuleKind: true });
     return { outcome: "proceed", heartbeat };
   });
@@ -990,19 +824,8 @@ export async function failHeartbeatOccurrence(
 }
 
 /**
- * The fire task's "the failure happened before or instead of the action handler" close-out — the
- * counterpart of `failHeartbeatOccurrence` for a handler failure. Runs inside the caller's
- * transaction on the fire job's final attempt, when preparation, the affinity check or the handler
- * lookup threw.
- *
- * A floating rule's `next_fire_at` is `NULL` from the sweep until the fire's first attempt commits
- * its preparation; when that never happened, this recomputes it from the database clock so the
- * heartbeat is not silently unscheduled. When the rule cannot be parsed or computed any more, the
- * row stays unscheduled (the next edit/enable recomputes it) and `last_error` says so.
- *
- * A given `occurrenceId` still `queued` or `running` is marked `failed`; a terminal occurrence is
- * left alone. Returns the heartbeat's `id`/`name` for the notification, or `null` when the
- * heartbeat is gone.
+ * Final-attempt close-out when setup (preparation, affinity, handler lookup) threw. Restores a floating
+ * rule's `NULL` `next_fire_at` from the database clock if it can, and fails a `queued`/`running` occurrence.
  */
 export async function recordHeartbeatFireSetupFailure(
   client: PoolClient,
@@ -1027,8 +850,7 @@ export async function recordHeartbeatFireSetupFailure(
   if (!row) return null;
 
   if (row.enabled && row.next_fire_at === null) {
-    // Read before the try: a database failure here must propagate as itself, not be recorded as
-    // an unrestorable rule (and a failed query has already aborted the transaction anyway).
+    // Read before the try: a database failure must propagate as itself, not be recorded as an unrestorable rule.
     const timezone = await getSystemTimezone(client);
     let restored: { ok: true; nextFireAt: Date | null } | { ok: false; error: string };
     try {
@@ -1064,7 +886,7 @@ export async function recordHeartbeatFireSetupFailure(
   }
 
   if (occurrenceId !== undefined) {
-    // Zero rows is a valid outcome: the occurrence is already terminal (or gone) and stays as it is.
+    // Zero rows is valid: the occurrence is already terminal or gone.
     await client.query(
       `UPDATE heartbeat_occurrences SET status = 'failed', last_error = $2
        WHERE id = $1 AND status IN ('queued', 'running')`,

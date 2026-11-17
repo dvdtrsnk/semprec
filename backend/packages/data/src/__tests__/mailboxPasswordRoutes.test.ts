@@ -79,19 +79,17 @@ const ICLOUD_SETTINGS: VerifiedMailServerSettings = {
 };
 
 let admin: Pool;
-/** The runtime role row-level security applies to; every production call and every assertion on rows goes through it. */
 let runtime: Pool;
 let tenant: string;
 let userId: string;
 
-/** Runs `fn` in one transaction of `tenantId` on the runtime role. */
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
 /**
- * The member as `serve.ts` sets it: the real `verifyMailCredentials`. A case that mounts it stubs the
- * per-endpoint connection attempts, so no mail server is contacted.
+ * The member as `serve.ts` sets it (the real `verifyMailCredentials`); a case mounting it stubs the
+ * per-endpoint connection attempts.
  */
 const PRODUCTION_VERIFICATION: MailboxPasswordRouteDependencies = {
   mailServerClients: { verifyPassword: verifyMailCredentials },
@@ -99,11 +97,9 @@ const PRODUCTION_VERIFICATION: MailboxPasswordRouteDependencies = {
 
 interface AcceptingVerifier {
   dependencies: MailboxPasswordRouteDependencies;
-  /** What the route handed the verification, one entry per call. */
   calls: VerifyMailCredentialsInput[];
 }
 
-/** A verification that accepts every login: the fixed iCloud endpoints, or 993 and 465 with TLS on the hosts it was given. */
 function acceptingVerifier(): AcceptingVerifier {
   const calls: VerifyMailCredentialsInput[] = [];
   return {
@@ -127,14 +123,12 @@ type Throttle = NonNullable<MailboxPasswordRouteDependencies["throttle"]>;
 
 interface RecordingThrottle {
   throttle: Throttle;
-  /** The action and the user id of every attempt the route asked for, in order. */
   attempts: Array<[string, string]>;
-  /** How often the route released a granted attempt. */
   releases: () => number;
 }
 
 /**
- * A limiter with the answers of `semprec-api`'s `ClientIpThrottle`: it grants every attempt with a
+ * A limiter answering like `semprec-api`'s `ClientIpThrottle`: it grants every attempt with a
  * reservation, or refuses every one with `refuseWithSeconds`. `onAttempt` runs when the route asks.
  */
 function recordingThrottle(options: { refuseWithSeconds?: number; onAttempt?: () => void } = {}): RecordingThrottle {
@@ -162,15 +156,12 @@ function recordingThrottle(options: { refuseWithSeconds?: number; onAttempt?: ()
 }
 
 interface ConnectOptions {
-  /** The verification side of the container; an accepting verification when absent. */
   dependencies?: MailboxPasswordRouteDependencies;
-  /** The limiter the route is mounted with: one that grants every attempt when absent, none for `null`. */
   throttle?: Throttle | null;
   tenantId?: string;
   locale?: string;
 }
 
-/** Calls the route handler the way the adapter does: inside the caller's tenant, with the session's user. */
 function connect(body: unknown, options: ConnectOptions = {}): Promise<{ status: number; item: ItemRow }> {
   const handler = createMailboxPasswordConnectRouteHandler(runtime, {
     ...(options.dependencies ?? acceptingVerifier().dependencies),
@@ -181,7 +172,6 @@ function connect(body: unknown, options: ConnectOptions = {}): Promise<{ status:
   );
 }
 
-/** The rejection of `work`, or a failure when it resolved. */
 async function rejectionOf(work: Promise<unknown>): Promise<unknown> {
   const settled = await work.then(
     () => ({ rejected: false as const }),
@@ -193,7 +183,6 @@ async function rejectionOf(work: Promise<unknown>): Promise<unknown> {
 
 const syncJobEnvelope = z.object({ tenantId: z.string(), payload: z.object({ mailboxItemId: z.string() }) });
 
-/** The queued first-sync jobs of `tenantId`, by mailbox id. */
 async function queuedSyncJobs(tenantId = tenant): Promise<string[]> {
   const payloads = await readJobPayloadsByIdentifier(admin, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC);
   return payloads
@@ -213,12 +202,10 @@ interface MailboxRows {
 
 const NOTHING: MailboxRows = { items: [], credentials: [], settings: [], syncStates: [], jobs: [] };
 
-/** What `mailboxRows` reads of a tenant that holds exactly one mailbox, `id`, with every part of it. */
 function oneWholeMailbox(id: string | undefined): Record<keyof MailboxRows, Array<string | undefined>> {
   return { items: [id], credentials: [id], settings: [id], syncStates: [id], jobs: [id] };
 }
 
-/** The ids of everything a mailbox consists of, as `tenantId` sees them. */
 async function mailboxRows(tenantId = tenant): Promise<MailboxRows> {
   const rows = await inTenant(async (client) => {
     const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
@@ -234,7 +221,6 @@ async function mailboxRows(tenantId = tenant): Promise<MailboxRows> {
   return { ...rows, jobs: await queuedSyncJobs(tenantId) };
 }
 
-/** What the route stored for one mailbox, read back through the stores the sync and send paths read. */
 async function storedMailbox(mailboxId: string, tenantId = tenant) {
   return inTenant(async (client) => {
     const credentialTypes = await client.query<{ credential_type: string }>(
@@ -251,7 +237,6 @@ async function storedMailbox(mailboxId: string, tenantId = tenant) {
   }, tenantId);
 }
 
-/** A mailbox of another connect flow, written through the production writers: an item, and what `fill` adds to it. */
 async function existingMailbox(
   fill: (client: PoolClient, mailbox: { databaseId: string; id: string }) => Promise<void>,
   tenantId = tenant,
@@ -267,7 +252,6 @@ async function existingMailbox(
   }, tenantId);
 }
 
-/** Records `address` as the mailbox's provider account address, as a connect flow does. */
 function recordingProviderAddress(address: string) {
   return async (client: PoolClient, mailbox: { id: string }): Promise<void> => {
     await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
@@ -275,7 +259,6 @@ function recordingProviderAddress(address: string) {
   };
 }
 
-/** Lists `alias` among the mailbox's addresses without recording it as a provider account address. */
 function listingAlias(alias: string) {
   return (client: PoolClient, mailbox: { databaseId: string; id: string }): Promise<void> =>
     writeMailboxAddresses(client, {
@@ -286,7 +269,6 @@ function listingAlias(alias: string) {
     });
 }
 
-/** Seeds the system databases of tenant zero and one user, on a database emptied of every earlier test's rows. */
 async function seedTenantZero(): Promise<void> {
   await resetDatabase(admin);
   tenant = getTenantZeroId();
@@ -299,7 +281,6 @@ async function seedTenantZero(): Promise<void> {
   userId = user.id;
 }
 
-/** A second tenant with its own system databases. */
 async function secondTenant(): Promise<string> {
   const other = await createTestTenant(admin, { status: "provisioning" });
   await provisionTenant(runtime, other);
@@ -309,8 +290,8 @@ async function secondTenant(): Promise<string> {
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
 
 /**
- * Records every call to the mail and database loggers, whatever the configured level, and silences them.
- * Returns the arguments of the calls so far, serialized with the message and stack of every logged error.
+ * Records every call to the mail and database loggers, whatever the level, and silences them. Returns
+ * the calls' arguments, serialized with every logged error's message and stack.
  */
 function recordLogCalls(): () => string {
   const calls: unknown[][] = [];
@@ -327,13 +308,11 @@ function recordLogCalls(): () => string {
     );
 }
 
-/** Everything of a thrown value that an error log or an error response could carry. */
 function errorText(error: unknown): string {
   if (!(error instanceof Error)) return JSON.stringify(error);
   return `${error.name} ${error.message} ${error.stack ?? ""} ${JSON.stringify(error)} ${JSON.stringify(Object.getOwnPropertyDescriptors(error))}`;
 }
 
-/** A gate a test opens once: `opened` settles after `open()`. */
 function gate(): { opened: Promise<void>; open: () => void } {
   let release: () => void = () => undefined;
   const opened = new Promise<void>((resolve) => {
@@ -342,7 +321,6 @@ function gate(): { opened: Promise<void>; open: () => void } {
   return { opened, open: () => release() };
 }
 
-/** Rejects when `work` has not settled after ten seconds, so an orchestration that went wrong fails with its name. */
 function withinTenSeconds<T>(work: Promise<T>, what: string): Promise<T> {
   const timeout = new Promise<never>((_resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${what} did not happen within 10 s`)), 10_000);
@@ -354,7 +332,6 @@ function withinTenSeconds<T>(work: Promise<T>, what: string): Promise<T> {
   return Promise.race([work, timeout]);
 }
 
-/** Resolves once a backend of the test database waits for a lock another transaction holds. */
 async function waitForLockWaiter(): Promise<void> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
     const { rows } = await admin.query<{ waiting: number }>(
@@ -367,8 +344,8 @@ async function waitForLockWaiter(): Promise<void> {
 }
 
 /**
- * Reads every entry of a ZIP archive into memory through the central directory, which carries each entry's
- * sizes even when the local header defers them to a data descriptor (as yazl writes them).
+ * Reads every ZIP entry through the central directory, which carries each entry's sizes even when the
+ * local header defers them to a data descriptor (as yazl writes them).
  */
 function readZip(archive: Buffer): Map<string, Buffer> {
   const eocd = archive.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
@@ -394,7 +371,6 @@ function readZip(archive: Buffer): Map<string, Buffer> {
   return entries;
 }
 
-/** A blob storage that keeps what the export writes in memory. */
 function capturingStorage(): { storage: BlobStorageWriter; written: Buffer[] } {
   const written: Buffer[] = [];
   return {
@@ -580,7 +556,6 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
     });
 
     it("stores port 143 with starttls when the generic server accepts IMAP only there", async () => {
-      // The route runs the real verifyMailCredentials, as serve.ts sets it, over the stubbed attempts.
       const imap = vi
         .spyOn(connections, "verifyImapServerConnection")
         .mockResolvedValueOnce("unreachable")
@@ -893,7 +868,6 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
 
       const error = await rejectionOf(connect(GENERIC_BODY, { dependencies: verifier.dependencies, throttle: null }));
 
-      // A plain error, which the adapter answers with a generic 500, and no domain status.
       expect(error).toBeInstanceOf(Error);
       expect(error).not.toBeInstanceOf(ChokePointError);
       if (!(error instanceof Error)) throw new Error("expected an Error");
@@ -915,7 +889,6 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
   describe("the duplicate rule", () => {
     beforeEach(seedTenantZero);
 
-    /** Expects the 409 of the duplicate rule. */
     function expectAlreadyConnected(error: unknown): void {
       expect(error).toBeInstanceOf(ProviderAccountAlreadyConnectedError);
       if (!(error instanceof ProviderAccountAlreadyConnectedError)) throw new Error("expected the duplicate refusal");
@@ -953,7 +926,7 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
     });
 
     it("matches an address list written with commas and capitals, as the list's other readers parse it", async () => {
-      // A list from before issue #1454, when the generic write accepted any text for `addresses`.
+      // A list from when the generic write accepted any text for `addresses`.
       await existingMailbox((client, mailbox) =>
         updateItemWithClient(
           client,
@@ -984,8 +957,8 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       let competitor: string | undefined;
       const dependencies: MailboxPasswordRouteDependencies = {
         mailServerClients: {
-          // The duplicate rule has passed once by now. No index holds an alias, so the read inside the
-          // write transaction is what refuses this request.
+          // The duplicate rule has passed once by now. No index holds an alias, so the read inside the write
+          // transaction is what refuses this request.
           verifyPassword: async () => {
             competitor = await existingMailbox(listingAlias(ADDRESS));
             return ICLOUD_SETTINGS;

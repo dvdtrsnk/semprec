@@ -30,7 +30,6 @@ export interface ItemAutomationRow {
   lastAttemptAt: string | null;
 }
 
-/** The raw `item_automation` row shape this module reads back from Postgres. */
 type ItemAutomationDbRow = {
   item_id: string;
   status: string;
@@ -59,11 +58,7 @@ function mapRow(row: ItemAutomationDbRow): ItemAutomationRow {
 
 const COLUMNS = "item_id, status, error, error_code, source, attempts, last_attempt_at";
 
-/**
- * Idempotent: a second call for the same item is a no-op, so re-firing the onItemEvent
- * 'create' trigger (e.g. a retried heartbeatFireCore job) never resets an in-flight or
- * already-resolved row back to 'pending'.
- */
+/** Idempotent, so a re-fired create trigger never resets an in-flight or resolved row to 'pending'. */
 export async function ensureItemAutomation(client: PoolClient, itemId: string): Promise<ItemAutomationRow> {
   const inserted = await client.query<ItemAutomationDbRow>(
     `INSERT INTO item_automation (item_id) VALUES ($1) ON CONFLICT (item_id) DO NOTHING RETURNING ${COLUMNS}`,
@@ -84,7 +79,6 @@ export async function getItemAutomation(client: PoolClient, itemId: string): Pro
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** Row-locking read used before a mutation, inside the caller's transaction — same pattern as `itemsStore.lockItemById`. */
 export async function lockItemAutomation(client: PoolClient, itemId: string): Promise<ItemAutomationRow | null> {
   const { rows } = await client.query<ItemAutomationDbRow>(
     `SELECT ${COLUMNS} FROM item_automation WHERE item_id = $1 FOR UPDATE`,
@@ -93,7 +87,7 @@ export async function lockItemAutomation(client: PoolClient, itemId: string): Pr
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** A `locked` row is never touched by the heartbeat, on success or failure — the WHERE guards both write paths below. */
+/** The job's writes skip a `locked` row on success and failure alike (WHERE guard). */
 export async function markItemAutomationDone(
   client: PoolClient,
   itemId: string,
@@ -106,7 +100,7 @@ export async function markItemAutomationDone(
   if (result.rowCount === null || result.rowCount > 1) throw new Error("Unexpected automation completion count");
 }
 
-/** `attempts` is a cumulative counter across the whole history (including across daily retry batches), not reset per batch. */
+/** `attempts` is cumulative across all retry batches. */
 export async function markItemAutomationError(
   client: PoolClient,
   itemId: string,
@@ -134,11 +128,8 @@ export async function markItemAutomationNotFound(
 }
 
 /**
- * Opens one processing attempt of a job that counts every attempt, not only failed ones (issue
- * #248's transcription pipeline): moves the row back to `pending`, increments the cumulative
- * `attempts` and stamps `last_attempt_at`, keeping `error` until a later success clears it.
- * Returns the updated row, or `null` when the row is `locked` or absent — either way the caller
- * must not process the item.
+ * Opens an attempt for a job that counts every attempt, not only failures: back to `pending`, `attempts + 1`,
+ * `error` kept until a success clears it. `null` when the row is `locked` or absent; do not process then.
  */
 export async function startItemAutomationAttempt(
   client: PoolClient,
@@ -154,10 +145,8 @@ export async function startItemAutomationAttempt(
 }
 
 /**
- * Records a failed attempt's reason without counting it again (`startItemAutomationAttempt`
- * already did): `status` stays `pending` while retries remain, and becomes `error` once the
- * failure is permanent. `errorCode` replaces the stored code (`null` clears it). Returns whether a row was written — `false` when the row is `locked`
- * or absent.
+ * Records the reason without counting the attempt again: `pending` while retries remain, `error` once permanent.
+ * `false` when the row is `locked` or absent.
  */
 export async function recordItemAutomationFailure(
   client: PoolClient,
@@ -174,13 +163,8 @@ export async function recordItemAutomationFailure(
 }
 
 /**
- * The one status transition the heartbeat may never make on its own — settable only by
- * the user (or an authorized agent). Unlocking only transitions a row that is actually
- * `'locked'` (guarded in the WHERE clause, not just by convention): without this, calling
- * this with `locked: false` on a `'done'`/`'error'` row it was never asked to unlock would
- * overwrite that status with `'pending'`, misrepresenting a settled outcome. A no-op call
- * (locking an already-locked row, or unlocking a row that isn't locked) returns the row
- * unchanged instead of erroring.
+ * Only the user (or an authorized agent) may lock. Unlocking is guarded to rows actually `locked`, so it never
+ * overwrites a settled `done`/`error` with `pending`. A no-op call returns the row unchanged.
  */
 export async function setItemAutomationLocked(
   client: PoolClient,
@@ -199,11 +183,8 @@ export async function setItemAutomationLocked(
 }
 
 /**
- * Sets the row back to `pending` from any status, `locked` included, and forgets the outcome that was recorded
- * for it: `error`, `errorCode` and `source`. `attempts` and `lastAttemptAt` keep counting across the whole history.
- * This is the user's request to look again (issue #1793), so unlike the job's writes above it does not skip a
- * `locked` row. The row must exist (`ensureItemAutomation`); it is updated, and so row-locked, until the caller's
- * transaction ends.
+ * The user's request to look again: back to `pending` from any status, `locked` included, forgetting the recorded
+ * outcome; `attempts` keeps counting. The row stays row-locked until the caller's transaction ends.
  */
 export async function resetItemAutomationToPending(client: PoolClient, itemId: string): Promise<void> {
   const result = await client.query(
@@ -215,13 +196,8 @@ export async function resetItemAutomationToPending(client: PoolClient, itemId: s
 }
 
 /**
- * Rows the daily retry sweep re-enqueues: every item under one of the given databases
- * whose whole 3-attempt batch has failed. Joins `items` to scope by database, since
- * `item_automation` itself carries no database_id (it is deliberately generic, not
- * library-specific) — `items.id` is unique across all partitions, so the join needs no
- * `database_id` predicate of its own, same as `itemsStore.getItemsByIds`. Excludes a
- * soft-deleted item: retrying metadata for something the user deleted would just fail (or
- * silently no-op) forever, spending a fresh 3-attempt batch every day for nothing.
+ * Joins `items` because `item_automation` carries no database id; soft-deleted items are excluded so the sweep
+ * does not spend a fresh batch on them every day.
  */
 export async function listErroredItemAutomationForDatabases(
   client: PoolClient,
@@ -238,10 +214,7 @@ export async function listErroredItemAutomationForDatabases(
   return rows.map(mapRow);
 }
 
-/**
- * Whether any item of the database still has an automation error: a row in `error` of an item that is not
- * soft-deleted, the same items the retry sweep looks at (`listErroredItemAutomationForDatabases`).
- */
+/** Same item set as the retry sweep: `error` rows of non-deleted items. */
 export async function databaseHasItemAutomationError(client: PoolClient, databaseId: string): Promise<boolean> {
   const { rows } = await client.query<{ present: boolean }>(
     `SELECT EXISTS (
@@ -270,7 +243,7 @@ export async function listRetryableLibraryAutomationForDatabases(
   return rows.map(mapRow);
 }
 
-/** Removes the automation state of a hard-deleted item (trash purge, issue #675); zero rows is valid — most items have none. */
+/** For a hard-deleted item (trash purge); most items have no row. */
 export async function deleteItemAutomation(client: PoolClient, itemId: string): Promise<void> {
   await client.query(`DELETE FROM item_automation WHERE item_id = $1`, [itemId]);
 }
@@ -284,7 +257,6 @@ interface ItemAutomationRead {
   nextAttemptAt: string | null;
 }
 
-/** Reads automation and its library retry schedule for a page of tenant-visible items. */
 export async function readAutomationForItems(
   client: PoolClient,
   itemIds: string[],

@@ -92,7 +92,6 @@ describe("choke-point relationPropertyOps", () => {
     expect(inverseProperty?.config).toMatchObject({ targetDatabaseId: db.id });
     expect(inverseProperty?.config.relationDefinitionId).toBeTruthy();
 
-    // The stored row must agree with the returned value — not just the in-memory patch.
     const reloadedInverse = await chokePoint.getProperty(inverseProperty!.id);
     expect(reloadedInverse?.locked).toBe(true);
   });

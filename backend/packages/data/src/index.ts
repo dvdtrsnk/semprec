@@ -310,7 +310,7 @@ export {
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
 export { resolveMailModuleIds, type MailModuleIds } from "./mail/mailModuleIds.js";
-// Issues #1739 and #1745: the existing Gmail watch and Graph subscription owners, hosted by semprec-api.
+// The Gmail watch and Graph subscription owners, hosted by semprec-api.
 export {
   createGmailPubSubDispatcher,
   createGmailWatchLifecycleFactory,
@@ -547,7 +547,7 @@ export {
   type ProjectedTaskOccurrence,
 } from "./tasks/projectTaskOccurrences.js";
 
-// Explicit, not `export *`: the module's reservation re-point for the Journal restore hook (issue #1666) is internal.
+// Explicit, not `export *`: the Journal restore hook's reservation re-point is internal.
 export {
   computeJournalPeriodKey,
   describeJournalPeriods,
@@ -660,16 +660,14 @@ export * from "./auth/sessionsStore.js";
 export * from "./auth/userAgentDevice.js";
 export * from "./auth/loginAttemptsStore.js";
 export * from "./auth/emailNormalization.js";
-// Explicit so the length constant (`DISPLAY_NAME_MAX_LENGTH`) stays out of the frozen public surface
-// (`publicSurface.test.ts`); the routes only need the validator.
+// Explicit so `DISPLAY_NAME_MAX_LENGTH` stays out of the frozen public surface (`publicSurface.test.ts`).
 export { normalizeDisplayName } from "./auth/displayName.js";
 export * from "./auth/loginLockout.js";
 export * from "./auth/authActions.js";
 export * from "./auth/nativeBridge.js";
 export * from "./auth/passwordResetStore.js";
 export * from "./auth/passwordResetMail.js";
-// Explicit so the timing-floor constant (`PASSWORD_RESET_REQUEST_MIN_DURATION_MS`) stays out of the
-// frozen public surface (`publicSurface.test.ts`); only the data package's own tests need it.
+// Explicit so `PASSWORD_RESET_REQUEST_MIN_DURATION_MS` stays out of the frozen public surface.
 export {
   PASSWORD_RESET_TOKEN_TTL_SECONDS,
   PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS,
@@ -686,8 +684,7 @@ export * from "./push/pushSubscriptionsStore.js";
 export * from "./push/pushSubscriptionActions.js";
 export { handlePushDismissTask } from "./push/pushDismissJob.js";
 
-// `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
-// NOT exported here — see that file's header comment (issue #124).
+// `mcpGrantsAdminStore.ts`'s user-only mutations are deliberately not exported (unreachable from agent code).
 export {
   type McpToolDisplayLabel,
   type McpToolRegistration,
@@ -779,18 +776,15 @@ export type {
 export * from "./mcp/mcpServerConnectionStateStore.js";
 export { executeMcpInvocation, MCP_FAILURE_KINDS } from "./mcp/mcpToolExecution.js";
 export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecution.js";
-// `approvalRequestsStore.ts`'s `decideApprovalRequest` is deliberately NOT exported here — see
-// that file's header comment (issue #131), same convention as `mcpGrantsAdminStore.ts`. Only
-// this wrapper (which also enqueues the reserved execution job in the same transaction) is
-// reachable from a route handler.
+// `decideApprovalRequest` is deliberately not exported: route handlers reach only this wrapper, which also enqueues
+// the execution job in the same transaction.
 export * from "./mcp/approvalDecisionAction.js";
 export { createPendingApprovalRequestAndPublish, publishApprovalRequestChange } from "./mcp/approvalRequestRealtime.js";
 // The module exports exactly CreateModuleToolApprovalRequestInput and createModuleToolApprovalRequest.
 export * from "./mcp/moduleToolApprovalRequest.js";
 
-// `mcpRunCredentialsStore.ts`'s raw hash-keyed lookup is deliberately NOT exported here, mirroring
-// `sessionsStore.ts`'s `getActiveSessionByTokenHash`: only the action-layer wrapper that hashes the
-// presented token internally (`resolveMcpRunCredential`) is reachable from a composition root.
+// The raw hash-keyed run-credential lookup is deliberately not exported (as with `getActiveSessionByTokenHash`):
+// only `resolveMcpRunCredential`, which hashes the presented token itself, is reachable.
 export type { ActiveMcpRunCredential } from "./mcp/mcpRunCredentialsStore.js";
 // The module exports exactly MintMcpRunCredentialInput, MintMcpRunCredentialResult, mintMcpRunCredential,
 // resolveMcpRunCredential and MCP_RUN_CREDENTIAL_TTL_SECONDS; publicSurface.test.ts pins the runtime names.

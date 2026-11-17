@@ -24,11 +24,7 @@ function fixturePath(name: string): string {
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-/**
- * Loads both fixture modules the way a real composition root would: explicit paths, both
- * declared active from the start — proving `ModuleRegistry.loadModule` accepts two
- * independent modules whose ids/task names/heartbeat rule kinds/database keys never collide.
- */
+/** Loads both fixture modules from explicit paths, both active, as a composition root would. */
 async function loadRegistry(): Promise<ModuleRegistry> {
   const registry = new ModuleRegistry(async () => new Set(["e2e-alpha", "e2e-beta"]));
   await registry.loadModule(fixturePath("alphaModule.js"));
@@ -56,8 +52,7 @@ describe("e2e: cross-module scenario (module-contract issue #114)", () => {
     );
     expect(rows.map((row) => row.table_name).sort()).toEqual(["e2e_alpha_marker", "e2e_beta_marker"]);
 
-    // Re-running must be a no-op (forward-only, tracked in the shared schema_migrations table)
-    // rather than re-executing the file and failing on the already-existing table.
+    // Re-running is a no-op: migrations are forward-only and tracked in schema_migrations.
     await expect(runMigrations(pool, path.join(MIGRATIONS_DIR, "alpha"))).resolves.not.toThrow();
   });
 

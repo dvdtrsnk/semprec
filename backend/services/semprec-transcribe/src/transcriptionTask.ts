@@ -93,18 +93,14 @@ function isDirectlyPlayable(mimeType: string): boolean {
 
 interface PrepareStepResult {
   normalizedBlobId: string;
-  /** The blob the app plays and seeks on the segments' timeline: the original for a directly playable type, else the rendition's. Absent from checkpoints written before this field existed. */
+  /** The original for a directly playable type, else the rendition. May be absent from older checkpoints. */
   playbackBlobId?: string | undefined;
   durationSeconds: number;
   /** The recording's own `creation_time`; `null` when it had none usable and `date` fell back to the upload time. */
   creationTime: string | null;
 }
 
-/**
- * Step 1's write transaction found the source's `file` replaced while ffmpeg was normalizing the
- * previous one. Nothing is written and the normalized audio is discarded; retryable — the job's
- * next attempt normalizes the new file instead.
- */
+/** The source's `file` was replaced while ffmpeg ran. Nothing is written; retryable. */
 export class TranscriptionSourceChangedError extends Error {
   constructor(fileItemId: string) {
     super(`Files item '${fileItemId}' changed its file while step 1 was normalizing it`);
@@ -112,11 +108,7 @@ export class TranscriptionSourceChangedError extends Error {
   }
 }
 
-/**
- * A step's transaction found the Transcriptions row `locked` by a user. Thrown before the
- * transaction writes anything, so nothing of that step lands; the pipeline stops without
- * recording a failure, since `locked` is the user's to keep.
- */
+/** A user locked the Transcriptions row; the pipeline stops without recording a failure. */
 export class TranscriptionLockedError extends Error {
   constructor(transcriptId: string) {
     super(`Transcriptions item '${transcriptId}' was locked by a user`);
@@ -125,9 +117,8 @@ export class TranscriptionLockedError extends Error {
 }
 
 /**
- * The Transcriptions row or its source Files item is in Trash or gone. Thrown by a step's first
- * read, before it writes or makes a paid call; the handler marks `item_automation` `error`/`deleted`
- * and ends the job successfully, with no notification.
+ * The transcript or its source is in Trash or gone. Thrown before any write or paid call; the
+ * handler marks `item_automation` `error`/`deleted` and ends the job successfully.
  */
 export class TranscriptionStoppedError extends Error {
   constructor(what: string, itemId: string) {
@@ -137,10 +128,8 @@ export class TranscriptionStoppedError extends Error {
 }
 
 /**
- * A shutdown signal (graphile-worker's `Runner.stop()` aborting `helpers.abortSignal`) arrived
- * between checkpoints. Thrown instead of letting the step continue, so the handler's `catch`
- * re-enqueues a fresh job to resume from the checkpoints already written rather than losing the
- * in-flight step to a SIGKILL.
+ * Shutdown (`helpers.abortSignal`) arrived between checkpoints. The handler re-enqueues a fresh
+ * job that resumes from the written checkpoints instead of losing the step to a SIGKILL.
  */
 export class TranscriptionInterruptedError extends Error {
   constructor(fileItemId: string, where: string) {
@@ -149,29 +138,23 @@ export class TranscriptionInterruptedError extends Error {
   }
 }
 
-/** Identifies the source file a run transcribes; all step 0 and the attempt start need. */
 interface TranscriptionSourceContext {
   pool: Pool;
   filesDatabaseId: string;
   fileItemId: string;
 }
 
-/** Steps 1–8 also know the Transcriptions row step 0 created, whose lock every one of their transactions checks. */
 interface TranscriptionStepContext extends TranscriptionSourceContext {
   transcriptId: string;
-  /** True once graphile-worker's `Runner.stop()` has begun; checked between checkpoints via `throwIfShutdownRequested`. */
   shutdownRequested: () => boolean;
 }
 
-/** Throws `TranscriptionInterruptedError` when the step context's shutdown signal has fired. Called between checkpoints, never mid-write, so it never interrupts a step's own transaction. */
+/** Called between checkpoints only, never inside a step's transaction. */
 function throwIfShutdownRequested(context: TranscriptionStepContext, where: string): void {
   if (context.shutdownRequested()) throw new TranscriptionInterruptedError(context.fileItemId, where);
 }
 
-/**
- * One checkpointed step. It opens its own transactions, so a step doing slow non-database work
- * (step 1's ffmpeg) never holds one open across it, and it is a no-op once its checkpoint exists.
- */
+/** A step opens its own transactions (none held across slow work) and is a no-op once checkpointed. */
 type TranscriptionStep = (context: TranscriptionStepContext) => Promise<void>;
 
 async function lockTranscriptionItem(client: PoolClient, databaseId: string, itemId: string): Promise<ItemRow | null> {
@@ -186,7 +169,6 @@ function requireSource(source: ItemRow | null, fileItemId: string): ItemRow {
   return source;
 }
 
-/** Reads the transcript item id step 0 checkpointed for this source, the row steps 1–8 write to. */
 function requireTranscriptId(source: ItemRow, fileItemId: string): string {
   const transcriptId = source.computed[TRANSCRIPTION_CREATE_COMPUTED_KEY];
   if (typeof transcriptId !== "string")
@@ -204,7 +186,6 @@ const prepareCheckpointSchema = z.object({
   creationTime: z.string().nullable(),
 });
 
-/** Reads step 1's checkpoint, the input steps 2 and 3 both consume. */
 function requirePrepareCheckpoint(source: ItemRow, fileItemId: string): PrepareStepResult {
   const parsed = prepareCheckpointSchema.safeParse(source.computed[TRANSCRIPTION_PREPARE_COMPUTED_KEY]);
   if (!parsed.success)
@@ -229,7 +210,6 @@ const asrCheckpointSchema = z.object({
 });
 type AsrCheckpoint = z.infer<typeof asrCheckpointSchema>;
 
-/** The ASR checkpoint written so far, or the empty shape before step 3's first chunk lands. */
 function readAsrCheckpoint(source: ItemRow): AsrCheckpoint {
   const raw = source.computed[TRANSCRIPTION_ASR_COMPUTED_KEY];
   if (raw === undefined) return { language: null, chunks: {} };
@@ -237,25 +217,18 @@ function readAsrCheckpoint(source: ItemRow): AsrCheckpoint {
 }
 
 /**
- * `withTransaction` at `repeatable read`, the default for bracketed transaction phases.
- * The prepare write phase uses the narrower recording-specific READ COMMITTED exception.
- * The isolation level is set by `withTransaction`'s `isolation` option on the `BEGIN` itself.
- * Built on `withTransaction` rather than `createPoolClientTransactionRunner` because only the
- * former fires the `runAfterCommit` invalidations `updateItemWithClient` registers.
+ * Bracketed phases run at `repeatable read` (the prepare write phase is the READ COMMITTED
+ * exception). Uses `withTransaction` because only it fires the `runAfterCommit` invalidations
+ * `updateItemWithClient` registers.
  */
 function withRepeatableReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return withTransaction(pool, fn, { isolation: "repeatable_read" });
 }
 
 /**
- * Locks the Files source, transcript and automation in that order in the caller's transaction and throws
- * `TranscriptionLockedError` when a user locked it. Held until that transaction ends, so a user's
- * lock cannot land between this check and the writes after it — it waits for them to commit.
- * Each step checks at entry, and again before a checkpoint write or the next chunk's paid call,
- * so a lock set while a step runs stops the pipeline before its next write or paid call.
- * Then throws `TranscriptionStoppedError` when the transcript or the source Files item is in
- * Trash or gone, so no step writes to or pays for deleted data. Returns the transcript row it
- * locked, for a step that decides on the transcript's `status`.
+ * Locks source, transcript and automation in that order until the caller's transaction ends, so a
+ * user's lock cannot land between this check and the writes after it. Steps call it at entry and
+ * before each checkpoint write or paid call. Returns the locked transcript row.
  */
 export async function requireTranscriptionUnlocked(
   client: PoolClient,
@@ -282,12 +255,9 @@ export type TranscriptionStepContextIds = Pick<
 >;
 
 /**
- * Step 0: database-only, so one transaction covers the checkpoint check, the Transcripts row and the
- * checkpoint. The transcript's `name` is written only from the upload's own name (`recording_requests.name`),
- * when it set one, and never from the Files item's filename (issue #1830). When the upload named an Event
- * (`recording_requests.event_item_id`, issue #1644), the same transaction writes the Transcripts `event` edge
- * to it, provided the Event is still in this tenant's Events database and not in the Trash; otherwise no edge
- * is written and step 6 matches the transcript as usual. See docs/adr/2026-11-10-transcription-create-writes-the-uploads-event.md.
+ * Step 0, one transaction. `name` comes only from the upload's own name, never the filename. An
+ * Event named by the upload gets the `event` edge here when it is live in this tenant; otherwise
+ * step 6 matches as usual.
  */
 async function runCreateStep({
   pool,
@@ -314,7 +284,6 @@ async function runCreateStep({
         databaseId: transcripts.id,
         idempotencyKey: `transcription:${fileItemId}`,
         properties: {
-          // The user-owned `name` comes only from the upload's own name, never from the filename (issue #1830).
           ...(recording?.name ? { name: recording.name } : {}),
           status: "processing",
           link: transcriptionSourceLink(fileItemId),
@@ -349,11 +318,8 @@ async function runCreateStep({
 }
 
 /**
- * Step 1 (`prepare`), bracketed per
- * `docs/adr/2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions.md` so no
- * transaction stays open while ffmpeg runs: a read transaction captures the source blob, the media
- * work runs outside any transaction, and a write transaction re-checks the source before writing
- * the normalized audio's blob row, the Transcripts `date` and the checkpoint.
+ * Step 1 (`prepare`): a read transaction captures the source blob, ffmpeg runs outside any
+ * transaction, and a write transaction re-checks the source before writing.
  */
 async function runPrepareStep(
   { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
@@ -409,7 +375,7 @@ async function runPrepareStep(
     // when an audio track starts late or a video continues after the audio ends.
     const durationSeconds = await probeNormalizedDuration(blobStorage, normalized.storageKey);
 
-    // The recording prepare ADR requires a fresh statement snapshot after the item reservations.
+    // READ COMMITTED: needs a fresh statement snapshot after the item locks.
     await withTransaction(pool, async (client) => {
       const isolation = await client.query<{ transaction_isolation: string }>("SHOW transaction_isolation");
       if (isolation.rows[0]?.transaction_isolation !== "read committed") {
@@ -473,11 +439,7 @@ async function runPrepareStep(
   }
 }
 
-/**
- * Step 2 (`diarize`): calls `gateway.diarize()` exactly once over the entire normalized recording
- * — diarization is never chunked — and checkpoints its speaker turns before step 3 starts, per
- * issue #182. No transaction stays open across the gateway call, mirroring step 1's bracket.
- */
+/** Step 2 (`diarize`): one unchunked call over the whole recording, bracketed like step 1. */
 async function runDiarizeStep(
   { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
   blobStorage: BlobStorageWriter,
@@ -529,10 +491,8 @@ async function runDiarizeStep(
 }
 
 /**
- * Step 3 (`ASR`): calls `gateway.transcribe()` once per 20-minute, 30-second-overlap chunk of the
- * normalized recording (`computeAsrChunkBoundaries`), checkpointing each chunk's raw result right
- * after it completes so a crash mid-stage repeats only the unfinished chunks. The language detected
- * on chunk 0 is passed explicitly to every later chunk, including across a resume.
+ * Step 3 (`ASR`): one call per overlapping chunk, each checkpointed so a crash repeats only
+ * unfinished chunks. Chunk 0's detected language is passed to every later chunk, also on resume.
  */
 async function runAsrStep(
   context: TranscriptionStepContext,
@@ -624,7 +584,6 @@ function requireTranscript(transcript: ItemRow | null, transcriptId: string): It
   return transcript;
 }
 
-/** Step 4's output, the input steps 5 and 7 both require. */
 function requireSegments(transcript: ItemRow): TranscriptSegment[] {
   const parsed = segmentsSchema.safeParse(transcript.computed[TRANSCRIPT_SEGMENTS_COMPUTED_KEY]);
   if (!parsed.success)
@@ -635,17 +594,11 @@ function requireSegments(transcript: ItemRow): TranscriptSegment[] {
   return parsed.data;
 }
 
-/** Whether step 5 has stored the transcript's `meetingNotes` (issue #1695). */
 function hasMeetingNotes(transcript: ItemRow): boolean {
   return Object.hasOwn(transcript.computed, TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY);
 }
 
-/**
- * Step 4 (`merge`): database-only, so one transaction reads steps 1–3's checkpoints, runs the pure
- * `mergeTranscriptSegments` over them, and writes `segments` and `language` onto the Transcripts
- * row together. Written once: a transcript that already has `segments` is left untouched, so its
- * speaker keys are never rewritten.
- */
+/** Step 4 (`merge`), one transaction. Written once, so speaker keys are never rewritten. */
 async function runMergeStep({
   pool,
   filesDatabaseId,
@@ -692,15 +645,9 @@ async function runMergeStep({
 }
 
 /**
- * Step 5 (`summarize`, issue #1695): asks `gateway.complete()` for structured meeting notes over the
- * merged transcript and stores them, normalized, as `computed.meetingNotes`. The prompt carries the
- * recording's calendar day and weekday in the tenant's time zone (`Transcripts.date` with
- * `getSystemTimezone`), so the model can resolve a relative due date. Skipped when `meetingNotes`
- * already exists, so a retry after a stored result makes no second paid call. Bracketed like steps 2
- * and 3: the gateway call runs outside any transaction, and the write transaction re-checks the key
- * under the transcript's row lock, so a concurrent run's notes are kept. A transcript with no
- * segments (no speech) gets empty notes without a paid call. Older `summaryByInstruction` values are
- * left as they are; no new one is written.
+ * Step 5 (`summarize`): meeting notes into `computed.meetingNotes`, bracketed like steps 2-3. The
+ * prompt carries the recording's day in the tenant's time zone so relative due dates resolve.
+ * No segments means empty notes without a paid call.
  */
 async function runSummarizeStep(
   { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
@@ -745,14 +692,8 @@ async function runSummarizeStep(
 }
 
 /**
- * Step 6 (`match`): links the one Event whose time interval overlaps the recording's interval, or
- * otherwise creates the transcript's single suggestion card; with two or more overlapping Events one
- * paid call recommends one of them (`runEventMatch`, issue #1848). A retry of an unfinished transcript
- * converges: an existing card, or an existing edge to an Event that is not in the Trash, is left as it
- * is; an edge to an Event in the Trash is no link (issue #1743). A transcript whose `status` is already
- * `done` is not matched at all (issue #1712), so a later run of its job neither links an Event again
- * nor adds a card after the user removed the edge. The status is read from the row `lockTranscription`
- * locked. See docs/adr/2026-11-10-finished-transcripts-are-not-matched-or-suggested-again.md.
+ * Step 6 (`match`, see `runEventMatch`). A `done` transcript is not matched again, so a rerun never
+ * re-links an Event or re-adds a card the user removed.
  */
 function runMatchStep(context: TranscriptionStepContext, completionClient: AiGatewayClientPort): Promise<void> {
   const { pool, filesDatabaseId, fileItemId, transcriptId } = context;
@@ -773,13 +714,7 @@ function runMatchStep(context: TranscriptionStepContext, completionClient: AiGat
   );
 }
 
-/**
- * Step 7 (`suggestSpeakers`): proposes a card for each unmapped speaker (`runSpeakerSuggestion`, which the
- * `transcriptSpeakerSuggestion` task of issue gh-1942 shares). A transcript whose `status` is already `done` gets no
- * call, no card and no checkpoint (issue #1712): the status is read from the row `lockRun` locked, before the call and
- * again in the transaction that would write the cards. See
- * docs/adr/2026-11-10-finished-transcripts-are-not-matched-or-suggested-again.md.
- */
+/** Step 7 (`suggestSpeakers`, see `runSpeakerSuggestion`). A `done` transcript gets no call, card or checkpoint. */
 function runSuggestSpeakersStep(
   context: TranscriptionStepContext,
   completionClient: AiGatewayClientPort,
@@ -801,14 +736,9 @@ function runSuggestSpeakersStep(
 }
 
 /**
- * Step 8 (`finalize`): sets `status = done` and `item_automation` to `done` (clearing any earlier
- * attempt's `error`) in one transaction, and only once that transaction itself sees the committed
- * `segments` and `meetingNotes` (issue #1695) — a run that failed before either landed leaves the
- * row as the failure handling in `createTranscriptionTask` records it. `status` goes through
- * `updateItemWithClient`, which announces it over the generic realtime channel. The same transaction
- * resolves the transcript's `transcription` Semp problem as `recovered` (issue gh-1945). A row that is
- * already `done` only has its `item_automation` settled again, since the attempt that reached this
- * step reopened it as `pending`.
+ * Step 8 (`finalize`): one transaction sets `status = done` and `item_automation` `done` only when it
+ * sees committed `segments` and `meetingNotes`, and resolves the `transcription` problem. An already
+ * `done` row only has `item_automation` settled again (this attempt reopened it as `pending`).
  */
 async function runFinalizeStep({
   pool,
@@ -851,7 +781,6 @@ async function runFinalizeStep({
   });
 }
 
-/** Steps 1–8; step 0 runs before them, since it creates the row the attempt is counted on. */
 function createTranscriptionSteps(
   blobStorage: BlobStorageWriter,
   gatewayClient: AudioGatewayClient,
@@ -869,11 +798,7 @@ function createTranscriptionSteps(
   ];
 }
 
-/**
- * Opens this attempt on the Transcriptions row step 0 created: counts it in the cumulative
- * `item_automation.attempts` and moves the row back to `pending`. Returns the row's id, or `null`
- * when a target is deleted or a user locked the automation.
- */
+/** Counts the attempt and moves the row to `pending`; `null` when a target is deleted or locked. */
 async function startTranscriptionAttempt(
   { pool, filesDatabaseId, fileItemId }: TranscriptionSourceContext,
   transcriptId: string,
@@ -901,11 +826,6 @@ async function startTranscriptionAttempt(
   });
 }
 
-/** A rejection by the gateway's budget caps: no retry can succeed until the cap resets, so the failure is permanent at once. */
-/**
- * Maps a pipeline failure onto the stable code stored beside its diagnostic message: budget
- * exhaustion, an `ffmpeg`/`ffprobe` failure, any other gateway failure, otherwise `unknown`.
- */
 export function classifyTranscriptionFailure(err: unknown): ItemAutomationErrorCode {
   if (isBudgetRejection(err)) return "budgetExceeded";
   if (err instanceof MediaToolError) return "mediaUnreadable";
@@ -921,20 +841,11 @@ function isBudgetRejection(err: unknown): boolean {
 }
 
 /**
- * Records a failed attempt on the Transcriptions row, all in one transaction. While retries
- * remain, only `item_automation.error` and `error_code` are written and the row stays `pending`/`processing`. A
- * permanent failure also sets `item_automation.status = 'error'` and `status = error`, and writes
- * one `automation_error` notification keyed by the cumulative attempt count, so replaying the same
- * attempt's failure never adds a second one while every later permanent failure gets its own. The
- * same transaction raises the transcript's `transcription` Semp problem after the notification (issue
- * gh-1945), counting the attempt as its occurrence, so a repeated permanent failure merges into the
- * one active problem; a tenant without a user gets neither the notification nor the problem.
- * A permanent failure of a re-run of a transcript whose `status` is already `done` (issue #1712's
- * meeting-notes backfill, a manual rerun) is recorded in `item_automation` only: `status` stays
- * `done` and no notification or problem is written, because the user's finished transcript is still complete.
- * Missing or trashed targets stop without an item update or notification; an existing unlocked
- * automation is marked `error`/`deleted`. A locked automation remains unchanged.
- * Returns `"locked"` for a live target with a user lock, `"deleted"` for the stop, otherwise `"recorded"`.
+ * Records a failed attempt in one transaction. While retries remain only `item_automation.error`
+ * is written. A permanent failure also sets `status = error`, writes one `automation_error`
+ * notification keyed by the cumulative attempt count (replay-safe) and raises the `transcription`
+ * problem. A `done` transcript records the failure in `item_automation` only. Missing or trashed
+ * targets mark an unlocked automation `error`/`deleted`.
  */
 async function recordTranscriptionFailure(
   client: PoolClient,
@@ -994,10 +905,9 @@ async function recordTranscriptionFailure(
   return "recorded";
 }
 
-/** The part of graphile-worker's `JobHelpers` this task reads: which attempt of how many this run is. */
 export interface TranscriptionJobHelpers {
   job: { attempts: number; max_attempts: number };
-  /** graphile-worker 0.17 aborts this `gracefulShutdownAbortTimeout` (5s) after `Runner.stop()` begins. Optional so existing tests' `{ job: {...} }` helpers keep compiling. */
+  /** Aborted `gracefulShutdownAbortTimeout` after `Runner.stop()` begins. */
   abortSignal?: AbortSignal;
 }
 
@@ -1017,7 +927,6 @@ class TranscriptionQueueError extends Error {
   }
 }
 
-/** Creates the transcript checkpoint without entering the media pipeline. */
 export function createTranscriptionCreateTask(pool: Pool) {
   return async (payload: unknown): Promise<void> => {
     const { fileItemId } = transcriptionJobPayloadSchema.parse(payload);
@@ -1028,30 +937,10 @@ export function createTranscriptionCreateTask(pool: Pool) {
 }
 
 /**
- * Runs each declared transcription step in order; each skips itself once its checkpoint exists,
- * so a retried attempt (`transcriptionJob` is enqueued with `max_attempts: 3` and graphile-worker's
- * built-in exponential backoff) resumes from the last checkpoint without repeating a paid call.
- * Every attempt is counted on the Transcriptions row's `item_automation`, and a row a user locked
- * is left alone — checked at step entry and before checkpoint writes (`requireTranscriptionUnlocked`),
- * so a lock set mid-run keeps the running step's pending write from landing. A failure
- * is recorded by `recordTranscriptionFailure` and a safe error reaches graphile-worker for retry, except a
- * budget rejection: that is permanent at once, so once recorded the job completes instead of
- * spending its remaining attempts on calls the gateway will reject. A failure in step 0 happens
- * before there is a Transcriptions row to record it on and is returned as a safe error. When
- * `helpers.abortSignal` fires (graphile-worker's `Runner.stop()`, given the systemd unit's
- * `TimeoutStopSec` to let the in-flight chunk finish and checkpoint), the next
- * `throwIfShutdownRequested` check — before a step or an ASR chunk — throws
- * `TranscriptionInterruptedError`; the handler re-enqueues a fresh job for the same file and
- * returns normally, recording no failure, so the interrupted attempt spends none of the job's
- * three attempts and resumes from the checkpoints already written.
- * `blobStorage` defaults to the same local-filesystem backend semprec-api writes Files blobs to
- * (issue #246), configured via `FILES_STORAGE_DIR`. `gatewayClient` defaults to a loopback HTTP
- * client for `semprec-ai-gateway`'s `/internal/diarize` and `/internal/transcribe` routes
- * (issue #182), and `summaryClient` to `@semprec/ai-gateway-client`'s client for its
- * `/internal/complete` route (issue #183) — also the client step 7 suggests speaker mappings
- * with (issue #185) — both configured via
- * `AI_GATEWAY_PORT`/`AI_GATEWAY_INTERNAL_TOKEN` — the only path from this service to an AI
- * provider, per `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
+ * Runs the steps in order; each skips itself once checkpointed, so a retry resumes without
+ * repeating a paid call. A budget rejection is permanent at once: the job completes after
+ * recording it instead of spending retries. On shutdown the job is re-enqueued and returns
+ * normally, spending none of its attempts. All AI calls go through semprec-ai-gateway.
  */
 export function createTranscriptionTask(
   pool: Pool,
@@ -1059,10 +948,7 @@ export function createTranscriptionTask(
   gatewayClient?: AudioGatewayClient,
   summaryClient?: AiGatewayClientPort,
 ) {
-  // Constructed lazily (only when a run actually reaches step 2), not as an eagerly-evaluated
-  // default parameter: callers who omit `gatewayClient` and never run a job that reaches
-  // diarize/ASR (e.g. queue-runtime handler-registration checks) must not fail just because
-  // AI_GATEWAY_INTERNAL_TOKEN happens to be unset in their environment.
+  // Lazy, so callers that never reach step 2 do not need AI_GATEWAY_INTERNAL_TOKEN set.
   const resolveGatewayClient = (): AudioGatewayClient =>
     gatewayClient ??
     createHttpAudioGatewayClient({

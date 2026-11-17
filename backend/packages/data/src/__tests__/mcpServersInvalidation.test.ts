@@ -30,7 +30,6 @@ async function mcpServersDatabaseId(): Promise<string> {
   return rows[0].id;
 }
 
-/** A server item written the way the sync tests write one: straight into the store, so that no write hook runs for it. */
 async function createServer(connectionConfig: McpConnectionConfig): Promise<string> {
   const item = await withTransaction(pool, (client) =>
     itemsStore.insertItem(client, {
@@ -41,7 +40,6 @@ async function createServer(connectionConfig: McpConnectionConfig): Promise<stri
   return item.id;
 }
 
-/** Updates one server item inside a transaction of its own, rolling it back on request. */
 const patchServer = (itemId: string, propertiesPatch: Record<string, unknown>, rollBack = false) =>
   withTransaction(pool, async (client) => {
     await updateItemWithClient(client, { databaseId: mcpServersId, itemId, propertiesPatch });
@@ -92,7 +90,6 @@ describe("the mcpServers invalidation (issue #2025)", () => {
       await patchServer(itemId, { name: "Renamed server" });
 
       expect(serverEvents()).toEqual([]);
-      // The update itself was written and announced as an item write.
       expect(events.some((event) => event.scope === "item" && event.itemId === itemId)).toBe(true);
     });
 
@@ -161,7 +158,7 @@ describe("the mcpServers invalidation (issue #2025)", () => {
     });
 
     it("announces nothing when the transaction that writes the registrations rolls back", async () => {
-      // A trigger that rejects the write of `syncStatus: 'ok'`, the last statement of the registrations' transaction.
+      // Rejects the write of `syncStatus: 'ok'`, the last statement of the registrations' transaction.
       await pool.query(`
         CREATE FUNCTION test_mcp_sync_reject_ok() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
@@ -177,7 +174,6 @@ describe("the mcpServers invalidation (issue #2025)", () => {
         await withContractServer(async (_contract, itemId) => {
           await expect(syncMcpServerTools(pool, itemId)).rejects.toThrow("simulated registration failure");
 
-          // The upserts of the same transaction were rolled back with it.
           expect(await listMcpToolRegistrationsForServer(pool, itemId)).toEqual([]);
           expect(serverEvents()).toEqual([]);
         });

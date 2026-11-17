@@ -72,7 +72,6 @@ describe("createClientIpThrottle", () => {
     expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(40);
 
     clock.advanceSeconds(40);
-    // The first event has left the window, the second has not.
     expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBeNull();
     throttle.record("login", "192.0.2.1");
     expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(10);
@@ -145,8 +144,8 @@ describe("createClientIpThrottle", () => {
     clock.advanceSeconds(10);
     throttle.record("login", "192.0.2.2");
     clock.advanceSeconds(100);
-    // The login key expired; the reset key is live but recorded earlier. Plain least-recently-recorded
-    // eviction would drop the reset key; the expired-first sweep must drop the login key instead.
+    // The login key expired; the reset key is live but recorded earlier. The expired-first sweep must drop the login
+    // key, where plain LRU eviction would drop the reset key.
     throttle.record("passwordResetConsume", "192.0.2.3");
 
     expect(throttle.retryAfterSeconds("passwordResetRequest", "192.0.2.1")).toBe(890);
@@ -164,7 +163,6 @@ describe("createClientIpThrottle", () => {
     throttle.record("login", "192.0.2.2");
     throttle.record("login", "192.0.2.2");
     clock.advanceSeconds(1);
-    // Re-recording .1 makes .2 the least recently recorded key.
     throttle.record("login", "192.0.2.1");
     throttle.record("login", "192.0.2.3");
     throttle.record("login", "192.0.2.3");
@@ -188,14 +186,12 @@ describe("createClientIpThrottle", () => {
     const acquisition = throttle.tryAcquire("login", "192.0.2.1");
     if (!acquisition.granted) throw new Error("expected the attempt to be granted");
     acquisition.reservation.release();
-    // .1 is now behind .2 in insertion order, but its remaining event is older.
     clock.advanceSeconds(elapsedSeconds - 20);
     throttle.record("login", "192.0.2.3");
     throttle.record("login", "192.0.2.3");
 
     expect(throttle.retryAfterSeconds("login", "192.0.2.2")).toBe(110 - elapsedSeconds);
     expect(throttle.retryAfterSeconds("login", "192.0.2.3")).toBe(100);
-    // Both new attempts fit only if .1's remaining event was evicted.
     expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(true);
     expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(true);
   });
@@ -221,7 +217,7 @@ describe("createClientIpThrottle", () => {
     throttle.record("login", "192.0.2.1");
     clock.advanceSeconds(100);
     expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBeNull();
-    // Two live keys fit in maxKeys 2 only if the pruned key freed its slot; a leaked slot would evict .2.
+    // Two live keys fit in maxKeys 2 only if the pruned key freed its slot.
     throttle.record("login", "192.0.2.2");
     throttle.record("login", "192.0.2.2");
     throttle.record("login", "192.0.2.3");
@@ -300,7 +296,6 @@ describe("mailboxCredentialVerification (issue gh-1750)", () => {
       retryAfterSeconds: 1,
     });
 
-    // The four earliest attempts are 900 seconds old now, so four more are granted and no fifth.
     clock.advanceSeconds(1);
     for (let attempt = 0; attempt < 4; attempt++) {
       expect(throttle.tryAcquire("mailboxCredentialVerification", USER).granted).toBe(true);
@@ -332,7 +327,6 @@ describe("mailboxCredentialVerification (issue gh-1750)", () => {
     expect(throttle.retryAfterSeconds("mailboxCredentialVerification", "::ffff:192.0.2.1")).toBe(100);
     expect(throttle.retryAfterSeconds("mailboxCredentialVerification", "192.0.2.1")).toBeNull();
 
-    // The same four events under `login` fill the shared counters.
     throttle.record("login", "2001:db8:1:2::1");
     throttle.record("login", "2001:db8:1:2::1");
     throttle.record("login", "::ffff:192.0.2.1");

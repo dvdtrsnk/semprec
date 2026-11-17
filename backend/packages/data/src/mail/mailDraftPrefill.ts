@@ -1,10 +1,6 @@
-// Starts a reply, reply-all or forward draft from a received message (issue gh-1899): computes the recipients, the
-// sending address, the subject, the threading headers and the quoted text from the source message, creates the draft
-// through `createEmailDraftInMailbox` and, for a forward, copies the source's attachments through
-// `attachFileToDraft`. The create route (`mailDraftRouteHandlers.ts`) calls `createPrefilledEmailDraft` for the
-// three modes; the draft itself, its row and its edges are written by `draft.ts`, not here.
-// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md,
-// docs/adr/2026-11-14-a-mail-draft-attaches-copies-of-held-files-and-trashes-the-files-that-are-its-own.md
+// Starts a reply, reply-all or forward draft from a received message: computes recipients, sending address, subject,
+// threading headers and quoted text, creates the draft through `createEmailDraftInMailbox` and, for a forward, copies
+// the source's attachments through `attachFileToDraft`.
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
@@ -31,40 +27,28 @@ import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { htmlToPlainText } from "./mailPlainText.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 
-/** The modes that start from a received message; `new` starts from nothing and is written as the caller gave it. */
 export type PrefilledDraftMode = Exclude<MailDraftMode, "new">;
 
 export function isPrefilledDraftMode(mode: MailDraftMode): mode is PrefilledDraftMode {
   return mode !== "new";
 }
 
-/**
- * The most of the source's text a draft quotes. A received message can be far larger than the 500000 characters the
- * draft routes accept as a body, and a reply of that size could not be edited again.
- */
+/** A received message can be far larger than a draft body may be, and a reply of that size could not be edited. */
 const MAX_QUOTED_TEXT_LENGTH = 100_000;
 
-/** Every character of this class is replaced in a value that reaches a header or the draft row. */
 const UNSTORABLE_HEADER_CHARACTERS = new RegExp(UNSTORABLE_HEADER_CHARACTER.source, "gu");
 
-/** What the draft takes from its source message, before the caller's own text is added. */
 interface DraftPrefill {
-  /** The registered address of the mailbox that the draft is sent from. */
   from: string;
   to: MailDraftRecipient[];
   /** Always empty: the compose window has no Cc field, so reply-all puts every recipient into `to`. */
   cc: MailDraftRecipient[];
-  /** Always empty. */
   bcc: MailDraftRecipient[];
   subject: string;
-  /** The header line and the quoted source text; the draft body is the caller's text, an empty line and this. */
   quote: string;
-  /** The source's thread, which a forward keeps as the thread it started from. */
   threadId: string | null;
-  /** The source's Message-ID for a reply, `null` for a forward. */
   inReplyTo: string | null;
   references: string[];
-  /** The Files items the source message holds, which a forward copies. Empty for a reply. */
   attachmentFileItemIds: string[];
 }
 
@@ -72,11 +56,11 @@ interface DraftPrefillInput {
   mailboxItemId: string;
   sourceEmailItemId: string;
   mode: PrefilledDraftMode;
-  /** `users.locale` of the person the draft is made for; the quote's header lines are in this language. */
+  /** `users.locale`; the quote's header lines are in this language. */
   locale: string;
 }
 
-/** Replaces the control characters of a value that reaches a header and cuts it to `max` UTF-16 units without splitting a pair. */
+/** Cuts to `max` UTF-16 units without splitting a surrogate pair. */
 function headerText(value: string, max: number): string {
   const cleaned = value.replace(UNSTORABLE_HEADER_CHARACTERS, " ").trim();
   if (cleaned.length <= max) return cleaned;
@@ -84,7 +68,6 @@ function headerText(value: string, max: number): string {
   return cleaned.slice(0, lastKept >= 0xd800 && lastKept <= 0xdbff ? max - 1 : max);
 }
 
-/** The recipients of an envelope list that can be sent to: an address of the draft routes' shape, with a header-safe name. */
 function usableRecipients(list: readonly MailEnvelopeAddress[] | undefined): MailDraftRecipient[] {
   const recipients: MailDraftRecipient[] = [];
   for (const entry of list ?? []) {
@@ -95,7 +78,6 @@ function usableRecipients(list: readonly MailEnvelopeAddress[] | undefined): Mai
   return recipients;
 }
 
-/** The recipients without the addresses of `exclude` (normalized) and without a second entry for one address. */
 function withoutOwnAndDuplicates(
   list: readonly MailDraftRecipient[],
   exclude: ReadonlySet<string>,
@@ -110,8 +92,8 @@ function withoutOwnAndDuplicates(
 }
 
 /**
- * The address the draft is sent from: the address the source was delivered to when it is one of the mailbox's
- * addresses (in the form the mailbox lists it), otherwise the mailbox's first address, its primary one.
+ * The address the source was delivered to when the mailbox lists it (in the mailbox's form), else the mailbox's
+ * primary address.
  */
 export function sendingAddress(registered: readonly string[], deliveredTo: string | null): string {
   const delivered = deliveredTo === null ? null : normalizeEmailAddress(deliveredTo);
@@ -127,7 +109,7 @@ function withPrefix(prefix: "Re:" | "Fwd:", subject: string): string {
   return headerText(has ? cleaned : `${prefix} ${cleaned}`, MAX_SUBJECT_LENGTH);
 }
 
-/** The entities `htmlToPlainText` leaves escaped in its output, decoded in one pass so `&amp;lt;` becomes `&lt;`. */
+/** Decoded in one pass so `&amp;lt;` becomes `&lt;`. */
 const PLAIN_TEXT_ENTITIES: Readonly<Record<string, string>> = {
   "&amp;": "&",
   "&lt;": "<",
@@ -138,19 +120,16 @@ const PLAIN_TEXT_ENTITIES: Readonly<Record<string, string>> = {
 };
 
 /**
- * The markup that tells a stored body is HTML: a doctype or a comment, or the start or end tag of an HTML element that
- * mail uses, right behind the element's name a space, a slash or the end of the tag. `<petr@example.test>`,
- * `<https://example.test/a>` and `1 < 2 > 0` of a text part are no markup: after a name they have `@` or `:`.
+ * Markup that marks a stored body as HTML. `<petr@example.test>`, `<https://example.test/a>` and `1 < 2 > 0` in a text
+ * part do not match: after a name they have `@` or `:`.
  */
 const HTML_MARKUP =
   /<(?:!doctype\s+html|!--|\/?(?:html|head|body|title|meta|link|style|script|div|p|br|hr|span|a|b|i|u|s|em|strong|small|big|font|center|pre|code|blockquote|ul|ol|li|dl|dt|dd|table|thead|tbody|tfoot|tr|td|th|img|h[1-6]|section|article|header|footer|nav|main|abbr|sub|sup)(?=[\s/>]))/i;
 
 /**
- * The text of a stored body for quoting. Emails stores one `body`, the HTML part else the text part (`ingest.ts`), and
- * nothing records which, so a body with HTML markup (`HTML_MARKUP`) goes through `htmlToPlainText` as in the thread
- * read (`mailThreadDetail.ts`), line breaks the markup meant being kept first, and any other body is the text part and
- * is quoted as it is: the person sends this text, so the addresses and links in angle brackets of a text mail
- * (`Petr <petr@example.test> wrote:`) and a literal `&amp;` must reach the quote unchanged.
+ * Emails stores one `body` (the HTML part, else the text part) without recording which, so a body with HTML markup is
+ * converted like the thread read does, and any other body is quoted unchanged: angle-bracket addresses and a literal
+ * `&amp;` of a text mail must reach the quote as they are.
  */
 function plainTextOf(body: string): string {
   let text: string;
@@ -176,14 +155,12 @@ function textProperty(item: ItemRow, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-/** The source's own date, else the time it entered Semprec, else the item's creation time. */
 function sourceDate(item: ItemRow, ingestedAt: Date | null): Date {
   const stored = new Date(textProperty(item, "date"));
   if (!Number.isNaN(stored.getTime())) return stored;
   return ingestedAt ?? new Date(item.createdAt);
 }
 
-/** Returns the catalog text of a key in the person's locale, with `{name}` placeholders replaced in one pass. */
 async function loadCatalogText(
   locale: ManifestLocale,
 ): Promise<(key: string, values?: Readonly<Record<string, string>>) => string> {
@@ -200,21 +177,15 @@ function quoteLines(text: string): string[] {
 }
 
 /**
- * Computes what a reply, a reply-all or a forward of the received message `input.sourceEmailItemId` starts with, for
- * a draft of the mailbox `input.mailboxItemId`, in the caller's transaction and tenant. An unknown mailbox, an
- * unknown source (another tenant's included) and an Emails item that is no received message (it has no
- * `mail_message_meta` row, as a draft has none) are 404s; a mailbox without an address is a 400, and so is a tenant
- * time zone that Luxon cannot read. The quote's date is written by Luxon, as the settings writer validates the zone
- * with it: a fixed offset such as `UTC+2` is a zone a tenant can store, and `Intl.DateTimeFormat` throws for it.
+ * Computes what a reply, reply-all or forward of a received message starts with. 404 for an unknown mailbox or
+ * source or an Emails item with no `mail_message_meta` row (a draft); 400 for a mailbox without an address or a time
+ * zone Luxon cannot read. Luxon formats the date because the settings writer validates zones with it, and
+ * `Intl.DateTimeFormat` throws for a stored fixed offset such as `UTC+2`.
  *
- * - `reply` goes to the source's Reply-To, otherwise to its sender; `replyAll` goes to those and the source's To and
- *   Cc recipients, without any address of the mailbox and without duplicates; `forward` has no recipients. Cc and Bcc
- *   are empty in every mode.
- * - The subject is the source's with `Re: ` or `Fwd: ` in front, unless it starts with that prefix in any letter case.
- * - A reply's `inReplyTo` is the source's Message-ID and its `references` are the source's followed by that
- *   Message-ID. A forward sets neither; it keeps the source's thread id only as the thread it started from.
- * - The quote is a header line in the person's locale and the source's plain text, every line behind `> `; a
- *   forward's header lists the original sender, date, subject and recipients.
+ * - `reply` goes to Reply-To, else the sender; `replyAll` adds To and Cc minus the mailbox's own addresses and
+ *   duplicates; `forward` has no recipients. Cc and Bcc are always empty.
+ * - Subject gets `Re: ` / `Fwd: ` unless it already starts with it (any case).
+ * - A reply sets `inReplyTo` and `references`; a forward sets neither and keeps the source's thread id.
  */
 async function computeDraftPrefill(client: PoolClient, input: DraftPrefillInput): Promise<DraftPrefill> {
   const ids = await resolveMailModuleIds(client);
@@ -286,7 +257,7 @@ async function computeDraftPrefill(client: PoolClient, input: DraftPrefillInput)
   };
 }
 
-/** Values a caller gives for fields the prefill computes; a field that is present replaces the computed one. */
+/** Fields that replace the computed prefill when present. */
 export interface DraftPrefillOverrides {
   to?: MailDraftRecipient[];
   cc?: MailDraftRecipient[];
@@ -295,32 +266,24 @@ export interface DraftPrefillOverrides {
   subject?: string;
 }
 
-/** `overrides` without its absent fields, so that spreading it over the prefill replaces only what was given. */
 function definedOnly(overrides: DraftPrefillOverrides | undefined): DraftPrefillOverrides {
   return Object.fromEntries(Object.entries(overrides ?? {}).filter(([, value]) => value !== undefined));
 }
 
 export interface CreatePrefilledEmailDraftInput extends DraftPrefillInput {
-  /** The person's own text; the draft body is this text, an empty line and the quote. */
   body: string;
   /**
-   * What the caller addresses itself instead of taking it from the source: the recipients and the subject. The route
-   * passes none (its client changes them with an update); `mail.draft.create` of an agent passes those its call gave.
-   * The mailbox, the sending address, the threading and the quote always come from the source.
+   * Recipients and subject the caller sets itself (agent `mail.draft.create`); the route passes none. Mailbox,
+   * sending address, threading and quote always come from the source.
    */
   overrides?: DraftPrefillOverrides;
-  /**
-   * The limit for the attachments of a forward in a mailbox without a provider limit (`attachFileToDraft`). A
-   * forward whose source holds attachments fails with a plain error when it is absent; no other mode reads it.
-   */
+  /** Required only by a forward whose source has attachments (see `attachFileToDraft`). */
   uploadLimitBytes?: number;
 }
 
 /**
- * Creates the draft that `computeDraftPrefill` describes in the caller's transaction and tenant
- * (`createEmailDraftInMailbox`; its refusals are this function's) and returns its view. A forward then gets its own
- * copy of each of the source's attachments from `attachFileToDraft`, so the source keeps its files; a forward that
- * would pass the mailbox's attachment limit is refused with the 413 of `attachFileToDraft` and nothing is written.
+ * Creates the draft `computeDraftPrefill` describes and returns its view. A forward gets its own copy of each source
+ * attachment; one over the mailbox's attachment limit fails with the 413 of `attachFileToDraft` and writes nothing.
  */
 export async function createPrefilledEmailDraft(
   client: PoolClient,

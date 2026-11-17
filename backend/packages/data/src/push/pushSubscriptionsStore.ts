@@ -4,7 +4,6 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { SESSION_PLATFORMS } from "../auth/types.js";
 import { APNS_ENVIRONMENTS, PUSH_CHANNELS, type PushSubscriptionRow } from "./types.js";
 
-/** The raw `push_subscriptions` row shape this module reads back from Postgres. */
 type PushSubscriptionDbRow = {
   id: string;
   user_id: string;
@@ -54,11 +53,8 @@ export interface UpsertWebPushSubscriptionInput {
 }
 
 /**
- * Runs the displace-then-upsert pair shared by both channels on one transaction-scoped client.
- * `displace` revokes another user's active row for the same endpoint or token; `upsert` then
- * inserts or refreshes the caller's own row and returns no row only when a concurrent registration
- * by a different account committed in between. That is retried once; a second miss is a plain
- * `Error` (never a `ConflictError`, never naming another account).
+ * `upsert` returns no row only when another account registered concurrently; retried once, then a
+ * plain `Error` that never names the other account.
  */
 async function displaceAndUpsert(
   displace: () => Promise<number>,
@@ -74,17 +70,10 @@ async function displaceAndUpsert(
 }
 
 /**
- * Registers (or reactivates) a `web_push` subscription. A registration is owned by the user who
- * created it. An endpoint moves silently to the account registering it: any active row for this
- * `endpoint` owned by another user is revoked first, so the previous owner's row is kept (keys
- * unchanged) but no longer active, and the caller cannot tell whether one existed. The caller's own
- * active row is refreshed in place (same `id`; new session, refreshed keys) through `ON CONFLICT`
- * on its partial unique index. `push_subscriptions` is classified
- * `semprec:tenancy=global`: an endpoint or device token names one physical
- * device, so it is unique across tenants and displacement deliberately ignores the tenant. The displacement and the upsert run in one
- * transaction (opened here for a bare `Pool`), so a failed insert never leaves the previous owner
- * revoked. If a concurrent registration by another account wins the gap between the two statements,
- * both are repeated once before a plain `Error` is thrown.
+ * An endpoint moves silently to the registering account: another owner's active row is revoked
+ * first, and the caller cannot tell whether one existed. The table is `semprec:tenancy=global`
+ * because an endpoint names one physical device, so displacement deliberately ignores the tenant.
+ * Displace and upsert are atomic, so a failed insert never leaves the previous owner revoked.
  */
 export async function upsertWebPushSubscription(
   client: Pool | PoolClient,
@@ -93,7 +82,6 @@ export async function upsertWebPushSubscription(
   if (client instanceof Pool) return withTransaction(client, (c) => upsertWebPushSubscription(c, input));
   return displaceAndUpsert(
     async () => {
-      // Zero rows is the normal case: nobody else held it.
       const result = await client.query(
         `UPDATE push_subscriptions SET revoked_at = now(), updated_at = now()
          WHERE endpoint = $1 AND revoked_at IS NULL AND user_id <> $2`,
@@ -126,11 +114,7 @@ export interface UpsertApnsSubscriptionInput {
   apnsEnvironment: "sandbox" | "production";
 }
 
-/**
- * Same contract as `upsertWebPushSubscription`, keyed on `device_token` instead of `endpoint`: a
- * token moves silently to the account registering it and the previous owner's active row is
- * revoked; the caller's own active row is refreshed in place; displacement and upsert are atomic.
- */
+/** Same contract as `upsertWebPushSubscription`, keyed on `device_token`. */
 export async function upsertApnsSubscription(
   client: Pool | PoolClient,
   input: UpsertApnsSubscriptionInput,
@@ -138,7 +122,6 @@ export async function upsertApnsSubscription(
   if (client instanceof Pool) return withTransaction(client, (c) => upsertApnsSubscription(c, input));
   return displaceAndUpsert(
     async () => {
-      // Zero rows is the normal case: nobody else held it.
       const result = await client.query(
         `UPDATE push_subscriptions SET revoked_at = now(), updated_at = now()
          WHERE device_token = $1 AND revoked_at IS NULL AND user_id <> $2`,
@@ -163,11 +146,7 @@ export async function upsertApnsSubscription(
   );
 }
 
-/**
- * Explicit revocation (issue #150's authenticated revocation endpoint), scoped to `userId` so a
- * caller can't revoke a registration id it doesn't own by guessing it — same pattern as
- * `revokeSessionForUser`. Returns whether a row was actually revoked.
- */
+/** Scoped to `userId` so a guessed foreign id cannot be revoked. */
 export async function revokePushSubscriptionForUser(
   client: Pool | PoolClient,
   id: string,
@@ -181,11 +160,7 @@ export async function revokePushSubscriptionForUser(
   return (result.rowCount ?? 0) > 0;
 }
 
-/**
- * The session cascade the issue's Task requires: run in the same transaction as manual logout
- * or remote session revocation so a registration never outlives the session that created it.
- * A no-op when the session has no live registrations, which is the common case.
- */
+/** Run in the session revocation's transaction so a registration never outlives its session. */
 export async function revokePushSubscriptionsForSession(client: Pool | PoolClient, sessionId: string): Promise<void> {
   await client.query(
     `UPDATE push_subscriptions SET revoked_at = now(), updated_at = now()
@@ -194,13 +169,7 @@ export async function revokePushSubscriptionsForSession(client: Pool | PoolClien
   );
 }
 
-/**
- * The user-wide revocation (issue #1024): every registration of `userId` ends when the account's
- * access is reset. It covers rows with a NULL `session_id` as well, which the session cascade
- * never reaches. Password reset calls it on the same client as the password write, so it commits
- * or rolls back with the reset. Zero is a legitimate result: the user may have no registration.
- * Returns the number of rows it revoked.
- */
+/** Also covers rows with a NULL `session_id`, which the session cascade never reaches. */
 export async function revokeAllPushSubscriptionsForUser(client: Pool | PoolClient, userId: string): Promise<number> {
   const result = await client.query(
     `UPDATE push_subscriptions SET revoked_at = now(), updated_at = now()
@@ -213,13 +182,7 @@ export async function revokeAllPushSubscriptionsForUser(client: Pool | PoolClien
 export type ProviderInvalidationInput =
   { channel: "web_push"; endpoint: string } | { channel: "apns"; deviceToken: string };
 
-/**
- * The one repository operation for provider invalidation issue #150's Task explicitly requires:
- * a web push send answered with 404/410, or an APNs send answered with 410/`BadDeviceToken`,
- * means the provider itself says this registration is dead. Callers pass exactly the registration
- * they tried to use, never a caller-supplied search. Returns whether a row was actually revoked
- * (it may already have been, e.g. a concurrent duplicate send).
- */
+/** Callers pass exactly the registration they tried to use, never a caller-supplied search. */
 export async function revokePushSubscriptionByProviderInvalidation(
   client: Pool | PoolClient,
   input: ProviderInvalidationInput,

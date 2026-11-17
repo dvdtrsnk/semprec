@@ -51,8 +51,7 @@ import { wireRealtimeHooks } from "../wireHooks.js";
 
 const { realtimeWarn } = vi.hoisted(() => ({ realtimeWarn: vi.fn() }));
 
-// Only the realtime package's own logger is replaced so its warnings can be asserted; every other
-// logger (tenant-scope, ...) stays real.
+// Only the realtime logger is replaced so its warnings can be asserted; every other logger stays real.
 vi.mock("@semprec/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@semprec/shared")>();
   return {
@@ -73,7 +72,7 @@ afterAll(async () => {
   await pool?.end();
 });
 
-/** Resolves once `client` opens, rejecting on `error` — a rejected upgrade must reach the other branch instead. */
+/** Rejects on `error`, so a rejected upgrade reaches the other branch. */
 function waitForOpen(client: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
     client.once("open", () => resolve());
@@ -82,9 +81,8 @@ function waitForOpen(client: WebSocket): Promise<void> {
 }
 
 /**
- * `ws` hands a message over as `Buffer | ArrayBuffer | Buffer[]`, and the array case is a
- * fragmented frame — its default `toString()` joins the fragments with commas instead of
- * concatenating them, which would corrupt the JSON these tests parse.
+ * `ws` delivers `Buffer | ArrayBuffer | Buffer[]`; the array case is a fragmented frame whose default `toString()`
+ * joins fragments with commas and would corrupt the JSON.
  */
 function messageText(data: RawData): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
@@ -98,11 +96,7 @@ function messageBuffer(data: RawData): Buffer {
   return Buffer.from(data);
 }
 
-/**
- * A minimal browser-side Yjs client wired to one document over `WS /api/sync`'s binary
- * channel — exercises the same y-protocols/sync handshake a real editor client would run,
- * against the real server wiring in `syncServer.ts` (docId decode/dispatch, `docSync`).
- */
+/** A minimal Yjs client running the real y-protocols/sync handshake against the binary channel of `WS /api/sync`. */
 class TestDocClient {
   readonly ydoc = new Y.Doc();
   readonly received: Buffer[] = [];
@@ -123,7 +117,6 @@ class TestDocClient {
     this.ws.send(JSON.stringify({ type: "doc:close", docId: this.docId }));
   }
 
-  /** Applies a local mutation and sends the resulting Yjs update over the binary channel. */
   mutate(fn: (doc: Y.Doc) => void): void {
     let update: Uint8Array | null = null;
     const onUpdate = (u: Uint8Array) => (update = u);
@@ -147,9 +140,8 @@ class TestDocClient {
     const decoder = decoding.createDecoder(frame.payload);
     const messageType = decoding.readVarUint(decoder);
     if (messageType === syncProtocol.messageYjsSyncStep1) {
-      // Mirrors a real y-websocket client's bidirectional handshake: reply with whatever
-      // this client has that the server (per its state vector) is missing, and separately
-      // ask for the server's own content via this client's own SyncStep1.
+      // Mirrors y-websocket's bidirectional handshake: send what the server lacks, then request its content via
+      // SyncStep1.
       const remoteStateVector = decoding.readVarUint8Array(decoder);
       const step2Encoder = encoding.createEncoder();
       syncProtocol.writeSyncStep2(step2Encoder, this.ydoc, remoteStateVector);
@@ -168,10 +160,8 @@ class TestDocClient {
 }
 
 /**
- * Intercepts the very first `pool.connect()` call `create()` triggers — in every test in this
- * file that is `createSyncServer`'s own dedicated LISTEN connection, acquired synchronously
- * before anything else runs. Returns the real `PoolClient` so a test can force a fault on it
- * (`.emit("error", ...)`) without any test-only hook in production code.
+ * Captures the first `pool.connect()` call, which in this file is always the sync server's LISTEN connection, so a test
+ * can fault it (`.emit("error", ...)`) without a test-only hook in production code.
  */
 async function captureListenClient(
   pool: Pool,
@@ -182,10 +172,8 @@ async function captureListenClient(
   const clientPromise = new Promise<PoolClient>((resolve) => {
     resolveClient = resolve;
   });
-  // `Pool["connect"]` is overloaded (a promise-returning form and a callback-returning-`void`
-  // form); TS's `ReturnType`/`Parameters` machinery collapses that to the last overload for typing
-  // a mock implementation, which is the `void` one — spying through this narrowed, non-overloaded
-  // view of the same `pool` object keeps the mock's own type honest as promise-returning.
+  // `Pool["connect"]` is overloaded; mock typing collapses to the `void` callback overload, so spy through a
+  // non-overloaded, promise-returning view of the same pool.
   const poolConnect = pool as unknown as { connect: () => Promise<PoolClient> };
   const spy = vi.spyOn(poolConnect, "connect").mockImplementationOnce(async () => {
     const client = await originalConnect();
@@ -201,12 +189,11 @@ async function captureListenClient(
   return { syncServer, listenClient: await clientPromise };
 }
 
-/** Resolves once `client` closes, capturing the close code — never resolves on a dropped/errored connection. */
+/** Never resolves on a dropped or errored connection. */
 function waitForClose(client: WebSocket): Promise<number> {
   return new Promise((resolve) => client.once("close", (code) => resolve(code)));
 }
 
-/** Waits until `predicate()` becomes true or `timeoutMs` elapses, polling every 10ms. */
 async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -340,8 +327,7 @@ describe("createSyncServer heartbeat fallback (issue #160)", () => {
   let heartbeatPool: Pool;
 
   afterEach(async () => {
-    // Either may be unassigned when the test body threw before reaching it; an unguarded
-    // cleanup would raise a TypeError that masks that original failure.
+    // Unguarded cleanup after an early throw would raise a TypeError masking the original failure.
     const server = httpServer;
     const sync = syncServer;
     httpServer = undefined;
@@ -388,9 +374,8 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
   let identityByToken: Map<string, SyncIdentity>;
 
   /**
-   * Only the first account is bound to tenant zero (`users.tenant_id` is unique): it is the tenant's
-   * user, and the only one a tenant-zero notification may name (`notifications_user_id_tenant_fkey`).
-   * Every later account gets a fresh tenant of its own.
+   * Only the first account is bound to tenant zero (`users.tenant_id` is unique), and only it may be named by a
+   * tenant-zero notification (`notifications_user_id_tenant_fkey`). Later accounts get their own tenant.
    */
   async function createTestUser(): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
@@ -471,7 +456,6 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     };
     expect(JSON.parse(await receivedA)).toEqual(expected);
 
-    // Give clientB's socket a beat to (not) receive anything before asserting silence.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(bystanderMessage).toBeUndefined();
 
@@ -758,12 +742,12 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(frames).toHaveLength(5);
     expect(frames).toContainEqual({ type: "invalidate", scope: "approvalRequest", approvalRequestId: request.id });
-    // The owner's pending-decision count changed with the committed request (issue #1918), once.
+    // The owner's pending-decision count changed once, with the committed request.
     expect(frames.filter((frame) => frame.scope === "badgeCounts")).toEqual([
       { type: "invalidate", scope: "badgeCounts" },
     ]);
     expect(frames).toContainEqual({ type: "invalidate", scope: "sempThread", threadId });
-    // The run is announced twice: when it was created, and with the committed request (issue #1863).
+    // The run is announced when created and again with the committed request.
     expect(
       frames.filter(
         (frame) => frame.scope === "agentRuns" && frame.agentRunId === run.id && frame.projectItemId === null,
@@ -1202,14 +1186,9 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       userId: userA,
     });
 
-    // `publishRealtimeMessage` resolves once Postgres has queued the NOTIFY, not once this
-    // process's own LISTEN connection has received and dispatched it — without synchronizing on
-    // that, the reconnect below races the dispatch above and can win, landing the userA
-    // invalidation on a socket that did not exist when it was dispatched. A schema-scope
-    // broadcast (no userId) reaches every open socket and NOTIFYs are delivered to a LISTEN
-    // connection in the order their transactions committed, so a sentinel socket receiving this
-    // one proves the userA invalidation was already dispatched — to zero matching sockets, since
-    // `reconnected` below doesn't exist yet.
+    // `publishRealtimeMessage` resolves when Postgres queues the NOTIFY, not when this process dispatches it. NOTIFYs
+    // reach LISTEN in commit order, so a sentinel socket receiving this tenant-wide broadcast proves the userA
+    // invalidation was already dispatched, before `reconnected` existed.
     const sentinel = await connect("sentinel");
     const sentinelReceived = new Promise<string>((resolve) => sentinel.once("message", (d) => resolve(messageText(d))));
     await publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: "sentinel-db" });
@@ -1220,9 +1199,7 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     });
     sentinel.close();
 
-    // Reconnecting afterwards opens a brand-new socket with no queued/replayed backlog — the
-    // invalidation published above must never surface on it. A live socket converges only
-    // through its own REST refetch on connect, never by the server buffering missed frames.
+    // A new socket gets no replayed backlog; clients converge only through their own REST refetch.
     const reconnected = await connect("a");
     let reconnectedMessage: string | undefined;
     reconnected.once("message", (d) => {
@@ -1304,8 +1281,7 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
         transitionInstance: "job-3",
       }),
     );
-    // A malformed/tampered NOTIFY payload naming a real notificationId but a mismatched userId —
-    // must never reach the impostor's socket even though the payload claims it's theirs.
+    // A tampered payload naming a real notificationId with a mismatched userId must never reach that user's socket.
     await publishRealtimeMessage(pool, { type: "notification_created", userId: impostor, notificationId });
 
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1335,18 +1311,11 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
     );
     await publishRealtimeMessage(pool, { type: "notification_created", userId: owner, notificationId });
 
-    // `publishRealtimeMessage` resolving only means the NOTIFY was sent — the LISTEN client still
-    // has to receive it and `forwardNotification` still has to run its own async row fetch before
-    // delivery is attempted. Waiting here lets that pipeline finish while no socket is open at all
-    // (a real drop, matching production), instead of racing it against the reconnect below: under
-    // load, that race could let this same live-delivery machinery reach the *new* socket by
-    // coincidence, which is a timing artifact rather than the replay this test targets.
+    // Let the NOTIFY and `forwardNotification`'s row fetch finish while no socket is open; racing it against the
+    // reconnect could deliver to the new socket by coincidence, which is not the replay this test targets.
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    // Reconnecting afterwards opens a brand-new socket with no queued/replayed backlog — the
-    // notification published above must never surface on it. A reconnecting client converges by
-    // calling GET /api/notifications/unread itself, which still returns this row since it's
-    // unread, never by the server buffering and replaying the missed WS frame.
+    // A new socket gets no replayed backlog; the client converges through GET /api/notifications/unread.
     const reconnected = await connect("owner");
     let reconnectedMessage: string | undefined;
     reconnected.once("message", (d) => {
@@ -1435,9 +1404,7 @@ describe("createSyncServer doc sync (issue #162)", () => {
     identityByToken = new Map();
     chokePoint = createChokePoint(pool);
     docStore = createDocStore(pool);
-    // A real accepted update's fan-out rides the same doc_update NOTIFY the write path fires
-    // in production — wire it here too, rather than simulating the NOTIFY directly, so these
-    // tests exercise the actual write-then-notify path docSync depends on.
+    // Fan-out rides the real doc_update NOTIFY of the write path rather than a simulated one.
     wireRealtimeHooks(pool);
 
     syncServer = await createSyncServer(pool, {
@@ -1488,8 +1455,7 @@ describe("createSyncServer doc sync (issue #162)", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(wsC.readyState).toBe(wsC.OPEN);
-    // wsC never sent doc:open, so it never registered a listener for this doc's frames at all —
-    // asserting on its raw message count directly confirms the server never targeted it.
+    // wsC never sent doc:open; its raw message count confirms the server never targeted it.
     let sawAnyMessage = false;
     wsC.once("message", () => (sawAnyMessage = true));
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1569,7 +1535,6 @@ describe("createSyncServer doc sync (issue #162)", () => {
     identityByToken.set("a", { tenantId: getTenantZeroId(), userId: userA, sessionId: "session-a" });
     const docId = await createTestDoc();
 
-    // First connection makes an edit while "online", then disconnects (goes offline).
     const wsFirst = await connect("a");
     const clientFirst = new TestDocClient(wsFirst, docId);
     clientFirst.open();
@@ -1579,8 +1544,7 @@ describe("createSyncServer doc sync (issue #162)", () => {
     wsFirst.close();
     await new Promise<void>((resolve) => wsFirst.once("close", () => resolve()));
 
-    // A second, fresh client (simulating the same user's reconnect after time offline) opens
-    // the same doc with no prior state at all — it must recover everything from the server.
+    // A fresh client of the same user, with no prior state, must recover everything from the server.
     const wsReconnected = await connect("a");
     const reconnectedClient = new TestDocClient(wsReconnected, docId);
     reconnectedClient.open();
@@ -1637,11 +1601,9 @@ describe("createSyncServer doc sync tenancy (issue #1026)", () => {
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(pool);
     identityByToken = new Map();
-    // Row-level security applies only to a runtime role, so the server under test reads and writes
-    // through one. The pool is also fresh, so the server's LISTEN connection is a new one opened inside
-    // `connectListenClient`'s system scope rather than a pooled connection an earlier test opened inside
-    // a tenant scope: `connectListenClient` takes any idle pooled connection, and one carrying a tenant
-    // scope throws `TenantScopeConflictError` on a foreign-tenant envelope.
+    // RLS applies only to a runtime role. The fresh pool also makes the LISTEN connection a new one opened in
+    // `connectListenClient`'s system scope: a reused connection carrying a tenant scope would throw
+    // `TenantScopeConflictError` on a foreign-tenant envelope.
     runtimePool = await createRuntimeRolePool(pool, "semprec_data");
     tenantServer = await createSyncServer(runtimePool, {
       authenticate: async (req: IncomingMessage) => {
@@ -1979,9 +1941,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
   }
 
   /**
-   * Collects every frame the client receives, in arrival order; a frame that is not a JSON object fails the test.
-   * The `agentRuns` invalidation that each run these tests create announces to its actor (issue #1863) is not what
-   * they observe and is left out.
+   * Collects frames in arrival order; a non-object frame fails the test. Each run's own `agentRuns` invalidation is
+   * left out.
    */
   function collectFrames(client: WebSocket): Record<string, unknown>[] {
     const frames: Record<string, unknown>[] = [];
@@ -2006,7 +1967,6 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  /** Creates a run in `tenantId`, through the runtime role, as a user-triggered run by `actorUserId`. */
   function createRunIn(tenantId: string, actorUserId: string): Promise<{ id: string }> {
     return runInTenant(tenantId, () =>
       createAgentRun(runtimePool, { triggeredBy: "user", task: "tenancy run", userId: actorUserId }),
@@ -2018,7 +1978,6 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     return runInTenant(tenantId, () => insertAgentRunEvent(runtimePool, runId, "turn_start", { kind: "turn_start" }));
   }
 
-  /** Appends a durable event in `tenantId` and announces it through the real publisher. */
   async function announcedEventIn(tenantId: string, runId: string): Promise<{ id: string }> {
     return runInTenant(tenantId, async () => {
       const event = await insertAgentRunEvent(runtimePool, runId, "message", { kind: "message", text: "live" });
@@ -3365,9 +3324,8 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     expect(foreignFrames).toEqual(unknownFrames);
     expect(foreignFrames).toHaveLength(0);
 
-    // A live durable event and a live delta in tenant A are not delivered to the foreign socket. The run's
-    // own user's socket is the positive control: once it has its replay, the live event and the delta,
-    // the same fan-out has already passed over the foreign socket.
+    // The run's own user's socket is the positive control: once it has its replay, live event and delta, the same
+    // fan-out has passed over the foreign socket.
     const own = await connectAs("own", tenantA, userA);
     const ownFrames = collectFrames(own);
     own.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
@@ -3484,8 +3442,7 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     sentinel.send(JSON.stringify({ type: "agent:watch", runId: sentinelRun.id, afterEventId: "0" }));
     await settle();
 
-    // Hold the watcher in its replay window: the replay query runs, then its result is held until
-    // released, so a NOTIFY arriving meanwhile can only be queued for the drain.
+    // Hold the replay query's result so a NOTIFY arriving meanwhile can only be queued for the drain.
     let replayQueried: (() => void) | undefined;
     const replayQueriedSignal = new Promise<void>((resolve) => {
       replayQueried = resolve;
@@ -3705,10 +3662,8 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     client.on("message", (data) => received.push(JSON.parse(messageText(data)) as Record<string, unknown>));
 
     await withTransaction(pool, async (locker) => {
-      // `watch()` now authorizes with a plain (non-locking) SELECT against `agent_runs`, which a
-      // row-level `FOR UPDATE` from this transaction would not block. An `ACCESS EXCLUSIVE` table
-      // lock does conflict with it, so it holds that SELECT pending while the second frame
-      // arrives, then commits to let the older watch prove it cannot overtake the unwatch.
+      // `watch()` authorizes with a plain SELECT, which a row-level `FOR UPDATE` would not block; an `ACCESS EXCLUSIVE`
+      // table lock holds it pending while the second frame arrives.
       await locker.query("LOCK TABLE agent_runs IN ACCESS EXCLUSIVE MODE");
       client.send(JSON.stringify({ type: "agent:watch", runId: run.id, afterEventId: "0" }));
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -3721,8 +3676,8 @@ describe("createSyncServer watched agent runs (issue #163)", () => {
     client.close();
   });
 
-  // Issue #1066: agent_runs_actor_user_id_tenant_fkey confines actor_user_id to the run's own tenant,
-  // whose only user is the tenant's user, so an actor distinct from the tenant's user cannot exist.
+  // agent_runs_actor_user_id_tenant_fkey confines actor_user_id to the run's tenant, whose only user is the tenant's
+  // user, so a distinct actor cannot exist.
   it("authorizes agent:watch against the run's explicit actor_user_id and refuses another account", async () => {
     const actorUser = await createTestUser();
     const otherUser = await createTestUser();
@@ -3887,8 +3842,7 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
   });
 
   afterEach(async () => {
-    // A test that already exercised a controlled shutdown has closed this itself; closing again
-    // must not fail the test (`wss.close()` rejects the second time since it's already closed).
+    // A controlled-shutdown test may have closed it already; `wss.close()` rejects the second time.
     await syncServer?.close().catch(() => {});
     await new Promise<void>((resolve) => httpServer?.close(() => resolve()) ?? resolve());
   });
@@ -3914,11 +3868,8 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
     const closedA = waitForClose(clientA);
     const closedB = waitForClose(clientB);
 
-    // `onError` starts the reconnect loop synchronously, and the loop's first step is
-    // `pool.connect()`. Holding that one call until `releaseReconnect()` keeps the server in the
-    // outage gap for exactly as long as this test needs: without it, whether the next socket
-    // connects before or after the reconnect completes is a race, and a socket that wins it is
-    // (correctly) closed with 1012 by the reconnect.
+    // `onError` starts the reconnect loop, whose first step is `pool.connect()`. Holding that call keeps the server in
+    // the outage gap; otherwise whether the next socket connects before or after the reconnect is a race.
     const originalConnect = pool.connect.bind(pool);
     let releaseReconnect!: () => void;
     const reconnectReleased = new Promise<void>((resolve) => {
@@ -3930,8 +3881,7 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
       return originalConnect();
     });
 
-    // Simulates the LISTEN connection being lost (network blip, Postgres restart) without any
-    // test-only hook in production code — `onError` is the real handler `syncServer.ts` wires.
+    // `onError` is the real handler `syncServer.ts` wires; no test-only hook is needed.
     try {
       listenClient.emit("error", new Error("simulated LISTEN connection loss"));
       expect(reconnectSpy).toHaveBeenCalledTimes(1);
@@ -3942,16 +3892,14 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
     expect(await closedA).toBe(1012);
     expect(await closedB).toBe(1012);
 
-    // A socket that connects during the gap may already have missed a NOTIFY, so the reconnect
-    // closes it with 1012 as well. That close happens in the same step that installs the new
-    // LISTEN connection, which makes it this test's signal that the reconnect has completed.
+    // A socket connecting during the gap may have missed a NOTIFY, so the reconnect closes it with 1012 in the same
+    // step that installs the new LISTEN connection: that close signals the reconnect completed.
     const gapClient = await connect("a");
     const closedGap = waitForClose(gapClient);
     releaseReconnect();
     expect(await closedGap).toBe(1012);
 
-    // A client connecting after the reconnect is served exactly like one that connected before
-    // the outage: it stays open and receives fan-out through the restored LISTEN connection.
+    // Served like a pre-outage client: it stays open and receives fan-out through the restored connection.
     const clientC = await connect("a");
     const receivedC = new Promise<string>((resolve) => clientC.once("message", (d) => resolve(messageText(d))));
     await publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: "db-1" });
@@ -3988,9 +3936,7 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
     });
     await bindHttpServer();
 
-    // `autoPong: false` simulates a peer that stops answering the server's RFC 6455 pings — a
-    // stalled tab, a dropped network the TCP stack hasn't noticed yet — without needing to wait
-    // out the real ~90s window: the heartbeat cadence above is scaled down proportionally.
+    // `autoPong: false` simulates a peer that stops answering pings; the heartbeat cadence above is scaled down.
     const client = new WebSocket(`ws://127.0.0.1:${port}/api/sync`, { autoPong: false });
     const closed = waitForClose(client);
     await waitForOpen(client);
@@ -4063,9 +4009,7 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
   it("closes a slow consumer with 1013 once its outgoing buffer stays over the backpressure threshold, without silently dropping any of the frames it never acknowledged", async () => {
     const chokePoint = createChokePoint(pool);
     const docStore = createDocStore(pool);
-    // A real accepted update's fan-out rides the same doc_update NOTIFY the write path fires in
-    // production — wire it here too, exactly like the doc-sync describe block above, so this
-    // exercises the real write-then-notify path rather than a simulated one.
+    // Fan-out rides the real doc_update NOTIFY of the write path.
     wireRealtimeHooks(pool);
     const db = await chokePoint.createDatabase({ name: "Pages" });
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
@@ -4101,31 +4045,22 @@ describe("createSyncServer server-side limits, LISTEN outage and backpressure (i
     subscriber.open();
     await waitUntil(() => producer.received.length > 0 && subscriber.received.length > 0);
 
-    // Stops the subscriber's socket from being read, so every fanned-out update piles up in the
-    // *server's* outgoing buffer for that connection instead of draining over the wire — the
-    // server's own close frame (once it decides to send one) queues behind that same backlog,
-    // which is why the client's own `'close'` event can't fire yet either.
+    // Pausing the subscriber's socket piles fanned-out updates in the server's outgoing buffer; the server's close
+    // frame queues behind that backlog, so the client's `'close'` cannot fire yet.
     const subscriberSocket = (subscriberWs as unknown as { _socket: Socket })._socket;
     subscriberSocket.pause();
 
-    // Each update's fan-out rides a real Postgres NOTIFY round-trip, whose latency varies with
-    // system load (e.g. a preceding test's writes still settling) — and separately, how much data
-    // a paused socket can absorb before the OS-level window fills depends on how far the kernel
-    // had already auto-tuned that window, which is not under this test's control either. 30 x
-    // ~1MB updates over 3s (comfortably inside the 20s test timeout) makes both margins generous
-    // instead of tuned to a guessed minimum.
+    // NOTIFY latency and how much a paused socket absorbs (kernel window auto-tuning) are outside the test's control;
+    // 30 x ~1MB over 3s keeps both margins generous.
     for (let i = 0; i < 30; i += 1) {
       producer.mutate((ydoc) => ydoc.getText("body").insert(0, "x".repeat(1_000_000)));
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    // Gives the server a beat to notice `bufferedAmount` over the threshold and queue its 1013
-    // close frame behind the backlog above.
+    // Lets the server notice `bufferedAmount` over the threshold and queue its 1013 close behind the backlog.
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     const closed = waitForClose(subscriberWs);
-    // Resuming now lets the client drain the whole backlog, including the trailing close frame —
-    // proving every one of the updates above was actually delivered (never silently dropped) before
-    // the connection was closed for falling behind.
+    // Draining the backlog, including the trailing close frame, proves every update was delivered before the close.
     subscriberSocket.resume();
 
     expect(await closed).toBe(1013);

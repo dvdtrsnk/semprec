@@ -65,7 +65,6 @@ interface ProblemRow {
   resolution_kind: string | null;
 }
 
-/** Every problem row of the database, on the superuser pool so that a row of any tenant is seen. */
 async function allProblems(): Promise<ProblemRow[]> {
   const { rows } = await admin.query<ProblemRow>(
     `SELECT user_id, dedupe_key, occurrence_count, resolved_at, resolution_kind
@@ -107,7 +106,6 @@ async function createTenantUser(tenantId: string, role: "admin" | "member"): Pro
   return user.id;
 }
 
-/** An administrator in a tenant of its own (one user per tenant). */
 async function createAdminTenant(): Promise<{ tenantId: string; userId: string }> {
   const tenantId = await createTestTenant(admin);
   return { tenantId, userId: await createTenantUser(tenantId, "admin") };
@@ -162,7 +160,6 @@ describe("semp problems close when their source recovers (issue #1915)", () => {
       return heartbeat.id;
     }
 
-    /** A tick run with its thread, as the run action creates them, ready to be closed with a reply. */
     function startTickRun(heartbeatId: string): Promise<{ thread: TickThreadRef; runId: string }> {
       return inA(() =>
         withTransaction(runtime, async (client) => {
@@ -179,7 +176,6 @@ describe("semp problems close when their source recovers (issue #1915)", () => {
       );
     }
 
-    /** The failure of a tick: its final attempt closes the run as an error, which raises the heartbeat problem. */
     async function failTick(heartbeatId: string): Promise<void> {
       const { runId } = await startTickRun(heartbeatId);
       await inA(() =>
@@ -195,7 +191,6 @@ describe("semp problems close when their source recovers (issue #1915)", () => {
       );
     }
 
-    /** A tool call of a tick reply: `failed` stores `details.error`, as a failed generic operation does. */
     async function storeToolCall(runId: string, toolCallId: string, failed: boolean): Promise<void> {
       await inA(async () => {
         await insertAgentRunEvent(runtime, runId, "tool_use", {
@@ -240,7 +235,6 @@ describe("semp problems close when their source recovers (issue #1915)", () => {
       return row;
     }
 
-    /** A first run that failed and a second one that retries it, both of the same tick thread. */
     async function startChain(
       heartbeatId: string,
     ): Promise<{ thread: TickThreadRef; firstRunId: string; retryId: string }> {

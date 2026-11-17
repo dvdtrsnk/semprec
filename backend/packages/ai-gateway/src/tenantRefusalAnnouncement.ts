@@ -11,7 +11,7 @@ import { logger } from "./logger.js";
 
 /**
  * The window a refusal that the tenant's own state caused belongs to: `noBudget` for a tenant without a
- * `tenant_ai_budgets` row, and otherwise the exhausted window of the budget summary (gh-1456), where
+ * `tenant_ai_budgets` row, and otherwise the exhausted window of the budget summary, where
  * `monthly` wins over `daily` as it does for the Semp status.
  */
 export type TenantRefusalWindow = "noBudget" | "daily" | "monthly";
@@ -28,12 +28,10 @@ export interface TenantRefusalNotice {
 const ledger = new AnnouncementLedger();
 
 /**
- * Announces, once per tenant and window, that a call was refused because of the tenant's own budget
- * state (docs/adr/2026-11-13-the-gateway-announces-a-tenants-first-budget-refusal-of-a-window.md): one
- * Semp status invalidation of the tenant, and for an exhausted cap window one `aiBudgetReset` job that
- * repeats the invalidation at the instant the window resets. It runs after the refusal's transaction has
- * rolled back and never rejects: a failure is logged with the tenant id and the error's name, and the
- * window is then announced again by its next refusal.
+ * Announces once per tenant and window that a call was refused by the tenant's own budget state: one
+ * Semp status invalidation, and for an exhausted cap window an `aiBudgetReset` job that repeats it
+ * when the window resets. Runs after the refusal's transaction rolled back and never rejects: a
+ * failure is logged (tenant id and error name) and the window is announced again on its next refusal.
  */
 export async function announceTenantRefusal(pool: Pool, notice: TenantRefusalNotice): Promise<void> {
   try {

@@ -1,33 +1,28 @@
-// Expands one recurring subscribed event into its occurrences for a date range (issue gh-1966): the days come from the
-// rule in the event's own time zone, and each start is then converted to the tenant's wall clock, so a 09:00 New York
-// series keeps 09:00 in New York across a daylight-saving change in either zone.
-// Constrained by: docs/adr/2026-11-14-a-subscribed-event-series-is-expanded-from-its-stored-rows-on-read.md,
-// docs/adr/2026-10-25-task-and-event-recurrence-model.md
+// Expands a recurring subscribed event: days come from the rule in the event's own zone and each start is then
+// converted to the tenant's wall clock, so a 09:00 New York series keeps 09:00 in New York across DST in either zone.
 import { DateTime, IANAZone } from "luxon";
 import { instantToWallClock, wallClockToInstant, type WallClock } from "../calendarTime.js";
 import { recurrenceDates, type RecurrenceRule, type RecurrenceUntil } from "./subscribedEventRecurrence.js";
 import type { Schedule } from "./timelineRead.js";
 
-/** The stored values of a recurring subscribed event that the expansion reads; both times are tenant wall-clock values. */
+/** Both times are tenant wall-clock values. */
 export interface SubscribedSeries {
   startsAt: WallClock;
   endsAt: WallClock | null;
   allDay: boolean;
-  /** The IANA zone of the feed's own times; `null` for a floating time, which is the tenant's wall clock as it stands. */
+  /** `null` for a floating time, read as the tenant's wall clock. */
   timeZone: string | null;
   rule: RecurrenceRule;
 }
 
-/** One occurrence: where it is shown, and the tenant wall-clock start the feed's `EXDATE` and `RECURRENCE-ID` name. */
 export interface SubscribedOccurrence {
   schedule: Schedule;
-  /** `YYYY-MM-DDTHH:mm`, the start of the occurrence in the tenant's zone before any override moved it. */
+  /** Tenant-zone start before any override moved it; what the feed's `EXDATE` and `RECURRENCE-ID` name. */
   originalStart: string;
 }
 
 const MS_PER_DAY = 86_400_000;
 
-/** The text key of a wall-clock time: `YYYY-MM-DDTHH:mm`. */
 export function wallClockKey(wall: WallClock): string {
   return `${wall.date}T${wall.time}`;
 }
@@ -38,11 +33,7 @@ function shiftDays(date: string, days: number): string {
   return shifted;
 }
 
-/**
- * The last start the rule allows, as the local `YYYY-MM-DDTHH:mm` that `recurrenceDates` compares with. A date-only
- * `UNTIL`, and any `UNTIL` of an all-day series, allows the whole of that day. A `Z` time is converted to the event's own
- * zone, and a time without `Z` is already local to it.
- */
+/** A date-only `UNTIL`, and any `UNTIL` of an all-day series, allows the whole of that day. */
 function untilKey(until: RecurrenceUntil | null, eventZone: string, allDay: boolean): string | null {
   if (until === null) return null;
   if (until.time === null || allDay) return `${until.date}T23:59`;
@@ -52,11 +43,8 @@ function untilKey(until: RecurrenceUntil | null, eventZone: string, allDay: bool
 }
 
 /**
- * The occurrences of `series` that overlap `range` (`from` and `to`, both days included, in the tenant's zone),
- * earliest first. The first occurrence is the series' own start. A timed event
- * keeps its local start time and its length in elapsed time in its own zone (`timeZone`, the tenant's zone for a floating
- * time); an all-day event keeps its days. Returns `null` when the series' `timeZone` is not a zone this server knows, so
- * that its caller can show the event once instead.
+ * `range` is inclusive, in the tenant's zone. A timed event keeps its length in elapsed time. Returns `null` for an
+ * unknown `timeZone`, so the caller can show the event once instead.
  */
 export function expandSubscribedSeries(
   series: SubscribedSeries,

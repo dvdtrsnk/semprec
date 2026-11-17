@@ -90,7 +90,6 @@ const compactBodySchema = fullBodySchema.extend({
   ),
 });
 
-/** Calls the handler as the adapter does: inside the tenant's scope, with the request URL. */
 function request(query: string): Promise<{ status: number; body: unknown }> {
   return runInTenant(tenantId, () =>
     createCalendarTimelineRouteHandler(dataPool)({ req: { url: `/api/calendar/timeline${query}` } }),
@@ -128,7 +127,7 @@ describe("GET /api/calendar/timeline (issue #1717)", () => {
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     await runInTenant(tenantId, () => seedSystem(dataPool));
-    // The sleep nights of a seeded tenant have their own tests (issue #1806); these keep to Events and Tasks.
+    // The sleep nights of a seeded tenant have their own tests; these keep to Events and Tasks.
     await hideSleepInCalendar(dataPool, tenantId);
   });
 
@@ -177,7 +176,7 @@ describe("GET /api/calendar/timeline (issue #1717)", () => {
   it("answers 200 without an Event whose stored date is abc", async () => {
     const valid = await create("events", { name: "Valid", date: DAY });
     const broken = await create("events", { name: "Broken", date: DAY });
-    // Raw SQL: the Events write rules (issue #1663) refuse this value, so only an older row can hold it.
+    // Raw SQL: the Events write rules refuse this value.
     await withTenantTransaction(adminPool, tenantId, async (client) => {
       const updated = await client.query(
         `UPDATE items SET properties = properties || '{"date": "abc"}'::jsonb WHERE id = $1`,

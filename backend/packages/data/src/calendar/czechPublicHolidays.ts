@@ -1,10 +1,10 @@
 import { DateTime } from "luxon";
 
-/** The first and last year `czechPublicHolidays` knows: Good Friday and 24 December became holidays in 2016. */
+/** Good Friday and 24 December became holidays in 2016. */
 const FIRST_YEAR = 2016;
 const LAST_YEAR = 2100;
 
-/** One public holiday of the Czech Republic: its canonical key (`calendar.holiday.<key>` in the catalog) and day. */
+/** `key` is canonical (`calendar.holiday.<key>` in the catalog). */
 export interface CzechPublicHoliday {
   key:
     | "newYear"
@@ -20,11 +20,10 @@ export interface CzechPublicHoliday {
     | "christmasEve"
     | "christmasDay"
     | "boxingDay";
-  /** `YYYY-MM-DD`. */
   date: string;
 }
 
-/** Easter Sunday of a Gregorian `year` by the anonymous (Meeus/Jones/Butcher) algorithm. */
+/** Anonymous (Meeus/Jones/Butcher) algorithm. */
 function easterSunday(year: number): DateTime {
   const a = year % 19;
   const b = Math.floor(year / 100);
@@ -49,12 +48,7 @@ function isoDate(day: DateTime): string {
   return iso;
 }
 
-/**
- * The public holidays of the Czech Republic in `year`, in the order of the calendar: 1 January, Good Friday,
- * Easter Monday, 1 May, 8 May, 5 July, 6 July, 28 September, 28 October, 17 November, 24, 25 and 26 December.
- * Good Friday is two days before Easter Sunday and Easter Monday one day after it. The function knows the
- * years 2016 to 2100 and returns no holidays for any other year.
- */
+/** In calendar order. Returns no holidays outside 2016 to 2100. */
 export function czechPublicHolidays(year: number): CzechPublicHoliday[] {
   if (!Number.isInteger(year) || year < FIRST_YEAR || year > LAST_YEAR) return [];
   const easter = easterSunday(year);

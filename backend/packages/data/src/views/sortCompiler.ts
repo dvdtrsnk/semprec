@@ -3,13 +3,9 @@ import type { PropertyRow } from "../types.js";
 import { parseRollupConfig } from "../rollup/config.js";
 import type { SortSpec, SystemSortField } from "./sortSpec.js";
 
-/** What the sort compiler needs to know about one sortable property, keyed by property key. */
 export type SortProperties = Map<string, Pick<PropertyRow, "type" | "config">>;
 
-/**
- * The cast a sort key's text is compared under. A rollup's value is typed by its aggregation, not
- * its property type: `earliest`/`latest` produce a timestamp, every other aggregation a number.
- */
+/** A rollup is typed by its aggregation: `earliest`/`latest` produce a timestamp, every other a number. */
 export function sortKeyCast(property: Pick<PropertyRow, "type" | "config">): "::numeric" | "::timestamptz" | "" {
   if (property.type === "rollup") {
     const { aggregation } = parseRollupConfig(property.config);
@@ -21,50 +17,43 @@ export function sortKeyCast(property: Pick<PropertyRow, "type" | "config">): "::
 const DATE_ONLY_SORT_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
 
 /**
- * Applies a sort key's cast to the SQL text `valueSql`. A `::timestamptz` key reads a date-only
- * string through `::date` first and places it at midnight UTC explicitly, so it sorts by day
- * whatever the session's zone (a plain `date::timestamptz` would use the session zone).
+ * A `::timestamptz` key reads a date-only string via `::date` at midnight UTC explicitly, so it sorts by day
+ * whatever the session's zone.
  */
 function castSortKey(valueSql: string, cast: ReturnType<typeof sortKeyCast>): string {
   if (cast !== "::timestamptz") return `(${valueSql})${cast}`;
   return `(CASE WHEN (${valueSql}) ~ '${DATE_ONLY_SORT_PATTERN}' THEN (${valueSql})::date::timestamp AT TIME ZONE 'UTC' ELSE (${valueSql})::timestamptz END)`;
 }
 
-/** The ICU collations a text sort may use; the SQL names come only from this closed list. */
+/** The SQL collation names come only from this closed list. */
 export type SortCollation = "cs-x-icu" | "und-x-icu";
 
-/** The neutral collation, used for every locale but Czech and for callers without a user. */
 export const DEFAULT_SORT_COLLATION: SortCollation = "und-x-icu";
 
-/** Maps a `users.locale` to its collation: Czech sorts by the Czech alphabet, anything else (or no locale) neutrally. */
 export function collationForLocale(locale: string | undefined): SortCollation {
   return locale?.split(/[-_]/)[0]?.toLowerCase() === "cs" ? "cs-x-icu" : DEFAULT_SORT_COLLATION;
 }
 
 const COLLATED_TYPES: ReadonlySet<string> = new Set(["title", "text", "url"]);
 
-/** `COLLATE "<name>"` for a text-like sort key, empty for every other type. */
 function collateClause(property: Pick<PropertyRow, "type">, collation: SortCollation): string {
   return COLLATED_TYPES.has(property.type) ? ` COLLATE "${collation}"` : "";
 }
 
-/** The `items` column a system sort key orders by; both are `timestamptz NOT NULL`. */
+/** Both are `timestamptz NOT NULL`. */
 const SYSTEM_SORT_COLUMNS: Readonly<Record<SystemSortField, string>> = {
   createdAt: "created_at",
   updatedAt: "updated_at",
 };
 
 /**
- * A system key's SQL expression: its column at full PostgreSQL precision, so items created or updated
- * within one millisecond keep their real order. A cursor carries the column's exact UTC text with six
- * fractional digits (`listItems`' exact projection), which casts back to the same `timestamptz`, so the
- * keyset compares the value the row was ordered by. The column name comes only from `SYSTEM_SORT_COLUMNS`.
+ * The column at full precision, so items within one millisecond keep their real order. A cursor carries the exact
+ * six-digit UTC text, which casts back to the same `timestamptz`.
  */
 function systemSortExpression(field: SystemSortField): string {
   return SYSTEM_SORT_COLUMNS[field];
 }
 
-/** One sort key resolved against the database: a system timestamp, or a property with its type and config. */
 type ResolvedSortKey =
   | { kind: "system"; field: SystemSortField }
   | { kind: "property"; key: string; property: Pick<PropertyRow, "type" | "config"> };
@@ -79,11 +68,8 @@ function resolveSortKey(sort: SortSpec, properties: SortProperties): ResolvedSor
 }
 
 /**
- * The one place a sort key's SQL expression is built — `(column ->> $key)::cast` for a property, the
- * bare column for a system key — shared by `compileSort` and `compileSortKeyset` so the `ORDER BY`
- * and the keyset predicate that resumes it can never compare different expressions. A rollup's value
- * lives in `items.computed` (the recompute worker's column), every other property's in
- * `items.properties`. Pushes a property key onto `params`; a system key pushes nothing.
+ * The one place a sort key's SQL is built, shared by `compileSort` and `compileSortKeyset` so `ORDER BY` and the
+ * keyset predicate never compare different expressions. A rollup reads `items.computed`.
  */
 function sortKeyExpression(key: ResolvedSortKey, params: unknown[], collation: SortCollation): string {
   if (key.kind === "system") return systemSortExpression(key.field);
@@ -97,11 +83,7 @@ function sortKeyExpression(key: ResolvedSortKey, params: unknown[], collation: S
   return `${castSortKey(`${column} ->> $${params.length}`, sortKeyCast(property))}${collateClause(property, collation)}`;
 }
 
-/**
- * The declared option keys of a `select` property, in `config.options` order, or `undefined` for
- * any other type. A select sorts by the position of its stored value in this array, not by the
- * value's text. Entries without a string key are skipped.
- */
+/** A select sorts by its stored value's position in `config.options`, not by text. `undefined` for other types. */
 export function selectOptionKeys(property: Pick<PropertyRow, "type" | "config">): string[] | undefined {
   if (property.type !== "select") return undefined;
   const options: unknown = property.config.options;
@@ -112,23 +94,19 @@ export function selectOptionKeys(property: Pick<PropertyRow, "type" | "config">)
   });
 }
 
-/** Position of the text `valueSql` in the key array bound at `$keysIndex` (one-based); NULL when absent. */
+/** One-based; NULL when absent. */
 function optionPosition(keysIndex: number, valueSql: string): string {
   return `array_position($${keysIndex}::text[], ${valueSql})`;
 }
 
-/** The text `properties ->> key` would produce for a cursor value, or `null` when it has no option position. */
+/** `null` when the value has no option position. */
 function cursorOptionText(value: unknown, optionKeys: string[]): string | null {
   const text =
     typeof value === "string" ? value : typeof value === "number" || typeof value === "boolean" ? String(value) : null;
   return text !== null && optionKeys.includes(text) ? text : null;
 }
 
-/**
- * Compiles a list of sort specs into an `ORDER BY` fragment, pushing the property key
- * (never the direction, which is only ever the literal 'ASC'/'DESC' chosen below from
- * the already-validated 'asc'|'desc' enum) onto `params`.
- */
+/** The direction is only ever the literal 'ASC'/'DESC' chosen from the validated enum; property keys are bound. */
 export function compileSort(
   sorts: SortSpec[],
   properties: SortProperties,
@@ -143,15 +121,9 @@ export function compileSort(
 }
 
 /**
- * Compiles the "rows strictly after this tuple" predicate for the order `compileSort`
- * produces followed by `id ASC`: the OR-of-prefixes expansion
- * `(k1 AFTER v1) OR (k1 SAME v1 AND k2 AFTER v2) OR ... OR (k1 SAME v1 AND ... AND id > $id)`.
- * Every key sorts `NULLS LAST`, so after a non-null `v` come greater (asc) / smaller (desc)
- * values and all nulls, while after a null `v` no row of that key is strictly later.
- *
- * Each cursor value is bound as JSON and read back with `#>> '{}'` before the key's cast,
- * so it is the exact text `column ->> key` would have produced for the stored value.
- * Nothing from the cursor is interpolated into the SQL.
+ * "Rows strictly after this tuple" for `compileSort` then `id ASC`, as an OR-of-prefixes expansion. Every key sorts
+ * `NULLS LAST`, so after a null `v` no row of that key is strictly later. Cursor values are bound as JSON and read
+ * with `#>> '{}'` before the cast, giving the exact text `column ->> key` would; nothing is interpolated.
  */
 export function compileSortKeyset(
   sorts: SortSpec[],

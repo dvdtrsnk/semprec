@@ -20,7 +20,6 @@ import { hashPassword } from "../auth/passwordHash.js";
 let pool: Pool;
 
 /** Wraps the real pool so its first `connect()` calls reject with `errors`, in order; later calls delegate. */
-/** Each entry fails one `connect()` in order; `null` lets that call through to the real pool. */
 function poolWithFailingConnects(errors: (Error | null)[]): Pool {
   const remaining = [...errors];
   return new Proxy(pool, {
@@ -108,9 +107,8 @@ describe("coreAgentRunAction", () => {
     });
     const baseContext: ActionContext = { heartbeatId, projectItemId };
 
-    // Identifying "the final run" by comparing `startedAt` is unreliable: sequential inserts in a
-    // fast test environment can land in the same database millisecond. Instead, capture each
-    // call's newly created run id by diffing the run set immediately after that call returns.
+    // Sequential inserts can share a `startedAt` millisecond, so each call's run id is captured by diffing
+    // the run set right after the call returns.
     const seenRunIds = new Set<string>();
     async function runAndCaptureNewRunId(isFinalAttempt: boolean): Promise<string> {
       await expect(handler({}, { ...baseContext, isFinalAttempt })).rejects.toThrow("model failed");
@@ -170,15 +168,13 @@ describe("coreAgentRunAction", () => {
       heartbeatId,
     ]);
     expect(rows).toHaveLength(1);
-    // The close never completed (its transaction's connect() rejected), so the run is left
-    // running — the documented consequence is the next startup repair closes it.
+    // The close's connect() rejected, so the run is left running; startup repair closes it.
     expect(rows[0]!.status).toBe("running");
 
     const notifications = await getNotifications("agent_run_error");
     expect(notifications).toHaveLength(0);
   });
 
-  /** Everything the spies recorded as one string; an `Error` is expanded, which `JSON.stringify` alone drops. */
   function loggedText(...spies: MockInstance[]): string {
     return JSON.stringify(
       spies.map((spy) => spy.mock.calls),
@@ -326,7 +322,6 @@ describe("coreAgentRunAction", () => {
       heartbeatOccurrenceId: occurrenceId,
       attempt: 2,
     });
-    // Set distinct timestamps explicitly to prove the tie-break without relying on clock timing.
     for (const [id, startedAt] of [
       [first.id, "2026-01-03T00:00:00Z"],
       [older.id, "2026-01-01T00:00:00Z"],
@@ -430,7 +425,6 @@ describe("coreAgentRunAction", () => {
   });
 
   describe("retry of a failed run (issue #1908)", () => {
-    /** The failed first attempt of a new occurrence, closed the way the worker closes a final failure. */
     async function failedFirstAttempt(): Promise<{
       heartbeatId: string;
       projectItemId: string;

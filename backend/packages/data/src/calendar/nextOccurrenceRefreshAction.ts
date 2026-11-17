@@ -1,7 +1,5 @@
-// The daily heartbeat action that moves the stored `nextOccurrenceDate` of recurring Events on as days pass (issue
-// gh-1905). The inline computation on a write is `nextOccurrenceDateTransform.ts`.
-// Constrained by: docs/adr/2026-11-14-the-next-occurrence-date-of-an-event-is-a-stored-system-property.md,
-// docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+// Moves the stored `nextOccurrenceDate` of recurring Events on as days pass; writes use
+// `nextOccurrenceDateTransform.ts`.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -14,26 +12,17 @@ import type { StoredRow } from "./timelineRead.js";
 
 export const NEXT_OCCURRENCE_REFRESH_ACTION_ID = "calendar.refreshNextOccurrence";
 
-/**
- * The refresh's heartbeat, created by `seedCalendarsInTransaction`: five minutes after midnight in the tenant's system
- * time zone.
- */
+/** Runs in the tenant's system time zone. */
 export const NEXT_OCCURRENCE_REFRESH_HEARTBEAT = {
   name: "Refresh next occurrence of recurring events",
   rule: { kind: "dailyTime", at: "00:05" },
 } as const;
 
-/** The heartbeat's `action_config`: the Events database it refreshes, resolved once at seed time. */
 const configSchema = z.object({ eventsDatabaseId: z.uuid() });
 
-/** Events one transaction refreshes. */
 const BATCH_SIZE = 200;
 
-/**
- * The next batch of live recurring Events after `afterId` whose stored `nextOccurrenceDate` is a day before `today`,
- * locked until the transaction ends. A stored value that is not text, or a row without one, is not stale. Days are
- * compared as text in the "C" collation, never cast, so an unreadable stored value cannot fail the statement.
- */
+/** Days are compared as "C"-collated text, never cast, so an unreadable stored value cannot fail the statement. */
 async function lockStaleBatch(
   client: PoolClient,
   eventsDatabaseId: string,
@@ -55,15 +44,8 @@ async function lockStaleBatch(
 }
 
 /**
- * Registered as the `dailyTime` heartbeat action `calendar.refreshNextOccurrence`: recomputes `nextOccurrenceDate` for
- * every live recurring Event of the tenant whose stored value is before today in the tenant's system time zone, in
- * batches of `BATCH_SIZE` Events per transaction, paged by id. The rows of a batch are locked first, so the value is
- * computed on the row an update would see. Each new value is written through `updateItemWithClient` by the system
- * writer, with the system-owned key allowed; an Event whose stored value is current is not read at all. The values of a
- * batch come from one timeline expansion (`computeNextOccurrenceDates`), so a cancelled or moved occurrence is not named.
- *
- * Runs in the firing heartbeat's tenant. A failure of one write ends the run and rolls back its batch; batches
- * that committed stay, and the next run continues from the Events that are still stale.
+ * Batches are locked first, so each value is computed on the row an update would see. A failed write rolls back
+ * only its batch; the next run continues from the Events still stale.
  */
 export function createNextOccurrenceRefreshAction(pool: Pool): ActionHandler {
   return async (actionConfig) => {

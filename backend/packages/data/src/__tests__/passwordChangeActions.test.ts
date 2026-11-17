@@ -28,10 +28,9 @@ import { suspendAccount } from "../tenancy/accountsAdminStore.js";
 import { ReauthenticationFailedError } from "../tenancy/deleteAccount.js";
 import { lockUserTenantBinding } from "../tenancy/tenantsStore.js";
 
-// `afterVerify` runs right after a real password verification, so a test can commit a concurrent change, or
-// hold two calls, in the gap between `changePassword`'s check and its transaction. `afterConsume` runs right
-// after `resetPassword` consumed its token, while that transaction still holds the token row. `afterCreate`
-// runs right after a reset token was inserted, so a test can hold `requestPasswordReset` before its commit.
+// `afterVerify` runs between `changePassword`'s verification and its transaction; `afterConsume` after
+// `resetPassword` consumed its token (row still held); `afterCreate` after a reset token was inserted,
+// before commit.
 const hooks = vi.hoisted(() => ({
   verifyCalls: 0,
   afterVerify: null as null | (() => Promise<void>),
@@ -102,7 +101,6 @@ async function signIn(account: Account, password = PASSWORD, ip = IP): Promise<S
   return { token: result.token, sessionId: result.session.id };
 }
 
-/** Calls `changePassword` on the runtime-role pool in the system scope the auth listener runs in. */
 function change(account: Account, sessionId: string, overrides: Partial<ChangePasswordInput> = {}): Promise<void> {
   return runAsSystem("passwordChangeActions.test", () =>
     changePassword(pool, {
@@ -122,7 +120,6 @@ async function passwordHashOf(userId: string): Promise<string> {
   return user.passwordHash;
 }
 
-/** The recorded attempts of `email`, oldest first. */
 async function attemptsOf(email: string): Promise<Array<{ ip: string; succeeded: boolean }>> {
   const { rows } = await adminPool.query<{ ip: string; succeeded: boolean }>(
     "SELECT host(ip) AS ip, succeeded FROM login_attempts WHERE email = $1 ORDER BY attempted_at, id",
@@ -173,7 +170,6 @@ function tokenFromUrl(resetUrl: string): string {
 /** The statement with which `changePassword` locks the user row. */
 const USER_ROW_LOCK = "SELECT password_hash FROM users";
 
-/** Resolves once exactly `count` backends wait for a lock in a statement that starts with `statementStart`. */
 async function waitingOnLock(statementStart: string, count = 1): Promise<void> {
   await vi.waitFor(
     async () => {
@@ -189,7 +185,6 @@ async function waitingOnLock(statementStart: string, count = 1): Promise<void> {
   );
 }
 
-/** A promise a test resolves by hand, to hold a concurrent call at a known point or to learn that it got there. */
 function signal(): { reached: Promise<void>; mark: () => void } {
   let mark!: () => void;
   const reached = new Promise<void>((resolve) => {
@@ -198,7 +193,6 @@ function signal(): { reached: Promise<void>; mark: () => void } {
   return { reached, mark };
 }
 
-/** An admin of tenant zero, the actor of a suspension. */
 async function makeAdmin(): Promise<Account> {
   const email = `${randomUUID()}@example.test`;
   const user = await createUser(adminPool, {
@@ -210,10 +204,7 @@ async function makeAdmin(): Promise<Account> {
   return { userId: user.id, email };
 }
 
-/**
- * Holds the user row `FOR KEY SHARE` in an open transaction, as a login or a reset request does while it runs.
- * A change that reaches its user-row lock meanwhile waits there until `release` has resolved.
- */
+/** Holds the user row `FOR KEY SHARE`, as a login or reset request does; a change reaching its user-row lock waits. */
 async function holdUserRow(userId: string): Promise<{ release: () => Promise<void> }> {
   const locked = signal();
   const released = signal();
@@ -222,7 +213,7 @@ async function holdUserRow(userId: string): Promise<{ release: () => Promise<voi
     locked.mark();
     await released.reached;
   });
-  // Awaited by `release`; observed here too, so an early failure is never an unhandled rejection.
+  // Also observed here so an early failure is never an unhandled rejection.
   holding.catch(() => undefined);
   await within(Promise.race([locked.reached, holding]), 10_000, "The key-share lock on the user row");
   return {
@@ -249,7 +240,6 @@ async function revokedRegistrations(userId: string): Promise<string[]> {
   return rows.filter((row) => row.revokedAt !== null).map((row) => row.id);
 }
 
-/** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
 async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
@@ -309,7 +299,6 @@ describe("password change (issue #1701)", () => {
       for (const session of others) {
         await expect(verifySessionToken(adminPool, session.token)).rejects.toBeInstanceOf(UnauthorizedError);
       }
-      // The calling session's registration is not among the revoked ones.
       expect(callingRegistration).toEqual(expect.any(String));
       expect((await revokedRegistrations(account.userId)).sort()).toEqual([...revokedWithSessions].sort());
 
@@ -385,7 +374,6 @@ describe("password change (issue #1701)", () => {
       }
 
       await expect(signIn(account)).rejects.toBeInstanceOf(UnauthorizedError);
-      // The calling session is not a casualty of the failed attempts.
       expect(await isSessionActive(adminPool, calling.sessionId)).toBe(true);
     });
 
@@ -407,8 +395,7 @@ describe("password change (issue #1701)", () => {
       for (let i = 0; i < LOCKOUT_THRESHOLD; i++) {
         await recordLoginAttempt(adminPool, { email: account.email, ip: IP, succeeded: false });
       }
-      // Raw SQL because no production write backdates an attempt: the lockout of a streak at the threshold
-      // lasts 30 seconds, and these failures are now an hour old.
+      // Raw SQL: no production write backdates an attempt; the 30-second lockout has long passed.
       await adminPool.query(
         "UPDATE login_attempts SET attempted_at = now() - interval '1 hour' WHERE email = $1 AND succeeded = false",
         [account.email],
@@ -485,13 +472,12 @@ describe("password change (issue #1701)", () => {
     it("answers NotFoundError when the user row is gone by the time it is locked", async () => {
       const account = await makeAccount();
       hooks.afterVerify = async () => {
-        // Raw SQL because only the tenant purge deletes a user; the account has no session, token or attempt yet.
+        // Raw SQL: only the tenant purge deletes a user.
         await adminPool.query("DELETE FROM users WHERE id = $1", [account.userId]);
       };
 
       await expect(change(account, randomUUID())).rejects.toBeInstanceOf(NotFoundError);
 
-      // Neither a failed nor a successful attempt: the refusal came from the transaction, which rolled back.
       expect(await attemptsOf(account.email)).toEqual([]);
     });
 
@@ -550,7 +536,6 @@ describe("password change (issue #1701)", () => {
       const winner = callers.find((_caller, index) => outcomes[index]?.status === "fulfilled");
       const loser = callers.find((_caller, index) => outcomes[index]?.status === "rejected");
       if (!winner || !loser) throw new Error("expected one fulfilled and one rejected change");
-      // The refused call recorded nothing: one more attempt than before, the winner's success.
       expect(await attemptsOf(account.email)).toEqual([...attemptsBefore, { ip: IP, succeeded: true }]);
       expect(await isSessionActive(adminPool, winner.session.sessionId)).toBe(true);
       expect(await isSessionActive(adminPool, loser.session.sessionId)).toBe(false);
@@ -576,7 +561,6 @@ describe("password change (issue #1701)", () => {
       };
       // The reset consumed its token and has not yet locked the user row.
       const resetting = consumeResetLink(link.token, "reset-new-password");
-      // Awaited below; observed here too, so an early failure is never an unhandled rejection.
       resetting.catch(() => undefined);
       await within(tokenConsumed, 10_000, "The reset's token consumption");
 
@@ -642,7 +626,6 @@ describe("password change (issue #1701)", () => {
         suspended.mark();
         await released.reached;
       });
-      // Awaited below; observed here too, so an early failure is never an unhandled rejection.
       suspending.catch(() => undefined);
       await within(Promise.race([suspended.reached, suspending]), 10_000, "The suspension");
 
@@ -675,7 +658,6 @@ describe("password change (issue #1701)", () => {
       };
       // The request inserted its token and holds the user row FOR KEY SHARE; it has not committed.
       const requesting = requestPasswordReset(adminPool, mailer, { email: account.email, appBaseUrl: APP_BASE_URL });
-      // Awaited below; observed here too, so an early failure is never an unhandled rejection.
       requesting.catch(() => undefined);
       await within(Promise.race([inserted.reached, requesting]), 10_000, "The reset request's token insert");
 
@@ -710,7 +692,6 @@ describe("password change (issue #1701)", () => {
       const consumed = signal();
       const released = signal();
       const changing = change(account, calling.sessionId);
-      // Awaited below; observed here too, so an early failure is never an unhandled rejection.
       changing.catch(() => undefined);
       let resetting: Promise<void> | undefined;
       try {
@@ -762,7 +743,6 @@ describe("password change (issue #1701)", () => {
       try {
         // The first change runs its first marking before the token exists and waits for the user row.
         const firstChange = change(account, first.session.sessionId, { newPassword: first.newPassword });
-        // Awaited below; observed here too, so an early failure is never an unhandled rejection.
         firstChange.catch(() => undefined);
         changes.push(firstChange);
         await waitingOnLock(USER_ROW_LOCK);
@@ -872,7 +852,6 @@ describe("password change (issue #1701)", () => {
       };
       // The reset consumed `held` and has not committed, so it still holds that token row.
       const resetting = consumeResetLink(held.token);
-      // Awaited below; observed here too, so an early failure is never an unhandled rejection.
       resetting.catch(() => undefined);
       try {
         await within(Promise.race([consumed.reached, resetting]), 10_000, "The reset's token consumption");
@@ -881,7 +860,6 @@ describe("password change (issue #1701)", () => {
 
         expect(result).toEqual({ consumed: 1, remaining: 1 });
         expect(await consumedAtOf(free.tokenHash)).toEqual(expect.any(String));
-        // The reset has not committed: its token still reads as unconsumed.
         expect(await consumedAtOf(held.tokenHash)).toBeNull();
       } finally {
         released.mark();

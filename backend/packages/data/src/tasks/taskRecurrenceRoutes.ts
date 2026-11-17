@@ -15,7 +15,7 @@ interface Context {
   identity: { user: { id: string } };
 }
 
-/** The `owner: 'system'` Tasks properties these routes write as the Tasks module (issue #1605). */
+/** The `owner: 'system'` properties these routes write as the Tasks module. */
 const SERIES_PROPERTY_KEYS = ["seriesId", "occurrenceDate", "recurrence"] as const;
 function taskId(ctx: Context): string {
   const result = z.uuid().safeParse(ctx.params.id);
@@ -23,7 +23,7 @@ function taskId(ctx: Context): string {
   return result.data;
 }
 
-/** The Tasks database and the task `id`, locked; another tenant's task and a trashed one are not found alike. */
+/** Locked; foreign and trashed tasks are not found alike. */
 async function lockTask(client: PoolClient, id: string): Promise<{ databaseId: string; task: ItemRow }> {
   const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
   const task = tasks ? await itemsStore.lockItemById(client, tasks.id, id) : null;
@@ -56,12 +56,10 @@ async function writeSeriesProperties(
 }
 
 /**
- * `PUT /api/tasks/:id/recurrence` (issue #1665): sets or changes a task's recurrence from `{preset}` or `{mode, rule}`,
- * optionally with a new `date`. In one transaction it locks the task, then its `task_recurrence` row. A task without a
- * series gets a new one (a new row, or its own inactive row restarted with a new `seriesId`); the current occurrence of
- * a series gets the rule replaced. The task's `date` (when sent), `seriesId`, `occurrenceDate` and
- * `recurrence` (`{preset, mode, rule}`) are written through the Tasks write path in the same transaction; a sent
- * `date` also moves the series anchor. A task without a date is refused on `date`.
+ * `PUT /api/tasks/:id/recurrence`: sets a recurrence from `{preset}` or `{mode, rule}`, optionally with a new
+ * `date`. Locks the task, then its `task_recurrence` row. A task without a series gets a new one (or its inactive
+ * row restarted); a current occurrence gets the rule replaced. Task properties are written through the Tasks write
+ * path in the same transaction; a sent `date` also moves the anchor. A task without a date is refused on `date`.
  */
 export function createTaskRecurrenceSetRouteHandler(pool: Pool) {
   return async (ctx: Context): Promise<{ status: number; item: ItemRow }> => {
@@ -77,9 +75,8 @@ export function createTaskRecurrenceSetRouteHandler(pool: Pool) {
 }
 
 /**
- * `DELETE /api/tasks/:id/recurrence` (issue #1665): turns a task's recurrence off. It locks the task, then its series
- * row, deactivates the series and clears `seriesId`, `occurrenceDate` and `recurrence` on the task, which keeps its
- * `date` as a non-recurring task. A task without a series is returned unchanged.
+ * `DELETE /api/tasks/:id/recurrence`: locks the task, then its series row, deactivates the series and clears the
+ * series properties; the task keeps its `date`. A task without a series is returned unchanged.
  */
 export function createTaskRecurrenceClearRouteHandler(pool: Pool) {
   return async (ctx: Context): Promise<{ status: number; item: ItemRow }> => {

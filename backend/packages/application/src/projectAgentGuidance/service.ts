@@ -31,11 +31,8 @@ export interface ProjectAgentGuidanceService {
 }
 
 /**
- * `GuidanceReferenceStore`'s `require*` methods reject with `GuidanceReferenceNotFoundError`
- * when the referenced entity doesn't exist; that specific rejection is mapped to the matching
- * `validation_failed` response. Any other error (a dropped connection, a timeout) is an
- * infrastructure failure, not a missing entity, and must propagate unchanged rather than be
- * reported to the caller as a 400.
+ * Maps `GuidanceReferenceNotFoundError` to the matching `validation_failed` response; any other error
+ * is an infrastructure failure and propagates unchanged rather than becoming a 400.
  */
 async function requireOrValidationError(
   guard: () => Promise<void>,
@@ -80,8 +77,7 @@ export function createProjectAgentGuidanceService<Tx>(
           throw new ProjectAgentGuidanceOwnerViolationError(input.projectItemId);
         }
         if (!existing) {
-          // The first write seeds the owner, so the actor must be a user the reference store accepts
-          // (the tenant's own user). Any other user is refused as an owner violation.
+          // The first write seeds the owner, so the actor must be the tenant's own user; anyone else is an owner violation.
           try {
             await references.requireUser(tx, actor.userId);
           } catch (err) {
@@ -111,8 +107,7 @@ export function createProjectAgentGuidanceService<Tx>(
         });
 
         const existing = await store.load(tx, input.projectItemId);
-        // No guidance yet means no current owner to transfer from — treated as the actor
-        // not being the (nonexistent) current owner, the same 403 a wrong-owner call gets.
+        // No guidance means no current owner, so this gets the same 403 as a wrong-owner call.
         if (!existing || existing.ownerUserId !== actor.userId) {
           throw new ProjectAgentGuidanceOwnerViolationError(input.projectItemId);
         }

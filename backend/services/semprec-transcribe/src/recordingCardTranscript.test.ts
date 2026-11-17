@@ -27,9 +27,8 @@ import {
 } from "@semprec/data/testSupport";
 import { createTranscriptionCreateTask } from "./transcriptionTask.js";
 
-// Issue gh-1978: a recording card confirmed in the Inbox ends as a transcript with the name, the recording time and the
-// project the user chose. The data package's tests prove what the confirm writes into the recording request; this test
-// runs the transcription create step over that request, which only this service can do.
+// A confirmed recording card ends as a transcript with the chosen name, recording time and project; this runs the
+// real create step over the recording request the confirm wrote.
 
 const RECORDED_AT = "2026-11-03T13:32:00.000Z";
 

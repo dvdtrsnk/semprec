@@ -20,16 +20,16 @@ import { seedSubscribedEventsInTransaction } from "./seedSubscribedEvents.js";
 const CALENDAR_KINDS = ["own", "system", "subscription"] as const;
 
 interface CalendarRow {
-  /** Names the row's label `seed.calendars.<catalogKey>.name` in the calendar module catalog. */
+  /** Label key `seed.calendars.<catalogKey>.name` in the calendar module catalog. */
   catalogKey: string;
   color: string;
   notify: boolean;
   isDefault?: true;
-  /** Set on the system calendars only, as their `systemKey`. */
+  /** System calendars only. */
   systemKey?: string;
 }
 
-/** The default and system calendars every tenant starts with (issue #1600); `Personal` is the default. */
+/** `Personal` is the default. */
 const CALENDAR_ROWS: readonly CalendarRow[] = [
   { catalogKey: "personal", color: "#5856D6", notify: true, isDefault: true },
   { catalogKey: "work", color: "#007AFF", notify: true },
@@ -63,7 +63,7 @@ const CALENDAR_PROPERTIES: readonly PropSpec[] = [
     config: { options: CALENDAR_KINDS.map((key) => ({ key })) },
   },
   { key: "systemKey", type: "text", owner: "system", ownerProcess: CALENDAR_MODULE_ID },
-  // The feed address of a subscription calendar (issue gh-1925); judged by `calendar/calendarSubscriptionUrlTransform.ts`.
+  // Validated by `calendar/calendarSubscriptionUrlTransform.ts`.
   { key: "subscriptionUrl", type: "url", owner: "user" },
 ];
 
@@ -78,12 +78,9 @@ async function insertUserRelationProperty(client: PoolClient, databaseId: string
 }
 
 /**
- * The `Calendars.events` / `Events.calendar` pair: one calendar, many Events, so `Calendars.events` is
- * property A of a `one_to_many` definition and each Event has at most one calendar. Events is
- * `schema_locked` and `propertiesStore` refuses to change a locked schema, so both properties, the
- * relation definition and the property configs are written with raw SQL in three steps (the two
- * properties, the definition, the configs), under an exclusive `properties` lock. Returns the relation
- * definition id.
+ * `Calendars.events` (property A of a `one_to_many`) / `Events.calendar`. Events is `schema_locked` and
+ * `propertiesStore` refuses locked schemas, so the properties, definition and configs are written with
+ * raw SQL under an exclusive `properties` lock. Returns the relation definition id.
  */
 async function createCalendarEventsRelation(
   client: PoolClient,
@@ -121,16 +118,12 @@ export interface CalendarsSeedResult {
 }
 
 /**
- * Seeds the calendar module's first database (issue #1600) into the caller's open transaction: a system
- * project item for the module, the `calendars` system database with its properties (`kind` and
- * `systemKey` system-owned by the calendar module), the `Calendars.events` / `Events.calendar` relation,
- * and the eight default and system calendars. The project's and the rows' names come from the calendar
- * module catalog in the tenant user's language (`cs` while the tenant has no user), and the daily
- * `calendar.refreshNextOccurrence` heartbeat of the module's system project (issue gh-1905). The schema
- * is locked once complete. The `subscribedEvents` system database (issue gh-1962) is created last, after the
- * calendars, by `seedSubscribedEventsInTransaction`.
+ * Seeds the calendar module into the caller's transaction: a system project, the `calendars` database
+ * (`kind` and `systemKey` system-owned), the events relation, the eight default calendars, and the daily
+ * `calendar.refreshNextOccurrence` heartbeat. Names come from the module catalog in the tenant user's
+ * language (`cs` without a user). The schema is locked once complete; `subscribedEvents` is created last.
  *
- * Not idempotent on its own: `seedSystem` calls it once for a new tenant.
+ * Not idempotent: `seedSystem` calls it once per new tenant.
  */
 export async function seedCalendarsInTransaction(
   client: PoolClient,

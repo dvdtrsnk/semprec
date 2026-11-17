@@ -22,7 +22,6 @@ import {
 import { logger } from "../logger.js";
 import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
 
-/** `vi.waitFor` guards against `expire()`'s pending DB writes finishing asynchronously relative to when we check. */
 async function waitFor(predicate: () => Promise<boolean>, message: string): Promise<void> {
   await vi.waitFor(
     async () => {
@@ -33,12 +32,9 @@ async function waitFor(predicate: () => Promise<boolean>, message: string): Prom
 }
 
 /**
- * Wraps the real pool so its first `query` whose text starts with `sqlPrefix` rejects with
- * `error`; every other call, and every later one, delegates to the real pool. When `matchParams`
- * is given, a call is only failed if it also satisfies that predicate over the query's bind
- * params — needed to target one specific call among several that share the same SQL text (e.g.
- * `insertAgentRunEvent`'s INSERT, issued for every event kind including the `running` status
- * every `delegate()` call writes on creation).
+ * Wraps the real pool so the first `query` whose text starts with `sqlPrefix` (and, when given, whose params satisfy
+ * `matchParams`) rejects with `error`. `matchParams` targets one call among several sharing the same SQL, e.g. the
+ * `insertAgentRunEvent` INSERT used for every event kind.
  */
 function poolWithFailingQuery(sqlPrefix: string, error: Error, matchParams?: (params: unknown[]) => boolean): Pool {
   let failed = false;
@@ -61,10 +57,7 @@ function poolWithFailingQuery(sqlPrefix: string, error: Error, matchParams?: (pa
   });
 }
 
-/**
- * Wraps the real pool so its next `connect()` after `failNextConnect()` rejects with `error`; every
- * other call delegates. The close of a failed run opens its transaction through `connect()`.
- */
+/** The next `connect()` after `failNextConnect()` rejects; a failed run's close opens its transaction through it. */
 function poolWithFailableConnect(error: Error): { pool: Pool; failNextConnect: () => void } {
   let armed = false;
   const wrapped = new Proxy(pool, {
@@ -88,7 +81,7 @@ function poolWithFailableConnect(error: Error): { pool: Pool; failNextConnect: (
   };
 }
 
-/** Everything the spies recorded as one string; an `Error` is expanded, which `JSON.stringify` alone drops. */
+/** An `Error` is expanded, which `JSON.stringify` alone drops. */
 function loggedText(...spies: MockInstance[]): string {
   return JSON.stringify(
     spies.map((spy) => spy.mock.calls),
@@ -124,7 +117,6 @@ function scriptedSession(...batches: AgentMessage[][]): {
   return { createAgentSession, callCount: () => call };
 }
 
-/** Blocks inside its single turn until `release()` is called — for exercising the busy path. */
 function blockingSession(): { createAgentSession: CreateAgentSession; release: () => void } {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -295,9 +287,8 @@ describe("DelegationRegistry", () => {
       registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "second" }),
     );
 
-    // Whichever call actually reserved the key wins and blocks on the gate; the other must be
-    // rejected as busy rather than also creating an agent_runs row. Release the gate before
-    // awaiting either, otherwise awaiting the rejected one first would deadlock on the winner.
+    // The call that reserved the key blocks on the gate; the other must be rejected as busy. Release before awaiting
+    // either, or awaiting the rejected one first would deadlock on the winner.
     await new Promise((resolve) => setTimeout(resolve, 20));
     release();
 
@@ -404,8 +395,7 @@ describe("DelegationRegistry", () => {
   });
 
   it("rejects a delegate() that arrives while expire() is blocked closing the run, then starts a fresh run once expiry completes", async () => {
-    // Generous relative to the setup below (fetch the run id, open a second connection, BEGIN,
-    // take the row lock) so that setup reliably finishes before the TTL timer fires.
+    // Long enough for the setup below to finish before the TTL fires.
     const ttlMs = 150;
     const registry = new DelegationRegistry(pool, ttlMs);
     const supervisorRunId = await newSupervisorRunId();
@@ -450,10 +440,8 @@ describe("DelegationRegistry", () => {
     await blocker.query("COMMIT");
     blocker.release();
 
-    // Poll for the exact fact asserted next (the "done" run_status event), not just the
-    // agent_runs.status column, since finishAgentRun's UPDATE and expire()'s pushRunStatus are
-    // two separate auto-committed statements — the column can already read "done" a moment
-    // before the event insert commits.
+    // Poll for the "done" run_status event, not the status column: the UPDATE and the event insert are separate
+    // auto-committed statements.
     await waitFor(async () => {
       const { rows } = await pool.query<{ status: string }>(
         `SELECT payload->>'status' AS status FROM agent_run_events
@@ -488,10 +476,8 @@ describe("DelegationRegistry", () => {
   });
 
   it("keeps the entry busy=false and reschedules a retry when the expiry close's own UPDATE fails, so a later delegate() reuses the session", async () => {
-    // `expire()`'s catch path reschedules another attempt after another full `ttlMs`, and the
-    // failing pool below only fails the very first "UPDATE agent_runs" once — the assertions
-    // must run in the window after the first (failed) attempt but before the second (successful)
-    // one fires, so ttlMs needs enough slack for that window to be reliably wide.
+    // The failing pool fails only the first "UPDATE agent_runs"; the assertions must run after the failed attempt and
+    // before the rescheduled one, so ttlMs needs slack.
     const ttlMs = 300;
     const failingPool = poolWithFailingQuery("UPDATE agent_runs", new Error("simulated outage"));
     const registry = new DelegationRegistry(failingPool, ttlMs);
@@ -514,8 +500,7 @@ describe("DelegationRegistry", () => {
 
     await registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: "one" });
 
-    // Just past the first (failing) attempt, comfortably before the rescheduled second one at
-    // 2 * ttlMs.
+    // Past the first attempt, before the second at 2 * ttlMs.
     await new Promise((resolve) => setTimeout(resolve, ttlMs + 50));
 
     const { rows } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE project_item_id = $1`, [
@@ -542,15 +527,10 @@ describe("DelegationRegistry", () => {
   });
 
   it("drops the entry instead of leaving it busy=false when the run is already closed but the expiry's run_status write fails", async () => {
-    // `finishAgentRun`'s own "UPDATE agent_runs" succeeds here — the run really is closed as
-    // "done" in the DB — but the subsequent run_status event write throws. That's the race the
-    // fix addresses: the entry must still be dropped from `entries` (not left busy=false
-    // pointing at a terminal run), otherwise a delegate() landing in this window would reuse a
-    // session for a run that is already closed.
+    // The run is closed as "done" but the run_status event write throws: the entry must still be dropped, or a
+    // delegate() in this window would reuse a session for a closed run.
     const ttlMs = 60;
-    // Only fails the `run_status: "done"` event insert expire() issues after closing the run —
-    // not the `run_status: "running"` insert delegate() itself issues on creation, which shares
-    // the same SQL text.
+    // Fails only the `done` event insert, not the `running` insert delegate() issues with the same SQL.
     const failingPool = poolWithFailingQuery(
       "INSERT INTO agent_run_events",
       new Error("simulated outage"),
@@ -604,14 +584,9 @@ describe("DelegationRegistry", () => {
   });
 
   it("does not mutate or reschedule a stale entry when a concurrent delegate() replaces it while expire()'s run_status write is still failing", async () => {
-    // Reproduces the identity race: `finishAgentRun` closes the run and `entries.delete`
-    // already ran, but the `pushRunStatus` insert below is held pending rather than settled
-    // immediately. While it's pending, a fresh delegate() onto the same key creates a brand-new
-    // entry for a brand-new run. Only once that second entry exists do we reject the held
-    // insert, landing in expire()'s catch block with a *different* live entry now occupying the
-    // key. The fix must compare the stale `entry` object's identity against what's in `entries`
-    // (not just key presence) so it neither mutates the new entry's `busy` flag nor arms an
-    // orphaned TTL timer that would later force-close the new run out from under it.
+    // Identity race: after the run is closed and the entry deleted, `pushRunStatus` is held while a fresh delegate()
+    // creates a new entry under the same key; then the insert is rejected. expire() must compare entry identity so it
+    // neither touches the new entry's `busy` nor arms an orphaned TTL timer that would force-close the new run.
     let rejectPending: ((err: Error) => void) | null = null;
     let matched = false;
     const controlledPool = new Proxy(pool, {
@@ -656,8 +631,6 @@ describe("DelegationRegistry", () => {
     );
     const firstRunId = firstRunRows[0]!.id;
 
-    // Wait until expire()'s finishAgentRun has closed the first run and its entry has been
-    // dropped, and its pushRunStatus insert is blocked pending our release.
     await waitFor(async () => matched, "expire()'s run_status insert was never reached");
     await waitFor(async () => {
       const { rows } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [
@@ -666,8 +639,7 @@ describe("DelegationRegistry", () => {
       return rows[0]?.status === "done";
     }, "first run was never closed as done");
 
-    // A fresh delegate() onto the same key now sees no entry (it was already dropped) and no
-    // pending create, so it creates a brand-new run and entry.
+    // No entry and no pending create, so this creates a new run and entry.
     const { createAgentSession: secondSession } = scriptedSession(
       [{ kind: "turn_start" }, { kind: "message", text: "second session" }, { kind: "turn_end" }],
       [{ kind: "turn_start" }, { kind: "message", text: "second session, touched" }, { kind: "turn_end" }],
@@ -685,16 +657,12 @@ describe("DelegationRegistry", () => {
     );
     const secondRunId = secondRunRows[0]!.id;
 
-    // Now let the first expire() call's pushRunStatus fail, landing in the catch block while
-    // the second run's entry occupies the key. A buggy reschedule (armed on the stale, deleted
-    // entry) would fire another `expire()` call `ttlMs` after this rejection lands.
+    // A buggy reschedule on the stale entry would fire another expire() `ttlMs` after this rejection.
     const releasedAt = Date.now();
     rejectPending!(new Error("simulated outage"));
 
-    // Touch the second entry partway through that window, pushing its own legitimate TTL out
-    // further than the buggy timer would fire — so if the fix is broken and the second run gets
-    // force-closed at (released + ttlMs), that's distinguishable from its own real expiry, which
-    // would only be due at (touch + ttlMs), later still.
+    // Touching the second entry pushes its real expiry past when the buggy timer would fire, so the two are
+    // distinguishable.
     await new Promise((resolve) => setTimeout(resolve, 100));
     const touched = await registry.delegate({
       createAgentSession: secondSession,
@@ -704,8 +672,7 @@ describe("DelegationRegistry", () => {
     });
     expect(touched).toEqual({ ok: true, message: "second session, touched" });
 
-    // Past when the buggy orphaned timer would have fired (released + ttlMs), but comfortably
-    // before the second entry's own real, touch-extended expiry.
+    // Past the buggy timer, before the second entry's real expiry.
     const elapsedSinceRelease = Date.now() - releasedAt;
     await new Promise((resolve) => setTimeout(resolve, ttlMs + 30 - elapsedSinceRelease));
 
@@ -719,16 +686,11 @@ describe("DelegationRegistry", () => {
   });
 
   it("drops the entry instead of retrying when finishAgentRun finds the run already closed and the follow-up getAgentRun read fails", async () => {
-    // `finishAgentRun` returns `false` here (another writer already closed the run before the
-    // TTL fired), which already confirms the row terminal — but the follow-up `getAgentRun` read
-    // of its final status then throws. The fix must still drop the entry rather than treating
-    // this as a retryable failure: the row is terminal either way, so leaving a busy=false entry
-    // behind would let a delegate() reuse a session for a run that's already closed.
+    // `finishAgentRun` returns `false` (another writer closed the run), confirming the row terminal, then the
+    // `getAgentRun` read of its status throws. The entry must still be dropped, not retried.
     const ttlMs = 60;
-    // Matches only `getAgentRun`'s full-column SELECT for the delegated run itself, not
-    // `finishAgentRun`'s own `SELECT status FROM agent_runs ...` fallback read (which must still
-    // succeed) and not the earlier `getAgentRun` call `createAgentRun` issues to resolve the
-    // delegated run's actor from its supervisor parent.
+    // Matches only `getAgentRun`'s full-column SELECT for the delegated run, not `finishAgentRun`'s fallback status
+    // read nor the earlier `getAgentRun` that `createAgentRun` issues for the supervisor parent.
     const target: { runId: string | undefined } = { runId: undefined };
     const failingPool = poolWithFailingQuery(
       "SELECT id, project_item_id",
@@ -751,8 +713,7 @@ describe("DelegationRegistry", () => {
     );
     target.runId = firstRunRows[0]!.id;
 
-    // Simulate another writer closing the run before the TTL fires, so `finishAgentRun`'s own
-    // UPDATE affects zero rows and it falls into its "already finished" read, returning `false`.
+    // Another writer closes the run first, so `finishAgentRun`'s UPDATE affects zero rows and it returns `false`.
     await pool.query(`UPDATE agent_runs SET status = 'error', finished_at = now() WHERE project_item_id = $1`, [
       targetProjectItemId,
     ]);
@@ -766,8 +727,7 @@ describe("DelegationRegistry", () => {
     expect(afterTtl).toHaveLength(1);
     expect(afterTtl[0]!.status).toBe("error");
 
-    // If the entry were left behind (the bug), this delegate() would reuse it and reach
-    // `session.send()` instead of creating a fresh run — the run count would stay at 1.
+    // A leftover entry would be reused (reaching `session.send()`) and the run count would stay at 1.
     const { createAgentSession: secondSession } = scriptedSession([
       { kind: "turn_start" },
       { kind: "message", text: "second session" },
@@ -1176,7 +1136,7 @@ describe("DelegationRegistry", () => {
     const registry = new DelegationRegistry(pool);
     const supervisorRunId = await newSupervisorRunId();
     const targetProjectItemId = await createTestProjectItem(pool);
-    // No `send` implemented — only supports the very first turn, like every session before #229.
+    // No `send`: supports only the first turn.
     const createAgentSession: CreateAgentSession = (): AgentSession => ({
       async *messages() {
         yield { kind: "turn_start" };
@@ -1229,7 +1189,6 @@ describe("DelegationRegistry", () => {
       await runtimePool?.end();
     });
 
-    /** Creates a supervisor run in `tenantId` and returns its id. */
     function supervisorIn(tenantId: string): Promise<string> {
       return runInTenant(tenantId, async () => {
         const run = await createAgentRun(runtimePool, { triggeredBy: "user", task: "supervise" });

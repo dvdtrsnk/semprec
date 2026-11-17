@@ -7,10 +7,7 @@ import { projectAgentGuidanceStore } from "../projectAgentGuidanceStore.js";
 import { listHeartbeatsByProject, listLastFinishedOccurrenceRuns } from "../scheduler/schedulerStore.js";
 import { countEffectiveMcpGrants, listMcpToolGrantsForProject } from "./mcpAgentPageGrants.js";
 
-/**
- * The three signals that make a project's "Semp in this project" row show its attention dot, each as a count
- * (issue gh-1935). `needsAttention` is true when any of the three is greater than zero.
- */
+/** `needsAttention` is true when any count is above zero. */
 export interface ProjectAgentAttention {
   /** Rows of `agent_guidance_drift_findings` of the project with status `active`. */
   activeDriftFindings: number;
@@ -21,23 +18,18 @@ export interface ProjectAgentAttention {
   needsAttention: boolean;
 }
 
-/** What `GET /api/projects/:id/agent-summary` returns (issue gh-1935). */
 export interface ProjectAgentSummary {
   /** A guidance record exists and its Markdown is not blank. */
   hasGuidance: boolean;
-  /** `updated_at` of the guidance record as an ISO timestamp; `null` when the project has no record. */
+  /** `null` when the project has no record. */
   guidanceUpdatedAt: string | null;
-  /** `counts.effective` of the project's tool grants: granted, registration active, server active. */
+  /** Granted, registration active, server active. */
   grantedToolCount: number;
-  /** User-origin heartbeats of the project that are enabled; system heartbeats are not counted. */
+  /** System heartbeats are not counted. */
   enabledHeartbeatCount: number;
   attention: ProjectAgentAttention;
 }
 
-/**
- * The runs of `runIds` that have a pending approval request, with the number of requests, in one statement.
- * A run without one is absent.
- */
 async function readPendingApprovalCounts(client: PoolClient, runIds: readonly string[]): Promise<Map<string, number>> {
   const { rows } = await client.query<{ agent_run_id: string; pending: number }>(
     `SELECT agent_run_id, count(*)::int AS pending
@@ -50,10 +42,8 @@ async function readPendingApprovalCounts(client: PoolClient, runIds: readonly st
 }
 
 /**
- * The reply outcome of every run of `runs` that has a single reply to judge, by run id, in one statement. It is
- * the batched form of `getAgentRunReplyOutcome` (same rule: only a run that closed as `done`, is no MCP run and
- * has a thread, and only when its assistant message in that thread is the one and only), which that function
- * reads with one statement per run.
+ * Batched `getAgentRunReplyOutcome` (same rule: a `done`, non-MCP run with a thread and exactly one assistant
+ * message in it).
  */
 async function readReplyOutcomes(client: PoolClient, runs: readonly AgentRunRow[]): Promise<Map<string, ReplyOutcome>> {
   const judged = runs.filter((run) => run.status === "done" && run.triggeredBy !== "mcp" && run.threadId !== null);
@@ -74,10 +64,8 @@ async function readReplyOutcomes(client: PoolClient, runs: readonly AgentRunRow[
 }
 
 /**
- * How many of `heartbeatIds` have a last occurrence that reads `failed` on `GET /api/projects/:id/heartbeats`
- * (issue gh-1910): the latest finished run of the latest finished occurrence (`listLastFinishedOccurrenceRuns`)
- * whose display status (`deriveRunDisplayStatus`, with the reply outcome of issue #1890) is `error`. The runs, their
- * pending approvals and their replies are each read in one statement however many heartbeats there are.
+ * Matches the heartbeats list: the latest finished run of the latest finished occurrence whose display status is
+ * `error`. Each source is one statement regardless of heartbeat count.
  */
 async function countFailingHeartbeats(client: PoolClient, heartbeatIds: readonly string[]): Promise<number> {
   const lastRuns = await listLastFinishedOccurrenceRuns(client, heartbeatIds);
@@ -96,16 +84,9 @@ async function countFailingHeartbeats(client: PoolClient, heartbeatIds: readonly
 }
 
 /**
- * The project's agent setup and what needs a person, for the project detail's "Semp in this project" row
- * (issue gh-1935). Read-only; every source is read in the caller's tenant scope and each in a constant number of
- * statements, whatever the number of tools, heartbeats or runs. It does not check that `projectItemId` is a live
- * project: a caller that needs that (the route handler) checks it first. A project that has nothing reads all zeros.
- *
- * - `hasGuidance` and `guidanceUpdatedAt` come from the guidance record (`projectAgentGuidanceStore.load`).
- * - `grantedToolCount` is `countEffectiveMcpGrants` over `listMcpToolGrantsForProject`, the rule of the grants list.
- *   The locale only picks tool labels, which the count ignores.
- * - `enabledHeartbeatCount` and `failingHeartbeats` count the project's heartbeats of origin `user`; a switched-off
- *   heartbeat whose last occurrence failed still counts as failing, as it is listed that way.
+ * Read-only, each source in a constant number of statements. Does not check that `projectItemId` is a live
+ * project (the route does). A switched-off heartbeat whose last occurrence failed still counts as failing, as it is
+ * listed that way.
  */
 export async function getProjectAgentSummary(client: PoolClient, projectItemId: string): Promise<ProjectAgentSummary> {
   const guidance = await projectAgentGuidanceStore.load(client, projectItemId);

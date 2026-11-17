@@ -33,16 +33,10 @@ export type McpInvokeTool = (
 ) => Promise<McpInvokeToolResult>;
 
 /**
- * The outbound MCP-invoke adapter (issue #128): resolves `mcpToolRegistrationId` against
- * `projectItemId`'s current grants, validates `args` against the tool's synchronized schema,
- * and rejects before ever touching a transport (`resolveMcpInvocation`) — or, once that passes,
- * opens a connection through the #231 factory, calls `tools/call`, and closes it again
- * (`executeMcpInvocation`). Split into these two steps (rather than one function) so a future
- * approval-queue composition root can insert its waiting/execution state between them: a
- * resolved-but-not-yet-executed invocation already carries `target.requiresApproval` and
- * `target.riskClass` — the approval metadata this issue's Task says to feed forward — without
- * this file implementing any waiting itself. `createMcpInvokeTool` composes both directly for a
- * tool that doesn't need that gate.
+ * The outbound MCP-invoke adapter in two steps: `resolveMcpInvocation` resolves the registration against the project's
+ * current grants and validates `args` before any transport is touched; `executeMcpInvocation` connects, calls
+ * `tools/call` and closes. An approval gate sits between them (`createApprovalGatedMcpInvokeTool`); a resolved
+ * invocation carries `target.requiresApproval` and `target.riskClass` for it.
  */
 export interface ResolvedMcpInvocation {
   ok: true;
@@ -57,27 +51,21 @@ export interface RejectedMcpInvocation {
 
 export type McpInvocationResolution = ResolvedMcpInvocation | RejectedMcpInvocation;
 
-/** Bounds how many compiled schemas the agents process holds at once (issue #696's acceptance criterion). */
+/** Bounds how many compiled schemas the agents process holds. */
 const MAX_COMPILED_SCHEMAS = 256;
 
 interface CompiledSchemaEntry {
   updatedAt: string;
-  /** `null` when the schema failed to compile, so a broken schema isn't recompiled on every call — see `validateArguments`. */
+  /** `null` when compilation failed, so a broken schema is not recompiled on every call. */
   validate: ValidateFunction | null;
 }
 
-/**
- * Keyed by `mcpToolRegistrationId`, insertion-order-evicted once past `MAX_COMPILED_SCHEMAS`:
- * a `Map`'s iteration order is insertion order, and re-`set`ting an existing key moves it to the
- * end, so `.keys().next().value` is always the least-recently-inserted (LRU-by-insertion) entry.
- */
+/** Insertion-order eviction: re-`set`ting a key moves it to the end, so `.keys().next().value` is the oldest entry. */
 const compiledSchemas = new Map<string, CompiledSchemaEntry>();
 
 function compileSchema(schema: object, registrationId: string, updatedAt: string): CompiledSchemaEntry {
-  // A fresh Ajv instance per compile (rather than one shared, module-level instance) so a
-  // schema carrying its own `$id` can never collide with another registration's `$id` already
-  // registered on the same instance — the second `compile()` of a repeated `$id` on a shared
-  // instance throws "schema with key or id ... already exists".
+  // A fresh Ajv per compile: a schema's own `$id` would otherwise collide with another registration's on a shared
+  // instance ("schema with key or id ... already exists").
   const ajv = new Ajv({ allErrors: true, strict: false });
   let validate: ValidateFunction | null;
   try {
@@ -96,12 +84,7 @@ function compileSchema(schema: object, registrationId: string, updatedAt: string
   return entry;
 }
 
-/**
- * Compiles a granted tool's registered schema once per registration version instead of on every
- * call: a cache miss, or a `target.toolSchemaUpdatedAt` that no longer matches the cached entry
- * (the next "Synchronize tools" pass, #125, changed the schema), triggers a fresh compile; an
- * unchanged registration reuses the previously compiled validator.
- */
+/** Compiles once per registration version: a miss or a changed `target.toolSchemaUpdatedAt` recompiles. */
 function validateArguments(target: McpToolInvocationTarget, args: McpInvokeArgs): string | null {
   const { toolSchema: schema, mcpToolRegistrationId, toolSchemaUpdatedAt } = target;
   if (typeof schema !== "object" || schema === null) {
@@ -128,11 +111,8 @@ function rejection(result: string, failure?: McpInvokeResult["failure"]): Reject
 }
 
 /**
- * Re-derives authorization and validates arguments before any transport is touched. Both
- * `projectItemId` and `mcpToolRegistrationId` must come from server-derived run context (the
- * per-run permission manifest's `McpAgentToolProjection`), never from `args` or any other
- * model-supplied value — see `mcpToolInvocation.ts`'s own header comment for why a spoofed id
- * must fail exactly like an unknown or revoked one.
+ * `projectItemId` and `mcpToolRegistrationId` must come from server-derived run context, never from model-supplied
+ * values; a spoofed id must fail exactly like an unknown or revoked one (see `mcpToolInvocation.ts`).
  */
 export async function resolveMcpInvocation(
   pool: Pool,
@@ -159,12 +139,7 @@ export async function resolveMcpInvocation(
 }
 
 /**
- * Composes `resolveMcpInvocation` + `executeMcpInvocation` into one `(args) => result` function
- * bound to a single granted tool, following `delegateTool.ts`'s factory-closure convention.
- * Suitable wherever no approval gate needs to sit between resolution and execution; a
- * composition root that does need one calls the two steps separately instead — see
- * `createApprovalGatedMcpInvokeTool` below, the composition root issue #130 adds for exactly
- * that gate.
+ * `resolveMcpInvocation` + `executeMcpInvocation` bound to one granted tool, for callers that need no approval gate.
  */
 export function createMcpInvokeTool(
   pool: Pool,
@@ -180,9 +155,9 @@ export function createMcpInvokeTool(
 }
 
 /**
- * The reserved argument an agent may add to an approval-gated MCP tool call to say why it asks
- * (issue #1420). A third-party tool's own parameters are free-form, so a plain `reason` could
- * collide with a real one; the wrapper removes this key before validation, storage and invocation.
+ * Reserved argument an agent may add to an approval-gated MCP call to say why it asks. A third-party tool's parameters
+ * are free-form, so a plain `reason` could collide; the wrapper removes this key before validation, storage and
+ * invocation.
  */
 export const MCP_APPROVAL_REASON_KEY = "semprecReason";
 
@@ -201,13 +176,7 @@ function extractReason(args: McpInvokeArgs): ReasonExtraction {
   return { ok: true, args: rest, reason: raw };
 }
 
-/**
- * Formats the synthetic result a caller sees for a call this issue deferred to a human: shaped
- * exactly like a real `McpInvokeResult` (`error: false` — the *tool call itself* succeeded in the
- * sense that a request now exists, even though the underlying tool has not run) so the agent
- * turn and run complete normally as `done`, per the issue's Task, instead of the run treating
- * this as a failure.
- */
+/** Shaped like a real result with `error: false` (a request now exists) so the turn and run complete as `done`. */
 function pendingApprovalResult(requestId: string, toolName: string): McpInvokeToolResult {
   return {
     error: false,
@@ -217,24 +186,14 @@ function pendingApprovalResult(requestId: string, toolName: string): McpInvokeTo
 }
 
 /**
- * The approval-gated composition root (issue #130): resolves and validates exactly like
- * `createMcpInvokeTool`, but when the resolved target's `requiresApproval` is set, transactionally
- * inserts one `pending` `approval_requests` row — snapshotting the tool name, current risk class,
- * and the exact resolved invocation (registration/server ids and arguments) needed to execute it
- * later — instead of calling `executeMcpInvocation`, and returns a synthetic success result
- * carrying the new request's id. A tool that doesn't require approval continues straight through
- * to `executeMcpInvocation`, unaffected by this gate.
+ * Resolves and validates like `createMcpInvokeTool`; when the target `requiresApproval`, inserts one `pending`
+ * `approval_requests` row snapshotting the tool name, risk class and exact resolved invocation, and returns a synthetic
+ * success carrying the request id instead of executing.
  *
- * The insert also writes the reference `approval_pending` notification (issue #149) in the same
- * transaction: rolling back the request rolls back the notification with it. `transitionInstance`
- * is the new request's own freshly generated id — a create is a one-shot event with no retry of
- * "the same" transition to dedupe against, so the id doubling as both `sourceId` and
- * `transitionInstance` is exactly as unique as the row it names. Silently skips the notification
- * before any account exists, matching `notifyHeartbeatError`. The notification's link depends on
- * the source of the request and names the request (`approvalNotificationLinkHref`, issue #1787).
- * The new request is announced to its owner after the commit (`createPendingApprovalRequestAndPublish`),
- * through whatever realtime publisher the process wired (`semprec-agents` wires it at startup); a
- * replayed tool call, which returns the existing request, announces nothing.
+ * The `approval_pending` notification is written in the same transaction. Its `transitionInstance` is the new request's
+ * id: a create is one-shot, so that id is as unique as the row. The notification is skipped before any account exists.
+ * The request is announced to its owner after commit through the process's realtime publisher; a replayed tool call
+ * returns the existing request and announces nothing.
  */
 export function createApprovalGatedMcpInvokeTool(
   pool: Pool,
@@ -280,9 +239,7 @@ export function createApprovalGatedMcpInvokeTool(
             mcpServerItemId: target.mcpServerItemId,
             args: resolution.args,
           },
-          // mcpInvoke requests have no destructive-operation resource to snapshot (issue #89 only
-          // introduced that concept for the five generic-operation kinds) — this placeholder just
-          // satisfies the column's `NOT NULL` constraint without claiming a hash that doesn't exist.
+          // mcpInvoke has no destructive-operation resource to snapshot; this placeholder only satisfies `NOT NULL`.
           resourceSnapshot: { kind: "mcp_invoke", resourceId: mcpToolRegistrationId, sha256: null },
           reason,
           toolCallId: invokeOptions?.toolCallId ?? null,

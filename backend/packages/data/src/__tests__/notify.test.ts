@@ -24,7 +24,6 @@ describe("writeNotification", () => {
     await pool?.end();
   });
 
-  /** Tenant zero's user: a tenant-zero notification may only name its own tenant's user (issue #1066). */
   async function createTestUser(locale = "en"): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
     const user = await createUser(pool, {
@@ -97,7 +96,6 @@ describe("writeNotification", () => {
     expect(rows[0].body).toBeNull();
   });
 
-  /** Writes an approval body for one user and returns the stored body; `null` params exercise the unnamed label. */
   async function writeApprovalBody(userId: string, sourceId: string): Promise<string | null> {
     await withTransaction(pool, (client) =>
       writeNotification(client, {
@@ -132,7 +130,6 @@ describe("writeNotification", () => {
     );
   });
 
-  /** Writes the approval body of a delete that carries the delete impact of its module for one user and returns the stored body. */
   async function writeImpactBody(userId: string, sourceId: string): Promise<string | null> {
     await withTransaction(pool, (client) =>
       writeNotification(client, {
@@ -249,11 +246,11 @@ describe("writeNotification", () => {
       );
 
     await write("job-1");
-    await write("job-1"); // replay of the same transition: must not duplicate
+    await write("job-1");
     const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, ["hb-replay"]);
     expect(afterReplay).toHaveLength(1);
 
-    await write("job-2"); // a distinct, later failure of the same source: a genuinely new row
+    await write("job-2");
     const { rows: afterNewTransition } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [
       "hb-replay",
     ]);
@@ -287,7 +284,6 @@ describe("writeNotification", () => {
         transitionInstance: "job-1",
       }),
     );
-    // Replaying the same transition must not fire a second event.
     await withTransaction(pool, (client) =>
       writeNotification(client, {
         userId,
@@ -345,7 +341,6 @@ describe("writeNotification", () => {
       tenantB: string;
     }
 
-    /** Runs `body` in a transaction with two tenants and one user each, then rolls everything back. */
     async function inTwoTenants(body: (client: PoolClient, t: TwoTenants) => Promise<void>): Promise<void> {
       const passwordHash = await hashPassword("s3cret-password");
       try {
@@ -411,7 +406,7 @@ describe("writeNotification", () => {
     });
   });
 
-  // `getTestPool` connections start in tenant zero (session-level `app.tenant_id`, #1067).
+  // `getTestPool` connections start in tenant zero (session-level `app.tenant_id`).
   it("stamps the connection's tenant zero on a write made without a process scope", async () => {
     const userId = await createTestUser();
     const id = await withTransaction(pool, (client) =>

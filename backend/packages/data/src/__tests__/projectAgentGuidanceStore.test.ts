@@ -21,7 +21,6 @@ let pool: Pool;
 // A production `createPool` pool, so `runInTenant` reaches `app.tenant_id` the way it does at runtime.
 let scopedPool: Pool;
 
-/** Runs `fn` in a transaction on `scopedPool` inside `runInTenant(tenantId, …)`. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(scopedPool, fn));
 }
@@ -114,10 +113,8 @@ describe("projectAgentGuidanceStore (issue #214)", () => {
     expect(updated.markdown).toBe("# Guidance v2");
   });
 
-  // Issue #1066: project_agent_guidance_owner_user_id_tenant_fkey confines the owner to the guidance's
-  // own tenant, and a tenant has exactly one user (users_tenant_id_key), so the only valid transfer
-  // target is that user. The accepted transfer is therefore proven by the write it makes: updated_at
-  // advances and the returned row is the stored one.
+  // The owner fkey confines the owner to the guidance's tenant, which has exactly one user, so the accepted
+  // transfer is proven by its write: updated_at advances and the returned row is the stored one.
   it("transfers ownership within the tenant and refuses an owner from outside it", async () => {
     const projectItemId = await createProjectItem();
     const ownerUserId = (await createTenantZeroUser(pool)).id;

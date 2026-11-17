@@ -39,16 +39,13 @@ import {
 } from "../proposalActions.js";
 
 /**
- * Issue gh-1947: `PUT /api/inbox/items/:id/type`, through the route's handler and the production writers. Everything
- * runs on a `semprec_data` pool inside a tenant, so row-level security applies to the writes and to every lookup of
- * the route; the queue is read through the superuser pool, which sees the jobs of every tenant. The tick runs through
- * `createSemprecTickAction` with a stub model call, as the other tick tests do.
+ * `PUT /api/inbox/items/:id/type`, through the route's handler and the production writers on a `semprec_data` pool
+ * inside a tenant, so row-level security applies; the queue is read through the superuser pool, which sees every tenant.
  */
 
 let admin: Pool;
 let pool: Pool;
 
-/** What a test needs to know of one tenant's seeded Inbox pipeline. */
 interface Pipeline {
   tenant: string;
   inboxId: string;
@@ -57,7 +54,6 @@ interface Pipeline {
   tasksId: string;
   typeDefinitionId: string;
   sourceInboxDefinitionId: string;
-  /** The seeded `semprec.tick` heartbeat of the Inbox database that watches `update`. */
   updateHeartbeatId: string;
 }
 
@@ -118,7 +114,6 @@ async function createType(p: Pipeline, name: string, fixture: TypeFixture): Prom
   return type.id;
 }
 
-/** Captures one Inbox item through the production Inbox writer, with its type edge when `typeId` is given. */
 async function capture(p: Pipeline, text: string, typeId?: string): Promise<string> {
   const item = await inTenant(p, (client) =>
     createInboxItemWithClient(client, {
@@ -132,7 +127,6 @@ async function capture(p: Pipeline, text: string, typeId?: string): Promise<stri
   return item.id;
 }
 
-/** Runs the Inbox tick for the item with `compute` as its model call. */
 async function tick(p: Pipeline, itemId: string, compute: ComputeSemprecProposalFn): Promise<void> {
   await runInTenant(p.tenant, () =>
     createSemprecTickAction(pool, compute)(
@@ -148,7 +142,6 @@ async function tick(p: Pipeline, itemId: string, compute: ComputeSemprecProposal
 
 const noCandidates: ComputeSemprecProposalFn = async () => ({ properties: {}, candidates: [] });
 
-/** A typed Task item whose first tick stored a `proposed` card; the ids of both and of the type. */
 async function proposedTaskItem(p: Pipeline, text = "Buy milk") {
   const typeId = await createType(p, "Task", TASK_TYPE);
   const itemId = await capture(p, text, typeId);
@@ -174,7 +167,6 @@ async function requireCard(p: Pipeline, itemId: string): Promise<ItemRow> {
   return card;
 }
 
-/** The Inbox item a card points at through `sourceInbox`. */
 async function sourceOf(p: Pipeline, cardId: string): Promise<string[]> {
   return inTenant(p, async (client) =>
     (await relationsStore.listRelationsForItem(client, p.sourceInboxDefinitionId, cardId)).map((edge) =>
@@ -199,7 +191,6 @@ function historyOf(card: ItemRow) {
   return historySchema.parse(card.properties.history);
 }
 
-/** Calls the route's handler as `p`'s tenant on the runtime-role pool. */
 function change(p: Pipeline, itemId: string, body: unknown, identity?: { user: { id: string } }) {
   return runInTenant(p.tenant, () =>
     createChangeInboxItemTypeRouteHandler(pool)({ params: { id: itemId }, body, ...(identity ? { identity } : {}) }),
@@ -211,7 +202,6 @@ const answerSchema = z.object({
   body: z.object({ itemId: z.string(), typeId: z.string(), card: z.object({ id: z.string() }).nullable() }),
 });
 
-/** What an error tells a caller (status, code, message and details), with `id` replaced, so two refusals can be compared. */
 function errorMasking(error: unknown, id: string) {
   if (!(error instanceof ChokePointError)) throw new Error(`Expected a ChokePointError, got ${String(error)}`);
   return JSON.parse(
@@ -224,7 +214,6 @@ function errorMasking(error: unknown, id: string) {
   ) as unknown;
 }
 
-/** The jobs of the queue, by key and how often a keyed enqueue replaced it (`revision`). */
 async function queuedJobs(): Promise<Array<{ key: string | null; revision: number }>> {
   const { rows } = await admin.query<{ key: string | null; revision: number }>(
     "SELECT key, revision FROM graphile_worker.jobs ORDER BY id",
@@ -247,7 +236,6 @@ async function discardQueuedJobs(): Promise<void> {
   }
 }
 
-/** Everything a refused call must leave as it was: the type edges, the card and the queue. */
 async function writtenState(p: Pipeline, itemId: string) {
   return { types: await typeIdsOf(p, itemId), card: await cardOf(p, itemId), jobs: await queuedJobs() };
 }
@@ -391,8 +379,8 @@ describe("PUT /api/inbox/items/:id/type (issue gh-1947)", () => {
 
       await change(p, itemId, { typeId: newTypeId });
 
-      // The edge hook of issue gh-1718 enqueues the tick for the deleted edge and for the created one; every enqueue of
-      // the same key replaces the queued job and raises its revision, so the third is the route's own trigger.
+      // The type edge hook enqueues the tick for the deleted edge and for the created one; every enqueue of the same key
+      // replaces the queued job and raises its revision, so the third is the route's own trigger.
       const jobs = (await queuedJobs()).filter((job) => job.key === heartbeatFireJobKey(p.updateHeartbeatId, itemId));
       expect(jobs).toEqual([{ key: heartbeatFireJobKey(p.updateHeartbeatId, itemId), revision: 2 }]);
     });
@@ -539,7 +527,6 @@ describe("PUT /api/inbox/items/:id/type (issue gh-1947)", () => {
     it("refuses a type whose target database is not available for an item that has no card too, and writes nothing", async () => {
       const itemId = await capture(p, "Buy milk");
       const choreTypeId = await createType(p, "Chore", TASK_TYPE);
-      // Raw SQL: older generic writes accepted any select value, so a type can name a database that is not one.
       await admin.query(
         "UPDATE items SET properties = jsonb_set(properties, '{targetDatabase}', '\"legacyUnknown\"') WHERE id = $1",
         [choreTypeId],

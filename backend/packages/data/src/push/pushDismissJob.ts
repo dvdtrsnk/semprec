@@ -16,14 +16,10 @@ import { sendWebPushDismiss } from "./webPushAdapter.js";
 
 const logger = createLogger("push");
 
-/**
- * How many notification ids one `pushDismiss` job carries. An APNs payload may not exceed 4096 bytes and an id
- * takes 39 bytes in the JSON list, so 50 ids stay well inside it. Resolving more than that for one user
- * enqueues one job per 50.
- */
+/** 50 ids x 39 bytes stays well inside the 4096-byte APNs payload limit. */
 export const PUSH_DISMISS_MAX_IDS_PER_JOB = 50;
 
-/** The tries the queue gives a dismiss; a dismiss is best effort, so it does not keep retrying. */
+/** Best effort, so few retries. */
 const PUSH_DISMISS_MAX_ATTEMPTS = 3;
 
 const pushDismissPayloadSchema = z.object({
@@ -36,12 +32,7 @@ export interface PushDismissInput {
   notificationIds: readonly string[];
 }
 
-/**
- * Enqueues the `pushDismiss` job(s) that tell the devices of `userId` to remove the visible pushes of
- * `notificationIds` (issue #1826): one job for up to `PUSH_DISMISS_MAX_IDS_PER_JOB` ids. It runs on the caller's
- * client, so the job commits or rolls back with the write that resolved the notifications. It enqueues nothing
- * for an empty list.
- */
+/** Commits with the caller's write that resolved the notifications. */
 export async function enqueuePushDismiss(client: PoolClient, input: PushDismissInput): Promise<void> {
   for (let start = 0; start < input.notificationIds.length; start += PUSH_DISMISS_MAX_IDS_PER_JOB) {
     await enqueueJob(
@@ -62,18 +53,8 @@ const defaultPushDismissSenders: PushDismissSenders = {
 };
 
 /**
- * The `pushDismiss` job's handler (issue #1826): sends the dismiss of `notificationIds` to every active push
- * registration of `userId`, a silent background push for an APNs registration and the message
- * `{ dismiss: [...] }` for a Web Push one. `userId` must be the user of the job's own tenant (the tenant of its
- * envelope); for any other user the job sends nothing. It writes no `push_deliveries` row: a dismiss is not a
- * delivery of a notification, and the ledger has one row per notification and registration.
- *
- * Every registration is tried. A registration the provider reports dead (`permanent-failure`) is revoked, as the
- * fan-out job revokes it. `not-configured` neither revokes nor retries, because the gap is the server's and a
- * retry would meet it again; it is logged once per channel. A `transient-failure` is thrown after the other
- * registrations were tried, so the queue runs the job again, up to its three attempts, and the run sends to every
- * remaining registration again: a dismiss is idempotent on the device, so no per-registration record is kept.
- * A payload that is not a user id with a list of notification ids fails the job.
+ * Writes no `push_deliveries` row: a dismiss is not a notification delivery. Failure handling
+ * mirrors the fanout job; no per-registration record is kept because a dismiss is idempotent.
  */
 export async function handlePushDismissTask(
   pool: Pool,
@@ -82,8 +63,7 @@ export async function handlePushDismissTask(
 ): Promise<void> {
   const input = pushDismissPayloadSchema.parse(payload);
   const registrations = await withTransaction(pool, async (client) => {
-    // `push_subscriptions` is not row-level secured, so the job's tenant is applied here: a user other than the
-    // tenant's own is treated like a missing one.
+    // `push_subscriptions` has no RLS, so the job's tenant is enforced here.
     if ((await getTenantUserId(client)) !== input.userId) return [];
     return listPushSubscriptionsForUser(client, input.userId);
   });

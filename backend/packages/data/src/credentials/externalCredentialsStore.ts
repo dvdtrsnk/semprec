@@ -4,13 +4,9 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { getOrCreateTenantDataKey, getTenantDataKey } from "./tenantKeysStore.js";
 
 /**
- * Generic reversible-secret storage (issue #26): `item_id` references any `items` row that
- * needs a secret handed back later — a Mailbox here, an MCP server in issue #31 — never the
- * `users` login table (issue #34, hashed, not encrypted, no `items` row at all). One table,
- * one encryption module (`@semprec/credentials`), several narrow accessors over it — this
- * file is still the only place in the codebase allowed to decrypt a credential. Every row is a
- * `tenant` row: AEAD under the tenant's data key, bound to the tenant and item. The master-key-only
- * `master` scheme was retired in issue #1069, whose migration refuses any other `scheme` value.
+ * Reversible-secret storage for any `items` row that needs a secret back later (a Mailbox, an MCP server); login
+ * passwords are hashed elsewhere. This file is the only place allowed to decrypt a credential. Every row uses the
+ * `tenant` scheme: AEAD under the tenant's data key, bound to tenant and item.
  */
 export const CREDENTIAL_TYPES = [
   "oauth2_refresh_token",
@@ -21,10 +17,7 @@ export const CREDENTIAL_TYPES = [
 ] as const;
 export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 
-/**
- * The associated data a `tenant` credential is sealed with, binding the ciphertext to its tenant and
- * item so it cannot be copied onto another row. Both ids are lowercase canonical UUID text.
- */
+/** Binds the ciphertext to its tenant and item so it cannot be copied onto another row. */
 function credentialAssociatedData(tenantId: string, itemId: string): Buffer {
   return Buffer.from(`semprec:external-credential:v1:${tenantId.toLowerCase()}:${itemId.toLowerCase()}`, "utf8");
 }
@@ -45,11 +38,9 @@ export interface StoreCredentialInput {
 }
 
 /**
- * Seals under the current tenant's data key (created on first use), bound to `tenant_id‖item_id`,
- * marks the row `tenant` and stores/replaces the one credential this item holds (`item_id` is the
- * table's PK — one credential per item, see the migration's header note). Inside a transaction a newly created tenant key rolls back with the
- * caller. `key_version` is written as 1 and is not meaningful on a `tenant` row: the version of the
- * master key wrapping the tenant's data key lives in `tenant_keys.master_key_version`.
+ * Seals under the tenant's data key (created on first use; rolls back with the caller's transaction) and
+ * stores or replaces the item's one credential (`item_id` is the PK). `key_version` is always 1 and meaningless
+ * on a `tenant` row; the wrapping master key version lives in `tenant_keys.master_key_version`.
  */
 export async function storeCredential(client: Queryable, input: StoreCredentialInput): Promise<void> {
   const key = await getOrCreateTenantDataKey(client);
@@ -78,10 +69,7 @@ export async function hasCredential(client: Queryable, itemId: string): Promise<
   return rows.length > 0;
 }
 
-/**
- * The type of the credential item `itemId` holds, or `null` when it holds none. It reads the type
- * only: nothing is decrypted, so no `credential_access_log` entry is written.
- */
+/** Reads the type only: nothing is decrypted, so no `credential_access_log` entry. */
 export async function getCredentialType(client: Queryable, itemId: string): Promise<CredentialType | null> {
   const { rows } = await client.query<{ credential_type: string }>(
     `SELECT credential_type FROM external_credentials WHERE item_id = $1`,
@@ -95,21 +83,15 @@ export interface DecryptCredentialInput {
   itemId: string;
   actorType: CredentialActorType;
   actorId?: string;
-  /** e.g. 'imap_sync' | 'smtp_send' | 'test_connection' | 'mcp_connect' — keeps `credential_access_log` attributable. */
+  /** e.g. 'imap_sync' | 'smtp_send' | 'test_connection' | 'mcp_connect', so the access log is attributable. */
   purpose: string;
 }
 
 /**
- * The narrow decryption accessor — the only function in this codebase that decrypts a credential.
- * It opens `tenant` rows, the only scheme `storeCredential` writes; any other `scheme` value throws
- * after the access-log insert, as a decrypt failure does. Logs every decryption
- * *attempt* to `credential_access_log` — the log insert runs before the decryption itself (see
- * mailSyncJob.ts's caller-side note: this is intentional, so a decrypt failure downstream of a real key/ciphertext still leaves the
- * access attempt on record) — and returns `null` (no log entry) only when there is nothing to
- * decrypt at all, since "no credential stored" is not itself a credential access. Callers: the
- * mail sync worker (every sync cycle) and the MCP connection manager (once per opened
- * transport) — never an agent tool. The mailbox removal (issue gh-2030) reads an OAuth mailbox's
- * refresh token once, as the removing user, for its cleanup at the provider.
+ * The only function that decrypts a credential. Every attempt is logged to `credential_access_log` before
+ * decrypting, so a failed decrypt is still on record; returns `null` without a log entry only when nothing is
+ * stored. Callers: mail sync, the MCP connection manager, and mailbox removal (OAuth cleanup at the provider),
+ * never an agent tool.
  */
 export async function getDecryptedCredential(client: Queryable, input: DecryptCredentialInput): Promise<string | null> {
   const { rows } = await client.query<{
@@ -131,7 +113,7 @@ export async function getDecryptedCredential(client: Queryable, input: DecryptCr
     ],
   );
 
-  // The only scheme left since issue #1069; a plain `Error` like a decrypt failure, after the log insert.
+  // Throws like a decrypt failure, after the log insert.
   assertKnownValue(["tenant"], row.scheme, "credential scheme");
 
   const tenantKey = await getTenantDataKey(client);

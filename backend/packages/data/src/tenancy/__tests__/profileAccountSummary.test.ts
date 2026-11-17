@@ -18,10 +18,7 @@ let runtime: Pool;
 let tenantId: string;
 let userId: string;
 
-/**
- * `pool` with a `connect` and a `query` that count their calls together and refuse the `failAt`th one (1-based; 0
- * refuses none). Every read of the summary reaches the database through one of the two, so each can be refused.
- */
+/** Refuses the `failAt`th call (1-based; 0 refuses none) across `connect` and `query` combined. */
 function poolRefusingCall(pool: Pool, failAt: number): { pool: Pool; calls: () => number } {
   let calls = 0;
   const refuse = (): boolean => {

@@ -5,10 +5,7 @@ import { getProperty } from "../chokePoint/propertiesStore.js";
 import { findDependenciesByRelationDefinition, findDependenciesBySource } from "./dependencies.js";
 import { assertAggregationCompatibleWithType, parseRollupConfig } from "./config.js";
 
-/**
- * A DELETE on a relation property must be rejected, not silently invalidate dependent
- * rollups — the user's path is two explicit steps: delete the rollup, then the relation.
- */
+/** Rejected rather than silently invalidating rollups: delete the rollup first, then the relation. */
 export async function assertRelationDeletable(client: PoolClient, relationDefinitionId: string): Promise<void> {
   const dependents = await findDependenciesByRelationDefinition(client, relationDefinitionId);
   if (dependents.length > 0) {
@@ -18,11 +15,7 @@ export async function assertRelationDeletable(client: PoolClient, relationDefini
   }
 }
 
-/**
- * A DELETE on a property a rollup aggregates (its `targetPropertyKey`) must be rejected, not leave
- * the dependency pointing at a key no property has — as with a relation, the user's path is to
- * delete the rollup first, then the source property.
- */
+/** Rejected rather than leaving a dangling dependency: delete the rollup first, then the source property. */
 export async function assertSourceDeletable(
   client: PoolClient,
   sourceDatabaseId: string,
@@ -36,10 +29,6 @@ export async function assertSourceDeletable(
   }
 }
 
-/**
- * A PATCH changing a source property's type must be rejected if it would leave a
- * dependent rollup's aggregation incompatible with the new type.
- */
 export async function assertSourceRetypeAllowed(
   client: PoolClient,
   sourceDatabaseId: string,

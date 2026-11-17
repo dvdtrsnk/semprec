@@ -62,9 +62,8 @@ import {
 const PASSWORD = "agent-run-detail-password";
 
 /**
- * A copy of `agentRunSchema` of `web/src/api/agentRunOperations.ts`, the schema the web client parses
- * this route's response with. The backend cannot import the web package, so the contract test below
- * parses with this copy; it has to follow the web schema when that changes.
+ * A copy of `agentRunSchema` of `web/src/api/agentRunOperations.ts`: the backend cannot import the web package,
+ * so this copy must follow the web schema when that changes.
  */
 const webAgentRunSchema = z.object({
   id: z.string(),
@@ -80,10 +79,7 @@ const webAgentRunSchema = z.object({
   finishedAt: z.string().nullable(),
 });
 
-/**
- * The fields issues #1805 and #1820 add, and the two instants of the run's row (`startedAt`, `finishedAt`) that
- * `durationMs` is checked against, as this test reads them from a response.
- */
+/** Includes the run row's `startedAt` and `finishedAt`, which `durationMs` is checked against. */
 const addedFieldsSchema = z.object({
   displayStatus: z.enum(["running", "done", "waiting_approval", "error"]),
   startedAt: z.string(),
@@ -106,7 +102,6 @@ const addedFieldsSchema = z.object({
   }),
 });
 
-/** The fields the reply-scoped detail of issue #1889 changes, as this test reads them from a response. */
 const replyDetailSchema = z.object({
   id: z.string(),
   displayStatus: z.enum(["running", "done", "waiting_approval", "error"]),
@@ -142,7 +137,6 @@ let pool: Pool;
 let server: Server;
 let baseUrl: string;
 
-/** A tenant with its user, a seeded system and that user's bearer header. */
 async function tenantSession(): Promise<Session> {
   const tenant = await createTestTenant(admin);
   const email = `${randomUUID()}@example.test`;
@@ -152,7 +146,6 @@ async function tenantSession(): Promise<Session> {
   return { tenant, userId: user.id, headers: { Authorization: `Bearer ${session.token}` } };
 }
 
-/** A Projects item of the tenant with the given name. */
 function createProject(session: Session, name: string): Promise<string> {
   return runInTenant(session.tenant, async () => {
     const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
@@ -162,7 +155,6 @@ function createProject(session: Session, name: string): Promise<string> {
   });
 }
 
-/** A heartbeat of the project and its tick thread. */
 function createHeartbeatWithThread(
   session: Session,
   projectItemId: string,
@@ -189,7 +181,6 @@ function createRun(session: Session, input: Parameters<typeof createAgentRun>[1]
 
 const STORED_STEP_TIMES = { startedAt: "2026-11-01T10:00:00.000Z", durationMs: 5 };
 
-/** A stored tool step of an MCP call that failed with `failureKind`, as the projector of issue #1860 writes it. */
 function failedMcpStep(failureKind: string, extra: Partial<SempReplyStep> = {}): SempReplyStep {
   return {
     kind: "tool",
@@ -205,10 +196,7 @@ function failedMcpStep(failureKind: string, extra: Partial<SempReplyStep> = {}):
   };
 }
 
-/**
- * Gives `run` (still running) the single reply of its thread, finished as `done` with `steps` stored on it the
- * way the turn handler stores them, and then closes the run as done.
- */
+/** Stores `steps` the way the turn handler does, then closes the run as done. */
 async function finishRunWithReply(session: Session, run: AgentRunRow, steps: SempReplyStep[]): Promise<void> {
   const threadId = run.threadId;
   if (threadId === null) throw new Error("The run has no thread");
@@ -243,7 +231,6 @@ async function readDetail(session: Session, runId: string): Promise<{ status: nu
   return { status: res.status, body: await res.json() };
 }
 
-/** The added fields of a 200 answer, with the row's two instants (see `addedFieldsSchema`). */
 async function readAddedFields(session: Session, runId: string): Promise<z.infer<typeof addedFieldsSchema>> {
   const answer = await readDetail(session, runId);
   expect(answer.status).toBe(200);
@@ -617,7 +604,6 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       status: "done",
       displayStatus: "error",
       errorCode: null,
-      // The default locale of a user is Czech.
       errorSummary: "GitHub není dostupný",
     });
   });
@@ -701,7 +687,6 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       errorCode: null,
       errorSummary: null,
     });
-    // Once nothing waits any more, the incomplete reply reads as the error it is.
     expect(decided.body).toMatchObject({
       displayStatus: "error",
       errorCode: null,
@@ -785,8 +770,8 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
     }
 
     /**
-     * A chat run with two replies. Reply A has one tool call with a pending approval request and one model call;
-     * reply B has two tool calls, each with a pending request, and two model calls.
+     * Reply A: one tool call with a pending approval request and one model call. Reply B: two tool calls, each
+     * with a pending request, and two model calls.
      */
     async function twoReplies(session: Session) {
       const setup = replySetup(session);
@@ -1045,7 +1030,6 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       await playReply(setup, chat, { userText: "Second", startMs: 10_000, toolCalls: [{ toolCallId: "call-b" }] });
       const requestB = await createApproval(setup, chat.runId, "call-b");
 
-      // The failed reply stored no last event, so its range ends before the next reply's first event.
       const detail = await readScoped(owner, chat.runId, failed.assistantMessageId);
 
       expect(detail.approvals.requestIds).not.toContain(requestB);
@@ -1068,7 +1052,7 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       const chat = await createChatRun(setup);
       const a = await playReply(setup, chat, { userText: "First", startMs: 0, toolCalls: [{ toolCallId: "call-a" }] });
       const requestA = await createApproval(setup, chat.runId, "call-a");
-      // No production write leaves a started reply without its first event id; the column is cleared by SQL.
+      // No production write leaves a started reply without its first event id.
       await admin.query("UPDATE semp_messages SET event_from_id = NULL, event_to_id = NULL WHERE id = $1", [
         a.assistantMessageId,
       ]);
@@ -1093,7 +1077,6 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
     });
 
     describe("the title of a reply to a system message", () => {
-      /** A chat run in a tick thread whose approval outcome message `systemKey` the reply answers. */
       async function replyToApprovalOutcome(session: Session, outcome: "executed" | "rejected" | "conflict") {
         const setup = replySetup(session);
         const projectItemId = await createProject(session, "Weekly review");
@@ -1165,7 +1148,7 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
         const owner = await tenantSession();
         await updateUserLocale(admin, owner.userId, "en");
         const { chat, assistantId, systemMessageId } = await replyToApprovalOutcome(owner, "executed");
-        // No production writer makes another system key yet; the stored key is replaced by SQL.
+        // No production writer makes another system key yet.
         await admin.query("UPDATE semp_messages SET system_key = 'approval.outcome.unheardOf' WHERE id = $1", [
           systemMessageId,
         ]);
@@ -1210,7 +1193,7 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       const setup = replySetup(owner);
       const chat = await createChatRun(setup);
       const reply = await playReply(setup, chat, { userText: "First", startMs: 0 });
-      // No production write gives a user message a run; the link is set by SQL so that only its role is refused.
+      // No production write gives a user message a run; set by SQL so only its role is refused.
       await admin.query("UPDATE semp_messages SET agent_run_id = $2 WHERE id = $1", [reply.userMessageId, chat.runId]);
 
       const user = await readScopedRaw(owner, chat.runId, `?messageId=${reply.userMessageId}`);
@@ -1238,7 +1221,7 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       const owner = await tenantSession();
       const chat = await createChatRun(replySetup(owner));
       const reply = await playReply(replySetup(owner), chat, { userText: "First", startMs: 0 });
-      // The stranger's own tenant cannot see the run, so the answer is the run's 404 before any message is read.
+      // The run's 404 comes before any message is read.
       const stranger = await tenantSession();
 
       const answer = await readScopedRaw(stranger, chat.runId, `?messageId=${reply.assistantMessageId}`);
@@ -1246,10 +1229,7 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       expect(answer).toEqual(NOT_FOUND);
     });
 
-    /**
-     * A finished heartbeat run in the project, with its one assistant message in the tick thread. `prepare` runs
-     * before the run finishes.
-     */
+    /** `prepare` runs before the run finishes. */
     async function heartbeatRunWithMessage(
       session: Session,
       projectItemId: string,
@@ -1331,7 +1311,7 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
         const owner = await tenantSession();
         const projectItemId = await createProject(owner, "Weekly review");
         const run = await heartbeatRunWithMessage(owner, projectItemId, "Sunday planning");
-        // No production write gives a user message a run; the row is made by SQL so that only its role is refused.
+        // No production write gives a user message a run; made by SQL so only its role is refused.
         const user = await admin.query<{ id: string }>(
           `INSERT INTO semp_messages (tenant_id, thread_id, role, text, agent_run_id)
            VALUES ($1, $2, 'user', 'Private question', $3) RETURNING id`,
@@ -1386,7 +1366,6 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       const requestA = await createApproval(setup, chat.runId, "call-a");
       await settleCall(setup, chat.runId, a.assistantMessageId, { inputTokens: 100, outputTokens: 10, costUsd: 0.01 });
       await runInTenant(owner.tenant, () => finishAgentRun(pool, chat.runId, "done", null));
-      // The reply's events and the checkpoint after them are older than the retention window; reply B's are not.
       await admin.query("UPDATE agent_run_events SET at = $2 WHERE agent_run_id = $1 AND id <= $3::bigint", [
         chat.runId,
         new Date(Date.now() - 40 * 24 * 60 * 60 * 1000),
@@ -1401,7 +1380,6 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       const created = await admin.query<{ created_at: Date }>("SELECT created_at FROM semp_messages WHERE id = $1", [
         a.assistantMessageId,
       ]);
-      // Nothing but the start of the reply, which the removed first event gave, differs.
       expect(after).toEqual({ ...before, startedAt: created.rows[0]?.created_at.toISOString() });
       expect(after).toMatchObject({
         durationMs: 400,
@@ -1414,11 +1392,10 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
   });
 
   describe("retrying a finished tick run whose reply is incomplete (issue #1908)", () => {
-    /** A tick run of a succeeded occurrence, closed as done with `steps` stored on its single reply. */
     async function tickRunWithReply(owner: Session, steps: SempReplyStep[]): Promise<AgentRunRow> {
       const projectItemId = await createProject(owner, "Weekly review");
       const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-      // Raw SQL: only the sweep inserts an occurrence, and it does so for a due rule at a time the test cannot set.
+      // Raw SQL: only the sweep inserts an occurrence, at a time the test cannot set.
       const occurrence = await runInTenant(owner.tenant, () =>
         pool.query<{ id: string }>(
           `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)

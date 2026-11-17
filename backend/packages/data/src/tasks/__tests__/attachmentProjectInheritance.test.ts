@@ -29,7 +29,6 @@ let cp: ChokePoint;
 
 type DatabaseKey = "companies" | "events" | "files" | "projects" | "tasks" | "threads";
 
-/** The database and property ids of one seeded tenant that these cases read and write. */
 interface Schema {
   db: Record<DatabaseKey, string>;
   taskProject: string;
@@ -94,7 +93,6 @@ async function seedTenant(): Promise<{ tenant: string; schema: Schema }> {
   });
 }
 
-/** Runs `fn` in the tenant, as every request and job of that tenant does. */
 function inTenant<T>(world: Pick<World, "tenant">, fn: () => Promise<T>): Promise<T> {
   return runInTenant(world.tenant, fn);
 }
@@ -123,7 +121,6 @@ function unlink(
   return inTenant(world, () => cp.deleteRelation({ relationPropertyId, callerItemId, targetItemId }, writer));
 }
 
-/** `relation.set` on `Tasks.project`: replaces the task's single project, or clears it for `null`. */
 function setProject(world: World, taskId: string, projectId: string | null): Promise<unknown> {
   return inTenant(world, () =>
     cp.setRelation(
@@ -133,7 +130,6 @@ function setProject(world: World, taskId: string, projectId: string | null): Pro
   );
 }
 
-/** A task with the project `projectId`, or without a project for `null`. */
 async function createTask(world: World, name: string, projectId: string | null): Promise<string> {
   const task = await item(world, world.schema.db.tasks, { name });
   if (projectId !== null) await setProject(world, task, projectId);
@@ -162,7 +158,6 @@ async function attach(world: World, taskId: string, fileId: string): Promise<voi
 
 const sorted = (ids: string[]): string[] => [...ids].sort();
 
-/** The items a relation of `itemId` points to, sorted. */
 async function related(world: World, relationPropertyId: string, itemId: string): Promise<string[]> {
   const edges = await inTenant(world, () => cp.listItemRelations(itemId, relationPropertyId));
   return sorted((edges ?? []).map((edge) => edge.targetItemId));
@@ -175,7 +170,6 @@ async function linksOf(world: World, itemId: string) {
   return (await inTenant(world, () => cp.getValueLinksForItems([itemId]))).get(itemId) ?? {};
 }
 
-/** The ids of the items a file's `projects` link names as its sources, sorted; empty without a link. */
 async function sourceIds(world: World, fileId: string): Promise<string[]> {
   const sources = (await linksOf(world, fileId)).projects?.sources ?? [];
   return sorted(sources.map((source) => (source.kind === "item" ? source.itemId : "")));
@@ -187,7 +181,6 @@ interface LinkRow {
   state: string;
 }
 
-/** The stored link rows of an item, read through the runtime role inside the tenant. */
 async function linkRows(world: World, itemId: string): Promise<LinkRow[]> {
   return inTenant(
     world,
@@ -205,7 +198,6 @@ const PROJECTS_LINK_ON: LinkRow = { property_key: "projects", rule_key: "filePro
 const THREAD_PROJECTS_LINK_ON: LinkRow = { ...PROJECTS_LINK_ON, rule_key: THREAD_ATTACHMENT_PROJECT_RULE_KEY };
 const COMPANIES_LINK_ON: LinkRow = { property_key: "companies", rule_key: "fileCompaniesFromProjects", state: "on" };
 
-/** How many propagation jobs are queued, for any tenant. */
 async function queuedPropagationJobs(): Promise<number> {
   const { rows } = await admin.query<{ count: number }>(
     "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE task_identifier = $1",
@@ -215,11 +207,7 @@ async function queuedPropagationJobs(): Promise<number> {
   return rows[0].count;
 }
 
-/**
- * Runs the queued value-link propagation jobs through the registered worker task, in repeated passes until none
- * is left. A queue that never empties fails the test instead of letting an assertion about an unchanged value
- * pass by accident.
- */
+/** Drains propagation jobs in passes; a queue that never empties fails instead of letting an unchanged value pass. */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
   const handler = createCoreTaskList(pool, createActionRegistry())[taskName];
@@ -231,7 +219,6 @@ async function runPropagation(): Promise<void> {
   throw new Error("Propagation queue did not drain");
 }
 
-/** The source entry of a file's link that names the task `taskId` of the project `title` as a source. */
 function taskSource(taskId: string, title: string) {
   return { kind: "item", itemId: taskId, databaseKey: "tasks", propertyKey: "project", title };
 }
@@ -626,7 +613,7 @@ describe("a file attached to a task takes over the task's project (issue #1702)"
         );
         await runPropagation();
 
-        // The advance carries the file's edge to the next instance and moves the link's source onto it (issue #1673).
+        // The advance carries the file's edge to the next instance and moves the link's source onto it.
         const attached = await related(world, world.schema.fileTasks, file);
         expect(attached).toHaveLength(2);
         const next = attached.find((id) => id !== task);
@@ -648,9 +635,8 @@ describe("a file attached to a task takes over the task's project (issue #1702)"
   });
 
   describe("a file that also has a rule of a mail thread", () => {
-    // `Files.projects` is the target of two rules, `fileProjectFromThread` and `fileProjectsFromTasks`, and a file
-    // holds one link per property: the rule that linked it first keeps it, and the other rule never adds a source
-    // to it (`linkRuleEdgeHook` skips a link of another rule).
+    // `Files.projects` is the target of two rules and a file holds one link per property: the rule that linked first
+    // keeps it and the other never adds a source (`linkRuleEdgeHook` skips another rule's link).
     it("keeps the link of the thread that brought the file when the file is attached to a task, so the task gives it no project", async () => {
       const world = await buildWorld();
       const thread = await item(world, world.schema.db.threads, {});

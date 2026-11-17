@@ -29,16 +29,11 @@ import { edgeIsAsWritten, readEdge } from "./proposalEdgeRecording.js";
 import type { ProposalStep } from "./inboxTickAction.js";
 import { unsupportedEntityKindError, confirmationResultSchema, type ConfirmationResult } from "./proposalActions.js";
 
-/**
- * The reversal of a confirmed Processing proposal (issue #1943), following
- * `docs/adr/2026-10-25-undoing-a-confirmed-proposal-reverses-its-recorded-writes.md`. It is driven by what the confirm
- * recorded on the card: its stored envelope (the steps and the `before` values of the update steps), its `results` (the
- * item, `updatedAt` and inserted block ids of every step) and the history entry of the confirmation (the edges it
- * recorded as its own insertions), not by re-deriving what a confirm would write now. The origin rows of the items it
- * created are removed with them. `proposalReopen.ts` calls it in the transaction that returns the card to `proposed`.
- */
+// Reverses a confirmed proposal from what the confirm recorded (stored envelope with `before` values, `results`, and
+// the confirmation history entry's edges), not by re-deriving what a confirm would write now. Called by
+// `proposalReopen.ts` in the transaction that returns the card to `proposed`.
 
-/** The user's own writes: the undo is the person's decision, like the confirm it reverses. */
+/** The undo is the person's decision, like the confirm it reverses. */
 const UNDOING_USER_WRITER: WriterIdentity = { writerKind: "user" };
 
 /** An item the undo left in place, with why; the client names it to the user. */
@@ -49,7 +44,6 @@ export interface KeptItem {
   reason: "attachmentMovedToFiles";
 }
 
-/** What the confirm of this card did to each result: it created the item, changed it, or only wrote edges from it. */
 type ResultRole = "created" | "updated" | "pageContent" | "keptFile" | "edgesOnly";
 
 interface ClassifiedResult {
@@ -58,7 +52,7 @@ interface ClassifiedResult {
   step: ProposalStep | null;
 }
 
-/** The stored `results` of the card; a card with none recorded, or one that does not parse, cannot be reversed. */
+/** A card with no parsable recorded `results` cannot be reversed. */
 function readRecordedResults(proposal: ItemRow): ConfirmationResult[] {
   const parsed = z.array(confirmationResultSchema).safeParse(proposal.properties.results ?? []);
   if (!parsed.success || parsed.data.length === 0) {
@@ -69,7 +63,6 @@ function readRecordedResults(proposal: ItemRow): ConfirmationResult[] {
   return parsed.data;
 }
 
-/** The result of every step of the card, classified by what the confirm did with its item. */
 function classifyResults(envelope: ProposalEnvelope, results: ConfirmationResult[]) {
   const steps = new Map((envelope.operations ?? []).map((step) => [step.ref, step]));
   const classified: ClassifiedResult[] = results.map((result) => {
@@ -84,7 +77,7 @@ function classifyResults(envelope: ProposalEnvelope, results: ConfirmationResult
       return { result, role: roles[step.op], step };
     }
     if (envelope.entityKind === "database") return { result, role: "created", step: null };
-    // A journal entry is page content inserted into its day: the undo removes the blocks it inserted (issue gh-1981).
+    // A journal entry is page content inserted into its day: the undo removes the blocks it inserted.
     if (envelope.entityKind === "pageContent" || envelope.entityKind === "journalEntry")
       return { result, role: "pageContent", step: null };
     return { result, role: "edgesOnly", step: null };
@@ -92,17 +85,16 @@ function classifyResults(envelope: ProposalEnvelope, results: ConfirmationResult
   return classified;
 }
 
-/** The history entry of the confirmation: the card's last one, which the confirm wrote together with the status. */
+/** The card's last history entry, written together with the confirmed status. */
 function confirmationEntry(proposal: ItemRow) {
   const parsed = z.array(proposalHistoryEntrySchema).safeParse(proposal.properties.history);
   return parsed.success ? (parsed.data.at(-1) ?? null) : null;
 }
 
 /**
- * Checks every item the confirmation created, changed or wrote page blocks into, before anything is written, with the
- * row of each locked in id order: an item that is gone, in the Trash, or whose `updatedAt` is no longer the stored one
- * refuses the undo with the 409 `version_conflict` that names it. A Files item that received a moved attachment, and an
- * item the confirmation only linked, are not checked: the undo overwrites neither.
+ * Before any write, locks in id order every item the confirmation created, changed or wrote blocks into: one gone,
+ * trashed or with a different `updatedAt` refuses with a 409 `version_conflict`. Moved-attachment Files items and
+ * merely linked items are not checked, since the undo overwrites neither.
  */
 async function assertNothingChanged(client: PoolClient, checked: ClassifiedResult[]): Promise<void> {
   const ids = [...new Set(checked.map(({ result }) => result.itemId))].sort();
@@ -133,11 +125,9 @@ async function deleteEdge(
 }
 
 /**
- * (a) Reverses the edges between existing items that the confirmation recorded as its own writes (`writtenRelations`,
- * and the Event participant edges of `addedRelations`), and nothing else: an edge that was there before the confirmation
- * is never deleted. An edge the confirmation inserted is deleted; an edge it found and whose metadata it replaced gets
- * that metadata back. An edge that is gone, or whose metadata the user changed after the confirmation, is left as it is.
- * Edges from an item the confirmation created stay with that item.
+ * Reverses only edges between existing items the confirmation recorded as its own (`writtenRelations`, plus the Event
+ * participants of `addedRelations`): inserted edges are deleted, replaced metadata restored. An edge that is gone or
+ * that the user changed since is left alone; edges of created items stay with them.
  */
 async function reverseWrittenEdges(
   client: PoolClient,
@@ -168,10 +158,7 @@ async function reverseWrittenEdges(
   }
 }
 
-/**
- * (b) Writes back the properties an update step recorded as `before`, then the edges an update step deleted, each with
- * the metadata it had (`removedRelations`). An edge that exists again is left as the user has it.
- */
+/** Writes back an update step's `before` properties, then its deleted edges with their metadata; an edge that exists again is left as the user has it. */
 async function restoreUpdatedItems(
   client: PoolClient,
   classified: ClassifiedResult[],
@@ -200,19 +187,13 @@ async function restoreUpdatedItems(
 }
 
 /**
- * (f) Cancels what the confirmation of a transcription card queued (issue gh-1984): the `transcriptionCreate` and
- * `transcriptionJob` of its Files item (`cancelTranscriptionJobs`), then, when a job already ran and checkpointed a
- * Transcripts item on the file, that item goes to the Trash. The locks are taken in the order every producer of these
- * jobs takes them (`recordRecordingIntake`, the upload, a rerun): the Files row first, then the job rows its enqueue
- * upserts, then the transcript. The file row is therefore locked before the jobs are removed, which also lets a step of
- * the pipeline that holds the file commit first, after which the undo finds its transcript. Taking the job rows first
- * would wait for the file lock while holding a job row that a producer holding the file lock is waiting for, and
- * PostgreSQL would abort one of the two with a deadlock. A transcript that is already in the Trash or purged changes
- * nothing. The Files item itself is not touched: it is the confirmation's own move, which
- * `undoConfirmedProposalWithClient` leaves as it is.
+ * Cancels the `transcriptionCreate` and `transcriptionJob` a transcription card's confirmation queued, then trashes a
+ * checkpointed Transcripts item. Lock order matches every producer of these jobs: the Files row, then the job rows,
+ * then the transcript; taking job rows first could deadlock with a producer holding the file lock. Locking the file
+ * first also lets a pipeline step holding it commit, so its transcript is found. The Files item itself is untouched.
  *
- * Only a confirmation that enqueued the jobs itself records `transcriptionQueued` (`confirmRecordingCard`), so the jobs
- * of a Files item that the user's own upload had already queued are not cancelled by the undo of a card that reused it.
+ * Only a confirmation that enqueued the jobs records `transcriptionQueued`, so jobs the user's upload queued are not
+ * cancelled when a card reused that Files item.
  */
 async function cancelRecordingTranscription(
   client: PoolClient,
@@ -238,15 +219,8 @@ async function cancelRecordingTranscription(
 }
 
 /**
- * (f) For every result whose confirmation queued a follow-up job (`results[].followUp`), cancels that job in the undo's
- * transaction and removes what it already produced. `mcpSyncQueued` removes the sync job of the server item; the item is
- * in the Trash by then, and the readers that offer or invoke a tool (`mcpAgentTools.ts`, `mcpToolInvocation.ts`,
- * `mcpAgentPageGrants.ts`) join the live server item, so the registrations of a sync that already ran are no longer
- * offered. `transcriptionQueued` is `cancelRecordingTranscription`. A job a worker is already running is not
- * stopped, only detached from its key and not retried (`cancelJob`): an MCP sync ends without writing once it finds the
- * server item in the Trash, and a transcription run stops at its next step once it finds the transcript in the Trash.
- * A create step that is running when the undo commits and has not written its checkpoint is not stopped, because the
- * Files item stays live: it creates its transcript after the undo. A result without a follow-up touches no job.
+ * Cancels each result's queued follow-up job and removes what it produced. A running job is only detached from its
+ * key and not retried (`cancelJob`); it stops once it finds its item in the Trash.
  */
 async function cancelFollowUps(
   client: PoolClient,
@@ -260,31 +234,16 @@ async function cancelFollowUps(
 }
 
 /**
- * Reverses a confirmed card's writes in the caller's transaction, under the card's row lock, and returns the items it
- * kept. The precondition comes first and writes nothing; then, in this order: the edges between existing items that the
- * confirmation recorded as its own writes (`reverseWrittenEdges`), the `before` values of patched items and the edges
- * they lost (`restoreUpdatedItems`), the page blocks the confirmation inserted, the items it created (to the Trash, each
- * with its origin row removed), the credential stored for a created MCP server, and last the follow-up jobs it queued
- * (`cancelFollowUps`). A failure at any point throws, and the caller's transaction undoes every earlier write.
+ * Reverses a confirmed card's writes in the caller's transaction and returns the kept items: after the precondition,
+ * recorded edges, patched items, inserted page blocks, created items (trashed via the choke point, so their edges
+ * survive a restore), a created MCP server's credential, then follow-up jobs. Any failure throws.
  *
- * - An item the confirmation created is trashed with the item delete of the choke point, so its relation edges stay and a
- *   restore from the Trash brings it back with them. A Files item that received a moved Inbox attachment (a
- *   `fileFromAttachment` step) is neither checked nor trashed, and keeps its origin row: the move has no reverse, so the
- *   item is returned as a `KeptItem`.
- * - Only the edges the history entry of the confirmation records are reversed, so the edges and the Event participant of a
- *   card that `settleSpeakerCardWithClient` closed after a manual speaker assignment, which recorded none, stay as the
- *   user made them (`docs/adr/2026-11-12-a-manual-speaker-assignment-settles-the-key-card-in-the-confirm-lock-order.md`),
- *   and so do the edges of a card confirmed before the confirm recorded them.
- * - A confirmed `journalEntry` card is reversed as a page insert into its day: the blocks it inserted are removed, the
- *   day's `project` or `area` edge is deleted when the confirmation inserted it (it is in `writtenRelations`), and the
- *   Journal day stays, empty if the confirmation created it, because days are created lazily and an empty one is what
- *   every day without an entry is (`docs/adr/2026-11-14-undoing-a-journal-entry-confirmation-leaves-its-day.md`).
- * - The limits of the reversal are in
- *   `docs/adr/2026-11-14-the-undo-of-a-confirmation-reverses-only-the-edges-it-recorded.md`: the Events item of a synthetic
- *   occurrence that a `relation` confirm materialized stays, and so does the Trash release of an earlier trashed Event edge
- *   of a transcript card.
+ * - A Files item that received a moved attachment has no reverse and is returned as a `KeptItem`.
+ * - Only edges recorded in the confirmation entry are reversed, so a manually settled speaker card keeps its edges.
+ * - A `journalEntry` loses its blocks and inserted `project`/`area` edge, but the Journal day stays.
+ * - Not reversed: an Events item materialized for a synthetic occurrence, and the release of a trashed Event edge.
  *
- * The caller has locked the card, answered the cases that are not a `confirmed` one and checked `ifVersion`.
+ * The caller has locked the card, handled non-`confirmed` cases and checked `ifVersion`.
  */
 export async function undoConfirmedProposalWithClient(
   client: PoolClient,

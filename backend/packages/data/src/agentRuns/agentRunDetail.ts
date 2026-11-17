@@ -9,49 +9,30 @@ import { getAgentRunCatalogs } from "./agentRunErrorSummary.js";
 import type { AgentRunRow } from "./agentRunsStore.js";
 import { replyOutcomeOfStoredSteps, type ReplyOutcome } from "./replyOutcome.js";
 
-/** What started a run, as the run detail reports it (issue #1805). */
 export type AgentRunTriggerKind = "user" | "tick" | "mcp" | "supervisor";
 
-/** What `GET /api/agent-runs/:id` returns beside the run's own row (issue #1805). */
+/** What `GET /api/agent-runs/:id` returns beside the run's own row. */
 export interface AgentRunDetail {
-  /**
-   * What a client shows as the run's state (issue #1820): `deriveRunDisplayStatus` over the run's
-   * `status`, the pending count of `approvals` below and, for a finished run, the outcome of its reply
-   * (issue #1890: a run whose reply is incomplete reads `error`), evaluated on every read and never
-   * stored. The row's own `status` is unchanged.
-   */
+  /** Derived on every read (`deriveRunDisplayStatus`) and never stored; the row's `status` is unchanged. */
   displayStatus: AgentRunDisplayStatus;
-  /**
-   * The name of the run's heartbeat for a run that names one, because the `task` of such a run is
-   * the task text configured on the heartbeat's action; the run's `task` otherwise.
-   */
+  /** The heartbeat's name when the run names one, because such a run's `task` is the heartbeat action's text. */
   title: string;
-  /**
-   * The `name` of the run's project item; `null` for a run without a project, for a project item
-   * that is in the Trash or gone, and for one whose `name` is not text.
-   */
+  /** `null` without a project, for a trashed or gone project item, and for a non-text `name`. */
   projectName: string | null;
-  /** The current `project_heartbeats.name` of the run's heartbeat; `null` for a run that names none. */
   heartbeatName: string | null;
   /**
-   * The milliseconds between `startedAt` and `finishedAt` of a finished `invocation` run that no MCP
-   * client started. `null` for a run that is still running, and for a `session` run and an MCP run,
-   * whose two instants do not bound the time the work took: a session run can stay open while its
-   * conversation idles, and an MCP run stays open until its credential expires.
+   * Only for a finished `invocation` run no MCP client started. A session run stays open while its conversation
+   * idles and an MCP run until its credential expires, so their instants do not bound the work.
    */
   durationMs: number | null;
   trigger: {
-    /**
-     * `tick` for a run a heartbeat started and for a run a user started in a tick thread (a
-     * follow-up turn there); otherwise the run's `triggeredBy`.
-     */
+    /** `tick` also for a user's follow-up turn in a tick thread. */
     kind: AgentRunTriggerKind;
-    /** The run's Semp thread; `null` for a run without one, which every MCP run is. */
+    /** `null` for every MCP run. */
     threadId: string | null;
-    /** The client name stored on an MCP run (issue #1788); `null` for every other run and for an MCP run without one. */
     mcpClientName: string | null;
   };
-  /** The approval requests the run raised: how many there are, how many per status, and their ids from the oldest. */
+  /** Request ids are ordered oldest first. */
   approvals: {
     count: number;
     pending: number;
@@ -73,10 +54,6 @@ function triggerKindOf(run: AgentRunRow, threadKind: SempThreadKind | null): Age
   return run.triggeredBy;
 }
 
-/**
- * The `durationMs` of the run detail (issue #1805): `finishedAt - startedAt` of a finished `invocation` run that no
- * MCP client started, `null` for every other run. The project run list (issue gh-1909) reads it for each row.
- */
 export function durationMsOf(
   run: Pick<AgentRunRow, "unit" | "triggeredBy" | "startedAt" | "finishedAt">,
 ): number | null {
@@ -85,12 +62,9 @@ export function durationMsOf(
 }
 
 /**
- * The outcome of the reply of `run` (issue #1890), derived on this read from the steps stored on the reply
- * (`replyOutcomeOfStoredSteps`, the derivation the reply list applies to every message it returns) and never
- * stored. The reply is the run's assistant message in the run's Semp thread; a tick's run has exactly one.
- * `null` when the run has no reply to judge: an MCP run has no thread and no reply, a run that has not written
- * one yet has none, and a run with several replies (a chat session) has no single reply that stands for the
- * run, so each of its replies carries its own outcome on the message list instead.
+ * Derived from the reply's stored steps on every read. The reply is the run's assistant message in its thread (a
+ * tick's run has exactly one). `null` for an MCP run, a run with no reply yet, and a run with several replies (a
+ * chat session), whose replies each carry their own outcome on the message list.
  */
 export async function getAgentRunReplyOutcome(
   client: Queryable,
@@ -107,22 +81,12 @@ export async function getAgentRunReplyOutcome(
 }
 
 /**
- * Reads what the run detail shows beside the row of `run` (issue #1805): the project name, the
- * heartbeat name, the kind of the run's thread and the approval requests the run raised, and the
- * display status derived from the run, those requests and its reply (issues #1820 and #1890). It runs
- * the two statements of `getItemsByIds` for a run with a project, one statement for the heartbeat
- * and the thread and one aggregate over the run's approval requests, so the number of statements
- * does not depend on how many requests the run has. A finished run has its reply read with one more
- * statement (`getAgentRunReplyOutcome`), unless the caller that already read it passes it as
- * `replyOutcome` (`null` for a run without a reply). `replyOutcome` describes the whole run and is ignored
- * when `reply` is given.
+ * The statement count does not depend on how many requests the run has. A finished run reads its reply with one
+ * more statement unless the caller passes `replyOutcome` (which is ignored when `reply` is given).
  *
- * With `reply` (issue #1889), the fields that describe the work of the run describe that one reply of the
- * conversation instead: `title` is the reply's, `durationMs` the one stored on its message, `approvals` count
- * the requests whose tool call lies in the reply's events (the `tool_use` events of its range or the steps
- * stored on its message), and `displayStatus` derives from the reply's own outcome and those requests. The
- * project, heartbeat and trigger stay the run's. A request stored without a tool call id belongs to no reply.
- * The number of statements is the same.
+ * With `reply`, the work fields describe that one reply: its title, its stored duration, the requests whose tool
+ * call lies in its events or stored steps, and a display status from its own outcome. Project, heartbeat and
+ * trigger stay the run's. A request without a tool call id belongs to no reply.
  */
 export async function getAgentRunDetail(
   client: Queryable,
@@ -175,8 +139,7 @@ export async function getAgentRunDetail(
     ],
   );
   const counted = requireSingleRow(approvals.rows, "the approval counts of an agent run");
-  // Only a run that closed as done can be reclassified by its reply, so only that run reads it. A reply-scoped
-  // read judges the one reply it describes (`reply.runStatus`), so it reads no whole-run outcome.
+  // Only a run closed as done can be reclassified by its reply; a reply-scoped read judges `reply.runStatus` instead.
   const wholeRunOutcome =
     reply !== undefined || run.status !== "done"
       ? null
@@ -211,42 +174,33 @@ export async function getAgentRunDetail(
 
 const REPLY_STATUSES = ["queued", "running", "done", "error"] as const;
 
-/** The i18n key of the title of a reply that answers a system message with a `system_key` the catalog has no entry for. */
+/** For a `system_key` the catalog has no entry for. */
 const GENERIC_REPLY_TITLE_KEY = "agentRun.replyTitle.system";
 
-/**
- * One reply of a chat conversation as `GET /api/agent-runs/:id?messageId=` and
- * `GET /api/agent-runs/:id/steps?messageId=` scope the run to it (issue #1889): the assistant message in
- * the run, with the title, start and range of events that belong to it.
- */
+/** One reply of a chat conversation that `?messageId=` scopes the run detail and steps routes to. */
 export interface AgentRunReplyScope {
-  /** The assistant message the scope describes: the latest attempt of the reply the request named. */
+  /** The latest attempt of the reply the request named. */
   messageId: string;
-  /** What the reply's detail is computed from: `running` while it is queued or running, `error` when it failed, else `done`. */
+  /** `running` while queued or running, `error` when failed, else `done`. */
   runStatus: AgentRunRow["status"];
   /**
-   * The text of the user message the reply answers; for an answer to a system message without text (an approval
-   * outcome) the title of its `system_key` in the caller's locale; `null` for a reply that answers no message,
-   * which the run detail gives the title of the run.
+   * The user message text, else the localized `system_key` title; `null` when the reply answers no message (the run
+   * detail then uses the run's title).
    */
   title: string | null;
-  /** When the reply's first event was stored; the time the message was created once retention removed that event. */
+  /** The message's creation time once retention removed the first event. */
   startedAt: string;
-  /** The `duration_ms` stored on the message when its turn ended; `null` while it runs and for a turn stored without one. */
   durationMs: number | null;
-  /** The events of the reply; `null` for a reply that stored none. */
   range: AgentRunEventRange | null;
-  /** The reply is over: its status is `done` or `error`, so its range gets no more events. */
   finished: boolean;
-  /** The `toolCallId` of every step of the summary stored on the message, which retention does not remove. */
+  /** From the summary stored on the message, which retention does not remove. */
   stepToolCallIds: string[];
 }
 
-/** What `resolveAgentRunReply` found for a `messageId` of the run. */
 export type AgentRunReplyResolution =
-  /** Not an assistant message of the run in the caller's tenant: the route answers 404. */
+  /** The route answers 404. */
   | { kind: "notFound" }
-  /** The run is no chat conversation (a heartbeat tick holds one message), so the whole run applies. */
+  /** A heartbeat tick holds one message, so the whole run applies. */
   | { kind: "wholeRun" }
   | { kind: "reply"; reply: AgentRunReplyScope };
 
@@ -264,7 +218,6 @@ interface ReplyRow {
   system_key: string | null;
 }
 
-/** The title of a reply that answers the system message with `systemKey`, in `locale` (a `users.locale`). */
 export async function systemReplyTitle(systemKey: string, locale: string): Promise<string> {
   const catalogs = await getAgentRunCatalogs();
   const localized = catalogs[toManifestLocale(locale)];
@@ -273,19 +226,12 @@ export async function systemReplyTitle(systemKey: string, locale: string): Promi
 }
 
 /**
- * Resolves `messageId` against `run` for the reply-scoped reads (issue #1889). The message must be an assistant
- * message whose `agent_run_id` is the run, in the caller's tenant (row-level security): another run's message,
- * another tenant's, a user message and an unknown id are all `notFound`. A run that is not a `session` run
- * (a heartbeat tick, one message per run) is `wholeRun` once the message passed that check.
+ * Another run's or tenant's message (row-level security), a user message and an unknown id are all `notFound`. A
+ * non-`session` run is `wholeRun` once the message passed that check.
  *
- * The scope of a session run is the latest attempt of the reply: among the assistant messages of the run in
- * the same thread that answer the same message (`reply_to_message_id`), the newest by `created_at`, so a
- * retried reply shows its last attempt whichever attempt the request named. The reply's events run from its
- * `event_from_id` through its `event_to_id`; a reply that stored no `event_to_id` (a turn that ended in an
- * error, or one that is still running) ends before the first event of the next reply of the run, and at the
- * end of the run when there is none.
- *
- * `locale` is the caller's `users.locale`, in which a system title is written.
+ * A session run's scope is the newest assistant message answering the same `reply_to_message_id`, so a retried
+ * reply shows its last attempt whichever one was named. A reply without `event_to_id` (failed or still running)
+ * ends before the next reply's first event, or at the end of the run.
  */
 export async function resolveAgentRunReply(
   client: Queryable,
@@ -351,10 +297,8 @@ export async function resolveAgentRunReply(
 }
 
 /**
- * Whether the opening events of the reply are gone (issue #1889): the event the message names as its first
- * is no longer stored in the run. Retention (`handleAgentRunEventsRetentionTask`) removes events before a
- * compaction checkpoint, so what remains of the reply starts later; the summary stored on the message
- * survives. A reply that stored no event has no history to be missing.
+ * Retention removes events before a compaction checkpoint, so the message's first event may be gone while its
+ * stored summary survives. A reply that stored no event is never truncated.
  */
 export async function isAgentRunReplyHistoryTruncated(
   client: Queryable,

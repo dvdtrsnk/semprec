@@ -4,28 +4,28 @@ import { z } from "zod";
 import { GOOGLE_TOKEN_URL } from "@semprec/data";
 
 /**
- * Issue #1739: the deployment's Cloud Pub/Sub configuration for Gmail push — the topic `users.watch`
- * publishes to, the pull subscription the one dispatcher reads, and the application's own Google service
- * account, whose access token authenticates the Pub/Sub calls (a user's Gmail grant has no Pub/Sub scope).
+ * The Pub/Sub topic `users.watch` publishes to, the pull subscription the one dispatcher reads, and
+ * the application's own service account, whose token authenticates the Pub/Sub calls (a user's
+ * Gmail grant has no Pub/Sub scope).
  */
 export interface GmailPubSubConfig {
   /** `projects/<project>/topics/<topic>`. */
   topicName: string;
   /** `projects/<project>/subscriptions/<subscription>`. */
   subscriptionName: string;
-  /** A Pub/Sub access token of the service account, reused until shortly before it expires. */
+  /** Reused until shortly before it expires. */
   getPubSubAccessToken(): Promise<string>;
 }
 
-/** The configuration, or `null` and why it is incomplete; `reason` names keys, never a value. */
+/** `reason` names keys, never a value. */
 export type GmailPubSubConfigResult = { config: GmailPubSubConfig; reason: null } | { config: null; reason: string };
 
 const TOPIC_PATTERN = /^projects\/[^/\s]+\/topics\/[^/\s]+$/;
 const SUBSCRIPTION_PATTERN = /^projects\/[^/\s]+\/subscriptions\/[^/\s]+$/;
 const PUBSUB_SCOPE = "https://www.googleapis.com/auth/pubsub";
-/** Google issues a service-account token for at most an hour; the assertion asks for that. */
+/** Google issues a service-account token for at most an hour. */
 const ASSERTION_LIFETIME_SECONDS = 3600;
-/** A cached token is replaced this long before it expires, so no request carries one about to lapse. */
+/** So no request carries a token about to lapse. */
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
 const TOKEN_REQUEST_TIMEOUT_MS = 15_000;
 const MAX_TOKEN_RESPONSE_BYTES = 64 * 1024;
@@ -42,8 +42,8 @@ const tokenResponseSchema = z.object({
 });
 
 /**
- * `JSON.parse`, with `undefined` for text that is not JSON. V8's `SyntaxError` message quotes the start of
- * the input, which for a token response can be the token itself, so that error is not passed on.
+ * `undefined` for text that is not JSON. V8's `SyntaxError` message quotes the start of the input,
+ * which can be the token itself, so that error is not passed on.
  */
 function parseJson(text: string): unknown {
   try {
@@ -55,9 +55,9 @@ function parseJson(text: string): unknown {
 }
 
 /**
- * The key file errors that mean the configured path cannot be used, each with a fixed category for the
- * reason; any other failure of the read is unexpected and propagates as it is. `ERR_INVALID_ARG_VALUE` is
- * Node's refusal of a path containing a null byte.
+ * Read errors that mean the configured path cannot be used, each with a fixed reason category; any
+ * other failure propagates. `ERR_INVALID_ARG_VALUE` is Node's refusal of a path containing a null
+ * byte.
  */
 const UNREADABLE_KEY_PATH_CATEGORIES: Readonly<Record<string, string>> = {
   ENOENT: "does not exist",
@@ -77,9 +77,8 @@ function unreadableKeyPathCategory(error: unknown): string | undefined {
 }
 
 /**
- * Whether `error` is OpenSSL's decoder refusing the key material given to `createPrivateKey`: it carries
- * `ERR_OSSL_UNSUPPORTED` and an OpenSSL error stack, as for text that is no key at all, a truncated or
- * badly encoded PEM, or a public key.
+ * OpenSSL refusing the material given to `createPrivateKey` (`ERR_OSSL_UNSUPPORTED` plus an OpenSSL
+ * error stack), as for non-key text, a truncated or badly encoded PEM, or a public key.
  */
 function isUndecodableKeyMaterial(error: unknown): boolean {
   return (
@@ -88,8 +87,8 @@ function isUndecodableKeyMaterial(error: unknown): boolean {
 }
 
 /**
- * `primary` itself when no cleanup failed; otherwise an `AggregateError` that lists `primary` first, then the
- * cleanup failures in order, keeps `primary` as its `cause` and repeats only its fixed message.
+ * `primary` when no cleanup failed; otherwise an `AggregateError` listing `primary` first, then the
+ * cleanup failures, with `primary` as its `cause`.
  */
 function withCleanupFailures(primary: unknown, cleanupFailures: readonly unknown[]): unknown {
   if (cleanupFailures.length === 0) return primary;
@@ -97,17 +96,16 @@ function withCleanupFailures(primary: unknown, cleanupFailures: readonly unknown
   return new AggregateError([primary, ...cleanupFailures], message, { cause: primary });
 }
 
-/** An operation's outcome by the request deadline: its value, or `settled: false` when the deadline came first. */
 type ByDeadline<T> = { settled: true; value: T } | { settled: false };
 
 /**
- * Waits for `operation` until `deadline` aborts, and rethrows its failure when it fails first. When the deadline
- * comes first the operation is not settled: it stays pending, observed so that its later rejection is not an
- * unhandled one, and the caller reports it as unsettled. The abort listener is removed on every exit.
+ * Rethrows the operation's failure when it fails first. When the deadline comes first the operation
+ * stays pending, observed so its later rejection is not unhandled. The abort listener is removed on
+ * every exit.
  */
 async function byDeadline<T>(operation: Promise<T>, deadline: AbortSignal): Promise<ByDeadline<T>> {
   const observed = operation.then((value): ByDeadline<T> => ({ settled: true, value }));
-  // Observed here as well as by the race below, so a rejection after the deadline is never unhandled.
+  // So a rejection after the deadline is never unhandled.
   observed.catch(() => undefined);
   if (deadline.aborted) return { settled: false };
   let onAbort: (() => void) | undefined;
@@ -127,12 +125,11 @@ function base64Url(value: string | Buffer): string {
 }
 
 /**
- * Reads a response body up to `maxBytes`, every read bounded by the request's `deadline`; a longer body is
- * refused rather than buffered, and its stream is cancelled. A read still pending at the deadline fails with
- * the deadline's reason; its stream is asked to cancel without waiting further, and the response is reported
- * as not settled. The reader's lock is released on every path. A read, size or deadline failure stays the
- * primary error; a failed or unsettled cancel and a failed release are attached after it
- * (`withCleanupFailures`), and one after a complete read fails the read too, since the body was not settled.
+ * Every read is bounded by `deadline`; a longer body is refused and its stream cancelled. A read
+ * pending at the deadline fails with the deadline's reason, its stream is asked to cancel without
+ * waiting, and the response is reported as unsettled. The reader's lock is always released. Read,
+ * size or deadline failures stay primary; cancel and release failures are attached after them, and
+ * one after a complete read fails the read too.
  */
 async function readBoundedText(response: Response, maxBytes: number, deadline: AbortSignal): Promise<string> {
   const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
@@ -149,7 +146,7 @@ async function readBoundedText(response: Response, maxBytes: number, deadline: A
       if (!read.settled) {
         failed = true;
         failure = deadline.reason;
-        // Asked to stop, not awaited: the deadline has passed, so this response is reported as unsettled.
+        // Not awaited: the deadline has passed, so this response is reported as unsettled.
         reader.cancel(deadline.reason).catch(() => undefined);
         cleanupFailures.push(new Error("The Pub/Sub token response was not settled before its deadline"));
         break;
@@ -183,8 +180,8 @@ async function readBoundedText(response: Response, maxBytes: number, deadline: A
 }
 
 /**
- * Waits for a body cancellation until the request `deadline`. A rejected cancellation, and one still pending
- * at the deadline, are recorded in `cleanupFailures`; neither counts as settled.
+ * A rejected cancellation, and one still pending at the deadline, are recorded in
+ * `cleanupFailures`.
  */
 async function settleCancel(cancel: Promise<void>, deadline: AbortSignal, cleanupFailures: unknown[]): Promise<void> {
   try {
@@ -198,12 +195,10 @@ async function settleCancel(cancel: Promise<void>, deadline: AbortSignal, cleanu
 }
 
 /**
- * The service account's token source: an RS256-signed JWT assertion (`node:crypto`) exchanged at Google's
- * token endpoint, cached until `TOKEN_EXPIRY_MARGIN_MS` before its expiry. Concurrent callers while a
- * request is in flight share it; a failed request is not cached, so the next call asks again. The fetch,
- * every body read and any body cancellation share one `TOKEN_REQUEST_TIMEOUT_MS` deadline; work still
- * pending at it fails the request and is reported as not settled. No error message carries the key, the
- * assertion or a token.
+ * An RS256-signed JWT assertion exchanged at Google's token endpoint, cached until
+ * `TOKEN_EXPIRY_MARGIN_MS` before expiry. Concurrent callers share an in-flight request; a failed
+ * one is not cached. The fetch, body reads and cancellation share one `TOKEN_REQUEST_TIMEOUT_MS`
+ * deadline. No error message carries the key, the assertion or a token.
  */
 function createServiceAccountTokenSource(clientEmail: string, privateKey: KeyObject): () => Promise<string> {
   let cached: { token: string; expiresAtMs: number } | null = null;
@@ -223,7 +218,6 @@ function createServiceAccountTokenSource(clientEmail: string, privateKey: KeyObj
     );
     const signingInput = `${header}.${claims}`;
     const assertion = `${signingInput}.${base64Url(sign("RSA-SHA256", Buffer.from(signingInput), privateKey))}`;
-    // One deadline for the whole request: the fetch, every body read and any cancellation.
     const deadline = AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS);
     const response = await fetch(GOOGLE_TOKEN_URL, {
       method: "POST",
@@ -254,13 +248,10 @@ function createServiceAccountTokenSource(clientEmail: string, privateKey: KeyObj
 }
 
 /**
- * Reads `GMAIL_PUBSUB_TOPIC`, `GMAIL_PUBSUB_SUBSCRIPTION` and `GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH`,
- * checks the two resource names' formats, and reads and parses the service account key file once, here,
- * at startup. A missing key, a malformed resource name, a key path that does not exist, is not readable, is
- * a directory or is not a valid path, and a file that is not an RSA service account key give
- * `{ config: null, reason }`; the reason names the key and a fixed category, never a value, a path or the
- * file's content. Any other failure of the read or of decoding the key propagates. Runtime token failures
- * are `getPubSubAccessToken()` rejections, never a `null` configuration.
+ * Reads the key file once, at startup. Missing keys, malformed resource names, an unusable key
+ * path, or a file that is not an RSA service account key give `{ config: null, reason }`, where the
+ * reason names the key and a fixed category, never a value, path or content. Any other read or
+ * decode failure propagates. Runtime token failures are `getPubSubAccessToken()` rejections.
  */
 export async function loadGmailPubSubConfig(env: NodeJS.ProcessEnv): Promise<GmailPubSubConfigResult> {
   const topicName = env.GMAIL_PUBSUB_TOPIC;
@@ -305,7 +296,7 @@ export async function loadGmailPubSubConfig(env: NodeJS.ProcessEnv): Promise<Gma
   try {
     privateKey = createPrivateKey(key.data.private_key);
   } catch (error) {
-    // No detail is passed on: the reason is fixed, whatever the key material was.
+    // The reason is fixed, whatever the key material was.
     if (isUndecodableKeyMaterial(error)) return notAKey;
     throw error;
   }

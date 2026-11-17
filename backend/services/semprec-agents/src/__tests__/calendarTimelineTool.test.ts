@@ -18,11 +18,7 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
 import * as piSession from "../piAgentSession.js";
 
-/**
- * The read tool `calendar.timeline` in an agent session (issue gh-1952): the session offers it to a run whose project
- * owns the calendar databases, and a call answers what `GET /api/calendar/timeline` answers for the range, without an
- * approval request. The handler itself is tested in `packages/data` (`calendarTimelineTool.test.ts`).
- */
+/** Offered to a run whose project owns the calendar databases; answers like `GET /api/calendar/timeline`, with no approval. */
 
 const calendarManifestHref = new URL(
   "../../../../packages/data/src/calendar/calendarModuleManifest.js",
@@ -180,8 +176,7 @@ describe("calendar.timeline in an agent session (issue gh-1952)", () => {
     const { body } = await runInTenant(tenant, () =>
       createCalendarTimelineRouteHandler(runtime)({ req: { url: `/api/calendar/timeline?from=${DAY}&to=${DAY}` } }),
     );
-    // The run's project holds no grant on the sensitive sleep databases, so the tool leaves the nights the route returns
-    // out (docs/adr/2026-11-14-the-calendar-timeline-tool-leaves-out-sleep-nights-the-caller-may-not-read.md).
+    // Without a grant on the sensitive sleep databases, the tool leaves out the nights the route returns.
     const routeItems = timelineOf(JSON.stringify(body)).items;
     expect(routeItems.some((item) => kindOf(item) === "sleep")).toBe(true);
     expect(timeline.items).toEqual(routeItems.filter((item) => kindOf(item) !== "sleep"));

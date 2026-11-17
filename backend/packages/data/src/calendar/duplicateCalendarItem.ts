@@ -1,9 +1,5 @@
-// Duplicates an Event or a Task to a new date and time (issue gh-1796): the copy is created through the choke
-// point with a whitelist of properties, and a whitelist of the source's relation edges is copied onto it, all
-// inside the caller's transaction, so the copy and its edges commit or roll back together.
-// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md,
-// docs/adr/2026-11-11-new-events-get-their-calendar-in-a-create-hook.md,
-// docs/adr/2026-10-25-task-and-event-recurrence-model.md
+// Duplicates an Event or Task to a new date and time: the copy is created through the choke point with a
+// whitelist of properties and relation edges, in the caller's transaction, so copy and edges commit together.
 import { isDeepStrictEqual } from "node:util";
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
@@ -28,10 +24,9 @@ import { withChosenCalendar } from "./defaultCalendarCreateHook.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { EVENT_PEOPLE_PROPERTY_KEY } from "./eventParticipantEdgeHook.js";
 
-/** The Events relation whose edge decides whether the copy takes the source's `company` edges. */
 const EVENT_PROJECT_RELATION_KEY = "project";
 
-/** The Events properties a copy takes from its source. Its date and times come from the request. */
+/** Date and times come from the request. */
 export const EVENT_PROPERTY_KEYS = [
   "name",
   "type",
@@ -42,41 +37,33 @@ export const EVENT_PROPERTY_KEYS = [
   "travelMinutes",
 ] as const;
 
-/**
- * The Events relations whose edges a copy takes, besides the calendar edge, which the create gives it. A key
- * whose relation property the Events database does not have is skipped.
- */
+/** Besides the calendar edge, which the create gives the copy. A key the database lacks is skipped. */
 const EVENT_RELATION_KEYS = [EVENT_PROJECT_RELATION_KEY, EVENT_PEOPLE_PROPERTY_KEY, "area", "files"] as const;
 
-/** The Events relation a copy takes only from a source that has no project edge. */
 const EVENT_COMPANY_RELATION_KEY = "company";
 
-/** The Events relation whose single edge is the calendar the Event belongs to. */
 export const EVENT_CALENDAR_RELATION_KEY = "calendar";
 
-/** The Tasks properties a copy takes from its source. Its `status` is `notDone`, its date and times are described at `taskTimes`. */
+/** `status` is `notDone`; times as in `taskTimes`. */
 const TASK_PROPERTY_KEYS = ["name", "flagged", "description", "notifications"] as const;
 
-/** The Tasks relations whose edges a copy takes. A key whose relation property the Tasks database does not have is skipped. */
+/** A key the database lacks is skipped. */
 const TASK_RELATION_KEYS = ["project", "people", "files"] as const;
 
-/** The `owner: 'system'` Tasks properties the copy of a recurring Task is given as the Tasks module. */
 const SERIES_PROPERTY_KEYS = ["seriesId", "occurrenceDate", "recurrence"] as const;
 
-/** The stored shape of a Task's `recurrence` property, as `tasks/taskRecurrenceOwner.ts` writes it. */
+/** As `tasks/taskRecurrenceOwner.ts` writes it. */
 const storedRecurrenceSchema = z.object({ preset: z.string().nullable(), mode: z.string(), rule: z.unknown() });
 
 export interface DuplicateCalendarItemInput {
-  /** The Event or Task to copy. */
   itemId: string;
-  /** The copy's date. */
   date: string;
   timeFrom?: string;
   timeTo?: string;
-  /** An Event's last day. Without it the source's `endDate` is moved by as many days as `date` is from the source's `date`. */
+  /** Without it the source's `endDate` moves by as many days as `date` does. */
   endDate?: string;
   idempotencyKey?: string;
-  /** The user whose request this is: the copy and its edges are written as that user. */
+  /** The copy and its edges are written as that user. */
   actor: { userId: string };
 }
 
@@ -89,8 +76,8 @@ interface CalendarItemSource {
 }
 
 /**
- * The live Event or Task `itemId`, with its row locked until the caller's transaction ends. An unknown id, a trashed
- * item, another tenant's item (row-level security hides it) and an item of any other database are not found alike.
+ * Locked until the caller's transaction ends. Unknown, trashed, other tenant's (RLS) and other-database items are
+ * not found alike.
  */
 async function lockSource(client: PoolClient, itemId: string): Promise<CalendarItemSource> {
   const kinds: [CalendarItemKind, string][] = [
@@ -111,10 +98,7 @@ interface SourceEdge {
   metadata: Record<string, unknown>;
 }
 
-/**
- * The live edges `itemId` holds on its relation property `key`, or `null` when the database has no relation
- * property of that key. An edge whose other end is in the trash, in an archived database or gone is left out.
- */
+/** `null` when the database has no such relation property. Edges to trashed, archived or gone items are left out. */
 export async function liveEdgesOf(
   client: PoolClient,
   databaseId: string,
@@ -140,22 +124,19 @@ export async function liveEdgesOf(
   return { propertyId: property.id, edges };
 }
 
-/** `metadata` without its `invitation`: the copy's participants are linked, not invited. */
+/** The copy's participants are linked, not invited. */
 function withoutInvitation(metadata: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(metadata).filter(([key]) => key !== "invitation"));
 }
 
-/** The properties of `source` named by `keys` that hold a value; a missing or `null` one is left out of the copy. */
+/** A missing or `null` value is left out. */
 export function copiedProperties(source: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
   return Object.fromEntries(
     keys.flatMap((key) => (source[key] === undefined || source[key] === null ? [] : [[key, source[key]]])),
   );
 }
 
-/**
- * The `endDate` of an Event copy that starts on `copyDate`: `requestedEndDate` when there is one, or else the source's
- * moved by as many days as the date moves. A source without a readable `date` and `endDate` gives the copy none.
- */
+/** A source without a readable `date` and `endDate` gives the copy none. */
 export function copiedEndDate(
   source: Record<string, unknown>,
   copyDate: string,
@@ -168,10 +149,7 @@ export function copiedEndDate(
   return DateTime.fromISO(endDate, { zone: "utc" }).plus({ days }).toFormat("yyyy-MM-dd");
 }
 
-/**
- * The times of a Task copy: those of the request when it names a `timeFrom` or a `timeTo`, otherwise the source's. An
- * Event copy takes its times from the request alone, so a copy of an all-day Event stays all-day.
- */
+/** An Event copy takes its times from the request alone, so a copy of an all-day Event stays all-day. */
 function taskTimes(source: Record<string, unknown>, input: DuplicateCalendarItemInput): Record<string, unknown> {
   if (input.timeFrom !== undefined || input.timeTo !== undefined) {
     return {
@@ -182,10 +160,6 @@ function taskTimes(source: Record<string, unknown>, input: DuplicateCalendarItem
   return copiedProperties(source, ["timeFrom", "timeTo"]);
 }
 
-/**
- * Writes onto `toItemId` a copy of the live edges `fromItemId` holds on each of `keys`, as the writer of the copy.
- * `metadataOf` gives the metadata a copied edge carries.
- */
 async function copyEdges(
   client: PoolClient,
   write: {
@@ -219,9 +193,8 @@ async function copyEdges(
 }
 
 /**
- * Copies onto the Event `write.toItemId` the live edges of the Event `write.fromItemId` that an Event copy takes:
- * those of `EVENT_RELATION_KEYS`, and `company` only when the source has no project edge. The `invitation` of a
- * participant edge is dropped. The calendar edge is not copied: the create of the copy gives it.
+ * `company` only when the source has no project edge; participant `invitation`s are dropped; the calendar edge
+ * comes from the create.
  */
 export async function copyEventEdges(
   client: PoolClient,
@@ -242,9 +215,8 @@ export async function copyEventEdges(
 }
 
 /**
- * Gives the copy of a recurring Task its own series: the same mode and rule as the source's active series, anchored on
- * the copy's date, with the copy as its current occurrence. A source without an active series gives the copy none.
- * The source's series row is locked after the source's item row, the order of `tasks/advanceTaskRecurrenceWithClient.ts`.
+ * Same mode and rule as the source's active series, anchored on the copy's date. The series row is locked after
+ * the source's item row, the order of `tasks/advanceTaskRecurrenceWithClient.ts`.
  */
 async function startCopySeries(
   client: PoolClient,
@@ -262,7 +234,7 @@ async function startCopySeries(
     template: templateOf(write.copy.properties),
   });
   if (created.seriesId === null) throw new Error("createTaskRecurrence returned no series");
-  // The source's stored `recurrence` keeps its preset label when it still stands for the series' rule.
+  // The stored preset label is kept when it still stands for the series' rule.
   const stored = storedRecurrenceSchema.safeParse(write.source.properties.recurrence);
   const recurrence =
     stored.success && stored.data.mode === series.mode && isDeepStrictEqual(stored.data.rule, series.rule)
@@ -286,30 +258,18 @@ async function startCopySeries(
 }
 
 /**
- * Copies the Event or Task `input.itemId` to `input.date` and returns the copy. Run it inside the caller's
- * transaction: a failure after the copy was created leaves no copy once that transaction rolls back.
+ * Run inside the caller's transaction: a later failure leaves no copy once it rolls back.
  *
- * - The source is locked first; an unknown, trashed, another tenant's or neither Event nor Task id is a
- *   `NotFoundError`. When `input.idempotencyKey` already created a live item in the source's database, that item is
- *   returned as it is stored and nothing is copied. The read runs under the source's lock, so a request that waited
- *   for an earlier request with the same key and the same source finds that request's copy. A key that another
- *   source's request commits first is met at the insert instead: the insert returns that request's item, and nothing
- *   of this source is copied onto it.
- * - An Event copy takes `EVENT_PROPERTY_KEYS` from the source, its `date`, `timeFrom` and `timeTo` from the request,
- *   and the source's `endDate` moved with `date` (see `copiedEndDate`). It is created in the source's calendar through
- *   the default-calendar create hook's own scope (`withChosenCalendar`), so it ends with that one calendar edge and
- *   `calendar` is not copied as an edge; a source without a calendar edge gives the copy the default calendar. The
- *   edges of `EVENT_RELATION_KEYS` are copied, and `company` only from a source without a project; the `invitation` of
- *   a participant edge is dropped.
- * - A Task copy takes `TASK_PROPERTY_KEYS` and its times (see `taskTimes`), has `status` `notDone` and the request's
- *   `date`, and takes the edges of `TASK_RELATION_KEYS`. A Task has no `endDate`: one in the request is refused. The
- *   copy of a Task with an active series starts a new series of its own (`startCopySeries`).
- * - Nothing else of the source is copied: not its transcripts, action items, hosted tasks or host events, nor its
- *   completion, series, iCalendar identity, `createdAt`, page or derived values.
+ * - When `idempotencyKey` already created a live item in the source's database, that item is returned and nothing
+ *   is copied. The read runs under the source's lock, so a request waiting on an earlier one with the same key and
+ *   source finds its copy; a key another source's request commits first is met at the insert instead.
+ * - An Event copy is created in the source's calendar via `withChosenCalendar` (the default calendar when the
+ *   source has none), so `calendar` is not copied as an edge.
+ * - A Task has no `endDate`: one in the request is refused. A Task with an active series starts a new series.
+ * - Not copied: transcripts, action items, hosted tasks, host events, completion, series, iCalendar identity,
+ *   `createdAt`, page or derived values.
  *
- * The copy and every edge are written through the choke point as `input.actor`. The create validates the
- * copy's date and times with the rules of its database, so an invalid value is a `ValidationError` that
- * rolls the transaction back.
+ * The create validates date and times with the database's rules; an invalid value rolls the transaction back.
  */
 export async function duplicateCalendarItem(client: PoolClient, input: DuplicateCalendarItemInput): Promise<ItemRow> {
   const { kind, database, item: source } = await lockSource(client, input.itemId);

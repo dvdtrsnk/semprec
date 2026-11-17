@@ -11,26 +11,13 @@ export interface ApplyObservedMailMessageFlagsInput {
 }
 
 /**
- * Folds a provider flag observation (a full IMAP re-fetch of a known UID, or the flags an
- * already-known message carries on a later sync pass) into both the Emails item and
- * `mail_message_flag_sync_state`, called inside the caller's own transaction.
+ * Folds a provider flag observation into the Emails item and `mail_message_flag_sync_state`, in the caller's
+ * transaction. For `read`/`flagged`, the item is patched through `convergeObservedEmailFlagsWithClient` (the module's
+ * narrow ownership handoff for these user-owned fields) only when no write-back is pending, so a pending user change
+ * survives. `recordObservedMailMessageFlags` then records the observation for both flags.
  *
- * For each of `read`/`flagged`: when the sync-state row is absent or converged (no pending
- * write-back), and the observed value differs from what the item currently stores, the item is
- * patched through `convergeObservedEmailFlagsWithClient` (`itemWrites.ts`) — this module's own
- * declared, narrow ownership handoff for these two owner:'user' fields, not the generic
- * `updateItemWithClient` a user-initiated PATCH goes through (see that function's doc comment
- * for why the distinction matters). When the row is pending (a user change is still awaiting
- * write-back), the item is left alone so the pending write survives. Either way,
- * `recordObservedMailMessageFlags` runs once for both flags afterwards to set `current_state`
- * and, for a converged row, `desired_state` too (`mailMessageFlagSyncStore.ts`'s own
- * converged/pending check), so the two calls agree regardless of ordering.
- *
- * The items row is locked FOR UPDATE first, before mail_message_flag_sync_state, to match the
- * lock order the user-initiated write path takes (updateItemWithClient locks items, then
- * recordDesiredMailMessageFlags upserts the sync-state row). Locking sync-state first here would
- * let a concurrent reconcile pass and a concurrent user flag update each hold one row's lock and
- * wait on the other's, deadlocking (Postgres 40P01).
+ * Locks the items row before the sync-state row, the order the user write path takes; the reverse order would
+ * deadlock against a concurrent user flag update (40P01).
  */
 export async function applyObservedMailMessageFlags(
   client: PoolClient,

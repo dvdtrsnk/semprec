@@ -85,10 +85,8 @@ let world: World;
 
 const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenant, fn);
 
-/** A transaction of the runtime role in the test tenant. */
 const tx = <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> => inTenant(() => withTransaction(data, fn));
 
-/** A query of the runtime role in the test tenant. */
 const query = <Row extends QueryResultRow>(text: string, values: unknown[]): Promise<QueryResult<Row>> =>
   inTenant(() => data.query<Row>(text, values));
 
@@ -1114,7 +1112,6 @@ describe("the Threads company and project link rules (issue gh-1869)", () => {
       const first = await ingest("<m1@acme>", "sales@acme.cz");
       await runPropagation();
       const announced = events.filter((event) => event.scope === "mailThread" && event.threadId === first.threadId);
-      // One for the new message, one for the company edge, one for the project edge.
       expect(announced).toHaveLength(3);
       events.length = 0;
       await clearValue(first.threadItemId, "company", acme);
@@ -1215,7 +1212,6 @@ describe("the Threads company and project link rules (issue gh-1869)", () => {
       };
     }
 
-    /** Gives a thread an inherited company: the link `on` first, then the edge, as the engine writes them. */
     async function inheritCompany(thread: Ingested, ownerCompany: string, domain: string): Promise<void> {
       await tx(async (client) => {
         await insertValueLink(client, {
@@ -1444,7 +1440,6 @@ describe("the Threads company and project link rules (issue gh-1869)", () => {
   });
 });
 
-/** The first inbound message of a thread, read through a tenant transaction. */
 function firstInboundOf(threadId: string) {
   return tx((client) => firstInboundMessage(client, threadId));
 }

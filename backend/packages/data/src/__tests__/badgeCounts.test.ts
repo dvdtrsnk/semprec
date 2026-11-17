@@ -23,7 +23,6 @@ let adminPool: Pool;
 let dataPool: Pool;
 let ownerId: string;
 
-/** A pending approval request of a new run of `userId`, which `triggeredBy` decides the source kind of. */
 async function pendingRequestOf(
   userId: string,
   triggeredBy: CreateAgentRunInput["triggeredBy"] = "user",
@@ -50,7 +49,6 @@ async function createForeignUser(): Promise<{ id: string; tenantId: string }> {
   return { id: user.id, tenantId };
 }
 
-/** The answer of `GET /api/badge-counts` for the session user `userId`, on `pool`, inside tenant zero. */
 function badgeCountsOf(pool: Pool, userId: string) {
   return inTenantZero(() => createBadgeCountsRouteHandler(pool)({ identity: { user: { id: userId } } }));
 }

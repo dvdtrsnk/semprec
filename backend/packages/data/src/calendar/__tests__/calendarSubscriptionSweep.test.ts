@@ -24,9 +24,8 @@ import { CALENDAR_MODULE_ID } from "../calendarModuleId.js";
 import { feedUrlHash } from "../calendarFeedState.js";
 import { logger } from "../logger.js";
 
-// The store is wrapped so that one case can make the write of the first fetch of a run fail, whichever calendar that
-// is: a failure of the store is the failure of the sweep that is not an answer of a calendar (the database), which the
-// sweep must contain per calendar and per tenant.
+// Wrapped so one case can fail the store write of the first fetch of a run: a database failure, which the sweep
+// must contain per calendar and per tenant.
 const storeControl = vi.hoisted(() => ({ failFirstFetched: false, failedFor: null as string | null }));
 vi.mock("../calendarFeedState.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../calendarFeedState.js")>();
@@ -43,9 +42,8 @@ vi.mock("../calendarFeedState.js", async (importOriginal) => {
 });
 
 /**
- * The hourly feed download (issue gh-1960), against a local HTTP server under the test-only loopback allowance, on
- * the runtime role pool and in tenants of their own. The cases of the baseline check and of the connect-time refusal
- * run under the default policy instead, which refuses a loopback address.
+ * Runs against a local HTTP server under the test-only loopback allowance; the cases of the baseline check and of
+ * the connect-time refusal run under the default policy, which refuses a loopback address.
  */
 
 const FEED = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-FEED-MARKER:FEEDCONTENT\r\nEND:VCALENDAR\r\n";
@@ -101,10 +99,7 @@ async function seededTenant(): Promise<Tenant> {
   return { id, calendarsId: calendars.id };
 }
 
-/**
- * A subscription calendar written through the choke point with an address that passes the write rule. `kind` is
- * written by the calendar module, so the fixture writes it as that owner process, as the subscribe flow will.
- */
+/** `kind` is written by the calendar module only, so the fixture writes it as that owner process. */
 async function subscription(tenant: Tenant, url: string = VALID_URL, name = "Feed"): Promise<string> {
   const item = await runInTenant(tenant.id, () =>
     withTransaction(runtime, (client) =>
@@ -121,10 +116,7 @@ async function subscription(tenant: Tenant, url: string = VALID_URL, name = "Fee
   return item.id;
 }
 
-/**
- * Points the calendar at the local server. Raw SQL as the superuser: the write rule refuses an `http` address with a
- * port, which is exactly what the test server is.
- */
+/** Raw SQL: the write rule refuses an `http` address with a port, which is exactly what the test server is. */
 async function pointAtServer(calendarId: string, path = "/a.ics", query = ""): Promise<void> {
   const url = `http://127.0.0.1:${port}${path}${query}`;
   await admin.query(
@@ -133,10 +125,7 @@ async function pointAtServer(calendarId: string, path = "/a.ics", query = ""): P
   );
 }
 
-/**
- * Moves a calendar to the Trash. Raw SQL as the superuser: the calendar module refuses to delete a subscription
- * calendar through the choke point, and the sweep must still skip a trashed one and the purge must still clean up after it.
- */
+/** Raw SQL: the calendar module refuses to delete a subscription calendar through the choke point. */
 async function trash(calendarId: string): Promise<void> {
   await admin.query("UPDATE items SET deleted_at = now() - interval '1 hour' WHERE id = $1", [calendarId]);
 }
@@ -156,7 +145,6 @@ function serve(path: string, behavior: Behavior): void {
   behaviors.set(path, behavior);
 }
 
-/** An answer with the feed text and the validators of the feed. */
 const feedAnswer: Behavior = (_req, res) => {
   res.writeHead(200, { "content-type": "text/calendar", etag: '"v1"', "last-modified": LAST_MODIFIED });
   res.end(FEED);
@@ -329,7 +317,6 @@ describe("the subscription calendar sweep (issue gh-1960)", () => {
       requests.length = 0;
       await sweep(limits);
 
-      // The calendar the first run left out is the first of the second.
       const left = ["/c1.ics", "/c2.ics", "/c3.ics"].find((path) => !firstRun.includes(path));
       expect(requests.map((request) => request.path)).toContain(left);
       expect(requests).toHaveLength(2);
@@ -339,7 +326,6 @@ describe("the subscription calendar sweep (issue gh-1960)", () => {
   });
 
   describe("a feed that does not arrive", () => {
-    /** A calendar whose first feed was taken over, so there are validators that a failure must leave alone. */
     async function calendarWithStoredFeed(path = "/a.ics", query = ""): Promise<string> {
       const id = await feedCalendar(tenantA, path, query);
       serve(path, feedAnswer);
@@ -533,7 +519,6 @@ describe("the subscription calendar sweep (issue gh-1960)", () => {
   });
 
   describe("the address a feed was requested from", () => {
-    /** Answers 304 to a request that carries a validator, and the feed (older than any stored one) to one that does not. */
     const conditionalFeed: Behavior = (req, res) => {
       if (req.headers["if-none-match"] !== undefined || req.headers["if-modified-since"] !== undefined) {
         res.writeHead(304);
@@ -585,7 +570,6 @@ describe("the subscription calendar sweep (issue gh-1960)", () => {
     ] as const)("that was changed while it was requested neither delivers nor records %s", async (_name, answer) => {
       const id = await feedCalendar(tenantA, "/a.ics");
       serve("/a.ics", (req, res) => {
-        // The address is edited after the listing and before the answer comes back.
         void pointAtServer(id, "/b.ics").then(() => answer(req, res));
       });
 
@@ -625,7 +609,6 @@ describe("the subscription calendar sweep (issue gh-1960)", () => {
       serve("/a.ics", feedAnswer);
       let failures = 1;
       registerCalendarFeedConsumer(async (client, feed) => {
-        // A write of the consumer must go with the failure.
         await client.query("UPDATE calendar_feed_state SET last_status = 999 WHERE calendar_item_id = $1", [
           feed.calendarItemId,
         ]);
@@ -645,7 +628,6 @@ describe("the subscription calendar sweep (issue gh-1960)", () => {
 
       await sweep();
 
-      // No validators were stored, so the second request carried none, and this time the consumer took the feed.
       expect(requestsFor("/a.ics")[1]?.headers["if-none-match"]).toBeUndefined();
       expect(consumed).toHaveLength(1);
       expect(await stateOf(id)).toMatchObject({ etag: '"v1"', last_error_code: null });

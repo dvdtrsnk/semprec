@@ -41,7 +41,6 @@ async function lockGuidance(tx: PoolClient, projectItemId: string): Promise<Proj
   return rows[0] ?? null;
 }
 
-/** Concrete `PoolClient` implementation of `@semprec/shared`'s `ProjectAgentGuidanceStore`. */
 export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = {
   async loadForUpdate(tx, projectItemId) {
     const row = await lockGuidance(tx, projectItemId);
@@ -65,9 +64,7 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
   },
 
   async upsert(tx, row) {
-    // `owner_user_id` is deliberately absent from `DO UPDATE`: only `transfer` may change the
-    // owner of an existing row, so a direct `upsert` call can never bypass that authorization
-    // path even though it still accepts `ownerUserId` to seed the very first insert.
+    // `owner_user_id` is absent from `DO UPDATE`: only `transfer` may change an existing row's owner.
     const current = await lockGuidance(tx, row.projectItemId);
     const version = await projectAgentGuidanceVersionStore.next(tx, row.projectItemId, current?.updated_at ?? null);
     const { rows } = await tx.query<ProjectAgentGuidanceRow>(
@@ -100,17 +97,13 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
 };
 
 /**
- * Concrete `PoolClient` implementation of `@semprec/shared`'s `GuidanceReferenceStore`.
- * `requireProjectsItem` resolves the system Projects database by its canonical module id and
- * looks the item up in that database's partition — the only way to validate a partitioned
- * item id against a specific logical database, since `items` has no direct FK target.
+ * `requireProjectsItem` looks the item up in the Projects database's partition: `items` has no FK target that ties
+ * an id to one logical database.
  */
 export const guidanceReferenceStore: GuidanceReferenceStore<PoolClient> = {
   async requireProjectsItem(tx, projectItemId) {
     const database = await getDatabaseByModuleId(tx, PROJECTS_MODULE_ID);
-    // A missing Projects module database is a seeding/infrastructure problem, not a missing
-    // item — throw a plain error (not `GuidanceReferenceNotFoundError`) so it propagates as an
-    // infrastructure failure instead of being reported to the caller as a 400 "item not found".
+    // A missing Projects database is an infrastructure failure, not a 400 "item not found".
     if (!database) {
       throw new Error(`Projects module database not found for module ${PROJECTS_MODULE_ID}`);
     }
@@ -130,9 +123,8 @@ export const guidanceReferenceStore: GuidanceReferenceStore<PoolClient> = {
 };
 
 /**
- * Resolves `userId` only when it is the current tenant's user (`getTenantUserId`). Another tenant's
- * user, a user bound to no tenant and an unknown id all fail the same way, so a caller can never
- * name a user outside the tenant as guidance owner or drift recipient.
+ * Resolves `userId` only when it is the current tenant's user; anything else fails the same way, so no user outside
+ * the tenant can be named owner or drift recipient.
  */
 async function requireTenantUser(tx: PoolClient, userId: string) {
   const user = await getUserById(tx, userId);
@@ -142,12 +134,7 @@ async function requireTenantUser(tx: PoolClient, userId: string) {
   return user;
 }
 
-/**
- * Concrete `TransactionRunner<PoolClient>`: delegates to `withTransaction` (`db/pool.ts`) at the
- * requested isolation level, so after-commit hooks registered by stores inside the runner (e.g.
- * `runAfterCommit` calls made by `writeNotification`) fire after the commit, exactly as they
- * would for any other `withTransaction` caller.
- */
+/** Delegates to `withTransaction`, so after-commit hooks registered inside fire after the commit as usual. */
 export function createPoolClientTransactionRunner(pool: Pool): TransactionRunner<PoolClient> {
   return {
     withTransaction: (options, work) => withTransaction(pool, work, { isolation: options.isolation }),

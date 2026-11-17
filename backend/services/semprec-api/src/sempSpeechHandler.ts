@@ -99,7 +99,7 @@ export function createSempSpeechRequestListener(
             const key = await withTransaction(pool, (client) => tenantBlobStorageKey(client, `blobs/${randomUUID()}`));
             guardSignal.throwIfAborted();
             stagedKey = key;
-            // The speech row is attributed to the message that is read aloud and to the run that produced it.
+            // Attributed to the message read aloud and the run that produced it.
             const audio = await synthesizeSpeech(gateway, {
               text: source.text,
               voice,

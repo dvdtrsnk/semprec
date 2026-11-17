@@ -41,8 +41,7 @@ import {
 import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// Passthrough spy: a call reaches the real adapter (which answers not-configured without APNS_* settings) unless a
-// test replaces one answer, so the default wiring of the handler to the adapter is observed without a network.
+// Passthrough spy: the real adapter answers not-configured without APNS_* settings, so no network is used.
 vi.mock("../push/apnsAdapter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../push/apnsAdapter.js")>();
   return { ...actual, sendApnsBackgroundPush: vi.fn(actual.sendApnsBackgroundPush) };
@@ -92,7 +91,6 @@ function chokePoint(t: ResyncTenant) {
   };
 }
 
-/** A new tenant seeded as production seeds one, with a user, so it has the settings item and the two default plans. */
 async function seededTenant(): Promise<ResyncTenant> {
   const tenantId = await createTestTenant(adminPool);
   await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
@@ -130,7 +128,6 @@ async function seededTenant(): Promise<ResyncTenant> {
   };
 }
 
-/** The pending `sleep.resync` jobs, read through the public view of the queue schema. */
 async function resyncJobs(): Promise<ResyncJob[]> {
   const { rows } = await adminPool.query<ResyncJob>(
     "SELECT key, run_at FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -143,7 +140,6 @@ function resyncKey(t: ResyncTenant): string {
   return `sleep-resync:${t.tenantId}`;
 }
 
-/** Removes every pending `sleep.resync` job, so the next write is the only one that can have enqueued one. */
 async function clearResyncJobs(): Promise<void> {
   for (const job of await resyncJobs()) {
     await adminPool.query("SELECT graphile_worker.remove_job($1)", [job.key]);
@@ -405,7 +401,6 @@ describe("the sleep.resync handler (issue gh-1838)", () => {
     return { id: row.id, deviceToken };
   }
 
-  /** A tenant whose user has two active iOS registrations, a macOS one, a revoked iOS one and a Web Push one. */
   async function pushedTenant(): Promise<PushedTenant> {
     const t = await seededTenant();
     const ios = [await register(t, "ios", "sandbox"), await register(t, "ios", "production")];
@@ -610,7 +605,6 @@ function planProperties(): Record<string, unknown> {
   return { name: "Extra", wakeDays: [], bedTime: "22:00", wakeTime: "06:00", alarm: false, position: 5 };
 }
 
-/** Patches the System settings item of the tenant through the choke point. */
 async function patchSystemSettings(t: ResyncTenant, propertiesPatch: Record<string, unknown>): Promise<void> {
   const database = await inTenant(t.tenantId, (client) =>
     databasesStore.getDatabaseByModuleId(client, SYSTEM_SETTINGS_MODULE_ID),
@@ -632,7 +626,6 @@ interface HookContexts {
   restore: ItemRestoreHookContext;
 }
 
-/** The contexts the choke point would give the four hooks for the first item of the database `moduleId`. */
 async function hookContexts(client: PoolClient, moduleId: string): Promise<HookContexts> {
   const database = await databasesStore.getDatabaseByModuleId(client, moduleId);
   if (!database) throw new Error(`The tenant has no ${moduleId} database`);

@@ -25,7 +25,6 @@ const knowsNoCompany: AresClient = {
   },
 };
 
-/** These items carry no attachment, so no blob is ever opened. */
 const noBlobBytes = async (): Promise<null> => null;
 
 interface StubGateway extends AiGatewayClientPort {
@@ -64,7 +63,7 @@ function systemMessage(gateway: StubGateway): string {
   return z.string().parse(gateway.calls[0]?.system);
 }
 
-/** The block of the user message: its delimiter lines, which must stand alone, and the one JSON line between them. */
+/** Its delimiter lines must stand alone, with one JSON line between them. */
 function catalogBlock(gateway: StubGateway): z.infer<typeof catalogSchema> | null {
   const lines = userMessage(gateway).split("\n");
   const open = lines.indexOf(OPEN);
@@ -152,7 +151,7 @@ describe("the target option catalog in the proposal request (issue gh-1990)", ()
       );
   }
 
-  /** Health records is a sensitive database: the Semprec project reads its values only with a grant. */
+  /** Health records is sensitive: the Semprec project reads its values only with a grant. */
   async function grantHealthRead(): Promise<void> {
     const databaseId = await databaseIdFor("healthRecords");
     await inTenantZero(() =>
@@ -205,7 +204,6 @@ describe("the target option catalog in the proposal request (issue gh-1990)", ()
         ],
       },
     ]);
-    // No record title reaches the request through the catalog.
     expect(userMessage(gateway)).not.toContain("Record 0");
     expect(systemMessage(gateway)).toContain("A select or multi_select value must be an option key");
     expect(systemMessage(gateway)).toContain("A text value should reuse a listed value");
@@ -239,7 +237,6 @@ describe("the target option catalog in the proposal request (issue gh-1990)", ()
   });
 
   it("still sends the option lists and no text value when reading the values is not permitted", async () => {
-    // No grant for the Semprec project: Health records is closed to it.
     await storeSubjects(["David", "Heduš"]);
     const gateway = stubGateway({ properties: { name: "Blood pressure", tags: ["bloodPressure"] } });
 
@@ -253,8 +250,8 @@ describe("the target option catalog in the proposal request (issue gh-1990)", ()
   });
 
   it("adds no block for a target database with no select, even when it holds known text values", async () => {
-    // Companies has a title, a text `ico` and a url and no select. Two stored companies share one ico, so the facets
-    // would list it; the Task of gh-1990 still adds no block for a database with no select.
+    // Companies has no select. Two companies share one ico, so the facets would list it, but a database with no
+    // select gets no block.
     const companiesId = await databaseIdFor("companies");
     const chokePoint = createChokePoint(pool);
     for (const name of ["First", "Second"])
@@ -280,12 +277,10 @@ describe("the target option catalog in the proposal request (issue gh-1990)", ()
 
     await runTick(gateway, await createItemFor("healthRecords"));
 
-    // The closing delimiter stands once, alone on its line, after the one JSON line; the opening one likewise.
     const message = userMessage(gateway);
     expect(message.split(CLOSE)).toHaveLength(2);
     expect(message.split(OPEN)).toHaveLength(2);
     const block = catalogBlock(gateway);
-    // The model reads the line as JSON, and the values come back exactly as stored.
     expect(block?.textValues).toEqual([
       {
         propertyKey: "subject",
@@ -309,7 +304,7 @@ describe("the target option catalog in the proposal request (issue gh-1990)", ()
         sourceItem: item!,
         type: item!,
         entityKind: "pageContent",
-        // The id is set only to show that the kind decides: a page proposal has no target database in production.
+        // A page proposal has no target database in production; the id is set to show that the kind decides.
         targetDatabaseId: healthId,
         locale: "cs",
         projectItemId: semprecProjectId,
@@ -344,7 +339,7 @@ describe("the target option catalog in the proposal request (issue gh-1990)", ()
 
     expect(await proposalCards()).toEqual([expect.objectContaining({ status: "needsClarification", proposal: null })]);
   });
-  // Issue gh-1994: a new tag may be proposed with `newOptions` when no listed option fits.
+  // A new tag may be proposed with `newOptions` when no listed option fits.
   describe("new options in the proposal request and answer (issue gh-1994)", () => {
     const herbsAnswer = {
       properties: { name: "Herbal tea against a cold", tags: [{ newOption: "Bylinky" }] },

@@ -132,7 +132,7 @@ function assistant(
   } satisfies AgentMessage;
 }
 
-/** Reads a health record: the tool marks the answer, so the stored result becomes the marker (issue #1827). */
+/** The tool marks the answer, so the stored result becomes the marker. */
 function sensitiveRead(toolCallId: string): AgentMessage[] {
   return [
     toolUse(toolCallId, "item.get", { itemId: healthItemId }, { targetItemId: healthItemId }),
@@ -706,7 +706,7 @@ describe("redaction of tool call arguments, assistant text and compaction checkp
   });
 
   describe("compaction and resume", () => {
-    /** The turn of the issue: read a health record, write a value into it, quote it in the reply. */
+    /** Read a health record, write a value into it, quote it in the reply. */
     function sensitiveTurn(): AgentMessage[] {
       return [
         { kind: "user_message", text: "update my record", context: [] },

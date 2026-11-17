@@ -1,7 +1,6 @@
-// Issue gh-1948: the ephemeral `agent:delta` frames of a run that rewrites a mail draft. The run's `mail.draft.update` is
-// called as a session calls it (`resolveModuleAgentToolsForRun`), the frames travel through the wired realtime hooks, the
-// NOTIFY channel and the real sync server, and the sockets are those of the run's user, of another user of the tenant and
-// of another tenant.
+// The ephemeral `agent:delta` frames of a run that rewrites a mail draft. `mail.draft.update` is called as a session
+// calls it, and frames travel through the wired hooks, NOTIFY and the real sync server to sockets of the run's user,
+// another user of the tenant and another tenant.
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -78,7 +77,7 @@ function settle(ms = 300): Promise<void> {
 /** A tenant with a mailbox that has a Drafts folder and a primary address, and two users. */
 async function seededTenant(): Promise<MailTenant> {
   const tenantId = await createTestTenant(admin);
-  // A tenant holds one user row; a socket's identity is only the ids it carries, so another user is another id.
+  // A tenant holds one user row; a socket's identity is only its ids, so another user is another id.
   const userId = (
     await createUser(admin, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused", locale: "en" })
   ).id;
@@ -172,7 +171,7 @@ async function connectAs(token: string, tenantId: string, userId: string): Promi
   return client;
 }
 
-/** The `agent:delta` frames the socket receives, in arrival order; other frame types are not what these tests observe. */
+/** Other frame types are not observed here. */
 function collectDeltaFrames(client: WebSocket): Record<string, unknown>[] {
   const frames: Record<string, unknown>[] = [];
   client.on("message", (data) => {
@@ -182,7 +181,7 @@ function collectDeltaFrames(client: WebSocket): Record<string, unknown>[] {
   return frames;
 }
 
-/** Collects every frame, to prove a watcher that is refused has been silent altogether. */
+/** Proves a refused watcher received nothing at all. */
 function collectAllFrames(client: WebSocket): Record<string, unknown>[] {
   const frames: Record<string, unknown>[] = [];
   client.on("message", (data) => {
@@ -213,7 +212,7 @@ describe("mail draft body deltas of a run that rewrites a draft (issue gh-1948)"
     admin ??= getTestPool();
     await resetDatabase(admin);
     registry ??= await loadFullModuleRegistry();
-    // Row-level security applies only to a runtime role: the tools, the publisher and the server all use one.
+    // RLS applies only to a runtime role: the tools, publisher and server all use one.
     runtime = await createRuntimeRolePool(admin, "semprec_data");
     wireRealtimeHooks(runtime);
     tenant = await seededTenant();
@@ -252,7 +251,7 @@ describe("mail draft body deltas of a run that rewrites a draft (issue gh-1948)"
     const draftId = await createdDraftId(tenant, run.id);
     const own = await connectAs("own", tenant.tenantId, tenant.userId);
     const sameTenantOther = await connectAs("sameTenantOther", tenant.tenantId, tenant.secondUserId);
-    // The other tenant's socket claims the very user id of the run's user: only the tenant boundary can refuse it.
+    // The other tenant's socket claims the run user's id: only the tenant boundary can refuse it.
     const otherTenant = await connectAs("otherTenant", foreign.tenantId, tenant.userId);
     const ownFrames = collectDeltaFrames(own);
     const otherUserFrames = collectAllFrames(sameTenantOther);

@@ -1,13 +1,7 @@
 /**
- * The mapping between the two user-owned Emails flags the mailbox triage actions write
- * (issue #97) and the canonical IMAP system flags they mirror. Both the ingest direction
- * (IMAP flags -> item properties, below) and the outbound direction (a flag write over
- * IMAP, `ImapFlowMailClient.setMessageFlag`) name the flags from here, so the two can never
- * disagree about which property is which flag.
- *
- * The properties themselves are ordinary generic checkboxes on Emails, owner:'user' — the
- * mailbox marks a message read or flagged through the generic item-update path, exactly like
- * any other user-owned property, not through a mailbox-only endpoint.
+ * The two user-owned Emails flags and the IMAP system flags they mirror. Ingest and the outbound flag
+ * write both name the flags from here, so they can never disagree. The properties are ordinary
+ * `owner: 'user'` checkboxes written through the generic item-update path.
  */
 export const READ_PROPERTY_KEY = "read";
 export const FLAGGED_PROPERTY_KEY = "flagged";
@@ -15,12 +9,7 @@ export const FLAGGED_PROPERTY_KEY = "flagged";
 export const IMAP_SEEN_FLAG = "\\Seen";
 export const IMAP_FLAGGED_FLAG = "\\Flagged";
 
-/**
- * The only IMAP flags this codebase ever writes over `STORE` (`ImapFlowMailClient.setMessageFlag`) —
- * the two mirrored below, named as a union so the write surface can't be handed an arbitrary
- * string (a typo'd flag name, or one of the many read-only/other-system flags a server may
- * report back from `fetchMessagesSince`).
- */
+/** The only IMAP flags ever written over `STORE`; a union so the write surface takes no arbitrary string. */
 export type WritableImapFlag = typeof IMAP_SEEN_FLAG | typeof IMAP_FLAGGED_FLAG;
 
 export const MESSAGE_FLAG_PROPERTIES: ReadonlyArray<{ propertyKey: string; imapFlag: WritableImapFlag }> = [
@@ -29,21 +18,14 @@ export const MESSAGE_FLAG_PROPERTIES: ReadonlyArray<{ propertyKey: string; imapF
 ];
 
 /**
- * The `specialPurpose` of the folders whose messages are read by definition (issue #1461): the user
- * wrote a draft, and sending it keeps the same Emails item in Sent. `createEmailDraft` creates a draft as
- * read, the backfill in `mailDraftsAndSentReadBackfill.ts` makes older ones read, and the unread search
- * (`search.ts`) and the unscoped unread filter (`web/src/views/mailbox/config.ts`) leave messages in these
- * folders out.
+ * Folders whose messages are read by definition: the user wrote the draft, and sending keeps the same
+ * Emails item in Sent. The unread search and filter leave these folders out.
  */
 export const DRAFTS_AND_SENT_SPECIAL_PURPOSES = ["drafts", "sent"] as const;
 
 /**
- * The `read`/`flagged` properties a newly ingested message starts out with, derived from the
- * IMAP flags the fetch reported. Returns `{}` when the adapter reported no flags at all
- * (every non-IMAP adapter), leaving both properties absent — which the mailbox reads as
- * unread and unflagged, the same as an explicit `false`.
- *
- * RFC 3501 system flags are case-insensitive, so `\seen` counts the same as `\Seen`.
+ * Returns `{}` when the adapter reported no flags (every non-IMAP adapter); absent reads as unread and
+ * unflagged. RFC 3501 system flags are case-insensitive.
  */
 export function messageFlagProperties(flags: readonly string[] | undefined): Record<string, boolean> {
   if (!flags) return {};

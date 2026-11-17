@@ -21,10 +21,9 @@ import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { createClientIpThrottle } from "../clientIpThrottle.js";
 
 /**
- * Issue gh-1750 through the production composition path: the real dispatcher, the mail module's password
- * connect route behind the REST adapter, and the limiter that route counts in, on a pool of the runtime
- * role. The login verification is the one stand-in. It records every login it is handed, so a login that
- * is absent from that record opened no connection to a mail server.
+ * The password connect route's attempt limit through the production composition: the real dispatcher, the REST
+ * adapter and its limiter on a runtime-role pool. The login verification is the one stand-in; a login absent from
+ * its record opened no connection to a mail server.
  */
 
 const REFUSED_PASSWORD = "throttle-refused-password";
@@ -49,23 +48,19 @@ let bob: User;
 
 interface Mount {
   baseUrl: string;
-  /** The address of every login the route handed the verification, in the order of the calls. */
   verified: string[];
-  /** Moves the clock of the mount's limiter forward. */
   advanceSeconds: (seconds: number) => void;
 }
 
 interface MountOptions {
-  /** Every verification waits for this before it answers. */
   holdVerification?: Promise<void>;
-  /** Leaves the limiter out of the container, so the route counts in the one `createDispatcher` creates. */
+  /** The route then counts in the limiter `createDispatcher` creates. */
   limiterOfDispatcher?: boolean;
 }
 
 /**
- * Serves the real dispatcher with a verification that refuses `REFUSED_PASSWORD` as a mail server refuses a
- * wrong password and accepts every other login. Unless `limiterOfDispatcher` is set, the route counts in a
- * limiter with the production limits and a clock the test moves.
+ * The verification refuses `REFUSED_PASSWORD` as a mail server would and accepts every other login. Unless
+ * `limiterOfDispatcher` is set, the limiter has the production limits and a clock the test moves.
  */
 async function serve(options: MountOptions = {}): Promise<Mount> {
   const verified: string[] = [];
@@ -117,17 +112,15 @@ async function send(mount: Mount, method: string, path: string, user: User | nul
 
 interface ConnectAnswer {
   status: number;
-  /** `error.code` of a refusal; `null` for the item envelope of a created mailbox. */
+  /** `null` for the item envelope of a created mailbox. */
   code: string | null;
   body: unknown;
   retryAfter: string | null;
-  /** The address this request asked to connect. */
   address: string;
 }
 
 const refusalBody = z.object({ error: z.object({ code: z.string() }) });
 
-/** One request to the password connect route for an address nobody holds, unless `overrides` names another. */
 async function connect(
   mount: Mount,
   user: User,
@@ -152,7 +145,6 @@ async function connect(
   };
 }
 
-/** `count` attempts with a password the mail server refuses: each reaches the verification and creates nothing. */
 async function refusedLogins(mount: Mount, user: User, count: number): Promise<void> {
   for (let attempt = 0; attempt < count; attempt += 1) {
     const answer = await connect(mount, user, { password: REFUSED_PASSWORD });
@@ -162,7 +154,6 @@ async function refusedLogins(mount: Mount, user: User, count: number): Promise<v
 
 const mailboxList = z.object({ mailboxes: z.array(z.object({ id: z.string() })) });
 
-/** The ids of the mailboxes the user's tenant holds, as the list route answers them. */
 async function mailboxIdsOf(mount: Mount, user: User): Promise<string[]> {
   const response = await send(mount, "GET", "/api/mail/mailboxes", user);
   expect(response.status).toBe(200);
@@ -190,7 +181,6 @@ async function closeOpenServers(): Promise<void> {
   }
 }
 
-/** Rejects when `work` has not settled after ten seconds, so a hung orchestration fails with its name. */
 function withinTenSeconds<T>(work: Promise<T>, what: string): Promise<T> {
   const timeout = new Promise<never>((_resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${what} did not happen within 10 s`)), 10_000);
@@ -231,7 +221,6 @@ afterAll(async () => {
 describe("POST /api/mail/mailboxes: the per-user limit of login verifications (issue gh-1750)", () => {
   it("answers the eleventh attempt of a user within 15 minutes with 429 rate_limited and Retry-After, and verifies no login for it", async () => {
     const mount = await serve();
-    // A login the mail server accepts counts like one it refuses.
     const created = await connect(mount, alice);
     expect(created.status).toBe(201);
     mount.advanceSeconds(60);
@@ -242,7 +231,7 @@ describe("POST /api/mail/mailboxes: the per-user limit of login verifications (i
 
     expect(eleventh.status).toBe(429);
     expect(eleventh.body).toEqual({ error: { code: "rate_limited" } });
-    // The first attempt leaves the window 900 seconds after it was counted, which is 840 seconds from now.
+    // The first attempt leaves the 900-second window 840 seconds from now.
     expect(eleventh.retryAfter).toBe("840");
     expect(mount.verified).toHaveLength(10);
     expect(mount.verified).not.toContain(eleventh.address);
@@ -258,7 +247,6 @@ describe("POST /api/mail/mailboxes: the per-user limit of login verifications (i
 
     expect(ofBob.status).toBe(201);
     expect(mount.verified.slice(10)).toEqual([ofBob.address]);
-    // Bob's attempt left Alice's window as it was, and Bob had nine more of his own.
     expect((await connect(mount, alice)).status).toBe(429);
     await refusedLogins(mount, bob, 9);
     expect((await connect(mount, bob)).status).toBe(429);
@@ -274,10 +262,9 @@ describe("POST /api/mail/mailboxes: the per-user limit of login verifications (i
       expect({ status: invalid.status, code: invalid.code }).toEqual({ status: 400, code: "validation_failed" });
     }
 
-    // Twelve invalid bodies later the tenth attempt is still free, and the eleventh is not.
     await refusedLogins(mount, alice, 1);
     expect((await connect(mount, alice)).status).toBe(429);
-    // The body is validated before the attempt is counted, so an invalid one is answered as such at the limit too.
+    // The body is validated before the attempt is counted.
     const invalidAtTheLimit = await connect(mount, alice, { address: "not-an-address" });
     expect({ status: invalidAtTheLimit.status, code: invalidAtTheLimit.code }).toEqual({
       status: 400,
@@ -297,7 +284,6 @@ describe("POST /api/mail/mailboxes: the per-user limit of login verifications (i
     mount.advanceSeconds(599);
     expect(await connect(mount, alice)).toMatchObject({ status: 429, retryAfter: "1" });
 
-    // The four earliest attempts are 900 seconds old now: four more reach the verification and a fifth does not.
     mount.advanceSeconds(1);
     await refusedLogins(mount, alice, 4);
     expect(await connect(mount, alice)).toMatchObject({ status: 429, retryAfter: "300" });
@@ -318,7 +304,6 @@ describe("POST /api/mail/mailboxes: the per-user limit of login verifications (i
     }
 
     expect(mount.verified).toEqual([held.address]);
-    // Only the created mailbox was counted, so nine attempts are left and a tenth is not.
     await refusedLogins(mount, alice, 9);
     expect((await connect(mount, alice)).status).toBe(429);
   });
@@ -343,7 +328,6 @@ describe("POST /api/mail/mailboxes: the per-user limit of login verifications (i
             if (answer.status === 429) refused += 1;
             if (refused === 5) resolve();
           },
-          // A failed request fails the test through `Promise.all` below.
           () => undefined,
         );
       }
@@ -351,7 +335,7 @@ describe("POST /api/mail/mailboxes: the per-user limit of login verifications (i
 
     try {
       await withinTenSeconds(fiveRefused, "the refusal of five attempts");
-      // No verification has answered yet: the ten granted attempts hold the window while they are in flight.
+      // The in-flight attempts already hold the window.
       expect(answered).toBe(5);
       expect(mount.verified).toHaveLength(10);
     } finally {
@@ -374,7 +358,7 @@ describe("POST /api/mail/mailboxes: the per-user limit of login verifications (i
 
     expect(eleventh.status).toBe(429);
     expect(eleventh.body).toEqual({ error: { code: "rate_limited" } });
-    // That limiter runs on the real clock: the ten attempts were counted at most a few seconds ago.
+    // That limiter runs on the real clock.
     expect(eleventh.retryAfter).toMatch(/^\d+$/);
     const seconds = Number(eleventh.retryAfter);
     expect(seconds).toBeGreaterThanOrEqual(1);

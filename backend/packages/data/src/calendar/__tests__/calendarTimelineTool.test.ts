@@ -27,9 +27,8 @@ import { createCalendarTimelineRouteHandler } from "../timelineRouteHandler.js";
 import { hideSleepInCalendar } from "./hideSleepInCalendar.js";
 
 /**
- * The read tool `calendar.timeline` (issue gh-1952), on the runtime role pool and in tenants of their own. The tool runs
- * as `ResolvedModuleAgentTool.invoke`, the entry an agent session and `/mcp` use, so its argument schema is in the path.
- * The route runs on the same pool for the expected answers.
+ * The tool runs as `ResolvedModuleAgentTool.invoke`, the entry an agent session and `/mcp` use, so its argument
+ * schema is in the path.
  */
 
 const TIMELINE = "calendar.timeline";
@@ -38,13 +37,11 @@ const DAY = "2026-10-16";
 interface Tenant {
   id: string;
   userId: string;
-  /** The project that owns the calendar databases: the project of a run that holds `calendar.read`. */
   calendarProjectId: string;
   tasksId: string;
   eventsId: string;
   calendarsId: string;
   runId: string;
-  /** The ids of the three sleep databases: settings, plans and nights. */
   sleepDatabaseIds: string[];
 }
 
@@ -54,7 +51,6 @@ let cp: ChokePoint;
 let registry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
 let home: Tenant;
 let foreign: Tenant;
-/** A tenant whose seeded sleep settings show the nights in the calendar, as a seeded tenant has them by default. */
 let sleepy: Tenant;
 
 const timelineSchema = z.looseObject({
@@ -80,7 +76,7 @@ async function seededTenant(options: { showSleep?: boolean } = {}): Promise<Tena
     locale: "en",
   });
   await runInTenant(id, () => seedSystem(runtime));
-  // The sleep nights of a seeded tenant have their own tests (issue #1806); these keep to Events and Tasks.
+  // The sleep nights of a seeded tenant have their own tests; these keep to Events and Tasks.
   if (options.showSleep !== true) await hideSleepInCalendar(runtime, id);
   return runInTenant(id, async () => {
     const databases = await cp.listDatabases();
@@ -113,7 +109,6 @@ async function seededTenant(options: { showSleep?: boolean } = {}): Promise<Tena
   });
 }
 
-/** The tools the run of `tenant` is offered as an agent session resolves them, or as `/mcp` does with `effective`. */
 function toolsOf(
   tenant: Tenant,
   options: { includeApprovalGated?: boolean; projectItemId?: string; runId?: string } = {},
@@ -140,7 +135,6 @@ async function timelineTool(tenant: Tenant): Promise<ResolvedModuleAgentTool> {
   return found;
 }
 
-/** Calls the tool of `tenant`'s run as an agent session does, inside the tenant, and parses the answer. */
 async function callTimeline(tenant: Tenant, args: unknown) {
   const resolved = await timelineTool(tenant);
   const answer = await runInTenant(tenant.id, () => resolved.invoke(args));
@@ -148,7 +142,6 @@ async function callTimeline(tenant: Tenant, args: unknown) {
   return timelineSchema.parse(JSON.parse(answer.result));
 }
 
-/** The route's answer for `from`..`to`, as JSON carries it. */
 async function routeTimeline(tenant: Tenant, from: string, to: string) {
   const { body } = await runInTenant(tenant.id, () =>
     createCalendarTimelineRouteHandler(runtime)({ req: { url: `/api/calendar/timeline?from=${from}&to=${to}` } }),
@@ -167,7 +160,6 @@ async function calendarNamed(tenant: Tenant, name: string): Promise<string> {
   return found.id;
 }
 
-/** An Event in the calendar `calendarId`, written the way the app writes it: through the create hook of the calendar module. */
 async function eventInCalendar(tenant: Tenant, calendarId: string, properties: Record<string, unknown>) {
   const created = await runInTenant(tenant.id, () =>
     withTransaction(runtime, (client) =>
@@ -310,7 +302,6 @@ describe("calendar.timeline (issue gh-1952)", () => {
       const last = await create(home, home.eventsId, { name: "Last day", date: "2026-04-03" });
       const after = await create(home, home.eventsId, { name: "After", date: "2026-04-04" });
 
-      // 1 January to 3 April 2026 is 31 + 28 + 31 + 3 = 93 days, both included.
       const answer = await callTimeline(home, { from: "2026-01-01", to: "2026-04-03" });
       // The range also holds the public holidays of the tenant's calendar, which the route returns too.
       const ids = answer.items.map((item) => item.id);
@@ -406,7 +397,6 @@ describe("calendar.timeline (issue gh-1952)", () => {
     // The seeded plans cover every night, and the source also reads the night before the range that ends inside it.
     const NIGHTS = 8;
 
-    /** Gives the project of the calendar databases `access` on the sleep databases `databaseIds` of `tenant`. */
     async function grantSleep(
       tenant: Tenant,
       access: "read" | "write" | "none",

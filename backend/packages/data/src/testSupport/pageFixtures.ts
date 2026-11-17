@@ -6,8 +6,8 @@ import { mutateDoc } from "../docs/docPersistence.js";
 import { getOrCreateDoc } from "../docs/docsStore.js";
 
 /**
- * Appends one text block per entry to `itemId`'s page through the block model writer and the production doc write
- * path, so the page-text job reads the same shape the editor writes (issue #1658). Each call is one doc update.
+ * Appends one text block per entry through the block model writer and the production doc write path, so the
+ * page-text job reads what the editor writes. One doc update per call.
  */
 export async function writePageTextBlocks(pool: Pool, itemId: string, texts: string[]): Promise<void> {
   const doc = await withTransaction(pool, (client) => getOrCreateDoc(client, itemId, "page"));

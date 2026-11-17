@@ -35,7 +35,7 @@ export const manifest: ModuleManifest = {
       approval: "none",
       mcp: { humanHandlerExport: "createBadResultTool" },
     },
-    // A gated tool that opts in to MCP (issue gh-1957): a human session runs it as the user, a run credential defers it.
+    // A gated tool that opts in to MCP: a human session runs it as the user, a run credential defers it.
     {
       name: "mcpTools.gatedExposed",
       handlerExport: "createRunTool",

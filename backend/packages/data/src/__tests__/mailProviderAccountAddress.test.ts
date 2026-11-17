@@ -18,21 +18,17 @@ import {
 import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let adminPool: Pool;
-/** Runtime role (semprec_data) pool: the only pool isolation and production writes are asserted through. */
 let dataPool: Pool;
 let chokePoint: ChokePoint;
 
-/** The semprec_data pool every production write in this file goes through; row-level security applies to it. */
 function openDataPool(): Pool {
   return createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
 }
 
-/** Seeds one tenant's system databases in that tenant's scope, as production does. */
 async function seedTenant(tenantId: string): Promise<void> {
   await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
 }
 
-/** Creates a Gmail-backed Mailboxes item in a tenant with its address written by the production system writer. */
 async function createMailbox(tenantId: string, address: string): Promise<{ itemId: string; databaseId: string }> {
   return runInTenant(tenantId, () =>
     withTransaction(dataPool, async (client) => {
@@ -49,7 +45,6 @@ async function createMailbox(tenantId: string, address: string): Promise<{ itemI
   );
 }
 
-/** Runs the production recorder in a tenant and resolves to its error, or null on success. */
 async function recordAddress(tenantId: string, itemId: string, address: string): Promise<unknown> {
   return runInTenant(tenantId, () =>
     withTransaction(dataPool, (client) => recordProviderAccountAddress(client, itemId, address)).then(

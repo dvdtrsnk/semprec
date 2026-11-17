@@ -58,7 +58,7 @@ const GMAIL_CLIENT_ID = "test-gmail-client-id.example";
 const GMAIL_CLIENT_SECRET = "test-gmail-client-secret-value";
 const GMAIL_MISSING_BOTH = ["GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"];
 const STORED_REFRESH_TOKEN = "1//stored-refresh-token-value";
-/** Passed to `createGmailClient` as the job's decrypted credential; it must never be presented to Google. */
+/** The job's decrypted credential; it must never be presented to Google. */
 const STALE_JOB_CREDENTIAL = "stale-credential-decrypted-by-the-job";
 const T0 = new Date("2026-10-29T10:00:00.000Z");
 const ONE_HOUR_MS = 3_600_000;
@@ -71,24 +71,20 @@ const GRAPH_CLIENT_SECRET = "test-graph-client-secret-value";
 const GRAPH_MISSING_BOTH = ["MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET"];
 const STORED_MICROSOFT_REFRESH_TOKEN = "0.stored-refresh-token-value";
 const GRAPH_INBOX_ID = "AAMk-inbox";
-/** The delta links the fake Graph API hands out: the first pass ends at DELTA_LINK_1, the next one at DELTA_LINK_2. */
 const DELTA_LINK_1 = `${GRAPH_API_PREFIX}/messages/delta?$deltatoken=delta-1`;
 const DELTA_LINK_2 = `${GRAPH_API_PREFIX}/messages/delta?$deltatoken=delta-2`;
 
 interface FakeGoogleOptions {
-  /** 401 makes the token endpoint reject the stored refresh token, as Google does for a revoked one. */
+  /** 401 rejects the stored refresh token, as Google does for a revoked one. */
   tokenStatus?: 200 | 401;
-  /** Lifetime of each access token the token endpoint issues, in seconds. */
   expiresIn?: number;
   messages?: FakeMessage[];
 }
 
 interface FakeGoogleCalls {
-  /** Refresh tokens presented to the token endpoint, in order. */
   presentedRefreshTokens: string[];
-  /** The `Authorization` header of each Gmail API request, in order. */
   authorizations: string[];
-  /** The Gmail API route of each request (path and query, without the API prefix), in order. */
+  /** Path and query without the API prefix. */
   gmailRoutes: string[];
 }
 
@@ -130,16 +126,12 @@ function gmailMessage(message: FakeMessage): unknown {
   };
 }
 
-/** The absolute URL a `fetch` input names. The code under test only ever passes a string. */
 function hrefOf(input: string | URL | Request): string {
   if (typeof input === "string") return input;
   return input instanceof URL ? input.href : input.url;
 }
 
-/**
- * A fake Google token endpoint and Gmail REST API for one mailbox with two messages and historyId
- * "5000". Any other request to Google fails the test, so an unexpected call cannot pass silently.
- */
+/** One mailbox with two messages and historyId "5000"; any other request to Google fails the test. */
 function createFakeGoogle(options: FakeGoogleOptions = {}): FakeGoogle {
   const calls: FakeGoogleCalls = { presentedRefreshTokens: [], authorizations: [], gmailRoutes: [] };
   const messages = options.messages ?? FAKE_MESSAGES;
@@ -174,22 +166,19 @@ function createFakeGoogle(options: FakeGoogleOptions = {}): FakeGoogle {
 }
 
 interface FakeMicrosoftOptions {
-  /** Every refresh is rejected with 400 `invalid_grant`, as Microsoft answers a revoked refresh token. */
+  /** 400 `invalid_grant`, as Microsoft answers a revoked refresh token. */
   revoked?: boolean;
-  /** Each refresh rotates the refresh token, as Microsoft does: the presented token is retired and a new one returned. */
+  /** The presented token is retired and a new one returned, as Microsoft does. */
   rotates?: boolean;
   messages?: FakeMessage[];
   deltaMessages?: FakeMessage[];
 }
 
 interface FakeMicrosoftCalls {
-  /** Refresh tokens presented to the token endpoint, in order. */
   presentedRefreshTokens: string[];
-  /** Whether each token request carried a `scope` parameter, in order. */
   scopeParameters: boolean[];
-  /** The `Authorization` header of each Graph request, in order. */
   authorizations: string[];
-  /** The Graph route of each request (path and query, without the API prefix), in order. */
+  /** Path and query without the API prefix. */
   graphRoutes: string[];
 }
 
@@ -223,10 +212,8 @@ function graphMessage(message: FakeMessage): unknown {
 }
 
 /**
- * A fake Microsoft token endpoint and Graph API for one mailbox: an inbox with two messages and a
- * delta link that moves from DELTA_LINK_1 to DELTA_LINK_2 on the next pass. The token endpoint accepts
- * only the refresh token that is currently valid, so a client that presents a retired one is rejected.
- * Any other request fails the test, so an unexpected call cannot pass silently.
+ * One mailbox: an inbox with two messages and a delta link moving from DELTA_LINK_1 to DELTA_LINK_2. The token
+ * endpoint accepts only the currently valid refresh token. Any other request fails the test.
  */
 function createFakeMicrosoft(options: FakeMicrosoftOptions = {}): FakeMicrosoft {
   const calls: FakeMicrosoftCalls = {
@@ -279,7 +266,6 @@ function createFakeMicrosoft(options: FakeMicrosoftOptions = {}): FakeMicrosoft 
           value: (options.deltaMessages ?? []).map(graphMessage),
           "@odata.deltaLink": DELTA_LINK_2,
         });
-      // Every well-known folder other than the inbox does not exist in this mailbox.
       if (route.startsWith("/mailFolders/")) return new Response("not found", { status: 404 });
     }
     throw new Error(`fake Microsoft received an unexpected request to ${href}`);
@@ -290,14 +276,12 @@ function createFakeMicrosoft(options: FakeMicrosoftOptions = {}): FakeMicrosoft 
 type GmailClientFactory = NonNullable<MailSyncAdapterFactory["createGmailClient"]>;
 type GraphClientFactory = NonNullable<MailSyncAdapterFactory["createGraphClient"]>;
 
-/** The Gmail client factory the wiring returns; a test fails here if the factory has none. */
 function gmailClientFactory(adapters: MailSyncAdapterFactory): GmailClientFactory {
   const create = adapters.createGmailClient;
   if (!create) throw new Error("expected createMailSyncAdapters to provide a Gmail client factory");
   return create;
 }
 
-/** The Graph client factory the wiring returns; a test fails here if the factory has none. */
 function graphClientFactory(adapters: MailSyncAdapterFactory): GraphClientFactory {
   const create = adapters.createGraphClient;
   if (!create) throw new Error("expected createMailSyncAdapters to provide a Graph client factory");
@@ -314,7 +298,6 @@ async function rejectionOf(work: Promise<unknown>): Promise<Error> {
   throw new Error("expected the promise to reject");
 }
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -324,7 +307,6 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
   expect(await check()).toBe(true);
 }
 
-/** Sets a process environment variable, or removes it when `value` is undefined. */
 function setEnv(key: string, value: string | undefined): void {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
@@ -332,12 +314,11 @@ function setEnv(key: string, value: string | undefined): void {
 
 let pool: Pool;
 
-// File-level: every describe shares this pool, so ending it in one describe's afterAll would break the others.
+// Every describe shares this pool, so ending it in one describe's afterAll would break the others.
 afterAll(async () => {
   await pool?.end();
 });
 
-/** A Mailbox item with its stored refresh token and a sync-state row for `syncMode`, in tenant zero. */
 async function createMailbox(input: {
   name: string;
   provider: "gmail" | "outlook";
@@ -475,17 +456,15 @@ describe("createMailSyncAdapters (issues #1505, #1508)", () => {
     const client = createGmailClient(mailboxId, STALE_JOB_CREDENTIAL);
     await inTenantZero(() => client.listLabels());
     await inTenantZero(() => client.listLabels());
-    // Two requests on one token: the second one used the kept token, not a new refresh.
     expect(google.calls.presentedRefreshTokens).toEqual([STORED_REFRESH_TOKEN]);
     expect(google.calls.authorizations).toEqual(["Bearer ya29.access-1", "Bearer ya29.access-1"]);
 
-    // Thirty seconds before expiry is inside the margin: the refresh happens before this request.
+    // Thirty seconds before expiry is inside the refresh margin.
     vi.setSystemTime(new Date(T0.getTime() + ONE_HOUR_MS - 30_000));
     await inTenantZero(() => client.listLabels());
     expect(google.calls.presentedRefreshTokens).toHaveLength(2);
     expect(google.calls.authorizations.at(-1)).toBe("Bearer ya29.access-2");
 
-    // A second client starts with no token of its own.
     await inTenantZero(() => gmailClientFactory(adapters)(mailboxId, STALE_JOB_CREDENTIAL).listLabels());
     expect(google.calls.presentedRefreshTokens).toHaveLength(3);
     expect(google.calls.authorizations.at(-1)).toBe("Bearer ya29.access-3");
@@ -549,7 +528,6 @@ describe("createMailSyncAdapters (issues #1505, #1508)", () => {
   it("sends the Graph token request and every Graph request through the injected fetch", async () => {
     const mailboxId = await createGraphMailbox("Injected fetch");
     const microsoft = createFakeMicrosoft();
-    // Any request that reaches the global fetch fails the test instead of leaving the fake.
     vi.stubGlobal("fetch", () => {
       throw new Error("the global fetch must not be used when fetchImpl is injected");
     });
@@ -593,11 +571,9 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
   let runtime: ApiQueueRuntime | undefined;
   let liveRoot: MailLiveSyncRoot | undefined;
   /**
-   * The pool each case's runtime, live-sync root and hosting resolvers run on, built by `createPool` as `serve.ts`
-   * builds theirs: it opens every physical connection detached from the caller's tenant scope
-   * (docs/adr/2026-10-05-tenant-scope-propagation.md). The shared test pool opens a connection in whatever scope
-   * first needs one, and a socket's callbacks, the runtime's LISTEN notifications included, run in the scope that
-   * opened it. Fixtures, readers and job producers keep using `pool`.
+   * Built by `createPool` as `serve.ts` builds its pool, so connections open detached from the caller's tenant
+   * scope. The shared test pool opens a connection in whatever scope first needs one, and a socket's callbacks
+   * (LISTEN notifications included) run in the scope that opened it.
    */
   let runtimePool: Pool | undefined;
 
@@ -635,7 +611,6 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     return lines;
   }
 
-  /** Routes the requests to the hosts of one provider to its fake and leaves every other request to the real `fetch`. */
   function stubProviderFetch(provider: typeof fetch, hosts: readonly string[]): void {
     const realFetch = globalThis.fetch;
     const stubbed: typeof fetch = (input, init) => {
@@ -645,7 +620,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     vi.stubGlobal("fetch", stubbed);
   }
 
-  /** Sets the OAuth client keys of the providers named (removes the others) and builds the api runtime from the environment. */
+  /** Sets the OAuth client keys of the providers named (removes the others) and builds the api runtime. */
   async function startRuntimeWith(configured: { gmail?: boolean; graph?: boolean }): Promise<void> {
     setEnv("GMAIL_OAUTH_CLIENT_ID", configured.gmail ? GMAIL_CLIENT_ID : undefined);
     setEnv("GMAIL_OAUTH_CLIENT_SECRET", configured.gmail ? GMAIL_CLIENT_SECRET : undefined);
@@ -705,10 +680,9 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);
-    // The `mail_sync_error` notification the failed sync writes targets the tenant's user, so bind one.
+    // The failed sync's `mail_sync_error` notification targets the tenant's user.
     await createTenantZeroUser(pool);
     savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
-    // `createAiGatewayClientForApi` requires this to build the api runtime.
     process.env.AI_GATEWAY_INTERNAL_TOKEN = randomUUID();
     runtime = undefined;
     liveRoot = undefined;
@@ -722,7 +696,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
   afterEach(async () => {
     const failures: unknown[] = [];
     for (const cleanup of [
-      // The live-sync root stops before the queue runtime, as `createGracefulShutdown` orders them.
+      // As `createGracefulShutdown` orders them.
       async () => {
         const rooted = liveRoot;
         liveRoot = undefined;
@@ -730,8 +704,8 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       },
       async () => {
         await runtime?.stop();
-        // Graphile 0.17.3 starts unbatched complete/fail queries without awaiting them.
-        // Keep their pool open until the stopped workers have released every claimed job.
+        // Graphile 0.17.3 starts unbatched complete/fail queries without awaiting them, so the pool stays open
+        // until the stopped workers released every claimed job.
         await vi.waitFor(
           async () => {
             const { rows } = await pool.query<{ locked: number }>(
@@ -742,7 +716,6 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
           { timeout: 5000 },
         );
       },
-      // Ended only after the root and the runtime above were stopped, whatever either did.
       async () => {
         const owned = runtimePool;
         runtimePool = undefined;
@@ -1137,7 +1110,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       expect(await syncErrorOf(mailboxId)).toBeNull();
       expect(await syncStatusOf(mailboxId)).toBe("ok");
       expect(microsoft.calls.presentedRefreshTokens).toEqual([STORED_MICROSOFT_REFRESH_TOKEN]);
-      // The refresh sends no scope, so Microsoft keeps the scopes the account already granted.
+      // No scope, so Microsoft keeps the scopes the account already granted.
       expect(microsoft.calls.scopeParameters).toEqual([false]);
       expect(new Set(microsoft.calls.authorizations)).toEqual(new Set(["Bearer eyJ-access-1"]));
     });
@@ -1209,7 +1182,6 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       "Microsoft Graph OAuth client is not configured; Graph-mode mail accounts cannot sync";
     const HOSTING_ORIGIN = "https://semprec.example";
 
-    /** A complete, valid Gmail Pub/Sub configuration over a synthetic service-account key in an owned directory. */
     function configureGmailPubSub(): void {
       keyDir = mkdtempSync(join(tmpdir(), "semprec-pubsub-key-"));
       const keyPath = join(keyDir, "service-account.json");
@@ -1230,10 +1202,8 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
     }
 
     /**
-     * Composes this process in `serve.ts`'s order from the environment, over the case's runtime pool as `serve.ts`
-     * composes it over its one pool: the api queue runtime (which builds the mail sync adapters and runs the
-     * registered tasks), then the Gmail and the Graph hosting decisions, then the live-sync root over them, started.
-     * Every provider warning logged on the way is returned, in order.
+     * Composes the runtime in `serve.ts`'s order: the api queue runtime, the Gmail and Graph hosting decisions,
+     * then the live-sync root, started. Returns every provider warning logged on the way.
      */
     async function composeStartup(
       configured: { gmail?: boolean; graph?: boolean },
@@ -1279,10 +1249,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       return row;
     }
 
-    /**
-     * Makes the account due for the sweep, as the 15 minutes its last pass scheduled elapsing would. Raw SQL on
-     * purpose, so the test need not wait out the interval.
-     */
+    /** Raw SQL so the test need not wait out the 15-minute interval. */
     async function elapseUntilDue(mailboxItemId: string): Promise<void> {
       await pool.query(
         `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 second' WHERE item_id = $1`,
@@ -1290,14 +1257,12 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       );
     }
 
-    /** pg-pool's default `max`, which `createPool` keeps: the slots the runtime pool can hold at once. */
+    /** pg-pool's default `max`, which `createPool` keeps. */
     const RUNTIME_POOL_SLOTS = 10;
 
     /**
-     * Holds every connection slot of the case's fresh runtime pool at once inside tenant zero, then releases them
-     * all, so every physical connection the pool holds when the runtime starts, the one its LISTEN client takes
-     * included, was first opened from inside a tenant. Every started checkout is awaited and released even when
-     * another one failed.
+     * Holds every slot of the runtime pool at once inside tenant zero, so every physical connection, the LISTEN
+     * client's included, was first opened from inside a tenant.
      */
     async function openEveryRuntimeSlotInsideTenant(): Promise<void> {
       const owned = requireRuntimePool();
@@ -1324,7 +1289,6 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       expect(owned.totalCount).toBe(slots);
     }
 
-    /** Runs the registered `mailAccountSyncSweep` task once, as its crontab entry would, through the runtime. */
     async function runRegisteredSweep(): Promise<void> {
       await runAsSystem("test:mail-account-sync-sweep", () =>
         enqueueJob(pool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP, {}),
@@ -1347,7 +1311,6 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
         ],
       });
 
-      // The noop lifecycle's start enqueues the account's one immediate sync and registers no watch.
       await waitFor(async () => (await sweepStateOf(mailboxId)).last_successful_sync_at !== null);
       const first = await sweepStateOf(mailboxId);
       expect(first.due).toBe(false);
@@ -1361,7 +1324,6 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       expect(swept.last_successful_sync_at?.getTime()).toBeGreaterThan(first.last_successful_sync_at?.getTime() ?? 0);
       expect(await syncStateOf(mailboxId)).toEqual({ last_error: null, gmail_history_id: "5000" });
       expect(await syncStatusOf(mailboxId)).toBe("ok");
-      // The sweep's pass authenticated with the stored refresh token and read the history since the first pass.
       expect(google.calls.presentedRefreshTokens).toEqual([STORED_REFRESH_TOKEN, STORED_REFRESH_TOKEN]);
       expect(google.calls.gmailRoutes).toContain("/history?startHistoryId=5000");
       expect(google.calls.gmailRoutes.filter((route) => route.startsWith("/watch"))).toEqual([]);
@@ -1375,8 +1337,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
         graphHosted: true,
         providerWarnings: [[{ missingEnv: GMAIL_MISSING_BOTH }, GMAIL_ADAPTER_WARNING]],
       });
-      // Created after the root's discovery pass, so while this test runs (the root rediscovers every 60 s) the
-      // registered sweep is the only producer of this account's sync.
+      // Created after the root's discovery pass (every 60 s), so the sweep is the only producer of this sync.
       const mailboxId = await createGmailMailbox("Unconfigured Gmail");
       await runRegisteredSweep();
       await waitFor(
@@ -1384,7 +1345,6 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
           (await syncErrorOf(mailboxId)) !== null && (await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).length > 0,
       );
 
-      // The sweep's pass, and any queue retry of it, was refused by the missing adapter and none succeeded.
       expect(await syncStateOf(mailboxId)).toEqual({
         last_error: "No Gmail adapter configured for this composition root",
         gmail_history_id: null,
@@ -1412,7 +1372,6 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
         ],
       });
 
-      // The noop lifecycle's start enqueues the account's one immediate sync and creates no subscription.
       await waitFor(async () => (await graphDeltaLinkOf(mailboxId)) === DELTA_LINK_1);
       expect((await sweepStateOf(mailboxId)).due).toBe(false);
 
@@ -1450,8 +1409,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
       await runRegisteredSweep();
       await waitFor(async () => (await graphDeltaLinkOf(mailboxId)) === DELTA_LINK_2);
 
-      // The sweep ran as system although every connection the pool held when the runtime started, the LISTEN
-      // client's included, was first opened from inside a tenant.
+      // Ran as system although every pooled connection was first opened from inside a tenant.
       expect(await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP)).toEqual([]);
       expect(await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).toEqual([]);
       expect(await syncErrorOf(mailboxId)).toBeNull();
@@ -1470,8 +1428,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
         graphHosted: false,
         providerWarnings: [[{ missingEnv: GRAPH_MISSING_BOTH }, GRAPH_ADAPTER_WARNING]],
       });
-      // Created after the root's discovery pass, so while this test runs (the root rediscovers every 60 s) the
-      // registered sweep is the only producer of this account's sync.
+      // Created after the root's discovery pass (every 60 s), so the sweep is the only producer of this sync.
       const mailboxId = await createGraphMailbox("Unconfigured Graph");
       await runRegisteredSweep();
       await waitFor(
@@ -1479,7 +1436,6 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
           (await syncErrorOf(mailboxId)) !== null && (await jobErrorsFor(CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).length > 0,
       );
 
-      // The sweep's pass, and any queue retry of it, was refused by the missing adapter and none succeeded.
       expect(await syncErrorOf(mailboxId)).toBe("No Graph adapter configured for this composition root");
       expect(await syncStatusOf(mailboxId)).toBe("error");
       expect(await graphDeltaLinkOf(mailboxId)).toBeNull();
@@ -1494,7 +1450,7 @@ describe("mail sync passes through the api composition root (issues #1505, #1508
 });
 
 const IMAP_HOST = "imap.mail.test";
-/** The settings store accepts only the standard IMAP ports (migration 0101), so the tests store 993. `redirectImapConnections` sends the connection to the fake server's own port. */
+/** The settings store accepts only standard IMAP ports; `redirectImapConnections` sends the connection to the fake's own port. */
 const IMAP_STANDARD_PORT = 993;
 const IMAP_ENDPOINT: MailServerEndpoint = { host: IMAP_HOST, port: IMAP_STANDARD_PORT, security: "tls" };
 const IMAP_USERNAME = "owner@mail.test";
@@ -1519,26 +1475,24 @@ interface TlsCertificate {
 }
 
 interface FakeImapOptions {
-  /** Answers every connection with an untagged BYE in place of the greeting, as a server at its connection limit does. */
+  /** An untagged BYE in place of the greeting, as a server at its connection limit does. */
   connectionLimit?: boolean;
-  /** Answers SELECT with NO, so a pass fails after its login has succeeded. */
+  /** SELECT answers NO, so a pass fails after login. */
   failSelect?: boolean;
 }
 
 interface FakeImapServer {
   readonly port: number;
-  /** TCP connections accepted. */
   accepted(): number;
-  /** Accepted connections whose server side has closed. */
   closed(): number;
-  /** The IMAP lines the fake does not implement, in order. A pass must not need any. */
+  /** IMAP lines the fake does not implement; a pass must not need any. */
   readonly unsupported: string[];
   close(): Promise<void>;
 }
 
 const imapServers: FakeImapServer[] = [];
 
-/** A self-signed certificate for `commonName`, made with the openssl CLI at test time so no key is committed. */
+/** Made with the openssl CLI at test time so no key is committed. */
 function makeTlsCertificate(commonName: string): TlsCertificate {
   const dir = mkdtempSync(join(tmpdir(), "imap-sync-"));
   try {
@@ -1569,12 +1523,10 @@ function makeTlsCertificate(commonName: string): TlsCertificate {
   }
 }
 
-/** Splits IMAP arguments into their values, unquoting quoted strings. */
 function tokenize(text: string): string[] {
   return [...text.matchAll(/"((?:[^"\\]|\\.)*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? "");
 }
 
-/** Whether `uid` is in an IMAP sequence set of one number or a `low:high` range, where `*` is the largest UID. */
 function uidInSet(uid: number, set: string): boolean {
   const [lowText = "", highText = lowText] = set.split(":");
   const low = Number(lowText);
@@ -1592,7 +1544,7 @@ function bodyStructureOf(message: FakeImapMessage): string {
   return `("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" ${Buffer.byteLength(message.body)} 1)`;
 }
 
-/** One untagged FETCH response carrying the attributes the request named. Body sections are literals; header sections are empty. */
+/** Body sections are literals; header sections are empty. */
 function fetchLine(seq: number, message: FakeImapMessage, items: string): string {
   const attributes: string[] = [];
   if (/\bUID\b/.test(items)) attributes.push(`UID ${message.uid}`);
@@ -1611,7 +1563,7 @@ interface ImapReply {
   readonly end: boolean;
 }
 
-/** Answers one client line. Implements what one sync pass sends: CAPABILITY, LOGIN, LIST, LSUB, SELECT, UID SEARCH, UID FETCH, NOOP and LOGOUT. */
+/** Implements what one sync pass sends: CAPABILITY, LOGIN, LIST, LSUB, SELECT, UID SEARCH, UID FETCH, NOOP and LOGOUT. */
 function imapReply(line: string, options: FakeImapOptions, unsupported: string[]): ImapReply {
   const match = /^(\S+) (\S+)(?: (.*))?$/.exec(line);
   const tag = match?.[1] ?? "*";
@@ -1666,7 +1618,6 @@ function imapReply(line: string, options: FakeImapOptions, unsupported: string[]
   }
 }
 
-/** Serves one connection: a greeting (or a BYE at the connection limit), then the client's lines until LOGOUT or until it leaves. */
 function serveImapConnection(socket: Socket, options: FakeImapOptions, unsupported: string[]): void {
   if (options.connectionLimit) {
     socket.end("* BYE Too many simultaneous connections. (Failure)\r\n");
@@ -1688,7 +1639,7 @@ function serveImapConnection(socket: Socket, options: FakeImapOptions, unsupport
   });
 }
 
-/** A TLS IMAP server on loopback. Its certificate is only trusted by the test's `tls.connect` wrapper. */
+/** Its certificate is only trusted by the test's `tls.connect` wrapper. */
 async function startFakeImapServer(
   certificate: TlsCertificate,
   options: FakeImapOptions = {},
@@ -1700,7 +1651,7 @@ async function startFakeImapServer(
   const server = tls.createServer({ key: certificate.key, cert: certificate.cert }, (socket) => {
     accepted += 1;
     sockets.add(socket);
-    // A client that drops its connection after a failing pass is expected, so the fake does not treat it as an error.
+    // A client dropping its connection after a failing pass is expected.
     socket.on("error", () => undefined);
     socket.on("close", () => {
       closed += 1;
@@ -1742,10 +1693,9 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);
-    // The `mail_sync_error` notification the failed sync writes targets the tenant's user, so bind one.
+    // The failed sync's `mail_sync_error` notification targets the tenant's user.
     await createTenantZeroUser(pool);
     savedGatewayToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
-    // `createAiGatewayClientForApi` requires this to build the api runtime.
     process.env.AI_GATEWAY_INTERNAL_TOKEN = randomUUID();
     runtime = undefined;
   });
@@ -1762,14 +1712,13 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     setEnv("AI_GATEWAY_INTERNAL_TOKEN", savedGatewayToken);
   });
 
-  /** Sends IMAP_HOST to `server` on loopback under the test policy, and trusts the test certificate for the connections. */
   function reachFakeImap(server: FakeImapServer): void {
     restorePolicy = allowLoopbackOutboundForTests();
     stub = stubDnsLookup({ [IMAP_HOST]: ["127.0.0.1"] });
     redirectImapConnections(server);
   }
 
-  /** Sends every IMAP connection of this test to `server`'s port, keeping the host name for the lookup and the TLS server name. */
+  /** Keeps the host name for the lookup and the TLS server name. */
   function redirectImapConnections(server: FakeImapServer): void {
     const connect = tls.connect;
     vi.spyOn(tls, "connect").mockImplementation(((options: tls.ConnectionOptions, listener?: () => void) =>
@@ -1780,16 +1729,12 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     runtime = await createApiQueueRuntime(pool, await loadFullModuleRegistry());
   }
 
-  /** The endpoints of one stored settings row. */
   interface StoredEndpoints {
     imap: MailServerEndpoint | null;
     smtp: MailServerEndpoint | null;
   }
 
-  /**
-   * An IMAP Mailbox item with its app password and a sync-state row for `imap`. The server settings hold
-   * `endpoints`; `null` stores no settings row at all.
-   */
+  /** `endpoints: null` stores no settings row at all. */
   async function createImapMailbox(
     name: string,
     endpoints: StoredEndpoints | null = { imap: IMAP_ENDPOINT, smtp: null },
@@ -1817,7 +1762,7 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     );
   }
 
-  /** Messages ingested so far, across every mailbox; a refused or failed pass must leave this at zero. */
+  /** Across every mailbox; a refused or failed pass must leave this at zero. */
   async function ingestedMessageCount(): Promise<number> {
     const { rows } = await pool.query<{ count: number }>(`SELECT count(*)::int AS count FROM mail_message_meta`);
     const row = rows[0];
@@ -1894,7 +1839,6 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     expect(rows.map((row) => row.message_id)).toEqual(IMAP_MESSAGES.map((message) => message.messageId));
     expect(await syncErrorOf(mailboxId)).toBeNull();
     expect(server.unsupported).toEqual([]);
-    // The pass logs out when it ends, so the server sees its connection close.
     await waitFor(async () => server.accepted() > 0 && server.closed() === server.accepted());
   });
 
@@ -1911,18 +1855,16 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     // Typed as the composition root's container, so the factory is compiled against what the mount hands it.
     const dependencies: CustomRouteDependencies = {
       mailServerClients: {
-        // The login is taken as verified on the endpoint the fake serves; the fake has no SMTP side.
+        // The fake has no SMTP side.
         verifyPassword: async () => ({
           imap: IMAP_ENDPOINT,
           smtp: { host: "smtp.mail.test", port: 465, security: "tls" },
         }),
       },
-      // The limiter `createDispatcher` hands the route (issue gh-1750).
       throttle: createClientIpThrottle(),
     };
     const connectMailbox = createMailboxPasswordConnectRouteHandler(pool, dependencies);
 
-    // Nothing but the route runs from here on: no enqueue, no settings or credential written by the test.
     const created = await inTenantZero(() =>
       connectMailbox({
         identity: { user },
@@ -1952,7 +1894,7 @@ describe("IMAP-mode accounts (issue #1510)", () => {
   it.each(["127.0.0.1", "10.0.0.1"])(
     "a host that resolves to %s is refused as an unreachable server, and no connection reaches the server",
     async (address) => {
-      // The policy stays the default (public only), so the refusal is the policy's own decision.
+      // The default policy (public only), so the refusal is the policy's own decision.
       const server = await startFakeImapServer(imapCertificate);
       redirectImapConnections(server);
       stub = stubDnsLookup({ [IMAP_HOST]: [address] });
@@ -2033,7 +1975,6 @@ describe("IMAP-mode accounts (issue #1510)", () => {
     expect(await syncErrorOf(mailboxId)).toBe(
       "The IMAP server reports too many simultaneous connections for this account",
     );
-    // The job schedules the retry through the sync state instead of rethrowing into an immediate retry.
     const { rows } = await pool.query<{ backed_off: boolean }>(
       `SELECT next_expected_activity_at > now() AS backed_off FROM mail_account_sync_state WHERE item_id = $1`,
       [mailboxId],

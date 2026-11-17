@@ -29,7 +29,6 @@ import {
 } from "../../testSupport/testDb.js";
 import type { DatabaseRow, ItemRow } from "../../types.js";
 
-// Seeding the system databases of one tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 120_000;
 
 let admin: Pool;
@@ -53,7 +52,6 @@ function make(key: string, properties: Record<string, unknown> = {}): Promise<It
   return inTenant(() => cp.createItem({ databaseId: database(key).id, properties: { name: key, ...properties } }));
 }
 
-/** Links `from` to `to` through the relation property `key` of the database `from` belongs to, as a user write does. */
 async function link(from: Pick<ItemRow, "id" | "databaseId">, key: string, to: Pick<ItemRow, "id">): Promise<void> {
   await inTenant(async () => {
     const property = (await cp.listProperties(from.databaseId)).find((candidate) => candidate.key === key);
@@ -62,7 +60,6 @@ async function link(from: Pick<ItemRow, "id" | "databaseId">, key: string, to: P
   });
 }
 
-/** The impact of deleting `itemId`; a missing item fails the test, as `impactOrNull` is for the not-found cases. */
 async function impact(itemId: string, reader?: DatabaseReader): Promise<DeleteImpact> {
   const found = await impactOrNull(itemId, reader);
   if (found === null) throw new Error(`Item ${itemId} is not found`);
@@ -76,12 +73,11 @@ function impactOrNull(itemId: string, reader?: DatabaseReader, tenantId = tenant
   );
 }
 
-/** `{ databaseKey: count }` of the `related` part, so a test names the collections and not their order. */
+/** Keyed by database, so a test names collections, not their order. */
 function relatedCounts(result: DeleteImpact): Record<string, number> {
   return Object.fromEntries(result.related.map((row) => [row.databaseKey ?? "(user database)", row.count]));
 }
 
-/** A user-created database with an owner item (an inline database) and `size` records without properties. */
 async function inlineDatabase(
   parent: Pick<ItemRow, "id">,
   size: number,
@@ -139,7 +135,6 @@ describe("computeDeleteImpact (issue #1856)", () => {
       ]) {
         await link(event, "project", project);
       }
-      // Records of the same databases that are not connected to the project.
       await make("tasks");
       await make("files");
 
@@ -187,7 +182,6 @@ describe("computeDeleteImpact (issue #1856)", () => {
       await inlineDatabase(second.rows[0]!, 1);
 
       expect((await impact(project.id)).subtreeItemCount).toBe(6);
-      // Below the first record only its own nested databases count.
       expect((await impact(first.rows[0]!.id)).subtreeItemCount).toBe(3);
     });
 
@@ -195,7 +189,6 @@ describe("computeDeleteImpact (issue #1856)", () => {
       const project = await make("projects");
       const first = await inlineDatabase(project, 2);
       const nested = await inlineDatabase(first.rows[0]!, 2);
-      // The cascade trashes the record and its nested records; one nested record is restored on its own.
       await inTenant(() => cp.softDeleteItem(first.db.id, first.rows[0]!.id));
       await inTenant(() => cp.restoreItem(nested.db.id, nested.rows[0]!.id));
 
@@ -247,7 +240,6 @@ describe("computeDeleteImpact (issue #1856)", () => {
   });
 
   describe("linksToOwn", () => {
-    /** Two files whose `companies` value is inherited from the project's company through the shipped link rule. */
     async function projectWithLinkedFiles() {
       const company = await make("companies");
       const project = await make("projects");
@@ -278,7 +270,7 @@ describe("computeDeleteImpact (issue #1856)", () => {
       const { project, files } = await projectWithLinkedFiles();
       await inTenant(() => cp.unlinkValue({ itemId: files[0]!.id, propertyKey: "companies" }, "user"));
       const holder = await make("files");
-      // No shipped rule gives one link two sources that name the same item; the store's insert builds that state.
+      // No shipped rule gives one link two sources naming the same item; the store's insert builds that state.
       await inTenant(() =>
         withTransaction(pool, (client) =>
           insertValueLink(client, {
@@ -324,7 +316,6 @@ describe("computeDeleteImpact (issue #1856)", () => {
       expect(await impactOrNull(randomUUID())).toBeNull();
       expect(await impactOrNull(trashed.id)).toBeNull();
       expect(await impactOrNull(project.id, undefined, otherTenant)).toBeNull();
-      // The owner still reads its item.
       expect(await impactOrNull(project.id)).not.toBeNull();
     });
 
@@ -370,7 +361,6 @@ describe("computeDeleteImpact (issue #1856)", () => {
       await setAccess(closed.db.id, "none");
 
       expect((await impact(project.id, agentProject)).subtreeItemCount).toBe(2);
-      // A person reads every database regardless of any grant.
       expect((await impact(project.id)).subtreeItemCount).toBe(5);
 
       await setAccess(closed.db.id, "read");
@@ -403,7 +393,7 @@ describe("computeDeleteImpact (issue #1856)", () => {
       const project = await make("projects");
       const notes = await inTenant(() => cp.createDatabase({ name: "Notes" }));
       const holder = await inTenant(() => cp.createItem({ databaseId: notes.id, properties: {} }));
-      // No shipped rule writes a link onto an item of a user-created database; the store's insert builds that state.
+      // No shipped rule writes a link onto a user-created database's item; the store's insert builds that state.
       await inTenant(() =>
         withTransaction(pool, (client) =>
           insertValueLink(client, {
@@ -439,7 +429,6 @@ describe("computeDeleteImpact (issue #1856)", () => {
   describe("the counts of a task (issue gh-1882)", () => {
     const NO_MODULE_IMPACT = { seriesInstanceCount: 0, attachmentCount: 0, hostEventCount: 0 };
 
-    /** A task with a series of three stored instances; returns the instance ids, the named one first. */
     async function seriesOfThree(): Promise<{ seriesId: string; ids: string[] }> {
       const task = await make("tasks", { date: "2026-10-12" });
       const seriesId = await inTenant(() =>
@@ -461,7 +450,7 @@ describe("computeDeleteImpact (issue #1856)", () => {
       return { seriesId, ids };
     }
 
-    /** Writes an edge of `Tasks.hostEvents`, whose only writer is the Tasks process. */
+    /** `Tasks.hostEvents` is written only by the Tasks process. */
     async function putInEvent(task: ItemRow, event: ItemRow): Promise<void> {
       await inTenant(async () => {
         const property = (await cp.listProperties(task.databaseId)).find((candidate) => candidate.key === "hostEvents");
@@ -488,7 +477,6 @@ describe("computeDeleteImpact (issue #1856)", () => {
       await putInEvent({ ...(await make("tasks")), ...task }, await make("events", { date: "2026-10-16" }));
 
       expect(await impact(task.id)).toMatchObject({ seriesInstanceCount: 3, attachmentCount: 2, hostEventCount: 1 });
-      // Any instance of the series gives the series' count, and the counts of attachments and Events are its own.
       expect(await impact(ids[2]!)).toMatchObject({ seriesInstanceCount: 3, attachmentCount: 0, hostEventCount: 0 });
     });
 
@@ -523,7 +511,7 @@ describe("computeDeleteImpact (issue #1856)", () => {
       await putInEvent({ ...(await make("tasks")), ...task }, trashedEvent);
       await inTenant(() => cp.softDeleteItem(trashedFile.databaseId, trashedFile.id));
       await inTenant(() => cp.softDeleteItem(trashedEvent.databaseId, trashedEvent.id));
-      // Fixture SQL: the choke point trashes a series as a whole, so one instance is trashed on its own to read the count.
+      // The choke point trashes a series as a whole, so one instance is trashed directly.
       await admin.query("UPDATE items SET deleted_at = now() WHERE id = $1", [ids[2]]);
 
       expect(await impact(task.id)).toMatchObject({ seriesInstanceCount: 2, attachmentCount: 1, hostEventCount: 1 });
@@ -561,15 +549,13 @@ describe("computeDeleteImpact (issue #1856)", () => {
           ),
         );
 
-      // A person is told of both files; the agent is not told of the one it could neither list nor read.
       expect(await impact(task.id)).toMatchObject({ attachmentCount: 2 });
       expect(await impact(task.id, agentProject)).toMatchObject({ attachmentCount: 1 });
-      // Once the project may read the records, the file is one it sees.
       await grantOnRecords("read");
       expect(await impact(task.id, agentProject)).toMatchObject({ attachmentCount: 2 });
       await grantOnRecords("none");
       expect(await impact(task.id, agentProject)).toMatchObject({ attachmentCount: 1 });
-      // An external client is held to the access to the file's own database, as the point check holds it.
+      // An external client is held to the file's own database access, as the point check holds it.
       expect(await impact(task.id, { externalClient: true })).toMatchObject({ attachmentCount: 2 });
     });
   });

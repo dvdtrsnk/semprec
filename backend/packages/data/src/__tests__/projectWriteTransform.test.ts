@@ -105,7 +105,7 @@ describe("Projects registered pre-write rule", () => {
   it("leaves an unrelated patch over legacy data alone", async () =>
     runInTenant(tenant, async () => {
       const item = await cp.createItem({ databaseId, properties: { name: "Legacy", status: "done", pinned: false } });
-      // This impossible new-write combination represents a row predating the rule.
+      // A row predating the rule.
       await pool.query(
         "UPDATE items SET properties=properties || '{\"pinned\":true}'::jsonb WHERE database_id=$1 AND id=$2",
         [databaseId, item.id],

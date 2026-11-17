@@ -14,9 +14,8 @@ import {
 import type { HeartbeatRuleKindRegistry } from "./rule.js";
 
 /**
- * What the heartbeat agent tools may reach for one run (issue #2018): `project` is the run's own
- * project; `tenant` is every project of the tenant minus the ones the sensitive rule leaves out
- * (`getHeartbeatVisibleToChatRun`), and carries the run's project, which that rule compares grants against.
+ * What the heartbeat agent tools may reach for one run: `project` is the run's own project; `tenant` is
+ * every project except those the sensitive rule excludes, and carries the run's project for that rule.
  */
 export interface HeartbeatReadScope {
   scope: "project" | "tenant";
@@ -24,10 +23,8 @@ export interface HeartbeatReadScope {
 }
 
 /**
- * The scope of the calling run, derived from persisted rows only, never from tool arguments: `tenant` when
- * the run's `agent_runs.thread_id` points at a Semp thread of kind `chat` (a delegated run inherits the thread,
- * issue #1452), otherwise `project`. A run without a thread, or on an `item` or `tick` thread, keeps the own
- * project. `null` when the run is unknown or has no project.
+ * Derived from persisted rows only, never from tool arguments: `tenant` when the run's thread is a Semp
+ * `chat` thread (delegated runs inherit it), otherwise `project`. `null` for an unknown or projectless run.
  */
 export async function resolveHeartbeatReadScope(
   client: Pool | PoolClient,
@@ -43,10 +40,7 @@ export async function resolveHeartbeatReadScope(
   return { scope: rows[0]?.is_chat === true ? "tenant" : "project", projectItemId: run.projectItemId };
 }
 
-/**
- * One heartbeat by id inside `readScope`, in one statement: an id that is unknown, belongs to another project
- * (a `project` scope) or tenant, or is left out by the sensitive rule (a `tenant` scope) gives the same `null`.
- */
+/** One statement; unknown, out-of-scope and excluded ids all give the same `null`. */
 export function findHeartbeatInScope(
   client: Pool | PoolClient,
   readScope: HeartbeatReadScope,
@@ -58,10 +52,7 @@ export function findHeartbeatInScope(
     : getHeartbeatForProject(client, readScope.projectItemId, heartbeatId, moduleRuleKinds);
 }
 
-/**
- * The project item `projectItemId` when it is a live item of the tenant's Projects database, otherwise `null`:
- * an unknown id, an item of another database, a trashed project and another tenant's project give the same answer.
- */
+/** Unknown ids, other databases' items, trashed projects and other tenants' projects all give `null`. */
 export async function findLiveProject(client: PoolClient, projectItemId: string): Promise<ItemRow | null> {
   const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
   // A tenant without its Projects database is a seeding fault, not a missing project.
@@ -71,10 +62,9 @@ export async function findLiveProject(client: PoolClient, projectItemId: string)
 }
 
 /**
- * Throws `NotFoundError` ("Project <id> not found", the answer for a project that does not exist) for a project
- * the run may not create automations in (issue #1846): any project but its own for a `project` scope, and for a
- * `tenant` scope a project the sensitive rule leaves out (`isProjectReachableByChatRun`), the same rule that
- * hides its heartbeats from the run's reads. Whether the project exists is checked separately (`findLiveProject`).
+ * Throws `NotFoundError` (same message as a missing project) for a project the run may not create
+ * automations in: any but its own for a `project` scope; for `tenant`, one the sensitive rule excludes.
+ * Existence is checked separately (`findLiveProject`).
  */
 export async function requireProjectInRunScope(
   client: Pool | PoolClient,

@@ -13,7 +13,7 @@ import {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** The ids a page's calls name that can be looked up: a model writes them into its arguments, so one may not be a uuid. */
+/** A model writes these ids into its arguments, so they may not be uuids. */
 function lookupIds(values: Iterable<string | null>): string[] {
   const ids = new Set<string>();
   for (const value of values) if (value !== null && UUID.test(value)) ids.add(value);
@@ -21,11 +21,8 @@ function lookupIds(values: Iterable<string | null>): string[] {
 }
 
 /**
- * Resolves what the calls of one page point at, in a constant number of queries however many steps the page
- * holds (at most three): the items by id, trashed ones included since a call may have trashed its item, and
- * the labels of the databases the page names or the items are in. Both reads run under the caller's tenant
- * scope, so an id of another tenant is simply not found. An item's name is its `title` property, else its
- * `name`, and `null` when neither is text.
+ * At most three queries regardless of page size. Trashed items are included because a call may have trashed its
+ * item. Runs under the caller's tenant scope, so another tenant's id is simply not found.
  */
 export async function loadAgentRunStepTargets(
   client: PoolClient,
@@ -53,9 +50,8 @@ export async function loadAgentRunStepTargets(
 }
 
 /**
- * The approval requests of the page's approval steps by id, in one query (none when the page has no
- * approval step). A request the caller's tenant scope cannot read, or whose id is no uuid, is not in the
- * map, so its step has no `approvalState` and the page is still returned.
+ * A request outside the caller's tenant scope (or a non-uuid id) is missing from the map, so its step has no
+ * `approvalState` and the page is still returned.
  */
 export async function loadAgentRunStepApprovals(
   client: PoolClient,
@@ -66,11 +62,8 @@ export async function loadAgentRunStepApprovals(
 }
 
 /**
- * A page of a run's steps ready for the route (issues #1847 and #1862): `page` from `buildAgentRunStepPage`,
- * each step with its localized title and summary, its target's name and its change, and an approval step
- * with the live state of its request. `locale` is the session user's `users.locale`. The caller's `client`
- * must be inside the tenant scope of the run. With `range` (issue #1889) the page belongs to one reply of the
- * run, and the tool and approval counts of an `end` step cover that range only.
+ * `client` must be inside the run's tenant scope. With `range` the page covers one reply, and an `end` step's
+ * tool and approval counts cover that range only.
  */
 export async function projectAgentRunStepPage(
   client: PoolClient,

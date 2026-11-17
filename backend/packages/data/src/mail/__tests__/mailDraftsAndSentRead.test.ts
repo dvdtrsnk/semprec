@@ -20,7 +20,6 @@ let adminPool: Pool;
 /** Runtime role (semprec_data) pool: row-level security applies to every read and write in this file. */
 let dataPool: Pool;
 
-/** The Emails database, its folder relation and the Mailbox's three folders, read from the tenant's own seed. */
 interface MailFixture {
   emailsId: string;
   mailboxItemId: string;
@@ -40,7 +39,6 @@ async function seedTenant(tenantId: string): Promise<void> {
   await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
 }
 
-/** Creates one Mailbox with its INBOX, Sent and Drafts folders through the production writers. */
 async function setUpMail(tenantId: string): Promise<MailFixture> {
   return runInTenant(tenantId, () =>
     withTransaction(dataPool, async (client) => {
@@ -77,9 +75,7 @@ async function setUpMail(tenantId: string): Promise<MailFixture> {
   );
 }
 
-/**
- * A message with the fields `createEmailDraft` writes and no `read` property at all. It is indexed for search, so the unread search can return it.
- */
+/** The fields `createEmailDraft` writes and no `read` property; indexed so the unread search can return it. */
 async function createMessageWithoutReadState(
   client: PoolClient,
   mail: MailFixture,
@@ -103,10 +99,7 @@ async function createMessageWithoutReadState(
   return item.id;
 }
 
-/**
- * The item ids the search returns for `query`, sorted, so the assertion does not depend on rank order.
- * The limit is raised above the search's default of 50 so a whole fixture is returned.
- */
+/** Sorted, so rank order does not matter; the limit is raised above the default of 50 so a whole fixture is returned. */
 async function searchIds(tenantId: string, mail: MailFixture, query: string): Promise<string[]> {
   return runInTenant(tenantId, () =>
     withTransaction(dataPool, async (client) => {
@@ -121,7 +114,6 @@ interface StoredMessage {
   updatedAt: string;
 }
 
-/** The stored `read` property (null when absent) and `updated_at` of one item, read through the runtime role. */
 async function storedMessage(tenantId: string, itemId: string): Promise<StoredMessage> {
   return runInTenant(tenantId, async () => {
     const { rows } = await dataPool.query<{ read_value: string | null; updated_at: Date }>(

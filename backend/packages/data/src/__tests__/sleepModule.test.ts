@@ -20,7 +20,6 @@ import type { PropertyRow } from "../types.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// Each test builds one or more tenants with their couple of dozen system databases.
 const SEEDING_TEST_TIMEOUT_MS = 90_000;
 
 const SLEEP_KEYS = [SLEEP_SETTINGS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_NIGHTS_MODULE_ID] as const;
@@ -31,7 +30,7 @@ const USER = { writerKind: "user" } as const;
 let adminPool: Pool;
 let dataPool: Pool;
 
-/** A property's config as the test compares it: a relation's database and definition ids differ per tenant, so it keeps the target's module id. */
+/** Relation ids differ per tenant, so a relation config keeps the target's module id instead. */
 async function comparableConfig(client: PoolClient, row: PropertyRow): Promise<Record<string, unknown>> {
   if (row.type !== "relation") return row.config;
   const { targetDatabaseId } = z.object({ targetDatabaseId: z.string() }).parse(row.config);
@@ -50,7 +49,7 @@ function database(key: string, viewName: string, properties: unknown[]) {
   };
 }
 
-/** What issue #1776 seeds, without ids. Properties are in the order the store lists them: by key. */
+/** The seeded shape without ids; properties in store order (by key). */
 const EXPECTED_SHAPE = {
   project: { name: "Sleep", systemActive: true, deletedAt: null },
   sleepSettings: database("sleepSettings", "Sleep settings", [
@@ -124,7 +123,6 @@ function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): 
   return runInTenant(tenantId, () => withTransaction(dataPool, fn));
 }
 
-/** Creates a tenant, gives it a user of `locale` unless `locale` is null, and seeds it. Returns the tenant and user ids. */
 async function seededTenant(locale: string | null): Promise<{ tenantId: string; userId: string | null }> {
   const tenantId = await createTestTenant(adminPool);
   const user =
@@ -146,7 +144,6 @@ async function databaseId(tenantId: string, key: SleepKey): Promise<string> {
   return found.id;
 }
 
-/** The live items of one sleep database of `tenantId`, read through the choke point as the runtime role. */
 async function items(tenantId: string, key: SleepKey) {
   const id = await databaseId(tenantId, key);
   return runInTenant(tenantId, async () => (await createChokePoint(dataPool).listItems(id, { limit: 50 })).items);
@@ -156,7 +153,6 @@ async function planNames(tenantId: string): Promise<unknown[]> {
   return (await items(tenantId, SLEEP_PLANS_MODULE_ID)).map((plan) => plan.properties.name).sort();
 }
 
-/** The three sleep databases of `tenantId` and the project that owns them, as the runtime role sees them in that tenant's scope. */
 async function sleepShape(tenantId: string) {
   return inTenant(tenantId, async (client) => {
     const projects = await databasesStore.getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
@@ -199,7 +195,6 @@ async function sleepShape(tenantId: string) {
     const sleepSettings = await shape(SLEEP_SETTINGS_MODULE_ID);
     const sleepPlans = await shape(SLEEP_PLANS_MODULE_ID);
     const sleepNights = await shape(SLEEP_NIGHTS_MODULE_ID);
-    // One project owns all three.
     expect(owners.size).toBe(1);
     const [projectItemId] = [...owners];
     const project = projectItemId ? await getItemById(client, projects.id, projectItemId) : null;

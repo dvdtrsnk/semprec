@@ -35,7 +35,7 @@ export interface CreateGracefulShutdownOptions {
   observeSempSettlement: () => SempSettlementObservation;
 }
 
-/** Ends `pool`, bounded by `POOL_END_TIMEOUT_MS` so a hung or unreachable database can never stall shutdown indefinitely. */
+/** Bounded so a hung database cannot stall shutdown. */
 function endPool(
   pool: Pool,
   logger: Logger,
@@ -134,13 +134,8 @@ async function closeListener(
 }
 
 /**
- * Builds `semprec-agents`' shutdown sequence: this process has no HTTP intake to drain (it is a
- * pure queue consumer), so it closes the tenant deactivation listener (waiting at most
- * `LISTENER_CLOSE_TIMEOUT_MS`), stops the queue runtime
- * issue #91 hosts (`queueRuntime.stop()` awaits its `Runner.stop()`), closes the idle thread
- * sessions as `done` (so a deploy raises no `agent_run_error` for them) and then ends the pool. Per
- * `docs/adr/2026-09-17-shutdown-ordering-with-late-heartbeat-stop.md`'s rejected-alternative
- * note, this ordering is specific to this service — it names no heartbeat step.
+ * A pure queue consumer, so nothing to drain: close the listeners (bounded), stop the queue, close
+ * idle thread sessions as `done` (so a deploy raises no `agent_run_error`), then end the pool.
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
   const {
@@ -329,11 +324,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
   };
 }
 
-/**
- * Wires both `SIGTERM` and `SIGINT` to the injected `shutdown`. Uses `on`, not `once`, so a
- * repeated signal during shutdown does not fall through to Node's default (immediately fatal)
- * action — `shutdown()`'s own idempotency makes a repeat signal harmless.
- */
+/** `on`, not `once`: a repeated signal must not fall through to Node's default kill. */
 export function registerShutdownSignals(shutdown: (signal: string) => Promise<void>): void {
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.on(signal, () => {

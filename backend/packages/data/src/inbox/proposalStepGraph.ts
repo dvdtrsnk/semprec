@@ -7,12 +7,10 @@ export function stepError(step: ProposalStep, message: string, field: string): V
   return new ValidationError(`Proposal step '${step.ref}': ${message}`, { ref: step.ref, field });
 }
 
-/** The relation values that the executor will write for this step. */
 export function effectiveStepRelations(step: ProposalStep): NonNullable<ProposalStep["relations"]> {
   return step.op === "update" ? { ...step.relations, ...step.after?.relations } : (step.relations ?? {});
 }
 
-/** The `{ ref }` targets of a step's relations, with the relation key each sits under. */
 function stepRefTargets(step: ProposalStep): Array<{ key: string; ref: string }> {
   const targets: Array<{ key: string; ref: string }> = [];
   for (const [key, list] of Object.entries(effectiveStepRelations(step))) {
@@ -22,9 +20,8 @@ function stepRefTargets(step: ProposalStep): Array<{ key: string; ref: string }>
 }
 
 /**
- * The steps that are validated: a disabled step is skipped, and so is an `optional` step that no
- * active step refers to, or that refers to a skipped step. A non-optional step that refers to a
- * skipped step, or to no step at all, is a `ValidationError`.
+ * The steps that are validated: disabled steps are skipped, as are `optional` steps no active step refers to or that
+ * refer to a skipped step. A non-optional step referring to a skipped or missing step is a `ValidationError`.
  */
 export function selectActiveSteps(steps: ProposalStep[]): ProposalStep[] {
   const refs = new Set<string>();
@@ -71,7 +68,6 @@ export function selectActiveSteps(steps: ProposalStep[]): ProposalStep[] {
   return steps.filter((step) => active.has(step.ref));
 }
 
-/** Rejects a cycle in the ref graph of the active steps. */
 export function assertNoRefCycle(activeSteps: ProposalStep[]): void {
   const byRef = new Map(activeSteps.map((step) => [step.ref, step]));
   const state = new Map<string, "visiting" | "done">();

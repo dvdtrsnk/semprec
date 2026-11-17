@@ -17,7 +17,7 @@ import {
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway } from "../genericOperationGateway.js";
 
-// The subscription URL of a calendar (issue gh-1925) through the operations `/mcp` and the agent tools call. The
+// The subscription URL of a calendar through the operations `/mcp` and the agent tools call. The
 // rule itself is tested against the choke point in `@semprec/data` (`calendar/__tests__/calendarSubscriptionUrl.test.ts`).
 
 const metadataResolver: CollectionMetadataResolver = {

@@ -21,12 +21,12 @@ export interface GuidanceDriftBehaviorSubject {
   databaseId: string | null;
 }
 
-/** A finding's identity: the only input, besides the project and kind, of its fingerprint. */
+/** A finding's identity: with project and kind, the only input of its fingerprint. */
 export type GuidanceDriftSubject = GuidanceDriftPermissionSubject | GuidanceDriftBehaviorSubject;
 
 /**
- * One AI-gateway-reported contradiction between project guidance and the mechanically enforced permission manifest.
- * `subject` is `null` only for a payload stored before subjects existed.
+ * A contradiction between project guidance and the enforced permission manifest. `subject` is `null` only for a legacy
+ * payload.
  */
 export interface GuidanceDriftPermissionContradiction {
   kind: "permission";
@@ -82,11 +82,9 @@ export interface UpsertActiveGuidanceDriftFindingInput {
 }
 
 /**
- * Transaction-scoped finding store (issue #85). Only an insert or a resolved-to-active
- * transition reports `transitionedToActive: true`; only an active-to-resolved transition
- * reports `transitionedToResolved: true`. Repeated active observations of the same
- * `(projectItemId, fingerprint)` only advance `lastSeenAt`. `finding.id` is the id the caller
- * writes as a notification's `sourceId`.
+ * Only an insert or a resolved-to-active transition reports `transitionedToActive`; only active-to-resolved reports
+ * `transitionedToResolved`. Repeated active observations only advance `lastSeenAt`. `finding.id` is the notification's
+ * `sourceId`.
  */
 export interface GuidanceDriftFindingStore<Tx> {
   listActive(tx: Tx, projectItemId: string): Promise<GuidanceDriftFinding[]>;
@@ -107,10 +105,8 @@ export interface GuidanceDriftFindingStore<Tx> {
 }
 
 /**
- * Renders the exact permission-manifest string the drift action compares byte-for-byte across
- * its two transactions. Generic over `Tx` so `packages/application` can depend on it without
- * importing a concrete data-layer implementation (dependency-cruiser's
- * `no-application-gateway-implementation-import`-style neutrality rule).
+ * Renders the permission-manifest string the drift action compares byte-for-byte across its two transactions. Generic
+ * over `Tx` so `packages/application` need not import a data-layer implementation.
  */
 export interface GuidanceManifestPort<Tx> {
   render(tx: Tx, input: { projectItemId: string; userId: string; locale: string }): Promise<string>;
@@ -123,19 +119,16 @@ export interface CreateGuidanceNotificationInput {
   sourceTable: string;
   sourceId: string;
   /**
-   * Dedup key for the underlying notification writer's `(sourceTable, sourceId, kind,
-   * transitionInstance)` unique index. Must be unique per activation/resolution *cycle*, not
-   * just per fingerprint: `finding.id` and `fingerprint` are both stable across a
-   * resolved-then-reappeared cycle, so keying on either alone would cause the second
-   * activation's notification to collide with the first and be silently dropped. Callers should
-   * derive this from the fingerprint plus something that changes across cycles (e.g. this run's
-   * `seenAt`/`resolvedAt` timestamp).
+   * Dedup key for the notification writer's unique index. Must be unique per activation/resolution cycle: `finding.id`
+   * and `fingerprint` survive a resolved-then-reappeared cycle, so keying on either alone would silently drop the
+   * second activation's notification. Derive it from the fingerprint plus a per-cycle value (e.g.
+   * `seenAt`/`resolvedAt`).
    */
   transitionInstance: string;
   payload: Record<string, unknown>;
 }
 
-/** Transaction-scoped adapter over #36/#237's notification writer (issue #85). */
+/** Transaction-scoped adapter over the notification writer. */
 export interface GuidanceNotificationWriter<Tx> {
   create(tx: Tx, input: CreateGuidanceNotificationInput): Promise<void>;
 }
@@ -144,7 +137,6 @@ export interface RaiseGuidanceDriftProblemInput {
   userId: string;
   projectItemId: string;
   fingerprint: string;
-  /** The `agent_guidance_drift_findings` row the problem points at. */
   findingId: string;
   /** Identifies this activation cycle, like the notification's `transitionInstance`. */
   occurrenceKey: string;
@@ -155,17 +147,16 @@ export interface ResolveGuidanceDriftProblemInput {
   fingerprint: string;
 }
 
-/** Transaction-scoped adapter over the Semp status problem of a drift finding (issues #1465 and #1915). */
+/** Transaction-scoped adapter over a drift finding's Semp status problem. */
 export interface GuidanceProblemWriter<Tx> {
   raise(tx: Tx, input: RaiseGuidanceDriftProblemInput): Promise<void>;
-  /** Closes the problem of a finding that resolved, as recovered; a finding with no active problem changes nothing. */
+  /** Closes a resolved finding's problem as recovered; no active problem means no change. */
   resolve(tx: Tx, input: ResolveGuidanceDriftProblemInput): Promise<void>;
 }
 
 /**
- * Fingerprints a finding by its subject only (SHA-256 hex of the canonical JSON of
- * `{ projectItemId, kind, operation, mcpTool, databaseId }`). Nothing the AI words freely
- * (claim, excerpt, facts) enters it, so a reworded report of the same problem keeps its identity.
+ * SHA-256 hex of the canonical JSON of `{ projectItemId, kind, operation, mcpTool, databaseId }`. Free AI wording
+ * (claim, excerpt, facts) is excluded, so a reworded report of the same problem keeps its identity.
  */
 export function fingerprintGuidanceDriftSubject(
   projectItemId: string,
@@ -183,12 +174,9 @@ export function fingerprintGuidanceDriftSubject(
 }
 
 /**
- * Narrows an `unknown` value to a `GuidanceDriftContradiction`, throwing if any field is missing,
- * the wrong type, or empty (`kind` and `subject` may be absent: legacy payload, see the type). Shared by both the AI-gateway response boundary
- * (`driftAction.ts`, which validates defensively even though the gateway already enforces this
- * schema server-side) and the `agent_guidance_drift_findings.payload` JSONB boundary
- * (`agentGuidanceDriftFindingsStore.ts`'s `mapRow`), so a malformed row from a direct DB patch or
- * schema evolution can never be passed through as a typed `GuidanceDriftFinding.payload` silently.
+ * Throws if a field is missing, mistyped or empty (`kind` and `subject` may be absent in a legacy payload). Used at
+ * both the AI-gateway response boundary and the `agent_guidance_drift_findings.payload` JSONB boundary, so a malformed
+ * row can never pass as a typed payload.
  */
 export function validateGuidanceDriftContradiction(entry: unknown, context: string): GuidanceDriftContradiction {
   if (typeof entry !== "object" || entry === null) {
@@ -240,8 +228,7 @@ export function validateGuidanceDriftContradiction(entry: unknown, context: stri
     };
   }
 
-  // A payload stored before `kind`/`subject` existed has neither: it reads as a permission finding
-  // without a subject.
+  // A legacy payload has neither `kind` nor `subject`: it reads as a permission finding without a subject.
   if (kind !== undefined && kind !== "permission") {
     throw new Error(`${context}: contradiction has an invalid kind`);
   }

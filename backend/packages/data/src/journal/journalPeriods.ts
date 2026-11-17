@@ -6,7 +6,7 @@ import { assertKnownValue } from "../dbRowValidation.js";
 export const JOURNAL_PERIOD_TYPES = ["year", "quarter", "month", "week", "day"] as const;
 export type JournalPeriodType = (typeof JOURNAL_PERIOD_TYPES)[number];
 
-/** The canonical period key, also stored verbatim in the `period` property — e.g. '2026', '2026-Q3', '2026-08', '2026-W35', '2026-08-28'. */
+/** Stored verbatim in `period`: '2026', '2026-Q3', '2026-08', '2026-W35', '2026-08-28'. */
 export function computeJournalPeriodKey(type: JournalPeriodType, reference: DateTime): string {
   assertKnownValue(JOURNAL_PERIOD_TYPES, type, "journal period type");
   switch (type) {
@@ -24,18 +24,15 @@ export function computeJournalPeriodKey(type: JournalPeriodType, reference: Date
 }
 
 export interface JournalPeriodRange {
-  /** Canonical period key, as written by `computeJournalPeriodKey`. */
   period: string;
-  /** First calendar day of the period, `YYYY-MM-DD`, inclusive. */
   from: string;
-  /** Last calendar day of the period, `YYYY-MM-DD`, inclusive. */
   to: string;
 }
 
 export interface ParsedJournalPeriodKey {
   type: JournalPeriodType;
   period: string;
-  /** The first instant of the period (00:00) in the zone given to the parser. */
+  /** 00:00 of the period in the parser's zone. */
   reference: DateTime;
 }
 
@@ -77,9 +74,8 @@ function startOfPeriod(type: JournalPeriodType, key: string, zone: string): Date
 }
 
 /**
- * Parses a canonical journal period key and validates that the period exists (`2026-W53` does,
- * `2027-W53` and `2026-02-30` do not). Throws `ValidationError` on `field: 'period'` for a bad
- * format or a non-existent period. Invariant: `computeJournalPeriodKey(type, parsed.reference) === key`.
+ * Rejects nonexistent periods (`2027-W53`, `2026-02-30`) with a `ValidationError` on `period`.
+ * Invariant: `computeJournalPeriodKey(type, parsed.reference) === key`.
  */
 export function parseJournalPeriodKey(type: JournalPeriodType, key: string, timezone = "UTC"): ParsedJournalPeriodKey {
   if (!(JOURNAL_PERIOD_TYPES as readonly string[]).includes(type)) {
@@ -87,8 +83,7 @@ export function parseJournalPeriodKey(type: JournalPeriodType, key: string, time
   }
   assertValidTimezone(timezone);
   const reference = startOfPeriod(type, key, timezone);
-  // Luxon marks impossible dates (day 30 of February, week 53 of a 52-week year) invalid; the
-  // round trip additionally rejects anything that is not the canonical spelling.
+  // Luxon marks impossible dates invalid; the round trip rejects non-canonical spellings.
   if (!reference || !reference.isValid || computeJournalPeriodKey(type, reference) !== key) {
     throw new ValidationError(`Invalid ${type} period key: '${key}'`, { field: "period" });
   }
@@ -104,7 +99,6 @@ function rangeOf(type: JournalPeriodType, reference: DateTime): JournalPeriodRan
   };
 }
 
-/** The year, quarter, month, ISO week and day containing `date` in `timezone`. */
 export function describeJournalPeriods(date: Date, timezone: string): JournalPeriodDescription {
   assertValidTimezone(timezone);
   const reference = DateTime.fromJSDate(date, { zone: timezone });
@@ -117,7 +111,7 @@ export function describeJournalPeriods(date: Date, timezone: string): JournalPer
   };
 }
 
-/** Every ISO week overlapping the month, in order, including weeks crossing the month or year boundary. */
+/** Includes weeks crossing the month or year boundary. */
 export function weeksOfMonth(monthKey: string): JournalPeriodRange[] {
   const { reference } = parseJournalPeriodKey("month", monthKey);
   const lastDay = reference.endOf("month");

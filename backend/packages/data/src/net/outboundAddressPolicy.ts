@@ -12,10 +12,9 @@ import {
 
 /**
  * Connect-time address checks for requests to user-supplied URLs
- * (docs/adr/2026-10-16-connect-time-outbound-address-checks.md). The stored-URL baseline
- * (`storedOutboundUrl.ts`) rejects IP literals and `localhost` at write time; this module covers
- * what that cannot: a DNS name that resolves to an internal address. The name is resolved once,
- * every returned address is vetted, and the socket connects to exactly the vetted address.
+ * (docs/architecture/edges-io-and-errors.md#connect-time-address-policy). `storedOutboundUrl.ts` rejects IP
+ * literals and `localhost` at write time; this covers a DNS name that resolves to an internal address. The name is
+ * resolved once, every address is vetted, and the socket connects to exactly the vetted address.
  */
 
 const DENIED_IPV4_SUBNETS: ReadonlyArray<readonly [string, number]> = [
@@ -64,7 +63,7 @@ export class OutboundAddressNotAllowedError extends Error {
   }
 }
 
-/** True when `err`, or any error in its `cause` chain, is an `OutboundAddressNotAllowedError`. */
+/** Also checks the `cause` chain. */
 export function isOutboundAddressNotAllowed(err: unknown): boolean {
   const seen = new Set<unknown>();
   let current: unknown = err;
@@ -112,7 +111,7 @@ function classify(address: string): { address: string; family: "ipv4" | "ipv6" }
   }
 }
 
-/** False for any address in a denied range (see the ADR), for an IPv4-mapped or NAT64 form of one, and for a non-IP. */
+/** False for a denied range (including IPv4-mapped and NAT64 forms) and for a non-IP. */
 export function isPublicAddress(address: string): boolean {
   const classified = classify(address);
   return classified !== null && !deniedAddresses.check(classified.address, classified.family);
@@ -123,12 +122,10 @@ function isLoopbackAddress(address: string): boolean {
   return classified !== null && loopbackAddresses.check(classified.address, classified.family);
 }
 
-/** What one policy lets an outbound request reach. */
 export interface OutboundAddressPolicy {
   /** True only for the test policy; a caller skips its stored-URL baseline re-check under it. */
   readonly isTestPolicy: boolean;
   readonly protocols: readonly string[];
-  /** Whether a resolved address may be connected to. */
   allowsResolvedAddress(address: string): boolean;
   /** Whether a URL whose host is this IP literal may be requested; lookup never runs for a literal. */
   allowsIpLiteral(address: string): boolean;
@@ -172,10 +169,8 @@ export function allowLoopbackOutboundForTests(): () => void {
 }
 
 /**
- * A `dns.lookup`-compatible function that resolves every address of `hostname` once and fails with
- * `OutboundAddressNotAllowedError` unless the policy allows all of them. On success it hands the
- * socket the vetted address (or, when the socket asks for `all`, the vetted list), so the socket
- * never resolves the name a second time.
+ * A `dns.lookup` replacement that resolves once and fails unless the policy allows every address, then hands the
+ * socket the vetted address(es) so it never resolves again.
  */
 export function createPolicyLookup(policy: OutboundAddressPolicy): LookupFunction {
   return (hostname, options, callback) => {
@@ -198,7 +193,6 @@ export function createPolicyLookup(policy: OutboundAddressPolicy): LookupFunctio
   };
 }
 
-/** The public-only lookup; see `createPolicyLookup`. */
 export const publicOnlyLookup: LookupFunction = createPolicyLookup(PUBLIC_ONLY_POLICY);
 
 function stripBrackets(hostname: string): string {
@@ -226,8 +220,7 @@ class PolicyHttpsAgent extends https.Agent {
   ): Duplex | null | undefined {
     const host = stripBrackets(options.host ?? options.hostname ?? "");
     if (isIP(host) !== 0 && !this.#policy.allowsIpLiteral(host)) {
-      // A socket that never connects and is destroyed with the refusal: the request fails with this
-      // error through its normal `error` event, exactly as for a refused lookup.
+      // A never-connected socket destroyed with the refusal, so the request fails through its normal `error` event.
       const refused = new Socket();
       const error = new OutboundAddressNotAllowedError(host);
       process.nextTick(() => refused.destroy(error));
@@ -238,9 +231,8 @@ class PolicyHttpsAgent extends https.Agent {
 }
 
 /**
- * The request fields the MCP SDK sends (method, headers, a string or `URLSearchParams` body, an
- * abort signal), copied into `undici`'s own types. `undici` 8 and the global `fetch` declare the
- * same web types from two different packages, so they are rebuilt here rather than cast.
+ * Copies the fields the MCP SDK sends into `undici`'s types. `undici` and the global `fetch` declare the same web
+ * types from different packages, so they are rebuilt rather than cast.
  */
 function toUndiciInit(init: RequestInit | undefined, dispatcher: UndiciAgent): UndiciRequestInit {
   const body = init?.body;
@@ -257,7 +249,6 @@ function toUndiciInit(init: RequestInit | undefined, dispatcher: UndiciAgent): U
   };
 }
 
-/** The `undici` response as a global `Response`; the body stream is handed over as-is. */
 function toGlobalResponse(response: UndiciResponse): Response {
   return new Response(response.body, {
     status: response.status,
@@ -271,7 +262,6 @@ export interface OutboundHttp {
   readonly fetch: FetchLike;
   /** For libraries that take an `https.Agent` (web-push). */
   readonly httpsAgent: https.Agent;
-  /** Destroys both connection pools. */
   close(): Promise<void>;
 }
 

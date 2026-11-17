@@ -89,19 +89,17 @@ interface Fixtures {
   relationProperty: PropertyRow;
   singleRelationProperty: PropertyRow;
   secondTarget: ItemRow;
-  /** A subpage of `itemA`, present only after the `prepare` of a case that needs an existing page. */
+  /** Present only after the `prepare` of a case that needs an existing page. */
   subpageItemId?: string;
-  /** The `page` block of `itemA` that names `subpageItemId`, present with it after the `prepare` of `page.convertToBlock`. */
+  /** Present with `subpageItemId` after the `prepare` of `page.convertToBlock`. */
   subpageBlockId?: string;
-  /** The version token of `itemA`'s page, present only after the `prepare` of `page.replace`. */
+  /** Present only after the `prepare` of `page.replace`. */
   pageEtag?: string;
 }
 
 /**
- * Creates the view (and its initial membership) as the same `ai_agent` actor every case in this
- * file dispatches through — required by `assertViewWritable` (issue #87), which rejects an agent
- * actor's patch/membership write to a view it did not itself create, regardless of capability
- * grant.
+ * Creates the view as the same `ai_agent` actor every case uses: `assertViewWritable` rejects an agent's write to a
+ * view it did not create, regardless of grant.
  */
 async function buildFixtures(agentProjectItemId: string): Promise<Fixtures> {
   const viewActor = { type: "ai_agent" as const, agentProjectItemId };
@@ -173,19 +171,13 @@ async function buildFixtures(agentProjectItemId: string): Promise<Fixtures> {
 
 interface Case {
   args: (fx: Fixtures) => unknown;
-  /** State a case needs already in place before its own operation runs, applied directly through `chokePoint` rather than through the tool under test — mirrors `mcpGenericOperationsContract.test.ts`'s own `prepare` hook. */
+  /** Applied directly through `chokePoint`, not through the tool under test. */
   prepare?: (fx: Fixtures) => Promise<void>;
 }
 
 /**
- * One AgentTool call per operation in the closed 47-operation catalog, mirroring
- * `genericOperationsContract.test.ts`'s REST pattern and `mcpGenericOperationsContract.test.ts`'s
- * MCP pattern one adapter over (the code-review finding on issue #220's diff: parameterized
- * contract tests across all of the then-28 operations were missing for the AgentTool adapter). Every
- * destructive operation is expected to return the synthetic-success/pending-approval result
- * `genericOperationAgentTools.test.ts` already covers for `view.delete` alone — this file extends
- * that coverage to the other four destructive operations, plus dispatch coverage for the 24
- * non-destructive ones.
+ * One AgentTool call per catalog operation, mirroring the REST and MCP contract tests. Destructive operations are
+ * expected to return the pending-approval result.
  */
 const CASES: Record<GenericOperationName, Case> = {
   "database.list": { args: () => ({}) },
@@ -205,7 +197,7 @@ const CASES: Record<GenericOperationName, Case> = {
   "property.create": { args: (fx) => ({ databaseId: fx.database.id, key: "score", name: "Score", type: "number" }) },
   "property.patch": { args: (fx) => ({ propertyId: fx.property.id, patch: { name: "New Title" } }) },
   "property.delete": { args: (fx) => ({ propertyId: fx.property.id }) },
-  // REST-only (issue #1699): valid arguments, so only the gateway's refusal can keep these two from running.
+  // REST-only: valid arguments, so only the gateway's refusal keeps these from running.
   "property.option.add": { args: (fx) => ({ propertyId: fx.optionProperty.id, label: "Spices" }) },
   "property.option.update": {
     args: (fx) => ({ propertyId: fx.optionProperty.id, key: "herbs", label: "Fresh herbs" }),
@@ -297,7 +289,7 @@ const CASES: Record<GenericOperationName, Case> = {
   },
   "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
   "page.ensureJournalPeriod": { args: () => ({ type: "week", date: "2026-10-16" }) },
-  // Destructive for an agent (issue #2017): held for approval, also for a period that has no duplicate.
+  // Held for approval, even for a period without duplicates.
   "page.mergeJournalDuplicates": { args: () => ({ type: "day", period: "2026-10-16" }) },
   "page.createSubpage": { args: (fx) => ({ parent: { itemId: fx.itemA.id }, title: "Agent subpage" }) },
   "page.duplicate": {
@@ -314,7 +306,7 @@ const CASES: Record<GenericOperationName, Case> = {
       fx.subpageItemId = created.pages[0]?.pageItemId;
     },
   },
-  // Destructive for an agent (issue #1876): held for approval, with the count of pages the page block names now.
+  // Held for approval, with the current count of pages the block names.
   "page.convertToBlock": {
     args: (fx) => ({ parentItemId: fx.itemA.id, blockId: fx.subpageBlockId, type: "text", confirmedPageCount: 1 }),
     prepare: async (fx) => {
@@ -324,7 +316,7 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "page.insert": { args: (fx) => ({ itemId: fx.itemA.id, placement: "end", markdown: "Agent text" }) },
-  // Destructive for an agent (issue #1844): the call is held for approval, with the version token the page has now.
+  // Held for approval, with the page's current version token.
   "page.replace": {
     args: (fx) => ({ itemId: fx.itemA.id, markdown: "Agent replacement", expectedEtag: fx.pageEtag }),
     prepare: async (fx) => {
@@ -802,8 +794,8 @@ describe("generic operation AgentTools contract (issue #220)", () => {
   });
 
   for (const operation of GENERIC_OPERATION_NAMES) {
-    // `link.unlink` of the fixture's active value link is flagged by the write itself: an agent under a run asks
-    // for approval (issue #1758), so it queues a request like a destructive operation.
+    // `link.unlink` of the fixture's active value link is flagged by the write itself, so it queues an approval request
+    // like a destructive operation.
     const isDestructive = DESTRUCTIVE_OPERATIONS.includes(operation) || operation === "link.unlink";
     it(`${isDestructive ? "queues an approval request for" : "dispatches"} ${operation} through the AgentTool adapter`, async () => {
       const projectItemId = await createProjectItem();
@@ -845,8 +837,8 @@ describe("generic operation AgentTools contract (issue #220)", () => {
           expect(relations).toMatchObject([{ targetItemId: fx.secondTarget.id }]);
         }
         if (operation === "page.createSubpage") {
-          // The agent's call is a direct write attributed to the agent: the parent's page document gets one update
-          // authored `ai_agent`, and no approval request exists (checked below with every non-destructive call).
+          // A direct write attributed to the agent: one `ai_agent` update on the parent's page document and no approval
+          // request.
           const { rows } = await pool.query<{ created_by: string }>(
             `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id
              WHERE d.item_id = $1 ORDER BY u.id`,
@@ -892,8 +884,8 @@ describe("generic operation AgentTools contract (issue #220)", () => {
           expect(JSON.parse(outcome.result)).toEqual({ groups: [] });
         }
         if (operation === "page.duplicate" || operation === "page.rename") {
-          // The agent's write to the parent's page (the copy's block, the retitled block) follows the block `prepare`
-          // wrote as the user, and is authored by the agent.
+          // The agent's write to the parent's page follows the block `prepare` wrote as the user, and is authored by
+          // the agent.
           const { rows } = await pool.query<{ created_by: string }>(
             `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id
              WHERE d.item_id = $1 ORDER BY u.id`,
@@ -913,7 +905,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
             { targetItemId: fx.targetItem.id },
           ]);
         }
-        // A non-destructive call runs without an approval request (docs/adr/2026-09-18-non-destructive-generic-operations-bypass-agent-approval.md).
+        // A non-destructive call runs without an approval request.
         const { rows } = await pool.query<{ count: number }>(
           `SELECT count(*)::int AS count FROM approval_requests WHERE agent_run_id = $1`,
           [run.id],
@@ -924,11 +916,8 @@ describe("generic operation AgentTools contract (issue #220)", () => {
   }
 
   /**
-   * The AgentTool-adapter equivalents of the parity cases the code-review finding on issue #220's
-   * diff called out by name (`database_archived`, relation type/config patch rejection, relation
-   * direct `relationPropertyId` supply) — REST already covers `database_archived`/patch rejection
-   * in `itemsHandler.test.ts`/`propertiesHandler.test.ts`, and `genericOperationAgentTools.test.ts`
-   * already covers actor-schema spoofing for this adapter.
+   * AgentTool-adapter parity cases: `database_archived`, relation type/config patch rejection, and direct
+   * `relationPropertyId` supply.
    */
   describe("issue #220 parity: database_archived, relation patch rejection, relation direct supply", () => {
     it("surfaces database_archived (issue #83) as a ChokePointError-shaped result for a write against an archived database", async () => {
@@ -983,10 +972,8 @@ describe("generic operation AgentTools contract (issue #220)", () => {
       const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const fx = await buildFixtures(projectItemId);
 
-      // REST resolves a relation route's `:propertyKey` segment against the caller item's own
-      // database and 404s for no match. AgentTools has no route layer: it takes
-      // `relationPropertyId` directly and the choke point rejects a syntactically valid id that
-      // doesn't name a relation property, rather than resolving it.
+      // AgentTools has no route layer: it takes `relationPropertyId` directly, and the choke point rejects a valid id
+      // that names no relation property.
       const outcome = await tools["relation.put"](run.id, {
         relationPropertyId: fx.property.id,
         callerItemId: fx.itemA.id,

@@ -15,47 +15,37 @@ import type { MailServerEndpoint } from "./mailServerSettingsStore.js";
 import { MailServerUnreachableError } from "./providerTypes.js";
 
 /**
- * Connections to tenant-chosen IMAP and SMTP hosts (docs/adr/2026-10-29-mail-connections-through-the-outbound-address-policy.md).
- * Both factories resolve the host name once through the outbound address policy and connect only to
- * the address that resolved, while the TLS server name stays the host name. A refused or unreachable
- * server surfaces as MailServerUnreachableError; an authentication failure stays what the library
- * reports.
+ * Connections to tenant-chosen IMAP and SMTP hosts. The host name is resolved once through the outbound address
+ * policy and only that address is dialed, while the TLS server name stays the host name. A refused or unreachable
+ * server surfaces as MailServerUnreachableError; an authentication failure stays what the library reports.
  */
 
-/** One IMAP or SMTP endpoint of a mailbox, and the account name that logs in to it. */
 export interface MailServerConnectionSettings {
   endpoint: MailServerEndpoint;
   username: string;
 }
 
-/** The app-specific password the mailbox logs in with. Tenant-chosen hosts take no OAuth token: the settings store holds none. */
+/** Tenant-chosen hosts take no OAuth token: the settings store holds none. */
 export interface MailServerCredential {
   readonly password: string;
 }
 
 export interface MailServerConnectionOptions {
-  /** Vets every address the host name resolves to. Defaults to the module policy (`currentOutboundAddressPolicy`). */
+  /** Defaults to `currentOutboundAddressPolicy`. */
   policy?: OutboundAddressPolicy;
-  /**
-   * IMAP only; `createSmtpTransporter` ignores it. imapflow reads it when the client is constructed, so a caller
-   * that receives a connected client cannot set it. Forwarded to the `ImapFlow` constructor when present; imapflow's
-   * default applies otherwise (docs/adr/2026-10-29-imap-idle-connections-through-the-shared-imap-connect-step.md).
-   */
+  /** IMAP only. imapflow reads it at construction, so a caller handed a connected client cannot set it. */
   maxIdleTime?: number;
   /** IMAP only, as `maxIdleTime`: how long the socket may stay silent before imapflow gives up on it. */
   socketTimeout?: number;
 }
 
-/** A connection attempt may not take longer than this to establish, in each library and for the TCP connect of SMTP. */
+/** In each library and for the TCP connect of SMTP. */
 const CONNECT_TIMEOUT_MS = 30_000;
-/** How long the server may take to send its greeting, passed to both libraries. */
 const GREETING_TIMEOUT_MS = 15_000;
 
 /**
- * Failures of the connect path: the socket never came up, dropped, or a library's connect step timed out.
- * nodemailer reports every socket-level failure, a TLS handshake failure included, as `ESOCKET` or
- * `ECONNECTION`, and its `_formatError` overwrites the error's own code with that one; so these two codes
- * stand for the whole socket-and-TLS path of SMTP, and the TLS code of the cause is not available there.
+ * nodemailer reports every socket-level failure, TLS handshake included, as `ESOCKET` or `ECONNECTION` and overwrites
+ * the error's own code, so these two codes stand for the whole SMTP socket-and-TLS path.
  */
 const CONNECT_FAILURE_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",
@@ -74,7 +64,7 @@ const CONNECT_FAILURE_CODES: ReadonlySet<string> = new Set([
   "UPGRADE_TIMEOUT",
 ]);
 
-/** TLS failures: a handshake or certificate check that did not pass, including nodemailer's `ETLS` wrapper. */
+/** Includes nodemailer's `ETLS` wrapper. */
 const TLS_FAILURE_CODES: ReadonlySet<string> = new Set([
   "ETLS",
   "ERR_TLS_CERT_ALTNAME_INVALID",
@@ -87,7 +77,7 @@ const TLS_FAILURE_CODES: ReadonlySet<string> = new Set([
   "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
 ]);
 
-/** An own property of an error or other object; the errors this module reads set their fields as own properties. */
+/** The errors this module reads set their fields as own properties. */
 function propertyOf(value: unknown, key: string): unknown {
   if (typeof value !== "object" || value === null) return undefined;
   return Object.getOwnPropertyDescriptor(value, key)?.value;
@@ -98,7 +88,7 @@ function codeOf(value: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-/** The error and every error in its `cause` chain, outermost first, each object once. */
+/** Outermost first, each object once. */
 function errorChain(error: unknown): unknown[] {
   const chain: unknown[] = [];
   let current: unknown = error;
@@ -127,9 +117,8 @@ function isConnectionFailure(error: unknown): boolean {
 }
 
 /**
- * Maps a connect, refusal or TLS failure to MailServerUnreachableError and returns every other error
- * unchanged. The mapped error has no cause and names no address, so a refused address cannot be told
- * apart from an unreachable server. Diagnostics carry only a fixed stage.
+ * Maps a connect, refusal or TLS failure to MailServerUnreachableError; other errors pass unchanged. The mapped error
+ * has no cause and names no address, so a refused address cannot be told apart from an unreachable server.
  */
 function mapConnectionFailure(error: unknown): unknown {
   if (isAuthenticationFailure(error) || !isConnectionFailure(error)) return error;
@@ -152,9 +141,8 @@ function policyOf(options: MailServerConnectionOptions): OutboundAddressPolicy {
 }
 
 /**
- * The policy lookup never runs for an IP-literal host, so a literal is vetted here, before any socket is
- * opened: it is refused unless the policy allows literals, and the default policy allows none. The stored-host
- * contract already refuses literals at write time; this is the connect-time backstop.
+ * The policy lookup never runs for an IP-literal host, so a literal is vetted here before any socket opens. The
+ * stored-host contract refuses literals at write time; this is the connect-time backstop.
  */
 function literalRefusal(host: string, policy: OutboundAddressPolicy): OutboundAddressNotAllowedError | undefined {
   return isIP(host) !== 0 && !policy.allowsIpLiteral(host) ? new OutboundAddressNotAllowedError(host) : undefined;
@@ -213,7 +201,7 @@ function verificationImapSocket(client: ImapFlow): Socket {
   return value;
 }
 
-/** Verifies a single IMAP endpoint without returning the library client. */
+/** Does not return the library client. */
 export async function verifyImapServerConnection(
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,
@@ -383,12 +371,9 @@ export async function verifyImapServerConnection(
 }
 
 /**
- * The connect step of every IMAP connection to a tenant-chosen host
- * (docs/adr/2026-10-29-imap-idle-connections-through-the-shared-imap-connect-step.md). imapflow hands its TLS
- * options to `tls.connect`, so the policy lookup resolves the host name once and the socket connects to the
- * vetted address; `servername` keeps the host name for SNI and certificate checks. Resolves with the connected
- * client and never with an unconnected one. A refused, unreachable or TLS-failing server rejects with
- * MailServerUnreachableError; a rejected login rejects with imapflow's authentication error.
+ * The connect step of every IMAP connection to a tenant-chosen host. imapflow hands its TLS options to
+ * `tls.connect`, so the socket connects to the vetted address and `servername` keeps the host name for SNI and
+ * certificate checks. Never resolves with an unconnected client.
  */
 export async function openImapFlow(
   settings: MailServerConnectionSettings,
@@ -414,10 +399,7 @@ export async function openImapFlow(
   return client;
 }
 
-/**
- * Opens an IMAP connection for the sync pass: the connected client of `openImapFlow`, wrapped in the narrow
- * `ImapFlowMailClient` the reconcile pass uses (imapFlowClient.ts). The wrapper keeps the raw client private.
- */
+/** Wraps the raw client in the narrow `ImapFlowMailClient`, which keeps it private. */
 export async function openImapConnection(
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,
@@ -426,24 +408,22 @@ export async function openImapConnection(
   return new ImapFlowMailClient(await openImapFlow(settings, credential, options));
 }
 
-/** The SMTP operations the rest of the package uses. Its connect and send failures map exactly as `openImapConnection`'s do. */
+/** Connect and send failures map as the IMAP factory's do. */
 export interface MailSmtpTransporter {
-  /** Connects, negotiates TLS, logs in and disconnects; resolves `true` when the server accepts the login. */
+  /** Connects, negotiates TLS, logs in and disconnects. */
   verify(): Promise<true>;
   /**
-   * Resolves when the server accepts the message, with the number of recipients it refused. A refused
-   * recipient is not an error here: the server may still have accepted the message for the others.
+   * Resolves with the number of refused recipients; a refusal is not an error because the server may still have
+   * accepted the message for the others.
    */
   sendMail(message: SendMailOptions): Promise<{ refusedRecipientCount: number }>;
-  /** Ends the transport. A send still in flight ends too: every socket it holds is destroyed, and the send rejects. */
+  /** A send still in flight ends too: every socket it holds is destroyed, and the send rejects. */
   close(): void;
 }
 
 /**
- * nodemailer's `getSocket` hook. It opens the TCP socket with the policy lookup and hands it over once
- * connected. nodemailer then runs TLS (`secure`) or STARTTLS (`requireTLS`) on that socket with the
- * host name as the server name. nodemailer's own resolver is not reached on this path, so the name is
- * resolved only by the policy.
+ * nodemailer's `getSocket` hook: the TCP socket is opened through the policy lookup and handed over once connected;
+ * nodemailer then runs TLS or STARTTLS on it. nodemailer's own resolver is never reached on this path.
  */
 type SocketCallback = (error: Error | null, socketOptions?: { connection: Socket }) => void;
 
@@ -501,11 +481,7 @@ function connectPinned(
   });
 }
 
-/**
- * Builds the SMTP transport for a tenant-chosen host. `security: tls` uses implicit TLS, and
- * `security: starttls` requires STARTTLS. Every connection is opened through `connectPinned`. The
- * transport's connect and send failures pass through `mapConnectionFailure`, as the IMAP factory's do.
- */
+/** `tls` is implicit TLS, `starttls` requires STARTTLS; every connection goes through `connectPinned`. */
 function buildSmtpTransporter(
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,
@@ -518,8 +494,7 @@ function buildSmtpTransporter(
   const host = endpoint.host;
   const policy = policyOf(options);
   const lookup = createPolicyLookup(policy);
-  // Sockets handed to nodemailer that have connected and not yet closed. nodemailer's own `close()` does not end
-  // an in-flight send, so `close()` below destroys these.
+  // nodemailer's own `close()` does not end an in-flight send, so `close()` below destroys these sockets.
   const openSockets = new Set<Socket>();
   const transporter = createTransport({
     host,
@@ -542,7 +517,7 @@ function buildSmtpTransporter(
   return { transporter, openSockets };
 }
 
-/** Verifies one SMTP endpoint while retaining ownership of the policy-checked TCP socket. */
+/** Retains ownership of the policy-checked TCP socket. */
 export async function verifySmtpServerConnection(
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,

@@ -3,8 +3,7 @@ import { ValidationError } from "../errors.js";
 import { filterNodeSchema, type FilterNode } from "./filterTree.js";
 import { sortSpecSchema, type SortSpec } from "./sortSpec.js";
 
-// `.catchall(unknown)` lets a module-registered custom view type carry its own extra
-// config fields (issue #22, point 4) without this schema knowing about them in advance.
+// `.catchall(unknown)` lets a custom view type carry its own config fields.
 const viewConfigSchema = z
   .object({
     propertyOrder: z.array(z.string()).optional(),
@@ -26,13 +25,12 @@ export interface ViewConfig {
   filter?: FilterNode;
   sort?: SortSpec[];
   groupBy?: string;
-  /** Direction of the leading group sort; defaults to `asc`. */
+  /** Defaults to `asc`. */
   groupDirection?: "asc" | "desc";
   membership?: "manual";
   /**
-   * A stable, name-independent key of a system view (for example the Tasks `today` view). A database holds at most
-   * one view per key (`views_database_system_key_uq`), a view that has one is read-only for every actor, and only the
-   * system writes the key (`assertSystemKeyWritable`, ADR 2026-11-13 on the view system key).
+   * Stable key of a system view (e.g. Tasks `today`), unique per database. A view with one is read-only for every
+   * actor, and only the system writes it (`assertSystemKeyWritable`).
    */
   systemKey?: string;
   [key: string]: unknown;
@@ -49,7 +47,7 @@ export function parseViewConfig(raw: unknown): ViewConfig {
   return result.data;
 }
 
-/** Projects an item's properties per the view's `visibility`/`propertyOrder` — hides, then reorders (named keys first, in order given, then any remainder). */
+/** Hides per `visibility`, then puts `propertyOrder` keys first in order, then the rest. */
 export function projectProperties(properties: Record<string, unknown>, config: ViewConfig): Record<string, unknown> {
   const visible = config.visibility
     ? Object.keys(properties).filter((key) => config.visibility?.[key] !== false)

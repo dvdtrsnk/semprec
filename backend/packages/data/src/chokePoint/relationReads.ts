@@ -1,7 +1,5 @@
-// Owns the choke point's read of an item's live relation edges (issue #1404, `relation.list`): which
-// relation properties the item has, the edges each one reads from the item's own side, and whether
-// each target may still be pointed at. It writes nothing and knows nothing about which transport asked.
-// Constrained by: docs/adr/2026-09-17-generic-application-service-port.md
+// The read of an item's live relation edges: its relation properties, the edges each reads from the
+// item's own side, and whether each target may still be pointed at. Nothing here writes.
 import type { PoolClient } from "pg";
 import { ValidationError } from "../errors.js";
 import type { ItemRelationRow, PropertyRow } from "../types.js";
@@ -15,7 +13,7 @@ import {
 } from "../agentGrants/agentDatabaseAccess.js";
 import { itemIdsLinkedToDatabases } from "../agentGrants/inheritedSensitivity.js";
 
-/** One live edge seen from one end: the listed item's own relation property and the item on the other side. */
+/** One live edge seen from the listed item's own relation property. */
 export interface VisibleItemRelationEntry {
   relationPropertyId: string;
   propertyKey: string;
@@ -25,9 +23,8 @@ export interface VisibleItemRelationEntry {
 }
 
 /**
- * An edge to an item in a database the reading agent's project may not read (issue #1810): the listed item's own
- * property and the target's id, and neither the target's database nor the edge's metadata. Only an agent read
- * produces it.
+ * An edge into a database the reading agent's project may not read: the listed item's property and
+ * the target's id, never the target's database or the edge's metadata.
  */
 export interface HiddenItemRelationEntry {
   relationPropertyId: string;
@@ -38,33 +35,29 @@ export interface HiddenItemRelationEntry {
 
 export type ItemRelationEntry = VisibleItemRelationEntry | HiddenItemRelationEntry;
 
-/** One of the item's own relation properties, with the definition it reads and which side of that definition it is. */
 interface ReadableSide {
   property: PropertyRow;
   definitionId: string;
   isSideA: boolean;
 }
 
-/** A total order over entries: (property key, target id) pairs are unique, so two distinct entries never compare equal. */
+/** A total order: (property key, target id) pairs are unique. */
 function byPropertyKeyThenTarget(a: ItemRelationEntry, b: ItemRelationEntry): number {
   if (a.propertyKey !== b.propertyKey) return a.propertyKey < b.propertyKey ? -1 : 1;
   return a.targetItemId < b.targetItemId ? -1 : 1;
 }
 
 /**
- * The live edges of `itemId`, read from its own side and ordered by property key, then target id.
+ * The live edges of `itemId` from its own side, ordered by property key, then target id.
  *
- * `relationPropertyId`, when given, must be one of the item's own relation properties; any other id
- * (a property of another database, or a non-relation one) fails with `validation_failed` on that
- * field. An edge is omitted when its target is soft-deleted or its database is archived.
+ * `relationPropertyId`, when given, must be one of the item's own relation properties, else
+ * `validation_failed` on that field. Edges to trashed targets or archived databases are omitted.
  *
- * Returns `null` when the item does not exist, is in the trash, or belongs to another tenant. The
- * three answer alike, so the caller reports one not-found for all of them. An agent (a `reader` that is its project,
- * issue #1810) or an external client (issue #1998) needs `read` access to the database of the listed item, else the read is refused as `forbidden`,
- * and sees an edge to an item in a database it may not read as a `HiddenItemRelationEntry`.
+ * `null` when the item does not exist, is trashed, or belongs to another tenant, indistinguishably. A
+ * `reader` needs `read` on the item's database (else `forbidden`) and sees edges into databases it
+ * may not read as `HiddenItemRelationEntry`.
  *
- * Runs a fixed number of queries whatever the number of relation properties: the item, the
- * database's properties, the definitions of the relation ones, their edges and the live targets.
+ * A fixed number of queries whatever the number of relation properties.
  */
 export function listItemRelationsWithClient(
   client: PoolClient,
@@ -92,7 +85,7 @@ export async function listItemRelationsWithClient(
   const relationProperties = (await propertiesStore.listPropertiesByDatabase(client, item.databaseId)).filter(
     (property) => property.type === "relation",
   );
-  // Stored uuids are lower-case; a uuid-typed input is matched the way the database matches it, whatever its case.
+  // Stored uuids are lower-case; match a uuid input whatever its case, as the database does.
   const wantedId = relationPropertyId?.toLowerCase();
   const properties =
     wantedId === undefined ? relationProperties : relationProperties.filter((property) => property.id === wantedId);
@@ -106,7 +99,7 @@ export async function listItemRelationsWithClient(
     client,
     properties.map((property) => property.id),
   );
-  // A relation property with no definition has no edges: an edge is only ever stored against one.
+  // An edge is only ever stored against a definition.
   const sides: ReadableSide[] = properties.flatMap((property) => {
     const definition = definitions.get(property.id);
     if (!definition) return [];
@@ -126,8 +119,8 @@ export async function listItemRelationsWithClient(
     else edgesByDefinition.set(edge.relationDefinitionId, [edge]);
   }
 
-  // Side A of a definition is `item_a` and side B is `item_b`, so the item's own end decides which
-  // column it sits in and the other column is the target. A one-directional definition has side A only.
+  // Side A is `item_a`, side B `item_b`; the item's own end decides its column and the other is the
+  // target. A one-directional definition has side A only.
   const candidates: Array<{ side: ReadableSide; edge: ItemRelationRow; targetItemId: string }> = [];
   for (const side of sides) {
     for (const edge of edgesByDefinition.get(side.definitionId) ?? []) {
@@ -143,7 +136,7 @@ export async function listItemRelationsWithClient(
     ),
   );
   const unreadable = reader !== undefined ? await listUnreadableDatabaseIds(client, reader) : undefined;
-  // A target that inherits sensitivity from a database the agent may not read is hidden like one in such a database (issue #1999).
+  // A target inheriting sensitivity from a database the agent may not read is hidden as if in it.
   const hiddenInherited =
     typeof reader === "string" && unreadable !== undefined
       ? await itemIdsLinkedToDatabases(client, [...liveTargets.keys()], unreadable)

@@ -46,7 +46,6 @@ async function buildRegistryWith(fixtureFile: string, moduleId: string): Promise
   return registry;
 }
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -80,7 +79,6 @@ describe("createApiQueueRuntime (issue #91)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    // The runtime resolves the seeded mail databases' ids at startup.
     await seedSystem(pool);
     await pool.query("TRUNCATE graphile_worker._private_known_crontabs");
     apiFixtureModule.calls.length = 0;
@@ -101,9 +99,8 @@ describe("createApiQueueRuntime (issue #91)", () => {
     const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
     runtime = await createApiQueueRuntime(pool, registry);
 
-    // graphile-worker registers the crontab's identifiers from a background step that `run()`
-    // does not await, so they are only readable once that registration has committed. It inserts
-    // every identifier in one statement, so the first non-empty read is already the whole set.
+    // graphile-worker registers crontab identifiers in a background step `run()` does not await, in one
+    // statement, so the first non-empty read is the whole set.
     await waitFor(async () => (await knownCrontabIdentifiers(pool)).length > 0);
     expect(await knownCrontabIdentifiers(pool)).toEqual(EXPECTED_CRONTAB_IDENTIFIERS);
 
@@ -125,10 +122,8 @@ describe("createApiQueueRuntime (issue #91)", () => {
 
     await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {}));
 
-    // This runtime's taskList has no `heartbeatFireAgent` handler, so graphile-worker's own job
-    // fetcher (which only claims jobs for task identifiers the connected worker supports) never
-    // claims it — there is no "it ran and failed" signal to poll for, only its continued,
-    // unclaimed presence after giving this runner ample time to have picked it up if it could.
+    // No `heartbeatFireAgent` handler here, and graphile-worker only claims jobs for supported identifiers, so the
+    // only signal is the job's continued, unclaimed presence after ample time.
     await sleep(1_500);
     const { rows } = await pool.query<{ attempts: number }>(
       `SELECT jobs.attempts FROM graphile_worker._private_jobs jobs
@@ -150,9 +145,8 @@ describe("createApiQueueRuntime (issue #91)", () => {
     );
     await inTenantZero(() => enqueueJob(pool, CORE_TASK_NAMES.NOTIFICATION_FANOUT, { notificationId: randomUUID() }));
 
-    // None of these four handlers throw on an unresolvable id (each is a graceful `if (!row)
-    // return`), so successful completion means the job row disappears — a positive proof that
-    // the API runtime, not just "some" runtime, actually ran each of these core task names.
+    // These handlers return gracefully on an unresolvable id, so the job row disappearing proves the API runtime
+    // ran each core task name.
     for (const identifier of [
       CORE_TASK_NAMES.HEARTBEAT_SWEEP,
       CORE_TASK_NAMES.TRASH_PURGE,
@@ -164,13 +158,9 @@ describe("createApiQueueRuntime (issue #91)", () => {
   });
 
   it("fires the CORE_CRONTAB-installed heartbeatSweep entry through a test-specific crontab cadence, without waiting on the real minute boundary", async () => {
-    // graphile-worker only backfills an identifier it already knows about (`known_since`/
-    // `last_execution` present in `_private_known_crontabs`) — a freshly-unknown one always
-    // waits for the real next minute boundary. Pre-seeding this identifier as "known" a few
-    // minutes in the past, then installing a crontab entry carrying a `?fill=` backfill window
-    // covering that gap, makes the cadence itself the test-specific override `ApiQueueRuntimeOptions.crontab`
-    // exists for: the installed cron fires its backfilled catch-up run immediately at startup,
-    // observable in seconds instead of the real ~60s+ wait a freshly-unknown identifier requires.
+    // graphile-worker only backfills an identifier it already knows (`_private_known_crontabs`); an unknown one
+    // waits for the next minute boundary. Pre-seeding it as known a few minutes back and installing an entry with a
+    // `?fill=` window makes the backfilled run fire at startup, in seconds instead of ~60s+.
     await ensureQueueSchema(pool);
     const seededLastExecution = new Date(Date.now() - 5 * 60_000);
     await pool.query(
@@ -209,7 +199,7 @@ describe("createApiQueueRuntime (issue #91)", () => {
       enqueueJob(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE, { heartbeatId, triggeredByRunId: randomUUID() }),
     );
 
-    // A failed attempt keeps the job row (with `last_error`) for a retry; only success removes it.
+    // A failed attempt keeps the job row for a retry; only success removes it.
     await waitFor(async () => (await jobCountFor(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE)) === 0);
     const { rows } = await pool.query<{ last_error: string | null; error_notifications: string }>(
       `SELECT h.last_error,
@@ -250,7 +240,6 @@ describe("createApiQueueRuntime (issue #91)", () => {
       attendeeEmail: "petr@example.com",
     });
 
-    /** The job's `attempts` and `last_error`, from the queue's public view. */
     async function invitationJob(): Promise<{ attempts: number; last_error: string | null } | undefined> {
       const { rows } = await pool.query<{ attempts: number; last_error: string | null }>(
         "SELECT attempts, last_error FROM graphile_worker.jobs WHERE task_identifier = $1",
@@ -259,7 +248,6 @@ describe("createApiQueueRuntime (issue #91)", () => {
       return rows[0];
     }
 
-    /** Runs the queued invitation job once with the task list the module registry gives, outside any runtime. */
     async function runInvitationJobOutsideRuntime(registry: ModuleRegistry): Promise<void> {
       const taskList = await mergeModuleTaskListForAffinity({}, registry, "api");
       const handler = taskList[INVITATION_TASK];
@@ -302,7 +290,6 @@ describe("createApiQueueRuntime (issue #91)", () => {
       respondedAt: new Date().toISOString(),
     });
 
-    /** The job's `attempts` and `last_error`, from the queue's public view. */
     async function replyJob(): Promise<{ attempts: number; last_error: string | null } | undefined> {
       const { rows } = await pool.query<{ attempts: number; last_error: string | null }>(
         "SELECT attempts, last_error FROM graphile_worker.jobs WHERE task_identifier = $1",
@@ -311,7 +298,6 @@ describe("createApiQueueRuntime (issue #91)", () => {
       return rows[0];
     }
 
-    /** Runs the queued reply job once with the task list the module registry gives, outside any runtime. */
     async function runReplyJobOutsideRuntime(registry: ModuleRegistry): Promise<void> {
       const taskList = await mergeModuleTaskListForAffinity({}, registry, "api");
       const handler = taskList[REPLY_TASK];
@@ -350,7 +336,6 @@ describe("createApiQueueRuntime (issue #91)", () => {
     const TRIAGE_TASK = "mailTriageThreadProject";
     const NO_RUNTIME_ERROR = "No thread project triage runtime is configured for this composition root";
 
-    /** The job's `attempts` and `last_error`, from the queue's public view. */
     async function triageJob(): Promise<{ attempts: number; last_error: string | null } | undefined> {
       const { rows } = await pool.query<{ attempts: number; last_error: string | null }>(
         "SELECT attempts, last_error FROM graphile_worker.jobs WHERE task_identifier = $1",
@@ -359,7 +344,6 @@ describe("createApiQueueRuntime (issue #91)", () => {
       return rows[0];
     }
 
-    /** Runs the queued triage job once with the task list the module registry gives, outside any runtime. */
     async function runTriageJobOutsideRuntime(registry: ModuleRegistry): Promise<void> {
       const taskList = await mergeModuleTaskListForAffinity({}, registry, "api");
       const handler = taskList[TRIAGE_TASK];
@@ -397,7 +381,6 @@ describe("createApiQueueRuntime (issue #91)", () => {
 
   describe("the mail module's thread task people task (issue gh-1923)", () => {
     const PEOPLE_TASK = "mailSyncThreadTaskPeople";
-    // A thread item that does not exist ends the job without a write; the handler only gets that far with its pool bound.
     const peoplePayload = () => ({ threadItemId: randomUUID(), personId: randomUUID() });
 
     async function peopleJob(): Promise<{ attempts: number; last_error: string | null } | undefined> {

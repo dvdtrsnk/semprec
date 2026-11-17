@@ -11,10 +11,9 @@ import {
   TASKS_MODULE_ID,
 } from "../seed/tenDatabaseKeys.js";
 
-// The structured subtitle of a global search result (issue #1842). Nothing here is localised: the client composes the
-// text from the kinds and the canonical values, because relative words depend on the clock and the time zone.
+// The structured subtitle of a search result. Not localised: the client composes the text from kinds and canonical
+// values, because relative words depend on the clock and time zone.
 
-/** One result whose subtitle is built: the owning module of its database and its stored properties. */
 export interface SubtitleSource {
   id: string;
   databaseId: string;
@@ -22,7 +21,7 @@ export interface SubtitleSource {
   properties: Record<string, unknown>;
 }
 
-/** A relation the subtitle shows: `key` is the property on the source database, `limit` the most linked items shown. */
+/** `limit` is the most linked items shown. */
 interface LinkSpec {
   sourceModule: string;
   key: string;
@@ -31,7 +30,7 @@ interface LinkSpec {
   limit: number;
 }
 
-/** The most participants one event result names; the full list is on the event itself. */
+/** The full list is on the event itself. */
 const MAX_EVENT_PEOPLE = 5;
 
 const LINK_SPECS: readonly LinkSpec[] = [
@@ -49,9 +48,8 @@ const LINK_SPECS: readonly LinkSpec[] = [
 ];
 
 /**
- * The live items linked to the sources through the properties in `$4..$6` (source module, property key, target
- * module as three parallel arrays), seen from the source's side of each edge. Targets in an archived database or in
- * a database the agent cannot read (`$3`) are left out. The text is a closed constant; every value is bound.
+ * Live items linked through `$4..$6` (source module, property key, target module as parallel arrays), from the
+ * source's side. Targets in archived or agent-unreadable (`$3`) databases are left out. Every value is bound.
  */
 const LINKED_ITEMS_FROM_SQL = `
   FROM items source
@@ -96,19 +94,19 @@ function text(properties: Record<string, unknown>, key: string): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
-/** `YYYY-MM-DD` of a stored calendar date; a date stored with a time keeps its date part. */
+/** A date stored with a time keeps its date part. */
 function calendarDate(properties: Record<string, unknown>, key: string): string | null {
   const value = text(properties, key);
   return value !== null && /^\d{4}-\d{2}-\d{2}(?:$|[T ])/.test(value) ? value.slice(0, 10) : null;
 }
 
-/** `HH:mm` of a stored wall-clock time (`9:00` is padded); anything else is not a time. */
+/** `9:00` is padded; anything else is not a time. */
 function wallClock(properties: Record<string, unknown>, key: string): string | null {
   const match = /^(\d{1,2}):(\d{2})$/.exec(text(properties, key) ?? "");
   return match ? `${match[1]!.padStart(2, "0")}:${match[2]}` : null;
 }
 
-/** The start time alone is a `time`; with an end time it is a `timeRange` written `HH:mm-HH:mm`. An end time alone is not shown. */
+/** An end time alone is not shown. */
 function timeParts(properties: Record<string, unknown>): SearchSubtitlePart[] {
   const from = wallClock(properties, "timeFrom");
   if (from === null) return [];
@@ -116,10 +114,7 @@ function timeParts(properties: Record<string, unknown>): SearchSubtitlePart[] {
   return [to === null ? { kind: "time", value: from } : { kind: "timeRange", value: `${from}-${to}` }];
 }
 
-/**
- * The stored key of a task's recurrence: its preset when it was set from one, otherwise the kind of a fixed rule, or
- * `floating` for a rule that repeats every n days, weeks or months. A value that is not a recurrence shows nothing.
- */
+/** The preset when set from one, else the fixed rule's kind, or `floating` for every-n rules. */
 function recurrenceKey(properties: Record<string, unknown>): string | null {
   const parsed = recurrenceSchema.safeParse(properties.recurrence);
   if (!parsed.success) return null;
@@ -129,7 +124,7 @@ function recurrenceKey(properties: Record<string, unknown>): string | null {
   return rule.success ? rule.data.kind : null;
 }
 
-/** The first line of the stored phone numbers, as stored: one number per line, no reformatting. */
+/** One number per line, no reformatting. */
 function firstPhone(properties: Record<string, unknown>): string | null {
   const value = properties.phones;
   if (typeof value !== "string") return null;
@@ -152,7 +147,6 @@ function linkedParts(
     .map((target) => ({ kind, value: target.title, itemId: target.id }));
 }
 
-/** Groups the linked items of each source under the source's property key, in the order the statement returned them. */
 async function loadLinkedItems(
   client: PoolClient,
   sources: readonly SubtitleSource[],
@@ -188,7 +182,7 @@ async function loadLinkedItems(
   return linked;
 }
 
-/** The number of live, user-visible projects of each area: a system project is never searched and is not counted. */
+/** A system project is never searched and is not counted. */
 async function countAreaProjects(
   client: PoolClient,
   areas: readonly SubtitleSource[],
@@ -217,19 +211,10 @@ async function countAreaProjects(
 }
 
 /**
- * The `subtitleParts` of every source, by item id, read in the caller's transaction with a constant number of
- * statements however many results there are. A source whose module has no subtitle (a journal day) gets none.
- * Per module, in this order:
- * - tasks: date, time or timeRange, recurrence, project;
- * - events: date, time or timeRange, place, up to five people;
- * - projects: area, status;
- * - areas: count of their projects;
- * - people: relationship, project, phone; companies: the `relationship` marker `company` (the closed set of kinds has
- *   no company kind and a company has no relationship of its own, so the marker is the stored key `company`);
- * - files: project, date.
- * A linked item is shown with its title and `itemId`; the first by title when several are linked and the module shows
- * one. `visibleDatabaseIds` is the list of the tenant's databases (it lets the statement prune item partitions) and
- * `unreadableDatabaseIds` the databases an agent actor cannot read, whose items are never shown as links.
+ * The `subtitleParts` of every source by item id, with a constant number of statements however many results. A
+ * company gets the `relationship` marker `company`, since the closed kind set has no company kind. When a module
+ * shows one linked item, it is the first by title. `visibleDatabaseIds` lets the statement prune item partitions;
+ * items of `unreadableDatabaseIds` are never shown as links.
  */
 export async function buildSubtitleParts(
   client: PoolClient,

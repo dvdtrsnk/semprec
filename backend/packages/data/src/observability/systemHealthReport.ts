@@ -11,15 +11,15 @@ import { listAllMailAccountSyncStates } from "../mail/mailAccountSyncStateStore.
 
 export interface ProcessHealthStatus {
   process: string;
-  /** false when no `process_heartbeats` row exists yet for a process the current state expects. */
+  /** false when an expected process has no heartbeat row yet. */
   present: boolean;
-  /** true when `present` is false, or the row's `beatAt` is older than the stale threshold. */
+  /** true when absent or older than the stale threshold. */
   stale: boolean;
   pid: number | null;
   version: string | null;
   startedAt: string | null;
   beatAt: string | null;
-  /** `now - startedAt`, null when the process has never beaten at all. */
+  /** null when the process has never beaten. */
   uptimeMs: number | null;
 }
 
@@ -31,9 +31,9 @@ export interface AlertingCheck {
 
 export interface QueueHealthCounts {
   pending: number;
-  /** Pending jobs whose `run_at` has already passed by more than a short grace window. */
+  /** Past `run_at` by more than a short grace window. */
   overdue: number;
-  /** graphile-worker's own `attempts >= max_attempts` — will never run again on its own. */
+  /** `attempts >= max_attempts`: will never run again on its own. */
   permanent: number;
 }
 
@@ -59,12 +59,7 @@ export interface SystemHealthReport {
   mailboxes: MailboxHealthStatus[];
 }
 
-/**
- * One row per process in `expected`, joined against whatever `process_heartbeats` rows actually
- * exist. The caller decides the set: the per-tenant report passes the caller's mailbox processes
- * (`getActiveMailSyncProcessNames`, issue #1052), the operator report passes the fixed list so
- * mailbox rows never appear.
- */
+/** The caller decides the set; the operator report passes the fixed list so mailbox rows never appear. */
 async function getProcessHealthStatuses(
   client: Queryable,
   expected: readonly string[],
@@ -108,10 +103,7 @@ async function getProcessHealthStatuses(
   });
 }
 
-/**
- * The caller's alerting `tenant_observability_checks` rows (issue #169's per-tenant checks). The
- * global `observability_checks` table is operator data and is left to the operator report.
- */
+/** Tenant checks only; the global table is operator data. */
 async function getAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
   const { rows } = await client.query<{ check_key: string; detail: Record<string, unknown>; changed_at: Date }>(
     `SELECT check_key, detail, changed_at FROM tenant_observability_checks
@@ -122,25 +114,12 @@ async function getAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
 }
 
 /**
- * Same `graphile_worker.jobs` predicates as `observability/observabilityCheckSystem.ts`'s queue
- * checks, reported as plain current counts rather than a hysteresis-gated status. A
- * freshly-enqueued job's `run_at` defaults to its insertion time, so a bare `run_at < now()`
- * would call it overdue the instant any time at all has passed — true of nearly every ready job.
- * "Overdue" means stuck past its due time long enough that the worker fleet should have already
- * picked it up, not merely past due; this grace window separates the two.
+ * Same predicates as the queue checks, as plain counts. The grace window matters because a fresh
+ * job's `run_at` is its insertion time, so a bare `run_at < now()` would flag nearly every job.
  *
- * `tenantOnly` narrows the count to jobs whose queue envelope names the caller's tenant
- * (`payload->>'tenantId'`, stamped by `enqueueJob`). The public `graphile_worker.jobs` view has no
- * `payload` column, so that branch reads `graphile_worker._private_jobs` directly, the same
- * deliberate deviation onto graphile-worker's internals that `queueFailedJobsPrune.ts` makes. It is
- * pinned to the schema shape of graphile-worker@0.17.x (see `backend/packages/queue/package.json`);
- * bumping that dependency to a version that renames or restructures `_private_jobs` requires
- * re-checking this query. The two literals below are the only SQL `tenantOnly` switches in;
- * neither takes caller input.
- *
- * A job whose envelope carries no `tenantId` (one not enqueued through `enqueueJob`) is counted in
- * no tenant's report: `runInTaskScope` refuses such a tenant-task job. It appears only in the
- * operator report's global counts.
+ * `tenantOnly` filters on the envelope's `tenantId`, which only `_private_jobs` exposes; this relies
+ * on graphile-worker@0.17.x internals like `queueFailedJobsPrune.ts`. The two switched SQL literals
+ * take no caller input. Jobs without a `tenantId` appear only in operator counts.
  */
 async function getQueueHealthCounts(client: Queryable, tenantOnly: boolean): Promise<QueueHealthCounts> {
   const jobSource = tenantOnly
@@ -161,11 +140,7 @@ async function getQueueHealthCounts(client: Queryable, tenantOnly: boolean): Pro
   };
 }
 
-/**
- * `item_automation.item_id` has no FK to `items` (partitioned table, application-enforced
- * referential integrity, as for every table that references an item by id), so
- * grouping by database goes through a plain join rather than a stored `database_id` column.
- */
+/** `item_automation.item_id` has no FK (items is partitioned), so grouping uses a plain join. */
 async function getItemAutomationErrorCounts(client: Queryable): Promise<ItemAutomationErrorCount[]> {
   const { rows } = await client.query<{ database_id: string; error_count: string }>(
     `SELECT i.database_id, count(*) AS error_count
@@ -198,11 +173,7 @@ function toMailboxHealthStatus(
   };
 }
 
-/**
- * Asserts that the caller runs inside a tenant scope. Every section below reads through the
- * caller's `app.tenant_id`, so a missing scope is a wiring bug. It throws rather than returning a
- * report that looks empty and healthy.
- */
+/** A missing tenant scope is a wiring bug: throw rather than return an empty, healthy-looking report. */
 async function assertTenantScope(client: Queryable): Promise<void> {
   const { rows } = await client.query<{ tenant_id: string | null }>(`SELECT app_current_tenant()::text AS tenant_id`);
   if (!rows[0]?.tenant_id) {
@@ -210,14 +181,7 @@ async function assertTenantScope(client: Queryable): Promise<void> {
   }
 }
 
-/**
- * The per-tenant read model behind issue #170's `GET /api/system-health`, a snapshot of the
- * caller's own tenant (issue #1052). It holds the freshness of the caller's mailbox processes,
- * the caller's alerting tenant checks, the caller's queue jobs, the caller's `item_automation`
- * errors per database, its agent-run errors over the last seven days, and per-mailbox sync
- * activity/error. Operator-wide data is out of scope here; `getOperatorHealthReport` serves it.
- * No samples are persisted, and the report is computed fresh on every request.
- */
+/** The caller's own tenant only, computed fresh; operator-wide data is `getOperatorHealthReport`. */
 export async function getSystemHealthReport(client: Queryable): Promise<SystemHealthReport> {
   await assertTenantScope(client);
   const [processes, alertingChecks, queue, itemAutomationErrorsByDatabase, agentRunErrors7d, mailAccounts] =
@@ -248,14 +212,14 @@ export interface TenantStatusCounts {
   deleting: number;
 }
 
-/** Totals only, one per `ops_health_counts()` column. Never a tenant id, never a per-tenant breakdown. */
+/** Totals only; never a tenant id or per-tenant breakdown. */
 export interface OperatorTenantAggregates {
   agentRunErrors7d: number;
   itemAutomationErrors: number;
   alertingTenantChecks: number;
 }
 
-/** The admin-only operator report (issue #1038): content-free counts and global operator rows, never tenant content. */
+/** Admin-only; content-free counts and global rows, never tenant content. */
 export interface OperatorHealthReport {
   generatedAt: string;
   processes: ProcessHealthStatus[];
@@ -266,11 +230,8 @@ export interface OperatorHealthReport {
 }
 
 /**
- * Global `observability_checks` rows only. The operator report never reads
- * `tenant_observability_checks`, the per-tenant table `getAlertingChecks` reads. Legacy per-mailbox `mail:<itemId>`
- * and `process:mailsync:<itemId>` rows, whose key carries a mailbox id and whose `detail` carries
- * its `lastError`, are excluded here: `handleObservabilityCheckSystemTask` purges them only on its
- * next tick, so they can still exist when this report is read.
+ * Excludes global per-mailbox rows (their key and `detail` carry tenant data): the check task
+ * purges them only on its next tick, so they may still exist.
  */
 async function getGlobalAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
   const { rows } = await client.query<{ check_key: string; detail: Record<string, unknown>; changed_at: Date }>(
@@ -281,7 +242,7 @@ async function getGlobalAlertingChecks(client: Queryable): Promise<AlertingCheck
   return rows.map((row) => ({ checkKey: row.check_key, detail: row.detail, changedAt: row.changed_at.toISOString() }));
 }
 
-/** `count(*) GROUP BY tenants.status`; a status with no tenant reports 0. */
+/** A status with no tenant reports 0. */
 async function getTenantStatusCounts(client: Queryable): Promise<TenantStatusCounts> {
   const { rows } = await client.query<{ status: string; count: string }>(
     `SELECT status, count(*) AS count FROM tenants GROUP BY status`,
@@ -295,10 +256,8 @@ async function getTenantStatusCounts(client: Queryable): Promise<TenantStatusCou
 }
 
 /**
- * The three cross-tenant counts, run as `semprec_router` behind `ops_health_counts()`
- * (docs/operations/database-roles.md). The function always returns one row of
- * numbers, so a missing row means the function or its grants are broken and is thrown rather than
- * reported as zero errors.
+ * Runs as `semprec_router` behind `ops_health_counts()`. A missing row means broken grants and
+ * throws rather than reporting zero errors.
  */
 async function getOperatorTenantAggregates(client: Queryable): Promise<OperatorTenantAggregates> {
   const { rows } = await client.query<{
@@ -317,12 +276,7 @@ async function getOperatorTenantAggregates(client: Queryable): Promise<OperatorT
   };
 }
 
-/**
- * The admin operations health report behind `GET /api/admin/health` (issue #1038). Processes are
- * the four fixed processes only, so no mailbox heartbeat row is reported. Every value is a count
- * or a global operator row (legacy per-mailbox rows excluded), so no tenant id, item text or
- * `lastError` reaches the response.
- */
+/** Fixed processes and counts only, so no tenant id, item text or `lastError` reaches the response. */
 export async function getOperatorHealthReport(client: Queryable): Promise<OperatorHealthReport> {
   const [processes, alertingChecks, queue, tenants, tenantAggregates] = await Promise.all([
     getProcessHealthStatuses(client, FIXED_PROCESS_NAMES),

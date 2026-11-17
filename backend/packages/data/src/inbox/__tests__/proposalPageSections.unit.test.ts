@@ -11,7 +11,7 @@ import { proposalBlockId } from "../proposalPageContent.js";
 import { assertValidEnvelopePageSections } from "../proposalEnvelopeValidation.js";
 import { buildPageSectionBlocks, carryPageSections } from "../proposalPageSections.js";
 
-// Issue gh-1974: the page sections a `database` envelope carries for the item its confirm creates.
+// The page sections a `database` envelope carries for the item its confirm creates.
 
 const TARGET = "8f6f2d3e-8b1e-4a0e-9d0b-1c1f0f1a2b3c";
 const SECTIONS = [

@@ -5,11 +5,9 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 /**
- * The monorepo has exactly one version, its `vMAJOR.MINOR.PATCH` release tag
- * (`docs/adr/2026-09-24-monorepo-release-tag-from-guarded-command.md`). A package.json may carry
- * only the `0.0.0` placeholder — a real version there would be a second, per-package version, and
- * `.github/workflows/release.yml` would tag from `backend/package.json`'s outside the guarded
- * release command.
+ * The monorepo's only version is its `vMAJOR.MINOR.PATCH` release tag. A package.json may carry only
+ * the `0.0.0` placeholder; a real version would be a second, per-package version that
+ * `.github/workflows/release.yml` would tag from outside the guarded release command.
  */
 const PLACEHOLDER_VERSION = "0.0.0";
 const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "build", ".git"]);

@@ -21,10 +21,7 @@ interface Context {
   identity: { user: { id: string } };
 }
 
-/**
- * The template fields a series edit may change; every other key is refused by name. `persistent` was one until issue
- * #2009 removed the Tasks property; it is refused now like any other key, and responses omit it.
- */
+/** The template fields a series edit may change; every other key, `persistent` included, is refused by name. */
 const TEMPLATE_FIELDS = ["name", "timeFrom", "timeTo", "notifications", "flagged", "description"] as const;
 type TemplateField = (typeof TEMPLATE_FIELDS)[number];
 const TEMPLATE_FIELD_SET: ReadonlySet<string> = new Set(TEMPLATE_FIELDS);
@@ -33,11 +30,7 @@ function isTemplateField(key: string): key is TemplateField {
   return TEMPLATE_FIELD_SET.has(key);
 }
 
-/**
- * The series id of the path, in lower case. PostgreSQL prints `task_recurrence.series_id` in lower case, and that text
- * is what the occurrences of the series hold in `seriesId`. A path may spell the same UUID with upper-case digits; the
- * occurrence query below compares `properties->>'seriesId'` as text, and the response carries the value returned here.
- */
+/** Lower-cased: occurrences store `seriesId` as PostgreSQL prints it, and the query compares it as text. */
 function seriesIdOf(ctx: Context): string {
   const result = z.uuid().safeParse(ctx.params.seriesId);
   if (!result.success) throw new ValidationError("Series id must be a UUID", { field: "seriesId" });
@@ -50,9 +43,8 @@ function boolean(value: unknown, field: string): boolean {
 }
 
 /**
- * The patch a series edit stores, checked as the Tasks write checks the same properties: a non-blank `name`, `HH:MM`
- * times (`H:MM` is padded, only `timeTo` may be `24:00`, `null` clears), booleans for the checkboxes and a text or
- * `null` description. A field of a single occurrence (`date`, `status`, ...) or any other key is refused by name.
+ * Checked as the Tasks write checks the same properties (non-blank `name`, `HH:MM` times, booleans, text or
+ * `null` description). Single-occurrence fields and unknown keys are refused by name.
  */
 function parsePatch(body: unknown): Partial<TaskRecurrenceTemplate> {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -91,7 +83,7 @@ function parsePatch(body: unknown): Partial<TaskRecurrenceTemplate> {
   return patch;
 }
 
-/** The template's own time rule, as the Tasks write applies it: an end needs a start and must be later than it. */
+/** An end needs a start and must be later than it, as in the Tasks write. */
 function assertTemplateTimes(template: TaskRecurrenceTemplate): void {
   if (template.timeTo !== null && template.timeFrom === null) {
     throw new ValidationError("Property 'timeTo' requires a 'timeFrom'", { field: "timeTo" });
@@ -102,10 +94,8 @@ function assertTemplateTimes(template: TaskRecurrenceTemplate): void {
 }
 
 /**
- * The open occurrences of a series the edit reaches besides its current one: `notDone`, not trashed and dated on or
- * after the current occurrence's `date`, in id order. Done, wontDo and missed occurrences and earlier ones are never
- * selected. With `lock` the rows are locked `FOR UPDATE`; without it they are only read, which is the form to use
- * once the series row is locked (items before `task_recurrence`).
+ * Open occurrences besides the current one: `notDone`, not trashed, dated on or after the current one, in id
+ * order. `lock` locks them `FOR UPDATE`; omit it once the series row is held (items before `task_recurrence`).
  */
 async function openOccurrenceIds(
   client: PoolClient,
@@ -128,17 +118,14 @@ async function openOccurrenceIds(
 }
 
 /**
- * `PATCH /api/tasks/series/:seriesId` (issue #1667): edits a recurring series apart from its single occurrences. In one
- * transaction it locks the series' current occurrence, then the open materialized occurrences dated on or after it, all
- * of them before the `task_recurrence` row (items before `task_recurrence`,
- * docs/adr/2026-10-25-task-and-event-recurrence-model.md), then the series row `FOR UPDATE`. It merges the patch into
- * the template and writes the same patch to the current occurrence, when it is open, and to those occurrences through
- * the Tasks write path, which validates each of them again. An occurrence's own `date` is never written, so one moved
- * on its own keeps it. An unknown, inactive or another tenant's series is not found alike; a series that advanced to
- * another occurrence while the edit waited is a 409. So is a series whose open occurrences, read again once the series
- * row is locked, include one the edit did not lock: the occurrence route (issue #1720) stored it, or another write
- * made it one of them, after the edit locked the others. Responds with the series: `seriesId`, `template`, the current
- * occurrence's `recurrence` and its id.
+ * `PATCH /api/tasks/series/:seriesId`: edits a series apart from its single occurrences. Locks the current
+ * occurrence, then the open occurrences on or after it, then the series row (items before `task_recurrence`).
+ * Merges the patch into the template and writes it through the Tasks write path to the current occurrence (if
+ * open) and those occurrences; an occurrence's own `date` is never written.
+ *
+ * Unknown, inactive and foreign series are not found alike. 409 when the series advanced while waiting, or when
+ * the re-read under the series lock finds an open occurrence the edit did not lock. Responds with `seriesId`,
+ * `template`, and the current occurrence's `recurrence` and id.
  */
 export function createTaskSeriesPatchRouteHandler(pool: Pool) {
   return async (ctx: Context): Promise<{ status: number; body: unknown }> => {
@@ -155,10 +142,9 @@ export function createTaskSeriesPatchRouteHandler(pool: Pool) {
       if (!series || !series.active || series.itemId !== current.id || series.template === null) {
         throw new ConflictError("The series changed while it was being edited", { seriesId });
       }
-      // Read again now that the series row is locked. The occurrence route (issue #1720) creates an open occurrence
-      // under that lock and leaves the row pointing where it did, so one it committed while this edit waited for the
-      // row is not locked above and does not show in the row. The advance and the nightly close create theirs under
-      // the same lock, so none is created between this read and the commit.
+      // Re-read under the series row lock: the occurrence route creates open occurrences under that lock without moving
+      // the row, so one committed while this edit waited was not locked above. The advance and nightly close use the
+      // same lock, so nothing is created between this read and the commit.
       const open = await openOccurrenceIds(client, tasks.id, seriesId, current, false);
       if (open.some((id) => !others.includes(id))) {
         throw new ConflictError("The series changed while it was being edited", { seriesId });

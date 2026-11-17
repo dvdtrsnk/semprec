@@ -1,29 +1,21 @@
-// Serializes the iTIP messages the calendar sends about an Event: a `REQUEST` that invites one person or updates an
-// invitation and the `CANCEL` that withdraws it (issue #1774), and the `REPLY` with which an invited person answers
-// an organizer's invitation (issue gh-1953). The output is one iCalendar object (RFC 5545) with the iTIP method of
-// RFC 5546, lines ended by CRLF and folded at 75 octets.
+// Serializes iTIP (RFC 5546) REQUEST, CANCEL and REPLY messages as one iCalendar object, CRLF-ended and folded.
 import { DateTime } from "luxon";
 import { ValidationError } from "../errors.js";
 
 /**
- * What a message says about one Event and one invited person. Times are already converted to what the message
- * carries: an all-day Event has `start` as its first day and `end` as the day after its last day (`DTEND` of a
- * `DATE` value is exclusive), both `YYYY-MM-DD`; a timed Event has `start` and `end` as UTC instants
- * (`2026-11-16T09:00:00.000Z`). No `VTIMEZONE` is written.
+ * An all-day Event has `start` as its first day and `end` as the day after its last day (`DTEND` of a `DATE`
+ * value is exclusive), both `YYYY-MM-DD`; a timed Event has UTC instants. No `VTIMEZONE` is written.
  */
 export interface ItipEventInput {
   uid: string;
-  /** The `SEQUENCE` the message carries; a `CANCEL` carries the revision after the last one that was sent. */
+  /** A `CANCEL` carries the revision after the last one that was sent. */
   sequence: number;
-  /** The `DTSTAMP`, the moment the message is made. */
   stamp: Date;
   title: string;
-  /** The `LOCATION`; `null` or empty leaves the property out. */
   place: string | null;
   allDay: boolean;
   start: string;
   end: string;
-  /** The sending mailbox's address. */
   organizerEmail: string;
   attendeeEmail: string;
 }
@@ -104,7 +96,6 @@ function checkIdentity(input: { uid: string; sequence: number }): void {
   if (input.uid.length === 0) throw invalid("uid", "'uid' must not be empty");
 }
 
-/** The lines of one iCalendar object, folded and ended by CRLF. */
 function toCalendarText(lines: string[]): string {
   return lines.map(fold).join("\r\n") + "\r\n";
 }
@@ -138,40 +129,27 @@ function buildItipMessage(method: "REQUEST" | "CANCEL", input: ItipEventInput): 
   return toCalendarText(lines);
 }
 
-/**
- * The `METHOD:REQUEST` message that invites `attendeeEmail` to the Event or, with a higher `sequence`, updates
- * an invitation sent before. The attendee is asked to reply (`RSVP=TRUE`, `PARTSTAT=NEEDS-ACTION`). Refuses
- * with `validation_failed` an input whose sequence, UID, stamp, times or addresses cannot be written.
- */
+/** A higher `sequence` updates an invitation sent before. Throws `ValidationError` on unwritable input. */
 export function buildItipRequest(input: ItipEventInput): string {
   return buildItipMessage("REQUEST", input);
 }
 
-/**
- * The `METHOD:CANCEL` message that withdraws the invitation of `attendeeEmail`: the same `UID`, the revision
- * in `sequence` and `STATUS:CANCELLED`. Refuses the same inputs as `buildItipRequest`.
- */
 export function buildItipCancel(input: ItipEventInput): string {
   return buildItipMessage("CANCEL", input);
 }
 
-/** The `PARTSTAT` values a `REPLY` carries; an invitation that is only noted (`acknowledged`) is not replied to. */
+/** An invitation that is only noted (`acknowledged`) is not replied to. */
 export type ItipReplyPartstat = "ACCEPTED" | "TENTATIVE" | "DECLINED";
 
 /**
- * What an invited person's answer says about the invitation. `startsAt` and `endsAt` are UTC instants
- * (`2026-10-22T11:00:00.000Z`) as an invitation stores them: for an all-day invitation `startsAt` is midnight of the
- * first day and `endsAt` midnight of the last day, `null` for a single day; for a timed one `endsAt` is `null` when the
- * invitation had no end. `sequence` is the revision of the invitation that is answered.
+ * Times are UTC instants as an invitation stores them: for an all-day invitation midnight of the first and last
+ * day (`endsAt` `null` for a single day); for a timed one `endsAt` is `null` when it had no end.
  */
 export interface ItipReplyInput {
   uid: string;
   sequence: number;
-  /** The address the reply is sent to. */
   organizerEmail: string;
-  /** The address of the person who answers. */
   attendeeEmail: string;
-  /** The `CN` of the attendee; left out when absent or blank. */
   attendeeName?: string;
   partstat: ItipReplyPartstat;
   summary: string;
@@ -185,13 +163,6 @@ function quotedParameter(value: string): string {
   return `"${value.replace(/\p{Cc}/gu, "").replace(/"/g, "'")}"`;
 }
 
-/**
- * The `METHOD:REPLY` message of the invited person `attendeeEmail`: the invitation's `UID` and `SEQUENCE`, a
- * `DTSTAMP` of the moment it is made, the original `DTSTART` and `DTEND` (an all-day invitation as `DATE` values with
- * the day after its last day as the exclusive end; no `DTEND` for a timed invitation that had none), and one
- * `ATTENDEE` carrying the `PARTSTAT`. Refuses with `validation_failed` an input whose sequence, UID, times or
- * addresses cannot be written.
- */
 export function buildItipReply(input: ItipReplyInput): string {
   checkIdentity(input);
   const organizer = mailto(input.organizerEmail, "organizerEmail");

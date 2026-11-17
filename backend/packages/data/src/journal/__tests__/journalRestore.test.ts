@@ -41,7 +41,6 @@ function restore(itemId: string) {
   return runInTenant(tenant, () => cp.restoreItem(journalId, itemId));
 }
 
-/** The item the period's reservation points at, or null when there is none. */
 async function reservation(): Promise<string | null> {
   return runInTenant(tenant, async () => {
     const { rows } = await pool.query<{ item_id: string }>("SELECT item_id FROM idempotency_keys WHERE key = $1", [
@@ -51,7 +50,6 @@ async function reservation(): Promise<string | null> {
   });
 }
 
-/** Every reservation row of the tenant, in key order. */
 async function reservationRows(): Promise<Array<{ key: string; item_id: string }>> {
   return runInTenant(tenant, async () => {
     const { rows } = await pool.query<{ key: string; item_id: string }>(
@@ -61,7 +59,6 @@ async function reservationRows(): Promise<Array<{ key: string; item_id: string }
   });
 }
 
-/** The ids of the period's entries, live and trashed, in id order. */
 async function periodEntries(): Promise<Array<{ id: string; live: boolean }>> {
   return runInTenant(tenant, async () => {
     const { rows } = await pool.query<{ id: string; live: boolean }>(
@@ -110,7 +107,7 @@ async function backendPid(client: PoolClient): Promise<number> {
   return pid;
 }
 
-/** Polls (bounded) until `waiter`'s statement is blocked by `holder`, read through the admin pool; stops when aborted. */
+/** Bounded poll through the admin pool until `waiter` is blocked by `holder`. */
 async function untilBlocked(waiter: number, holder: number, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
@@ -125,18 +122,13 @@ async function untilBlocked(waiter: number, holder: number, signal: AbortSignal)
   }
 }
 
-/** Rejects as soon as `write` settles: a write that should still be waiting has finished, or it failed. */
 function settledEarly(write: Promise<unknown>, label: string): Promise<never> {
   return write.then((): never => {
     throw new Error(`${label} finished before it was expected to`);
   });
 }
 
-/**
- * Runs `first` in a transaction that stays open until the second writer is observed waiting on it, then commits it
- * and settles both. The gate is opened on every path, and both transactions are awaited before this returns, so a
- * failing case leaves no open transaction behind; the first failure is the one rethrown.
- */
+/** Holds `first` open until the second writer is seen waiting; always awaits both and rethrows the first failure. */
 async function contended<A, B>(
   first: (client: PoolClient) => Promise<A>,
   second: (client: PoolClient) => Promise<B>,

@@ -321,7 +321,6 @@ describe("generic operation AgentTools (issue #220)", () => {
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "plan a meeting" });
       const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const UID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@semprec$/;
-      /** The item a successful tool call returned, narrowed from its JSON text. */
       const returnedItem = (outcome: { error: boolean; result: string }) => {
         expect(outcome.error).toBe(false);
         const value: unknown = JSON.parse(outcome.result);
@@ -402,9 +401,8 @@ describe("generic operation AgentTools (issue #220)", () => {
       const database = await chokePoint.createDatabase({ name: "Tools DB" });
       const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
 
-      // Every generic-operation input schema is a strict zod object with none of these field
-      // names (see AuthenticatedActor's own doc comment) — an attempt to smuggle a different
-      // identity in through `args` fails validation rather than silently being ignored.
+      // Input schemas are strict objects without these fields, so smuggling an identity through `args` fails
+      // validation.
       const spoofed = await tools["view.create"](run.id, {
         databaseId: database.id,
         type: "table",
@@ -428,10 +426,8 @@ describe("generic operation AgentTools (issue #220)", () => {
     it("a destructive operation, granted, returns a synthetic-success result and creates exactly one pending approval request, without executing", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a view" });
-      // Owned by this same agent identity (issue #89's preflight now runs the destructive
-      // command's own `assertViewWritable` ownership check before ever creating the approval
-      // row) — a view owned by someone else is exactly what that preflight must reject outright,
-      // not synthesize a pending approval for, so this fixture has to match the calling agent.
+      // Owned by the calling agent: the destructive preflight runs `assertViewWritable` before creating an approval,
+      // and would reject someone else's view outright.
       const view = await chokePoint.createView(
         { type: "list", name: "Scratch", config: { membership: "manual" } },
         { type: "ai_agent", agentProjectItemId: projectItemId },
@@ -599,7 +595,7 @@ describe("generic operation AgentTools (issue #220)", () => {
             const output = await invoke(...call);
             if (call[0] === "item.patch") {
               if (change === "type change") {
-                // The public conversion catalog has no longText-to-text path; simulate the committed schema change directly.
+                // The conversion catalog has no longText-to-text path; simulate the committed schema change directly.
                 const updated = await withTransaction(pool, (client) =>
                   client.query("UPDATE properties SET type = 'text' WHERE id = $1", [property.id]),
                 );

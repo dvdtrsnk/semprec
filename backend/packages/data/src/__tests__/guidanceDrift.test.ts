@@ -406,6 +406,4 @@ describe("guidanceDrift stores (issue #85)", () => {
   });
 });
 
-// `createGuidanceNotificationWriter`'s tests live in `packages/notifications` (issue #85's
-// AC #46: the writer itself moved there too, on top of that package's `createNotification`),
-// exercised against `@semprec/data`'s public API rather than these internal fixtures.
+// `createGuidanceNotificationWriter`'s tests live in `packages/notifications`.

@@ -1405,7 +1405,6 @@ describe("library module (issue #25)", () => {
     const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [item.id]);
     expect(afterReplay).toHaveLength(1);
 
-    // A later, independent failure (a new job) is a different transition and does insert.
     await expect(
       handleProcessLibraryMetadataTask(pool, payload, failingFetcher, { job: { id: "job-2" } }),
     ).rejects.toThrow("Library metadata processing failed");
@@ -1442,10 +1441,9 @@ describe("library module (issue #25)", () => {
     const registry = libraryRegistry();
     const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
 
-    // Pre-seed and lock the row before anything drains — `runOnce` cascades the trigger
-    // and the processing job through in one call, so locking "mid-flight" between them
-    // isn't observable from a test; pre-locking exercises the same guard in the job itself
-    // (`ensureItemAutomation` is a no-op once the row already exists).
+    // Pre-seed and lock the row before anything drains: `runOnce` cascades the trigger and processing job
+    // in one call, so "mid-flight" locking is not observable; pre-locking exercises the same guard
+    // (`ensureItemAutomation` is a no-op once the row exists).
     await withTransaction(pool, async (client) => {
       await ensureItemAutomation(client, item.id);
       await setItemAutomationLocked(client, item.id, true);
@@ -1488,7 +1486,7 @@ describe("library module (issue #25)", () => {
 
     const recovered = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
     expect(recovered?.status).toBe("done");
-    expect(recovered?.attempts).toBe(1); // unchanged by the successful retry, only failures increment it
+    expect(recovered?.attempts).toBe(1); // only failures increment it
   });
 
   it("retries a not-found title through the actual daily heartbeat", async () => {
@@ -1658,7 +1656,7 @@ describe("library module (issue #25)", () => {
     expect(called).toBe(false);
 
     const settled = await withTransaction(pool, (client) => getItemAutomation(client, item.id));
-    expect(settled?.status).toBe("error"); // untouched — never re-enqueued in the first place
+    expect(settled?.status).toBe("error");
   });
 
   it("settles item_automation to 'done' for a job that runs against an already-deleted item", async () => {
@@ -1667,8 +1665,8 @@ describe("library module (issue #25)", () => {
     const item = await inTenantZero(() => chokePoint.createItem({ databaseId: booksId, properties: { name: "Dune" } }));
     await chokePoint.softDeleteItem(booksId, item.id);
 
-    // A job enqueued directly (e.g. one already in flight when the delete happened),
-    // bypassing the retry sweep's exclusion filter entirely.
+    // A job enqueued directly (e.g. already in flight when the delete happened), bypassing the retry sweep's
+    // exclusion filter.
     let called = false;
     await inTenantZero(() =>
       withTransaction(pool, (client) =>
@@ -1930,7 +1928,6 @@ describe("Books year and ISBN properties", () => {
 
 describe("library cover override (issue gh-1793)", () => {
   const STORAGE_BYTES = Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]);
-  /** One case per library database: the source its job reads, a field the job may fill, and the job config. */
   const LIBRARY_CASES = [
     {
       moduleId: "books",

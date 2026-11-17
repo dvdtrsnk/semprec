@@ -10,7 +10,6 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 let admin: Pool;
 let runtime: Pool;
 
-/** One tenant with its Companies database and a writer; every statement runs on the runtime role pool. */
 async function seedTenant(): Promise<{ tenantId: string; databaseId: string }> {
   const tenantId = await createTestTenant(admin);
   const databaseId = await runInTenant(tenantId, async () => {

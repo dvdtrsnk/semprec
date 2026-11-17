@@ -23,11 +23,9 @@ function substitute(node: AreaFilterTemplate, areaId: string): unknown {
 }
 
 /**
- * Expands a database's declared area filter (a module manifest's `databases[].areaFilter`, issue #1597)
- * for one area: every `{ areaValue: true }` slot becomes `areaId`, and the result is validated with the
- * filter-tree schema (`parseFilterNode`), so it is an ordinary filter tree any query of that database
- * accepts. A malformed area id is a 400 on `areaId`; property keys are resolved later, by the compiler,
- * against the queried database.
+ * Fills every `{ areaValue: true }` slot of a manifest's declared area filter with `areaId` and validates the result
+ * as an ordinary filter tree. A malformed area id is a 400 on `areaId`; property keys are resolved later by the
+ * compiler.
  */
 export function expandAreaFilter(template: AreaFilterTemplate, areaId: string): FilterNode {
   if (!z.uuid().safeParse(areaId).success) {
@@ -36,17 +34,13 @@ export function expandAreaFilter(template: AreaFilterTemplate, areaId: string): 
   return parseFilterNode(substitute(template, areaId));
 }
 
-/** Stands in for an area id while a declaration is compiled; the compiler binds it as a parameter only. */
+/** The compiler binds it as a parameter only. */
 const PROBE_AREA_ID = "00000000-0000-4000-8000-000000000000";
 
 /**
- * The declared area filters of the system databases the current tenant has, keyed by database key, each
- * accepted by the existing filter compiler against that tenant's actual schema before it is returned
- * (issue #1597): the manifest loader checks only the template's shape, and a property or relation hop is
- * resolvable only in a tenant's schema. A declaration for a database the tenant does not have is left
- * out. A declaration the compiler refuses is a configuration error: it throws, naming only the database
- * key and the compiler's field, with the compiler's error as `cause`, and nothing is returned. Runs in the
- * caller's transaction.
+ * The declared area filters of the tenant's system databases, by key, each compiled against the tenant's actual
+ * schema first, since the manifest loader checks only shape. Databases the tenant lacks are left out. A refused
+ * declaration is a configuration error: it throws naming only the database key and field, with `cause`.
  */
 export async function resolveDatabaseAreaFilters(
   client: PoolClient,

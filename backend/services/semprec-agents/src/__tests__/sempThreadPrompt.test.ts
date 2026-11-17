@@ -388,7 +388,7 @@ describe("Semp thread live prompt", () => {
       ]),
     );
     expect(jobs.rows).toEqual([{ key: `heartbeat-fire:manual:${fixture.own}` }]);
-    // The later system-continuation producer is outside this batch; these rows form a valid stored input to the real task.
+    // No producer writes these yet; the rows form a valid stored input to the real task.
     const continuation = await runInTenant(tenant, () =>
       withTransaction(runtime, async (client) => {
         const source = await client.query<{ id: string }>(
@@ -515,7 +515,7 @@ describe("Semp thread live prompt", () => {
         expect(prompt).toContain("Data schema:");
         expect(prompt).toContain(`"databaseId":"${fixture.inboxId}","key":null,"name":"Inbox"`);
         expect(prompt).toContain('"key":"areas","name":"Areas"');
-        // The project holds no grant on the sensitive databases, so the schema lists none of them (issue #1810).
+        // The project holds no grant on the sensitive databases, so the schema lists none of them.
         expect(prompt).toContain('"sensitive":false');
         expect(prompt).not.toContain('"sensitive":true');
         expect(prompt).toContain('"properties":');
@@ -526,7 +526,7 @@ describe("Semp thread live prompt", () => {
       const itemTools = toolLists[1] ?? [];
       expect(userInputs[0]).not.toContain("Automation:");
       expect(userInputs[1]).not.toContain("Automation:");
-      // The grants cover the capability of the REST-only operations (issue #1699), so only the gateway keeps them out.
+      // The grants cover the REST-only operations' capability, so only the gateway keeps them out.
       expect(fixture.grants).toContain("core.schema.write");
       for (const name of GENERIC_OPERATION_NAMES) {
         if (OPERATION_METADATA[name].riskClass !== "read") expect(itemTools).not.toContain(modelName(name));

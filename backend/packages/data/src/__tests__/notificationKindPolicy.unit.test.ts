@@ -22,7 +22,6 @@ describe("notification kind policy", () => {
       const policy = policyForKind(kind);
       expect(NOTIFICATION_CATEGORIES).toContain(policy.category);
       if (policy.category === "problems") {
-        // `semp_problem` takes its severity from its payload, so its policy names no severity (issue #1466).
         expect([...NOTIFICATION_SEVERITIES, "payload"]).toContain(policy.severity);
       } else {
         expect("severity" in policy).toBe(false);

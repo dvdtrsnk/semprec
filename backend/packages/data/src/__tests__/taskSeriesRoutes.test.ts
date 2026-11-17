@@ -53,7 +53,6 @@ async function template(seriesId: string): Promise<unknown> {
   });
 }
 
-/** A daily series started through the recurrence route on a task dated 16 October. */
 async function series(): Promise<{ seriesId: string; currentId: string }> {
   const created = await runInTenant(tenant, () =>
     cp.createItem({ databaseId: tasksId, properties: { name: "Stretch", date: "2026-10-16" } }),
@@ -66,7 +65,7 @@ async function series(): Promise<{ seriesId: string; currentId: string }> {
   return { seriesId, currentId: created.id };
 }
 
-/** A materialized occurrence of the series (synthetic: the #1720 materialization that creates them is not built). */
+/** Synthetic: no materialization creates occurrences yet. */
 function occurrence(seriesId: string, occurrenceDate: string, status: string): Promise<string> {
   return runInTenant(tenant, () =>
     createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate, status }),
@@ -201,7 +200,7 @@ describe("PATCH /api/tasks/series/:seriesId (issue #1667)", () => {
     ["occurrenceDate", { occurrenceDate: "2026-10-20" }],
     ["completedOn", { completedOn: "2026-10-16" }],
     ["every", { every: 2 }],
-    // Issue #2009 removed the Tasks property; the legacy template field is refused like any other unknown key.
+    // The legacy template field is refused like any other unknown key.
     ["persistent", { persistent: true }],
   ])("refuses a patch of %s with 400 on that field and changes nothing", async (field, body) => {
     const { seriesId, currentId } = await series();
@@ -282,7 +281,6 @@ describe("PATCH /api/tasks/series/:seriesId (issue #1667)", () => {
           timer = setTimeout(() => reject(new Error("The completion did not start")), WAIT_MS);
         }),
       ]);
-      // Started only once the completion holds the occurrence, so the edit is the one that waits.
       edit = patchSeries(seriesId, { timeFrom: "08:00" }).then(
         () => undefined,
         (error: unknown) => error,

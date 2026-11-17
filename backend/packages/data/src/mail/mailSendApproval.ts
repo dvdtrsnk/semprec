@@ -1,11 +1,6 @@
-// The approval request of a mail send by an agent or an MCP client with a run credential (issue gh-1913), and the hash
-// that ties the request to the draft it was made for. The executor that sends after the approval is
-// mail/mailSendApprovalExecution.ts. In v1 no permission lets an agent send without approval, so nothing here reads a
-// project, a thread or a heartbeat: the decision does not depend on where the draft or the run is.
-// Constrained by: docs/adr/2026-11-14-an-agents-mail-send-is-an-approval-request-of-its-own-kind-sent-as-the-user.md,
-// docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md,
-// docs/adr/2026-11-12-module-agent-tools-that-require-approval-run-through-a-moduletool-request.md
-// Template and params (the catalogs are `seed/i18n/{cs,en}.json` and `notifications/i18n/{cs,en}.json`):
+// The approval request of a mail send by an agent or a run-credential MCP client, and the hash that ties it to the
+// draft. No permission lets an agent send without approval, so nothing here reads a project, thread or heartbeat.
+// Template and params (catalogs `seed/i18n/{cs,en}.json` and `notifications/i18n/{cs,en}.json`):
 //   approval.emailSend   {mailboxName, recipientCount}   (no recipient, no subject and no body: those are argument values)
 import { createHash } from "node:crypto";
 import type { Pool } from "pg";
@@ -33,11 +28,9 @@ function recipientsOf(
 }
 
 /**
- * The hash of what a send would deliver: the mailbox, From, To, Cc, Bcc, subject, text body and attachments, as the
- * SHA-256 hex of their canonical JSON. An attachment is its file name, content type and blob id; a blob is immutable
- * and stored by its content, so its id stands for its bytes. The reply headers are not part of it. The request stores
- * it as `draftHash`, and the executor computes it again from the draft as it is then; a different hash means the
- * draft was changed after it was approved, and nothing is sent.
+ * SHA-256 of the canonical JSON of what a send would deliver (mailbox, From, To, Cc, Bcc, subject, text body,
+ * attachments). Blobs are immutable and content-addressed, so a blob id stands for its bytes; reply headers are
+ * excluded. The executor recomputes it at send time and sends nothing on a mismatch.
  */
 export function computeMailDraftHash(input: SendEmailInput): string {
   return createHash("sha256")
@@ -61,24 +54,18 @@ export function computeMailDraftHash(input: SendEmailInput): string {
     .digest("hex");
 }
 
-/** The description of an email send request: the mailbox's name and how many recipients the message has in To, Cc and Bcc. */
 function buildEmailSendApprovalDescription(mailboxName: string, recipientCount: number): ApprovalDescription {
   return { key: "approval.emailSend", params: { mailboxName, recipientCount } };
 }
 
 /**
- * Creates the `pending` approval request of the agent's send of the draft `draftItemId` (issue gh-1913), and in the
- * same transaction its `approval_pending` notification linked by source, so a rollback drops both. Everything the request
- * says is read from the stored draft under the locks of its writers (`prepareSend`: the Emails item, then its
- * `mail_drafts` row), never from what the caller supplies: the draft hash, the To recipients, the subject and the text
- * body of the payload, and the mailbox's name and the recipient count of the description. The refusals are those of
- * `prepareSend`: 404 for a draft that is gone or a mailbox that is gone, 409 `mail_draft_not_editable` for an item without
- * a draft row, 409 `mail_draft_already_sent` for a sent draft and 400 for a draft without a recipient. The request has risk class
- * `outbound`, and its source (`chat`, `tick` or `mcp`) is derived from the run when it is read.
+ * Creates the `pending` send request and, in the same transaction, its `approval_pending` notification. Everything it
+ * says is read from the stored draft under its writers' locks (`prepareSend`), never from the caller; refusals are
+ * those of `prepareSend`. Risk class `outbound`; its source is derived from the run when read.
  *
- * A draft has at most one pending request: when one exists, this returns it and writes nothing. The Emails item lock
- * that `prepareSend` takes is held to the commit, so two concurrent calls for one draft are ordered and the second
- * sees the first's request. A repeated `(agentRunId, toolCallId)` returns the request it created before.
+ * At most one pending request per draft: an existing one is returned without writing. The Emails item lock is held
+ * to the commit, so concurrent calls for one draft are ordered. A repeated `(agentRunId, toolCallId)` returns the
+ * earlier request.
  */
 export async function requestMailSendApproval(
   pool: Pool,

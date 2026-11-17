@@ -27,7 +27,6 @@ interface RelationShape {
   }>;
 }
 
-/** The `Events.people` definition and both of its properties, read in the tenant's own scope. */
 async function relationShape(tenant: string): Promise<RelationShape> {
   return runInTenant(tenant, async () => {
     const { rows: definitions } = await pool.query<{
@@ -77,7 +76,6 @@ async function databaseIds(tenant: string): Promise<{ events: string; people: st
   });
 }
 
-/** Creates a person and an Event that lists them as a participant, through the choke point. */
 async function eventWithParticipant(tenant: string): Promise<{ eventId: string; personId: string }> {
   const ids = await databaseIds(tenant);
   return runInTenant(tenant, async () => {
@@ -91,7 +89,6 @@ async function eventWithParticipant(tenant: string): Promise<{ eventId: string; 
   });
 }
 
-/** The Events a person's own `events` relation returns. */
 async function eventsOfPerson(tenant: string, personId: string): Promise<string[]> {
   const ids = await databaseIds(tenant);
   return runInTenant(tenant, async () => {

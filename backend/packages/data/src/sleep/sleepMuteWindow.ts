@@ -16,7 +16,6 @@ interface SleepItemRow {
   properties: Record<string, unknown>;
 }
 
-/** The plan values a sleep window depends on. */
 const planProperties = z.object({
   wakeDays: z.array(z.string()),
   bedTime: z.string(),
@@ -24,7 +23,7 @@ const planProperties = z.object({
   position: z.number(),
 });
 
-/** One night exception; an unset field becomes null, which the resolver reads as "follow the plan". */
+/** An unset field becomes null, which the resolver reads as "follow the plan". */
 const nightProperties = z.object({
   night: z.string(),
   bedTime: z.string().nullable().default(null),
@@ -32,20 +31,15 @@ const nightProperties = z.object({
   alarm: z.boolean().nullable().default(null),
 });
 
-/** A sleep window does not depend on the bedtime reminder, so the resolver is asked for none. */
 const NO_PREP_REMINDER: SleepNightsSettings = { prepReminder: false, prepReminderMinutes: 0 };
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** The calendar date before `date` (`YYYY-MM-DD`). */
 function dayBefore(date: string): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) - MILLISECONDS_PER_DAY).toISOString().slice(0, 10);
 }
 
-/**
- * The non-deleted items of one sleep database of the tenant, ordered by id; none when the tenant has no such
- * database. With `nights`, only the items whose `night` is one of those dates.
- */
+/** None when the tenant has no such database. */
 async function liveItems(
   client: PoolClient,
   moduleId: string,
@@ -64,7 +58,7 @@ async function liveItems(
 }
 
 function toPlan(row: SleepItemRow): SleepPlan {
-  // A plan's name and alarm do not change its window, so they are not read from the row.
+  // Name and alarm do not affect the window.
   return { id: row.id, name: "", alarm: false, ...planProperties.parse(row.properties) };
 }
 
@@ -73,19 +67,9 @@ function toException(row: SleepItemRow): SleepNightException {
 }
 
 /**
- * Until when Semp stays quiet for the tenant of `client` (issue #1794): the latest wake time among the nights
- * whose sleep window contains `now`, or `null` when Semp is not to stay quiet.
- *
- * A window runs from a night's bedtime, inclusive, to its wake time, exclusive. The nights named yesterday and
- * today in the tenant's time zone are resolved with `resolveSleepNights` from the tenant's non-deleted plans
- * and night exceptions, so a night without an alarm has a window like any other.
- *
- * Returns `null` when the tenant has no sleep settings item, and when `enabled` or `muteSemp` of that item is
- * not `true`; the plans and exceptions are then not read.
- *
- * Throws when the tenant has more than one non-deleted settings item, when a stored plan or exception does not
- * have the value types of `planProperties` or `nightProperties`, and with whatever the time zone lookup and the
- * resolver throw. The caller decides what such a failure means.
+ * The latest wake time among the nights (yesterday's and today's, tenant zone) whose window `[bedAt, wakeAt)`
+ * contains `now`, or `null`. A night without an alarm has a window too. `null` without reading plans when there is
+ * no settings item or `enabled`/`muteSemp` is not `true`. Failures propagate; the caller decides what they mean.
  */
 export async function findSleepMuteUntil(client: PoolClient, now: Date): Promise<Date | null> {
   const settingsItems = await liveItems(client, SLEEP_SETTINGS_MODULE_ID);

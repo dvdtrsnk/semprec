@@ -145,7 +145,6 @@ async function addOccurrence(heartbeatId: string, scheduledFor: string): Promise
 
 type Closing = "done" | "error" | "running";
 
-/** The run of a new occurrence of the heartbeat, closed as `closing`. */
 async function addOccurrenceRun(
   projectItemId: string,
   heartbeatId: string,
@@ -182,10 +181,7 @@ function failedMcpStep(): SempReplyStep {
   };
 }
 
-/**
- * Stores an incomplete reply (a failed tool call, issue #1890) as an assistant message of `run`. `threadId` is the
- * thread to send into; without it a new chat thread is created. Returns the thread the message was sent into.
- */
+/** Without `threadId` a new chat thread is created. Returns the thread used. */
 async function addIncompleteReply(run: { id: string }, eventId: string, threadId: string | undefined): Promise<string> {
   // Queuing the reply message is a tenant task, so it needs a tenant scope.
   return runInTenant(getTenantZeroId(), () =>
@@ -211,9 +207,8 @@ async function addIncompleteReply(run: { id: string }, eventId: string, threadId
 }
 
 /**
- * An occurrence whose run closed as `done` with a reply that left a failed tool call (issue #1890): it reads `failed`.
- * `extraReply` adds a second assistant message of the same run, in the run's own thread (`"same-thread"`, so the run
- * has two replies and no single one to judge) or in another thread (`"other-thread"`, so only one reply is the run's).
+ * Reads `failed`. `extraReply` adds a second reply of the run: `"same-thread"` leaves no single reply to judge,
+ * `"other-thread"` keeps the own-thread reply as the run's.
  */
 async function addIncompleteReplyOccurrence(
   projectItemId: string,
@@ -247,7 +242,6 @@ async function addPendingApproval(runId: string): Promise<string> {
   return request.id;
 }
 
-/** A run of the project that is not tied to a heartbeat. */
 function addUserRun(projectItemId: string) {
   return createAgentRun(pool, { userId, projectItemId, triggeredBy: "user", task: "Ask" });
 }

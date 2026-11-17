@@ -1,15 +1,8 @@
-// Issue #1756: a file's company link ends together with its attachment to an Event. A file attached to an
-// Event inherits its project from the Event (rule `fileProjectsFromEvents`) and its company from that project
-// (rule `fileCompaniesFromProjects`). Removing the attachment keeps the file in Files with its project, so the
-// link rules alone would keep the company following that project. The hook below ends the company link in the
-// transaction that removes the `Files.events` edge; the project and company edges are not touched and read as
-// the file's own values from then on.
-// It runs before `linkRuleEdgeHook`, because the engine deletes the file's `projects` link when the removed Event
-// was its last source, and the hook has to read that link first to tell this file from one whose project is its own.
-// Registered in `../domainWriteHooks.ts`. Constrained by:
-// docs/adr/2026-11-15-an-event-attachments-company-link-ends-with-the-attachment.md,
-// docs/adr/2026-11-10-transcript-values-are-inherited-by-link-rules-whichever-process-writes-the-edge.md,
-// docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
+// A file's company link ends with its Event attachment. The file inherits its project from the Event and its company
+// from that project; removing the attachment keeps the project, so the link rules alone would keep the company
+// following it. The project and company edges stay and read as the file's own values afterwards.
+// Must run before `linkRuleEdgeHook`, which deletes the `projects` link when the Event was its last source; this hook
+// must read that link first to tell an inherited project from the file's own.
 import type { PoolClient } from "pg";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import type { RelationEdgeChangedHook } from "../chokePoint/hooks.js";
@@ -37,7 +30,6 @@ interface FileEventRelation {
   definitionId: string;
 }
 
-/** The Files `events` relation of the caller's tenant, or `null` in a tenant without it. */
 async function loadFileEventRelation(client: PoolClient): Promise<FileEventRelation | null> {
   const files = await getDatabaseByModuleId(client, FILES_MODULE_ID);
   const property = files && (await getPropertyByKey(client, files.id, "events"));
@@ -46,16 +38,12 @@ async function loadFileEventRelation(client: PoolClient): Promise<FileEventRelat
   return { filesDatabaseId: files.id, definitionId: definition.id };
 }
 
-/** The item sources of a locked link, as the ids of the items they name. */
 async function itemSourceIds(client: PoolClient, link: ValueLinkRow): Promise<string[]> {
   const sources = await listValueLinkSourcesByLinkIds(client, [link.id]);
   return sources.flatMap((source) => (source.kind === "item" ? [source.sourceItemId] : []));
 }
 
-/**
- * Deletes the caller-locked link with every item source it has. The final delete succeeds only when no source
- * row is left, so a link that keeps a source fails the caller's transaction.
- */
+/** A link that still keeps a source fails the caller's transaction. */
 async function deleteLinkWithSources(client: PoolClient, link: ValueLinkRow, what: string): Promise<void> {
   for (const source of await listValueLinkSourcesByLinkIds(client, [link.id])) {
     if (source.kind === "item")
@@ -66,27 +54,19 @@ async function deleteLinkWithSources(client: PoolClient, link: ValueLinkRow, wha
 }
 
 /**
- * After a Files `events` edge was removed (issue #1530's hook), for the file, the edge's item that is a row of the
- * Files database, trashed or not: locks the file row, then its `projects` link row, then its `companies` link row,
- * and ends the links of the attachment.
+ * Lock order: file row, `projects` link, `companies` link.
  *
- * - When the `projects` link is the one of rule `fileProjectsFromEvents` and the removed Event is its only
- *   source, whatever the link's state, the hook deletes that link and the `companies` link of rule
- *   `fileCompaniesFromProjects`, whatever its state, with their source rows. The file is announced after the commit.
- * - When another Event still feeds that `projects` link, the hook removes the removed Event from the sources of a
- *   link that is not `on` and announces the file, and does the same for a link that is `on` while the file is in
- *   the Trash, because the link engine's hook, which runs after this one, skips a target in the Trash. A live
- *   link that is `on` is left to that hook, which removes the source and recomputes the projects. The
- *   `companies` link stays.
- * - Otherwise (the file has no `projects` link, the link is of another rule, or it does not name the removed
- *   Event) nothing changes, so a company that follows a project the file had on its own keeps following it.
+ * - Removed Event was the only source of the rule's `projects` link: delete it and the rule's `companies` link.
+ * - Other Events remain: drop this source when the link is not `on`, or when the file is trashed (the engine's hook
+ *   skips trashed targets). A live `on` link is left to the engine's hook. `companies` stays.
+ * - Otherwise nothing changes, so a company following the file's own project keeps following it.
  */
 export const eventAttachmentLinkReleaseEdgeChangedHook: RelationEdgeChangedHook = async (context) => {
   if (context.op !== "delete") return;
   const { client } = context;
   const relation = await loadFileEventRelation(client);
   if (!relation || relation.definitionId !== context.relationDefinitionId) return;
-  // The Files side of the edge is the one item that is a row of the Files database; the lock finds it and takes it.
+  // Whichever side is a Files row is the file.
   const file =
     (await lockItemById(client, relation.filesDatabaseId, context.itemA)) ??
     (await lockItemById(client, relation.filesDatabaseId, context.itemB));
@@ -103,8 +83,7 @@ export const eventAttachmentLinkReleaseEdgeChangedHook: RelationEdgeChangedHook 
     if (companiesLink && companiesLink.ruleKey === COMPANIES_RULE_KEY)
       await deleteLinkWithSources(client, companiesLink, "companies");
   } else if (projectsLink.state !== "on" || file.deletedAt) {
-    // The engine's hook leaves a target in the Trash alone (`linkRuleEdgeHook`), so for such a file this hook is the
-    // only one that takes the removed Event out of the sources, whatever the link's state.
+    // `linkRuleEdgeHook` skips trashed targets, so only this hook can drop the source for them.
     for (const source of await listValueLinkSourcesByLinkIds(client, [projectsLink.id])) {
       if (source.kind === "item" && source.sourceItemId === eventId)
         await removeValueLinkItemSource(client, projectsLink.id, eventId, source.sourcePropertyKey);

@@ -43,10 +43,7 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 
-/**
- * The item writes of confirm, wrapped so one test can make the item create of the confirm fail after the options were
- * added. Every other call runs the real write.
- */
+/** Wrapped so one test can fail the confirm's item create after the options were added. */
 vi.mock("../chokePoint/itemWrites.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../chokePoint/itemWrites.js")>();
   return { ...actual, createItemWithClient: vi.fn(actual.createItemWithClient) };
@@ -54,7 +51,6 @@ vi.mock("../chokePoint/itemWrites.js", async (importOriginal) => {
 
 const invalidation = vi.fn<(event: InvalidationEvent) => void>();
 
-/** The schema invalidations sent since the last reset: the item invalidations of the writes around them are not counted. */
 function schemaInvalidations(): InvalidationEvent[] {
   return invalidation.mock.calls.map(([event]) => event).filter((event) => event.scope === "schema");
 }
@@ -69,7 +65,6 @@ interface Fixture {
   types: string;
   proposals: string;
   healthRecords: string;
-  /** The `tags` multi_select and the `type` select of Health records. */
   tags: string;
   type: string;
 }
@@ -78,7 +73,6 @@ const optionRowsSchema = z.object({
   options: z.array(z.object({ key: z.string(), label: z.string().optional(), color: z.string().optional() })),
 });
 
-/** The ids of the tenant's databases and the two select properties this test reads, resolved as that tenant. */
 async function loadFixture(tenantId: string): Promise<Fixture> {
   return runInTenant(tenantId, () =>
     withTransaction(runtime, async (client) => {
@@ -111,7 +105,6 @@ let foreign: Fixture;
 const NEW_TAG = { propertyKey: "tags", label: "Bylinky" };
 const NEW_TAG_VALUE = { newOption: "Bylinky" };
 
-/** What the computation answers for a health note whose tag is new: the record, the tag by label, and the option. */
 function herbsAnswer(overrides: Partial<ProposalComputationResult> = {}): ProposalComputationResult {
   return {
     properties: { name: "Herbal tea against a cold", tags: [NEW_TAG_VALUE] },
@@ -120,11 +113,7 @@ function herbsAnswer(overrides: Partial<ProposalComputationResult> = {}): Propos
   };
 }
 
-/**
- * A proposal card for a health note through the production path: an active Inbox type that targets Health records,
- * an Inbox item of that type and one tick whose computation answers `result`, so the card holds the envelope exactly
- * as the tick validated and stored it.
- */
+/** Through the production path: an Inbox type targeting Health records, an item and one tick answering `result`. */
 async function createHealthCard(
   tenantId: string,
   fixture: Fixture,
@@ -189,7 +178,6 @@ function confirm(tenantId: string, fixture: Fixture, cardId: string): Promise<It
   return runInTenant(tenantId, () => withTransaction(runtime, (client) => confirmWithClient(client, fixture, cardId)));
 }
 
-/** The options of one select property of the tenant's Health records, in stored order, read on a connection of their own. */
 async function optionsOf(
   tenantId: string,
   propertyId: string,
@@ -206,7 +194,6 @@ async function optionKeys(tenantId: string, propertyId: string): Promise<string[
   return (await optionsOf(tenantId, propertyId)).map((option) => option.key);
 }
 
-/** The live Health records of a tenant, read on a connection of their own. */
 async function healthRecords(tenantId: string, fixture: Fixture): Promise<ItemRow[]> {
   const page = await runInTenant(tenantId, () =>
     createChokePoint(runtime).queryDatabaseItems(fixture.healthRecords, {}),
@@ -221,7 +208,6 @@ async function cardStatus(tenantId: string, fixture: Fixture, cardId: string): P
   return card?.properties.status;
 }
 
-/** Adds an option through the choke point, as a person would, so a label is taken after a card was computed. */
 async function addOption(tenantId: string, propertyId: string, label: string): Promise<void> {
   await runInTenant(tenantId, () => createChokePoint(runtime).addPropertyOption(propertyId, { label }));
 }
@@ -609,7 +595,6 @@ describe("confirming a proposal that carries new options (issue gh-1994)", () =>
       runInTenant(tenant, () =>
         withTransaction(runtime, async (client) => {
           await confirmWithClient(client, ids, card.id);
-          // Nothing has been sent while the transaction is open.
           expect(schemaInvalidations()).toEqual([]);
           throw failure;
         }),
@@ -692,7 +677,6 @@ describe("confirming a proposal that carries new options (issue gh-1994)", () =>
       optionSeenByTheCreate = optionRowsSchema
         .parse(inside.rows[0]?.config)
         .options.some((option) => option.key === "bylinky");
-      // The key has already replaced the label in the properties the create receives.
       expect(input.properties).toMatchObject({ tags: ["bylinky"] });
       throw failure;
     });
@@ -708,8 +692,7 @@ describe("confirming a proposal that carries new options (issue gh-1994)", () =>
   it("creates no option for a record with no title, which the required-field check refuses before any write", async () => {
     const card = await createHealthCard(tenant, ids, herbsAnswer());
     const before = await optionKeys(tenant, ids.tags);
-    // Raw SQL: no write path stores an envelope without the title, since the tick and revise validate; this is the card
-    // an edit that cleared the title leaves behind.
+    // Raw SQL: tick and revise validate the title; this is what an edit clearing it leaves.
     await admin.query(
       "UPDATE items SET properties = jsonb_set(properties, '{proposal,properties}', $2::jsonb) WHERE id = $1",
       [card.id, JSON.stringify({ tags: [NEW_TAG_VALUE] })],

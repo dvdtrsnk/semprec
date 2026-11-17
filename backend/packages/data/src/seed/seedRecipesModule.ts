@@ -18,9 +18,8 @@ interface PropSpec {
 }
 
 /**
- * The seven properties of a recipe; the labels of each, of the options and of the presets are in `recipes/i18n`.
- * `sourceUrl` (issue gh-1974) is the page a recipe was taken from; `recipes/recipeSourceUrlHook.ts` checks each value
- * written.
+ * Labels of properties, options and presets are in `recipes/i18n`. `sourceUrl` values are checked by
+ * `recipes/recipeSourceUrlHook.ts`.
  */
 const RECIPE_PROPERTIES: readonly PropSpec[] = [
   { key: "name", type: "title", owner: "user" },
@@ -56,17 +55,15 @@ const RECIPE_PROPERTIES: readonly PropSpec[] = [
 ];
 
 export interface RecipesModuleResult {
-  /** The Projects item "Recipes" that owns the `recipes` database. */
   projectItemId: string;
 }
 
 /**
- * Seeds the Recipes module (issue #1707) into the caller's open transaction: the system project item "Recipes"
- * in the Projects database, the `recipes` system database it owns, the seven properties of `RECIPE_PROPERTIES`,
- * and the default `gallery` view (two columns, 4:3 tiles, the photo as the tile image). The schema is locked
- * once the view exists. Resolves with the id of the project item it created.
+ * Seeds the Recipes module into the caller's transaction: the "Recipes" system project, its `recipes`
+ * database and properties, and the default `gallery` view; the schema is locked after the view.
+ * Resolves with the project item id.
  *
- * Not idempotent on its own: `seedSystem` calls it once for a new tenant.
+ * Not idempotent: `seedSystem` calls it once per new tenant.
  */
 export async function seedRecipesModuleInTransaction(
   client: PoolClient,
@@ -89,7 +86,7 @@ export async function seedRecipesModuleInTransaction(
     ownerProjectItemId: project.id,
   });
   for (const spec of RECIPE_PROPERTIES) {
-    // `name` stays null: the label of each property comes from the module catalog.
+    // `name` stays null: labels come from the module catalog.
     await propertiesStore.createProperty(client, {
       databaseId: recipes.id,
       key: spec.key,

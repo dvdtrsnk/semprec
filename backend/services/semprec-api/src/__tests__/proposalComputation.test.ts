@@ -97,14 +97,12 @@ vi.mock("@semprec/shared", async (importOriginal) => {
 
 let pool: Pool;
 
-/** A register that knows no company, for the tests that never reach a Companies proposal. */
 const knowsNoCompany: AresClient = {
   async lookupCompanyByIco() {
     return null;
   },
 };
 
-/** These items carry no attachment, so no blob is ever opened. */
 const noBlobBytes = async (): Promise<null> => null;
 
 async function databaseIdFor(moduleId: string): Promise<string> {
@@ -113,7 +111,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Counts connections of this database sitting in an open transaction, seen from an unrelated connection. */
+/** Seen from an unrelated connection. */
 async function openTransactionCount(): Promise<number> {
   const { rows } = await pool.query<{ count: string }>(
     `SELECT count(*) FROM pg_stat_activity
@@ -140,7 +138,6 @@ function stubGateway(content: unknown): StubGateway {
   return stub;
 }
 
-/** A pool that records the text of every statement run on it, so a test can assert none of them writes. */
 function recordingPool(inner: Pool, statements: string[]): Pool {
   const record = (client: PoolClient): PoolClient =>
     new Proxy(client, {
@@ -242,7 +239,6 @@ describe("createProposalComputation (issue #1434)", () => {
     return rows.map((row) => row.properties);
   }
 
-  /** One request to the API as a freshly created user of tenant zero, through the real dispatcher. */
   async function requestByHttp(
     method: string,
     path: string,
@@ -677,7 +673,7 @@ describe("createProposalComputation (issue #1434)", () => {
     const project = await inTenantZero(() =>
       createChokePoint(pool).createItem({ databaseId: projects, properties: { name: "Active", status: "inProgress" } }),
     );
-    // Simulate a system-owned catalog relation; user property APIs cannot change ownership.
+    // User property APIs cannot change ownership.
     await pool.query(
       "UPDATE properties SET owner = 'system', owner_process = 'test' WHERE database_id = $1 AND key = 'project'",
       [tasks],
@@ -1498,7 +1494,7 @@ describe("createProposalComputation (issue #1434)", () => {
       await inTenantZero(() =>
         cp.createRelation({ relationPropertyId: areaProperty.id, callerItemId: project.id, targetItemId: oldArea.id }),
       );
-      // Reproduce a legacy pinned project without an allocation; a normal write would allocate it.
+      // A pinned project without an allocation; a normal write would allocate it.
       await pool.query(
         "UPDATE items SET properties = jsonb_set(properties, '{pinnedOrder}', 'null'::jsonb) WHERE id = $1",
         [project.id],
@@ -1519,7 +1515,7 @@ describe("createProposalComputation (issue #1434)", () => {
       expect(request).toContain(oldArea.id);
       expect(request).toContain("Old");
       expect(request.split(project.id)).toHaveLength(2);
-      // Twice since issue gh-1987: the area's own entry of the workspace context and the `areaId` of the project's entry.
+      // Twice: the area's own context entry and the `areaId` of the project's entry.
       expect(request.split(oldArea.id)).toHaveLength(3);
       expect(userMessage).not.toContain('"before"');
       expect(userMessage).not.toContain(JSON.stringify([oldArea.id]));
@@ -1886,7 +1882,6 @@ describe("createProposalComputation (issue #1434)", () => {
       return z.string().parse(gateway.calls[index]?.messages[0]?.content);
     }
 
-    /** The JSON after the label of the line `<label> (JSON): ` of the user message. */
     function jsonLine(message: string, label: string): unknown {
       const prefix = `${label} (JSON): `;
       const line = message.split("\n").find((candidate) => candidate.startsWith(prefix));
@@ -1914,14 +1909,13 @@ describe("createProposalComputation (issue #1434)", () => {
       );
     }
 
-    /** Fakes the clock only, so the connection and job timers of the tick keep running. */
+    /** Fakes the clock only, so the connection and job timers keep running. */
     function setClock(iso: string): void {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(new Date(iso));
     }
 
     it("passes the capture date, time, channel, the tenant timezone and today, and stores what the model returns", async () => {
-      // 23:30 UTC on 16 October is 01:30 on 17 October in Prague.
       setClock("2026-10-16T23:30:00Z");
       const itemId = await createTaskItem("Call the dentist tomorrow at 9", "events", {
         date: "2026-10-16",
@@ -1973,7 +1967,6 @@ describe("createProposalComputation (issue #1434)", () => {
 
       await runTick(pool, gateway, itemId);
 
-      // No `captureChannel` was set on the item, so the fact is absent, not null.
       expect(factsSchema.parse(jsonLine(userMessage(gateway), "Capture facts"))).toEqual({
         captureDate: "2026-08-28",
         captureTime: "09:00",
@@ -2068,8 +2061,8 @@ describe("createProposalComputation (issue #1434)", () => {
       const health = await inTenantZero(() =>
         cp.createItem({ databaseId: healthId, properties: { name: "SECRET_HEALTH_RECORD" } }),
       );
-      // No API marks a built-in database sensitive (the cutover does it for the Health and sleep databases only), and
-      // Health is not one of the five kinds of the context, so the test marks Companies.
+      // No API marks a built-in database sensitive, and Health is not one of the context's five kinds, so the test
+      // marks Companies.
       await pool.query("UPDATE databases SET sensitive = true WHERE id = $1", [companiesId]);
 
       const withoutGrant = stubGateway({ properties: { name: "Plan" } });
@@ -2093,7 +2086,6 @@ describe("createProposalComputation (issue #1434)", () => {
       const withGrant = stubGateway({ properties: { name: "Plan again" } });
       await runTick(pool, withGrant, await createTaskItem("Plan again"));
       expect(listed(withGrant, "companies")).toEqual([company.id]);
-      // Health stays out: it is not one of the five kinds, a grant for its database does not add it.
       expect(JSON.stringify(withGrant.calls[0])).not.toContain(health.id);
     });
 
@@ -2143,7 +2135,7 @@ describe("createProposalComputation (issue #1434)", () => {
       const typedItemId = await createTaskItem("Typed words", "tasks");
       for (const id of [voiceItemId, typedItemId])
         await withTransaction(pool, (client) =>
-          // The transcribe process's own write: `recordInboxTranscribedText` needs real voice-note attachments.
+          // The transcribe process's write: `recordInboxTranscribedText` needs real voice-note attachments.
           updateItemWithClient(
             client,
             { databaseId: config.inboxDatabaseId, itemId: id, propertiesPatch: { transcribedText: "Spoken words" } },
@@ -2200,11 +2192,10 @@ describe("createProposalComputation (issue #1434)", () => {
         await seedWorkspace();
         const small = await contextWithText(10);
         const full = counts(small);
-        // The areas include the seeded Unplanned area.
         expect(full).toEqual({ projects: 3, areas: 3, people: 3, companies: 4, events: 3 });
         expect(bytes(small)).toBeLessThan(REQUEST_BUDGET_BYTES);
 
-        // The text length at which the context is 10 bytes over the budget once every event is gone, so one company goes too.
+        // The length at which the context is 10 bytes over budget once every event is gone, so one company goes too.
         const withoutEvents = small.workspace.map((group) =>
           group.moduleId === "events" ? { ...group, items: [] } : group,
         );
@@ -2221,8 +2212,7 @@ describe("createProposalComputation (issue #1434)", () => {
         expect(bytes(squeezed)).toBeLessThanOrEqual(REQUEST_BUDGET_BYTES);
       });
 
-      // The context is then over the budget but, at 901 KiB, under the gateway's 1 MiB body limit, so the request is
-      // still accepted: the gateway refuses only a body over that limit.
+      // At 901 KiB the context is over budget but under the gateway's 1 MiB body limit, so it is still accepted.
       it("drops every entry and still sends the whole text when the text alone is over the budget", async () => {
         await seedWorkspace();
         const huge = await contextWithText(REQUEST_BUDGET_BYTES + 1024);
@@ -2582,7 +2572,7 @@ describe("createProposalComputation (issue #1434)", () => {
       return (await createChokePoint(pool).createItem({ databaseId, properties })).id;
     }
 
-    /** A person, with its addresses claimed in `person_email_index` by the heartbeat action production runs for it. */
+    /** Addresses claimed in `person_email_index` by the heartbeat action production runs for it. */
     async function createPerson(properties: Record<string, unknown>): Promise<string> {
       const peopleDatabaseId = await databaseIdFor("people");
       const id = (await createChokePoint(pool).createItem({ databaseId: peopleDatabaseId, properties })).id;
@@ -2623,7 +2613,6 @@ describe("createProposalComputation (issue #1434)", () => {
         ).rows[0]!.n,
       );
 
-    /** The input of a computation for an Inbox item of a database type, as the tick builds it. */
     async function computationInput(
       targetModule: string,
     ): Promise<Parameters<ReturnType<typeof createProposalComputation>>[0]> {
@@ -3039,13 +3028,12 @@ describe("createProposalComputation (issue #1434)", () => {
           properties: { name: "Bakery", ico: EXISTING_ICO },
           operations: operations(companyId),
         });
-        // The model's link names the company, so the company has to be one the workspace context lists.
         await runTick(pool, gateway, await createTaskItem("Bakery", "companies"));
 
         const card = await onlyCard();
         expect(card.status).toBe("needsClarification");
         expect(card.proposal).toBeNull();
-        // The refusal of `prepareComputedUpdates`, not the one of a link to an item the workspace does not list.
+        // The refusal of `prepareComputedUpdates`, not of a link to an unlisted item.
         expect(JSON.stringify(card.history)).toContain("Repeated mutation of a proposal target");
         expect(await countItems("companies")).toBe(1);
       });
@@ -3101,7 +3089,6 @@ describe("createProposalComputation (issue #1434)", () => {
       const tenantB = await createTestTenant(pool);
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
       try {
-        // Tenant B holds the company and the person; tenant A holds nothing but the Inbox item it computes for.
         const setup = (tenant: string, withRecords: boolean) =>
           runInTenant(tenant, async () => {
             await seedSystem(runtime);
@@ -3210,7 +3197,6 @@ describe("createProposalComputation (issue #1434)", () => {
       return z.string().parse(gateway.calls[0]?.messages[0]?.content);
     }
 
-    /** The section of the request, or `null` when the request has none. */
     function durationsOf(gateway: StubGateway): z.infer<typeof durationsSchema> | null {
       const prefix = "Past event durations (JSON): ";
       const line = userMessage(gateway)
@@ -3224,7 +3210,6 @@ describe("createProposalComputation (issue #1434)", () => {
       return (await inTenantZero(() => createChokePoint(pool).createItem({ databaseId, properties: { name } }))).id;
     }
 
-    /** A same-day Event of `personId` on `date` from `timeFrom` to `timeTo`. */
     async function createEvent(
       personId: string,
       date: string,
@@ -3263,7 +3248,6 @@ describe("createProposalComputation (issue #1434)", () => {
             petr,
             `2026-08-${String(day).padStart(2, "0")}`,
             "09:00",
-            // The Event starts at 09:00 and lasts 10 minutes on day 1, 20 on day 2, and so on.
             `${String(9 + Math.floor(day / 6)).padStart(2, "0")}:${String((10 * day) % 60).padStart(2, "0")}`,
             "SECRET_EVENT_NAME",
           ),
@@ -3291,8 +3275,7 @@ describe("createProposalComputation (issue #1434)", () => {
       const counted = await createEvent(petr, "2026-08-10", "09:00", "10:00");
       const spanning = await createEvent(petr, "2026-08-12", "09:00", "10:00");
       const unfinished = await createEvent(petr, "2026-08-13", "09:00", "10:00");
-      // Both states pass the Events validation only as a whole: a second day needs a timeTo, and a timeFrom alone
-      // gets one, so the stored values are set directly.
+      // Both states pass Events validation only as a whole, so the stored values are set directly.
       await pool.query(
         'UPDATE items SET properties = properties || \'{"endDate":"2026-08-14"}\'::jsonb WHERE id = $1',
         [spanning],
@@ -3372,7 +3355,7 @@ describe("createProposalComputation (issue #1434)", () => {
       const petr = await createPerson("Petr");
       await createEvent(petr, "2026-08-10", "09:00", "10:00");
       for (const closed of ["events", "people"]) {
-        // No API marks a built-in database sensitive, so the test does, and gives the project no grant.
+        // No API marks a built-in database sensitive.
         await pool.query("UPDATE databases SET sensitive = true WHERE owner_module_id = $1", [closed]);
         const gateway = stubGateway(callAnswer);
 
@@ -3408,7 +3391,6 @@ describe("createProposalComputation (issue #1434)", () => {
       const wholePeople = whole.workspace.find((group) => group.moduleId === "people")?.items ?? [];
       expect(wholePeople).toHaveLength(6);
       expect(Object.keys(whole.pastEventDurations ?? {}).sort()).toEqual(wholePeople.map((person) => person.id).sort());
-      // Enough text that every entry of the events and companies groups and about two people have to go.
       const dropped = [
         ...whole.workspace.filter((group) => group.moduleId === "events" || group.moduleId === "companies"),
       ];

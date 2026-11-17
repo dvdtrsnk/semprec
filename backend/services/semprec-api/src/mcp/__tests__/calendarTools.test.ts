@@ -28,11 +28,10 @@ import {
 import { createMcpRequestListener } from "../mcpHandler.js";
 
 /**
- * The calendar write tools over `POST /mcp` (issue gh-1957): a run credential of a project that owns the calendar
- * databases lists them, a call files a `moduleTool` approval request and answers -32001 without running the handler,
- * and the approved request runs the handler once. A credential whose list does not name `calendar.write`, a project
- * without the databases and an unknown name get the same -32601. A human session lists the tools and runs them as its
- * user, without a request.
+ * A run credential of a calendar-owning project lists them; a call files a `moduleTool` approval
+ * request and answers -32001 without running the handler, and the approved request runs it once. A
+ * credential not naming `calendar.write`, a project without the databases and an unknown name get
+ * the same -32601. A human session runs them as its user, without a request.
  */
 
 const calendarManifestHref = new URL(
@@ -75,8 +74,9 @@ interface Tenant {
   eventsId: string;
   invitationsId: string;
   /**
-   * Tokens of run credentials. In the project that owns the calendar databases: one whose list names `calendar.write`
-   * with the item capabilities, one restricted to reading items, and one that may write items but does not name it. In another project: one that names it.
+   * In the calendar-owning project: one naming `calendar.write` with the item capabilities, one
+   * restricted to reading items, one that may write items but does not name it. In another project:
+   * one that names it.
    */
   calendarToken: string;
   readOnlyCalendarToken: string;
@@ -157,7 +157,7 @@ async function toolNames(token: string): Promise<string[]> {
 
 const callTool = (token: string, name: string, args: unknown) => rpc(token, "tools/call", { name, arguments: args });
 
-/** The `-32001` answer of a gated call: the id of the approval request it filed. */
+/** The id of the approval request a gated call filed. */
 function requestIdOf(answer: z.infer<typeof rpcBodySchema>): string {
   expect(answer.error?.code).toBe(-32001);
   return approvalDataSchema.parse(answer.error?.data).approvalRequestId;
@@ -176,7 +176,8 @@ async function invitation(tenant: Tenant): Promise<string> {
     "sequence",
     "respondedAt",
   ] as const;
-  // Raw production write as the calendar module: the invitation ingest is the only production writer of such a row.
+  // Raw write as the calendar module: the invitation ingest is the only production writer of such a
+  // row.
   const created = await runInTenant(tenant.id, () =>
     withTransaction(pool, (client) =>
       createItemWithClient(
@@ -228,7 +229,6 @@ async function reload(tenant: Tenant, requestId: string): Promise<ApprovalReques
   return request;
 }
 
-/** The owner approves the request and the worker runs the execution job once. */
 async function approveAndRun(tenant: Tenant, requestId: string): Promise<void> {
   await runInTenant(tenant.id, () =>
     withTransaction(pool, (client) =>
@@ -323,7 +323,7 @@ describe("calendar write tools over POST /mcp (issue gh-1957)", () => {
 
     it("lists the three tools for a human session", async () => {
       const session = await login(admin, { email: home.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
-      // The read tool `semprec.calendar.timeline` (issue gh-1952) is listed too and has its own tests.
+      // The read tool is listed too and has its own tests.
       expect(
         (await toolNames(session.token))
           .filter((name) => name.startsWith("semprec.calendar.") && name !== "semprec.calendar.timeline")
@@ -458,7 +458,7 @@ describe("calendar write tools over POST /mcp (issue gh-1957)", () => {
       expect(await queuedReplies()).toBe(1);
       const settled = await reload(home, requestId);
       expect(settled.executionStatus).toBe("succeeded");
-      // The route answers the same answer again with the stored invitation and writes nothing.
+      // The route answers the same again with the stored invitation and writes nothing.
       const { item } = await runInTenant(home.id, () =>
         createRespondToInvitationRouteHandler(pool)({
           params: { id },

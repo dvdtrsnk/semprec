@@ -6,7 +6,6 @@ import { logger } from "./logger.js";
 import { refreshAccessToken } from "./oauthTokenExchange.js";
 
 export interface RefreshAndPersistAccessTokenInput {
-  /** The mailbox item whose `oauth2_refresh_token` credential is refreshed. */
   mailboxItemId: string;
   tokenUrl: string;
   clientId: string;
@@ -14,7 +13,6 @@ export interface RefreshAndPersistAccessTokenInput {
   scope?: string;
   /** Names the sync mode in `credential_access_log`, e.g. `gmail_api_sync`. */
   purpose: string;
-  /** Replaces the global `fetch` for the token request (see `RefreshAccessTokenInput.fetchImpl`). */
   fetchImpl?: typeof fetch;
 }
 
@@ -24,17 +22,13 @@ export interface RefreshedAccessToken {
 }
 
 /**
- * Refreshes a mailbox's OAuth access token and persists a rotated refresh token (Microsoft rotates it
- * on every refresh; Google rarely does). One transaction holds a row lock on the mailbox's credential
- * from the read to the commit, so concurrent refreshes of one mailbox queue up and each later caller
- * reads the token the earlier one stored instead of presenting a stale one. The provider call runs
- * while that lock is held (bounded by `refreshAccessToken`'s 15 s timeout): releasing it first would
- * let a second caller present the token this call is about to retire.
+ * Refreshes a mailbox's OAuth access token and persists a rotated refresh token (Microsoft rotates on every refresh).
+ * One transaction holds a row lock on the credential from read to commit, through the provider call (bounded by a
+ * 15 s timeout): releasing it earlier would let a second caller present the token this call is about to retire.
  *
- * A new refresh token is written before the access token is returned; if that write fails the
- * transaction rolls back, the previous token stays stored, and the call throws. The provider may
- * already have retired the previous token, so the code attempts to log the failure. No log line or thrown message
- * carries a token. A 400/401 from the provider throws `MailReauthorizationRequiredError`.
+ * If persisting a new refresh token fails, the transaction rolls back and the call throws; the failure is logged
+ * because the provider may already have retired the old token. No log line or message carries a token. A 400/401
+ * throws `MailReauthorizationRequiredError`.
  */
 export async function refreshAndPersistAccessToken(
   pool: Pool,
@@ -90,8 +84,8 @@ export async function refreshAndPersistAccessToken(
           plaintext: refreshed.refreshToken,
         });
       } catch (err) {
-        // The provider may already have invalidated the previous token, so this must be visible.
-        // Error names and causes can themselves contain credential material.
+        // Must be visible: the provider may already have invalidated the previous token. Error names and causes can
+        // themselves contain credential material.
         const observed: unknown[] = [err];
         try {
           logger.error(

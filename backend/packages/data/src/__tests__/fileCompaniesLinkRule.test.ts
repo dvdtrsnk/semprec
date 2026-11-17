@@ -37,7 +37,6 @@ async function item(databaseId: string, name: string): Promise<string> {
   return (await inTenant(() => cp.createItem({ databaseId, properties: { name } }))).id;
 }
 
-/** Links two items through the relation property `relationPropertyId`, as the given writer. */
 async function link(relationPropertyId: string, callerItemId: string, targetItemId: string): Promise<void> {
   await inTenant(() => cp.createRelation({ relationPropertyId, callerItemId, targetItemId }, USER));
 }
@@ -46,7 +45,6 @@ async function unlink(relationPropertyId: string, callerItemId: string, targetIt
   await inTenant(() => cp.deleteRelation({ relationPropertyId, callerItemId, targetItemId }, USER));
 }
 
-/** The companies on a file's own `companies` relation, sorted. */
 async function fileCompanies(fileId: string): Promise<string[]> {
   const entries = await inTenant(() => cp.listItemRelations(fileId, ids.fileCompanies));
   return (entries ?? []).map((entry) => entry.targetItemId).sort();
@@ -73,9 +71,9 @@ async function valueLinkRows(fileId: string): Promise<ValueLinkRow[]> {
 }
 
 /**
- * Runs every queued value-link propagation job through the registered worker task. A tenant's jobs share one lane
- * and one `runOnce` runs one of them, so it repeats until none is left: the Companies.projects edges this file writes
- * also queue the jobs of the Threads project rule (issue gh-1869).
+ * Runs every queued value-link propagation job. A tenant's jobs share one lane and one `runOnce` runs one
+ * of them, so it repeats until none is left; the Companies.projects edges also queue the Threads project
+ * rule's jobs.
  */
 async function runPropagation(): Promise<void> {
   const handler = createCoreTaskList(pool, createActionRegistry())[CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE];
@@ -94,7 +92,6 @@ async function runPropagation(): Promise<void> {
 
 const sorted = (values: string[]): string[] => [...values].sort();
 
-/** Two projects, Web for client (Novak Web s.r.o.) and Bathroom renovation (Siko Koupelny a.s.). */
 async function twoProjects() {
   const novak = await item(ids.companies, "Novak Web s.r.o.");
   const siko = await item(ids.companies, "Siko Koupelny a.s.");

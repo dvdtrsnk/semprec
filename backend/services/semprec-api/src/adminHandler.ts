@@ -20,10 +20,7 @@ import { requireJsonObjectBody, requireStringField, requireUuidParam } from "./a
 import type { RouteDefinition } from "./adapter/routeTable.js";
 import type { AppOptions } from "./app.js";
 
-/**
- * A cap body field: `null` for no tenant cap in that window, otherwise a finite number >= 0 — the
- * full domain of `tenant_ai_budgets`' columns. Anything else is `validation_failed` naming the field.
- */
+/** `null` for no tenant cap in that window, otherwise a finite number >= 0. */
 function requireCapField(body: Record<string, unknown>, field: string): number | null {
   const value = body[field];
   if (value === null) return null;
@@ -34,11 +31,9 @@ function requireCapField(body: Record<string, unknown>, field: string): number |
 }
 
 /**
- * The admin route family (issue #1037). Every route is flagged `admin: true`, so the adapter
- * refuses members with 403 `admin_required` and runs the handler in system scope; handlers here
- * read global identity tables only and never enter a tenant
- * (docs/adr/2026-10-17-admin-role-without-content-access.md). `options` is the dispatcher's own
- * options object: invitations read its `appBaseUrl` and `inviteMailer`.
+ * Every route is `admin: true`, so handlers run in system scope and read global identity tables
+ * only, never entering a tenant (docs/architecture/tenancy-and-security.md#admin-role). Invitations
+ * read `options.appBaseUrl` and `options.inviteMailer`.
  */
 export function createAdminRoutes(pool: Pool, options: AppOptions): RouteDefinition[] {
   return [
@@ -74,8 +69,8 @@ export function createAdminRoutes(pool: Pool, options: AppOptions): RouteDefinit
         const monthlyCapUsd = requireCapField(body, "monthlyCapUsd");
         const actorUserId = ctx.identity.user.id;
         const budget = await withTransaction(pool, async (client) => {
-          // The budget is set for the account's own tenant: `users.tenant_id` is NOT NULL (#1067), so
-          // there is no fallback to another tenant.
+          // The budget is set for the account's own tenant: `users.tenant_id` is NOT NULL, so there
+          // is no fallback.
           const { rows } = await client.query<{ tenant_id: string }>("SELECT tenant_id FROM users WHERE id = $1", [
             userId,
           ]);

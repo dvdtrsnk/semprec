@@ -31,10 +31,8 @@ import type { AiGatewayClientPort } from "@semprec/shared";
 import type { AudioGatewayClient } from "./audioGatewayClient.js";
 import { createTranscriptionCreateTask, createTranscriptionTask } from "./transcriptionTask.js";
 
-// Issue gh-1984: the undo of a confirmed recording card cancels the transcription it queued. The data package's tests
-// prove the cancellation against fixtures; this test runs the real transcription handlers around the undo, which only
-// this service can do: the transcript the create step makes is what the undo trashes, and a handler that runs for a
-// Files item that is gone or in the Trash writes nothing.
+// Runs the real transcription handlers around the undo of a confirmed recording card: the undo trashes the
+// transcript the create step made, and a handler for a gone or trashed Files item writes nothing.
 
 let pool: Pool;
 let blobDir: string;
@@ -213,9 +211,7 @@ describe("a transcription handler that runs for a Files item that is gone or in 
     expect(await writtenState()).toEqual(before);
   });
 
-  // A Files item in the Trash with a transcript the create step made is the one case in which a handler writes: the
-  // attempt records `deleted` on the transcript's automation row (issue #1582) and stops. Pinned so the criterion
-  // "completes without writing" is stated with its one deliberate exception, and so that nothing else is written.
+  // The one deliberate exception to "writes nothing": the attempt records `deleted` on the automation row.
   async function automationOf(transcriptId: string) {
     const { rows } = await pool.query(
       "SELECT status, error, error_code, attempts FROM item_automation WHERE item_id = $1",

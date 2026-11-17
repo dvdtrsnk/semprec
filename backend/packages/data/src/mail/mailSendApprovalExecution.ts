@@ -1,11 +1,6 @@
-// What becomes of an approved mail send request (issue gh-1913): the executor that `handleApprovalRequestExecuteTask`
-// (mcp/approvalRequestExecution.ts) hands a claimed request of the payload kind `MailSendApprovalRequestPayload`. It
-// follows the claim, external call, record-outcome protocol of
-// docs/adr/2026-09-29-exactly-once-execution-of-deferred-mcp-tool-calls.md: the claim (`claimApprovalRequestExecution`)
-// was taken by the caller, this sends outside any transaction of its own, and the outcome is written guarded on the
-// request still being `queued`. A claim whose delivery died is settled by the caller's stale-claim sweep, and the mail
-// is not sent by a later delivery, so it leaves at most once.
-// Constrained by: docs/adr/2026-11-14-an-agents-mail-send-is-an-approval-request-of-its-own-kind-sent-as-the-user.md
+// Executor of an approved mail send request. The caller took the claim; this sends outside any transaction of its own
+// and records the outcome guarded on the request still being `queued`. A claim whose delivery died is settled by the
+// stale-claim sweep and never re-sent, so the mail leaves at most once.
 import type { Pool, PoolClient } from "pg";
 import { describeModuleToolFailure } from "../agentTools/describeModuleToolFailure.js";
 import { withTransaction } from "../db/pool.js";
@@ -24,7 +19,7 @@ import { prepareSend, type PreparedSend } from "./mailDraftSendInput.js";
 import { computeMailDraftHash } from "./mailSendApproval.js";
 import { MailSendClaimLostError, sendDraftEmail, type MailSendAdapterFactory } from "./send.js";
 
-/** Raised in the claim transaction of the send when the draft no longer holds what the request was approved for. */
+/** The draft no longer holds what the request was approved for. */
 class ApprovedDraftChangedError extends ConflictError {
   constructor() {
     super("The draft was changed after the send was approved; nothing was sent");
@@ -39,9 +34,8 @@ const DRAFT_CHANGED: ApprovalRequestOutcome = {
 };
 
 /**
- * `prepareSend` for an approved draft: the refusals that say the draft is gone or in the trash, has no draft row, was
- * sent or has no recipient become `ApprovedDraftChangedError`, so that a refusal of the read is told apart from a
- * failure after the provider took the message, which can be a `NotFoundError` as well. Any other failure propagates.
+ * Maps the "draft gone/sent/unaddressed" refusals to `ApprovedDraftChangedError`, so they are told apart from a
+ * `NotFoundError` raised after the provider took the message. Any other failure propagates.
  */
 async function readApprovedDraft(client: PoolClient, draftId: string): Promise<PreparedSend> {
   try {
@@ -60,18 +54,13 @@ async function readApprovedDraft(client: PoolClient, draftId: string): Promise<P
 }
 
 /**
- * The outcome of one claimed send request. In order:
- * 1. A worker without mail send adapters records `toolUnavailable` and sends nothing.
- * 2. The draft is read as it is now (`readApprovedDraft`, in one transaction) and its hash is computed again. A draft
- *    that is gone, sent, without a recipient or without a draft row, and a hash that differs from the approved
- *    `draftHash`, are a `sourceChanged` outcome (execution status `conflict`) and nothing is sent.
- * 3. The draft is sent through `sendDraftEmail` as a `user` actor, the owner's approval being the authorization. Its
- *    claim transaction reads the draft again under the writers' locks and refuses a hash that differs, so what is
- *    delivered is what was approved. A claim that another send holds is a `sourceChanged` outcome as well. Any other
- *    failure is `callFailed`, logged by class name and code only. A failure before or during delivery leaves the draft
- *    sendable (`sendDraftEmail` undoes its claim) but the request ends and is not retried; after the provider took
- *    the message the claim stays, so the draft cannot go twice.
- * 4. A sent message is a successful outcome that records the ids of the email and its thread and the send time.
+ * 1. Without mail send adapters: `toolUnavailable`, nothing sent.
+ * 2. A draft that is gone or changed (hash differs from `draftHash`) is `sourceChanged` (status `conflict`).
+ * 3. Sent through `sendDraftEmail` as a `user` actor, the owner's approval being the authorization; its claim
+ *    transaction re-checks the hash under the writers' locks, so what is delivered is what was approved. A claim held
+ *    by another send is `sourceChanged`; any other failure is `callFailed`, logged by class name and code only, and
+ *    not retried.
+ * 4. Success records the email and thread ids and the send time.
  */
 async function mailSendOutcome(
   pool: Pool,
@@ -111,10 +100,8 @@ async function mailSendOutcome(
 }
 
 /**
- * Settles one mail send request that `claimApprovalRequestExecution` just claimed: works out its outcome
- * (`mailSendOutcome`), then, in one transaction, records it guarded on the request still being `queued`, posts the
- * outcome message into the requesting thread and announces the change. An outcome that finds the request already
- * settled by another path is discarded and logged, like the outcome of a module tool request.
+ * Records the outcome guarded on the request still being `queued`, posts it to the requesting thread and announces
+ * the change, in one transaction. An outcome for an already settled request is discarded and logged.
  */
 export async function executeClaimedMailSendApproval(
   pool: Pool,

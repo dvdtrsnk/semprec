@@ -68,7 +68,7 @@ async function stored(itemId: string) {
   return storedRow.parse(rows[0]);
 }
 
-/** The values the Events transforms own, which every write path must store identically. */
+/** Every write path must store these identically. */
 function transformed(properties: Record<string, unknown>) {
   const { date, endDate, timeFrom, timeTo, time, icalSequence } = properties;
   return { date, endDate: endDate ?? null, timeFrom, timeTo, time, icalSequence };
@@ -158,10 +158,7 @@ describe("Events writes through REST, the agent gateway and MCP (issues #1598, #
     return itemBody.parse(JSON.parse(text));
   }
 
-  /**
-   * Issue #1599: the identity a create returned and stored, read before any later write of the Event, so a
-   * missing initial sequence cannot be hidden by the patch transform's bump.
-   */
+  /** Read before any later write, so a missing initial sequence cannot be hidden by the patch transform's bump. */
   async function expectCreationIdentity(returned: unknown, path: string): Promise<void> {
     const created = createdIdentity.parse(returned);
     expect(created.properties.icalUid, path).toMatch(UID_PATTERN);
@@ -181,7 +178,7 @@ describe("Events writes through REST, the agent gateway and MCP (issues #1598, #
     return item.id;
   }
 
-  /** The generic operation gateway invoked with an agent actor; the agent-runtime tool wrapper is not exercised here. */
+  /** The agent-runtime tool wrapper is not exercised here. */
   async function viaAgentGateway(): Promise<string> {
     const returned = await gateway().invoke("item.create", agentActor, new Set(CAPABILITY_IDS), {
       databaseId: eventsId,

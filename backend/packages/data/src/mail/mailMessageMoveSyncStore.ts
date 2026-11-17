@@ -110,7 +110,7 @@ export async function captureMailMoveBaseline(client: PoolClient, mailboxItemId:
   return { tenantId, mailboxItemId: mailbox, rows: new Map(rows.map((row) => [row.message_item_id, row])) };
 }
 
-/** Called after acquiring the existing thread guard and before provider observations. */
+/** Called after acquiring the thread guard and before provider observations. */
 export async function protectedMailMovesForPass(
   client: PoolClient,
   mailboxItemId: string,
@@ -141,10 +141,9 @@ export async function protectedMailMovesForPass(
 }
 
 /**
- * The one rule for whether a new desire keeps the source evidence of the row it replaces: while the earlier desire is
- * still pending or a provider operation is outstanding, the evidence it recorded is what addresses the provider copy,
- * because the local folder edge no longer does. `recordDesiredMailMessageMove` and `hasPreservedMailMoveSource` both
- * decide through this function, so they cannot disagree.
+ * While the earlier desire is pending or a provider operation is outstanding, its recorded source evidence is what
+ * addresses the provider copy, since the local folder edge no longer does. The single rule both
+ * `recordDesiredMailMessageMove` and `hasPreservedMailMoveSource` use.
  */
 function keepsEarlierMoveSource(row: { status: string; operation_token: string | null }): boolean {
   return row.status === "pending" || row.operation_token !== null;
@@ -217,11 +216,7 @@ export async function recordDesiredMailMessageMove(
   return rowSchema.parse(result.rows[0]);
 }
 
-/**
- * Whether a new desire for `messageItemId` keeps the source evidence an earlier desire recorded, so that the new
- * desire needs no source of its own. It reads the row under the caller's thread guard and applies the rule of
- * `recordDesiredMailMessageMove` (`keepsEarlierMoveSource`), which is the only place that rule is written.
- */
+/** Read under the caller's thread guard. */
 export async function hasPreservedMailMoveSource(client: PoolClient, messageItemId: string): Promise<boolean> {
   const result = await client.query<{ status: string; operation_token: string | null }>(
     `SELECT status, operation_token FROM mail_message_move_sync_state
@@ -289,7 +284,6 @@ export async function checkpointMailMoveStep(
   return result.rowCount === 1;
 }
 
-/** Leaves a step blocked after a provider outcome that cannot be established. */
 export async function markMailMoveUncertain(
   client: PoolClient,
   messageItemId: string,
@@ -318,7 +312,7 @@ export async function markMoveConfirmed(client: PoolClient, messageItemId: strin
   return result.rowCount === 1;
 }
 
-/** Records a definite failure of the same unclaimed revision; an uncertain operation is never retried here. */
+/** An uncertain operation is never retried here. */
 export async function markMoveAttemptFailed(
   client: PoolClient,
   messageItemId: string,
@@ -393,7 +387,6 @@ export async function completeGraphMove(
   return matched ? "confirmed" : "pending";
 }
 
-/** Checks whether a local placement is awaiting provider convergence or recovery. */
 export async function hasUnsettledMailMove(client: PoolClient, messageItemId: string): Promise<boolean> {
   const result = await client.query(
     `SELECT 1 FROM mail_message_move_sync_state
@@ -478,7 +471,7 @@ export async function completeGmailMove(
   return matched ? "confirmed" : "pending";
 }
 
-/** Confirms a read-only observation only if its source identity is still current. */
+/** Confirms only if its source identity is still current. */
 export async function confirmObservedProviderMove(
   client: PoolClient,
   input: { messageItemId: string; revision: string; providerMessageId: string },
@@ -498,7 +491,7 @@ export async function confirmObservedProviderMove(
   return result.rowCount === 1;
 }
 
-/** Persists an IMAP result without replacing a newer edge identity. */
+/** Does not replace a newer edge identity. */
 export async function completeImapMove(
   client: PoolClient,
   input: { messageItemId: string; token: string; evidence: MailMoveEvidence; folderRelationPropertyId: string },

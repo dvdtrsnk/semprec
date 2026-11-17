@@ -2,12 +2,7 @@ import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { logger } from "./logger.js";
 
-/**
- * How long a permanently-failed (`attempts >= max_attempts`) `graphile_worker.jobs` row is kept
- * around before `pruneQueueFailedJobs` deletes it (issue #706) — long enough for a human to have
- * noticed and investigated the `queue:permanentlyFailedJobs` alert `checkPermanentlyFailedJobs`
- * raised while the row was still fresh.
- */
+/** Long enough for a human to investigate the alert raised while the row was fresh. */
 export const FAILED_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface FailedJobRow {
@@ -20,30 +15,13 @@ interface FailedJobRow {
 }
 
 /**
- * The `queueFailedJobsPrune` daily core task (issue #706): deletes `graphile_worker.jobs` rows
- * that have exhausted their retries (`attempts >= max_attempts`), are not currently locked (a
- * locked row is still running — a re-enqueue of a running job's key can bump its `attempts` to
- * `max_attempts` while it is mid-run), and have not been updated in `FAILED_JOB_RETENTION_MS`.
- * Deletion goes through `graphile_worker.complete_jobs`, the same function `complete_job` uses on
- * success — the supported way to remove a row without a raw `DELETE` on `_private_jobs`. Logs one
- * warning per pruned row before deleting it, carrying the job's identifiers (id, task name, key),
- * attempt count and last update time, so the record of a permanently-failed job survives in the
- * log after its row is gone. The job's `last_error` is deliberately not logged: it is arbitrary
- * text from the task and can echo user content.
+ * Deletes exhausted, unlocked jobs older than the retention (locked rows may be running: a
+ * re-enqueue bumps `attempts` mid-run) via `complete_jobs`, logging identifiers first so a record
+ * survives. `last_error` is never logged: it can echo user content.
  *
- * The SELECT and the `complete_jobs` delete run in a single transaction, with the SELECT using
- * `FOR UPDATE SKIP LOCKED`: a row a concurrent transaction re-enqueues (and thus locks) between
- * the SELECT and the delete is skipped rather than claimed, so a job that has become active again
- * is never deleted out from under it. The SELECT reads `_private_jobs`/`_private_tasks` directly
- * rather than the `graphile_worker.jobs` view: the view's `LEFT JOIN` to `_private_job_queues`
- * puts `jobs` on the nullable side of an outer join, which Postgres refuses to lock with `FOR
- * UPDATE`.
- *
- * This is a deliberate deviation from graphile_worker's public interface (the `jobs` view and the
- * `complete_jobs`/`add_job` functions) onto its `_private_`-prefixed internals, pinned to the
- * schema shape of graphile-worker@0.17.x (see `backend/packages/queue/package.json`). Bumping
- * that dependency to a version that renames or restructures `_private_jobs`/`_private_tasks`
- * requires re-checking this query against the new schema.
+ * `FOR UPDATE SKIP LOCKED` in the same transaction skips a row re-enqueued meanwhile. It reads
+ * `_private_jobs` directly because Postgres cannot lock the `jobs` view's outer-joined side. This
+ * relies on graphile-worker@0.17.x internals; re-check the query when bumping that dependency.
  */
 export async function pruneQueueFailedJobs(pool: Pool, now = new Date()): Promise<number> {
   const cutoff = new Date(now.getTime() - FAILED_JOB_RETENTION_MS);

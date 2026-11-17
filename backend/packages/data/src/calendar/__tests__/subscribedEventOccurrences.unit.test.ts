@@ -9,7 +9,6 @@ function series(text: string, values: Omit<SubscribedSeries, "rule">): Subscribe
   return { ...values, rule };
 }
 
-/** A timed series that starts on `startsAt` and lasts an hour, in the tenant wall clock. */
 function timed(text: string, startsAt: string, timeZone: string | null): SubscribedSeries {
   const [date = "", time = ""] = startsAt.split("T");
   const end = DateTime.fromISO(startsAt).plus({ hours: 1 }).toFormat("yyyy-MM-dd'T'HH:mm");

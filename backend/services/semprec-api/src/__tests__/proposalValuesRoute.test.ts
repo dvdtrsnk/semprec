@@ -24,7 +24,6 @@ const errorBody = z.object({
   error: z.object({ code: z.string(), details: z.record(z.string(), z.unknown()).optional() }),
 });
 
-/** A `proposed` Processing proposals card of `tenantId` whose assistant envelope creates a task named `name`. */
 async function createCard(tenantId: string, name: string): Promise<string> {
   return runInTenant(tenantId, () =>
     withTransaction(harness.runtime, async (client) => {
@@ -70,7 +69,7 @@ describe("PATCH /api/proposals/:id/values over HTTP (issue #1892)", () => {
   beforeAll(() => harness.start());
   beforeEach(async () => {
     await harness.reset();
-    // One tenant after the other: concurrent seeding of two tenants deadlocks on the shared partition catalog.
+    // Sequential: concurrent seeding of two tenants deadlocks on the shared partition catalog.
     for (const tenantId of [harness.tenantA, harness.tenantB]) {
       await runInTenant(tenantId, () => seedSystem(harness.runtime));
     }
@@ -247,7 +246,7 @@ describe("PATCH /api/proposals/:id/values with an Idempotency-Key over HTTP (iss
   beforeAll(() => harness.start());
   beforeEach(async () => {
     await harness.reset();
-    // One tenant after the other: concurrent seeding of two tenants deadlocks on the shared partition catalog.
+    // Sequential: concurrent seeding of two tenants deadlocks on the shared partition catalog.
     for (const tenantId of [harness.tenantA, harness.tenantB]) {
       await runInTenant(tenantId, () => seedSystem(harness.runtime));
     }
@@ -269,7 +268,6 @@ describe("PATCH /api/proposals/:id/values with an Idempotency-Key over HTTP (iss
       key === undefined ? {} : { "Idempotency-Key": key },
     );
 
-  /** The edits the card's history records, and its current name. */
   async function cardState(id: string): Promise<{ edits: number; name: unknown }> {
     const card = cardBody.parse(JSON.parse(await readCard(id)));
     return {
@@ -333,7 +331,7 @@ describe("PATCH /api/proposals/:id/values with an Idempotency-Key over HTTP (iss
   it("runs the action again when the stored row is older than 24 hours", async () => {
     const id = await createCard(harness.tenantA, "Send the invoice");
     await patchValues(harness.headersA, id, "Old edit", "key-1");
-    // Fixture SQL: the only way to age a stored row past its 24 hours.
+    // The only way to age a stored row past its 24 hours.
     await harness.admin.query("UPDATE idempotent_responses SET expires_at = now() - interval '1 second'");
 
     const answered = await patchValues(harness.headersA, id, "New edit", "key-1");
@@ -354,7 +352,6 @@ describe("PATCH /api/proposals/:id/values with an Idempotency-Key over HTTP (iss
     expect(cardBody.parse(JSON.parse(answeredForB.text)).id).toBe(cardB);
     expect(await storedRows(harness.tenantA)).toHaveLength(1);
     expect(await storedRows(harness.tenantB)).toHaveLength(1);
-    // Tenant B's scope reads its own row only: tenant A's user id is not among its rows.
     const [rowA] = await storedRows(harness.tenantA);
     expect((await storedRows(harness.tenantB)).map((row) => row.user_id)).not.toContain(rowA?.user_id);
     const { rows: foreign } = await runInTenant(harness.tenantB, () =>

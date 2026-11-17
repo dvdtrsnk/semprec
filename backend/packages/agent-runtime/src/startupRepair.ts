@@ -18,15 +18,12 @@ const INTERRUPTED_REASON = "interrupted_by_restart";
 
 const INTERRUPTION_TEXT = `Run interrupted by service restart before this tool call completed (${INTERRUPTED_REASON}).`;
 
-/**
- * A thread session between turns: a user-triggered run bound to a thread whose last event is
- * `turn_end`. It holds no work, so closing it loses nothing and the thread wakes a new run.
- */
+/** A user-triggered thread run whose last event is `turn_end`: it holds no work, so closing it loses nothing. */
 function isIdleThreadSession(run: AgentRunRow, last: AgentRunEventRow | undefined): boolean {
   return run.threadId !== null && run.triggeredBy === "user" && last?.kind === "turn_end";
 }
 
-/** Closes an idle thread session as `done` with its `run_status` event; false when another closer won. */
+/** False when another closer won. */
 async function closeIdleSession(client: PoolClient, runId: string): Promise<boolean> {
   if (!(await finishAgentRun(client, runId, "done", null))) return false;
   await insertAgentRunEvent(client, runId, "run_status", { kind: "run_status", status: "done" });
@@ -34,11 +31,9 @@ async function closeIdleSession(client: PoolClient, runId: string): Promise<bool
 }
 
 /**
- * Graceful-shutdown sweep: closes every idle thread session (see `isIdleThreadSession`) of every
- * active tenant as `done`, without an `agent_run_error` notification, and returns their ids. A
- * session that is mid-turn is left running. Each tenant is swept in its own transaction; a tenant
- * whose sweep fails does not stop the others, and once all were attempted the call rejects with an
- * `AggregateError`.
+ * Graceful-shutdown sweep: closes every active tenant's idle thread sessions as `done`, with no `agent_run_error`
+ * notification; mid-turn sessions keep running. Each tenant runs in its own transaction; a failing tenant does not stop
+ * the others, and the call then rejects with an `AggregateError`.
  */
 export async function closeIdleThreadSessions(pool: Pool): Promise<{ closedRunIds: string[] }> {
   return runAsSystem("agents:closeIdleThreadSessions", async () => {
@@ -61,39 +56,22 @@ export async function closeIdleThreadSessions(pool: Pool): Promise<{ closedRunId
 }
 
 /**
- * Startup orphan repair: the in-memory session registry is always empty right after a
- * process restart, so every `agent_runs` row still `status='running'` was abandoned
- * mid-flight. The caller must run this to completion before the process accepts any new
- * trigger (heartbeat, delegation, user message) — recovery from here is left to those
- * existing continuation paths, not to this sweep.
+ * Startup orphan repair: after a restart the in-memory registry is empty, so every `running` row was abandoned. Must
+ * complete before the process accepts any trigger; `serve.ts` runs it before installing the graphile-worker runner.
  *
- * `services/semprec-agents/src/serve.ts` calls this before installing its graphile-worker
- * runner, so no queued trigger can be claimed while the sweep is in flight.
+ * Skipped:
+ * - `triggeredBy === "mcp"` runs only back an MCP run credential until it expires; no session drives them. Their
+ *   credential's expiry sweep closes them; repairing them would revoke every live MCP credential.
+ * - Idle thread sessions are closed as `done` without notification and reported in `closedIdleRunIds`.
  *
- * Runs with `triggeredBy === "mcp"` are skipped: they are not orphans. Such a run only backs a
- * minted MCP run credential that authenticates `POST /mcp` calls until it expires — no
- * in-process session drives it, so a restart interrupts nothing. It is closed by its
- * credential's expiry sweep, not here; repairing it would revoke every live MCP credential and
- * emit a spurious `agent_run_error` notification on each restart.
+ * Every other running run gets:
+ * 1. a synthetic `tool_result` for each unpaired `tool_use`, keeping the transcript invariant reconstruction needs
+ *    (first, because only a `running` run accepts non-`run_status` events);
+ * 2. a close as `error` (`interrupted_by_restart`) with its `agent_run_error` notification in the same transaction.
  *
- * An idle thread session (see `isIdleThreadSession`) is not an orphan either: it is closed as
- * `done` with no notification and reported in `closedIdleRunIds`, so its thread wakes again.
- * Two repairs, per other orphaned run:
- *  1. For every unpaired `tool_use` in its log, append a synthetic `tool_result` so the stored
- *     transcript keeps the invariant that every `tool_use` has a matching `tool_result` (needed
- *     for #119's reconstruction and #118's failed-state handling). This comes first because only
- *     a `running` run accepts non-`run_status` events.
- *  2. Close it out as `error` with reason `interrupted_by_restart`, writing the
- *     `agent_run_error` notification (issue #149) in the same transaction.
- *
- * Runs once per active tenant (`forEachActiveTenant`, inside a system scope this function enters
- * itself), each tenant's repair in its own transaction: the runs visible there are exactly that
- * tenant's. Atomicity is per tenant — a crash between tenants leaves the later tenants for the next
- * startup, whose repair is idempotent, and a partial synthetic-event write within one tenant is still
- * rolled back with that tenant's transaction. A tenant whose repair fails does not stop the others;
- * once every tenant was attempted the call rejects (an `AggregateError`), so the caller still refuses
- * to start rather than run a queue over unrepaired runs, and the ids of tenants that did commit are
- * not returned. Runs of tenants that are not active are left untouched.
+ * Runs once per active tenant in its own transaction (atomic per tenant; the repair is idempotent, so a crash leaves
+ * the rest for the next startup). A failing tenant does not stop the others; the call then rejects with an
+ * `AggregateError`, so the caller refuses to start over unrepaired runs. Inactive tenants are untouched.
  */
 export async function repairInterruptedRuns(
   pool: Pool,

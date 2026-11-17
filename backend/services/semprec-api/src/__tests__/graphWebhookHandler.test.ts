@@ -21,7 +21,7 @@ async function createMailboxItem(name: string): Promise<string> {
   return item.id;
 }
 
-/** Sets up `mail_account_sync_state` directly with plain SQL: registering a subscription is `graphWebhookLifecycle.ts`'s own concern (covered by its own package test), not something this HTTP-boundary test needs to exercise through it. */
+/** Plain SQL: registering a subscription is `graphWebhookLifecycle.ts`'s concern, covered by its own test. */
 async function registerSubscription(mailboxItemId: string, subscriptionId: string, clientState: string): Promise<void> {
   await pool.query(
     `INSERT INTO mail_account_sync_state (item_id, sync_mode, graph_subscription_id, graph_subscription_expires_at, graph_client_state)
@@ -41,11 +41,8 @@ async function pendingMailSyncJobCount(mailboxItemId: string): Promise<number> {
 }
 
 /**
- * HTTP-level tests for `POST /api/mail/graph/webhook` (issue #198). `graphWebhookLifecycle.test.ts`
- * (packages/data) covers the subscription registration/renewal lifecycle and
- * `handleGraphChangeNotification`'s own dedup/rejection behavior directly; this file covers only
- * what's specific to the HTTP boundary — the validation handshake, request parsing, and response
- * codes.
+ * Only what is specific to the HTTP boundary: the validation handshake, request parsing and response codes. The
+ * lifecycle and `handleGraphChangeNotification` are covered by `graphWebhookLifecycle.test.ts`.
  */
 describe("createGraphWebhookRequestListener (issue #198)", () => {
   let server: Server;

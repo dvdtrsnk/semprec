@@ -2,16 +2,13 @@ import { z } from "zod";
 import type { AiGatewayCompletionInput } from "@semprec/shared";
 import type { TranscriptSegment } from "./segmentMerge.js";
 
-/**
- * The instruction step 5 generates for. `key` is the English camelCase computed key its result is
- * stored under on the Transcripts item; `prompt` is what the model is asked to do.
- */
+/** `key` is the computed key the result is stored under. */
 export interface SummaryInstruction {
   key: string;
   prompt: string;
 }
 
-/** Issue #1695: structured meeting notes, stored as the Transcripts computed key `meetingNotes`. */
+/** Stored as the Transcripts computed key `meetingNotes`. */
 export const MEETING_NOTES_INSTRUCTION: SummaryInstruction = {
   key: "meetingNotes",
   prompt:
@@ -26,11 +23,7 @@ export const MEETING_NOTES_INSTRUCTION: SummaryInstruction = {
     "decisions or action items.",
 };
 
-/**
- * The `responseSchema` the gateway validates the model's notes against
- * (`services/semprec-ai-gateway/src/schemaValidation.ts`, Draft 2020-12): nullable fields are
- * `["string", "null"]`/`["number", "null"]`, and every field is required so the model states `null`.
- */
+/** Every field is required, so the model states `null` explicitly. */
 export const MEETING_NOTES_RESPONSE_SCHEMA = {
   type: "object",
   properties: {
@@ -76,7 +69,6 @@ const meetingNotesContentSchema = z
   })
   .strict();
 
-/** The notes as stored in `computed.meetingNotes`: the model's notes after `normalizeMeetingNotes`. */
 export type MeetingNotes = z.infer<typeof meetingNotesContentSchema>;
 
 /** The notes of a transcript without segments, stored without a paid call. */
@@ -84,16 +76,12 @@ export function emptyMeetingNotes(): MeetingNotes {
   return { title: "", summary: "", shortSummary: "", decisions: [], actionItems: [] };
 }
 
-/** The recording's calendar day in the tenant's time zone, with its English weekday name. */
 export interface RecordingDay {
   date: string;
   weekday: string;
 }
 
-/**
- * The calendar day and weekday of the instant `recordedAt` (the UTC instant `Transcripts.date`
- * stores) in `timeZone`, or `null` when `recordedAt` is not a valid instant.
- */
+/** `null` when `recordedAt` is not a valid instant. */
 export function recordingDay(recordedAt: string, timeZone: string): RecordingDay | null {
   const instant = new Date(recordedAt);
   if (Number.isNaN(instant.getTime())) return null;
@@ -113,7 +101,6 @@ function renderTranscript(segments: readonly TranscriptSegment[]): string {
   return segments.map((segment) => `[${segment.startsAt}] ${segment.speaker}: ${segment.text}`).join("\n");
 }
 
-/** The `gateway.complete()` request for the meeting notes of a merged transcript. */
 export function buildMeetingNotesRequest(
   segments: readonly TranscriptSegment[],
   language: string | null,
@@ -138,7 +125,7 @@ export function buildMeetingNotesRequest(
   };
 }
 
-/** Validates the gateway's structured content: it crossed a process boundary, so it is checked, not cast. */
+/** Crossed a process boundary, so it is checked, not cast. */
 export function parseMeetingNotesContent(content: unknown): MeetingNotes {
   return meetingNotesContentSchema.parse(content);
 }
@@ -153,10 +140,8 @@ function isCalendarDate(value: string): boolean {
 }
 
 /**
- * Normalizes the parsed notes before they are stored: an action item's `ownerSpeaker` is kept only
- * when it is a speaker key of `segments`, `due` only when it is a valid calendar date, `startsAt`
- * only when it is a finite number of at least 0; otherwise each is `null`. The validation checks the
- * shape of the date, it does not interpret natural language: resolving "tomorrow" is the model's job.
+ * Nulls an `ownerSpeaker` that is not a speaker of `segments`, an invalid `due` date, and a negative
+ * or non-finite `startsAt`. Resolving "tomorrow" is the model's job, not this check's.
  */
 export function normalizeMeetingNotes(notes: MeetingNotes, segments: readonly TranscriptSegment[]): MeetingNotes {
   const speakers = new Set(segments.map((segment) => segment.speaker));

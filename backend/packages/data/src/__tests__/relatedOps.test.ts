@@ -53,7 +53,6 @@ function makeEvent(properties: Record<string, unknown> = {}): Promise<ItemRow> {
   return make("events", { date: "2026-10-16", ...properties });
 }
 
-/** Links `from` to `to` through the relation property `key` of the database `from` belongs to, as a user write does. */
 async function link(from: Pick<ItemRow, "id" | "databaseId">, key: string, to: Pick<ItemRow, "id">): Promise<void> {
   await inTenant(async () => {
     const property = (await cp.listProperties(from.databaseId)).find((candidate) => candidate.key === key);
@@ -82,14 +81,12 @@ function keysOf(rows: readonly RelatedCollectionRow[]): Array<string | null> {
   return rows.map((row) => row.databaseKey);
 }
 
-/** The ids a query of the row's database selects with the row's filter. */
 async function selectedIds(row: RelatedCollectionRow): Promise<string[]> {
   if (row.filter === null) throw new Error("The row has no filter");
   const page = await inTenant(() => cp.queryDatabaseItems(row.databaseId, { filter: row.filter, limit: 200 }));
   return page.items.map((item) => item.id).sort();
 }
 
-/** Every row with a filter counts exactly the records its filter selects. */
 async function expectCountsMatchFilters(rows: readonly RelatedCollectionRow[]): Promise<void> {
   for (const row of rows) {
     if (row.filter === null) continue;
@@ -97,7 +94,6 @@ async function expectCountsMatchFilters(rows: readonly RelatedCollectionRow[]): 
   }
 }
 
-/** The Journal entry of a day, through the lazy create. */
 function journalEntry(): Promise<ItemRow> {
   return inTenant(() =>
     withTransaction(pool, (client) =>
@@ -113,7 +109,6 @@ function withClientVisible(base: CollectionMetadataResolver, hidden: ReadonlySet
   };
 }
 
-/** A user-created database; its items are created without properties. */
 function userDatabase(name: string): Promise<DatabaseRow> {
   return inTenant(() => cp.createDatabase({ name }));
 }
@@ -174,8 +169,7 @@ describe("relation.related (issue #1839)", () => {
 
       const rows = await relatedRows(project.id);
 
-      // Projects order: projects, events, files, threads, transcripts, companies, people, journal; Tasks is omitted and
-      // Health records, which the declaration does not list, follows the listed collections.
+      // Projects order without Tasks; Health records, not declared, follows the listed collections.
       expect(keysOf(rows)).toEqual(["events", "files", "companies", "people", "healthRecords"]);
       expect(rows.map((row) => row.count)).toEqual([1, 1, 1, 1, 1]);
       expect(rows.every((row) => row.via === "direct")).toBe(true);
@@ -516,7 +510,7 @@ describe("relation.related (issue #1839)", () => {
       await link(task, "project", project);
       expect(keysOf(await relatedRows(company.id))).toEqual(["projects", "tasks"]);
 
-      // The API refuses to archive a system database; this is the state of a tenant whose Tasks database is not listed.
+      // The API refuses to archive a system database.
       await admin.query("UPDATE databases SET archived_at = now() WHERE id = $1", [database("tasks").id]);
 
       expect(keysOf(await relatedRows(company.id))).toEqual(["projects"]);
@@ -607,7 +601,6 @@ describe("relation.related (issue #1839)", () => {
 
       expect(await related(randomUUID())).toBeNull();
       expect(await related(trashed.id)).toBeNull();
-      // The same id asked from the other tenant's scope is as unknown as a random one.
       expect(await inTenant(() => cp.listRelatedCollections(project.id, resolver), otherTenant)).toBeNull();
       expect(await related(project.id)).toEqual([]);
     });
@@ -702,7 +695,6 @@ describe("relation.related (issue #1839)", () => {
         );
         const withGrant = await related(project.id, resolver, agentProject);
         expect(keysOf(withGrant ?? [])).toEqual(["events", "healthRecords"]);
-        // A person reads every collection regardless of any grant.
         expect(keysOf(await relatedRows(project.id))).toEqual(["events", "healthRecords"]);
       });
 
@@ -723,7 +715,6 @@ describe("relation.related (issue #1839)", () => {
             ),
           );
         const keys = async () => keysOf((await related(project.id, resolver, agentProject)) ?? []);
-        // A user-created database is open to an agent without a grant.
         expect(await keys()).toEqual(["events", null]);
 
         await setAccess("none");
@@ -772,7 +763,6 @@ describe("relation.related (issue #1839)", () => {
       expect(rows.map((candidate) => candidate.databaseKey ?? "custom")).toEqual(["events", "custom"]);
       expect(rowOf(rows, notes.id).count).toBe(4);
       expect(seen).toEqual([`people:true`]);
-      // The registration is for people, so a record of another type is not asked.
       await relatedRows((await make("projects")).id);
       expect(seen).toHaveLength(1);
 
@@ -806,7 +796,6 @@ describe("relation.related (issue #1839)", () => {
   });
 
   describe("the Threads database", () => {
-    /** A thread, through the mail store, which creates the thread's item; the Threads schema is seeded and locked. */
     async function thread(): Promise<Pick<ItemRow, "id" | "databaseId">> {
       return inTenant(() =>
         withTransaction(pool, async (client) => {
@@ -874,7 +863,7 @@ describe("relation.related (issue #1839)", () => {
       await link(await thread(), "project", project);
       expect(threadsRowsOf(await relatedRows(area.id))).toEqual([threadsRow(1, "project")]);
 
-      // The API refuses to archive a system database; this is the state of a tenant whose Threads database is not listed.
+      // The API refuses to archive a system database.
       await admin.query("UPDATE databases SET archived_at = now() WHERE id = $1", [database("threads").id]);
 
       expect(threadsRowsOf(await relatedRows(area.id))).toEqual([]);

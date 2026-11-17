@@ -4,11 +4,9 @@ import { raiseProblem, resolveProblem } from "./sempProblemsStore.js";
 import { guidanceProblemKey } from "./sourceProblemKeys.js";
 
 /**
- * Resolves the `guidanceDrift` problem of one finding in the caller's open transaction (issue #1915), as
- * `recovered`. It is the one resolve every path that ends a finding goes through: the drift passes (through the
- * writer below), the owner's decision (allow, forbid and dismiss: a decided finding is never reactivated, so
- * nothing else would close the problem) and the emptying of the project's guidance. Returns whether a problem
- * was active.
+ * Resolves the `guidanceDrift` problem of one finding as `recovered`. Every path that ends a finding goes
+ * through here: the drift passing, the owner's decision (decided findings never reactivate) and emptying the
+ * project's guidance. Returns whether a problem was active.
  */
 export function resolveGuidanceDriftProblem(
   tx: PoolClient,
@@ -20,10 +18,7 @@ export function resolveGuidanceDriftProblem(
   });
 }
 
-/**
- * `PoolClient` implementation of `@semprec/shared`'s `GuidanceProblemWriter` (issues #1465 and #1915): one
- * active `guidanceDrift` warning per finding, raised and resolved in the caller's transaction.
- */
+/** One active `guidanceDrift` warning per finding, raised and resolved in the caller's transaction. */
 export function createGuidanceProblemWriter(): GuidanceProblemWriter<PoolClient> {
   return {
     async raise(tx, input) {

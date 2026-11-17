@@ -13,7 +13,7 @@ export interface OrphanedOwnerProcessProperty {
   ownerProcess: string | null;
 }
 
-/** owner: 'system' says who may NOT write, not who does — an empty/unknown owner_process means nothing actually fills it. */
+/** owner: 'system' says who may NOT write; an empty/unknown owner_process means nothing fills it. */
 export async function findOrphanedOwnerProcessProperties(
   client: PoolClient,
   activeProcessIds?: ReadonlySet<string>,
@@ -42,17 +42,14 @@ export interface InvalidLinkRuleReference {
   ruleKey: string;
   moduleId: string;
   reason: InvalidLinkRuleReasonKind;
-  /** The `databaseKey.propertyKey` the reason is about. */
+  /** `databaseKey.propertyKey`. */
   property: string;
 }
 
 /**
- * Checks every link rule of an active module against the tenant's seeded schema: its source,
- * target and `via` relation properties must exist in the named databases, the `via` property
- * must be a relation, and that relation (its `config.targetDatabaseId`) must lead to the other
- * database of the rule. The property a rule's `valueFilter.omit` names must exist in the system
- * database whose owner module id is `omit.databaseKey`, and be a relation. Reports every problem;
- * one rule can appear more than once.
+ * Checks every active link rule against the seeded schema: properties exist, `via` is a relation
+ * leading to the rule's other database, and `valueFilter.omit` names a relation. Reports every
+ * problem; one rule can appear more than once.
  */
 export async function findInvalidLinkRuleReferences(
   client: PoolClient,
@@ -122,49 +119,29 @@ export async function findInvalidLinkRuleReferences(
 
 export interface CreateDriftCheckActionOptions {
   activeProcessIds?: ReadonlySet<string>;
-  /**
-   * Threaded straight through to `generatePermissionManifest` (issue #147) so this check also
-   * confirms every database/property/option name it touches actually resolves against the
-   * loaded catalogs — not just that the query shape is valid. Confirming resolvability without a
-   * `moduleRegistry` (the pre-#147 behavior) is still a meaningful check on its own, so this
-   * remains optional.
-   */
+  /** When given, the check also confirms every touched name resolves against the catalogs. */
   moduleRegistry?: ModuleRegistry;
   /**
-   * Overrides the locale `generatePermissionManifest` resolves against. Ignored unless
-   * `moduleRegistry` is also given. Omit this to use the scope's tenant user's
-   * `users.locale`, or `en` when that tenant has no user, live on every run (see
-   * `createDriftCheckAction` below) — the production behavior. Pass an explicit value only
-   * to pin the check to one locale regardless of what's stored, e.g. in a test.
+   * Ignored without `moduleRegistry`. Omitted (production), the tenant user's locale is read on
+   * every run, `en` when there is no user; pass one only to pin it, e.g. in a test.
    */
   locale?: ManifestLocale;
 }
 
 /**
- * Registers as a heartbeat action; reports via `manifest_drift_findings`, never stays silent
- * about a mismatch. Only the mechanically-checkable half (owner_process orphans) runs
- * here — the manifest <-> `agents` text comparison is a semantic-judgment task that
- * genuinely needs an LLM call through the AI gateway, out of scope for this issue
- * (running an AI agent is a later issue). That comparator plugs in as a later
- * extension to this action, once the agent-orchestration issue exists to supply it.
+ * Reports via `manifest_drift_findings`, never silently. Only the mechanical half
+ * (owner_process orphans) runs here; comparing the manifest with `agents` text needs an LLM.
  */
 export function createDriftCheckAction(pool: Pool, options: CreateDriftCheckActionOptions = {}): ActionHandler {
   return async (_actionConfig: Record<string, unknown>, context: ActionContext) => {
-    // The orphan check and the notification it produces must be atomic: without a
-    // transaction, a crash (or the INSERT throwing) between the SELECT and the INSERT
-    // would drop the drift report for this cycle with no trace it was ever detected.
+    // Atomic, so a failure between detection and the INSERT cannot drop the report.
     await withTransaction(pool, async (client) => {
-      // Resolved fresh from the scope's tenant user on every run (issue #147 AC #9/#10),
-      // falling back to en when the tenant has no user. A locale change is picked up on
-      // the very next heartbeat tick, with no persisted manifest to go stale. Looked up
-      // only when it'll actually be used — `generatePermissionManifest` ignores `locale`
-      // without a `moduleRegistry` — and only when the caller hasn't pinned one explicitly.
+      // Read fresh each run so a locale change applies on the next tick; only when it will be used.
       const locale =
         options.locale ??
         (options.moduleRegistry ? toManifestLocale((await getTenantUserLocale(client)) ?? "en") : undefined);
 
-      // Confirms the schema this drift check reports against is actually resolvable;
-      // the manifest's content is only consumed once the text comparator (above) exists.
+      // Only confirms the schema is resolvable; the manifest content itself is not consumed yet.
       await generatePermissionManifest(client, context.projectItemId, {
         moduleRegistry: options.moduleRegistry,
         locale,

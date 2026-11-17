@@ -17,10 +17,9 @@ export const AGENT = { writerKind: "agent" } as const;
 export const OWN_ADDRESS = "me@example.test";
 
 /**
- * A seeded tenant of the mail module with one mailbox, and helpers that act in it through the production writers: a
- * message that arrives with attachments through the sync writer (`ingestEmailMessage`), items and relation edges written as
- * a user, and reads of edges and value links (issues gh-1898 and gh-1922). `tenantId` must be seeded with `seedSystem`.
- * Every helper runs in the tenant scope of `tenantId` on `runtime`, a pool of the runtime role.
+ * A seeded mail tenant with one mailbox and helpers using the production writers: attachments arrive through
+ * `ingestEmailMessage`, items and edges are written as a user. `tenantId` must be seeded with `seedSystem`; every
+ * helper runs in its tenant scope on `runtime`, a runtime-role pool.
  */
 /** A message that arrived through the sync writer: its thread, the Threads item of the thread and the files it brought. */
 export interface ReceivedMessage {
@@ -33,7 +32,6 @@ export interface ReceivedMessage {
 export type ValueLinks =
   Awaited<ReturnType<ChokePoint["getValueLinksForItems"]>> extends Map<string, infer V> ? V : never;
 
-/** One tenant's ids and the helpers that act in it. */
 export interface MailAttachmentWorld {
   tenantId: string;
   cp: ChokePoint;
@@ -59,7 +57,7 @@ export interface MailAttachmentWorld {
   linksOf(itemId: string): Promise<ValueLinks>;
 }
 
-/** Consumes each attachment stream, so the write completes as a real storage write does. */
+/** Consumes each attachment stream, as a real storage write does. */
 export function recordingStorage(written: string[] = []): BlobStorageWriter {
   return {
     async writeStream(storageKey: string, source: Readable) {

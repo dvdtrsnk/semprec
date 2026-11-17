@@ -52,10 +52,7 @@ import { createGatewayModel, type GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { logger } from "../logger.js";
 
-/**
- * Lets a test run code while a run's session is being composed — to fail the composition, or to
- * close the run in the gap before the handler claims it. Unset, the real composition runs as is.
- */
+/** Runs test code during session composition, e.g. to fail it or close the run before the claim. */
 const composition = vi.hoisted(() => ({ during: undefined as ((agentRunId: string) => Promise<void>) | undefined }));
 
 vi.mock("../agentSessionComposition.js", async (importOriginal) => {
@@ -69,7 +66,6 @@ vi.mock("../agentSessionComposition.js", async (importOriginal) => {
   };
 });
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -96,7 +92,6 @@ let runtime: AgentsQueueRuntime | undefined;
 let faux: FauxProviderHandle;
 let fauxGateway: GatewayModel;
 let requestHeaders: Record<string, string | null>[];
-/** The account `beforeEach` creates; the owner of the project guidance rows. */
 let ownerUserId: string;
 
 async function jobCount(taskName: string): Promise<number> {
@@ -154,17 +149,13 @@ async function errorNotificationCount(runId: string): Promise<number> {
   return Number(rows[0]?.count ?? 0);
 }
 
-/** The Semprec project item `seedSystem` creates — the project the directly created runs belong to. */
 async function seededSemprecProjectItemId(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(`SELECT id FROM items WHERE properties ->> 'name' = 'Semprec'`);
   expect(rows).toHaveLength(1);
   return rows[0]!.id;
 }
 
-/**
- * The seeded `core.agentRun` heartbeat (the `newEmail` rule) and the project that owns it — the
- * Email project, not Semprec, since a heartbeat fire opens its run for the heartbeat's own project.
- */
+/** A heartbeat fire opens its run for the heartbeat's own project (Email, not Semprec). */
 async function seededAgentHeartbeat(): Promise<{ id: string; projectItemId: string }> {
   const { rows } = await pool.query<{ id: string; project_item_id: string }>(
     `SELECT id, project_item_id FROM project_heartbeats WHERE action_id = $1`,
@@ -1452,8 +1443,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
 
   it("runs the seeded core.agentRun heartbeat's session through coreAgentRunAction", async () => {
     const heartbeat = await seededAgentHeartbeat();
-    // A manual (`triggeredByRunId`) fire skips the seeded rule's item-relation filter, which only
-    // applies to an item-triggered fire.
+    // A manual (`triggeredByRunId`) fire skips the seeded rule's item-relation filter.
     const parentRun = await createAgentRun(pool, {
       projectItemId: heartbeat.projectItemId,
       triggeredBy: "user",
@@ -1554,10 +1544,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     expect(prompt).toContain(`Triggering item id: ${setup.item.id}`);
   });
 
-  /**
-   * Fires the seeded heartbeat as a single-attempt job, so its one failure is the final attempt that
-   * records `last_error`, then returns the one run it opened and that `last_error`.
-   */
+  /** Single attempt, so its one failure is final and records `last_error`. */
   async function fireFailingHeartbeat(): Promise<{
     run: { id: string; status: string; result: string | null };
     lastError: string | null;

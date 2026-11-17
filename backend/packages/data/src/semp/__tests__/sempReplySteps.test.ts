@@ -35,7 +35,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 let setup: TurnSetup;
 let foreignTenant: string;
 
-/** Reserves and settles one gateway call attributed to `messageId`, as the gateway does for a model call. */
 async function settledCall(messageId: string | null, input: number, output: number): Promise<void> {
   await runInTenant(setup.tenant, async () => {
     const reserved = await reserveGatewayCall(setup.runtime, {
@@ -252,8 +251,7 @@ describe("the typed step summary of a Semp reply (issue #1860)", () => {
       });
       await failGatewayCall(setup.runtime, failed.id);
     });
-    // Raw SQL, because production leaves the token columns of a reserved or failed call NULL, where a sum would skip
-    // them anyway: give them tokens, so only the status filter keeps them out of the total.
+    // Raw SQL: production leaves reserved/failed calls' tokens NULL; give them tokens so only the status filter excludes them.
     await setup.admin.query(
       "UPDATE ai_gateway_calls SET input_tokens = 1000, output_tokens = 100 WHERE semp_message_id = $1 AND status IN ('reserved', 'failed')",
       [first.messageId],

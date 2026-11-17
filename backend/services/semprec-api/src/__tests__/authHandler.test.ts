@@ -176,7 +176,7 @@ describe("createAuthRequestListener", () => {
         passwordHash: await hashPassword(PASSWORD),
         role: "admin",
       });
-      // Set the stored value directly to exercise the read path required by issue #1387.
+      // Set directly to exercise the read path.
       await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
 
       const res = await fetch(`${baseUrl}/api/auth/login`, {
@@ -435,7 +435,7 @@ describe("createAuthRequestListener", () => {
       );
       expect(rows.rows).toHaveLength(5);
       const ids = rows.rows.map((row) => row.id);
-      // Older sessions predate device identity and cannot be created by the current login route.
+      // Sessions without device identity cannot be created by the current login route.
       await pool.query(
         "UPDATE sessions SET device_id = NULL, device_kind = NULL, device_name = NULL, os_version = NULL, app_version = NULL WHERE id = $1",
         [ids[0]],
@@ -510,7 +510,7 @@ describe("createAuthRequestListener", () => {
           }
           headers = { Authorization: `Bearer ${body.token}` };
         }
-        // Age the expiry to exercise the sliding update; the login API cannot backdate a session.
+        // The login API cannot backdate a session.
         await withTransaction(pool, (client) =>
           client.query("UPDATE sessions SET expires_at = now() + interval '1 day' WHERE user_id = $1", [user.id]),
         );
@@ -544,7 +544,6 @@ describe("createAuthRequestListener", () => {
       if (typeof body !== "object" || body === null || !("token" in body) || typeof body.token !== "string") {
         throw new Error("Native login did not return a token");
       }
-      // Synthetic age: production login cannot create an already-aged session.
       await withTransaction(pool, (client) =>
         client.query(
           "UPDATE sessions SET created_at = now() - interval '364 days', expires_at = now() + interval '1 hour' WHERE user_id = $1",
@@ -576,7 +575,6 @@ describe("createAuthRequestListener", () => {
         });
         expect(loginResponse.status).toBe(200);
         const cookie = sessionCookieFrom(loginResponse);
-        // Synthetic age: the login API cannot backdate a still-active session.
         await withTransaction(pool, (client) =>
           client.query(
             "UPDATE sessions SET created_at = now() - make_interval(days => $2::int), expires_at = now() + interval '1 hour' WHERE user_id = $1",
@@ -604,7 +602,6 @@ describe("createAuthRequestListener", () => {
         body: JSON.stringify({ email: user.email, password: PASSWORD, platform: "web" }),
       });
       const cookie = sessionCookieFrom(loginResponse);
-      // A valid login cannot create an already-expired session.
       await withTransaction(pool, (client) =>
         client.query(
           "UPDATE sessions SET created_at = now() - interval '31 days', expires_at = now() - interval '1 day' WHERE user_id = $1",
@@ -697,7 +694,7 @@ describe("createAuthRequestListener", () => {
 
     it("returns the stored displayName", async () => {
       const user = await makeUser();
-      // Set the stored value directly to exercise the read path required by issue #1387.
+      // Set directly to exercise the read path.
       await pool.query("UPDATE users SET display_name = $2 WHERE id = $1", [user.id, "Ada Lovelace"]);
       const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
         method: "POST",
@@ -1187,8 +1184,8 @@ describe("createAuthRequestListener", () => {
       }, 5000);
       try {
         for (const { req } of requests) req.flushHeaders();
-        // The last arrival's listener runs synchronously through the throttle check before this
-        // continuation sends any body. Every request therefore reaches that check before any body is read.
+        // The last arrival's listener runs synchronously through the throttle check before any body is sent, so
+        // every request reaches that check before any body is read.
         await Promise.race([allArrivedPromise, statuses]);
         for (const { req, payload } of requests) req.end(payload);
         return await statuses;
@@ -1212,7 +1209,6 @@ describe("createAuthRequestListener", () => {
       const login = (from: string, email: string, password: string): Promise<Response> =>
         post("/api/auth/login", from, { email, password, platform: "web" });
 
-      // Neither a success nor a validation failure counts toward the limit.
       expect((await login(ADDRESS, user.email, PASSWORD)).status).toBe(200);
       expect((await post("/api/auth/login", ADDRESS, { email: user.email, platform: "web" })).status).toBe(400);
       for (let i = 0; i < 3; i++) {
@@ -1268,7 +1264,7 @@ describe("createAuthRequestListener", () => {
     });
 
     it("does not count a login that failed for a reason other than its credentials", async () => {
-      // A pool whose connections are refused makes `login` throw an infrastructure error, not UnauthorizedError.
+      // Refused connections make `login` throw an infrastructure error, not UnauthorizedError.
       const unreachablePool = new pg.Pool({ host: "127.0.0.1", port: 1, connectionTimeoutMillis: 1000 });
       const throttle = createClientIpThrottle({ limits: { login: { maxEvents: 1, windowSeconds: 900 } } });
       const brokenServer = createServer(
@@ -1316,7 +1312,6 @@ describe("createAuthRequestListener", () => {
       const requestReset = (email: unknown): Promise<Response> =>
         post("/api/auth/password-reset/request", ADDRESS, { email });
 
-      // A validation failure does not count.
       expect((await requestReset(undefined)).status).toBe(400);
       const known = await requestReset(user.email);
       const unknown = await requestReset("nobody@example.com");
@@ -1353,7 +1348,6 @@ describe("createAuthRequestListener", () => {
       const consume = (from: string, body: unknown): Promise<Response> =>
         post("/api/auth/password-reset/consume", from, body);
 
-      // A validation failure (password too short) does not count.
       expect((await consume(ADDRESS, { token, newPassword: "short" })).status).toBe(400);
       for (let i = 0; i < 2; i++) {
         const invalid = await consume(ADDRESS, { token: `not-a-token-${i}`, newPassword: "a-brand-new-password" });
@@ -1699,7 +1693,7 @@ describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
 
   interface OpenedSocket {
     socket: WebSocket;
-    /** The close code, and the closed session's `revoked_at` read the moment the close arrived. */
+    /** `revoked_at` read the moment the close arrived. */
     closed: Promise<{ code: number; sessionRevokedAt: Date | null }>;
   }
 
@@ -1712,10 +1706,7 @@ describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
     return row.revoked_at;
   }
 
-  /**
-   * Opens a sync socket for one session and records it in `opened` before waiting for it to open, so a case's
-   * cleanup ends every socket it started, including one whose opening failed.
-   */
+  /** Recorded before it opens, so the cleanup ends every started socket, including one that failed to open. */
   async function openSocket(
     session: { token: string; sessionId: string },
     opened: OpenedSocket[],
@@ -1724,7 +1715,7 @@ describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
     const closed = new Promise<number>((resolve) => socket.once("close", (code: number) => resolve(code))).then(
       async (code) => ({ code, sessionRevokedAt: await sessionRevokedAt(session.sessionId) }),
     );
-    // Read by the case, or by the cleanup; observed here too, so a failed read is never an unhandled rejection.
+    // Observed here too, so a failed read is never an unhandled rejection.
     closed.catch(() => undefined);
     const entry = { socket, closed };
     opened.push(entry);
@@ -1735,7 +1726,6 @@ describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
     return entry;
   }
 
-  /** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
   async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
     const expired = new Promise<never>((_resolve, reject) => {
@@ -1768,7 +1758,7 @@ describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
       for (const other of otherSockets) {
         const closed = await within(other.closed, 10_000, "A revoked session's socket close");
         expect(closed.code).toBe(4401);
-        // Read as the close arrives, the session already reads as revoked: the close follows the commit.
+        // The session already reads as revoked when the close arrives: the close follows the commit.
         expect(closed.sessionRevokedAt).toBeInstanceOf(Date);
       }
       expect(await sessionStatus(caller.token)).toBe(200);
@@ -1824,7 +1814,7 @@ describe("POST /api/auth/sessions/revoke-others (issue #1650)", () => {
     const user = await makeUser("router@example.com");
     const caller = await signIn(user.email);
     const other = await signIn(user.email);
-    // `revoke-others` used as a session id goes to the single revoke route, which refuses it as no UUID.
+    // `revoke-others` as a session id goes to the single revoke route, which refuses it as no UUID.
     const single = await fetch(`${baseUrl}/api/auth/sessions/revoke-others/revoke`, {
       method: "POST",
       headers: { Authorization: `Bearer ${caller.token}` },
@@ -1838,8 +1828,8 @@ describe("POST /api/auth/login replacing the sessions of its installation (issue
   const DEVICE_ID = "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f";
   const OTHER_DEVICE_ID = "0b7e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b";
 
-  // The auth listener, the realtime hooks and the sync upgrade share one pool logged in as `semprec_data`,
-  // the role the API connects as. Fixtures and assertions go through the file's superuser `pool`.
+  // The auth listener, realtime hooks and sync upgrade share one pool as `semprec_data`, the API's role;
+  // fixtures go through the superuser `pool`.
   let runtime: Pool | undefined;
   let server: Server | undefined;
   let syncServer: SyncServer | undefined;
@@ -1879,7 +1869,7 @@ describe("POST /api/auth/login replacing the sessions of its installation (issue
   });
 
   afterAll(async () => {
-    // The hooks are module-global; leave none bound to the pool that is ended here.
+    // The hooks are module-global; leave none bound to the ended pool.
     setInvalidationHook(() => {});
     setDocUpdateHook(() => {});
     setNotificationCreatedHook(() => {});
@@ -1944,11 +1934,9 @@ describe("POST /api/auth/login replacing the sessions of its installation (issue
 
   interface OpenedSocket {
     socket: WebSocket;
-    /** The close code, and whether the session still read as active the moment the close arrived. */
     closed: Promise<{ code: number; sessionActive: boolean }>;
   }
 
-  /** The socket's close, or a rejection when it has not arrived within `ms`; the timer is cleared either way. */
   async function closeWithin(opened: OpenedSocket, ms: number): Promise<{ code: number; sessionActive: boolean }> {
     let timer: NodeJS.Timeout | undefined;
     const expired = new Promise<never>((_resolve, reject) => {
@@ -1962,9 +1950,8 @@ describe("POST /api/auth/login replacing the sessions of its installation (issue
   }
 
   /**
-   * Runs `work` with an opener of sync sockets and then ends every socket it opened, whether `work` passed
-   * or threw. Throws the failure of `work`; when ending a socket failed as well, throws an `AggregateError`
-   * that holds both and names the failure of `work` as its cause.
+   * Ends every opened socket whether `work` passed or threw; when ending one failed too, throws an `AggregateError`
+   * with the failure of `work` as its cause.
    */
   async function withSockets(
     work: (open: (session: SignedIn) => Promise<OpenedSocket>) => Promise<void>,
@@ -1975,7 +1962,7 @@ describe("POST /api/auth/login replacing the sessions of its installation (issue
       const closed = new Promise<number>((resolve) => socket.once("close", (code: number) => resolve(code))).then(
         async (code) => ({ code, sessionActive: await isSessionActive(pool, session.sessionId) }),
       );
-      // Read by the case, or by the cleanup; observed here too, so a failed read is never an unhandled rejection.
+      // Observed here too, so a failed read is never an unhandled rejection.
       closed.catch(() => undefined);
       const entry = { socket, closed };
       opened.push(entry);
@@ -2025,7 +2012,7 @@ describe("POST /api/auth/login replacing the sessions of its installation (issue
 
       const closed = await closeWithin(previousSocket, 10_000);
       expect(closed.code).toBe(4401);
-      // Read as the close arrives, the session is no longer active: the close follows the commit.
+      // The session is no longer active when the close arrives: the close follows the commit.
       expect(closed.sessionActive).toBe(false);
       expect(await sessionStatus(previous.token)).toBe(401);
       expect(await sessionStatus(next.token)).toBe(200);
@@ -2070,8 +2057,8 @@ describe("POST /api/auth/login replacing the sessions of its installation (issue
     expect(await sessionStatus(otherSession.token)).toBe(200);
   });
 
-  // The schedule that fails without the installation lock is forced in authActions.test.ts; this case
-  // sends the logins at once through the composed route under the API's role.
+  // The schedule failing without the installation lock is forced in authActions.test.ts; this case sends the
+  // logins at once through the composed route under the API's role.
   it("ends simultaneous logins with one deviceId with exactly one active session of that installation", async () => {
     const user = await makeUser("caller@example.com");
     const previous = await signIn(user.email, { deviceId: DEVICE_ID });
@@ -2137,8 +2124,7 @@ describe("POST /api/auth/password-change (issue #1701)", () => {
   const OTHER_ADDRESS = "198.51.100.4";
   const NEW_PASSWORD = "a-brand-new-password";
 
-  // The auth listener runs on a pool logged in as `semprec_data`, the role the API connects as.
-  // Fixtures and assertions go through the file's superuser `pool`.
+  // The auth listener runs on a pool as `semprec_data`, the API's role; fixtures go through the superuser `pool`.
   let runtime: Pool | undefined;
   let server: Server | undefined;
   let baseUrl: string;
@@ -2204,7 +2190,6 @@ describe("POST /api/auth/password-change (issue #1701)", () => {
     return (await fetch(`${baseUrl}/api/auth/session`, { headers: { Authorization: `Bearer ${token}` } })).status;
   }
 
-  /** Sends `body` as JSON, or verbatim when it is already a string. */
   function postChange(token: string | null, body: unknown, address = ADDRESS): Promise<Response> {
     const headers: Record<string, string> = { "Content-Type": "application/json", "X-Forwarded-For": address };
     if (token !== null) headers.Authorization = `Bearer ${token}`;
@@ -2514,11 +2499,11 @@ describe("POST /api/auth/password-change (issue #1701)", () => {
       markSuspended();
       await suspensionHeld;
     });
-    // Awaited below; observed here too, so an early failure is never an unhandled rejection.
+    // Observed here too, so an early failure is never an unhandled rejection.
     suspension.catch(() => undefined);
     await Promise.race([suspendedUncommitted, suspension]);
 
-    // The request reads the tenant as active, because the suspension is not committed, and then waits for it.
+    // The uncommitted suspension leaves the tenant active, so the request reads it and then waits.
     const responding = postChange(calling.token, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
     responding.catch(() => undefined);
     try {

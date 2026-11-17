@@ -26,9 +26,8 @@ interface FakeTool {
 }
 
 /**
- * The sync's connection is replaced by a fake whose `tools/list` answers `fakeServer.tools`: the contract servers
- * cannot advertise annotations. Everything after the connection (validation, the transaction, the upsert and the
- * stores) is the real code against the real database. Hoisted because the `vi.mock` factory below runs first.
+ * The connection is faked (contract servers cannot advertise annotations); everything after it runs for real
+ * against the database. Hoisted because the `vi.mock` factory runs first.
  */
 const fakeServer = vi.hoisted(() => ({ tools: [] as FakeTool[] }));
 

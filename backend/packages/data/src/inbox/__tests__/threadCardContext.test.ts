@@ -33,7 +33,6 @@ import {
   type InboxCardThreadContext,
 } from "../threadCardContext.js";
 
-/** The JSON object between the data tags of a rendered context. */
 function dataOf(text: string): Record<string, unknown> {
   const match = /<inbox-card-data>\n(.*)\n<\/inbox-card-data>$/s.exec(text);
   if (!match?.[1]) throw new Error("The rendered context has no data tags");
@@ -340,8 +339,7 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
 
   it("returns the newest card when more than one live card is linked to the source", async () => {
     const fixture = await createCard(owner);
-    // The tick makes one card per source; a source split into several cards (issue #1939) is not written yet, so the
-    // second card is made the way the tick makes one.
+    // The tick makes one card per source, so the second card of the source is made the way the tick makes one.
     const second = await runInTenant(owner, () =>
       withTransaction(runtime, async (client) => {
         const card = await createItemWithClient(

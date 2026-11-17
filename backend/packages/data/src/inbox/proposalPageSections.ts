@@ -6,9 +6,8 @@ import { proposalEnvelopeSchema, type ProposalEnvelope, type ProposalPageSection
 import { proposalBlockId } from "./proposalPageContent.js";
 
 /**
- * The blocks of `sections` in page order, with the ids of the proposal: each section is an `h2` heading block followed
- * by one block of the section's type per item. The block ids are `proposalBlockId(proposalId, n)` for the n-th block
- * of the page (heading and items counted together), so a repeated confirm names the same ids.
+ * The blocks of `sections`: an `h2` heading then one block per item, with ids `proposalBlockId(proposalId, n)`, so a
+ * repeated confirm names the same ids.
  */
 export function buildPageSectionBlocks(
   proposalId: string,
@@ -26,13 +25,9 @@ export function buildPageSectionBlocks(
 }
 
 /**
- * `next`, the envelope a revise of a card writes, with the page sections of the card's previous assistant envelope
- * carried over (issue gh-1974). A revise replaces the whole envelope with one the caller composed from properties
- * alone, so without this a revised recipe card would be confirmed with an empty page. The sections are carried only
- * when the revision keeps the destination they were computed for: `next` has none of its own, and both envelopes are
- * single-step `database` envelopes with the same `target`. `previous` is the stored envelope as read from the card
- * (`aiProposal`, else `proposal`); one that is absent or does not parse carries nothing, because a revise may replace
- * a malformed envelope. The inputs are not changed.
+ * `next` (a revise's envelope, composed from properties alone) with the previous assistant envelope's page sections
+ * carried over, so a revised recipe card does not confirm with an empty page. Only when `next` has none and both are
+ * single-step `database` envelopes with the same `target`; an absent or unparsable `previous` carries nothing.
  */
 export function carryPageSections(previous: unknown, next: ProposalEnvelope): ProposalEnvelope {
   if (next.pageSections !== undefined || next.entityKind !== "database" || next.operations !== undefined) return next;
@@ -46,10 +41,8 @@ export function carryPageSections(previous: unknown, next: ProposalEnvelope): Pr
 }
 
 /**
- * Writes the sections of a confirmed `database` proposal into the page of the item the confirm created (issue
- * gh-1974): the item is locked live, then one document write appends the blocks of `buildPageSectionBlocks` at the end
- * of the page as it stands, authored `user` like the other blocks a confirm writes. The caller's transaction owns the
- * commit, so a failure leaves no block and no item. Returns the inserted block ids in order.
+ * Appends the sections' blocks to the page of the item the confirm created (item locked live), authored `user`. The
+ * caller's transaction owns the commit. Returns the inserted block ids in order.
  */
 export async function insertProposalPageSections(
   client: PoolClient,

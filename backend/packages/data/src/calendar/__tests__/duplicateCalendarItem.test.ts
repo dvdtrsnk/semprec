@@ -31,7 +31,6 @@ let userId: string;
 const USER: WriterIdentity = { writerKind: "user" };
 const MAILBOX_ID = randomUUID();
 
-/** The edge target the hook below refuses; `null` while no test wants an edge write to fail. */
 let failEdgeWriteTo: string | null = null;
 registerRelationEdgeWriteHook(async ({ targetItemId }) => {
   if (failEdgeWriteTo !== null && targetItemId === failEdgeWriteTo) throw new Error("edge write refused on purpose");
@@ -39,7 +38,6 @@ registerRelationEdgeWriteHook(async ({ targetItemId }) => {
 
 const calendarRow = z.object({ id: z.string(), properties: z.object({ name: z.string() }).passthrough() });
 
-/** A tenant with one English-speaking user, so its seeded calendars are named `Personal`, `Work` and so on. */
 async function seededTenant(): Promise<{ tenantId: string; userId: string }> {
   const tenantId = await createTestTenant(admin);
   const user = await createUser(admin, {
@@ -52,7 +50,6 @@ async function seededTenant(): Promise<{ tenantId: string; userId: string }> {
   return { tenantId, userId: user.id };
 }
 
-/** Resolves once a backend of this database waits for a transaction to finish, read through `pg_stat_activity`. */
 async function waitForTransactionWaiter(): Promise<void> {
   for (let attempt = 0; attempt < 250; attempt += 1) {
     const { rows } = await admin.query<{ waiting: number }>(
@@ -89,7 +86,6 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
     await admin.end();
   });
 
-  /** The ids and writes of the tenant in scope; every write of a test goes through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -121,12 +117,10 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
         },
         USER,
       );
-    /** An Event in the calendar named `calendarName`, the way a create in a chosen calendar makes one. */
     const eventIn = (calendarName: string, properties: Record<string, unknown>) =>
       withTransaction(runtime, (client) =>
         createEventInCalendar(client, { properties }, calendar(calendarName), { writer: USER }),
       ).then((item) => item.id);
-    /** Every live edge of the item as `key:targetId`, sorted. */
     const edgesOf = async (itemId: string) =>
       ((await cp.listItemRelations(itemId)) ?? []).map((entry) => `${entry.propertyKey}:${entry.targetItemId}`).sort();
     const edgeMetadata = async (itemId: string, key: string) =>
@@ -200,11 +194,9 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
         travelMinutes: 30,
         icalUid: expect.any(String),
         icalSequence: expect.any(Number),
-        // The copy is not recurring, so its next occurrence is its own day (issue gh-1905).
         nextOccurrenceDate: "2026-10-19",
       });
       expect(result.item.properties.icalUid).not.toBe((await f.read("events", meeting))?.properties.icalUid);
-      // Project, three people and the source's own calendar, which the create linked: no transcript, action item or hosted task.
       expect(await f.edgesOf(result.item.id)).toEqual(
         [
           `project:${project}`,
@@ -214,7 +206,6 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
           `calendar:${f.calendar("Work")}`,
         ].sort(),
       );
-      // The source keeps everything it had, and nothing moved from it to the copy.
       expect(await f.edgesOf(meeting)).toEqual(
         [
           `project:${project}`,
@@ -335,7 +326,6 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
       expect(refused).toBeInstanceOf(ChokePointError);
       expect(refused).toMatchObject({ status: 400, code: "validation_failed", details: { field: "timeTo" } });
       expect(await f.idsIn("events")).toEqual(before);
-      // The key was not kept by the refused request: the same key still creates a copy with valid times.
       const retried = await duplicate(meeting, { date: "2026-10-19", timeFrom: "10:00", timeTo: "11:00" }, "bad-times");
       expect(retried.item.properties.timeTo).toBe("11:00");
       expect((await f.idsIn("events")).length).toBe(before.length + 1);
@@ -371,7 +361,7 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
     runInTenant(tenant, async () => {
       const f = await setup();
       const trip = await f.eventIn("Work", { name: "Legacy trip", date: "2026-10-29", endDate: "2026-10-30" });
-      // The Events rules refuse a date with a time, so a row stored before them is made with raw SQL, as the migrations did.
+      // The Events rules refuse a date with a time, so such a row is stored with raw SQL.
       await admin.query(
         `UPDATE items SET properties = jsonb_set(properties, '{date}', '"2026-10-29T08:00:00Z"') WHERE id = $1`,
         [trip],
@@ -430,9 +420,8 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
   it("skips a relation the database does not have and an edge to a person in the Trash", () =>
     runInTenant(tenant, async () => {
       const f = await setup();
-      // A tenant whose Events and Tasks databases lack the whitelisted `area` and `files` relations, as an install
-      // before their cutover migrations is. The schema lock refuses the API, so it is lifted with raw SQL first.
-      // Deleting a relation property also deletes its inverse, on the Areas and Files databases.
+      // Events and Tasks databases without the whitelisted `area` and `files` relations. The schema lock refuses the
+      // API, so it is lifted with raw SQL first; deleting a relation property also deletes its inverse.
       await admin.query(`UPDATE databases SET schema_locked = false WHERE system`);
       await f.cp.deleteProperty((await f.property("events", "area")).id);
       await f.cp.deleteProperty((await f.property("events", "files")).id);
@@ -480,7 +469,6 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
       await withTransaction(runtime, (client) => setSelfPersonId(client, me));
       await f.link("events", "people", meeting, me, { role: "organizer" });
       await f.link("events", "people", meeting, plain);
-      // The invitation is written the way the invitation code writes it, with the system writer.
       await f.cp.createRelation({
         relationPropertyId: (await f.property("events", "people")).id,
         callerItemId: meeting,
@@ -633,7 +621,6 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
         rule: stored.source?.rule,
       });
       expect(stored.copy?.template).toMatchObject({ name: "Water the plants" });
-      // The source keeps its own series, unchanged.
       expect(stored.source).toMatchObject({ itemId: task, active: true, anchorDate: "2026-10-19" });
       expect((await f.read("tasks", task))?.properties.seriesId).toBe(sourceSeries);
     }));
@@ -689,7 +676,6 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
       );
 
       expect(await f.idsIn("events")).toEqual(before);
-      // The key was not kept either: once the failure is gone, the same key makes one complete copy.
       failEdgeWriteTo = null;
       const retried = await duplicate(meeting, { date: "2026-10-19" }, "copy-fails");
       expect((await f.idsIn("events")).length).toBe(before.length + 1);

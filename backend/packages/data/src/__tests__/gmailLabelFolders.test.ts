@@ -260,7 +260,6 @@ async function folderProviderIds(params: Setup): Promise<string[]> {
   return rows.map((r) => r.pid);
 }
 
-/** Provider ids of the live folders a message (by Message-ID) is linked to. */
 async function foldersOf(params: Setup, providerMessageId: string): Promise<string[]> {
   const { rows } = await admin.query<{ pid: string }>(
     `SELECT f.properties ->> 'providerId' AS pid

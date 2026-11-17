@@ -5,17 +5,14 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 /**
- * Issue #973: the restrictive `tenant_isolation` policy, exercised as each runtime role. The test
- * pool is a superuser and bypasses RLS, so every case switches role inside one transaction that is
- * rolled back at the end. Tenant zero's rows are seeded first, through the choke point. The cases
- * run on a plain pool, not `getTestPool`'s (whose connections start in tenant zero), so "no scope"
- * means no `app.tenant_id` at all; since the strict switch (#1067) that sees no tenant row.
+ * The restrictive `tenant_isolation` policy, per runtime role. The test pool is a superuser that bypasses
+ * RLS, so each case switches role in a rolled-back transaction. A plain pool is used so "no scope" means no
+ * `app.tenant_id` at all, which sees no tenant row.
  */
 const ROLES = ["semprec_data", "semprec_side"] as const;
 type Role = (typeof ROLES)[number];
 
 let pool: Pool;
-/** Superuser connections with no session-level `app.tenant_id`. */
 let rolePool: Pool;
 let tenantZero: string;
 let tenantTables: string[];
@@ -32,7 +29,6 @@ async function sqlState(client: PoolClient, text: string, values: unknown[] = []
   return undefined;
 }
 
-/** Quote a catalog name as a SQL identifier so it cannot break out of the identifier position. */
 function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
@@ -88,7 +84,7 @@ describe("row-level security as the runtime roles", () => {
     const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
     expect(tenants).toHaveLength(1);
     tenantZero = tenants[0]?.id ?? "";
-    // Tenant zero's user: a notification may only name its own tenant's user (issue #1066).
+    // A notification may only name its own tenant's user.
     const { rows: users } = await pool.query<{ id: string }>(
       `INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id`,
       [`rls-${randomUUID()}@example.com`, tenantZero],

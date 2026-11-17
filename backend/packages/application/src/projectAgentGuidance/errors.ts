@@ -1,8 +1,6 @@
 /**
- * This package stays neutral (dependency-cruiser forbids it importing `packages/data`'s
- * `ChokePointError` family — see `dependency-cruiser.rules.json`), so it defines its own
- * error shapes here, mirroring the same `status`/`code`/`details` convention used across the
- * rest of the backend.
+ * Own error shapes with the backend's `status`/`code`/`details` convention: this package may not
+ * import `packages/data`'s `ChokePointError` family.
  */
 
 export type ProjectAgentGuidanceValidationField = "projectItemId" | "newOwnerUserId" | "markdown";

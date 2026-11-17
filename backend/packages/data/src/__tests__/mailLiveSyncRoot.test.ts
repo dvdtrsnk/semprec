@@ -79,7 +79,7 @@ function recordingFactory(
   return { factory, byAccount };
 }
 
-/** Counts every `pool.connect()` call — a proxy for how many transactions discovery opens. */
+/** Counts every `pool.connect()` call, a proxy for how many transactions discovery opens. */
 function countingConnectPool(target: Pool): { pool: Pool; connectCount: () => number } {
   let count = 0;
   const proxy = new Proxy(target, {
@@ -97,20 +97,17 @@ function countingConnectPool(target: Pool): { pool: Pool; connectCount: () => nu
 }
 
 /**
- * Wraps `pool` so that the `mail_account_sync_state` seeding INSERT for `failItemId` is rewritten
- * into a statement the server itself rejects (an insert into a nonexistent column) — a fake
- * client-side rejection would never abort the surrounding transaction on Postgres's side, so it
- * would pass even without savepoints; this must actually reach and fail against the server.
+ * Wraps `pool` so the `mail_account_sync_state` seeding INSERT for `failItemId` becomes a statement the
+ * server rejects: a client-side rejection would not abort the transaction in Postgres, so it would pass
+ * even without savepoints.
  */
 function failingSeedPool(target: Pool, failItemId: string): Pool {
   const proxy = new Proxy(target, {
     get(t, prop, receiver) {
       if (prop === "connect") {
         return async (...args: unknown[]) => {
-          // `pool.query()` (a heartbeat tick's own write, unrelated to this helper's rewrite
-          // target) calls `this.connect(callback)` in callback style internally, which doesn't
-          // resolve a client through this wrapper's return value at all. Only the promise-style
-          // call this helper's SAVEPOINT-seeding transaction actually makes needs wrapping.
+          // `pool.query()` (a heartbeat tick's write) connects in callback style, which this wrapper does not
+          // intercept; only the promise-style SAVEPOINT-seeding transaction needs wrapping.
           if (typeof args[0] === "function") {
             return (t.connect as (...a: unknown[]) => unknown)(...args);
           }
@@ -146,10 +143,8 @@ function failingSeedPool(target: Pool, failItemId: string): Pool {
 }
 
 /**
- * Like `failingSeedPool`, but also rewrites the subsequent `ROLLBACK TO SAVEPOINT
- * discover_account` into a rejection with `rollbackErr` — exercises the discover `catch`'s
- * ordering: `onLifecycleError` must still receive the original seed error even when the rollback
- * that follows it also throws.
+ * Like `failingSeedPool`, but also turns the following `ROLLBACK TO SAVEPOINT discover_account` into a
+ * rejection with `rollbackErr`: `onLifecycleError` must still receive the original seed error.
  */
 function failingSeedAndRollbackPool(target: Pool, failItemId: string, rollbackErr: Error): Pool {
   const proxy = new Proxy(target, {
@@ -194,11 +189,9 @@ function failingSeedAndRollbackPool(target: Pool, failItemId: string, rollbackEr
 }
 
 /**
- * Wraps `pool.query` so a test can await every `process_heartbeats` UPSERT a heartbeat tick
- * issued, rather than racing its own assertions against a write that `startProcessHeartbeat`
- * never awaits (it fires the query and moves on). `rejectNextUpsert`, when set, makes the very
- * next matching UPSERT reject instead of running, to exercise the `onError` -> `onLifecycleError`
- * "heartbeat" phase.
+ * Wraps `pool.query` so a test can await every `process_heartbeats` UPSERT, which
+ * `startProcessHeartbeat` never awaits. `rejectNextUpsert` makes the next matching UPSERT reject, to
+ * exercise the `onError` -> `onLifecycleError` "heartbeat" phase.
  */
 function heartbeatTrackingPool(target: Pool): {
   pool: Pool;
@@ -274,8 +267,7 @@ describe("mail live-sync composition root (issue #195)", () => {
     const stateA = await withTransaction(pool, (client) => getMailAccountSyncState(client, a.id));
     expect(stateA?.syncMode).toBe("gmail_api");
 
-    // A second pass with no changes to the active set must not start a second lifecycle for
-    // either account — exactly one lifecycle per active account, restart or not.
+    // A second pass with an unchanged active set starts no second lifecycle for either account.
     await root.reconcileOnce();
     expect(byAccount.get(a.id)?.starts).toBe(1);
     expect(byAccount.get(b.id)?.starts).toBe(1);
@@ -306,7 +298,6 @@ describe("mail live-sync composition root (issue #195)", () => {
     expect(byAccount.get(a.id)?.stops).toBe(1);
     expect(byAccount.get(b.id)?.stops).toBe(0);
 
-    // Reactivation restarts a fresh lifecycle for the account rather than leaving it stopped.
     await chokePoint.restoreItem(mailboxesId, a.id);
     await root.reconcileOnce();
     expect(byAccount.get(a.id)?.starts).toBe(1);
@@ -323,9 +314,8 @@ describe("mail live-sync composition root (issue #195)", () => {
     await rootOne.reconcileOnce();
     expect(first.byAccount.get(a.id)?.starts).toBe(1);
 
-    // Persisted sync state survives across "restarts" (a brand-new root instance, simulating a
-    // process restart) — it is read back, not reset, and the fresh root does not start a
-    // second concurrent lifecycle for the still-active account beyond its own one.
+    // Persisted sync state survives a restart (a brand-new root instance): it is read back, not reset, and
+    // the fresh root starts only its own lifecycle for the still-active account.
     const stateBeforeRestart = await withTransaction(pool, (client) => getMailAccountSyncState(client, a.id));
 
     const second = recordingFactory();
@@ -368,8 +358,7 @@ describe("mail live-sync composition root (issue #195)", () => {
     expect(byAccount.get(b.id)?.starts).toBe(1);
 
     await root.stop();
-    // Even though A's lifecycle failed to start, it is still tracked as hosted (its `start`
-    // threw, but the composition root already recorded it) and gets a matching stop call.
+    // A's start threw, but the composition root already recorded it as hosted, so it gets a matching stop.
     expect(byAccount.get(a.id)?.stops).toBe(1);
     expect(byAccount.get(b.id)?.stops).toBe(1);
   });
@@ -423,11 +412,11 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     const root = createMailLiveSyncRoot(countingPool, factory, { discoveryIntervalMs: 1000 });
 
     await root.start();
-    await root.start(); // second call must be a no-op: no second initial reconcile, no second interval
+    await root.start(); // no second initial reconcile, no second interval
 
     const beforeTick = connectCount();
     await vi.advanceTimersByTimeAsync(1000);
-    // Exactly one interval firing means exactly one discovery pass: the tenant enumeration plus one page transaction.
+    // One interval firing is one discovery pass: the tenant enumeration plus one page transaction.
     // `stop()` awaits the pass the tick started, so every connection it opens is counted by then.
     await root.stop();
     expect(connectCount() - beforeTick).toBe(2);
@@ -493,8 +482,8 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     releaseFirstReconcile();
     await Promise.all([firstStart, secondStart]);
 
-    // Only the second start()'s interval (the current generation) should be scheduled; the
-    // first call's resumed continuation must have skipped scheduling as superseded.
+    // Only the second start()'s interval (the current generation) is scheduled; the first call's resumed
+    // continuation skips scheduling as superseded.
     const beforeTick = connectCount();
     await vi.advanceTimersByTimeAsync(1000);
     // `stop()` awaits the pass the tick started, so every connection it opens is counted by then.
@@ -516,8 +505,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     const gate = new Promise<void>((resolve) => (releaseIntervalPass = resolve));
     const { factory } = recordingFactory(undefined, () => ({
       start: async () => {
-        // Only the interval-driven pass is gated; start()'s own initial reconcile must not be,
-        // or start() itself would never resolve.
+        // Only the interval-driven pass is gated; gating start()'s initial reconcile would hang start().
         if (!intervalPassStarted) return;
         await gate;
       },
@@ -534,9 +522,8 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     const stopping = root.stop().then(() => {
       stopped = true;
     });
-    // Drain the microtask queue well past the handful of awaits stop() needs for its own
-    // teardown. clearInterval cancels the next tick but not the pass already running, so as
-    // long as that pass is gated stop() must not resolve no matter how long we yield for.
+    // Yield well past the awaits stop() needs for its own teardown. clearInterval does not cancel the pass
+    // already running, so while that pass is gated stop() must not resolve.
     for (let i = 0; i < 100; i++) await Promise.resolve();
     expect(stopped).toBe(false);
 
@@ -558,11 +545,8 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     );
 
     const { pool: countingPool, connectCount } = countingConnectPool(failingSeedPool(pool, b.id));
-    // Each hosted account's first heartbeat tick fires `pool.query()` immediately without being
-    // awaited by `startProcessHeartbeat` — left untracked, that write can still be in flight when
-    // this test (or a later one sharing the module-level `pool`) tears the connection down,
-    // surfacing as an unrelated unhandled rejection deep in `failingSeedPool`'s proxy. Draining it
-    // here keeps this test's own async work fully settled before it returns.
+    // Each hosted account's first heartbeat tick fires an unawaited `pool.query()`; draining it here keeps it
+    // from surfacing as an unrelated unhandled rejection when a later test tears the pool down.
     const { pool: trackingPool, drain } = heartbeatTrackingPool(countingPool);
 
     const errors: Array<{ mailboxItemId: string; phase: string }> = [];
@@ -575,10 +559,8 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     await root.reconcileOnce();
     await drain();
 
-    // A single page (three accounts, well under the 200-row page limit) costs exactly one
-    // transaction for the whole page's read-and-seed, not one per account — plus one more
-    // `pool.connect()` per account that actually got hosted (A and C; B never enters the active
-    // set), since each one's first heartbeat tick fires its own `pool.query()` immediately.
+    // A single page (three accounts, under the 200-row limit) costs one transaction for the whole page's
+    // read-and-seed, plus one `pool.connect()` per hosted account (A and C) for its first heartbeat tick.
     expect(connectCount() - before).toBe(4);
 
     expect(errors).toEqual([{ mailboxItemId: b.id, phase: "discover" }]);
@@ -592,7 +574,6 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
     const stateB = await withTransaction(pool, (client) => getMailAccountSyncState(client, b.id));
     const stateC = await withTransaction(pool, (client) => getMailAccountSyncState(client, c.id));
     expect(stateA).not.toBeNull();
-    // The rolled-back savepoint means B's row was never actually inserted.
     expect(stateB).toBeNull();
     expect(stateC).not.toBeNull();
 
@@ -615,8 +596,8 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
       onLifecycleError: (mailboxItemId, phase, err) => errors.push({ mailboxItemId, phase, err }),
     });
 
-    // The rollback's own failure aborts the page's transaction; the per-tenant discovery catches it
-    // and reports it as `("*", "discover", rollbackErr)`, so the pass itself resolves.
+    // The rollback's own failure aborts the page's transaction; the per-tenant discovery reports it as
+    // `("*", "discover", rollbackErr)`, so the pass itself resolves.
     await expect(root.reconcileOnce()).resolves.toBeUndefined();
     await drain();
 
@@ -667,8 +648,7 @@ describe("mail live-sync root: double-start guard and batched discovery (issue #
 
     await expect(root.start()).rejects.toThrow(/boom/);
 
-    // If `started` had stayed stuck `true` after that failure, this second call would silently
-    // no-op at the guard check instead of actually running discovery.
+    // If `started` had stayed `true` after that failure, this call would no-op instead of running discovery.
     await root.start();
     expect(byAccount.get(a.id)?.starts).toBe(1);
 
@@ -741,9 +721,8 @@ describe("mail live-sync root: per-account process heartbeat (issue #707)", () =
 
     vi.useFakeTimers();
     try {
-      // reconcileOnce() itself clears the heartbeat's interval synchronously via `stopHosted`;
-      // advancing well past the heartbeat interval afterwards proves nothing was scheduled that
-      // could still fire, not merely that we didn't wait long enough.
+      // reconcileOnce() clears the heartbeat's interval synchronously via `stopHosted`; advancing well past the
+      // interval proves nothing was left scheduled.
       await root.reconcileOnce();
       await vi.advanceTimersByTimeAsync(PROCESS_HEARTBEAT_INTERVAL_MS * 2);
     } finally {
@@ -756,7 +735,6 @@ describe("mail live-sync root: per-account process heartbeat (issue #707)", () =
     ]);
     expect(afterWait.rows[0]?.beat_at.toISOString()).toBe(beatAtBeforeDelete!.toISOString());
 
-    // The expected set no longer includes the deactivated account either, so nothing alerts on it.
     const statuses = await getExpectedProcessHeartbeatStatuses(pool);
     expect(statuses.some((s) => s.process === processName)).toBe(false);
   });
@@ -829,12 +807,10 @@ describe("mail live-sync root: stopTenant (issue #1042)", () => {
     await dataPool.end();
   });
 
-  /** Tenant zero's mailbox, created through the runtime role inside tenant zero. */
   async function addMailboxToTenantZero(): Promise<string> {
     return addMailboxTo(getTenantZeroId(), { provider: "generic" });
   }
 
-  /** A mailbox in a tenant that already has a Mailboxes database, created through the runtime role inside it. */
   async function addMailboxTo(tenantId: string, properties: Record<string, string> = {}): Promise<string> {
     return runInTenant(tenantId, () =>
       withTransaction(dataPool, async (client) => {
@@ -849,7 +825,6 @@ describe("mail live-sync root: stopTenant (issue #1042)", () => {
     );
   }
 
-  /** A second tenant's minimal mail fixture: the four system mail databases and one mailbox. */
   async function addTenantWithMailbox(): Promise<{ tenantId: string; mailboxId: string }> {
     const tenantId = await createTestTenant(pool);
     const mailboxId = await runInTenant(tenantId, () =>
@@ -867,7 +842,7 @@ describe("mail live-sync root: stopTenant (issue #1042)", () => {
     return { tenantId, mailboxId };
   }
 
-  /** Raw status write: the suspension's own writer needs users and an admin, none of which this root reads. */
+  /** Raw status write: the suspension's own writer needs users and an admin, which this root does not read. */
   async function markSuspended(tenantId: string): Promise<void> {
     await pool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantId]);
   }
@@ -1111,7 +1086,6 @@ describe("mail live-sync root: restartAccount (issue gh-1742)", () => {
     await dataPool.end();
   });
 
-  /** A mailbox of `tenantId`, created through the runtime role inside that tenant. */
   function addMailbox(tenantId: string = getTenantZeroId()): Promise<string> {
     return runInTenant(tenantId, () =>
       withTransaction(dataPool, async (client) => {
@@ -1126,7 +1100,6 @@ describe("mail live-sync root: restartAccount (issue gh-1742)", () => {
     );
   }
 
-  /** A second tenant with its own system databases. */
   async function addTenant(): Promise<string> {
     const tenantId = await createTestTenant(pool);
     await provisionTenant(dataPool, tenantId);
@@ -1143,14 +1116,13 @@ describe("mail live-sync root: restartAccount (issue gh-1742)", () => {
 
   interface Created {
     mailboxItemId: string;
-    /** The tenant scope and the trace context each `start()` and `stop()` ran in. */
     starts: Array<{ scope: TenantScope | undefined; trace: TraceContext | undefined }>;
     stops: Array<TenantScope | undefined>;
   }
 
   /**
-   * Lifecycles numbered in the order the factory created them. `events` holds `start:<n>`, `started:<n>`
-   * and `stop:<n>`; `behavior` may hold or fail the start or the stop of the lifecycle numbered `n`.
+   * Lifecycles numbered in creation order. `events` holds `start:<n>`, `started:<n>` and `stop:<n>`;
+   * `behavior` may hold or fail the start or the stop of lifecycle `n`.
    */
   function numberedFactory(behavior: (n: number) => Partial<MailAccountLifecycle> = () => ({})): {
     factory: MailLiveSyncLifecycleFactory;
@@ -1300,7 +1272,6 @@ describe("mail live-sync root: restartAccount (issue gh-1742)", () => {
     await root.restartAccount(mailboxId);
 
     expect(created).toEqual([]);
-    // The pass hosts it with a lifecycle created then.
     await root.reconcileOnce();
     expect(events).toEqual(["start:1", "started:1"]);
     await root.stop();
@@ -1387,9 +1358,8 @@ describe("mail live-sync root: restartAccount (issue gh-1742)", () => {
     const root = createMailLiveSyncRoot(dataPool, factory);
     await root.reconcileOnce();
 
-    // The pass has read the active accounts, with `mailboxId` among them, and holds in the start of
-    // a newly added one. Whether it reaches `mailboxId` before or after that start, it must leave
-    // the replacement alone.
+    // The pass has read the active accounts, including `mailboxId`, and holds in the start of a newly added
+    // one. Whether it reaches `mailboxId` before or after that start, it must leave the replacement alone.
     const lateMailboxId = await addMailbox();
     heldStarts.add(lateMailboxId);
     const pass = root.reconcileOnce();
@@ -1509,14 +1479,12 @@ describe("mail live-sync root: stopMailbox (issue gh-2030)", () => {
     await dataPool.end();
   });
 
-  /** The Mailboxes database of `tenantId`, read through the runtime role inside that tenant. */
   function mailboxesDatabaseOf(tenantId: string): Promise<string> {
     return runInTenant(tenantId, () =>
       withTransaction(dataPool, async (client) => (await resolveMailModuleIds(client)).mailboxesDatabaseId),
     );
   }
 
-  /** A live mailbox of `tenantId`, created through the runtime role inside that tenant. */
   async function addMailbox(tenantId: string): Promise<string> {
     const databaseId = await mailboxesDatabaseOf(tenantId);
     return runInTenant(tenantId, async () => {
@@ -1527,7 +1495,6 @@ describe("mail live-sync root: stopMailbox (issue gh-2030)", () => {
     });
   }
 
-  /** A second tenant with the system databases of a provisioned tenant. */
   async function addTenant(): Promise<string> {
     const tenantId = await createTestTenant(pool);
     await provisionTenant(dataPool, tenantId);
@@ -1548,8 +1515,8 @@ describe("mail live-sync root: stopMailbox (issue gh-2030)", () => {
   }
 
   /**
-   * A factory whose lifecycles record `start:<id>` and `stop:<id>` with the scope each ran in. A start
-   * or stop waits for the gate registered for its mailbox, when there is one.
+   * A factory whose lifecycles record `start:<id>` and `stop:<id>` with the scope each ran in. A start or
+   * stop waits for its mailbox's gate, when there is one.
    */
   function gatedFactory(): {
     factory: MailLiveSyncLifecycleFactory;
@@ -1614,7 +1581,6 @@ describe("mail live-sync root: stopMailbox (issue gh-2030)", () => {
 
     expect(stopsOf(events)).toEqual([]);
 
-    // The same id with its own tenant is the allowed side of the same check.
     await root.stopMailbox(tenantB, hostedForB);
     expect(stopsOf(events)).toEqual([`stop:${hostedForB}`]);
     await root.stop();
@@ -1834,7 +1800,6 @@ describe("mail live-sync root: seeding under a share lock on the live mailbox (s
 
   const tenantId = (): string => getTenantZeroId();
 
-  /** A live mailbox of tenant zero without a sync state row, created through the runtime role. */
   async function addMailbox(provider = "generic"): Promise<string> {
     return runInTenant(tenantId(), () =>
       withTransaction(dataPool, async (client) => {
@@ -1866,10 +1831,9 @@ describe("mail live-sync root: seeding under a share lock on the live mailbox (s
   }
 
   /**
-   * Wraps `target` so that the first statement of a page transaction whose text is `holdAt` stops
-   * until `release()`. `held` settles when it stopped, with the backend pid of that transaction and
-   * the id of the last account whose sync state a statement of this pool inserted. The held statement
-   * runs after the release.
+   * Wraps `target` so the first page-transaction statement whose text is `holdAt` stops until `release()`.
+   * `held` settles when it stopped, with that transaction's backend pid and the last account whose sync
+   * state this pool inserted.
    */
   function holdingPool(
     target: Pool,
@@ -2005,7 +1969,6 @@ describe("mail live-sync root: seeding under a share lock on the live mailbox (s
       [seeded],
     );
     expect(rows).toEqual([{ deleted: true }]);
-    // The other mailbox of the page kept its row.
     const other = seeded === first ? second : first;
     expect(await syncStateOf(other)).not.toBeNull();
     expect(errors).toEqual([]);
@@ -2031,7 +1994,6 @@ describe("mail live-sync root: seeding under a share lock on the live mailbox (s
     });
     try {
       await Promise.race([holderHasLock.promise, holder]);
-      // This pass ends while the holder's transaction is still open.
       await root.reconcileOnce();
       expect(byAccount.has(locked)).toBe(false);
       expect(await syncStateOf(locked)).toBeNull();

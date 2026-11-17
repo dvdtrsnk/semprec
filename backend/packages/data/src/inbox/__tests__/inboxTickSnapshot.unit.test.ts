@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ItemRow } from "../../types.js";
 import { tickComputationInput, type TickSnapshot } from "../inboxTickSnapshot.js";
 
-// Issue gh-1987: the state of the card being recomputed travels with the computation input.
+// The state of the card being recomputed travels with the computation input.
 
 function row(id: string, properties: Record<string, unknown>): ItemRow {
   return {

@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { toApprovalRequestArgumentValues } from "../mcp/approvalRequestArguments.js";
 
-/** The UTF-8 size of the JSON text of `value`, as the cap of `toApprovalRequestArgumentValues` counts it. */
 function jsonBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
-/** The record that `JSON.parse` makes of `text`, as a payload read from the database is. */
 function parseRecord(text: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(text);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("expected an object");
@@ -187,7 +185,6 @@ describe("toApprovalRequestArgumentValues (issue #2021)", () => {
   });
 
   describe("depth", () => {
-    /** An object chain of `levels` objects, each holding the next under `n`; the innermost holds `leaf`. */
     function chain(levels: number): Record<string, unknown> {
       let value: Record<string, unknown> = { leaf: "x" };
       for (let level = 1; level < levels; level += 1) value = { n: value };

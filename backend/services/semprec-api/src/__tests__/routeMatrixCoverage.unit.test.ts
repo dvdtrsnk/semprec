@@ -18,7 +18,7 @@ interface MountedRoute {
   path: string;
 }
 
-/** The same rule as `pathPatternToRegExp` in `adapterTenantScope.test.ts`: a `:param` segment is one non-empty segment. */
+/** As in `adapterTenantScope.test.ts`: a `:param` segment is one non-empty segment. */
 function pathPatternToRegExp(path: string): RegExp {
   const source = path
     .split("/")
@@ -27,10 +27,7 @@ function pathPatternToRegExp(path: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
-/**
- * Every `(method, path)` of `definitions` for which `matrix` has no `surface: "api"` entry of the same method whose path,
- * query string removed, matches the definition's path pattern.
- */
+/** Routes with no `surface: "api"` matrix entry of the same method whose path, query removed, matches. */
 function findUnmatchedRoutes(
   definitions: readonly MountedRoute[],
   matrix: readonly RouteMatrixEntry[],
@@ -105,7 +102,6 @@ describe("findUnmatchedRoutes", () => {
 
 describe("ROUTE_MATRIX coverage of the mounted routes", () => {
   const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
-  // `new Pool()` opens no connection until a query runs, and no factory runs one at construction.
   const pool = new Pool();
   let customRoutes: MountedRoute[];
   let resourceRoutes: MountedRoute[];

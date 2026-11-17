@@ -1,14 +1,13 @@
 import type { IncomingMessage } from "node:http";
 
 /**
- * Same-origin rule for requests a browser can send cross-origin (issue #1044). A request with no
- * `Origin` header passes: native clients, bearer-token MCP clients, the Graph webhook and `curl`
- * never send one. A request that does carry `Origin` passes only when it is an `http:` or `https:`
- * URL whose host (hostname and port) equals the request's `Host` header. `Origin: null`, an
- * unparseable value, another scheme, a missing `Host` and any mismatch are refused.
+ * A request with no `Origin` passes: native clients, bearer-token MCP clients, the Graph webhook
+ * and `curl` never send one. Otherwise `Origin` must be an `http:`/`https:` URL whose host and port
+ * equal the `Host` header; `Origin: null`, unparseable values, other schemes, a missing `Host` and
+ * any mismatch are refused.
  *
- * The comparison uses only `Host`. A client-settable forwarding header such as `X-Forwarded-Host`
- * is never read, so a foreign page cannot make its own origin match.
+ * Only `Host` is compared. A client-settable header such as `X-Forwarded-Host` is never read, so a
+ * foreign page cannot make its origin match.
  */
 export function isAllowedOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;

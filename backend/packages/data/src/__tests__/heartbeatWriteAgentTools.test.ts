@@ -46,7 +46,6 @@ import { getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 import { createSempChatThread } from "../sempThreads/sempThreadsStore.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// Seeding the system databases of a tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 180_000;
 const DAILY_RULE = { kind: "dailyTime", at: "09:00" } as const;
 const NEW_RULE = { kind: "dailyTime", at: "07:30" } as const;
@@ -55,7 +54,6 @@ const MODULE_RULE = { kind: "fixtureGood.onWidgetTick", everyMinutes: 5 } as con
 const coreHref = new URL("../chokePoint/schemaCoreModuleManifest.js", import.meta.url).href;
 const fixtureHref = new URL("../../../module-registry/src/__tests__/fixtures/goodModule.js", import.meta.url).href;
 
-/** The kind the `fixture-good` module declares, as `resolveModuleAgentToolsForRun` hands it to a tool. */
 const MODULE_RULE_KINDS: HeartbeatRuleKindRegistry = new Map([
   [
     MODULE_RULE.kind,
@@ -180,7 +178,6 @@ interface RunFixture {
   threadId: string | null;
 }
 
-/** A run on a Semp chat thread: the tenant scope. */
 async function chatRun(projectItemId: string, tenant = tenantA): Promise<RunFixture> {
   return inTenant(tenant, async () => {
     const threadId = await withTransaction(runtime, createSempChatThread);
@@ -189,7 +186,6 @@ async function chatRun(projectItemId: string, tenant = tenantA): Promise<RunFixt
   });
 }
 
-/** A run with no thread: the project scope. */
 async function projectRun(projectItemId: string): Promise<RunFixture> {
   return inTenant(tenantA, async () => {
     const run = await createAgentRun(runtime, { projectItemId, triggeredBy: "user", task: "project" });
@@ -908,8 +904,7 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
 
       await deliver(fixture, request.id);
       expect((await readHeartbeat(id))?.name).toBe("Renamed once");
-      // Back to the fields the request hashed, so the snapshot is equal again and only the exactly-once claim
-      // can stop the second delivery (a snapshot that differed would end in a conflict whatever the claim did).
+      // Back to the fields the request hashed, so only the exactly-once claim can stop the second delivery.
       await inTenant(tenantA, () => withTransaction(runtime, (client) => updateHeartbeatName(client, id, "Once")));
       await deliver(fixture, request.id);
 
@@ -1073,7 +1068,6 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
         expect(allowed.error).toBe(false);
         expect((await readHeartbeat(id))?.name).toBe("Clinic renamed");
       } finally {
-        // The grant on the shared Semprec project must not leak into the other tests.
         await inTenant(tenantA, () =>
           withTransaction(runtime, (client) => removeAgentDatabaseGrant(client, semprecA, healthDatabaseId)),
         );
@@ -1375,7 +1369,7 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
     it("uses the language of the tenant user", async () => {
       const fixture = await chatRun(semprecB, tenantB);
       const id = await newHeartbeat(semprecB, "Water the plants", { tenant: tenantB });
-      // Raw SQL: the locale of a user has no store function on this tip, and the default is Czech.
+      // Raw SQL: a user's locale has no store function, and the default is Czech.
       await admin.query("UPDATE users SET locale = 'en' WHERE tenant_id = $1", [tenantB]);
       try {
         const request = await requestCall(fixture, "heartbeat.setEnabled", { heartbeatId: id, enabled: false });

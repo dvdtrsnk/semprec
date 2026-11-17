@@ -226,7 +226,6 @@ describe("Inbox type lock", () => {
       if (!source) throw new Error("Missing sourceInbox property");
       const ids = [cardId];
       for (const status of ["proposed", "confirmed"]) {
-        // Synthetic card state: public APIs do not insert decided cards directly.
         const card = await withTransaction(pool, (client) =>
           insertItem(client, {
             databaseId: proposals,

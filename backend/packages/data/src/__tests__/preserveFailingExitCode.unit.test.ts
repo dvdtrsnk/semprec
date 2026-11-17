@@ -6,9 +6,8 @@ const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const guardModule = pathToFileURL(fileURLToPath(new URL("../testSupport/preserveFailingExitCode.ts", import.meta.url)));
 
 /**
- * Runs a fresh Node process that loads `embedded-postgres` the way the test tiers' `globalSetup`
- * does, optionally installs the guard, then fails the way vitest does — by setting
- * `process.exitCode` and letting the event loop drain — and returns the process' exit status.
+ * Runs a fresh Node process that loads `embedded-postgres` like `globalSetup`, optionally installs the guard,
+ * then fails as vitest does (`process.exitCode` and a drained event loop); returns its exit status.
  */
 function exitStatusOfFailingProcess(withGuard: boolean): number | null {
   const script = [

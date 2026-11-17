@@ -29,7 +29,7 @@ interface Answer {
   headers: Response["headers"];
 }
 
-/** `PUT /api/items/:id/page.md` with the headers a client sends; `etag` undefined sends no `If-Match`. */
+/** `etag` undefined sends no `If-Match`. */
 async function put(
   headers: Headers | undefined,
   itemId: string,
@@ -49,7 +49,6 @@ async function put(
   return { status: response.status, text: await response.text(), headers: response.headers };
 }
 
-/** The Markdown of the page and its token, as `GET /api/items/:id/page.md` answers. */
 async function read(itemId: string, headers: Headers = harness.headersA): Promise<{ markdown: string; etag: string }> {
   const response = await fetch(`${harness.baseUrl}/api/items/${itemId}/page.md`, { headers });
   expect(response.status).toBe(200);
@@ -58,7 +57,6 @@ async function read(itemId: string, headers: Headers = harness.headersA): Promis
   return { markdown: await response.text(), etag };
 }
 
-/** Replaces the page with the token it has now; returns the answer. */
 async function replace(itemId: string, markdown: string, headers: Headers = harness.headersA): Promise<Answer> {
   return put(headers, itemId, markdown, { etag: (await read(itemId, headers)).etag });
 }
@@ -90,14 +88,12 @@ async function createSubpage(parent: string, title: string, afterBlockId?: strin
   return page;
 }
 
-/** The blocks of the page of `itemId` in document order. */
 async function blocksOf(itemId: string): Promise<z.infer<typeof summaryBody>["blocks"]> {
   const response = await fetch(`${harness.baseUrl}/api/items/${itemId}/page`, { headers: harness.headersA });
   expect(response.status).toBe(200);
   return summaryBody.parse(await response.json()).blocks;
 }
 
-/** The status of `GET /api/items/:id` for each id, as tenant A. */
 async function statusesOf(...itemIds: string[]): Promise<number[]> {
   const statuses: number[] = [];
   for (const id of itemIds) {
@@ -118,7 +114,7 @@ interface PageState {
   relations: number;
 }
 
-/** What a refused replace must leave exactly as it found it: documents, stored updates and relation edges of the tenant. */
+/** Documents, stored updates and relation edges: what a refused replace must leave as it found it. */
 async function stateOf(): Promise<PageState> {
   const { rows } = await runInTenant(harness.tenantA, () =>
     harness.runtime.query<PageState>(
@@ -146,7 +142,6 @@ function parseError(answer: Answer): z.infer<typeof errorBody>["error"] {
   return errorBody.parse(JSON.parse(answer.text)).error;
 }
 
-/** A host of tenant A whose notes read `Intro`, a page block for "Release checklist", `Outro`. */
 async function hostWithSubpage(): Promise<{ host: string; intro: string; outro: string; checklist: Subpage }> {
   const host = await harness.createHost(harness.tenantA);
   const [intro, outro] = await insertMarkdown(host, "Intro\n\nOutro");
@@ -430,7 +425,7 @@ describe("PUT /api/items/:id/page.md (issue #1765)", () => {
       expect(await statusesOf(checklist.pageItemId, host)).toEqual([404, 200]);
       expect((await blocksOf(host)).map((block) => block.id)).toEqual([intro, outro]);
 
-      // Undo: the restore of the trashed page puts its block back after the block that stood before it.
+      // Restoring the trashed page puts its block back after the block that stood before it.
       const restored = await fetch(`${harness.baseUrl}/api/items/${checklist.pageItemId}/restore`, {
         method: "POST",
         headers: harness.headersA,
@@ -578,7 +573,6 @@ describe("PUT /api/items/:id/page.md (issue #1765)", () => {
       expect(replacedBody.parse(JSON.parse(answer.text))).toEqual({ trashedPages: [] });
       expect(await titleOf(checklist.pageItemId)).toBe("Launch checklist");
       const blocks = await blocksOf(host);
-      // The block was retitled in place, so it is the same block and no other block changed.
       expect(blocks.map((block) => block.id)).toEqual([intro, checklist.blockId, outro]);
       expect(blocks[1]?.text).toBe("Launch checklist");
     });

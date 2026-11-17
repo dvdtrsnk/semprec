@@ -33,10 +33,7 @@ let tenant: string;
 const taskName = CORE_TASK_NAMES.PAGE_TITLE_MIRROR;
 const DEBOUNCE_MS = 10_000;
 
-/**
- * Set while an actor the race tests started has not settled (its backend may still hold locks): the file then refuses to
- * reset the database or close the shared pools. `recover` finishes the cleanup once the actors have settled.
- */
+/** Set while a race actor has not settled (it may hold locks): the file then refuses to reset the database or close pools. */
 let abandoned: { names: string[]; recover: () => Promise<void> } | undefined;
 
 function assertNoAbandonedActors(): void {
@@ -48,8 +45,8 @@ function assertNoAbandonedActors(): void {
 }
 
 /*
- * Tenant scope is entered per helper and never around `runOnce`: the queue drain is a system scope, and the
- * production task list enters each job's own tenant from its envelope.
+ * Never around `runOnce`: the queue drain is a system scope, and the task list enters each job's tenant
+ * from its envelope.
  */
 function inTenant<T>(fn: () => Promise<T>): Promise<T> {
   return runInTenant(tenant, fn);
@@ -81,7 +78,6 @@ async function subpage(parent: string, title: string): Promise<Subpage> {
   return page;
 }
 
-/** Types `text` as the title of the page block `blockId`, the way a sync client does: through the block's Y.Text. */
 async function typeTitle(parent: string, blockId: string, text: string): Promise<void> {
   await inTenant(async () => {
     const doc = await withTransaction(pool, (client) => getOrCreateDoc(client, parent, "page"));
@@ -133,7 +129,6 @@ async function versionOf(itemId: string): Promise<string | undefined> {
   });
 }
 
-/** The queued jobs' run times, read from Graphile Worker's public `jobs` view (which has no payload column). */
 async function queuedJobs(): Promise<Array<{ key: string | null; run_at: Date }>> {
   const result = await admin.query<{ key: string | null; run_at: Date }>(
     "SELECT key, run_at FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY id",
@@ -142,7 +137,6 @@ async function queuedJobs(): Promise<Array<{ key: string | null; run_at: Date }>
   return result.rows;
 }
 
-/** Drains the queue once with the production API task list, as the worker does. */
 async function runMirrorJobs(): Promise<void> {
   const handler = createApiCoreTaskList(pool, createActionRegistry())[taskName];
   if (!handler) throw new Error("The mirror handler is missing from the production API task list");
@@ -159,8 +153,7 @@ beforeEach(async () => {
   await resetDatabase(admin);
   tenant = getTenantZeroId();
   await inTenant(() => seedSystem(pool));
-  // Edits are written 60 seconds in the past, so their 10-second debounce has elapsed when the queue is drained.
-  // Only `Date` is faked; the database clock and Graphile Worker's polling are untouched.
+  // Edits are written 60 s in the past so the 10 s debounce has elapsed; only `Date` is faked.
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(Date.now() - 60_000);
 });
@@ -284,8 +277,8 @@ describe("subpage title mirror (issue #1715)", () => {
     const trashedParent = await host("Trashed parent");
     const page = await subpage(trashedParent, "Kept");
     await trash(trashedParent);
-    // The host's trash took the page and its block with it (issue #1763). Restored on its own and retitled, the page
-    // is live below the trashed host, so a job that went on for a trashed host would have a title to mirror.
+    // The host's trash took the page; restored and retitled, the page is live below the trashed host,
+    // so a job that went on would have a title to mirror.
     await restore(page.pageItemId);
     await typeTitle(trashedParent, page.blockId, "Changed");
     const noPage = await host("No page");
@@ -297,7 +290,6 @@ describe("subpage title mirror (issue #1715)", () => {
     expect(await titleOf(page.pageItemId)).toBe("Kept");
     expect(await versionOf(page.pageItemId)).toBe(before);
 
-    // A tenant that never created a subpage has no Pages database: its job completes without looking further.
     const otherTenant = await createTestTenant(admin);
     const otherItem = await runInTenant(otherTenant, async () => {
       const chokePoint = createChokePoint(pool);
@@ -312,18 +304,16 @@ describe("subpage title mirror (issue #1715)", () => {
   describe("host trash racing the mirror (issue #1715 repair)", () => {
     type Settled = { ok: true; value: unknown } | { ok: false; error: unknown };
 
-    /** A backend the test started or owns: its process id and the start time that tells it apart from a reused id. */
+    /** A backend identified by pid and start time, which tells it apart from a reused pid. */
     interface Session {
       pid: number;
       backendStart: string;
     }
 
-    /** An operation the test started on a session of its own, with its outcome observed from the moment it starts. */
     interface Actor {
       name: string;
       session: Session;
       done: boolean;
-      /** Set when the operation ends, so a failed run can name its own rejection without awaiting it. */
       settled: Settled | undefined;
       outcome: Promise<Settled>;
     }
@@ -357,9 +347,8 @@ describe("subpage title mirror (issue #1715)", () => {
     }
 
     /**
-     * Runs each rule's `inject` once, right after the first statement that matches it has finished and before the
-     * statement's caller sees the result. A rule disarms itself before its `inject` runs, so the statements the
-     * injection causes are not intercepted by that rule again.
+     * Runs each rule's `inject` once, right after the first matching statement finishes and before its caller
+     * sees the result. A rule disarms itself first, so its injected statements are not intercepted again.
      */
     function onStatements(rules: StatementRule[]): { restore: () => void; fired: (index: number) => boolean } {
       const armed = rules.map(() => true);
@@ -387,10 +376,7 @@ describe("subpage title mirror (issue #1715)", () => {
       return { restore: () => spy.mockRestore(), fired: (index) => armed[index] === false };
     }
 
-    /**
-     * A pool of one connection whose backend identity is read before any actor uses it. A connection error of its client
-     * (a checked-out client has no other listener, so it would be an uncaught exception) is collected in `connectionErrors`.
-     */
+    /** One connection whose backend identity is read up front; client connection errors are collected rather than uncaught. */
     async function ownedPool(
       observer: PoolClient,
       connectionErrors: unknown[],
@@ -421,7 +407,6 @@ describe("subpage title mirror (issue #1715)", () => {
       }
     }
 
-    /** A promise the test resolves by hand: a gate an injected statement can wait on. */
     function gateOf(): { promise: Promise<void>; release: () => void } {
       let release!: () => void;
       const promise = new Promise<void>((resolve) => {
@@ -430,14 +415,9 @@ describe("subpage title mirror (issue #1715)", () => {
       return { promise, release };
     }
 
-    /**
-     * Test-local deadlines and fault injection for the failure controls; the defaults are the bounds of a real run.
-     * `attempted` and `sessions` are filled by the helpers, so a control can read them after the call failed.
-     */
+    /** Test-local deadlines and fault injection; the defaults are a real run's bounds. */
     interface Faults {
-      /** The bound on the first wait for the job(s). */
       outcomeMs: number;
-      /** The bound on each wait of `settleActors`. */
       settleMs: number;
       /** Actors whose guarded termination fails with an injected error instead of reaching the database. */
       failTerminateFor: string[];
@@ -461,7 +441,6 @@ describe("subpage title mirror (issue #1715)", () => {
 
     const failingCleanup = (): Promise<void> => Promise.reject(new Error("Injected cleanup failure"));
 
-    /** Whether every actor has settled within `ms`; the timer is cleared on every result. */
     async function boundedSettled(actors: Actor[], ms: number): Promise<boolean> {
       let timer: NodeJS.Timeout | undefined;
       try {
@@ -481,11 +460,9 @@ describe("subpage title mirror (issue #1715)", () => {
     }
 
     /**
-     * Waits for every actor's own outcome. When some are still pending after the bound, a guarded termination of each
-     * pending actor's backend is attempted independently (only while its pid and start time still match; a failed
-     * attempt is recorded and the next actor is still tried) and the actors are awaited once more. Settlement is the
-     * actors' own outcomes, never the result of a termination: `unsettled` names the actors that still have none, and
-     * `errors` holds the termination failures, which do not by themselves mean an actor is unsettled.
+     * Waits for every actor's outcome; past the bound, each pending backend gets a guarded termination (only
+     * while its pid and start time still match) and the actors are awaited again. Settlement is the actors' own
+     * outcomes, never a termination's result.
      */
     async function settleActors(
       observer: PoolClient,
@@ -512,15 +489,12 @@ describe("subpage title mirror (issue #1715)", () => {
       return { unsettled: settled ? [] : actors.filter((actor) => !actor.done).map((actor) => actor.name), errors };
     }
 
-    /** What a helper has started and must release again, whichever way the call ends. */
     interface Run {
       observer: PoolClient | undefined;
-      /** Everything the run started, jobs and trash. */
       actors: Actor[];
       /** The actors whose own rejection is the run's failure. */
       jobs: Actor[];
       cleanups: Array<() => Promise<void>>;
-      /** Connection errors of the owned pools' clients. */
       connectionErrors: unknown[];
       hook: { restore: () => void } | undefined;
       timer: NodeJS.Timeout | undefined;
@@ -542,11 +516,9 @@ describe("subpage title mirror (issue #1715)", () => {
     }
 
     /**
-     * Ends a run. A failed run first releases the gates it holds, then every actor is settled (`settleActors`). Only when
-     * all have settled are the hook restored and the observer and pools released, each step on its own `try`; if one has
-     * not, nothing is restored or closed under it and the file-level `abandoned` flag is set, which `beforeEach` and
-     * `afterAll` honour. The error thrown keeps the original failure as its first entry and its `cause` (also a falsy
-     * one): the failure that ended the run, else the rejection of the job itself.
+     * A failed run first releases its gates, then every actor is settled. Only when all have settled are the hook
+     * restored and pools released, each step independently; otherwise `abandoned` is set. The original failure
+     * stays the first error and the `cause`, even when falsy.
      */
     async function finishRun(run: Run, primary: { error: unknown } | undefined, faults: Faults): Promise<void> {
       const failures: unknown[] = [];
@@ -630,7 +602,6 @@ describe("subpage title mirror (issue #1715)", () => {
       return rows[0]?.deleted_at ?? null;
     }
 
-    /** Sessions of `owned` that are still visible, by identity (pid and start time). */
     async function liveSessions(sessions: Session[]): Promise<number> {
       let live = 0;
       for (const session of sessions) {
@@ -644,10 +615,8 @@ describe("subpage title mirror (issue #1715)", () => {
     }
 
     /**
-     * Runs the mirror job of `parent` on a session of its own and, once the job holds the host reservation, starts a
-     * trash of the host on another owned session and calls `afterTrashQueued` (with a probe for the blocked trash and a
-     * `hold` that waits on a gate the helper releases on any failure). The wait for the job is bounded; everything the
-     * call starts is settled on every exit before the hook is restored and the pools are closed (see `finishRun`).
+     * Runs the mirror job of `parent` on its own session; once the job holds the host reservation, starts a host
+     * trash on another session and calls `afterTrashQueued`. Settled on every exit as in `finishRun`.
      */
     async function mirrorWhileTrashing(
       parent: string,
@@ -719,9 +688,8 @@ describe("subpage title mirror (issue #1715)", () => {
     }
 
     /**
-     * Runs the mirror jobs of two hosts at once, each on a session of its own, and holds each job at its host
-     * reservation until both have reserved theirs (a barrier that gives up after 5 s and is released on any failure).
-     * The wait for the jobs is bounded and every job is settled on every exit, with the rules of `finishRun`.
+     * Runs two hosts' mirror jobs at once, each held at its reservation until both reserved (a 5 s barrier
+     * released on any failure). Settled on every exit as in `finishRun`.
      */
     async function mirrorTwoHosts(
       hostA: string,
@@ -781,7 +749,6 @@ describe("subpage title mirror (issue #1715)", () => {
       return { a: await first.outcome, b: await second.outcome, sessions: faults.sessions };
     }
 
-    /** A page block of `host`'s document that names `pageId` with `caption`, as a sync client could leave it. */
     async function nameFromDocument(host: string, pageId: string, caption: string): Promise<void> {
       await inTenant(async () => {
         const doc = await withTransaction(pool, (client) => getOrCreateDoc(client, host, "page"));
@@ -826,7 +793,7 @@ describe("subpage title mirror (issue #1715)", () => {
           match: (text, values) =>
             /FROM items WHERE id = ANY/.test(text) && Array.isArray(values[0]) && values[0].includes(moving.pageItemId),
           inject: async () => {
-            // Synthetic: no operation reparents a page; this superuser write stands in for a move after the read.
+            // Superuser write standing in for a move after the read.
             await admin.query(
               `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
               [moving.pageItemId, randomUUID()],
@@ -853,8 +820,7 @@ describe("subpage title mirror (issue #1715)", () => {
           match: (text) => /FROM items WHERE id = ANY/.test(text),
           inject: async () => {
             await trash(parent);
-            // The host's trash took the page and its block with it (issue #1763). Restored on its own and retitled,
-            // the page is live below the trashed host, so a job that went on would have a title to mirror.
+            // The host's trash took the page; restored and retitled, the page is live below the trashed host.
             await restore(page.pageItemId);
             await typeTitle(parent, page.blockId, "Changed");
           },

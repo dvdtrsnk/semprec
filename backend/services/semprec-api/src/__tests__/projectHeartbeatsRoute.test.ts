@@ -83,7 +83,6 @@ let pool: Pool;
 let server: Server;
 let baseUrl: string;
 
-/** A tenant with its user, a seeded system and that user's bearer header. */
 async function tenantSession(): Promise<Session> {
   const tenant = await createTestTenant(admin);
   const email = `${randomUUID()}@example.test`;
@@ -93,7 +92,6 @@ async function tenantSession(): Promise<Session> {
   return { tenant, userId: user.id, headers: { Authorization: `Bearer ${session.token}` } };
 }
 
-/** A Projects item of the tenant with the given name. */
 function createProject(session: Session, name: string): Promise<string> {
   return runInTenant(session.tenant, async () => {
     const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
@@ -110,7 +108,7 @@ interface NewHeartbeat {
   enabled?: boolean;
 }
 
-/** One heartbeat in its own transaction, so `created_at` orders the heartbeats of a test as they were made. */
+/** Its own transaction, so `created_at` orders the heartbeats of a test as they were made. */
 function createHeartbeatOf(session: Session, projectItemId: string, input: NewHeartbeat): Promise<string> {
   return runInTenant(session.tenant, () =>
     withTransaction(pool, async (client) => {
@@ -129,8 +127,8 @@ function createHeartbeatOf(session: Session, projectItemId: string, input: NewHe
 }
 
 /**
- * One scheduled occurrence of a heartbeat. Raw SQL, because the production writer is the sweep, which inserts
- * a row only for a due time of the clock and so cannot produce a past occurrence at a chosen instant.
+ * Raw SQL: the production writer is the sweep, which inserts a row only for a due time of the clock and cannot
+ * produce a past occurrence at a chosen instant.
  */
 function createOccurrence(session: Session, heartbeatId: string, scheduledFor: string): Promise<string> {
   return runInTenant(session.tenant, async () => {
@@ -176,7 +174,6 @@ function closeFailed(session: Session, runId: string, errorCode: "modelError" | 
   return runInTenant(session.tenant, () => finishAgentRun(pool, runId, "error", errorCode));
 }
 
-/** The run of a new occurrence of the heartbeat, closed with `closing`. */
 async function runOfOccurrence(
   session: Session,
   ids: { projectItemId: string; heartbeatId: string },
@@ -205,7 +202,6 @@ function createRequest(session: Session, agentRunId: string): Promise<string> {
 
 const STORED_STEP_TIMES = { startedAt: "2026-11-01T10:00:00.000Z", durationMs: 5 };
 
-/** A stored tool step of an MCP call that failed with `failureKind`, as the projector of issue #1860 writes it. */
 function failedMcpStep(failureKind: string): SempReplyStep {
   return {
     kind: "tool",
@@ -220,7 +216,6 @@ function failedMcpStep(failureKind: string): SempReplyStep {
   };
 }
 
-/** Gives `run` (still running) the single reply of its tick thread, finished as `done` with `steps`, and closes the run as done. */
 async function finishRunWithReply(session: Session, run: AgentRunRow, steps: SempReplyStep[]): Promise<void> {
   const threadId = run.threadId;
   if (threadId === null) throw new Error("The run has no thread");
@@ -277,7 +272,6 @@ function setLocale(session: Session, locale: "cs" | "en"): Promise<unknown> {
   return updateUserLocale(admin, session.userId, locale);
 }
 
-/** The time of day of `isoInstant` on the wall clock of `timeZone`, as `HH:MM`. */
 function wallClockIn(timeZone: string, isoInstant: string): string {
   return new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(
     new Date(isoInstant),
@@ -334,14 +328,13 @@ describe("GET /api/projects/:id/heartbeats (issue gh-1910)", () => {
         rule: { kind: "interval", minutes: 90 },
         enabled: false,
       });
-      // The system's own: a time-based one and an onItemEvent one named as the seeded new-email automation is.
+      // The system's own: a time-based one and an onItemEvent one named as the seeded new-email automation.
       await createHeartbeatOf(owner, project, { name: "Nightly sweep", origin: "system" });
       await createHeartbeatOf(owner, project, {
         name: "newEmail",
         origin: "system",
         rule: { kind: "onItemEvent", databaseId: watched, event: "create" },
       });
-      // A user automation of another project is that project's.
       await createHeartbeatOf(owner, otherProject, { name: "Someone else's" });
 
       const rows = await listHeartbeats(owner, project);
@@ -352,9 +345,7 @@ describe("GET /api/projects/:id/heartbeats (issue gh-1910)", () => {
       expect(rows[0]!.rule).toEqual(WEEKDAYS_AT_EIGHT_THIRTY);
       expect(rows[1]!.rule).toEqual({ kind: "dailyTime", at: "18:00" });
       expect(rows[2]!.rule).toEqual({ kind: "interval", minutes: 90 });
-      // The next due time is the stored one: set for the two switched on, none for the one switched off.
       expect(rows.map((row) => row.nextFireAt === null)).toEqual([false, false, true]);
-      // Nothing has run, so there is no last occurrence and no tick thread yet.
       expect(rows.every((row) => row.lastOccurrence === null && row.threadId === null)).toBe(true);
     });
 
@@ -411,8 +402,7 @@ describe("GET /api/projects/:id/heartbeats (issue gh-1910)", () => {
       });
       const after = await onlyHeartbeat(owner, project);
 
-      // The seeded zone is Europe/Prague: both due times are 08:30 on the clock of the zone in force when they
-      // were computed, and the label states that clock time in both.
+      // The seeded zone is Europe/Prague: both due times are 08:30 on the clock of the zone in force when computed.
       expect(wallClockIn("Europe/Prague", before.nextFireAt!)).toBe("08:30");
       expect(wallClockIn("America/New_York", after.nextFireAt!)).toBe("08:30");
       expect(after.nextFireAt).not.toBe(before.nextFireAt);
@@ -489,7 +479,7 @@ describe("GET /api/projects/:id/heartbeats (issue gh-1910)", () => {
       expect(decision.status).toBe(200);
       const decided = await onlyHeartbeat(owner, project);
 
-      // The occurrence itself succeeded in both: only the run's display status tells them apart.
+      // The occurrence succeeded in both; only the run's display status tells them apart.
       expect(waiting.lastOccurrence).toEqual({
         at: "2026-11-10T07:30:00.000Z",
         status: "waiting_approval",
@@ -532,7 +522,7 @@ describe("GET /api/projects/:id/heartbeats (issue gh-1910)", () => {
       );
       const rawError = "connect ECONNREFUSED 10.0.0.7:5432 token=raw-secret-value";
       await runInTenant(owner.tenant, async () => {
-        // The fire task of a run that failed still ends as a succeeded occurrence, and the queue keeps the raw text.
+        // The fire task of a failed run still ends as a succeeded occurrence; the queue keeps the raw text.
         await withTransaction(pool, async (client) => {
           await succeedHeartbeatOccurrence(client, run.heartbeatOccurrenceId!);
           await recordHeartbeatFailure(client, heartbeatId, rawError);
@@ -643,7 +633,7 @@ describe("GET /api/projects/:id/heartbeats (issue gh-1910)", () => {
         }),
       );
       expect(retry).not.toBeNull();
-      // While the retry runs, the occurrence has no finished last attempt and the failed first one does not stand for it.
+      // While the retry runs, the failed first attempt does not stand for the occurrence.
       expect((await onlyHeartbeat(owner, project)).lastOccurrence).toBeNull();
       await closeDone(owner, retry!.id);
 
@@ -719,7 +709,7 @@ describe("GET /api/projects/:id/heartbeats (issue gh-1910)", () => {
       expect(foreign.status).toBe(404);
       expect(foreign.text).toBe(random.text);
       expect(foreign.text).not.toContain("Stranger's automation");
-      // The owner of the project still gets its automation, so the 404 above is a refusal and not an empty route.
+      // The owner still gets it, so the 404 above is a refusal and not an empty route.
       expect((await listHeartbeats(stranger, strangerProject)).map((row) => row.name)).toEqual([
         "Stranger's automation",
       ]);
@@ -740,7 +730,6 @@ describe("GET /api/projects/:id/heartbeats (issue gh-1910)", () => {
       const project = await createProject(owner, "Weekly review");
       const heartbeatId = await createHeartbeatOf(owner, project, { name: "Monday plan" });
 
-      // A heartbeat's id is the id of no project.
       expect((await getAnswer(owner, heartbeatId)).status).toBe(404);
     });
 

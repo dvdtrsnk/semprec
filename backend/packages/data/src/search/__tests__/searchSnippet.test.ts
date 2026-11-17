@@ -50,7 +50,6 @@ afterAll(async () => {
 
 const ITEM_SCOPE: SearchGroupType[] = [...SEARCH_ITEM_GROUP_TYPES];
 
-/** Searches in tenant zero as a person, unless the input says otherwise. */
 function search(q: string, input: Partial<Omit<SearchItemGroupsInput, "q">> = {}): Promise<SearchOutput> {
   return runInTenant(tenant, () => searchItemGroups(pool, { q, scope: ITEM_SCOPE, perGroupLimit: 4, ...input }));
 }
@@ -85,7 +84,6 @@ async function create(moduleKey: string, properties: Record<string, unknown>): P
   return runInTenant(tenant, async () => (await cp.createItem({ databaseId: await dbId(moduleKey), properties })).id);
 }
 
-/** Writes the page of an item through the production doc path and runs the page-text job's handler for it. */
 async function writePage(itemId: string, texts: string[]): Promise<void> {
   await runInTenant(tenant, async () => {
     await writePageTextBlocks(pool, itemId, texts);
@@ -93,7 +91,6 @@ async function writePage(itemId: string, texts: string[]): Promise<void> {
   });
 }
 
-/** The Journal day 2026-10-16 with one Inbox entry, whose text the day's index body holds. */
 async function journalDayWithEntry(text: string): Promise<string> {
   return runInTenant(tenant, async () => {
     const journalId = await dbId("journal");
@@ -114,7 +111,6 @@ interface RecordedStatement {
   values: unknown[];
 }
 
-/** Records every statement a pooled client sends from now on, until the mocks are restored after the test. */
 function recordStatements(): RecordedStatement[] {
   const recorded: RecordedStatement[] = [];
   // Called back with the receiving client below, so the unbound reference is safe.
@@ -122,7 +118,6 @@ function recordStatements(): RecordedStatement[] {
   const originalQuery: (this: Client, ...args: unknown[]) => unknown = Client.prototype.query;
   vi.spyOn(Client.prototype, "query").mockImplementation(function (this: Client, ...args: unknown[]) {
     const [statement, values] = args;
-    // A statement is sent as its text or as a query config that carries the text.
     const text: unknown =
       typeof statement === "object" && statement !== null && "text" in statement ? statement.text : statement;
     if (typeof text === "string") recorded.push({ text, values: Array.isArray(values) ? values : [] });
@@ -131,7 +126,6 @@ function recordStatements(): RecordedStatement[] {
   return recorded;
 }
 
-/** Makes every statement whose text holds `fragment` fail with `error` from now on, until the mocks are restored. */
 function failStatementsContaining(fragment: string, error: Error): void {
   // Called back with the receiving client below, so the unbound reference is safe.
   // eslint-disable-next-line @typescript-eslint/unbound-method
@@ -145,7 +139,6 @@ function failStatementsContaining(fragment: string, error: Error): void {
   });
 }
 
-/** Records every logger call of every level, until the mocks are restored after the test. */
 function recordLogCalls(): unknown[][] {
   const calls: unknown[][] = [];
   for (const level of ["trace", "debug", "info", "warn", "error", "fatal"] as const) {
@@ -302,7 +295,7 @@ describe("the snippet of an item-backed search result (issue #1996)", () => {
     expect(group.items.map((item) => item.snippet)).toEqual(group.items.map(() => expect.stringContaining("fakturu")));
     expect(groupOf(second, "task").items).toHaveLength(2);
     for (const item of groupOf(second, "task").items) expect(item.snippet).toContain("fakturu");
-    // The excerpt statement is given the two returned items of each page, not the five matches.
+    // The excerpt statement gets only each page's two returned items, not all five matches.
     const excerptStatements = statements.filter((statement) => statement.text.includes("ts_headline"));
     expect(excerptStatements.map((statement) => (statement.values[1] as unknown[]).length)).toEqual([2, 2]);
   });
@@ -339,7 +332,7 @@ describe("the snippet of an item-backed search result (issue #1996)", () => {
   it("neither logs nor puts the query text into the error of a failed excerpt statement", async () => {
     const task = await create("tasks", { name: "Poznámky" });
     await writePage(task, ["Zeměpis a dějepis"]);
-    // What Postgres says of a statement that is cancelled: its text and values are not part of the message.
+    // Postgres's cancel message carries neither the statement text nor its values.
     const cancelled = Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" });
     failStatementsContaining("ts_headline", cancelled);
     const calls = recordLogCalls();
@@ -349,7 +342,6 @@ describe("the snippet of an item-backed search result (issue #1996)", () => {
       (error: unknown) => error,
     );
 
-    // The excerpt statement ran and failed, and the failure left the search as it came, with nothing added to it.
     expect(failure).toBe(cancelled);
     expect(JSON.stringify([failure, (failure as Error).message, (failure as Error).stack])).not.toContain("zeměpis");
     expect(JSON.stringify(calls)).not.toContain("zeměpis");

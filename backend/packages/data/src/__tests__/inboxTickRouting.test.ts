@@ -17,7 +17,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import type { ItemRow } from "../types.js";
 
-// Issue gh-1985: the Inbox tick routes an item that holds a long recording to the recording card, before the model
+// The Inbox tick routes an item holding a long recording to the recording card before the model
 // computation, and makes no model call for it.
 
 let pool: Pool;
@@ -37,7 +37,7 @@ function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
 
 type Attachment = { mimeType: string; metadata: InboxAttachmentMetadata | null };
 
-/** An audio attachment of `seconds` whose metadata the job has written, its kind decided by the shared boundary. */
+/** An audio attachment of `seconds` whose metadata the job has written. */
 const audioOfSeconds = (seconds: number): Attachment => ({
   mimeType: "audio/mp4",
   metadata: { pages: null, durationSeconds: seconds, audioKind: audioKindForDuration(seconds) },

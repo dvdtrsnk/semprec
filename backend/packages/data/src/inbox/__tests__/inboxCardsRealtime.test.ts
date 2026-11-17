@@ -72,7 +72,6 @@ describe("inboxCards invalidations from the writers of Processing proposals card
     return item.id;
   }
 
-  /** An Inbox item with no type, which the tick turns into a card that needs clarification. */
   async function createUntypedItem(): Promise<string> {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {

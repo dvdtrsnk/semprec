@@ -190,7 +190,7 @@ describe("moduleRegistry.checkDrift", () => {
     expect(findings).toHaveLength(2);
     expect(findings.every((row) => row.resolved_at === null)).toBe(true);
 
-    // Repair both onto the already-active id, then re-run: prior findings must resolve, not accumulate.
+    // Prior findings must resolve, not accumulate.
     await pool.query(`UPDATE project_heartbeats SET action_id = 'core.expected' WHERE action_id = 'core.unknown'`);
     await pool.query(`UPDATE properties SET owner_process = 'core.expected' WHERE owner_process = 'core.orphan'`);
 

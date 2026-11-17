@@ -8,41 +8,15 @@ import { assertSweepNotFailedEntirely, type SweepOutcome } from "./sweepOutcome.
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 
 /**
- * Re-baselines one document's history at the retention cutoff (issue #86). Issue #216
- * mirrors every append into `doc_history_updates` and never deletes it — this is the
- * cleanup that actually bounds that log's growth, deferred out of #216's scope.
+ * Bounds `doc_history_updates` growth: folds the state at the retention cutoff into a new NULL-expiry baseline, then
+ * advances `history_available_from` and deletes what the baseline makes redundant.
  *
- * `cutoff = transaction_timestamp() - make_interval(hours => 24 * retentionDays)`, the exact
- * cutoff `openDocVersionAt` already uses. The document's exact state at `cutoff` is
- * reconstructed from its current rolling baseline plus `doc_history_updates` (the same
- * checkpoint-then-replay contract as `openDocVersionAt`), then installed as a new full,
- * NULL-expiry baseline checkpoint at `represented_at = cutoff`. Only after that checkpoint
- * has been written does this advance `docs.history_available_from` to `cutoff` and delete
- * the `doc_history_updates` rows and older checkpoints (including the preceding NULL-expiry
- * baseline) the new baseline makes redundant — every later update/checkpoint required to
- * reconstruct anything at or after `cutoff` is left untouched.
+ * The folded boundary is chosen by `update_id` contiguity, not timestamp: `created_at` is the appending transaction's
+ * start time while `update_id` is assigned at insert, so a lower id can carry a later `created_at`. Folding by
+ * timestamp could delete an unfolded lower-id row that `openDocVersionAt` (which reads `update_id >
+ * through_update_id`) could never replay. Rows past the gap stay and are replayed; Yjs updates commute.
  *
- * The folded boundary is chosen by `update_id` contiguity, not by timestamp order: every row
- * after the checkpoint up to (excluding) the first row, in id order, whose `created_at` is
- * past `cutoff`. Timestamp order cannot be used because `created_at` is the appending
- * transaction's start time while `update_id` is assigned at insert — a transaction that
- * started earlier but inserted later carries a lower `created_at` and a higher `update_id`
- * than a concurrent one. Taking the last row in `(created_at, update_id)` order as the
- * boundary would then delete an unfolded lower-id row past `cutoff`, which `openDocVersionAt`
- * could never replay again (it only reads `update_id > through_update_id`). With the
- * contiguous boundary, every row with `update_id <= through_update_id` has been applied.
- * Rows past the gap with `created_at <= cutoff` are retained and replayed by
- * `openDocVersionAt`; Yjs updates are commutative, so the baseline still represents
- * `cutoff`.
- *
- * Runs in one transaction under the same `doc_snapshots` row lock `loadDocWithClient`
- * (docPersistence.ts) takes for append/compaction, so this can never observe, or race
- * with, a concurrent append or compaction on the same doc.
- *
- * A no-op — retaining the existing baseline and availability — when `cutoff` doesn't
- * strictly advance past the doc's current `history_available_from` (including a doc with no
- * history yet, or one whose retention window hasn't produced a new cutoff since the last
- * re-baseline). Returns whether a re-baseline was performed.
+ * Holds the same `doc_snapshots` row lock as append/compaction. Returns false (no-op) when the cutoff does not advance.
  */
 export async function rebaselineDocHistory(
   pool: Pool,
@@ -50,8 +24,7 @@ export async function rebaselineDocHistory(
   retentionDays = resolveDocHistoryRetentionDays(),
 ): Promise<boolean> {
   return withTransaction(pool, async (client) => {
-    // The document lock: the same `doc_snapshots` row-per-doc FOR UPDATE that
-    // `loadDocWithClient` takes, serializing this against append/compaction on this doc.
+    // Same lock as `loadDocWithClient`: serializes against append/compaction.
     await client.query(`SELECT 1 FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`, [docId]);
 
     const { rows: docRows } = await client.query<{ history_available_from: Date | null }>(
@@ -98,8 +71,6 @@ export async function rebaselineDocHistory(
     );
     for (const row of historyRows) Y.applyUpdate(doc, row.update);
 
-    // The last update_id of the contiguous run replayed above, or the preceding baseline's
-    // own boundary when nothing new was replayed forward from it.
     const throughUpdateId =
       historyRows.length > 0 ? historyRows[historyRows.length - 1]!.update_id : checkpoint.through_update_id;
     const state = Buffer.from(Y.encodeStateAsUpdate(doc));
@@ -111,11 +82,7 @@ export async function rebaselineDocHistory(
     );
     await client.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [docId, cutoff]);
 
-    // Safe only now that the replacement baseline above is in place: openDocVersionAt never
-    // opens a timestamp before history_available_from, which was just advanced to `cutoff`,
-    // so every checkpoint represented before `cutoff` — including the preceding NULL-expiry
-    // baseline — and every history update through the new boundary is unreachable and
-    // redundant.
+    // Safe only after the new baseline exists and `history_available_from` advanced: these rows are now unreachable.
     await client.query(`DELETE FROM doc_snapshot_history WHERE doc_id = $1 AND represented_at < $2`, [docId, cutoff]);
     await client.query(`DELETE FROM doc_history_updates WHERE doc_id = $1 AND update_id <= $2`, [
       docId,
@@ -126,12 +93,7 @@ export async function rebaselineDocHistory(
   });
 }
 
-/**
- * Runs the retention re-baseline for every doc visible in the current scope — one tenant's
- * docs when called per tenant; see the compaction sweep for the pattern this mirrors. One doc
- * failing must not abort the sweep for every doc after it in the list, so each is isolated
- * and logged rather than thrown.
- */
+/** Per-doc failures are logged, not thrown, so one doc cannot abort the sweep. */
 export async function runDocHistoryRetentionSweep(
   pool: Pool,
   retentionDays = resolveDocHistoryRetentionDays(),
@@ -152,13 +114,10 @@ export async function runDocHistoryRetentionSweep(
   return { succeeded, failed, rebaselined };
 }
 
-/** Deletes the current scope's expired checkpoints (one tenant's, when called per tenant) past their retention window — a cleanup job, not a business/tiering layer.
- *  Never touches a NULL-expiry rolling baseline: `expires_at < now()` is NULL (falsy) for those rows.
- *  Subordinate to `rebaselineDocHistory`/`runDocHistoryRetentionSweep`: an expiring compaction
- *  checkpoint is always safe to delete regardless of order, since an earlier NULL-expiry
- *  baseline is always present to reconstruct from instead (see compact()'s docPersistence.ts
- *  comment) — this never removes a checkpoint still required for reconstruction inside the
- *  retained interval. */
+/**
+ * Never touches a NULL-expiry baseline (`expires_at < now()` is NULL for those). An expiring compaction checkpoint is
+ * always safe to delete because an earlier NULL-expiry baseline remains to reconstruct from.
+ */
 export async function cleanupExpiredDocHistory(pool: Pool): Promise<number> {
   const { rowCount } = await pool.query(`DELETE FROM doc_snapshot_history WHERE expires_at < now()`);
   return rowCount ?? 0;
@@ -173,27 +132,9 @@ export async function handleDocHistoryCleanupTask(pool: Pool): Promise<void> {
 }
 
 /**
- * Reconstructs the doc as of `at` (issue #216's selection contract): the latest checkpoint
- * whose `represented_at <= at`, replayed forward through `doc_history_updates` rows with
- * `update_id > through_update_id` and `created_at <= at`, in `update_id` order. Order is
- * irrelevant to the CRDT merge; `created_at` is the appending transaction's start time, so
- * it does not order updates relative to their ids anyway.
- *
- * Unlike the pre-#216 reader, this never has to refuse a reconstruction because a later
- * compaction deleted something it needed: `doc_history_updates` is mirrored on every append
- * and never touched by compaction, so any timestamp inside the retained window can always be
- * replayed forward from its nearest checkpoint (the new-doc baseline or a compaction
- * checkpoint).
- *
- * - A nonexistent `docId` raises `NotFoundError` (404 `not_found`).
- * - A future `at` raises `ValidationError` (400 `validation_failed`).
- * - An `at` before `docs.history_available_from` or before the configured retention cutoff
- *   raises `HistoryNotRetainedError` (410 `history_not_retained`) — a stable explicit
- *   "not retained" result, not a misleading partial document.
- * - `at` between doc creation and the first update returns the empty initial doc, via the
- *   new-doc baseline checkpoint (`through_update_id = 0`, nothing yet to replay).
- * - A nonfuture `at` at/after the latest update returns the latest state, because replay
- *   naturally includes every history update through `at`.
+ * Latest checkpoint at or before `at`, replayed forward through `doc_history_updates`. Compaction never touches that
+ * log, so any `at` inside the retained window is reconstructible. Outside it: `HistoryNotRetainedError` (410), never a
+ * partial document.
  */
 export async function openDocVersionAt(
   pool: Pool,
@@ -204,12 +145,7 @@ export async function openDocVersionAt(
   return withTransaction(pool, (client) => openDocVersionAtWithClient(client, docId, at, retentionDays));
 }
 
-/**
- * The read-side preconditions of `openDocVersionAtWithClient`, checked in its order: a future `at`
- * (`ValidationError`), an unknown doc (`NotFoundError`), then an `at` outside the retained window
- * (`HistoryNotRetainedError`). Exported so the page restore can refuse a request that could never
- * be served without replaying the whole history first (issue #1617).
- */
+/** Exported so the page restore can refuse early, before replaying any history. */
 export async function assertDocVersionReadable(
   client: PoolClient,
   docId: string,
@@ -249,11 +185,6 @@ export async function assertDocVersionReadable(
   }
 }
 
-/**
- * The latest checkpoint of `docId` represented at or before `at`: its state and the last history update it contains.
- * `HistoryNotRetainedError` when there is none. Shared by the version read and the page change list (issue #1680),
- * which both replay `doc_history_updates` forward from it.
- */
 export async function readCheckpointAtOrBefore(
   client: PoolClient,
   docId: string,
@@ -277,10 +208,8 @@ export async function readCheckpointAtOrBefore(
 }
 
 /**
- * The same checkpoint `readCheckpointAtOrBefore` picks, without its state: the row id, the last history update it
- * contains and the size of the stored state in bytes, so a caller with a byte budget can refuse an oversized
- * checkpoint before the state is materialized (`readCheckpointState`). Internal to the docs module; it is not exported
- * from the package barrel, and `readCheckpointAtOrBefore` keeps its behavior for its other callers.
+ * Same checkpoint as `readCheckpointAtOrBefore` but without the state, so a caller with a byte budget can refuse an
+ * oversized checkpoint before materializing it. Not exported from the package barrel.
  */
 export async function readCheckpointHeadAtOrBefore(
   client: PoolClient,
@@ -300,7 +229,7 @@ export async function readCheckpointHeadAtOrBefore(
   return { id: head.id, throughUpdateId: head.through_update_id, stateBytes: head.state_bytes };
 }
 
-/** The stored state of one checkpoint row named by `readCheckpointHeadAtOrBefore`; the row is read in the same snapshot. */
+/** Must run in the same snapshot as `readCheckpointHeadAtOrBefore`. */
 export async function readCheckpointState(client: PoolClient, checkpointId: string): Promise<Buffer> {
   const { rows } = await client.query<{ state: Buffer }>(`SELECT state FROM doc_snapshot_history WHERE id = $1`, [
     checkpointId,
@@ -310,10 +239,7 @@ export async function readCheckpointState(client: PoolClient, checkpointId: stri
   return row.state;
 }
 
-/**
- * The checkpoint-then-replay read behind `openDocVersionAt`, run on the caller's client so a
- * caller that also writes (the page restore, issue #1617) reads the history in its own transaction.
- */
+/** On the caller's client so a writing caller (page restore) reads history in its own transaction. */
 export async function openDocVersionAtWithClient(
   client: PoolClient,
   docId: string,

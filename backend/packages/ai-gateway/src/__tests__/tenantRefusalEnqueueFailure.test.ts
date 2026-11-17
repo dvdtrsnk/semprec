@@ -12,7 +12,7 @@ import { runInTenant } from "@semprec/shared";
 import { BudgetExceededError, complete } from "../gateway.js";
 import { logger } from "../logger.js";
 
-// Issue gh-2024: the reset-job enqueue is the one step whose failure the database cannot be made to produce on a
+// The reset-job enqueue is the one step whose failure the database cannot be made to produce on a
 // shared test instance, so the data layer's enqueue is wrapped here; by default the wrapper runs the real one.
 vi.mock("@semprec/data", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@semprec/data")>();

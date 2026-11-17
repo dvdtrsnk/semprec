@@ -43,15 +43,12 @@ async function createTestUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
-/** Tenant zero's user, which `beforeEach` creates; the first `authSession` of a test signs it in. */
 let tenantUserEmail: string;
 let tenantUserSignedIn: boolean;
 
 /**
- * Signs in tenant zero's user on the first call of a test, and after it the user of a fresh tenant of
- * its own. A run's actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue
- * #1066) and a tenant has one user, so only the first session can own a request; a later one is the
- * non-owner, in another tenant as every other account is.
+ * The first call signs in tenant zero's user, later ones the user of a fresh tenant. A run's actor must be its
+ * own tenant's user and a tenant has one user, so only the first session can own a request.
  */
 async function authSession(): Promise<{ headers: { Authorization: string }; userId: string }> {
   let email = tenantUserEmail;
@@ -237,7 +234,7 @@ describe("createApprovalRequestsRequestListener", () => {
     const body: unknown = await res.json();
     expect(body).not.toHaveProperty("payload");
     expect(JSON.stringify(body)).not.toContain('"hi"');
-    // The fixture's server item and registration do not exist: still 200, with null names.
+    // The server item and registration do not exist: still 200, with null names.
     expect(body).toMatchObject({ safeSummary: { argKeys: ["query"], mcpServerName: null, mcpToolName: null } });
   });
 
@@ -356,7 +353,6 @@ describe("createApprovalRequestsRequestListener", () => {
         body: JSON.stringify({ decision: "approved" }),
       });
     expect((await decide()).status).toBe(200);
-    // Recreate persisted historical execution outcomes for the response boundary.
     await pool.query(
       "UPDATE approval_requests SET execution_status = 'conflict', execution_result_jsonb = $2::jsonb WHERE id = $1",
       [id, JSON.stringify(executionResult)],
@@ -702,7 +698,7 @@ describe("createApprovalRequestsRequestListener", () => {
       nextCursor: z.string().nullable(),
     });
 
-    /** The fields of a row of the pending list, in sort order: those the unpaged queue returns. */
+    /** In sort order: the fields the unpaged queue returns. */
     const PENDING_ROW_KEYS = [
       "agentRunId",
       "breaksLinks",
@@ -803,7 +799,7 @@ describe("createApprovalRequestsRequestListener", () => {
       const approved = await createPendingRequest(session.userId);
       const rejected = await createPendingRequest(session.userId);
       const pending = await createPendingRequest(session.userId);
-      // The later request is decided first, so the order of the decisions is not the order of the requests.
+      // Decided in reverse, so decision order differs from request order.
       await decide(session, rejected, "rejected");
       await decide(session, approved, "approved");
 
@@ -876,7 +872,6 @@ describe("createApprovalRequestsRequestListener", () => {
       expect(await ids("?q=nalada")).toEqual([fromChat.id]);
       expect(await ids("?q=%20NALADA%20")).toEqual([fromChat.id]);
       expect(await ids("?q=nalada&source=mcp")).toEqual([]);
-      // A blank `q` is no filter, and still selects the paged answer.
       expect(await ids("?q=")).toEqual([fromMcp.id, fromChat.id]);
       expect(await ids(`?q=${"a".repeat(100)}`)).toEqual([]);
     });
@@ -1016,7 +1011,7 @@ describe("createApprovalRequestsRequestListener", () => {
         const text = await read(path);
         expect(text, path).not.toContain("outcome");
       }
-      // The decided list holds the request, so its answer above is not empty by accident.
+      // Proves the answer above is not empty by accident.
       expect(await read("/api/approval-requests?status=decided")).toContain(decidedId);
     });
   });
@@ -1068,7 +1063,7 @@ describe("createApprovalRequestsRequestListener", () => {
         source: { kind: "chat", threadId, heartbeatId: null, heartbeatName: null, mcpClientName: null },
       });
       expect(body).not.toHaveProperty("payload");
-      // The values of an MCP request are those of `arguments`, redacted and bounded (issue #2021), and only there.
+      // An MCP request's values come from `arguments`, redacted and bounded, and only there.
       expect(body).toMatchObject({ arguments: { to: "a@b.com" }, argumentsTruncated: false });
       expect(JSON.stringify(body).split("a@b.com")).toHaveLength(2);
     });
@@ -1128,8 +1123,8 @@ describe("createApprovalRequestsRequestListener", () => {
 
       const res = await getOne(session.headers, id);
       expect(res.status).toBe(200);
-      // The PATCH answer is the view and the outcome of that call, which a read does not carry (issue #2022).
-      // The read adds the argument values of an MCP request, which the PATCH answer does not (issue #2021).
+      // The PATCH answer carries the call's outcome, which a read does not; the read adds an MCP request's argument
+      // values, which the PATCH answer does not.
       expect(outcome).toBe("decided");
       expect(await res.json()).toEqual({ ...decision, arguments: { query: "hi" }, argumentsTruncated: false });
       expect(decision).toMatchObject({ status: "approved", executionStatus: "queued" });
@@ -1140,7 +1135,6 @@ describe("createApprovalRequestsRequestListener", () => {
       const pendingId = await createPendingRequest(owner.userId);
       const decidedId = await createPendingRequest(owner.userId);
       await decide(owner, decidedId, "rejected");
-      // The second session is the user of another tenant, which is where every other account lives.
       const other = await authSession();
 
       const unknown = await getOne(other.headers, randomUUID());
@@ -1151,7 +1145,7 @@ describe("createApprovalRequestsRequestListener", () => {
         const foreign = await getOne(other.headers, id);
         expect(foreign.status).toBe(404);
         expect(await foreign.text()).toBe(unknownBody);
-        // The same id is served to the owner, so the 404 above is a refusal and not a missing route.
+        // The owner gets the same id, so the 404 above is a refusal and not a missing route.
         expect((await getOne(owner.headers, id)).status).toBe(200);
       }
     });
@@ -1191,10 +1185,7 @@ describe("createApprovalRequestsRequestListener", () => {
       session: { headers: { Authorization: string }; userId: string };
     }
 
-    /**
-     * A pending `send_email` request of the session's user with `args`, made the way the approval-gated MCP tool
-     * makes it: the description snapshot of the production builder, and the notification its body renders.
-     */
+    /** Made the way the approval-gated MCP tool makes it: the production description snapshot and notification. */
     async function createMcpRequest(args: Record<string, unknown>): Promise<McpRequest> {
       const session = await authSession();
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: session.userId });
@@ -1244,7 +1235,7 @@ describe("createApprovalRequestsRequestListener", () => {
         arguments: { to: RECIPIENT, subject: SUBJECT, body: "Hello, the invoice is attached." },
         argumentsTruncated: false,
       });
-      // The safe summary keeps naming the arguments only; Postgres stores them in an order of its own.
+      // The safe summary names the arguments only; Postgres stores them in an order of its own.
       expect(
         z
           .looseObject({ safeSummary: z.looseObject({ argKeys: z.array(z.string()) }) })
@@ -1389,7 +1380,7 @@ describe("createApprovalRequestsRequestListener", () => {
       const foreignBody = await foreign.text();
       expect(foreignBody).toBe(unknownBody);
       expect(foreignBody).not.toContain(RECIPIENT);
-      // The same id gives its values to the owner, so the 404 is a refusal and not a missing request.
+      // The owner gets the values, so the 404 is a refusal and not a missing request.
       expect((await getDetail(request)).status).toBe(200);
     });
 
@@ -1405,7 +1396,6 @@ describe("createApprovalRequestsRequestListener", () => {
         return res.text();
       };
 
-      // The detail has the values, so the reads below are not empty of them by accident.
       expect(await (await getDetail(request)).text()).toContain(RECIPIENT);
       for (const path of [
         "/api/approval-requests",
@@ -1428,7 +1418,6 @@ describe("createApprovalRequestsRequestListener", () => {
       expectNoValue(decisionText, "PATCH");
       expect(JSON.parse(decisionText)).not.toHaveProperty("arguments");
       expect(JSON.parse(decisionText)).not.toHaveProperty("argumentsTruncated");
-      // A repeated decision answers the same view.
       const repeated = await fetch(`${baseUrl}/api/approval-requests/${request.id}`, {
         method: "PATCH",
         headers: { ...request.session.headers, "Content-Type": "application/json" },
@@ -1471,7 +1460,6 @@ describe("createApprovalRequestsRequestListener", () => {
       return z.looseObject({ rows: z.array(z.unknown()) }).parse(await res.json()).rows.length;
     }
 
-    /** A pending request of a new run that `triggeredBy` started and, for `chat`, a chat thread holds. */
     async function pendingRequestFrom(userId: string, kind: "chat" | "mcp"): Promise<string> {
       const threadId = kind === "chat" ? await withTransaction(pool, (client) => createSempChatThread(client)) : null;
       const run = await createAgentRun(pool, {
@@ -1619,7 +1607,6 @@ describe("approval requests under the runtime role (issues #1766 and #1785)", ()
     headers: { Authorization: string };
   }
 
-  /** A seeded tenant with its user, whose `users.locale` is `locale`, and that user's bearer session. */
   async function tenantSession(locale: string): Promise<Session> {
     const tenant = await createTestTenant(admin);
     const email = `${randomUUID()}@example.test`;
@@ -1634,7 +1621,6 @@ describe("approval requests under the runtime role (issues #1766 and #1785)", ()
     return { tenant, userId: user.id, headers: { Authorization: `Bearer ${session.token}` } };
   }
 
-  /** A pending request of a run in the item thread of a new Inbox item with `text`. */
   async function itemThreadRequest(session: Session, text: string): Promise<{ threadId: string; requestId: string }> {
     return runInTenant(session.tenant, async () => {
       const inbox = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "inbox"));
@@ -1798,7 +1784,6 @@ describe("approval requests under the runtime role (issues #1766 and #1785)", ()
   });
 
   it("never returns another tenant's request from the paged list, whatever the status, source or search (issue #1785)", async () => {
-    /** One pending and one decided request of a run in a chat thread titled "Společný název". */
     const seed = async (session: Session): Promise<{ pending: string; decided: string }> => {
       const ids = await runInTenant(session.tenant, async () => {
         const threadId = await withTransaction(runtime, (client) => createSempChatThread(client));

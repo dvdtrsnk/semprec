@@ -1,10 +1,7 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/**
- * `ROUTE_MATRIX` slice for the `/api/properties` path family, together with the property entries under
- * `/api/databases/:id/properties`.
- */
+/** Also the property entries under `/api/databases/:id/properties`. */
 export const PROPERTIES_ROUTES: RouteMatrixEntry[] = [
   {
     name: "property catalog",

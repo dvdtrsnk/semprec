@@ -59,7 +59,6 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     );
   });
 
-  /** Drives a `needsClarification` proposal into `proposed` targeting mcpServers, mirroring proposalActions.test.ts's revise-from-clarification path. */
   async function createMcpProposal(properties: Record<string, unknown>) {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -121,8 +120,7 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
     );
   });
 
-  // Defense in depth: the `http` schema defines no `env` and, being non-strict, drops an unknown one,
-  // so assertNoCredentialShapedEnvKeys is what refuses a credential-shaped key before that happens.
+  // The non-strict `http` schema drops an unknown `env`, so assertNoCredentialShapedEnvKeys must refuse it first.
   it("rejects a remote connectionConfig whose env map smuggles a credential-shaped key", async () => {
     await expect(
       createMcpProposal({
@@ -268,7 +266,7 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
         name: "Remote tool",
         connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" },
       });
-      // Raw write: a proposal that holds a stdio connection cannot be created through the API (it is refused as a card).
+      // Raw write: the API refuses a proposal holding a stdio connection.
       const stdio = {
         entityKind: "database",
         target: mcpServersId,

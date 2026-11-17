@@ -402,7 +402,7 @@ describe("database routes (issue #240)", () => {
       "companies",
       "files",
       "healthRecords",
-      // Recipes holds position 9 of the switcher (issue #1707).
+      // Recipes holds position 9 of the switcher.
       "recipes",
     ]);
     const overviewOnly = databases.filter((db) => db.switcherOrder === null && db.overviewOrder !== null);
@@ -991,7 +991,6 @@ describe("database routes (issue #240)", () => {
       try {
         const hiddenResponse = await patch(headers, before.id, { overviewHidden: true });
         expect(hiddenResponse.status).toBe(200);
-        // The whole envelope but the flag is unchanged, the two orders included.
         expect(envelope.parse(await hiddenResponse.json())).toEqual({ ...before, overviewHidden: true });
         expect(invalidations).toEqual([{ scope: "schema", databaseId: before.id, userId: expect.any(String) }]);
         expect(await storedFlags(before.id)).toEqual([true]);

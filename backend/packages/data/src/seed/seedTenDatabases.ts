@@ -37,19 +37,15 @@ import { EVENT_OCCURRENCE_DATE_PROPERTY_KEY, EVENT_SERIES_ID_PROPERTY_KEY } from
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
 
-// Issue #145: every shipped catalog option `s` becomes `{ key: s }` — no `label`, since a
-// shipped option's display text is not an override (see SelectOption's doc comment).
+// Every shipped catalog option `s` becomes `{ key: s }` with no `label`: a shipped option's display
+// text is not an override (see SelectOption).
 function selectConfig(options: string[], colors: Record<string, string> = {}): Record<string, unknown> {
   return { options: options.map((key) => ({ key, ...(colors[key] ? { color: colors[key] } : {}) })) };
 }
 
 interface PropSpec {
   key: string;
-  /**
-   * Kept only as inline documentation of the canonical label (useful once issue #146 ships a
-   * translation catalog); a built-in property of a system database is stored with a null
-   * `name` (issue #235) — `createProps` below never writes this string to the column.
-   */
+  /** The canonical label as documentation only; `createProps` stores a null `name` for built-in properties. */
   name: string | null;
   type: PropertyType;
   owner?: PropertyOwner;
@@ -58,7 +54,7 @@ interface PropSpec {
   config?: Record<string, unknown>;
 }
 
-/** `key` doubles as `databases.key` (issue #235) and `owner_module_id` — a system database's built-in `name` is always null; its display label comes from the future translation catalog (#146/#147). */
+/** `key` is both `databases.key` and `owner_module_id`; the `name` of a system database is null (labels come from the catalog). */
 async function createDb(client: PoolClient, key: TenDatabaseModuleId): Promise<DatabaseRow> {
   return databasesStore.createDatabase(client, {
     name: null,
@@ -74,7 +70,7 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
     await propertiesStore.createProperty(client, {
       databaseId,
       key: spec.key,
-      // Null, not spec.name — see PropSpec.name's doc comment.
+      // Null, not spec.name; see PropSpec.name.
       name: null,
       type: spec.type,
       owner: spec.owner,
@@ -86,17 +82,8 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
 }
 
 /**
- * Creates the ten hardcoded databases (issue #24), their fixed properties, the real
- * relations between them (including the bidirectional ones and the three mock-inconsistency
- * fixes), and a default `created_by: 'system'` view for each — all against an already-open
- * `client`/transaction, so the caller (seed/seedSystem.ts) can compose this with the rest of
- * system bootstrapping atomically. Every database is created unlocked, built up across two
- * passes (own properties, then relations — so every relation's target database already
- * exists regardless of declaration order), and locked only once its full schema is in place,
- * mirroring seedSystem.ts's existing Projects/System settings pattern.
- *
- * Not idempotent on its own — the caller is responsible for the idempotency check (see
- * seedSystem.ts), same as the rest of that seed.
+ * Creates the ten hardcoded databases, their properties, relations and default views in the caller's
+ * transaction: unlocked, own properties then relations, locked once complete. Not idempotent.
  */
 export async function seedTenDatabasesInTransaction(
   client: PoolClient,
@@ -104,10 +91,8 @@ export async function seedTenDatabasesInTransaction(
   computedKeyRegistry: ComputedKeyRegistry,
   moduleRegistry: ModuleRegistry,
 ): Promise<TenDatabases> {
-  // `input.name`/`input.inverse.name` below are always overridden to null: a relation property
-  // of one of these ten databases is as much a built-in property as the plain ones `createProps`
-  // creates, so it gets the same null-name treatment (issue #235). Each call site below still
-  // spells out its intended label as documentation for the future translation catalog (#146).
+  // Relation property names are forced to null like other built-in properties; call sites spell out the
+  // label as documentation.
   const relate = (
     input: CreateRelationPropertyInput,
     context?: SystemRelationWriteContext,
@@ -119,7 +104,7 @@ export async function seedTenDatabasesInTransaction(
       computedKeyRegistry,
     );
 
-  // ---- phase 1: create each database and its own (non-relation) properties ----
+  // ---- phase 1: each database and its own (non-relation) properties ----
   const areas = await createDb(client, AREAS_MODULE_ID);
   await createProps(client, areas.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
@@ -156,8 +141,8 @@ export async function seedTenDatabasesInTransaction(
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "completedAt", name: null, type: "date", owner: "system", ownerProcess: PROJECTS_OWNER_PROCESS },
     { key: "color", name: "Color", type: "color", owner: "user" },
-    // A 4-section equivalent of an AGENT.md; `sections` names the fixed structure a client
-    // renders as separate fields within this one longText value, not four separate columns.
+    // An AGENT.md equivalent; `sections` names the fixed structure a client renders as fields within one
+    // longText value.
     {
       key: "agents",
       name: "AGENT.md",
@@ -166,8 +151,7 @@ export async function seedTenDatabasesInTransaction(
       locked: true,
       config: { sections: ["purpose", "allowed", "notAllowed", "generalInstructions"] },
     },
-    // Present in the schema for every project; only ever set for system-module projects
-    // (Email, Personal finance, ...), which can be deactivated but never deleted.
+    // Only set for system-module projects, which can be deactivated but never deleted.
     { key: "systemActive", name: "System active", type: "checkbox", owner: "user", locked: true },
   ]);
 
@@ -184,8 +168,7 @@ export async function seedTenDatabasesInTransaction(
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "timeFrom", name: "Time from", type: "time", owner: "user" },
     { key: "timeTo", name: "Time to", type: "time", owner: "user" },
-    // Derived from timeFrom/timeTo; not directly editable — see the issue's "the generic
-    // update path refuses this field" pattern (assertWritableProperties on owner:'system').
+    // Derived from timeFrom/timeTo; the generic update path refuses it (system-owned).
     { key: "time", name: "Time", type: "time", owner: "system", ownerProcess: TASKS_MODULE_ID, locked: true },
     { key: "flagged", name: null, type: "checkbox", owner: "user" },
     { key: "description", name: null, type: "longText", owner: "user" },
@@ -218,7 +201,7 @@ export async function seedTenDatabasesInTransaction(
   const people = await createDb(client, PEOPLE_MODULE_ID);
   await createProps(client, people.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    // A closed but extensible list, not free text — starting values taken from the mock.
+    // A closed but extensible list, not free text.
     {
       key: "relationship",
       name: "Relationship",
@@ -239,15 +222,13 @@ export async function seedTenDatabasesInTransaction(
         },
       ),
     },
-    // Canonical values stay plain English camelCase per the canonical-keys skill; the
-    // mock's emoji (📞/✉️) is presentational and belongs to the not-yet-built i18n/UI layer.
+    // Canonical values stay English camelCase; any icon is presentational.
     { key: "contact", name: "Contact", type: "select", owner: "user", config: selectConfig(["phone", "email"]) },
     { key: "phones", name: "Phones", type: "longText", owner: "user" },
-    // Issue #1660: derived from the person's past Events, Emails and Transcripts, written only by
-    // `people/lastContact.ts`'s recompute.
+    // Derived from the person's past Events, Emails and Transcripts; written only by `people/lastContact.ts`.
     { key: "lastContact", name: "Last contact", type: "date", owner: "system", ownerProcess: PEOPLE_MODULE_ID },
-    // Issue #1795: the calendar's birthday source reads the month and day. A person whose year is unknown stores
-    // a placeholder leap year with `birthdayYearKnown` false.
+    // The calendar's birthday source reads month and day; an unknown year stores a placeholder leap year with
+    // `birthdayYearKnown` false.
     { key: "birthday", name: "Birthday", type: "date", owner: "user" },
     { key: "birthdayYearKnown", name: "Year known", type: "checkbox", owner: "user" },
   ]);
@@ -297,16 +278,14 @@ export async function seedTenDatabasesInTransaction(
     { key: "description", name: "Description", type: "longText", owner: "user" },
     { key: "alertMinutes", name: "Alert minutes", type: "number", owner: "user" },
     { key: "travelMinutes", name: "Travel minutes", type: "number", owner: "user" },
-    // The iCalendar identity of an Event (issue #1599), computed by `calendar/eventIcalIdentityTransform.ts`.
+    // Computed by `calendar/eventIcalIdentityTransform.ts`.
     { key: "icalUid", name: "iCalendar UID", type: "text", owner: "system", locked: true },
     { key: "icalSequence", name: "iCalendar sequence", type: "number", owner: "system", locked: true },
-    // The fixed recurrence rule of an Event (issue gh-1817), judged by `calendar/eventRecurrenceHook.ts`.
+    // Validated by `calendar/eventRecurrenceHook.ts`.
     { key: "recurrence", name: "Recurrence", type: "json", owner: "user" },
-    // The day of the nearest occurrence on or after today in the tenant time zone (issue gh-1905), computed by
-    // `calendar/nextOccurrenceDateTransform.ts` and refreshed daily by `calendar/nextOccurrenceRefreshAction.ts`, so the
-    // generic sort, group and filter work on a recurring Event. Declared like `time`.
+    // Nearest occurrence from today (tenant zone), refreshed daily, so generic sort/group/filter work on recurring Events.
     { key: "nextOccurrenceDate", name: "Next occurrence date", type: "date", owner: "system", locked: true },
-    // The identity of a materialized occurrence of a recurring Event (issue gh-1843), written only by
+    // Identity of a materialized occurrence of a recurring Event; written only by
     // `calendar/materializeEventOccurrence.ts`.
     {
       key: EVENT_SERIES_ID_PROPERTY_KEY,
@@ -335,8 +314,7 @@ export async function seedTenDatabasesInTransaction(
       owner: "user",
       config: selectConfig(["monitoring", "resolved"], { monitoring: "#FF9500", resolved: "#34C759" }),
     },
-    // Stays text, not a relation to People: also covers pets, which don't and shouldn't
-    // exist in the People database.
+    // Text, not a relation to People: it also covers pets.
     { key: "subject", name: "Subject", type: "text", owner: "user" },
     {
       key: "type",
@@ -362,8 +340,7 @@ export async function seedTenDatabasesInTransaction(
   const companies = await createDb(client, COMPANIES_MODULE_ID);
   await createProps(client, companies.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    // Deliberate exception (canonical-keys skill): the Czech IČO company-registration id,
-    // a domain term with no honest English name, already ASCII.
+    // Deliberate exception to English keys: the Czech IČO company id has no honest English name.
     { key: "ico", name: "ICO", type: "text", owner: "user" },
     { key: "web", name: "Web", type: "url", owner: "user" },
   ]);
@@ -371,9 +348,7 @@ export async function seedTenDatabasesInTransaction(
   const transcripts = await createDb(client, TRANSCRIPTS_MODULE_ID);
   await createProps(client, transcripts.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
-    // Fix: purely a pipeline status: owner is 'system', written only by the transcription
-    // process, not freely editable as in the mock. 'error' is a 4th value added on top of
-    // the mock's three.
+    // A pipeline status written only by the transcription process; not user-editable.
     {
       key: "status",
       name: "Status",
@@ -393,8 +368,7 @@ export async function seedTenDatabasesInTransaction(
     },
     { key: "notes", name: "Notes", type: "longText", owner: "user" },
     { key: "link", name: "Link", type: "url", owner: "system", ownerProcess: TRANSCRIPTION_OWNER_PROCESS },
-    // `segments`/`summaryByInstruction` deliberately live in items.computed (issue #21's
-    // cache), not here — see the issue's "non-generic" note; not properties at all.
+    // `segments`/`summaryByInstruction` live in items.computed, not as properties.
   ]);
 
   const journal = await createDb(client, JOURNAL_MODULE_ID);
@@ -404,7 +378,7 @@ export async function seedTenDatabasesInTransaction(
     { key: "period", name: "Period", type: "text", owner: "system" },
   ]);
 
-  // ---- phase 2: relations — every target database above already exists, so declaration order doesn't matter here ----
+  // ---- phase 2: relations (every target exists, so order does not matter) ----
 
   await relate({
     sourceDatabaseId: tasks.id,
@@ -449,10 +423,8 @@ export async function seedTenDatabasesInTransaction(
     { ownerProcess: TASKS_MODULE_ID },
   );
 
-  // Areas <-> Projects ("Hub"): one area has many projects. `property_id_a` is Areas.projects
-  // (the "one" side, issue #82's cardinality contract), Projects.area/"Hub" is the inverse —
-  // a project's own "Hub" field is single-valued and must be the side the enforced
-  // `one_to_many` constraint lands on.
+  // Areas <-> Projects ("Hub"): Areas.projects is property A (the "one" side) so the `one_to_many`
+  // constraint lands on the single-valued Projects.area.
   await relate({
     sourceDatabaseId: areas.id,
     key: "projects",
@@ -478,7 +450,6 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "area", name: "Area" },
   });
-  // Fix: Areas <-> Health records was one-directional (from Areas) in the mock; unified to bidirectional.
   await relate({
     sourceDatabaseId: areas.id,
     key: "healthRecord",
@@ -487,10 +458,7 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "area", name: "Area" },
   });
-  // Fix: Projects <-> Companies was a free-form select ("Osobní"/"MeguMethod") in the mock;
-  // unified with the existing Companies -> Projects relation into a real N:1 relation.
-  // `property_id_a` is Companies.projects (the "one" side) — Projects.company is single-valued
-  // and must be the inverse for the same reason as the Areas/Projects Hub above.
+  // Projects <-> Companies (N:1): Companies.projects is property A; Projects.company is single-valued.
   await relate({
     sourceDatabaseId: companies.id,
     key: "projects",
@@ -499,9 +467,8 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "company", name: "Company" },
   });
-  // Tasks -> Projects (hub backlink), optional at the item level (relations carry no NOT NULL
-  // in this engine). `property_id_a` is Projects.tasks (the "one" side) — Tasks.project is
-  // single-valued and must be the inverse, same reasoning as above.
+  // Tasks -> Projects (hub backlink), optional (relations carry no NOT NULL). Projects.tasks is property A;
+  // Tasks.project is single-valued.
   await relate({
     sourceDatabaseId: projects.id,
     key: "tasks",
@@ -519,7 +486,7 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "people", name: "People" },
   });
-  // People <-> Companies: explicit bidirectional N:N — a person keeps both a current and a former company link.
+  // People <-> Companies: N:N, so a person keeps both current and former company links.
   await relate({
     sourceDatabaseId: people.id,
     key: "companies",
@@ -528,11 +495,8 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "people", name: "People" },
   });
-  // Files -> Areas: one-directional only (neither side's relation list names the other beyond
-  // this). `many_to_many`, not `one_to_many` (issue #82): Files.area is single-valued, so
-  // `one_to_many`'s "item_b gets at most one edge" would wrongly cap each Area to one File,
-  // and there's no inverse to swap this source/target pairing onto — same reasoning as
-  // Emails.attachments/Inbox.type.
+  // Files -> Areas: one-directional. `many_to_many`: Files.area is single-valued and there is no inverse,
+  // so `one_to_many` would cap each Area to one File.
   await relate({
     sourceDatabaseId: files.id,
     key: "area",
@@ -567,9 +531,7 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "files", name: "Files" },
   });
-  // Events -> Projects (hub backlink). `property_id_a` is Projects.events (the "one" side) —
-  // Events.project is single-valued and must be the inverse, same reasoning as the other hub
-  // backlinks above.
+  // Events -> Projects (hub backlink): Projects.events is property A; Events.project is single-valued.
   await relate({
     sourceDatabaseId: projects.id,
     key: "events",
@@ -578,7 +540,7 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "project", name: "Project" },
   });
-  // Events <-> Files: files attached to an event (issue #1588).
+  // Events <-> Files: files attached to an event.
   await relate({
     sourceDatabaseId: events.id,
     key: "files",
@@ -588,7 +550,7 @@ export async function seedTenDatabasesInTransaction(
     owner: "user",
     inverse: { key: "events", name: "Events", owner: "user" },
   });
-  // Events <-> People: an Event's participants, read from the person as `People.events` (issue #1664).
+  // Events <-> People: an Event's participants (`People.events`).
   await relate({
     sourceDatabaseId: events.id,
     key: "people",
@@ -597,10 +559,8 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "events", name: "Events" },
   });
-  // Events <-> Transcripts: explicit bidirectional. One Event has many transcripts (the parts of one
-  // meeting, each with its own summary); a transcript has at most one Event. `property_id_a` is
-  // Events.transcript (the "one" side), so the `enforce_relation_cardinality` trigger guards only `item_b`, the
-  // transcript.
+  // Events <-> Transcripts: one Event, many transcripts (the parts of one meeting). Events.transcript is
+  // property A, so `enforce_relation_cardinality` guards only the transcript side.
   await relate({
     sourceDatabaseId: events.id,
     key: "transcript",
@@ -618,8 +578,7 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "sourceEvents", name: null },
   });
-  // Fix: Events <-> Companies ("firma") was a free-form multiSelect in the mock, the same
-  // inconsistency as Projects'; unified with the existing Companies -> Events ("meetings") relation.
+  // Events <-> Companies ("meetings").
   await relate({
     sourceDatabaseId: events.id,
     key: "company",
@@ -637,7 +596,7 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "healthRecords", name: "Health records" },
   });
-  // Tasks <-> Health records: a follow-up task and the records it belongs to (issue #1836).
+  // Tasks <-> Health records: a follow-up task and its records.
   await relate({
     sourceDatabaseId: tasks.id,
     key: "healthRecords",
@@ -647,9 +606,8 @@ export async function seedTenDatabasesInTransaction(
     owner: "user",
     inverse: { key: "tasks", name: "Tasks", owner: "user" },
   });
-  // Transcripts -> People ("speakers"): one-directional; each edge maps one diarization speaker
-  // key to a person through its { speaker } metadata, which the choke point's relation write
-  // validates (`transcription/transcriptionSpeakerEdges.ts`'s `assertSpeakerEdgeWritable`).
+  // Transcripts -> People ("speakers"): one-directional; each edge maps a diarization speaker key to a
+  // person via { speaker } metadata, validated by `assertSpeakerEdgeWritable`.
   await relate({
     sourceDatabaseId: transcripts.id,
     key: "speakers",
@@ -684,9 +642,7 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "transcripts", name: "Transcripts" },
   });
-  // Journal -> Areas: optional, nullable, one-directional; no default value (issue's fix — the
-  // mock hardwired every entry to a single "Osobní" area, which this issue explicitly rejects).
-  // `many_to_many`, not `one_to_many` (issue #82) — same reasoning as Files.area above.
+  // Journal -> Areas: optional, one-directional, no default. `many_to_many` for the same reason as Files.area.
   await relate({
     sourceDatabaseId: journal.id,
     key: "area",
@@ -702,8 +658,8 @@ export async function seedTenDatabasesInTransaction(
     targetDatabaseId: projects.id,
     cardinality: "many_to_many",
   });
-  // Journal -> Events (issue #1609): derived from the event links in the entry's page (#2016), so it is system-owned
-  // by that sync's process; one-directional, with no inverse on Events.
+  // Journal -> Events: derived from the event links in the entry's page, so system-owned by that sync's
+  // process; one-directional.
   await relate(
     {
       sourceDatabaseId: journal.id,
@@ -717,7 +673,7 @@ export async function seedTenDatabasesInTransaction(
     { ownerProcess: JOURNAL_EVENT_LINKS_OWNER_PROCESS },
   );
 
-  // ---- phase 3: lock every schema now that it's fully built (system DBs are not user-editable) ----
+  // ---- phase 3: lock every schema (system DBs are not user-editable) ----
   const all: TenDatabases = {
     [AREAS_MODULE_ID]: areas,
     [PROJECTS_MODULE_ID]: projects,
@@ -736,8 +692,7 @@ export async function seedTenDatabasesInTransaction(
 
   // ---- phase 4: seed default views (created_by: 'system') ----
   registerTemporalSwitcherViewType(viewTypeRegistry);
-  // `databases.name` is null for these ten (issue #235), so the view's own (still required,
-  // unrelated) `name` column is sourced from the manifest's label instead.
+  // `databases.name` is null for these, so the view's required `name` comes from the manifest label.
   const manifestDatabaseByKey = new Map((await moduleRegistry.getDatabases()).map((db) => [db.key, db]));
   for (const [moduleId, database] of Object.entries(all) as [TenDatabaseModuleId, DatabaseRow][]) {
     const manifestDatabase = manifestDatabaseByKey.get(moduleId);
@@ -748,7 +703,7 @@ export async function seedTenDatabasesInTransaction(
       viewTypeRegistry,
     );
   }
-  // Issue #1798: the Today system view, after the properties and relations its filter names exist (phases 1 and 2).
+  // The Today system view, once the properties and relations its filter names exist.
   await createTasksTodayView(client, tasks.id, viewTypeRegistry);
 
   return all;

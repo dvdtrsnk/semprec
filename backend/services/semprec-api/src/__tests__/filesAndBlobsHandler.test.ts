@@ -31,7 +31,6 @@ import { runTranscriptionFixture, withFixtureStorage } from "./transcriptionHttp
 
 const PASSWORD = "s3cret-password";
 const MAX_FILE_SIZE_BYTES = 1024;
-// A complete 1×1 RGBA PNG, including its image data and chunk checksums.
 const PNG_IMAGE = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
   "base64",
@@ -60,10 +59,9 @@ const noopMailer: PasswordResetMailer = {
 let pool: Pool;
 const moduleRegistry = await loadFullModuleRegistry();
 
-/** Tenant zero's one user, created in `beforeEach`: every upload of a test must land in the same tenant. */
+/** Every upload of a test must land in tenant zero. */
 const OWNER_EMAIL = "files-owner@example.com";
 
-/** A fresh session of tenant zero's user. */
 async function authHeader(): Promise<{ Authorization: string }> {
   const { token } = await login(pool, { email: OWNER_EMAIL, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
   return { Authorization: `Bearer ${token}` };
@@ -297,9 +295,8 @@ describe("files and blobs routes (issue #158)", () => {
       const oversized = "y".repeat(MAX_FILE_SIZE_BYTES * 2);
       const stream = Readable.from(
         (async function* () {
-          // Yielding in small chunks with no declared length forces `fetch` to use chunked
-          // transfer-encoding, so no `Content-Length` header precheck can catch this — only
-          // the always-on streaming byte counter can.
+          // Small chunks with no declared length force chunked transfer-encoding, so only the streaming byte
+          // counter, not a `Content-Length` precheck, can catch this.
           for (let i = 0; i < oversized.length; i += 16) {
             yield oversized.slice(i, i + 16);
           }
@@ -460,7 +457,7 @@ describe("files and blobs routes (issue #158)", () => {
       const res = await uploadBlob(PNG_IMAGE, "Image/PNG; charset=binary");
       expect(res.status).toBe(200);
       expect(((await res.json()) as { blobId: string; mimeType: string }).blobId).toBe(first.blobId);
-      // The duplicate's bytes are removed after the commit, without the response waiting for it.
+      // The duplicate's bytes are removed after commit without the response waiting.
       await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
     });
 
@@ -654,7 +651,7 @@ describe("files and blobs routes (issue #158)", () => {
 
     it("honors ?disposition=inline only for an allowlisted MIME type", async () => {
       const headers = await authHeader();
-      // The mime is detected from the bytes, so a PNG signature is needed whatever the client claims.
+      // The mime is detected from the bytes, whatever the client claims.
       const pngBytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("x")]);
       const pngBlobId = await uploadAndGetBlobId(pngBytes, { filename: "pic.png", contentType: "text/plain" });
 

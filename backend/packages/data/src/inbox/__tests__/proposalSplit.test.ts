@@ -97,10 +97,7 @@ describe("splitInboxSourceWithClient (issue #1939)", () => {
     if (errors.length) throw new AggregateError(errors, "Split fixture cleanup failed", { cause: errors[0] });
   });
 
-  /**
-   * An Inbox item whose card the tick created and the user revised into the Tasks proposal `Buy milk and renew the
-   * passport`, so that it is `proposed` with an envelope.
-   */
+  /** An Inbox item whose card the user revised into the Tasks proposal `Buy milk and renew the passport`. */
   async function createCard(tenant: string): Promise<CardFixture> {
     return runInTenant(tenant, async () => {
       const dbs = await withTransaction(runtime, async (client) => ({
@@ -166,7 +163,6 @@ describe("splitInboxSourceWithClient (issue #1939)", () => {
     taskCard(fixture, "Renew the passport"),
   ];
 
-  /** Runs the action in its own transaction under the fixture's tenant, as the thread's request does. */
   function split(
     fixture: CardFixture,
     cards: SplitCardInput[],
@@ -201,7 +197,6 @@ describe("splitInboxSourceWithClient (issue #1939)", () => {
     });
   }
 
-  /** Every Processing proposals row of the tenant as stored, and the number of edges, read through the runtime role. */
   async function snapshot(fixture: CardFixture) {
     return runInTenant(fixture.tenant, async () => {
       const cards = await runtime.query<{ id: string; properties: unknown; updated_at: Date }>(
@@ -230,7 +225,6 @@ describe("splitInboxSourceWithClient (issue #1939)", () => {
     });
   }
 
-  /** The ids of the cards the `sourceInbox` edges of the source lead to. */
   async function cardsOfSource(fixture: CardFixture): Promise<string[]> {
     return runInTenant(fixture.tenant, async () => {
       const rows = await runtime.query<{ id: string }>(
@@ -287,7 +281,6 @@ describe("splitInboxSourceWithClient (issue #1939)", () => {
     expect(sibling.card.history).toEqual([
       { author: "ai", message: "Two separate things", kind: "threadRevision", threadId, messageId },
     ]);
-    // Nothing is created in any target database, and exactly one card and one edge were added.
     const after = await snapshot(fixture);
     expect(after.tasks).toBe(before.tasks);
     expect(after.events).toBe(before.events);

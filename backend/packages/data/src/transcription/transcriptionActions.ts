@@ -18,9 +18,7 @@ import {
 export const FILES_TRANSCRIPTION_TRIGGER_ACTION_ID = "core.filesTranscriptionTrigger";
 export const TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID = "core.transcriptionRequeueSweep";
 
-/**
- * The requeue sweep's heartbeat, created by `seedSystem`. 04:30 keeps it clear of the other daily heartbeats (03:05, 04:00).
- */
+/** 04:30 keeps it clear of the other daily heartbeats (03:05, 04:00). */
 export const TRANSCRIPTION_REQUEUE_HEARTBEAT = {
   name: "Transcription requeue sweep",
   rule: { kind: "dailyTime", at: "04:30" },
@@ -28,18 +26,13 @@ export const TRANSCRIPTION_REQUEUE_HEARTBEAT = {
 
 const logger = createLogger("transcription");
 
-/**
- * The heartbeat's `action_config`: the Files database this action is scoped to, plus the relation
- * properties a candidate file is checked against, Emails.attachments and Files.events. The seed
- * (seed/seedSystem.ts) stores their ids in the config; they are not re-resolved on every fire.
- */
+/** Relation property ids are stored by the seed, not re-resolved on every fire. */
 const filesTranscriptionTriggerConfigSchema = z.object({
   filesDatabaseId: z.string().uuid(),
   attachmentsRelationPropertyId: z.string().uuid(),
   eventsRelationPropertyId: z.string().uuid(),
 });
 
-/** Shared with `transcriptionRouteHandlers.ts`'s own mime-type gate on `POST /api/transcriptions`. */
 export function readBlobId(properties: Record<string, unknown>): string | undefined {
   const file = properties.file;
   if (typeof file !== "object" || file === null) return undefined;
@@ -48,16 +41,10 @@ export function readBlobId(properties: Record<string, unknown>): string | undefi
 }
 
 /**
- * Registered as an `onItemEvent` ('create') heartbeat action for the Files database (issue #180):
- * enqueues `TASK_NAMES.transcriptionJob` for a standalone audio recording, and does nothing else —
- * no item write, matching the issue's Task ("performing no item write"). A file is a candidate
- * only when its blob's mime type is `audio/*` and it carries no Emails.attachments edge (an
- * emailed audio attachment is not a standalone recording); everything else — a PDF, a video, a
- * mail attachment — is silently skipped, the same "not every create matters" shape as
- * `libraryMetadataActions.ts`'s trigger. A file filed from an Inbox attachment (an item with an
- * `inbox` origin row, issue #1703) is skipped too: transcribing it is proposed explicitly (#1978).
- * A file attached to an Event (at least one Files.events edge, issue #1698) is skipped like an
- * email attachment: it is a plain attachment, not a recording.
+ * `onItemEvent` ('create') action on Files: enqueues `transcriptionJob` for a standalone audio
+ * recording and writes no item. A candidate is an `audio/*` blob with no Emails.attachments edge, no
+ * Files.events edge and no Inbox origin (transcribing an Inbox file is proposed explicitly). Anything
+ * else is silently skipped.
  */
 export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -105,19 +92,15 @@ export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler
   };
 }
 
-/** The requeue sweep's `action_config`: the Transcripts database whose failed rows it requeues, resolved once at seed time. */
 const transcriptionRequeueSweepConfigSchema = z.object({ transcriptsDatabaseId: z.string().uuid() });
 
 /**
- * Registered as a `dailyTime` heartbeat action (issue #186): re-enqueues every Transcriptions row
- * whose `item_automation.status` is `error` as a fresh 3-attempt batch under its original key,
- * `transcription-job:${fileItemId}`, with `fileItemId` read from the row's `link`. The job resumes
- * the existing row from its checkpoints, so no second row is created and no paid stage repeats.
- * Only `error` rows are listed — `done`, `pending` and `locked` ones are never touched — and the
- * sweep writes nothing itself, so it never sets `locked`; the row is swept again every day until
- * it succeeds or a user locks it. A repeat run while a batch is still queued replaces that job
- * under the same key rather than adding a second. A row whose `link` is not a Files item link
- * cannot be requeued: it is skipped with a warning so the rest of the sweep still runs.
+ * Daily sweep: re-enqueues every Transcripts row whose automation status is `error` as a fresh batch
+ * under its original key `transcription-job:${fileItemId}`. The job resumes from its checkpoints, so
+ * no second row is created and no paid stage repeats. The sweep writes nothing itself (never sets
+ * `locked`), so a row is swept daily until it succeeds or a user locks it; re-enqueuing replaces a
+ * still-queued job under the same key. A row whose `link` is not a Files link is skipped with a
+ * warning.
  */
 export function createTranscriptionRequeueSweepAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>) => {

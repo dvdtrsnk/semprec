@@ -51,7 +51,6 @@ function times(item: ItemRow) {
   return timesOf(item.properties);
 }
 
-/** The properties the Events time transform would store for this write, read through its preparation. */
 async function prepared(stored: ItemRow | null, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
   const result = await prepareEventTime({ stored, patch: { ...patch }, timezone: "Europe/Prague" });
   return { ...(stored?.properties ?? {}), ...result.patch };
@@ -61,7 +60,6 @@ function patchEvent(event: ItemRow, propertiesPatch: Record<string, unknown>): P
   return chokePoint.updateItem({ databaseId: eventsId, itemId: event.id, propertiesPatch }, undefined, undefined, USER);
 }
 
-/** The write is refused by the Events validation of issue #1663, naming `field`. */
 async function expectRefused(write: Promise<unknown>, field: string): Promise<void> {
   await expect(write).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field } });
 }
@@ -122,8 +120,8 @@ describe("Events time normalization before the write (issue #1598)", () => {
       timeTo: null,
       time: "08:00",
     });
-    // Issue #1663: a timed Event spanning days needs an explicit end, so the write without one is refused; with one,
-    // the write stores the given end unchanged.
+    // A timed Event spanning days needs an explicit end: the write without one is refused; with one, the
+    // given end is stored unchanged.
     await expectRefused(createEvent(multiDay), "timeTo");
     const ended = await createEvent({ ...multiDay, timeTo: "02:00" });
     expect(times(ended)).toEqual({
@@ -161,8 +159,8 @@ describe("Events time normalization before the write (issue #1598)", () => {
     expect(times(evening)).toMatchObject({ date: "2026-10-16", timeFrom: "22:30", timeTo: "23:30" });
   });
 
-  // Issue #1663 rejects every value the transform leaves unreadable, so the transform's own output for those values is
-  // read through its read-only preparation (the same `deriveEventTimeProperties`), and the write is asserted refused.
+  // Every value the transform leaves unreadable is refused, so the transform's own output is read through
+  // its read-only preparation (`deriveEventTimeProperties`) and the write is asserted refused.
   it("reads a date with a time but no offset as wall-clock, and leaves date-only and unreadable dates alone", async () => {
     await setTenantZone("America/New_York");
     const wallClock = await createEvent({ date: "2026-10-16T08:00" });
@@ -192,7 +190,7 @@ describe("Events time normalization before the write (issue #1598)", () => {
     expect(times(valid)).toMatchObject({ date: "2026-10-16", timeFrom: "10:15", timeTo: "11:15" });
 
     const event = await createEvent({ date: "2026-10-16", timeFrom: "09:00" });
-    // The malformed value does not replace the stored start in the transform, and issue #1663 refuses the write.
+    // The malformed value does not replace the stored start in the transform, and the write is refused.
     expect(timesOf(await prepared(event, { date: "2026-10-16T10:15:99" }))).toEqual({
       date: "2026-10-16T10:15:99",
       endDate: null,
@@ -227,8 +225,8 @@ describe("Events time normalization before the write (issue #1598)", () => {
     });
     await expectRefused(patchEvent(event, { timeFrom: null, timeTo: "invalid" }), "timeTo");
 
-    // Clearing only the start drops the derived time and keeps the stored end in the transform; issue #1663 then
-    // refuses an end without a start.
+    // Clearing only the start drops the derived time and keeps the stored end in the transform; the write is
+    // then refused for an end without a start.
     expect(timesOf(await prepared(event, { timeFrom: null }))).toMatchObject({
       timeFrom: null,
       timeTo: "10:00",
@@ -312,13 +310,13 @@ describe("Events time normalization before the write (issue #1598)", () => {
     }));
     const stored = (await withTransaction(pool, (client) => itemsStore.getItemById(client, eventsId, event.id)))!;
     const prepared = await prepareUserItemPatch(properties, { timeFrom: "7:45" }, database, stored, "Europe/Prague");
-    // The iCalendar preparation that runs after it adds the bumped sequence (issue #1599).
+    // The iCalendar preparation that runs after it adds the bumped sequence.
     expect(prepared).toEqual({ patch: { timeFrom: "07:45", time: "07:45–10:00", icalSequence: 1 }, deferredKeys: [] });
 
     for (const zone of ["Europe/Prague", "America/New_York"]) {
       // The row as this iteration's write will find it: the previous iteration wrote and restored it.
       const current = (await withTransaction(pool, (client) => itemsStore.getItemById(client, eventsId, event.id)))!;
-      // The end is cleared so the moved start gets its one-hour end: a start after the stored end is refused (#1663).
+      // The end is cleared so the moved start gets its one-hour end: a start after the stored end is refused.
       const patch = { date: "2026-10-16T14:00:00Z", timeTo: null };
       const instant = await prepareUserItemPatch(properties, patch, database, current, zone);
       await setTenantZone(zone);
@@ -336,7 +334,6 @@ describe("Events time normalization before the write (issue #1598)", () => {
       expect(instant.patch.timeFrom).toBe(zone === "Europe/Prague" ? "16:00" : "10:00");
       // The iCalendar preparation compares the time-normalized values: the start moved, so the sequence is bumped.
       expect(instant.patch.icalSequence).toBe(Number(current.properties.icalSequence) + 1);
-      // Restore the stored row the next zone's preparation starts from.
       await chokePoint.updateItem(
         { databaseId: eventsId, itemId: event.id, propertiesPatch: { date: "2026-10-16", timeFrom: "09:00" } },
         undefined,

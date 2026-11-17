@@ -4,9 +4,8 @@ import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "..
 import type { ProposalStep } from "./inboxTickAction.js";
 
 /**
- * One step of a multi-step answer, as the model names it. `database` is a module id from the writable
- * target catalog (`create` steps); `itemId` is an existing item id from the workspace context (`update`
- * and `link` steps). `alias` is the local name later operations use as a relation target.
+ * One step as the model names it: `database` is a module id from the writable target catalog (`create`); `itemId`
+ * an existing item (`update`, `link`); `alias` the local name later operations use as a relation target.
  */
 export interface ProposalComputationOperation {
   op: "create" | "update" | "link";
@@ -16,25 +15,21 @@ export interface ProposalComputationOperation {
   properties?: Record<string, unknown>;
   relations?: Record<string, Array<string | { alias: string }>>;
   /**
-   * Set only by the duplicate step of the computation (issue gh-1992), on the `update` that stands for the proposal's
-   * own record when an existing company or person was found: `buildProposalSteps` then makes this operation the
-   * primary step. It is never read from the model's answer, whose schema has no such key, and it is not copied into
-   * the stored step.
+   * Set only by the duplicate step on the `update` of an existing company or person, making it the primary step. Not
+   * in the model's answer schema and not copied into the stored step.
    */
   primary?: true;
 }
 
-/** At most this many operations of one answer are kept; the rest are dropped from the end. */
 export const MAX_PROPOSAL_OPERATIONS = 6;
 
-/** A database the Inbox may propose into, by its module id. */
 export interface WritableProposalTarget {
   moduleId: string;
   databaseId: string;
   name: string;
 }
 
-/** The non-archived system databases a proposal may write to (the Inbox's own databases are read-only for it). */
+/** The non-archived system databases a proposal may write to (the Inbox's own are read-only for it). */
 export async function listWritableProposalTargets(client: PoolClient): Promise<WritableProposalTarget[]> {
   const databases = await databasesStore.listAllDatabases(client);
   return databases.flatMap((database) =>
@@ -48,9 +43,8 @@ export async function listWritableProposalTargets(client: PoolClient): Promise<W
 }
 
 /**
- * The steps of a multi-step envelope: refs are the aliases (or `op<n>`), the primary is the operation marked
- * `primary`, else the first `create` into the type's target database (else the first operation, which validation
- * then rejects as not mirroring the top level). Only shapes are built here; validation is `assertValidProposalEnvelope`'s.
+ * Builds multi-step envelope steps: refs are the aliases (or `op<n>`); the primary is the operation marked `primary`,
+ * else the first `create` into the type's target, else the first operation (which validation then rejects).
  */
 export function buildProposalSteps(
   operations: ProposalComputationOperation[],

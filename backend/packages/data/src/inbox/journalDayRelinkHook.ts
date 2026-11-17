@@ -1,9 +1,6 @@
-// The choke point's item-create hook (registered by `../domainWriteHooks.ts`) that re-links a trashed Journal day's
-// Inbox items to the day's new entry (issue #1603). A trashed entry keeps its `journalDay` edges, and the next write
-// for that day creates a different entry, so without this the day's Inbox items would drop out of its Inbox section.
-// The hook belongs to the Inbox module because the edge and its relation context belong to Inbox. It runs inside the
-// create's transaction after a real insert and never on an idempotency replay, so every caller that creates a day
-// entry through the choke point is covered. See docs/adr/2026-10-09-item-create-domain-hooks.md.
+// A trashed Journal day entry keeps its `journalDay` edges, and the next write for that day creates a different entry,
+// so this hook moves the day's Inbox items to the new entry. It belongs to Inbox because the edge and its relation
+// context do. Runs in the create's transaction after a real insert, never on an idempotency replay.
 import type { ItemCreateHook } from "../chokePoint/hooks.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -15,15 +12,10 @@ import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { enqueueJournalInboxRecompute } from "./journalInboxCompute.js";
 
-/** The same Inbox process identity Inbox capture writes the `journalDay` edge with (`inboxCreateHook.ts`). */
+/** The identity Inbox capture writes the `journalDay` edge with. */
 const INBOX_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: INBOX_MODULE_ID };
 
-/**
- * For a new Journal entry of `type = day`: finds the trashed day entries with the same `period`, moves the
- * `journalDay` edge of each of their live Inbox items to the new entry (delete, then create, with the Inbox context)
- * and enqueues the Inbox recompute for the new entry and for every old entry that lost an item, so the old cached
- * lists are emptied. Writes nothing when no trashed entry of the period exists or none of them has live Inbox items.
- */
+/** Recomputes the new entry and every old entry that lost an item, so stale cached lists are emptied. */
 export const journalDayRelinkItemCreateHook: ItemCreateHook = async ({ client, database, item, properties }) => {
   const period = properties.period;
   if (database.ownerModuleId !== JOURNAL_MODULE_ID || properties.type !== "day" || typeof period !== "string") return;

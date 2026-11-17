@@ -65,8 +65,8 @@ export async function resolveGuidanceDriftFinding(
     userId: input.actorUserId,
     at,
   });
-  // Every choice ends the finding for good (`upsertActive` never reactivates a decided finding), so its problem
-  // closes with it in this transaction; a dismissed finding is not a recovery, but nothing else could close it.
+  // Every choice ends the finding for good (`upsertActive` never reactivates a decided one), so its problem closes
+  // here too; a dismissal is not a recovery, but nothing else could close it.
   await resolveGuidanceDriftProblem(tx, { projectItemId: projectId, fingerprint: row.fingerprint });
   await writeNotification(tx, {
     userId: guidance.ownerUserId,

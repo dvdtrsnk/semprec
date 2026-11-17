@@ -4,10 +4,7 @@ import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { readCalendarCancellationImpact, type CalendarCancellationImpact } from "./calendarCancellationImpact.js";
 
-/**
- * Duck-typed the same way `eventParticipantsRouteHandlers.ts` is: matches `semprec-api`'s `AdapterRequestContext`
- * structurally, with no dependency on that service's HTTP types.
- */
+/** Matches `semprec-api`'s `AdapterRequestContext` structurally, without depending on its HTTP types. */
 interface CalendarCancellationImpactRouteRequestContext {
   params: Record<string, string>;
 }
@@ -15,11 +12,8 @@ interface CalendarCancellationImpactRouteRequestContext {
 const calendarIdSchema = z.uuid();
 
 /**
- * `GET /api/calendar/calendars/:id/cancellation-impact` (issue gh-2003): `{ eventCount, recipientCount,
- * cancellationCount }` for deleting the calendar, as `readCalendarCancellationImpact` describes them. The route
- * only reports: it changes nothing, and the delete asks for no confirmation flag. The read runs in the caller's
- * tenant scope, so a calendar that is unknown, in the Trash or another tenant's answers with the same `not_found`
- * body. An `id` that is not a UUID is `validation_failed` on `id`.
+ * `GET /api/calendar/calendars/:id/cancellation-impact`. Only reports; the delete asks for no confirmation flag.
+ * Runs in the caller's tenant scope, so an unknown, trashed or other tenant's calendar is the same `not_found`.
  */
 export function createCalendarCancellationImpactRouteHandler(pool: Pool) {
   return async (

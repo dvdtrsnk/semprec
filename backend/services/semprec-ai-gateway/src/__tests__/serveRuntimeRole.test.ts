@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 
-/**
- * Issue #1051: `serve.ts` refuses to start under a superuser database role before it touches the
- * pool, so the superuser `TEST_DATABASE_URL` must reject with `RuntimeRoleAssertionError` and leave
- * no `process_heartbeats` row behind for this process.
- */
+/** `serve.ts` refuses a superuser role before touching the pool, leaving no `process_heartbeats` row. */
 describe("serve.ts startup runtime role check", () => {
   const ORIGINAL_ENV = { ...process.env };
 

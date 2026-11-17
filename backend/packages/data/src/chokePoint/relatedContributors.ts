@@ -1,9 +1,6 @@
-// The registry of extra rows a module adds to the related collections of one record type (issue #1839,
-// `relation.related`). A module registers a function for the key of a database; `listRelatedWithClient` calls the
-// functions registered for the viewed record's database and lists the rows they return with its own. The registry
-// is empty in this issue: the mail thread counts of people (#1874) register the first contributor. The shape of the
-// registry, the replace-the-row rule, the read-only contract of the supplied client and where a module registers are
-// decided in docs/adr/2026-11-13-related-rows-are-contributed-through-a-per-process-registry.md.
+// The registry of extra rows a module adds to the related collections of one record type, keyed by
+// database key. `listRelatedWithClient` lists the rows returned by the contributors registered for the
+// viewed record's database alongside its own.
 import type { PoolClient } from "pg";
 import type { FilterNode } from "../views/filterTree.js";
 
@@ -12,13 +9,12 @@ export interface RelatedCollectionRow {
   databaseKey: string | null;
   databaseId: string;
   count: number;
-  /** Whether the records are connected to the viewed record itself (`direct`) or through a project of it (`project`). */
+  /** Whether the records connect to the viewed record itself or through one of its projects. */
   via: "direct" | "project";
-  /** The filter tree that selects exactly the counted records in a query of the database; `null` when none can. */
+  /** Selects exactly the counted records in a query of the database; `null` when none can. */
   filter: FilterNode | null;
 }
 
-/** The record a contributor is asked about, and the transaction it reads in. */
 export interface RelatedContributorContext {
   client: PoolClient;
   itemId: string;
@@ -27,18 +23,15 @@ export interface RelatedContributorContext {
 }
 
 /**
- * Returns the extra row for the record, or `null` for none. The row replaces the row the generic read built for the
- * same database; it still goes through the exclusion of empty, archived, internal and unreadable collections, the
- * order and the agent's grants like every other row.
+ * Returns the extra row for the record, or `null`. It replaces the generic row for the same database
+ * and still goes through the exclusion of empty, archived, internal and unreadable collections, the
+ * ordering and the agent's grants.
  */
 export type RelatedRowContributor = (context: RelatedContributorContext) => Promise<RelatedCollectionRow | null>;
 
 const contributorsByDatabaseKey = new Map<string, RelatedRowContributor[]>();
 
-/**
- * Registers `contributor` for records of the database with key `databaseKey`. Returns the function that removes it
- * again.
- */
+/** Returns the function that unregisters `contributor`. */
 export function registerRelatedRowContributor(databaseKey: string, contributor: RelatedRowContributor): () => void {
   const registered = contributorsByDatabaseKey.get(databaseKey) ?? [];
   contributorsByDatabaseKey.set(databaseKey, [...registered, contributor]);
@@ -49,7 +42,7 @@ export function registerRelatedRowContributor(databaseKey: string, contributor: 
   };
 }
 
-/** The contributors registered for the database key, in registration order. */
+/** In registration order. */
 export function relatedRowContributorsFor(databaseKey: string): readonly RelatedRowContributor[] {
   return contributorsByDatabaseKey.get(databaseKey) ?? [];
 }

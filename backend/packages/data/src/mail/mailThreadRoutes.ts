@@ -80,11 +80,7 @@ export function createMailThreadListRouteHandler(pool: Pool) {
   };
 }
 
-/**
- * `GET /api/mail/threads/:threadId[?allowRemoteImages=true]` (issue #1632). Remote images are an
- * explicit opt-in: only `true` allows them, `false` or no parameter keeps them stripped, anything
- * else is a 400.
- */
+/** Remote images are an explicit opt-in: only `true` allows them, anything other than `false` or absent is a 400. */
 export function createMailThreadDetailRouteHandler(pool: Pool) {
   return async (ctx: { req: { url?: string }; params: Record<string, string> }) => {
     const threadId = z.uuid().safeParse(ctx.params.threadId);
@@ -100,11 +96,9 @@ export function createMailThreadDetailRouteHandler(pool: Pool) {
 }
 
 /**
- * `GET /api/mail/threads/facets[?areaId=<uuid>][&projectId=<uuid>]` (issue gh-1747): the thread counts
- * of the mailbox filter bar, per area and per project, from one statement (`readMailThreadFacets`).
- * The selected project narrows the area counts and the selected area narrows the project counts. A
- * value that is not a UUID is a 400 naming its parameter. An id that names no project or area of the
- * caller's tenant selects no thread and is no error.
+ * Thread counts of the mailbox filter bar in one statement. The selected project narrows the area
+ * counts and the selected area narrows the project counts. An id of no project or area in the caller's
+ * tenant selects no thread and is no error.
  */
 export function createMailThreadFacetsRouteHandler(pool: Pool) {
   return async (ctx: { req: { url?: string } }): Promise<{ status: number; body: MailThreadFacets }> => {
@@ -123,23 +117,13 @@ export function createMailThreadFacetsRouteHandler(pool: Pool) {
 const readBodySchema = z.object({ read: z.boolean() }).strict();
 
 /**
- * `POST /api/mail/threads/:threadId/read` with the body `{ read: boolean }` (issue gh-1865): marks the
- * conversation read or unread in one transaction and answers `{ threadId, unread }`, the thread id after
- * the translation of a merged id (issue #1493) and the thread's unread state once the writes are done
- * (`readMailThreadUnread`, the value the thread detail reports). A thread id that is no UUID and a body that is anything but that object
- * are 400s; an unknown id, another tenant's id and a thread without a live message are the same 404.
+ * `read: true` sets `read` on every incoming copy in every mailbox; `read: false` only on the copies of
+ * the last incoming message. Non-incoming copies (own mail, Sent, Drafts) are never written. The server
+ * loads the versions, so the last write wins.
  *
- * `read: true` sets `read` on every incoming copy of the thread, in every mailbox. `read: false` sets it
- * on the copies of the last incoming message only (`listMailThreadActionMessages`). A copy that is not
- * incoming (the user's own mail, anything in Sent or Drafts) is never written. The server loads the
- * versions, so a request carries none and the last write wins.
- *
- * The transaction starts with the tenant's mail-thread guard (`resolveMailThreadForAction`, see
- * [[2026-11-13-mail-thread-actions-take-the-thread-guard-before-their-item-locks]]). Each copy is locked, in
- * item id order, and written only when the locked row's `read` differs from the
- * requested value; the write is `updateItemWithClient` as the session's user, so the Emails flag hook
- * records the desired state and queues the mailbox sync (issue #1494). After the commit the route sends
- * one `mailThread` invalidation, also when every copy already matched; a rolled-back request sends none.
+ * The transaction starts with the tenant's mail-thread guard; each copy is then locked in item id order
+ * and written as the session's user only when its `read` differs, so the Emails flag hook queues the
+ * mailbox sync. One `mailThread` invalidation is sent after commit, none on rollback.
  */
 export function createMailThreadReadRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
@@ -163,8 +147,8 @@ export function createMailThreadReadRouteHandler(pool: Pool) {
       const targets = messages.filter(
         (message) => message.incoming && (read || message.messageId === lastIncomingMessageId),
       );
-      // The guard `resolveMailThreadForAction` took serializes this request with a reconcile pass and with every
-      // other thread action, so the copies, locked in item id order, are never locked against another order.
+      // The thread guard serializes this with reconcile and every other thread action, so the item-id-ordered
+      // copy locks never meet another lock order.
       for (const target of targets) {
         const locked = await lockItemForObservedMailFlags(client, emailsDatabaseId, target.itemId);
         if (locked === null || locked.deletedAt !== null || (locked.properties[READ_PROPERTY_KEY] === true) === read)
@@ -185,23 +169,9 @@ export function createMailThreadReadRouteHandler(pool: Pool) {
 const flagBodySchema = z.object({ flagged: z.boolean() }).strict();
 
 /**
- * `POST /api/mail/threads/:threadId/flag` with the body `{ flagged: boolean }` (issue gh-1893): flags or unflags
- * the conversation in one transaction and answers `{ threadId, flagged }`, the thread id after the translation of a
- * merged id (issue #1493) and whether the thread is flagged once the writes are done (`readMailThreadFlagged`, the
- * value the thread detail reports). A thread id that is no UUID and a body that is anything but that object are 400s;
- * an unknown id, another tenant's id and a thread without a live message are the same 404.
- *
- * `flagged: true` sets `flagged` on the copies of the last incoming message (`listMailThreadActionMessages`): that
- * message in every mailbox it was delivered to. A thread without an incoming message has nothing to flag, so the call
- * writes nothing and answers the state the thread already had. `flagged: false` clears `flagged` on every live copy of the thread,
- * the user's own mail, Sent and Drafts included. The server loads the versions, so a request carries none and the
- * last write wins.
- *
- * Like the read route, the transaction starts with the tenant's mail-thread guard (`resolveMailThreadForAction`).
- * Each copy is locked, in item id order, and written only when the locked row's `flagged` differs from the requested
- * value; the write is `updateItemWithClient` as the session's user, so the Emails flag hook records the desired state
- * and queues the mailbox sync (issue #1494). After the commit the route sends one `mailThread` invalidation, also when
- * every copy already matched; a rolled-back request sends none.
+ * `flagged: true` flags the copies of the last incoming message (nothing to flag without one);
+ * `flagged: false` clears every live copy, own mail, Sent and Drafts included. Locking, writing and
+ * invalidation follow the read route.
  */
 export function createMailThreadFlagRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
@@ -225,8 +195,7 @@ export function createMailThreadFlagRouteHandler(pool: Pool) {
       const targets = messages.filter(
         (message) => !flagged || (message.incoming && message.messageId === lastIncomingMessageId),
       );
-      // The guard `resolveMailThreadForAction` took serializes this request with a reconcile pass and with every
-      // other thread action, so the copies, locked in item id order, are never locked against another order.
+      // Same guard and lock order as the read route.
       for (const target of targets) {
         const locked = await lockItemForObservedMailFlags(client, emailsDatabaseId, target.itemId);
         if (
@@ -249,12 +218,8 @@ export function createMailThreadFlagRouteHandler(pool: Pool) {
 }
 
 /**
- * Runs one thread move in one transaction and answers `{ threadId, moved }`: the thread id after the translation of a
- * merged id (issue #1493) and the number of copies moved. `select` chooses the copies and, for each, the purpose of the
- * folder it moves to in its own mailbox. The transaction starts with the tenant's mail-thread guard
- * (`resolveMailThreadForAction`); the 409 cases of `select`, of the target folders and of the sources of the moves are decided
- * before the first write, so a refused call changes nothing. After the commit it sends one `mailThread` invalidation, also when
- * nothing needed to move; a rolled-back request sends none.
+ * One thread move in one transaction under the tenant's mail-thread guard. Every 409 is decided before
+ * the first write, so a refused call changes nothing. One `mailThread` invalidation after commit.
  */
 async function moveMailThread(
   pool: Pool,
@@ -275,13 +240,9 @@ async function moveMailThread(
 }
 
 /**
- * `POST /api/mail/threads/:threadId/archive` (issue gh-1917): moves the conversation's copies that are in an Inbox
- * folder to the Archive folder of their own mailbox (for a Gmail API mailbox its synthetic Archive), in every account,
- * and answers `{ threadId, moved }`. Copies in any other folder and drafts stay where they are, and a thread with no
- * copy in an Inbox answers `moved: 0`. A mailbox that holds such a copy and has no Archive folder fails the whole
- * call with 409 `mail_archive_folder_missing` and nothing changes. A thread id that is no UUID is a 400; an unknown id,
- * another tenant's id and a thread without a live message are the same 404. For each moved copy the move is recorded
- * as a pending move and its mailbox sync is enqueued (`applyMailThreadMoves`); nothing is deleted.
+ * Moves the copies in an Inbox to their own mailbox's Archive (a Gmail API mailbox's synthetic one).
+ * A mailbox without an Archive fails the whole call with 409 `mail_archive_folder_missing`. Moves are
+ * recorded as pending and synced later; nothing is deleted.
  */
 export function createMailThreadArchiveRouteHandler(pool: Pool) {
   return (ctx: { params: Record<string, string> }) =>
@@ -289,12 +250,9 @@ export function createMailThreadArchiveRouteHandler(pool: Pool) {
 }
 
 /**
- * `POST /api/mail/threads/:threadId/trash` (issue gh-1917): moves every counted copy of the conversation that is not
- * already in Trash to the Trash folder of its own mailbox, in every account, and answers `{ threadId, moved }`. Drafts
- * stay where they are. A thread whose counted copies are all in Trash or Junk fails with 409
- * `mail_thread_already_trashed`, a mailbox that holds a copy to move and has no Trash folder with 409
- * `mail_trash_folder_missing`, and in both cases nothing changes. The status codes for a bad, unknown or foreign thread
- * id, the recording of the moves and the invalidation are those of the archive route; nothing is deleted permanently.
+ * Moves every counted copy not yet in Trash to its mailbox's Trash; drafts stay. 409
+ * `mail_thread_already_trashed` when all counted copies are in Trash or Junk, 409
+ * `mail_trash_folder_missing` when a mailbox has no Trash.
  */
 export function createMailThreadTrashRouteHandler(pool: Pool) {
   return (ctx: { params: Record<string, string> }) =>
@@ -302,14 +260,9 @@ export function createMailThreadTrashRouteHandler(pool: Pool) {
 }
 
 /**
- * `POST /api/mail/threads/:threadId/restore` (issue gh-2033): moves the conversation's copies that are in an Archive or
- * Trash folder back, in every account: an incoming copy to the Inbox folder of its own mailbox, the user's own copy to
- * its Sent folder (`selectMailThreadRestoreMoves`), and answers `{ threadId, moved }`. Copies in any other folder, Junk
- * included, and drafts stay where they are. A thread with no copy in Archive or Trash fails with 409
- * `mail_thread_not_archived_or_trashed`, a mailbox without the folder a copy needs with 409
- * `mail_inbox_folder_missing` or `mail_sent_folder_missing`, and in each case nothing changes. The status codes for a
- * bad, unknown or foreign thread id, the recording of the moves (desired purpose `inbox` or `sent`) and the
- * invalidation are those of the archive route.
+ * Moves copies in Archive or Trash back: incoming ones to Inbox, the user's own to Sent; Junk and drafts
+ * stay. 409 `mail_thread_not_archived_or_trashed`, `mail_inbox_folder_missing` or
+ * `mail_sent_folder_missing`, each changing nothing.
  */
 export function createMailThreadRestoreRouteHandler(pool: Pool) {
   return (ctx: { params: Record<string, string> }) =>

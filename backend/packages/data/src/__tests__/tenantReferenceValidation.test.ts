@@ -23,7 +23,6 @@ let chokePoint: ChokePoint;
 let tenantA: string;
 let tenantB: string;
 
-/** Fixtures that live in one tenant: a database with a live item, plus a soft-deleted item. */
 interface TenantFixture {
   databaseId: string;
   itemId: string;
@@ -40,7 +39,6 @@ async function seedTenant(tenantId: string): Promise<TenantFixture> {
   });
 }
 
-/** Runs `fn` expecting a ValidationError and returns it. */
 async function validationError(fn: () => Promise<unknown>): Promise<ValidationError> {
   const error: unknown = await fn().then(
     () => undefined,
@@ -50,7 +48,6 @@ async function validationError(fn: () => Promise<unknown>): Promise<ValidationEr
   return error as ValidationError;
 }
 
-/** Asserts every error is byte-identical in message and details, and returns the first. */
 function expectIdentical(errors: ValidationError[]): ValidationError {
   const [first, ...rest] = errors;
   for (const error of rest) {

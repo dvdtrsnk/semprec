@@ -1,10 +1,5 @@
-// The heartbeat action that applies the iMIP `REPLY` of a new email to the invitation on a participant edge of an Event
-// (issue gh-1950). Mail ingest writes nothing to calendar data: the calendar module reacts to the new Emails item
-// instead, the way `calendar.ingestInvitation` does. The `invitation` object of an edge is the calendar module's to
-// write, with the system writer kind.
-// Constrained by: docs/adr/2026-09-10-single-writer-ownership-model.md,
-// docs/adr/2026-09-10-choke-point-api-for-state-writes.md,
-// docs/adr/2026-11-11-event-participant-invitations-are-written-by-system-writers.md
+// Applies the iMIP `REPLY` of a new email to the invitation on an Event's participant edge. The edge's
+// `invitation` object is the calendar module's to write, with the system writer kind.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -25,16 +20,14 @@ import { logger } from "./logger.js";
 
 export const CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID = "calendar.applyInvitationReply";
 
-/** The `action_config` of the heartbeat: the three databases the action reads, resolved once at seed time. */
+/** The database ids are resolved once at seed time. */
 const configSchema = z.object({
   emailsDatabaseId: z.uuid(),
   eventsDatabaseId: z.uuid(),
   peopleDatabaseId: z.uuid(),
 });
 
-/**
- * The reply heartbeat, created by `seedInvitationsDatabaseInTransaction`: an `onItemEvent` create rule on the Emails database, owned by `projectItemId`, the system project of the Invitations database.
- */
+/** `projectItemId` is the system project of the Invitations database. */
 export function invitationReplyHeartbeat(input: {
   projectItemId: string;
   emailsDatabaseId: string;
@@ -54,21 +47,20 @@ export function invitationReplyHeartbeat(input: {
   };
 }
 
-/** Logs that a reply, or part of one, was left unapplied: the email item id and a reason code, nothing of its content. */
+/** Logs nothing of the reply's content. */
 function logIgnored(emailItemId: string, reason: string): void {
   logger.info({ emailItemId, reason }, "calendar invitation reply ignored");
 }
 
 type InvitationStatus = "accepted" | "tentative" | "declined";
 
-/** The `PARTSTAT` values that change a status; `NEEDS-ACTION`, `DELEGATED` and every other value are ignored. */
+/** Every other `PARTSTAT` (`NEEDS-ACTION`, `DELEGATED`, ...) is ignored. */
 const STATUS_OF_PARTSTAT: ReadonlyMap<string, InvitationStatus> = new Map([
   ["ACCEPTED", "accepted"],
   ["TENTATIVE", "tentative"],
   ["DECLINED", "declined"],
 ]);
 
-/** One answer a message carries: the Event `UID`, the address that answered and what it answered. */
 interface Reply {
   uid: string;
   attendeeAddress: string;
@@ -76,10 +68,8 @@ interface Reply {
 }
 
 /**
- * The answers in the calendar parts `texts` of a message that may be applied: one per `ATTENDEE` of a `METHOD:REPLY`
- * event whose address is the message's sender and whose `PARTSTAT` is one of the three that change a status.
- * Everything else is logged with a reason code and left out. An event with a `RECURRENCE-ID` answers one occurrence of a series, which the
- * Event's single participant edge cannot record, so it is left out as well.
+ * Only `ATTENDEE`s whose address is the message's sender count. An event with a `RECURRENCE-ID` answers one
+ * occurrence, which the Event's single participant edge cannot record, so it is skipped.
  */
 function collectReplies(emailItemId: string, senderAddress: string | null, texts: readonly string[]): Reply[] {
   const replies: Reply[] = [];
@@ -118,19 +108,9 @@ interface ApplyContext {
 }
 
 /**
- * Applies one answer inside the caller's transaction. The Event row is locked first, as every participant edge write
- * does, then the person's row, so the edge read below is the edge the write replaces. Writes nothing, with the reason
- * code logged, when:
- *
- * - no live Event has the `UID` (`unknown_uid`), or more than one has (`ambiguous_uid`);
- * - no live person has the address (`unknown_attendee`);
- * - the person has no edge to the Event, or the edge has no invitation (`not_invited`);
- * - the invitation already has the status (`unchanged`), which keeps its `respondedAt` and makes a second run of the
- *   same message a no-op. The check compares the status only, so a later, different message that repeats the status
- *   keeps the first `respondedAt` too: `respondedAt` is the time the current status was first recorded, and only a
- *   change of status moves it.
- *
- * Otherwise the edge's metadata is replaced with itself, the invitation changed only in `status` and `respondedAt`.
+ * The Event row is locked first, as every participant edge write does, then the person's row, so the edge read
+ * below is the edge the write replaces. An unchanged status is skipped, so `respondedAt` is when the current status
+ * was first recorded and a rerun of the same message is a no-op.
  */
 async function applyReply(client: PoolClient, context: ApplyContext, reply: Reply): Promise<void> {
   const ignore = (reason: string): void => logIgnored(context.emailItemId, reason);
@@ -188,25 +168,9 @@ async function applyReply(client: PoolClient, context: ApplyContext, reply: Repl
 }
 
 /**
- * Registered as the `onItemEvent` ('create') heartbeat action `calendar.applyInvitationReply` on the Emails database:
- * reads the calendar parts of the new message and, for each `METHOD:REPLY` event among them, sets `status` and
- * `respondedAt` of the invitation on the participant edge of the answering person, as `applyReply` describes.
- *
- * A reply is applied only when the `ATTENDEE` address and the message's own sender (`envelope.from`) are the same
- * address in any letter case, the address belongs to a person who has an edge with an invitation to the Event with the
- * `UID`, and the `PARTSTAT` is `ACCEPTED`, `TENTATIVE` or `DECLINED` (stored as `accepted`, `tentative`, `declined`).
- * The `SEQUENCE` is not compared, so the latest reply processed wins; a reply that repeats the stored status leaves
- * the invitation, `respondedAt` included, as it is. Delivery authenticity (SPF, DKIM) is not
- * checked. The edge is written with the system writer kind through the choke point's relation write, in one transaction
- * per message that also holds the Emails row lock.
- *
- * Nothing is written, and the action does not fail, for a message of kind `dsn`, one without a calendar part, a part
- * the parser rejects, a calendar with another `METHOD`, a message that is trashed or gone by the time the transaction
- * locks it, and every case `applyReply` and `collectReplies` list. A failure of the storage read or of a write does
- * fail the action. Logs carry the email item id and a reason code only, never calendar content or addresses.
- *
- * The parts are read before the transaction opens, so no transaction waits on storage. Runs in the firing heartbeat's
- * tenant, so every read and write is confined to its rows.
+ * `SEQUENCE` is not compared, so the latest reply processed wins. Delivery authenticity (SPF, DKIM) is not checked.
+ * One transaction per message, holding the Emails row lock; the parts are read before it opens, so no transaction
+ * waits on storage. Logs never carry calendar content or addresses.
  */
 export function createInvitationReplyAction(
   pool: Pool,

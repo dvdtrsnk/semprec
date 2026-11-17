@@ -15,17 +15,13 @@ async function migrate(input: MigrateItemPropertyInput): Promise<void> {
   await withTransaction(pool, (client) => migrateItemPropertyWithClient(client, input));
 }
 
-/** Reads the row whether or not it is soft-deleted, which `chokePoint.getItem` does not. */
 async function readItem(databaseId: string, itemId: string): Promise<ItemRow> {
   const item = await getItemById(pool, databaseId, itemId);
   if (!item) throw new Error(`item ${itemId} not found`);
   return item;
 }
 
-/**
- * Reads `updated_at` at full microsecond precision. `ItemRow.updatedAt` is truncated to milliseconds,
- * so two writes within one millisecond would compare equal there even though the column advanced.
- */
+/** Reads `updated_at` at full microsecond precision; `ItemRow.updatedAt` is truncated to milliseconds. */
 async function readUpdatedAt(databaseId: string, itemId: string): Promise<string> {
   const { rows } = await pool.query<{ updated_at: string }>(
     "SELECT updated_at::text AS updated_at FROM items WHERE database_id = $1 AND id = $2",

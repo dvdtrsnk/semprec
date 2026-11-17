@@ -4,11 +4,7 @@ import { withTransaction } from "../db/pool.js";
 import { registerPushSubscription, revokePushSubscription } from "./pushSubscriptionActions.js";
 import { ValidationError } from "../errors.js";
 
-/**
- * The custom-route handler shape this file's exports are cast to by `semprec-api`'s mount
- * (issue #239) — duck-typed here, same as `inboxRouteHandlers.ts`, so this package has no
- * reason to import that service's HTTP types.
- */
+/** Duck-typed custom-route context so this package need not import `semprec-api`'s HTTP types. */
 interface CustomRouteRequestContext {
   params: Record<string, string>;
   body: unknown;
@@ -17,11 +13,7 @@ interface CustomRouteRequestContext {
 
 type CustomRouteResult = { status: number; body: unknown };
 
-/**
- * `push_subscriptions.id` is a `uuid` column — a malformed path id must fail as a 400 here rather
- * than reach Postgres, which would throw `22P02 invalid input syntax for type uuid` and surface
- * as a 500. Same check as `transcriptionRouteHandlers.ts`.
- */
+/** A malformed id must 400 here rather than reach Postgres as a `22P02` 500. */
 const subscriptionIdSchema = z.string().uuid();
 
 function requireBodyObject(body: unknown): Record<string, unknown> {
@@ -31,12 +23,7 @@ function requireBodyObject(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
-/**
- * `POST /api/push-subscriptions` (issue #239's custom-route registration of #150's
- * `registerPushSubscription`) — a cross-database write binding the new row to the caller's own
- * session in one transaction, the "transactional semantics" justification. Thin mapping only:
- * every validation/channel rule lives in `registerPushSubscription` itself.
- */
+/** `POST /api/push-subscriptions`: thin mapping; binds the row to the caller's session in one transaction. */
 export function createRegisterPushSubscriptionRouteHandler(pool: Pool) {
   return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
     const body = requireBodyObject(ctx.body);
@@ -57,11 +44,7 @@ export function createRegisterPushSubscriptionRouteHandler(pool: Pool) {
   };
 }
 
-/**
- * `POST /api/push-subscriptions/:id/revoke` (issue #239's custom-route registration of #150's
- * `revokePushSubscription`) — an explicit revocation scoped to the caller's own subscriptions,
- * committed in its own transaction.
- */
+/** `POST /api/push-subscriptions/:id/revoke`: scoped to the caller's own subscriptions. */
 export function createRevokePushSubscriptionRouteHandler(pool: Pool) {
   return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
     const parsedId = subscriptionIdSchema.safeParse(ctx.params.id);

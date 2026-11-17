@@ -38,7 +38,6 @@ import {
 } from "../testSupport/testDb.js";
 import { createApiCoreTaskList } from "../worker.js";
 
-/** The seeded ids every fixture shares, read per tenant. */
 interface MailIds {
   mailboxes: string;
   folders: string;
@@ -51,7 +50,6 @@ interface MailIds {
 
 type FolderPurpose = "inbox" | "archive" | "drafts" | "junk";
 
-/** A Mailboxes item with the four Folders a test files mail into. */
 type TestMailbox = { id: string } & Record<FolderPurpose, string>;
 
 /** How one item stands after the job: live, trashed with the mailbox's deletion time, or trashed at a time of its own. */
@@ -65,7 +63,6 @@ let chokePoint: ChokePoint;
 let tenant: string;
 /** The item whose trash the test delete hook refuses, to interrupt a run; registered once for the file. */
 let veto: string | null = null;
-/** The storage keys the attachment writer was asked to delete. */
 let deletedStorageKeys: string[] = [];
 
 const storage: BlobStorageWriter = {
@@ -109,7 +106,6 @@ async function loadIds(client: PoolClient): Promise<MailIds> {
   };
 }
 
-/** A Mailboxes item and its folders, each linked to it through the production folder edge. */
 async function createMailbox(client: PoolClient, ids: MailIds, name: string): Promise<TestMailbox> {
   const mailbox = await createItemWithClient(client, {
     databaseId: ids.mailboxes,
@@ -147,7 +143,7 @@ function attachment(filename: string): ClassifiedAttachment {
   };
 }
 
-/** One message through the production ingest writer. A repeated `messageId` in the same mailbox joins the same Email, as sync does. */
+/** A repeated `messageId` in the same mailbox joins the same Email, as sync does. */
 function ingest(
   client: PoolClient,
   ids: MailIds,
@@ -173,9 +169,8 @@ function ingest(
 }
 
 /**
- * The Threads item an `ingestAttachments` call for a draft hangs its files on. A draft has no thread, and no production
- * caller ingests attachments for one, so this stands for the thread item of the message the fixture models: a bare
- * Threads item with no `mail_threads` row, which no thread count or thread cleanup sees.
+ * A bare Threads item with no `mail_threads` row, standing in for a draft's thread: no thread count or
+ * thread cleanup sees it.
  */
 async function newThreadsItemFor(client: PoolClient): Promise<string> {
   const threads = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
@@ -188,7 +183,7 @@ async function newThreadsItemFor(client: PoolClient): Promise<string> {
   return item.id;
 }
 
-/** A draft through the production draft writer, with no Message-ID and so no thread, as an unsent draft has. */
+/** No Message-ID, so no thread, as an unsent draft has. */
 async function createDraft(
   client: PoolClient,
   ids: MailIds,
@@ -216,7 +211,6 @@ async function createDraft(
   return draft.id;
 }
 
-/** Soft-deletes one item through the choke point, at a time of its own, and fails if nothing was deleted. */
 async function softDelete(databaseId: string, itemId: string, tenantId = tenant): Promise<void> {
   const deleted = await runInTenant(tenantId, () => chokePoint.softDeleteItem(databaseId, itemId));
   if (deleted === null) throw new Error(`item ${itemId} was not soft-deleted`);
@@ -232,10 +226,7 @@ function runJob(mailboxItemId: string, options: { chunkSize?: number } = {}, ten
   return runInTenant(tenantId, () => handleMailboxRemovalTask(runtime, { mailboxItemId }, options));
 }
 
-/**
- * Each item's standing against mailbox `mailboxId`, compared by Postgres at the column's full precision,
- * with the columns a rerun must leave alone. Read in `tenantId`'s scope.
- */
+/** Compared by Postgres at the column's full precision, with the columns a rerun must leave alone. */
 async function standings(
   mailboxId: string,
   itemIds: string[],
@@ -272,7 +263,6 @@ function allStanding(ids: string[], standing: Standing): Record<string, Standing
   return Object.fromEntries(ids.map((id) => [id, standing]));
 }
 
-/** The inbox thread list as the route reads it: each listed thread's id and message count. */
 function listedThreads(tenantId = tenant): Promise<Array<{ threadId: string; messageCount: number }>> {
   return inTenant(async (client) => {
     const threads = await listMailThreads(client, 200, null, {
@@ -285,7 +275,6 @@ function listedThreads(tenantId = tenant): Promise<Array<{ threadId: string; mes
   }, tenantId);
 }
 
-/** The ids the generic list of `databaseId` returns, which leaves trashed items out. */
 function listedItemIds(databaseId: string, tenantId = tenant): Promise<string[]> {
   return inTenant(async (client) => {
     const page = await listItems(client, databaseId, { limit: 200 });
@@ -306,7 +295,6 @@ async function threadOf(itemId: string): Promise<string> {
   return threadId;
 }
 
-/** The queued jobs under one key, from Graphile Worker's public `jobs` view. */
 async function queuedJobs(jobKey: string): Promise<Array<{ task_identifier: string; queue_name: string | null }>> {
   const { rows } = await admin.query<{ task_identifier: string; queue_name: string | null }>(
     "SELECT task_identifier, queue_name FROM graphile_worker.jobs WHERE key = $1",
@@ -445,7 +433,6 @@ describe("mailboxRemoval job (gh-2029)", () => {
     ]);
     expect(listed.map((thread) => thread.threadId).sort()).toEqual([sharedThread, otherThread].sort());
 
-    // The generic lists leave the trashed folders and messages out and keep the other mailbox's.
     const otherFolders = [other.inbox, other.archive, other.drafts, other.junk];
     expect((await listedItemIds(ids.folders)).sort()).toEqual([...otherFolders].sort());
     expect((await listedItemIds(ids.emails)).sort()).toEqual(
@@ -478,10 +465,8 @@ describe("mailboxRemoval job (gh-2029)", () => {
     const jobKey = mailboxRemovalJobKey(mailbox.id);
     expect(jobKey).toBe(`mailbox-removal-${mailbox.id}`);
 
-    // The removal has to fail after its enqueue statement ran, or the test would pass for an enqueue on
-    // any connection. The enqueue is the removal's last statement, so the failure is a deferred
-    // constraint trigger: it fires at COMMIT, for the server settings row the removal deleted. No
-    // production code exposes that seam.
+    // The removal must fail after its enqueue ran, so a deferred constraint trigger fails it at COMMIT
+    // (the enqueue is the removal's last statement).
     await admin.query(`CREATE FUNCTION test_mailbox_removal_job_fail() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'test mailbox removal failure'; END $$`);
     try {
@@ -567,7 +552,6 @@ describe("mailboxRemoval job (gh-2029)", () => {
     );
     expect(await standings(mailbox.id, firstChunk)).toEqual(afterInterruption);
 
-    // A further run finds nothing left and changes no row.
     const finished = await standings(mailbox.id, [...emails, ...folders]);
     await runJob(mailbox.id, { chunkSize: 2 });
     expect(await standings(mailbox.id, [...emails, ...folders])).toEqual(finished);

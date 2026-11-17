@@ -21,13 +21,11 @@ import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID } from "../seed/inboxPipeli
 import { RECIPES_MODULE_ID } from "../seed/recipesModuleKeys.js";
 import type { ItemRow } from "../types.js";
 
-// Fixtures of the recipe proposal tests (issue gh-1974): an Inbox item typed to the Recipes database, with the photos
-// the Inbox keeps for it, and stand-ins for the gateway and for the outbound client.
+// Recipe proposal fixtures: an Inbox item typed to Recipes with its photos, plus gateway and outbound-client fakes.
 
-/** The gateway operation the writer calls. */
 export const RECIPE_GATEWAY_OPERATION = "inbox_proposal";
 
-/** A gateway that answers each call with `answer(callNumber)`; a throw is a failed call. Every call is recorded. */
+/** Answers each call with `answer(callNumber)`; a throw is a failed call. Every call is recorded. */
 export interface ScriptedGateway extends AiGatewayClientPort {
   readonly calls: AiGatewayCompletionInput[];
 }
@@ -52,7 +50,6 @@ export const failingGateway = (reason: "timeout" | "http" | "budget_exceeded" | 
     throw new AiGatewayFailedError(reason);
   });
 
-/** A recipe as the model answers it. */
 export const GOULASH_ANSWER = {
   name: "Beef goulash",
   ingredients: ["600 g beef chuck", "2 onions", "1 tbsp paprika"],
@@ -64,10 +61,10 @@ export const GOULASH_ANSWER = {
 
 export type FakeFetch = (url: string | URL, init?: RequestInit) => Promise<Response>;
 
-/** A stand-in for the outbound client: `routes` maps a URL to its response, any other URL is a failed request. */
+/** `routes` maps a URL to its response; any other URL fails. */
 export interface RoutedFetch {
   readonly fetch: FakeFetch;
-  /** Every URL requested, in order. */
+  /** In request order. */
   readonly requested: string[];
 }
 
@@ -87,41 +84,36 @@ export function routedFetch(routes: Readonly<Record<string, () => Response>>): R
 export const htmlPage = (body: string): Response =>
   new Response(body, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
 
-/** The signature of a PNG file and a few bytes, enough for the content classification of the blob store. */
+/** A PNG signature plus a few bytes, enough for the blob store's content classification. */
 export const PNG_BYTES = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
   "base64",
 );
 
-/** What `createRecipeInboxItem` made. */
 export interface RecipeInboxFixture {
   itemId: string;
   typeId: string;
   recipesDatabaseId: string;
   inboxDatabaseId: string;
-  /** The input the tick hands to the computation for the item. */
+  /** The input the tick hands to the computation. */
   input: ProposalComputationInput;
-  /** The ids of the attachments, in the order they were attached. */
+  /** In attach order. */
   attachmentIds: string[];
-  /** The blob each attachment names, in the same order. */
   attachmentBlobIds: string[];
 }
 
 export interface PhotoFixture {
-  /** The reduced copy the model reads: its bytes and the type recorded for it. */
+  /** The reduced copy the model reads. */
   reduced: { bytes: Buffer; mimeType: string } | null;
-  /** The type the attachment's own blob is stored with. */
   blobMimeType?: string;
-  /** The verified type recorded for the blob, which the Inbox judges it by instead of the stored one. */
+  /** The verified type the Inbox judges the blob by, instead of the stored one. */
   blobDetectedMimeType?: string;
 }
 
 /**
- * An Inbox item with `text`, typed (by its `type` edge) to a type whose target is the Recipes database, in the tenant `tenantId`, and the
- * input the tick would compute it with. Each of `photos` is attached and its metadata recorded: a reduced copy is
- * written to `storage` and named in the metadata, or none when `reduced` is null. Everything goes through the
- * choke point and the stores that own the rows; the attachment's own blob is a row without bytes, because only the
- * reduced copy is read.
+ * An Inbox item with `text`, typed to Recipes, plus the input the tick would compute it with. Each photo is
+ * attached with metadata; its reduced copy (unless `reduced` is null) is written to `storage`. All writes go through
+ * the owning stores; the original blob is a row without bytes, since only the reduced copy is read.
  */
 export async function createRecipeInboxItem(
   dataPool: Pool,

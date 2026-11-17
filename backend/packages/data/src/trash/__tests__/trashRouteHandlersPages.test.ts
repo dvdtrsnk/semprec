@@ -37,7 +37,6 @@ const bodySchema = z
   .strict();
 type Body = z.infer<typeof bodySchema>;
 
-/** Calls the handler as the adapter does: inside the tenant's scope, with the request URL and the caller's locale. */
 async function list(query = "", options: { tenant?: string; locale?: string } = {}): Promise<Body> {
   const result = await runInTenant(options.tenant ?? tenantId, () =>
     createTrashItemsRouteHandler(dataPool)({
@@ -55,7 +54,6 @@ function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenant = tenantId):
   return runInTenant(tenant, () => withTransaction(dataPool, fn));
 }
 
-/** A new item of the system database of `moduleId`, written through the choke point. */
 async function moduleItem(moduleId: string, properties: Record<string, unknown>, tenant = tenantId): Promise<string> {
   return runInTenant(tenant, async () => {
     const database = (await chokePoint.listDatabases()).find(
@@ -68,7 +66,6 @@ async function moduleItem(moduleId: string, properties: Record<string, unknown>,
 
 const createProject = (name: string, tenant = tenantId): Promise<string> => moduleItem("projects", { name }, tenant);
 
-/** A subpage of `parentItemId` (a host item or a page), created by the page operation like production does. */
 async function createPage(parentItemId: string, title: string, tenant = tenantId): Promise<string> {
   const created = await inTenant(
     (client) => createSubpageWithClient(client, { parent: { itemId: parentItemId }, title }, "user"),
@@ -83,7 +80,6 @@ async function renamePage(pageItemId: string, title: string): Promise<void> {
   await inTenant((client) => renamePageWithClient(client, { pageItemId, title }, "user"));
 }
 
-/** Trashes an item the way the application service does: resolve its database, then the choke point's cascade. */
 async function trash(itemId: string, tenant = tenantId): Promise<void> {
   await runInTenant(tenant, async () => {
     const item = await chokePoint.findItemIncludingDeleted(itemId);
@@ -92,10 +88,7 @@ async function trash(itemId: string, tenant = tenantId): Promise<void> {
   });
 }
 
-/**
- * Raw SQL on the superuser pool for a stored state the page operations refuse to create (a link that is not an id,
- * a cycle, a title that is not text): the item's `properties` gets `patch` merged in.
- */
+/** Superuser SQL for states page operations refuse to create (non-id link, cycle, non-text title). */
 async function forceProperties(itemId: string, patch: Record<string, unknown>): Promise<void> {
   const result = await adminPool.query("UPDATE items SET properties = properties || $2::jsonb WHERE id = $1", [
     itemId,
@@ -197,7 +190,7 @@ describe("GET /api/trash/items with pages (issue gh-1855)", () => {
 
     const body = await list();
 
-    // The parent was trashed last, so it is first; its live sibling went with it, the child kept its own epoch.
+    // The parent was trashed last, so it is first; the child kept its own epoch.
     expect(ids(body)).toEqual([parent, child]);
     expect(body.totalCount).toBe(2);
     expect(ids(body)).not.toContain(grandchild);
@@ -242,7 +235,6 @@ describe("GET /api/trash/items with pages (issue gh-1855)", () => {
     const nestedParent = await createPage(standalone, "Outer");
     const nestedChild = await createPage(nestedParent, "Inner");
     const task = await moduleItem("tasks", { name: "Pay rent" });
-    // Trashed one after the other, so the list is the reverse of this order.
     await trash(project);
     await trash(lonePage);
     await trash(nestedParent);
@@ -301,7 +293,6 @@ describe("GET /api/trash/items with pages (issue gh-1855)", () => {
 
     const body = await list();
 
-    // The host has no title-typed value here, which reads as the empty title; the project above it is not listed.
     expect(pageOf(body, page).path).toEqual([{ itemId: milestone, title: "", trashed: false }]);
   });
 
@@ -328,7 +319,6 @@ describe("GET /api/trash/items with pages (issue gh-1855)", () => {
     const outer = await createPage(project, "Outer");
     const inner = await createPage(outer, "Inner");
     await trash(inner);
-    // The page operations refuse a cycle, so the stored state is forced: outer now names inner as its parent.
     await forceProperties(outer, { parentItemId: inner });
 
     const body = await list();
@@ -341,8 +331,7 @@ describe("GET /api/trash/items with pages (issue gh-1855)", () => {
     const project = await createProject("Website");
     const head = await createPage(project, "Head");
     const pages = await runInTenant(tenantId, () => inTenant((client) => ensurePagesDatabase(client)));
-    // A 1100-deep chain would take 1100 API calls; this superuser insert builds it with one statement. Page 1's parent
-    // is the head, so page n has the ancestors p(n-1) .. p1, the head and the project: n + 1 of them.
+    // One superuser statement instead of 1100 API calls. Page n has n + 1 ancestors (p(n-1) .. p1, head, project).
     const { rows } = await adminPool.query<{ id: string; label: string }>(
       `WITH chain AS (
          SELECT n, gen_random_uuid() AS id FROM generate_series(1, 1100) AS n
@@ -360,7 +349,6 @@ describe("GET /api/trash/items with pages (issue gh-1855)", () => {
       if (!id) throw new Error(`Missing ${label}`);
       return id;
     };
-    // p999 has exactly 1000 ancestors (p998 .. p1, the head, the project), p1100 has 1101.
     await adminPool.query("UPDATE items SET deleted_at = now() WHERE id = ANY($1::uuid[])", [
       [idOf("p999"), idOf("p1100")],
     ]);
@@ -372,7 +360,7 @@ describe("GET /api/trash/items with pages (issue gh-1855)", () => {
     expect(exact[0]).toEqual({ itemId: project, title: "Website", trashed: false });
     expect(exact[1]).toEqual({ itemId: head, title: "Head", trashed: false });
     expect(exact.at(-1)).toEqual({ itemId: idOf("p998"), title: "p998", trashed: false });
-    // The cut is at the root end: the project, the head and p1 .. p99 are dropped, the nearest 1000 ancestors stay.
+    // The cut is at the root end: the nearest 1000 ancestors stay.
     const deep = pageOf(body, idOf("p1100")).path;
     expect(deep).toHaveLength(MAX_SUBPAGE_CHAIN);
     expect(deep[0]).toEqual({ itemId: idOf("p100"), title: "p100", trashed: false });

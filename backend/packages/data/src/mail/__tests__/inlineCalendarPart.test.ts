@@ -56,7 +56,6 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** A seeded tenant with one mailbox and its INBOX folder, and the ids `reconcileImapFolder` and `ingestEmailMessage` need. */
 async function setUpFolder() {
   const [emailsId, foldersId, filesId, mailboxesId] = await Promise.all([
     databaseIdFor("emails"),

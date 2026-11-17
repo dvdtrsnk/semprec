@@ -3,28 +3,21 @@ import { withTransaction } from "../db/pool.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 
 /**
- * Rows older than this that precede their conversation's latest `compaction` checkpoint are
- * deleted by `handleAgentRunEventsRetentionTask` (issue #692). The checkpoint itself and
- * everything after it are always kept, so reconstruction (`walkStoredEntries`, which resets to
- * the latest `compaction` payload and never reads anything before it) is unaffected. A run-page
- * transcript for a conversation older than this window may show only its post-checkpoint tail.
+ * Older rows that precede their conversation's latest `compaction` checkpoint are deleted. The checkpoint and
+ * everything after it stay, so reconstruction (which resets to the latest checkpoint) is unaffected.
  */
 export const AGENT_RUN_EVENTS_RETENTION_DAYS = 30;
 
-/** Rows deleted per transaction, so one sweep never holds a lock or a transaction open over an unbounded row count. */
+/** Bounds each transaction's lock footprint. */
 const RETENTION_DELETE_BATCH_SIZE = 1000;
 
 /**
- * SQL predicate (alias `r`) for the main conversation of a thread (#1560), grouped by `thread_id`
- * rather than by project item. A delegated session inherits `thread_id` but has a `parent_run_id`,
- * so it falls under the generic grouping instead.
+ * A thread's main conversation, grouped by `thread_id`. A delegated session inherits `thread_id` but has a
+ * `parent_run_id`, so it falls under the generic grouping.
  */
 const THREAD_MAIN_CONVERSATION = `(r.thread_id IS NOT NULL AND r.triggered_by = 'user' AND r.parent_run_id IS NULL)`;
 
-/**
- * One conversation (grouping key) that has ever produced a `compaction` checkpoint, and the id of its latest one.
- * A thread's main conversation has `thread_id` set and the other key columns null; any other has `thread_id` null.
- */
+/** A thread's main conversation has `thread_id` set and the other key columns null; any other has `thread_id` null. */
 type CompactedConversationRow = {
   thread_id: string | null;
   project_item_id: string | null;
@@ -34,23 +27,11 @@ type CompactedConversationRow = {
 };
 
 /**
- * Deletes `agent_run_events` rows
- * that are (1) older than `AGENT_RUN_EVENTS_RETENTION_DAYS`, (2) attached to a finished
- * (`status <> 'running'`) `unit = 'session'` run, and (3) precede their conversation's latest
- * `compaction` checkpoint (`e.id < compaction_id`). A `compaction` row itself is never deleted
- * by this task: the strict `<` excludes the latest one, and an older checkpoint superseded by a
- * later one only qualifies once it is itself below that later checkpoint's id, at which point
- * reconstruction no longer reads it either.
+ * Deletes rows that are older than the retention window, belong to a finished `unit = 'session'` run, and precede
+ * their conversation's latest checkpoint (`e.id < compaction_id`, so the latest checkpoint itself survives). The
+ * `status <> 'running'` guard keeps a live run's events even when an earlier checkpoint precedes them.
  *
- * The `r.status <> 'running'` guard means a live run's events are never touched, even when they
- * are old and precede a checkpoint from an earlier run in the same conversation.
- *
- * Deletes in batches of `RETENTION_DELETE_BATCH_SIZE`, each in its own transaction — the same
- * per-unit chunking `docHistoryCleanup` uses to keep every transaction's lock footprint small —
- * looping per conversation until a batch deletes fewer than the batch size.
- *
- * Runs in whatever tenant scope the caller established: row-level security narrows the grouping
- * and every delete to that tenant.
+ * Each batch is its own transaction. Row-level security narrows everything to the caller's tenant scope.
  */
 async function deleteExpiredRunEventsInScope(pool: Pool): Promise<number> {
   const { rows: conversations } = await pool.query<CompactedConversationRow>(
@@ -107,12 +88,8 @@ async function deleteExpiredRunEventsInScope(pool: Pool): Promise<number> {
 }
 
 /**
- * The `agentRunEventsRetention` daily core task (issue #692): for every active tenant, deletes
- * the tenant's expired run events (see `deleteExpiredRunEventsInScope` for the rules). The
- * conversation grouping, its latest `compaction` checkpoint and the deletion are all per tenant, so
- * one tenant's checkpoint never decides what another tenant keeps even when their conversation
- * keys are equal. Returns the total deleted across tenants; when any tenant fails, rejects after
- * every tenant was attempted (see `forEachActiveTenant`).
+ * Grouping and checkpoints are per tenant, so one tenant's checkpoint never decides what another keeps. Rejects
+ * after every tenant was attempted when any failed.
  */
 export async function handleAgentRunEventsRetentionTask(pool: Pool): Promise<{ deleted: number }> {
   let deleted = 0;

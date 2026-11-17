@@ -109,12 +109,14 @@ import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { ROUTE_MATRIX, ROUTE_TENANCIES, type RouteMatrixEntry } from "../routeMatrix.js";
 
 /**
- * Issue #1053: every `surface: "api"` entry of `ROUTE_MATRIX` and every MCP generic operation is
- * driven as tenant B against tenant A's real rows, on a runtime-role pool with
- * `SEMPREC_TENANT_SCOPE=strict`. A foreign id must be answered exactly like a random one (same
- * status, body and headers once each requested id is masked; `IGNORED_HEADERS` lists the
- * per-connection exceptions), a mutation must leave A's rows as A reads them, and a list, query or
- * count must succeed, contain B's own rows and contain none of A's ids.
+ * Every `surface: "api"` entry of `ROUTE_MATRIX` and every MCP generic operation is driven as
+ * tenant B against tenant A's rows on a runtime-role pool with `SEMPREC_TENANT_SCOPE=strict`. A
+ * foreign id must be answered exactly like a random one (same status, body and headers once
+ * requested ids are masked), a mutation must leave A's rows as A reads them, and a list, query or
+ * count must contain B's own rows and none of A's ids.
+ *
+ * Most cases also run a positive control (A's own request, or B's request on its own row) so a
+ * refusal or an empty answer cannot pass for isolation by accident.
  */
 
 const SETUP_TOKEN = "tenant-isolation-setup-token";
@@ -123,8 +125,8 @@ const MAILBOX_PASSWORD = "isolation-mailbox-password";
 const REFUSED_MAILBOX_PASSWORD = "isolation-refused-mailbox-password";
 
 /**
- * What the composition root hands the password connect route (issue gh-1736). The mail server accepts every
- * login except one with `REFUSED_MAILBOX_PASSWORD`, so a case creates mailboxes and none reaches a real server.
+ * The mail server accepts every login except `REFUSED_MAILBOX_PASSWORD`, so no case reaches a real
+ * server.
  */
 const MAILBOX_PASSWORD_DEPENDENCIES: CustomRouteDependencies = {
   mailServerClients: {
@@ -138,8 +140,8 @@ const MAILBOX_PASSWORD_DEPENDENCIES: CustomRouteDependencies = {
   },
 };
 /**
- * What the composition root hands the thread task route (issue gh-1900): a gateway that names every task
- * `THREAD_TASK_AI_NAME` and records the requests it got, so a case can tell which threads' text reached the model.
+ * Names every task `THREAD_TASK_AI_NAME` and records its requests, so a case can tell which
+ * threads' text reached the model.
  */
 const THREAD_TASK_AI_NAME = "Isolation thread task";
 const threadTaskGatewayCalls: AiGatewayCompletionInput[] = [];
@@ -153,10 +155,7 @@ const THREAD_TASK_DEPENDENCIES: CustomRouteDependencies = {
 };
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-isolation-${randomUUID()}`);
 const filesStorage = new LocalFsBlobStorageWriter(join(tmpBlobDir, "files"));
-/**
- * What the composition root hands the draft send route (issue gh-1896): a transport that records every message it is
- * asked to deliver, so a case can tell whose mail reached it, and none reaches a real server.
- */
+/** Records every message it is asked to deliver, so a case can tell whose mail reached it. */
 const deliveredMail: MailTransportMessage[] = [];
 const MAIL_SEND_DEPENDENCIES: CustomRouteDependencies = {
   mailServerClients: {
@@ -178,8 +177,8 @@ const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
 /**
- * What the composition root hands the mail sign-in routes (issue gh-1686). The provider refuses every
- * authorization code, so a case can get as far as the provider call and none reaches a real provider.
+ * The provider refuses every authorization code, so a case gets as far as the provider call and
+ * none reaches a real provider.
  */
 const MAIL_OAUTH_DEPENDENCIES: CustomRouteDependencies = {
   oauth: {
@@ -202,14 +201,12 @@ interface Caller {
 interface Answer {
   status: number;
   text: string;
-  /** Every response header except the per-connection ones in `IGNORED_HEADERS`. */
   headers: Record<string, string>;
 }
 
 /**
- * Headers that differ per request or connection whatever the row, so they carry nothing about it.
- * `content-length` is left out because it is a function of the body, which is compared itself;
- * masking a requested value of a different length would otherwise change it.
+ * Headers that differ per request or connection whatever the row. `content-length` is left out
+ * because masking a value of a different length would change it; the body is compared itself.
  */
 const IGNORED_HEADERS: ReadonlySet<string> = new Set(["date", "connection", "keep-alive", "content-length"]);
 
@@ -231,7 +228,6 @@ interface Member extends Caller {
 interface TenantFixture {
   tenantId: string;
   member: Member;
-  /** A second bearer session of the member, the target of a foreign revoke. */
   secondSession: Member;
   webSession: Member;
   databaseId: string;
@@ -248,11 +244,10 @@ interface TenantFixture {
   itemVersion: string;
   trashedItemId: string;
   fileItemId: string;
-  /** The uploaded file's bytes, unique to this tenant. */
   fileContent: string;
   recordingContent: string;
   blobId: string;
-  /** The blob's content hash, the value its ETag is derived from. */
+  /** The value its ETag is derived from. */
   blobContentHash: string;
   projectItemId: string;
   heartbeatId: string;
@@ -266,7 +261,7 @@ interface TenantFixture {
   mcpToolRegistrationId: string;
   transcriptItemId: string;
   proposalItemId: string;
-  /** A Mailboxes item of the tenant, the target of the removal-impact route (issue gh-1501). */
+  /** Target of the removal-impact route. */
   mailboxItemId: string;
   pushSubscriptionId: string;
   pushDeviceToken: string;
@@ -277,7 +272,7 @@ interface TenantFixture {
    * system databases included).
    */
   ids: string[];
-  /** The tenant's own id and the ids of its rows in tenant tables: `ids` without users, sessions, push subscriptions and the Graph subscription. */
+  /** `ids` without users, sessions, push subscriptions and the Graph subscription. */
   tenantRowIds: string[];
 }
 
@@ -291,7 +286,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Reads the string at `path` of a JSON response body, failing loudly when the shape differs. */
 function readString(text: string, ...path: string[]): string {
   let value: unknown = JSON.parse(text);
   for (const key of path) {
@@ -310,7 +304,6 @@ function readNumber(text: string, field: string): number {
   return value;
 }
 
-/** `GET /api/approval-requests/:id`. */
 function approvalRequestRead(id: string): Request {
   return { method: "GET", path: `/api/approval-requests/${id}` };
 }
@@ -326,7 +319,6 @@ function readIdArray(text: string, field: string): string[] {
   });
 }
 
-/** The `{ id, status }` of each result of `POST /api/trash/restore`, in the order the answer lists them. */
 function restoreStatuses(text: string): Array<{ id: string; status: string }> {
   const body: unknown = JSON.parse(text);
   if (!isRecord(body) || !Array.isArray(body.results)) throw new Error(`expected a results array in ${text}`);
@@ -337,16 +329,15 @@ function restoreStatuses(text: string): Array<{ id: string; status: string }> {
   });
 }
 
-/** Test SQL inside `tenantId`'s scope on the runtime-role pool, which strict enforcement requires. */
+/** Strict enforcement requires a tenant scope on the runtime-role pool. */
 function inTenantTransaction<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(pool, fn));
 }
 
 /**
- * A chat run of the tenant's member with one started reply, for the cases of the reply-scoped agent run reads
- * (issue #1889), removed by `removeScopedReply` so the shared fixture of the tenant is not changed. The two messages
- * are inserted by SQL, in the shape `insertSempUserTurn` and `startSempMessageTurn` leave them, because the
- * production writer queues a worker job for the reply that this case must not leave behind.
+ * The two messages are inserted by SQL in the shape `insertSempUserTurn` and `startSempMessageTurn`
+ * leave them, because the production writer queues a worker job this case must not leave behind.
+ * Undone by `removeScopedReply`.
  */
 async function seedScopedReply(tenantId: string, userId: string) {
   return inTenantTransaction(tenantId, async (client) => {
@@ -374,7 +365,6 @@ async function seedScopedReply(tenantId: string, userId: string) {
   });
 }
 
-/** Removes what `seedScopedReply` wrote: the thread with its messages, then the run's events and the run. */
 async function removeScopedReply(seeded: { threadId: string; runId: string }): Promise<void> {
   await adminPool.query("DELETE FROM semp_threads WHERE id = $1", [seeded.threadId]);
   await adminPool.query("DELETE FROM agent_run_events WHERE agent_run_id = $1", [seeded.runId]);
@@ -382,7 +372,7 @@ async function removeScopedReply(seeded: { threadId: string; runId: string }): P
   expect(removed.rowCount).toBe(1);
 }
 
-/** The raw token of an invitation created and revoked through the production functions; invitations are global, so no tenant scope applies. */
+/** Invitations are global, so no tenant scope applies. */
 function revokedInvitationToken(invitedBy: string): Promise<string> {
   return runAsSystem("isolation test invitation", () =>
     withTransaction(pool, async (client) => {
@@ -398,7 +388,7 @@ function revokedInvitationToken(invitedBy: string): Promise<string> {
   );
 }
 
-/** The number of tenant rows, read as the superuser so the count sees every tenant. */
+/** Read as the superuser so the count sees every tenant. */
 async function tenantCount(): Promise<number> {
   const { rows } = await adminPool.query<{ n: number }>("SELECT count(*)::int AS n FROM tenants");
   return rows[0]?.n ?? -1;
@@ -420,12 +410,11 @@ async function send(caller: Caller | null, request: Request): Promise<Answer> {
   return { status: res.status, text: await res.text(), headers: responseHeaders };
 }
 
-/** The bytes of a PNG signature followed by `text`: `POST /api/blobs` stores only bytes whose type it recognises. */
+/** `POST /api/blobs` stores only bytes whose type it recognises. */
 function pngBytesOf(text: string): Buffer {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(text)]);
 }
 
-/** Expects a 2xx and returns the body text — for fixture writes made through the real routes. */
 async function sendOk(caller: Caller, request: Request): Promise<string> {
   const answer = await send(caller, request);
   if (answer.status < 200 || answer.status >= 300) {
@@ -434,7 +423,7 @@ async function sendOk(caller: Caller, request: Request): Promise<string> {
   return answer.text;
 }
 
-/** The comparison rule: every occurrence of a requested value, in the body and the headers, is replaced with `<id>`. */
+/** Every occurrence of a requested value, in the body and the headers, is replaced with `<id>`. */
 function masked(answer: Answer, values: readonly string[]): Answer {
   const mask = (text: string): string => values.reduce((acc, value) => acc.split(value).join("<id>"), text);
   return {
@@ -444,10 +433,7 @@ function masked(answer: Answer, values: readonly string[]): Answer {
   };
 }
 
-/**
- * Sends `build(foreign)` and `build(random)` — `random` holds one fresh UUID per foreign value —
- * and expects both answers to be equal under the comparison rule. Returns the foreign answer.
- */
+/** `random` holds one fresh UUID per foreign value. Returns the foreign answer. */
 async function expectForeignLikeRandom(
   caller: Caller | null,
   foreign: readonly string[],
@@ -466,10 +452,7 @@ function expectNoneOf(text: string, ids: readonly string[], what: string): void 
   expect(leaked, `${what} contains ids it must not`).toEqual([]);
 }
 
-/**
- * Expects a successful answer that contains none of A's ids and, so that an empty answer cannot
- * pass for the wrong reason, every one of `ownIds` (B's own rows the request must return).
- */
+/** Also requires every one of `ownIds`, so an empty answer cannot pass for the wrong reason. */
 async function expectExcludesA(
   caller: Caller,
   request: Request,
@@ -487,7 +470,6 @@ async function expectExcludesA(
   return answer;
 }
 
-/** The reads A uses to observe its own rows; compared before and after every mutating case. */
 function aStateReads(): Request[] {
   return [
     { method: "GET", path: "/api/databases?limit=200" },
@@ -523,7 +505,7 @@ function aStateReads(): Request[] {
   ];
 }
 
-/** A's own view of its rows, plus the heartbeats, run events, relation edges (with metadata) and push subscriptions no route lists. */
+/** Also covers the heartbeats, run events, relation edges and push subscriptions no route lists. */
 async function readAState(): Promise<string[]> {
   const lines: string[] = [];
   for (const request of aStateReads()) {
@@ -551,7 +533,6 @@ async function readAState(): Promise<string[]> {
   return lines;
 }
 
-/** Whether each of A's sessions still authenticates, and A's push subscriptions as stored. */
 async function readAAccountState(): Promise<string[]> {
   const lines: string[] = [];
   for (const session of [a.member, a.secondSession, a.webSession]) {
@@ -578,7 +559,6 @@ async function expectAAccountActive(): Promise<void> {
   });
 }
 
-/** Runs `body` and then expects every read of A's state to answer exactly as before it. */
 async function leavesAUnchanged(body: () => Promise<void>): Promise<void> {
   const before = await readAState();
   await body();
@@ -586,8 +566,7 @@ async function leavesAUnchanged(body: () => Promise<void>): Promise<void> {
 }
 
 /**
- * Links the tenant's user to a fresh People item through the real routes, so that a case which sends an invitation does
- * not depend on whether the case "set self person" ran before it. The Event's organizer is the person it links.
+ * So a case that sends an invitation does not depend on whether "set self person" ran before it.
  */
 async function linkOwnPerson(tenant: TenantFixture): Promise<void> {
   const personId = readString(
@@ -601,10 +580,7 @@ async function linkOwnPerson(tenant: TenantFixture): Promise<void> {
   await sendOk(tenant.member, { method: "PUT", path: "/api/auth/self-person", body: { personId } });
 }
 
-/**
- * An open Processing proposals card of `tenant`, created through the choke point. It is a row of the one case that
- * asks for it: a case that rejects a card changes none of the rows A and B share with the other cases.
- */
+/** Seeded per case, so a case that rejects a card changes none of the rows A and B share. */
 async function seedProposalCard(tenant: TenantFixture): Promise<string> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const database = await getDatabaseByModuleId(client, "processingProposals");
@@ -623,10 +599,7 @@ interface SeededSubpage {
   pageItemId: string;
 }
 
-/**
- * A subpage under a fresh host item of `tenant`, created through the real routes. These are rows of the one case that
- * asks for them: a case that needs a page changes none of the rows A and B share with the other cases.
- */
+/** Seeded per case, so a case that needs a page changes none of the rows A and B share. */
 async function seedSubpage(tenant: TenantFixture): Promise<SeededSubpage> {
   const hostItemId = readString(
     await sendOk(tenant.member, {
@@ -647,7 +620,7 @@ async function seedSubpage(tenant: TenantFixture): Promise<SeededSubpage> {
   return { hostItemId, pageItemId: page.pageItemId };
 }
 
-/** The id of the first block of the page of `hostItemId`, which for a host seeded by `seedSubpage` is the `page` block of its one subpage. */
+/** For a host seeded by `seedSubpage` this is the `page` block of its subpage. */
 async function firstBlockIdOfPage(member: TenantFixture["member"], hostItemId: string): Promise<string> {
   const read = await sendOk(member, { method: "GET", path: `/api/items/${hostItemId}/page` });
   const block = z.object({ blocks: z.array(z.object({ id: z.string() })).min(1) }).parse(JSON.parse(read)).blocks[0];
@@ -656,9 +629,8 @@ async function firstBlockIdOfPage(member: TenantFixture["member"], hostItemId: s
 }
 
 /**
- * A page of A and a page of B for the MCP cases that name a page (`page.duplicate`, `page.rename`). Every MCP case
- * runs inside `leavesAUnchanged`, so A's page cannot be created inside the case; the MCP suite seeds both before its
- * cases.
+ * Seeded before the MCP cases: every MCP case runs inside `leavesAUnchanged`, so A's page cannot be
+ * created inside one.
  */
 let mcpPages: { foreign: SeededSubpage; own: SeededSubpage };
 
@@ -666,7 +638,7 @@ let mcpPages: { foreign: SeededSubpage; own: SeededSubpage };
 // Fixture
 // ---------------------------------------------------------------------------------------------
 
-/** Signs in through `POST /api/auth/login`; a web session's token comes back only in its cookie. */
+/** A web session's token comes back only in its cookie. */
 async function signIn(email: string, password: string, platform: "ios" | "web"): Promise<Member> {
   const res = await fetch(`${baseUrl}/api/auth/login`, {
     method: "POST",
@@ -717,7 +689,6 @@ async function databaseIdFor(tenantId: string, moduleId: string): Promise<string
   });
 }
 
-/** A Task titled `title` in `tenant`, created through the REST write route; returns its id. */
 async function seedSearchTask(tenant: TenantFixture, title: string): Promise<string> {
   return readString(
     await sendOk(tenant.member, {
@@ -734,7 +705,7 @@ function freshSearchWord(): string {
   return `isolationsearch${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 }
 
-/** One row of every kind a route addresses, created in `tenantId` through production writes. */
+/** One row of every kind a route addresses, created through production writes. */
 async function seedTenant(): Promise<TenantFixture> {
   const tenantId = await createTestTenant(adminPool);
   await provisionTenant(pool, tenantId);
@@ -840,7 +811,7 @@ async function seedTenant(): Promise<TenantFixture> {
   });
   await sendOk(member, { method: "POST", path: "/api/transcriptions", body: { fileItemId } });
   const transcriptItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "transcripts"));
-  // One speaker key, so A's own speaker probes (issue gh-1770) reach the key check and not only the transcript lookup.
+  // One speaker key, so A's speaker probes reach the key check and not only the transcript lookup.
   await inTenantTransaction(tenantId, async (client) => {
     const transcripts = await getDatabaseByModuleId(client, "transcripts");
     if (!transcripts) throw new Error("Missing transcripts");
@@ -1031,7 +1002,6 @@ async function seedTenant(): Promise<TenantFixture> {
   };
 }
 
-/** Runs every queued `tenantExport` job through the production task list, so both exports are `ready`. */
 async function runExportJobs(): Promise<void> {
   const coreTasks = createCoreTaskList(
     pool,
@@ -1056,14 +1026,13 @@ async function runExportJobs(): Promise<void> {
 
 type RouteCase = () => Promise<void>;
 
-/** The entry's path with every example id replaced by `id`. */
 function entryPath(name: string, id: string): string {
   const entry = ROUTE_MATRIX.find((route) => route.name === name);
   if (!entry) throw new Error(`no route matrix entry named '${name}'`);
   return entry.path.split(EXAMPLE_ID).join(id);
 }
 
-/** A Mailboxes item of `tenant` whose `syncStatus` is `needsReauthorization`, written the way the sync job writes it. */
+/** Written the way the sync job writes it. */
 async function mailboxNeedingReauthorization(tenant: TenantFixture): Promise<string> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
@@ -1080,7 +1049,6 @@ async function mailboxNeedingReauthorization(tenant: TenantFixture): Promise<str
   });
 }
 
-/** A new Mailboxes item of `tenant` with one Inbox folder, the folder created the way folder discovery creates it. */
 function mailboxWithInboxFolder(tenant: TenantFixture): Promise<{ mailboxId: string; folderId: string }> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const ids = await resolveMailModuleIds(client);
@@ -1106,7 +1074,6 @@ function mailboxWithInboxFolder(tenant: TenantFixture): Promise<{ mailboxId: str
 
 const DRAFT_ADDRESS = "drafts@example.test";
 
-/** A new Mailboxes item of `tenant` with an address and a Drafts folder, the folder created the way folder discovery creates it. */
 function mailboxForDrafts(tenant: TenantFixture): Promise<string> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const ids = await resolveMailModuleIds(client);
@@ -1135,7 +1102,6 @@ function mailboxForDrafts(tenant: TenantFixture): Promise<string> {
   });
 }
 
-/** Gives the mailbox of `tenant` a Sent folder, created the way folder discovery creates it, so a draft in it can be sent. */
 function addSentFolder(tenant: TenantFixture, mailboxId: string): Promise<void> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const ids = await resolveMailModuleIds(client);
@@ -1154,7 +1120,6 @@ function addSentFolder(tenant: TenantFixture, mailboxId: string): Promise<void> 
   });
 }
 
-/** The body of a create request for a draft in `mailboxId`. */
 function draftBody(mailboxId: string, subject: string): Record<string, unknown> {
   return {
     mailboxId,
@@ -1167,7 +1132,6 @@ function draftBody(mailboxId: string, subject: string): Record<string, unknown> 
   };
 }
 
-/** A draft in a new mailbox of `tenant`, created through the real route as its member. */
 async function seedDraft(tenant: TenantFixture): Promise<{ mailboxId: string; draftId: string; updatedAt: string }> {
   const mailboxId = await mailboxForDrafts(tenant);
   const text = await sendOk(tenant.member, {
@@ -1178,7 +1142,6 @@ async function seedDraft(tenant: TenantFixture): Promise<{ mailboxId: string; dr
   return { mailboxId, draftId: readString(text, "id"), updatedAt: readString(text, "updatedAt") };
 }
 
-/** A new Files item of `tenant`, uploaded through the real route with bytes that are its own, for a case that attaches it. */
 async function uploadAttachableFile(tenant: TenantFixture): Promise<string> {
   return readString(
     await sendOk(tenant.member, {
@@ -1191,7 +1154,6 @@ async function uploadAttachableFile(tenant: TenantFixture): Promise<string> {
   );
 }
 
-/** Starts a Gmail sign-in as `member` through the real route and returns the state the provider would hand back. */
 async function startMailOauth(member: Member): Promise<string> {
   const started = await sendOk(member, {
     method: "POST",
@@ -1209,7 +1171,6 @@ interface MailOauthStateSnapshot {
   used_at: string | null;
 }
 
-/** The sign-in states `tenant` sees in its own scope: all of them, or the one row of `state`. */
 async function mailOauthStates(tenant: TenantFixture, state?: string): Promise<MailOauthStateSnapshot[]> {
   const hash = state === undefined ? null : createHash("sha256").update(state, "utf8").digest("hex");
   return inTenantTransaction(tenant.tenantId, async (client) => {
@@ -1250,7 +1211,6 @@ async function createInviteAsAdmin(): Promise<string> {
   return readString(text, "invite", "id");
 }
 
-/** Ingests one Gmail message for the fixture's tenant through the real reconcile path; returns its thread id. */
 /** `providerId` names the provider's message; a second seed in one tenant needs its own, or it converges on the first. */
 function seedMailThread(
   fixture: TenantFixture,
@@ -1325,7 +1285,6 @@ function seedMailThread(
   );
 }
 
-/** Adds a folder with `specialPurpose` to the mailbox that holds mail thread `threadId`, created the way folder discovery creates it. */
 function addFolderToThreadMailbox(
   fixture: TenantFixture,
   threadId: string,
@@ -1355,7 +1314,6 @@ function addFolderToThreadMailbox(
   });
 }
 
-/** The thread ids `caller`'s Inbox box lists (`GET /api/mail/threads?box=inbox`). */
 async function inboxThreadIds(caller: Caller): Promise<string[]> {
   const parsed = z
     .object({ threads: z.array(z.object({ threadId: z.string() })) })
@@ -1364,10 +1322,8 @@ async function inboxThreadIds(caller: Caller): Promise<string[]> {
 }
 
 /**
- * A Projects item and a Companies item of the fixture's tenant, named `marker`-prefixed, set as the `project` and the
- * `company` of mail thread `threadId` the way a user sets them, and then a value link of each whose source is the
- * sender domain `<marker>.example`. The link rule that writes such links is not part of this tree, so the rows are
- * written with `insertValueLink` after the user's edges, which would otherwise end them (issue gh-1897).
+ * The link rule that writes such links is not part of this tree, so the value links are written
+ * with `insertValueLink` after the user's edges, which would otherwise end them.
  */
 async function seedThreadProjectAndCompany(
   fixture: TenantFixture,
@@ -1420,9 +1376,8 @@ async function seedThreadProjectAndCompany(
 }
 
 /**
- * Gives the attachment `fileName` of mail thread `threadId` a project of its own by hand (issue gh-1922), so that the
- * file's project and link entry differ from the thread's: the link that ingest wrote ends with `broken_by` user.
- * Returns the project's name.
+ * Gives the attachment its own project, so the file's project and link entry differ from the
+ * thread's (the ingest link ends with `broken_by` user). Returns the project's name.
  */
 async function seedAttachmentProject(
   fixture: TenantFixture,
@@ -1458,7 +1413,6 @@ async function seedAttachmentProject(
   return projectName;
 }
 
-/** A Tasks item of the fixture's tenant linked to mail thread `threadId` through `Threads.tasks`, as a user links it (issue gh-1692). */
 async function seedThreadTask(fixture: TenantFixture, threadId: string): Promise<string> {
   return runInTenant(fixture.tenantId, async () => {
     const cp = createChokePoint(pool);
@@ -1484,7 +1438,7 @@ async function seedThreadTask(fixture: TenantFixture, threadId: string): Promise
   });
 }
 
-/** A Mailboxes item of the fixture's tenant with a credential, a sync state and server settings, for the removal route (issue gh-1690). */
+/** Has a credential, a sync state and server settings, for the removal route. */
 function seedRemovableMailbox(fixture: TenantFixture): Promise<string> {
   return inTenantTransaction(fixture.tenantId, async (client) => {
     const ids = await resolveMailModuleIds(client);
@@ -1510,7 +1464,6 @@ interface RemovableMailboxRows {
   serverSettings: number;
 }
 
-/** Whether the mailbox is in the trash and how many of its secret-bearing rows exist, read in the fixture's tenant. */
 function removableMailboxRows(fixture: TenantFixture, mailboxItemId: string): Promise<RemovableMailboxRows[]> {
   return inTenantTransaction(fixture.tenantId, async (client) => {
     const { rows } = await client.query<RemovableMailboxRows>(
@@ -1533,8 +1486,8 @@ const mailThreadFacetsBody = z.object({
 });
 
 /**
- * A new mail thread of `tenant` in a new project of a new area: the thread through the real reconcile path, the
- * area, the project and both relations through the choke point (issue gh-1747).
+ * The thread through the real reconcile path; the area, the project and both relations through the
+ * choke point.
  */
 async function mailThreadInProjectOfArea(tenant: TenantFixture): Promise<{ areaId: string; projectId: string }> {
   const threadId = await seedMailThread(
@@ -1580,7 +1533,6 @@ async function mailThreadInProjectOfArea(tenant: TenantFixture): Promise<{ areaI
   });
 }
 
-/** A dated Tasks item of `tenant`, created through the choke point, for the recurrence routes (issue #1665). */
 async function datedTask(tenant: TenantFixture): Promise<string> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const tasks = await getDatabaseByModuleId(client, "tasks");
@@ -1604,7 +1556,6 @@ interface TaskRecurrenceSnapshot {
   anchor_date: string | null;
 }
 
-/** A task's stored properties and its `task_recurrence` row, read in its own tenant. */
 async function recurrenceState(tenant: TenantFixture, taskId: string): Promise<unknown> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const item = await client.query<TaskItemSnapshot>("SELECT properties, updated_at::text FROM items WHERE id = $1", [
@@ -1618,7 +1569,6 @@ async function recurrenceState(tenant: TenantFixture, taskId: string): Promise<u
   });
 }
 
-/** A Tasks item and an Events item of `tenant`, created through the choke point, for the host event routes (issue gh-1764). */
 async function taskAndEvent(tenant: TenantFixture): Promise<{ taskId: string; eventId: string }> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const tasks = await getDatabaseByModuleId(client, "tasks");
@@ -1641,7 +1591,6 @@ interface HostEventState {
   item: TaskItemSnapshot[];
 }
 
-/** A task's stored relation edges, with their metadata, and its stored properties, read in its own tenant. */
 async function hostEventState(tenant: TenantFixture, taskId: string): Promise<HostEventState> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const edges = await client.query<HostEventState["edges"][number]>(
@@ -1657,7 +1606,6 @@ async function hostEventState(tenant: TenantFixture, taskId: string): Promise<Ho
 
 const hostEventPath = (taskId: string, eventId: string): string => `/api/tasks/${taskId}/host-events/${eventId}`;
 
-/** A series' stored `template`, read in its own tenant. */
 async function seriesTemplate(tenant: TenantFixture, seriesId: string): Promise<Array<{ template: unknown }>> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const { rows } = await client.query<{ template: unknown }>(
@@ -1672,7 +1620,6 @@ interface SeriesOccurrenceSnapshot extends TaskItemSnapshot {
   id: string;
 }
 
-/** The items that carry `seriesId` and the item its `task_recurrence` row points at, read in `tenant`. */
 async function seriesOccurrenceState(tenant: TenantFixture, seriesId: string): Promise<unknown> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const items = await client.query<SeriesOccurrenceSnapshot>(
@@ -1687,7 +1634,7 @@ async function seriesOccurrenceState(tenant: TenantFixture, seriesId: string): P
   });
 }
 
-/** The `tags` property of a tenant's Health records, a multi_select of a schema-locked system database (issue #1699). */
+/** A multi_select of a schema-locked system database. */
 async function healthTagsPropertyId(tenant: TenantFixture): Promise<string> {
   const databaseId = await databaseIdFor(tenant.tenantId, "healthRecords");
   const property = await runInTenant(tenant.tenantId, () =>
@@ -1698,8 +1645,7 @@ async function healthTagsPropertyId(tenant: TenantFixture): Promise<string> {
 }
 
 /**
- * A multi_select property with the option `one`, in a database the tenant's member creates for one case (issue
- * #1699): the case writes its own rows and leaves the shared fixture rows as they are.
+ * Created per case, so the case writes its own rows and leaves the shared fixture rows as they are.
  */
 async function caseOptionPropertyId(tenant: TenantFixture, databaseName: string): Promise<string> {
   const databaseId = readString(
@@ -1733,13 +1679,12 @@ const storedOptionsBody = z.object({
   }),
 });
 
-/** A property's stored options as its own tenant's member reads them over `GET /api/properties/:id`. */
 async function storedOptions(tenant: TenantFixture, propertyId: string): Promise<StoredOption[]> {
   const text = await sendOk(tenant.member, { method: "GET", path: `/api/properties/${propertyId}` });
   return storedOptionsBody.parse(JSON.parse(text)).config.options;
 }
 
-/** The `medication` option of the Health records `tags` exactly as the seed stores it: a color and no label (issue #1705). */
+/** Exactly as the seed stores it: a color and no label. */
 const SEEDED_MEDICATION_OPTION: StoredOption = { key: "medication", color: "#AF52DE" };
 
 interface ActionItemWorld {
@@ -1755,20 +1700,19 @@ interface SpeakerWorld {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** The name of the task the action item of `seedActionItemWorld` becomes; no other case writes a task of that name. */
+/** No other case writes a task of this name. */
 const ACTION_ITEM_TASK_NAME = "Send the revised offer";
 
 /**
- * An Event and a transcript linked to it whose stored notes hold one action item without an owner, in
- * the tenant of `tenant`. The shared rows of the fixture are not touched; the ids are used by the cases
- * of issue gh-1767 only.
+ * An Event and a linked transcript whose stored notes hold one action item without an owner. The
+ * shared fixture rows are not touched.
  */
 async function seedActionItemWorld(tenant: TenantFixture): Promise<ActionItemWorld> {
   const transcriptId = await inTenantTransaction(tenant.tenantId, async (client) => {
     const transcripts = await getDatabaseByModuleId(client, "transcripts");
     if (!transcripts) throw new Error("Missing transcripts");
     const item = await createItemWithClient(client, { databaseId: transcripts.id, properties: { name: "Offer" } });
-    // The notes only the transcription process writes, as its step 5 stores them.
+    // Notes only the transcription process writes.
     await writeComputed(client, transcripts.id, item.id, TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY, {
       title: "Offer",
       summary: "",
@@ -1793,16 +1737,15 @@ async function seedActionItemWorld(tenant: TenantFixture): Promise<ActionItemWor
 }
 
 /**
- * A transcript with one speaker, SPEAKER_00, an Event it is linked to and a person who participates in that
- * Event, in the tenant of `tenant`. The shared rows of the fixture are not touched; the ids are used by the
- * cases of issue gh-1770 only.
+ * A transcript with speaker SPEAKER_00, an Event it is linked to and a person who participates in
+ * that Event. The shared fixture rows are not touched.
  */
 async function seedSpeakerWorld(tenant: TenantFixture): Promise<SpeakerWorld> {
   const transcriptId = await inTenantTransaction(tenant.tenantId, async (client) => {
     const transcripts = await getDatabaseByModuleId(client, "transcripts");
     if (!transcripts) throw new Error("Missing transcripts");
     const item = await createItemWithClient(client, { databaseId: transcripts.id, properties: { name: "Speakers" } });
-    // The segments only the transcription process writes, as its merge step stores them.
+    // Segments only the transcription process writes.
     await writeComputed(client, transcripts.id, item.id, TRANSCRIPT_SEGMENTS_COMPUTED_KEY, [
       { speaker: "SPEAKER_00", text: "Welcome to the speaker probe.", startsAt: 0, endsAt: 2 },
     ]);
@@ -1828,7 +1771,6 @@ async function seedSpeakerWorld(tenant: TenantFixture): Promise<SpeakerWorld> {
   return { eventId, transcriptId, personId };
 }
 
-/** The state rows of one transcript and the live tasks of the action item's name in the tenant, read inside the tenant. */
 async function actionItemRows(
   tenant: TenantFixture,
   transcriptId: string,
@@ -1849,8 +1791,8 @@ async function actionItemRows(
 }
 
 /**
- * A Books item of `tenant` made through the API, with its metadata job queued by the refresh route (issue gh-1812).
- * `runCoverCandidateJobs` runs the job, which stores one candidate whose image URL names the item.
+ * Its metadata job is queued by the refresh route; `runCoverCandidateJobs` stores one candidate
+ * whose image URL names the item.
  */
 async function seedCoverCandidateItem(tenant: TenantFixture): Promise<{ itemId: string; imageUrl: string }> {
   const created = await sendOk(tenant.member, {
@@ -1863,7 +1805,7 @@ async function seedCoverCandidateItem(tenant: TenantFixture): Promise<{ itemId: 
   return { itemId, imageUrl: `https://covers.example.test/${itemId}.jpg` };
 }
 
-/** Runs the queued library metadata jobs with a fetcher that finds every item and offers one candidate named by its id. */
+/** The fetcher finds every item and offers one candidate named by its id. */
 async function runCoverCandidateJobs(): Promise<void> {
   const tasks = createCoreTaskList(pool, createActionRegistry(), async (item) => ({
     status: "found",
@@ -1875,7 +1817,6 @@ async function runCoverCandidateJobs(): Promise<void> {
   await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: task } });
 }
 
-/** The automation status and stored candidate image URLs of an item, read in its tenant. */
 async function coverCandidateState(
   tenant: TenantFixture,
   itemId: string,
@@ -1946,8 +1887,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       );
       findingIds.push(finding.finding.id);
     }
-    // R1 F4: a project lists its findings only once it has guidance, so B saves its guidance through
-    // the real route first, against its current version (an earlier case may already have saved one).
+    // A project lists its findings only once it has guidance, so B saves guidance first, against
+    // its current version (an earlier case may already have saved one).
     const current: unknown = JSON.parse(
       await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/agent-guidance` }),
     );
@@ -2110,8 +2051,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(masked(known, [a.member.email])).toEqual(masked(unknown, [unknownEmail]));
   },
   "accept invitation": async () => {
-    // A revoked invitation's token stands in for a foreign one: it must answer exactly like a random token,
-    // and no tenant may be created by either request.
+    // A revoked invitation's token stands in for a foreign one; no tenant may be created by either
+    // request.
     const revokedToken = await revokedInvitationToken(a.member.userId);
     const tenantsBefore = await tenantCount();
     await expectForeignLikeRandom(null, [revokedToken], ([token]) => ({
@@ -2199,7 +2140,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     // A member of a third tenant calls it: B's password and sessions are fixtures the cases after this one use.
     const caller = await signUp(await createTestTenant(adminPool), "member");
     const second = await signIn(caller.email, caller.password, "ios");
-    // `users` and `password_reset_tokens` are global identity tables, read in the system scope the route uses.
+    // Global identity tables, read in the system scope the route uses.
     const passwordHashOf = async (userId: string): Promise<string> => {
       const user = await runAsSystem("isolation test user read", () => getUserById(pool, userId));
       if (!user) throw new Error(`no user ${userId}`);
@@ -2222,7 +2163,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       body: { currentPassword, newPassword },
     });
 
-    // A's real password is a wrong current password for the caller: it is refused exactly as any other.
+    // A's real password is a wrong current password for the caller.
     const refused = await expectForeignLikeRandom(caller, [a.member.password], ([password]) => change(password!));
     expect(refused.status).toBe(403);
     expect((await send(second, { method: "GET", path: "/api/auth/session" })).status).toBe(200);
@@ -2260,16 +2201,15 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const random = await send(b.member, register(randomBytes(32).toString("hex")));
       expect(foreign.status).toBe(random.status);
       expect(foreign.status).toBe(200);
-      // Push device tokens are deliberately global identity-plane keys (the 2026-10-03
-      // tenancy ADR). Registering the same physical device moves it to the caller, as
-      // upsertApnsSubscription specifies; this is distinct from revoking a foreign row id.
+      // Push device tokens are deliberately global identity-plane keys: registering the same
+      // physical device moves it to the caller, as `upsertApnsSubscription` specifies. This differs
+      // from revoking a foreign row id.
       const subscriptions = await runInTenant(a.tenantId, () => listPushSubscriptionsForUser(pool, a.member.userId));
       expect(subscriptions.find((subscription) => subscription.id === a.pushSubscriptionId)?.revokedAt).toEqual(
         expect.any(String),
       );
     } finally {
-      // Re-register A's device as A when the case displaced it, so later cases start from an
-      // active subscription instead of failing on this case's leftover.
+      // Re-register A's device so later cases start from an active subscription.
       const subscriptions = await runInTenant(a.tenantId, () => listPushSubscriptionsForUser(pool, a.member.userId));
       if (subscriptions.find((subscription) => subscription.id === a.pushSubscriptionId)?.revokedAt !== null) {
         a.pushSubscriptionId = readString(await sendOk(a.member, register(a.pushDeviceToken)), "subscription", "id");
@@ -2339,8 +2279,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         b.notificationId,
       ]);
     }),
-  // Preferences hold no ids, so these cases compare values: A stores values away from the defaults,
-  // and B must read its own defaults and change only its own row (issue #1441).
+  // Preferences hold no ids, so these cases compare values: A stores non-default values, and B must
+  // read its own defaults and change only its own row.
   "get notification preferences": async () => {
     await sendOk(a.member, { method: "PATCH", path: "/api/notification-preferences", body: { badgeInbox: true } });
     try {
@@ -2373,8 +2313,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       });
     }
   },
-  // A's heartbeat answers B exactly as a random id does (issue #1453): the lookup is tenant-scoped,
-  // and a refused trigger writes nothing, so A's state is compared before and after.
+  // The lookup is tenant-scoped and a refused trigger writes nothing.
   "trigger heartbeat": () =>
     leavesAUnchanged(async () => {
       await expectForeignLikeRandom(b.member, [a.heartbeatId], ([id]) => ({
@@ -2395,8 +2334,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "schema projection": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/schema" });
   },
-  // A has no AI budget row, so A's own status lists `aiBudgetMissing` (issue gh-1871). B has a row,
-  // and B's status must carry neither A's stored problem nor A's budget problem.
+  // A has no AI budget row, so A's status lists `aiBudgetMissing`; B's status must carry neither
+  // A's stored problem nor A's budget problem.
   "semp status": async () => {
     await setTenantAiBudget(adminPool, b.tenantId);
     const ids: string[] = [];
@@ -2422,8 +2361,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.text).not.toContain("aiBudget");
     expect(await sendOk(a.member, { method: "GET", path: "/api/semp-status" })).toContain('"id":"aiBudgetMissing"');
   },
-  // Each tenant gets one critical agents problem, its banner candidate; B's banner and count must be
-  // B's own only. B has an AI budget row and A has none, so A's missing budget must not become B's banner.
+  // Each tenant gets one critical agents problem. B has an AI budget row and A has none, so A's
+  // missing budget must not become B's banner.
   "semp status summary": async () => {
     await setTenantAiBudget(adminPool, b.tenantId);
     const ids: string[] = [];
@@ -2451,8 +2390,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "ai usage report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/ai-usage?from=2026-01-01&to=2026-12-31" });
   },
-  // A's spend goes through the gateway's own accounting writer, so B's summary must show none of it:
-  // B has no spend of its own in this fixture, and its figures stay at zero.
+  // A's spend goes through the gateway's accounting writer; B has no spend, so its figures stay at
+  // zero.
   "ai usage summary": async () => {
     await runInTenant(a.tenantId, () =>
       recordTokenGatewayCall(pool, {
@@ -2469,7 +2408,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "system health report": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/system-health" });
   },
-  // A's mailbox answers B exactly as a random id does, and both answers are the 404 of an unknown mailbox (issue gh-1501).
+  // Both answers are the 404 of an unknown mailbox.
   "mail contacts": async () => {
     async function person(tenantId: string, email: string) {
       return inTenantTransaction(tenantId, async (client) => {
@@ -2488,8 +2427,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const seed = (fixture: TenantFixture) => seedMailThread(fixture, `<${fixture.tenantId}@example.test>`);
     const first = await seed(a);
     const second = await seed(b);
-    // Each thread has a project and a company of its own tenant with a value link (issue gh-1897): B's list names B's
-    // and carries B's link sources, and nothing of A's.
+    // Each thread has a project and a company of its own tenant with a value link: B's list carries
+    // only B's.
     const foreignValues = await seedThreadProjectAndCompany(a, first, `list-${randomUUID()}`);
     const ownValues = await seedThreadProjectAndCompany(b, second, `list-${randomUUID()}`);
     const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/threads" }, [second]);
@@ -2499,7 +2438,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     for (const own of Object.values(ownValues)) expect(answer.text).toContain(own);
   },
   "mail thread detail": async () => {
-    // Each thread brings an attachment whose file has a project of its tenant's own (issue gh-1922).
+    // Each attachment's file has a project of its own tenant.
     const foreignFile = `foreign-${randomUUID()}.pdf`;
     const ownFile = `own-${randomUUID()}.pdf`;
     const foreign = await seedMailThread(
@@ -2518,10 +2457,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     );
     const foreignFileProject = await seedAttachmentProject(a, foreign, foreignFile, `detail-${randomUUID()}`);
     const ownFileProject = await seedAttachmentProject(b, own, ownFile, `detail-${randomUUID()}`);
-    // Each thread has a task of its own tenant (issue gh-1692): B's detail lists B's task and never A's.
     const foreignTask = await seedThreadTask(a, foreign);
     const ownTask = await seedThreadTask(b, own);
-    // And a project and a company with a value link of its own tenant (issue gh-1897).
     const foreignValues = await seedThreadProjectAndCompany(a, foreign, `detail-${randomUUID()}`);
     const ownValues = await seedThreadProjectAndCompany(b, own, `detail-${randomUUID()}`);
     const answer = await expectExcludesA(b.member, { method: "GET", path: `/api/mail/threads/${own}` }, [own, ownTask]);
@@ -2529,7 +2466,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.text).not.toContain(foreignTask);
     for (const value of Object.values(foreignValues)) expect(answer.text).not.toContain(value);
     for (const value of Object.values(ownValues)) expect(answer.text).toContain(value);
-    // B's attachment shows B's file project; A's file and its project are nowhere in B's answer.
     expect(answer.text).toContain(ownFile);
     expect(answer.text).toContain(ownFileProject);
     expect(answer.text).toContain("inheritedBroken");
@@ -2544,7 +2480,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(result.text).not.toContain(foreignFile);
     expect(result.text).not.toContain(foreignFileProject);
     for (const value of Object.values(foreignValues)) expect(result.text).not.toContain(value);
-    // A reads its own thread with its task, project and company, so the refusal above is a real one.
     const owner = await send(a.member, { method: "GET", path: `/api/mail/threads/${foreign}` });
     expect(owner.status).toBe(200);
     expect(owner.text).toContain(foreignTask);
@@ -2555,8 +2490,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(owner.text).not.toContain(ownFile);
     expect(owner.text).not.toContain(ownFileProject);
   },
-  // A's mailbox answers B's create like a mailbox that does not exist, and B's draft lands in B's own mailbox, while A
-  // itself creates a draft there, so B's refusal is a real one (issue gh-1867).
   "mail draft create": async () => {
     const ofA = await mailboxForDrafts(a);
     const ofB = await mailboxForDrafts(b);
@@ -2573,7 +2506,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(await sendOk(a.member, create(ofA))).toContain(ofA);
   },
-  // A's draft answers B like an id that names no draft, and B reads its own, while A reads its draft unchanged (issue gh-1867).
   "mail draft read": async () => {
     const foreign = await seedDraft(a);
     const own = await seedDraft(b);
@@ -2584,8 +2516,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(refused.status).toBe(404);
     expect(await sendOk(a.member, read(foreign.draftId))).toContain(foreign.mailboxId);
   },
-  // B's PATCH of A's draft is answered like one of an id that names no draft and leaves A's draft as A reads it; B's
-  // own draft takes the same request (issue gh-1867).
   "mail draft update": async () => {
     const foreign = await seedDraft(a);
     const own = await seedDraft(b);
@@ -2608,8 +2538,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const owner = await send(a.member, update(foreign.draftId, foreign.updatedAt));
     expect(owner.status).toBe(200);
   },
-  // B's DELETE of A's draft is answered like one of an id that names no draft and A's draft stays; B's own draft is
-  // discarded by the same route (issue gh-1867).
   "mail draft discard": async () => {
     const foreign = await seedDraft(a);
     const own = await seedDraft(b);
@@ -2629,9 +2557,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const again = await send(b.member, discard(own.draftId));
     expect(again.status).toBe(404);
   },
-  // B's POST to send A's draft is answered like one of an id that names no draft: A's draft stays unsent and no
-  // transport is asked to deliver it. B's own draft is delivered once, and A sends its own afterwards, so B's refusal
-  // is a real one (issue gh-1896).
+  // A's draft stays unsent and no transport is asked to deliver it; A sends its own afterwards.
   "mail draft send": async () => {
     const foreign = await seedDraft(a);
     const own = await seedDraft(b);
@@ -2659,8 +2585,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(JSON.parse(owner.text)).toMatchObject({ emailId: foreign.draftId, mailbox: { id: foreign.mailboxId } });
     expect(deliveredMail.at(-1)?.raw.toString("utf8")).toContain(`Draft of ${a.tenantId}`);
   },
-  // B attaches its own new file to its own draft. A's file and A's draft answer B like an id that names nothing, and
-  // A's draft lists nothing and A's file stays free for A to attach (issue gh-1895).
+  // A's draft lists nothing and A's file stays free for A to attach.
   "mail draft attachment add": async () => {
     const foreign = await seedDraft(a);
     const own = await seedDraft(b);
@@ -2686,8 +2611,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(owner.status).toBe(200);
     expect(JSON.parse(owner.text)).toMatchObject({ id: foreign.draftId, attachments: [{ fileItemId: foreignFile }] });
   },
-  // B detaches its own file from its own draft. A's draft with A's file answers B like an id that names no draft,
-  // and A's attachment stays until A removes it (issue gh-1895).
   "mail draft attachment remove": async () => {
     const foreign = await seedDraft(a);
     const own = await seedDraft(b);
@@ -2717,8 +2640,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(owner.status).toBe(200);
     expect(JSON.parse(owner.text)).toMatchObject({ id: foreign.draftId, attachments: [] });
   },
-  // B marks its own thread read. A's thread answers B like a random thread id and stays unread: A reads it unread
-  // before and after B's attempt, and A itself marks it read afterwards, so B's refusal is a real one (issue gh-1865).
+  // A reads its thread unread before and after, then marks it read itself.
   "mail thread read": async () => {
     const seed = (fixture: TenantFixture) =>
       seedMailThread(fixture, `<${randomUUID()}@example.test>`, `read-${randomUUID()}`, `thread-${randomUUID()}`);
@@ -2750,9 +2672,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(await unreadOf(a.member, foreign)).toBe(false);
   },
-  // B creates tasks on its own thread, with and without a name. A's thread answers B like a random thread id with no
-  // model call and no task, and A itself creates a task on its thread afterwards, so B's refusal is a real one
-  // (issue gh-1900).
+  // A's thread gets no model call and no task; A then creates a task itself.
   "mail thread task create": async () => {
     const seed = (fixture: TenantFixture) =>
       seedMailThread(fixture, `<${randomUUID()}@example.test>`, `task-${randomUUID()}`, `thread-${randomUUID()}`);
@@ -2788,8 +2708,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(owner.status).toBe(201);
     expect(await tasksOf(a.member, foreign)).toEqual([readString(owner.text, "id")]);
   },
-  // B flags its own thread. A's thread answers B like a random thread id and stays unflagged: A's detail reports it
-  // unflagged before and after B's attempt, and A itself flags it afterwards, so B's refusal is a real one (issue gh-1893).
   "mail thread flag": async () => {
     const seed = (fixture: TenantFixture) =>
       seedMailThread(fixture, `<${randomUUID()}@example.test>`, `flag-${randomUUID()}`, `thread-${randomUUID()}`);
@@ -2821,9 +2739,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(await flaggedOf(a.member, foreign)).toBe(true);
   },
-  // B archives its own thread and trashes another of its own. A's threads answer B like a random thread id and stay in
-  // A's Inbox: A's list shows them before and after B's attempts, and A itself archives and trashes them afterwards, so
-  // B's refusals are real ones (issue gh-1917).
+  // A's threads stay in A's Inbox; A then archives and trashes them itself.
   "mail thread archive": async () => {
     const seed = (fixture: TenantFixture) =>
       seedMailThread(fixture, `<${randomUUID()}@example.test>`, `archive-${randomUUID()}`, `thread-${randomUUID()}`);
@@ -2879,9 +2795,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(await inboxThreadIds(a.member)).not.toContain(foreign);
   },
-  // Both tenants archive their own thread, then B restores its own. A's archived thread answers B like a random thread id
-  // and stays in A's Archive: A's Inbox does not list it before and after B's attempt, and A itself restores it
-  // afterwards, so B's refusal is a real one (issue gh-2033).
+  // A's archived thread stays in A's Archive; A then restores it itself.
   "mail thread restore": async () => {
     const seed = async (fixture: TenantFixture) => {
       const threadId = await seedMailThread(
@@ -2915,8 +2829,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(await inboxThreadIds(a.member)).toContain(foreign);
   },
-  // No writer of the grant exists by design (issue #1635 is read only): both tenants' projects get
-  // `emailSendAutonomous` by direct SQL, as the server operator would set it.
+  // The grant has no writer by design: both tenants' projects get `emailSendAutonomous` by SQL, as
+  // the server operator would set it.
   "mail autonomous send projects": async () => {
     for (const fixture of [a, b]) {
       await inTenantTransaction(fixture.tenantId, (client) =>
@@ -2947,9 +2861,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     expect(answer.status).toBe(404);
   },
-  // An address that a mailbox of A holds answers B exactly like an address nobody holds: B gets its own mailbox and
-  // learns nothing of A's. The same address a second time is refused inside B, so the 201 is the duplicate rule's
-  // own answer and not what every request gets (issue gh-1736).
+  // An address A holds answers B exactly like an unused one. The same address a second time is
+  // refused inside B, so the 201 is the duplicate rule's own answer.
   "mailbox password connect": async () => {
     const connect = (address: string, password = MAILBOX_PASSWORD): Request => ({
       method: "POST",
@@ -2965,7 +2878,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const unusedAddress = (): string => `${randomUUID()}@isolation.example.test`;
     const mailboxesOf = async (member: Member): Promise<string[]> =>
       readIdArray(await sendOk(member, { method: "GET", path: "/api/mail/mailboxes" }), "mailboxes");
-    /** The keys of an item envelope and of its properties: what two created mailboxes have in common. */
+    /** What two created mailboxes have in common. */
     const shapeOf = (text: string): string[][] => {
       const body: unknown = JSON.parse(text);
       if (!isRecord(body) || !isRecord(body.properties)) throw new Error(`expected an item envelope in ${text}`);
@@ -2990,7 +2903,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(readString(again.text, "error", "code")).toBe("provider_account_already_connected");
       expectNoneOf(again.text, [...a.ids, ofA], "B's duplicate refusal");
 
-      // The verification's refusal reaches the caller as its own 400 code, and creates nothing.
       const refused = await send(b.member, connect(unusedAddress(), REFUSED_MAILBOX_PASSWORD));
       expect(refused.status).toBe(400);
       expect(readString(refused.text, "error", "code")).toBe("mail_auth_failed");
@@ -3013,8 +2925,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     expect(answer.status).toBe(404);
   },
-  // B's summary names B's signed-out mailbox and not A's, and an unread inbox thread that arrives in A leaves B's
-  // counts where they were, while one that arrives in B raises B's unread count by exactly one (issue gh-1688).
+  // An unread inbox thread arriving in A leaves B's counts as they were; one arriving in B raises
+  // B's unread count by exactly one.
   "mail summary": async () => {
     const summaryOfB = async (ownIds: readonly string[] = []) => {
       const answer = await expectExcludesA(b.member, { method: "GET", path: "/api/mail/summary" }, ownIds);
@@ -3039,8 +2951,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     await seedMailThread(b, `<${randomUUID()}@example.test>`, `summary-${randomUUID()}`, `thread-${randomUUID()}`);
     expect((await summaryOfB([signedOutOfB])).unreadInbox).toBe(before.unreadInbox + 1);
   },
-  // B lists the folder of B's own mailbox and nothing of A's. A's mailbox answers B like a mailbox that does not
-  // exist, while A itself lists its folder there, so B's answer is a real refusal (issue gh-1689).
   "mailbox folder list": async () => {
     const ofA = await mailboxWithInboxFolder(a);
     const ofB = await mailboxWithInboxFolder(b);
@@ -3054,9 +2964,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.status).toBe(404);
     expect(await sendOk(a.member, foldersOf(ofA.mailboxId))).toContain(ofA.folderId);
   },
-  // B's reauthorization state lands in B's tenant for B's user and names B's mailbox. A's mailbox answers B like a
-  // mailbox that does not exist and gets no state, while A itself starts a reauthorization of it, so B's answer
-  // is a real refusal (issue gh-1742).
+  // A's mailbox gets no state for B; A then starts a reauthorization itself.
   "mailbox reauthorize": async () => {
     const ofA = await mailboxNeedingReauthorization(a);
     const ofB = await mailboxNeedingReauthorization(b);
@@ -3088,9 +2996,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const ofAStates = (await mailOauthStates(a)).filter((row) => !statesOfA.some((known) => known.id === row.id));
     expect(ofAStates.map((row) => [row.user_id, row.used_at])).toEqual([[a.member.userId, null]]);
   },
-  // B's facets name B's own area and project, each with B's thread, and neither A's area nor A's project. A's ids
-  // select for B what random ids select: no thread. A itself reads its project there, so its rows exist (issue
-  // gh-1747). The thread detail's pattern matches this path too, so the facets body shows which route answered.
+  // A's ids select for B what random ids select: no thread. The thread detail's pattern matches
+  // this path too, so the facets body shows which route answered.
   "mail thread facets": async () => {
     const ofA = await mailThreadInProjectOfArea(a);
     const ofB = await mailThreadInProjectOfArea(b);
@@ -3113,7 +3020,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(await sendOk(a.member, facets)).toContain(ofA.projectId);
   },
-  // B's sign-in state lands in B's tenant for B's user, and A's states and rows stay as they were (issue gh-1686).
   "mail oauth start": async () => {
     await startMailOauth(a.member);
     const statesOfA = await mailOauthStates(a);
@@ -3130,9 +3036,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(added.map((row) => [row.user_id, row.used_at])).toEqual([[b.member.userId, null]]);
     expectNoneOf(JSON.stringify(added), a.ids, "B's new sign-in state");
   },
-  // A's live sign-in state answers B exactly like a state nobody started, connects nothing and stays unused. A
-  // itself gets past the state check with it (the fixture's provider then refuses the code), so B's answer is a
-  // real refusal of the state and not what every caller gets.
+  // A itself gets past the state check with it (the fixture's provider then refuses the code).
   "mail oauth complete": async () => {
     const stateOfA = await startMailOauth(a.member);
     const complete = (state: string | undefined): Request => ({
@@ -3158,7 +3062,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(afterOwn).toHaveLength(1);
     expect(afterOwn[0]?.used_at).not.toBeNull();
   },
-  // The public callback reads no row: A's live state is handed on exactly like a random value, and stays unused.
+  // The public callback reads no row, so A's state is handed on like a random value and stays
+  // unused.
   "mail oauth callback": async () => {
     const stateOfA = await startMailOauth(a.member);
     await leavesAUnchanged(async () => {
@@ -3170,9 +3075,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect((await mailOauthStates(a, stateOfA)).map((row) => row.used_at)).toEqual([null]);
   },
-  // Each tenant gets a mailbox of its own for this case, with a credential, a sync state and server
-  // settings. A's answers B like a random id and keeps every row; B's own is removed by the same
-  // route, so the refusal is real (issue gh-1690).
   "mailbox removal": async () => {
     const foreign = await seedRemovableMailbox(a);
     const own = await seedRemovableMailbox(b);
@@ -3204,8 +3106,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
-  // A gets an open card of its own in this case. B's reject of it answers like a random id and leaves the card
-  // as it was; A's own reject then closes it, so the refusal above is real and not an unreachable route.
   "reject proposal": async () => {
     const card = await seedProposalCard(a);
     const cardOf = () => sendOk(a.member, { method: "GET", path: `/api/items/${card}` });
@@ -3223,9 +3123,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(own.status).toBe(200);
     expect(readString(own.text, "properties", "status")).toBe("rejected");
   },
-  // A gets two `rejected` cards with a valid envelope inside this case. B's reopen of the one answers like a random id
-  // and leaves it as it was; A's own reopen of the other returns it to `proposed`, so the refusal is not a route that
-  // refuses everything. A's reopened card is rejected again at the end, so the "inbox cards" case never counts it as open.
+  // A's own reopen of a second card succeeds. That card is rejected again at the end so "inbox
+  // cards" never counts it as open.
   "reopen proposal": async () => {
     const seedRejectedCard = (tenant: TenantFixture) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
@@ -3281,8 +3180,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: { message: "Use the other Event" },
       }));
     }),
-  // A and B each get a `proposed` card with an envelope inside this case. B's edit of A's card answers like a random id and
-  // leaves A's card as it was; B's edit of its own card succeeds, so the refusal is not a route that refuses everything.
   "update proposal values": async () => {
     const seedCard = (tenant: TenantFixture) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
@@ -3300,7 +3197,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         );
         return card.id;
       });
-    // A rejected card is no open card, so the "inbox cards" case, which counts each tenant's open cards, never sees these.
+    // A rejected card is not open, so the "inbox cards" case never counts these.
     const settle = (tenant: TenantFixture, cardId: string) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
         const cards = await getDatabaseByModuleId(client, "processingProposals");
@@ -3334,8 +3231,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await readCard(foreign)).toBe(foreignBefore);
     await Promise.all([settle(b, own), settle(a, foreign)]);
   },
-  // A and B each get a `proposed` card with a manual value inside this case. B's reset of A's card answers like a random id
-  // and leaves A's card, manual value included, as it was; B's reset of its own card succeeds and clears its manual value.
   "reset proposal overrides": async () => {
     const seedCard = (tenant: TenantFixture) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
@@ -3361,7 +3256,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         );
         return card.id;
       });
-    // A rejected card is no open card, so the "inbox cards" case, which counts each tenant's open cards, never sees these.
+    // A rejected card is not open, so the "inbox cards" case never counts these.
     const settle = (tenant: TenantFixture, cardId: string) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
         const cards = await getDatabaseByModuleId(client, "processingProposals");
@@ -3391,9 +3286,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await readCard(foreign)).toBe(foreignBefore);
     await Promise.all([settle(b, own), settle(a, foreign)]);
   },
-  // A and B each get an Inbox item and its `proposed` card inside this case. B's recompute of A's card answers like a random
-  // id and leaves A's card as it was; B's recompute of its own card succeeds and makes it `computing`, so the refusal is not a
-  // route that refuses everything.
+  // B's recompute of its own card succeeds (`computing`).
   "recompute proposal": async () => {
     const seedCard = (tenant: TenantFixture) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
@@ -3418,7 +3311,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         );
         return card.id;
       });
-    // A rejected card is no open card, so the "inbox cards" case, which counts each tenant's open cards, never sees these.
+    // A rejected card is not open, so the "inbox cards" case never counts these.
     const settle = (tenant: TenantFixture, cardId: string) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
         const cards = await getDatabaseByModuleId(client, "processingProposals");
@@ -3448,9 +3341,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await readCard(foreign)).toBe(foreignBefore);
     await Promise.all([settle(b, own), settle(a, foreign)]);
   },
-  // A and B each get a project and a `proposed` card inside this case. B's options of A's card answer like a random id, and
-  // each tenant's options of its own card hold its own project and never the other's, so the refusal is not a route that
-  // refuses everything and the list is not another tenant's.
+  // Each tenant's options hold only its own project.
   "list proposal options": async () => {
     const seed = (tenant: TenantFixture, name: string) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
@@ -3465,7 +3356,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         );
         return { cardId: card.id, projectId: project.id };
       });
-    // A rejected card is no open card, so the "inbox cards" case, which counts each tenant's open cards, never sees these.
+    // A rejected card is not open, so the "inbox cards" case never counts these.
     const settle = (tenant: TenantFixture, cardId: string) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
         const cards = await getDatabaseByModuleId(client, "processingProposals");
@@ -3565,7 +3456,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       path: `/api/tasks/series/${id}/occurrences/2026-10-21`,
       body: { status: "done" },
     });
-    // B's own series answers 201 and 400, the two answers a foreign series must not get.
+    // The two answers a foreign series must not get.
     const created = await send(b.member, onRuleDate(own));
     expect(created.status, created.text).toBe(201);
     expect(readString(created.text, "properties", "seriesId")).toBe(own);
@@ -3587,7 +3478,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const placed = await sendOk(b.member, { method: "PUT", path: hostEventPath(own.taskId, own.eventId) });
     expect(readString(placed, "taskId")).toBe(own.taskId);
     expect(placed).toContain(own.eventId);
-    // The generic relation endpoint still refuses both sides of the relation, for an edge that exists.
+    // The generic relation endpoint refuses both sides of the relation, for an edge that exists.
     for (const [source, key, target] of [
       [own.taskId, "hostEvents", own.eventId],
       [own.eventId, "hostedTasks", own.taskId],
@@ -3686,7 +3577,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       });
     const ownA = await createPeriod(a);
     const ownB = await createPeriod(b);
-    /** An Event of that day with a project and a transcript (issue #1721): the ids its `events` entry carries. */
+    /** The ids its `events` entry carries. */
     const seedDayEvent = (tenant: TenantFixture) =>
       runInTenant(tenant.tenantId, async () => {
         const chokePoint = createChokePoint(pool);
@@ -3700,7 +3591,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
           properties: { name: "Journal day project" },
         });
         const transcriptsId = await databaseIdFor(tenant.tenantId, "transcripts");
-        // `status` is a system key that only the transcription process may write.
+        // `status` is a system key only the transcription process may write.
         const transcript = await withTransaction(pool, (client) =>
           createItemWithClient(
             client,
@@ -3727,7 +3618,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(response).not.toContain(ownA.id);
     expect(dayEventOfB.filter((id) => !response.includes(id))).toEqual([]);
     expectNoneOf(response, dayEventOfA, "B's journal day");
-    // A's Event is on that day for A, so its absence from B's answer is isolation and not an empty day.
     const asA = await sendOk(a.member, { method: "GET", path });
     expect(dayEventOfA.filter((id) => !asA.includes(id))).toEqual([]);
     expectNoneOf(asA, dayEventOfB, "A's journal day");
@@ -3763,8 +3653,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(answer.text).toBe('{"transcripts":[],"nextCursor":null}');
     }
   },
-  // B deletes its own recording through the route and restores it through the generic Trash route;
-  // A's transcript answers like a random id and A's rows stay as A reads them.
+  // B restores its own recording through the generic Trash route.
   "transcript delete": () =>
     leavesAUnchanged(async () => {
       const fileId = readString(
@@ -3780,7 +3669,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         withTransaction(pool, async (client) => {
           const transcripts = await getDatabaseByModuleId(client, "transcripts");
           if (!transcripts) throw new Error("Missing transcripts");
-          // The link only the transcription process writes, as its step 0 writes it.
+          // The link only the transcription process writes.
           const item = await createItemWithClient(
             client,
             { databaseId: transcripts.id, properties: { name: "Delete me", link: transcriptionSourceLink(fileId) } },
@@ -3820,7 +3709,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       path: `/api/transcripts/${id}/speakers`,
     }));
   },
-  // Each tenant gets an Event with one `done` transcript linked to it, seeded here and used by no other case.
   "transcript summaries": async () => {
     const seedEvent = async (tenant: TenantFixture): Promise<string> => {
       const eventId = readString(
@@ -3834,7 +3722,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const transcriptId = await inTenantTransaction(tenant.tenantId, async (client) => {
         const transcripts = await getDatabaseByModuleId(client, "transcripts");
         if (!transcripts) throw new Error("Missing transcripts");
-        // `status` is a system key that only the transcription process may write.
+        // `status` is a system key only the transcription process may write.
         const item = await createItemWithClient(
           client,
           { databaseId: transcripts.id, properties: { name: "Summary probe", status: "done" } },
@@ -3851,7 +3739,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     };
     const [own, foreign] = [await seedEvent(b), await seedEvent(a)];
     const path = (ids: readonly string[]) => `/api/transcript-summaries?eventIds=${ids.join(",")}`;
-    // A reads the count of its own Event, so the zero B gets for it below is a refusal and not an empty fixture.
     expect(JSON.parse(await sendOk(a.member, { method: "GET", path: path([foreign]) }))).toEqual({
       [foreign]: { count: 1, doneCount: 1 },
     });
@@ -3871,16 +3758,15 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
     }
   },
-  // A and B each follow item 0 of a transcript of their own that this case seeds with notes. B then
-  // names A's transcript: `null` would delete A's state and `noted` on item 1 would add one. Both
-  // answer like a random id, A's state rows stay as they are and none appears in B's tenant.
+  // B names A's transcript: `null` would delete A's state and `noted` on item 1 would add one. Both
+  // answer like a random id and A's state rows stay as they are.
   "transcript action item state": async () => {
     const transcriptWithNotes = (tenant: TenantFixture): Promise<string> =>
       inTenantTransaction(tenant.tenantId, async (client) => {
         const transcripts = await getDatabaseByModuleId(client, "transcripts");
         if (!transcripts) throw new Error("Missing transcripts");
         const item = await createItemWithClient(client, { databaseId: transcripts.id, properties: { name: "Notes" } });
-        // The notes only the transcription process writes, as its step 5 stores them.
+        // Notes only the transcription process writes.
         await writeComputed(client, transcripts.id, item.id, TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY, {
           title: "Notes",
           summary: "",
@@ -3924,9 +3810,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await states(b, foreign)).toEqual([]);
     expect((await states(b, own)).map((row) => [row.action_item_id, row.state])).toEqual([[0, "noted"]]);
   },
-  // A and B each get a transcript with notes (an item without an owner) linked to an Event of their own,
-  // seeded here and used by no other case (issue gh-1767). B names A's transcript: the add answers like a
-  // random id and creates no task in either tenant and no state for A's transcript.
+  // B names A's transcript: the add creates no task in either tenant and no state for A's
+  // transcript.
   "transcript action item task create": async () => {
     const [own, foreign] = [await seedActionItemWorld(b), await seedActionItemWorld(a)];
     const request = (id: string | undefined): Request => ({
@@ -3942,7 +3827,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.status).toBe(404);
     expect(await actionItemRows(a, foreign.transcriptId)).toEqual({ states: [], tasks: tasksOfA });
     expect(await actionItemRows(b, foreign.transcriptId)).toEqual({ states: [], tasks: tasksOfB });
-    // A and B can each add their own item, so the 404 above is a refusal and not a route that never works.
     expect(readString(await sendOk(b.member, request(own.transcriptId)), "taskId")).toMatch(UUID_PATTERN);
     expect(readString(await sendOk(a.member, request(foreign.transcriptId)), "taskId")).toMatch(UUID_PATTERN);
     expect((await actionItemRows(a, foreign.transcriptId)).states).toMatchObject([
@@ -3950,8 +3834,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     ]);
     expect((await actionItemRows(a, own.transcriptId)).states).toEqual([]);
   },
-  // A and B each add the item of their own transcript. B then undoes the addition on A's transcript: it
-  // answers like a random id and A's task stays alive and its state `added`.
   "transcript action item task remove": async () => {
     const [own, foreign] = [await seedActionItemWorld(b), await seedActionItemWorld(a)];
     const path = (id: string | undefined): string => `/api/transcripts/${id}/action-items/0/task`;
@@ -3966,30 +3848,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     expect(answer.status).toBe(404);
     expect(await actionItemRows(a, foreign.transcriptId)).toEqual(before);
-    // B undoes its own addition, so the 404 above is a refusal and not a route that never works.
     expect(await sendOk(b.member, { method: "DELETE", path: path(own.transcriptId) })).toBe(
       '{"actionItemId":0,"state":null}',
     );
     expect((await actionItemRows(b, own.transcriptId)).states).toEqual([]);
   },
-  // Each tenant's Event offers the open item of its own transcript. B reads A's Event as a random id and
-  // its own list holds nothing of A's.
   "event transcript action items": async () => {
     const [own, foreign] = [await seedActionItemWorld(b), await seedActionItemWorld(a)];
     const proposalsOf = (eventId: string | undefined): Request => ({
       method: "GET",
       path: `/api/events/${eventId}/transcript-action-items`,
     });
-    // A reads the item of its own Event, so the 404 B gets for it below is a refusal and not an empty fixture.
     expect(await sendOk(a.member, proposalsOf(foreign.eventId))).toContain(foreign.transcriptId);
     const listed = await expectExcludesA(b.member, proposalsOf(own.eventId), [own.transcriptId]);
     expectNoneOf(listed.text, [foreign.eventId, foreign.transcriptId], "B's action item proposals");
     const answer = await expectForeignLikeRandom(b.member, [foreign.eventId], ([id]) => proposalsOf(id));
     expect(answer.status).toBe(404);
   },
-  // A and B each get a transcript of one speaker, linked to an Event with one participant, seeded here and
-  // used by no other case (issue gh-1770). B names A's transcript with its own person, and its own transcript
-  // with A's person: both answer like a random id, and A's speaker stays unmapped.
+  // B names A's transcript with its own person, and its own transcript with A's person; A's speaker
+  // stays unmapped.
   "transcript speaker assign": async () => {
     const [own, foreign] = [await seedSpeakerWorld(b), await seedSpeakerWorld(a)];
     const assign = (transcriptId: string | undefined, personId: string | undefined): Request => ({
@@ -4012,28 +3889,24 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(withForeignPerson.status).toBe(404);
     expect(await speakersOf(a.member, foreign.transcriptId)).toBe(before);
     expect(await speakersOf(b.member, own.transcriptId)).toContain('"personId":null');
-    // A and B each map their own speaker, so the 404s above are refusals and not a route that never works.
     expect(readString(await sendOk(b.member, assign(own.transcriptId, own.personId)), "personId")).toBe(own.personId);
     expect(readString(await sendOk(a.member, assign(foreign.transcriptId, foreign.personId)), "personId")).toBe(
       foreign.personId,
     );
     expect(await speakersOf(b.member, own.transcriptId)).not.toContain(foreign.personId);
   },
-  // Each tenant's candidates hold the participant of its own Event. B reads A's transcript as a random id.
   "transcript speaker candidates": async () => {
     const [own, foreign] = [await seedSpeakerWorld(b), await seedSpeakerWorld(a)];
     const candidatesOf = (transcriptId: string | undefined): Request => ({
       method: "GET",
       path: `/api/transcripts/${transcriptId}/speaker-candidates`,
     });
-    // A reads the participant of its own Event, so the 404 B gets for it below is a refusal and not an empty fixture.
     expect(await sendOk(a.member, candidatesOf(foreign.transcriptId))).toContain(foreign.personId);
     const listed = await expectExcludesA(b.member, candidatesOf(own.transcriptId), [own.personId]);
     expectNoneOf(listed.text, [foreign.personId, foreign.transcriptId, foreign.eventId], "B's speaker candidates");
     const answer = await expectForeignLikeRandom(b.member, [foreign.transcriptId], ([id]) => candidatesOf(id));
     expect(answer.status).toBe(404);
   },
-  // Each tenant gets an Event with one participant, seeded here and used by no other case (issue gh-1757).
   "event people": async () => {
     const seed = async (tenant: TenantFixture): Promise<{ eventId: string; personId: string }> => {
       const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
@@ -4059,17 +3932,15 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       method: "GET",
       path: `/api/events/${eventId}/people`,
     });
-    // A reads the participant of its own Event, so the 404 B gets for it below is a refusal and not an empty fixture.
     expect(await sendOk(a.member, peopleOf(foreign.eventId))).toContain(foreign.personId);
     const listed = await expectExcludesA(b.member, peopleOf(own.eventId), [own.personId]);
     expectNoneOf(listed.text, [foreign.eventId, foreign.personId], "B's participant list");
     const answer = await expectForeignLikeRandom(b.member, [foreign.eventId], ([id]) => peopleOf(id));
     expect(answer.status).toBe(404);
   },
-  // Each tenant gets an Event and a person with an address, seeded here and used by no other case (issue gh-1790).
-  // B replaces the people of A's Event, names A's person and names A's mailbox: each answers like a random id, and
-  // A's Event keeps its people. B then invites through its own Event with its own mailbox, so the refusals are not
-  // what every request gets; that one invitation queues a single job in B and creates B's organizer edge.
+  // B replaces the people of A's Event, names A's person and names A's mailbox; each answers like a
+  // random id. B then invites through its own Event, so the refusals are not what every request
+  // gets; that invitation queues one job in B and creates B's organizer edge.
   "event people replace": async () => {
     await linkOwnPerson(b);
     const seed = async (tenant: TenantFixture): Promise<{ eventId: string; personId: string; keptId: string }> => {
@@ -4129,9 +4000,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await peopleOf(a.member, foreign.eventId)).not.toContain(foreign.personId);
     expect(await peopleOf(a.member, foreign.eventId)).toContain(foreign.keptId);
   },
-  // Each tenant gets an Event with a linked person who has an address, seeded here and used by no other case (issue
-  // gh-1790). B invites through A's Event, A's person and A's mailbox: each answers like a random id and A's Event keeps
-  // its person without an invitation. B then invites its own person with its own mailbox, which queues one job in B.
+  // B invites through A's Event, A's person and A's mailbox; each answers like a random id. B then
+  // invites its own person, which queues one job in B.
   "event person invite": async () => {
     await linkOwnPerson(b);
     const seed = async (tenant: TenantFixture): Promise<{ eventId: string; personId: string }> => {
@@ -4189,17 +4059,16 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expectNoneOf(invited, [foreign.eventId, foreign.personId], "B's participant list");
     expect(await peopleOf(a.member, foreign.eventId)).toBe(stateOfA);
   },
-  // Each tenant gets an Event that hosts one task, seeded here and used by no other case (issue gh-1801).
   "event tasks": async () => {
     const [own, foreign] = [await taskAndEvent(b), await taskAndEvent(a)];
     await sendOk(b.member, { method: "PUT", path: hostEventPath(own.taskId, own.eventId) });
     await sendOk(a.member, { method: "PUT", path: hostEventPath(foreign.taskId, foreign.eventId) });
     const tasksOf = (eventId: string | undefined): Request => ({ method: "GET", path: `/api/events/${eventId}/tasks` });
-    // A reads the task of its own Event, so the 404 B gets for it below is a refusal and not an empty fixture.
     expect(await sendOk(a.member, tasksOf(foreign.eventId))).toContain(foreign.taskId);
     const listed = await expectExcludesA(b.member, tasksOf(own.eventId), [own.taskId]);
     expectNoneOf(listed.text, [foreign.eventId, foreign.taskId], "B's event tasks");
-    // The Event's day is fixed, so the state is open or missed depending on the day the test runs; both count as open.
+    // The Event's day is fixed, so the state is open or missed depending on when the test runs;
+    // both count as open.
     expect(JSON.parse(listed.text)).toMatchObject({
       eventId: own.eventId,
       tasks: [{ taskId: own.taskId }],
@@ -4211,8 +4080,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
-  // Each tenant gets an area with one project that holds an overdue open task, seeded here and used by no
-  // other case (issue gh-1760). An overdue task is in the overview's list whatever the day the test runs on.
+  // An overdue task is in the overview's list whatever day the test runs on.
   "area overview": async () => {
     const seed = async (tenant: TenantFixture): Promise<{ areaId: string; projectId: string; taskId: string }> => {
       const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
@@ -4238,7 +4106,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       method: "GET",
       path: `/api/areas/${areaId}/overview`,
     });
-    // A reads the task of its own area, so the 404 B gets for that area below is a refusal and not an empty fixture.
     const asOwner = await sendOk(a.member, overviewOf(foreign.areaId));
     expect([foreign.projectId, foreign.taskId].filter((id) => !asOwner.includes(id))).toEqual([]);
     const listed = await expectExcludesA(b.member, overviewOf(own.areaId), [own.projectId, own.taskId]);
@@ -4249,7 +4116,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
-  // Each tenant gets a Books item that holds a chosen cover, seeded here and used by no other case (issue gh-1793).
   "library automation retry": async () => {
     const seed = async (tenant: TenantFixture): Promise<{ itemId: string; blobId: string }> => {
       const created = await sendOk(tenant.member, {
@@ -4289,7 +4155,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     };
     const [own, foreign] = [await seed(b), await seed(a)];
     const retry = (id: string): Request => ({ method: "POST", path: `/api/items/${id}/automation/retry`, body: {} });
-    // B's own item is retried, so the 404 B gets for A's item below is a refusal and not a missing route.
     expect(await stateOf(b, own.itemId)).toMatchObject({ cover: { blobId: own.blobId } });
     const accepted = await send(b.member, retry(own.itemId));
     expect(accepted.status).toBe(202);
@@ -4300,13 +4165,11 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.status).toBe(404);
     expect(await stateOf(a, foreign.itemId)).toEqual(before);
   },
-  // Each tenant gets a Books item whose metadata job has run once and stored one cover candidate, seeded here and
-  // used by no other case (issue gh-1812): the job is the only writer of the stored set.
+  // The metadata job is the only writer of the stored candidate set.
   "library cover candidates list": async () => {
     const [own, foreign] = [await seedCoverCandidateItem(b), await seedCoverCandidateItem(a)];
     await runCoverCandidateJobs();
     const listOf = (id: string): Request => ({ method: "GET", path: `/api/items/${id}/cover-candidates` });
-    // B lists its own candidate, so the 404 B gets for A's item below is a refusal and not an empty fixture.
     const listed = await expectExcludesA(b.member, listOf(own.itemId), [own.imageUrl]);
     expectNoneOf(listed.text, [foreign.itemId, foreign.imageUrl], "B's cover candidates");
     expect(await send(a.member, listOf(foreign.itemId))).toMatchObject({ status: 200 });
@@ -4326,7 +4189,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     const before = await coverCandidateState(a, foreign.itemId);
     expect(before).toEqual({ status: "done", imageUrls: [foreign.imageUrl] });
-    // B refreshes its own item, so the 404 B gets for A's item below is a refusal and not a missing route.
     expect((await send(b.member, refresh(own.itemId))).status).toBe(202);
     expect(await coverCandidateState(b, own.itemId)).toEqual({ status: "pending", imageUrls: [own.imageUrl] });
     const answer = await expectForeignLikeRandom(b.member, [foreign.itemId], ([id]) => refresh(id!));
@@ -4349,8 +4211,9 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       return z.object({ properties: z.record(z.string(), z.unknown()) }).parse(JSON.parse(item)).properties
         .coverOverride;
     };
-    // The candidate host resolves to a private address, so a request that reaches the download is refused with a
-    // 400 on `index`, which shows the route is mounted and checked the address; no image is fetched or stored.
+    // The candidate host resolves to a private address, so a request that reaches the download is
+    // refused with a 400 on `index`: the route is mounted and checked the address, and no image is
+    // fetched.
     const dns = stubDnsLookup({ "covers.example.test": ["10.0.0.1"] });
     try {
       const refused = await send(b.member, selectOf(own.itemId));
@@ -4374,7 +4237,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "inbox types": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/inbox-types" });
   },
-  // A and B each get a card and a pending tick approval inside this case; each reads its own two and neither of the other's.
   "inbox cards": async () => {
     const seedStack = (tenant: TenantFixture) =>
       runInTenant(tenant.tenantId, async () => {
@@ -4404,7 +4266,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const [own, foreign] = [await seedStack(b), await seedStack(a)];
     const request: Request = { method: "GET", path: "/api/inbox/cards" };
 
-    // A reads its own two, so the absence of them for B below is a refusal and not an empty fixture.
     const asOwner = await sendOk(a.member, request);
     expect(Object.values(foreign).filter((id) => !asOwner.includes(id))).toEqual([]);
     expectNoneOf(asOwner, Object.values(own), "A's inbox cards");
@@ -4416,10 +4277,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       [own.approvalId, own.cardId].sort(),
     );
   },
-  // A and B each get an Inbox item and an active type inside this case, so the shared rows of the two tenants stay as
-  // they are. B's change of A's item answers like a random item id, and B's own item with A's type answers like a random
-  // type id; neither leaves an edge on A's or B's item. B's own change then succeeds, so the refusals are not a route
-  // that refuses everything.
+  // B's change of A's item, and of its own item with A's type, each answer like a random id and
+  // leave no edge. B's own change then succeeds.
   "change inbox item type": async () => {
     const seed = (tenant: TenantFixture) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
@@ -4472,9 +4331,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(changed.status).toBe(200);
     expect(await edgeCount(b, own.itemId, own.typeId)).toBe(1);
   },
-  // A and B each get an active Inbox item type inside this case, so the shared rows of the two tenants stay as they are. B's
-  // capture with A's type answers like one with a random type id and writes no item in either tenant; B's capture with its
-  // own type then succeeds and holds its item and the `type` edge, so the refusal is not a route that refuses everything.
+  // B's capture with A's type writes no item in either tenant; B's capture with its own type
+  // succeeds.
   "capture inbox item": async () => {
     const marker = "Isolation capture route probe";
     const seedType = (tenant: TenantFixture) =>
@@ -4540,8 +4398,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(item?.type_edges).toBe(2);
     expect(await captured(a)).toEqual([]);
 
-    // Attachments (issue gh-1963): B naming A's blob answers like a random blob id and creates no item and no attachment
-    // in either tenant; B's own uploaded blob then attaches, so the refusal is not a route that refuses every attachment.
+    // B naming A's blob creates no item and no attachment in either tenant; B's own blob then
+    // attaches.
     const attachmentText = "Isolation capture attachment probe";
     const withAttachment = (blobId: string) => ({
       text: attachmentText,
@@ -4578,8 +4436,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await captured(a, attachmentText)).toEqual([]);
     expect(await attachmentBlobIds(a, attachmentText)).toEqual([]);
   },
-  // A gets three cards and one pending tick approval, B one card and one approval, on top of whatever the shared rows
-  // and earlier cases left; each count rises by its own tenant's rows only, so neither sees the other's.
+  // Counts are compared as deltas on top of whatever earlier cases left; each rises by its own
+  // tenant's rows only.
   "inbox cards count": async () => {
     const request: Request = { method: "GET", path: "/api/inbox/cards/count" };
     const totalOf = async (tenant: TenantFixture): Promise<number> =>
@@ -4618,8 +4476,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await totalOf(a)).toBe(aBefore + 4);
     expect(await totalOf(b)).toBe(bBefore + 2);
   },
-  // A gets three pending approvals and two pending invitations, B one of each, on top of whatever earlier cases left
-  // (issue gh-1954); each tenant's counts rise by its own rows only, and the field without a source stays 0 for both.
+  // Counts are compared as deltas on top of whatever earlier cases left; the field without a source
+  // stays 0 for both.
   "badge counts": async () => {
     const request: Request = { method: "GET", path: "/api/badge-counts" };
     const countsOf = async (tenant: TenantFixture) =>
@@ -4647,7 +4505,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
           });
         }
       });
-    // The ingest of an iMIP message is the only production writer of an invitation; the fixture writes the row it would.
+    // iMIP ingest is the only production writer of an invitation; the fixture writes the row it
+    // would.
     const seedInvitations = async (tenant: TenantFixture, count: number) => {
       const invitationsDatabaseId = await databaseIdFor(tenant.tenantId, "invitations");
       await inTenantTransaction(tenant.tenantId, async (client) => {
@@ -4693,7 +4552,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       openInboxItems: 0,
     });
   },
-  // A and B each get an Event and a Task on the same day; each reads its own two and neither of the other's.
   "calendar timeline": async () => {
     const seedDay = (tenant: TenantFixture) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
@@ -4716,7 +4574,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const answer = await expectExcludesA(b.member, { method: "GET", path: `${path}${shape}` }, own);
       expectNoneOf(answer.text, foreign, `B's calendar timeline${shape}`);
     }
-    // A's rows are on that day for A, so their absence from B's answer is isolation and not an empty day.
     const asA = await sendOk(a.member, { method: "GET", path });
     expect(foreign.filter((id) => !asA.includes(id))).toEqual([]);
     expectNoneOf(asA, own, "A's calendar timeline");
@@ -4727,7 +4584,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
-  // A and B each get an Event and a Task on one day; each reads its own two in both directions and neither of the other's.
   "calendar agenda": async () => {
     const day = "2026-10-21";
     const seedDay = (tenant: TenantFixture) =>
@@ -4750,7 +4606,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const path = `/api/calendar/agenda?from=${day}&direction=${direction}&limit=200`;
       const answer = await expectExcludesA(b.member, { method: "GET", path }, own);
       expectNoneOf(answer.text, foreign, `B's calendar agenda ${direction}`);
-      // A's rows are on that day for A, so their absence from B's answer is isolation and not an empty day.
       const asA = await sendOk(a.member, { method: "GET", path });
       expect(foreign.filter((id) => !asA.includes(id))).toEqual([]);
       expectNoneOf(asA, own, `A's calendar agenda ${direction}`);
@@ -4768,9 +4623,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
-  // A and B each get an exception for the night of 2026-10-15 with a bedtime of its own, seeded here and used by
-  // no other case (issue gh-1809). Each reads its own bedtime for the night and never the other's; both tenants
-  // also keep their seeded plans, so a night that follows a plan is not mistaken for an empty answer.
+  // Both tenants keep their seeded plans, so a night that follows a plan is not mistaken for an
+  // empty answer.
   "sleep nights": async () => {
     const seedNight = (tenant: TenantFixture, bedTime: string) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
@@ -4789,7 +4643,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const asB = await expectExcludesA(b.member, request);
     expect(asB.text).toContain(`"bedTime":"${ownBedTime}"`);
     expect(asB.text).not.toContain(foreignBedTime);
-    // A's exception is on that night for A, so its absence from B's answer is isolation and not an empty fixture.
     const asA = await sendOk(a.member, request);
     expect(asA).toContain(`"bedTime":"${foreignBedTime}"`);
     expect(asA).not.toContain(ownBedTime);
@@ -4797,9 +4650,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
-  // A and B each get an area with one active project and, in turn, a Journal entry for today, seeded here and used by
-  // no other case (issue gh-1837). B reads no area, no day entry and no database of A, first while only A has rows and
-  // then with rows of its own; A reads its own rows, so B's answers are isolation and not an empty fixture.
+  // B reads nothing of A first while only A has rows, then with rows of its own; A reads its own
+  // rows, so B's answers are isolation and not an empty fixture.
   "overview summary": async () => {
     const overviewBody = z.object({
       areas: z.array(z.object({ id: z.string(), activeProjectCount: z.number() })),
@@ -4851,8 +4703,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     ).toEqual([]);
     expectNoneOf(asA, Object.values(own), "A's overview");
   },
-  // A and B each get a Task whose title holds the same fresh word, seeded here and used by no other case (issue
-  // gh-1842). B finds its own Task and never A's; A finds its own and never B's, so an empty answer cannot pass for
+  // Each tenant finds its own Task and never the other's, so an empty answer cannot pass for
   // isolation. A refused input answers 400 without repeating the query.
   "global search": async () => {
     const word = freshSearchWord();
@@ -4869,9 +4720,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
     expect(invalid.text).not.toContain(word);
   },
-  // Each tenant gets an Event with one participant, seeded here and used by no other case (issue gh-1796). B names
-  // A's Event: the copy answers like a random id and creates nothing in either tenant. An Idempotency-Key is a
-  // reservation of one tenant, so the key B used does not find A's copy.
+  // An Idempotency-Key is a reservation of one tenant, so the key B used does not find A's copy.
   "calendar item duplicate": async () => {
     const seed = async (
       tenant: TenantFixture,
@@ -4915,29 +4764,27 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await eventsOf(a.member, foreign.eventsDatabaseId)).toBe(eventsOfA);
     expect(await eventsOf(b.member, own.eventsDatabaseId)).toBe(eventsOfB);
 
-    // B copies its own Event with the same key, so the 404 above is a refusal and not a route that never works.
     const copy = await sendOk(b.member, duplicateOf(own.eventId));
     const copyId = readString(copy, "id");
     expect(copyId).not.toBe(own.eventId);
     expectNoneOf(copy, [foreign.eventId, foreign.personId], "B's copy");
     expect(await peopleOf(b.member, copyId)).toContain(own.personId);
     expectNoneOf(await eventsOf(b.member, own.eventsDatabaseId), [foreign.eventId, foreign.personId], "B's Events");
-    // A's request with the key B already used makes A's own copy, not B's.
     const copyOfA = readString(await sendOk(a.member, duplicateOf(foreign.eventId)), "id");
     expect(copyOfA).not.toBe(copyId);
     expect(await peopleOf(a.member, copyOfA)).toContain(foreign.personId);
     expect(await peopleOf(b.member, copyId)).not.toContain(foreign.personId);
   },
-  // Each tenant gets one pending invitation, seeded here and used by no other case (issue gh-1944). B answers A's:
-  // the answer is the 404 of a random id, and A's invitation stays pending with no Event made in either tenant. B's
-  // answer to its own invitation makes B's Event only, so the 404 is a refusal and not a route that never works.
+  // A's invitation stays pending with no Event made in either tenant; B's answer to its own makes
+  // B's Event only.
   "calendar invitation respond": async () => {
     const seed = async (
       tenant: TenantFixture,
       title: string,
     ): Promise<{ id: string; invitationsDatabaseId: string }> => {
       const invitationsDatabaseId = await databaseIdFor(tenant.tenantId, "invitations");
-      // The ingest of an iMIP message is the only production writer of an invitation; the fixture writes the row it would.
+      // iMIP ingest is the only production writer of an invitation; the fixture writes the row it
+      // would.
       const id = await inTenantTransaction(tenant.tenantId, async (client) => {
         const invitation = await createItemWithClient(
           client,
@@ -5003,8 +4850,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(generic.status, generic.text).toBe(403);
   },
-  // Each tenant gets its own calendar whose Events carry invitations, seeded here and used by no other case
-  // (issue gh-2003). A's calendar holds more of everything than B's, so a leaked count would show in B's answer.
+  // A's calendar holds more of everything than B's, so a leaked count would show in B's answer.
   "calendar cancellation impact": async () => {
     const seed = async (tenant: TenantFixture, eventCount: number): Promise<{ calendarId: string; ids: string[] }> => {
       const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
@@ -5035,7 +4881,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
               { writer: { writerKind: "user" } },
             ),
           );
-          // The invitation is written by the server only, so the fixture writes it with the system writer kind.
+          // Invitations are written by the server only, hence the system writer kind.
           await chokePoint.createRelation({
             relationPropertyId: people.id,
             callerItemId: event.id,
@@ -5059,7 +4905,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       method: "GET",
       path: `/api/calendar/calendars/${calendarId}/cancellation-impact`,
     });
-    // A reads its own calendar, so the 404 B gets for it below is a refusal and not an empty fixture.
     expect(JSON.parse(await sendOk(a.member, impactOf(foreign.calendarId)))).toEqual({
       eventCount: 2,
       cancellationCount: 2,
@@ -5074,9 +4919,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
-  // A and B each get an Event and a Task with a reminder on the same day, seeded here and used by no other case
-  // (issue gh-1858). Each reads its own two reminders and neither of the other's; A reads its own, so B's answer is
-  // isolation and not an empty fixture.
   "calendar reminders": async () => {
     const seedReminders = async (tenant: TenantFixture): Promise<string[]> => {
       const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
@@ -5098,7 +4940,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const request: Request = { method: "GET", path: "/api/calendar/reminders?from=2026-10-16T00%3A00%3A00Z" };
     const asB = await expectExcludesA(b.member, request, own);
     expectNoneOf(asB.text, foreign, "B's calendar reminders");
-    // A's reminders are in the window for A, so their absence from B's answer is isolation and not an empty window.
     const asA = await sendOk(a.member, request);
     expect(foreign.filter((id) => !asA.includes(id))).toEqual([]);
     expectNoneOf(asA, own, "A's calendar reminders");
@@ -5110,8 +4951,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
 
-  // A and B each put an exception for the night of 2026-10-23 with a bedtime of its own, through the real route
-  // (issue gh-1835). B's put answers B's bedtime and none of A's, and A keeps its exception untouched.
   "sleep night put": async () => {
     const path = "/api/sleep/nights/2026-10-23";
     const foreignBedTime = "20:41";
@@ -5123,7 +4962,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expectNoneOf(asB.text, [...a.ids, foreignPlanId], "B's sleep night put");
     expect(asB.text).toContain(`"bedTime":"${ownBedTime}"`);
     expect(asB.text).not.toContain(foreignBedTime);
-    // A's exception is still A's own, so B's put wrote B's tenant and not A's.
+    // So B's put wrote B's tenant and not A's.
     const asA = await sendOk(a.member, { method: "GET", path: "/api/sleep/nights?from=2026-10-23&to=2026-10-23" });
     expect(asA).toContain(`"bedTime":"${foreignBedTime}"`);
     expect(asA).not.toContain(ownBedTime);
@@ -5132,9 +4971,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
 
-  // Each tenant gets a weekday Event series, seeded here and used by no other case (issue gh-1843). A has already
-  // materialized the 14 October occurrence of its series, so B's request for that very date meets a stored occurrence
-  // item of A and must still answer like a random id. A foreign series creates nothing in either tenant.
+  // A has already materialized the 14 October occurrence, so B's request for that date meets a
+  // stored occurrence of A and must still answer like a random id.
   "event occurrence materialize": async () => {
     const seed = async (tenant: TenantFixture): Promise<{ seriesId: string; eventsDatabaseId: string }> => {
       const eventsDatabaseId = await databaseIdFor(tenant.tenantId, "events");
@@ -5164,7 +5002,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const eventsOf = (caller: Caller, databaseId: string): Promise<string> =>
       sendOk(caller, { method: "POST", path: `/api/databases/${databaseId}/query`, body: {} });
 
-    // A materializes its own occurrence, so the 404 B gets for the series below is a refusal and not a missing route.
     const foreignCreated = await send(a.member, materializeOf(foreign.seriesId));
     expect(foreignCreated.status, foreignCreated.text).toBe(201);
     const foreignOccurrenceId = readString(foreignCreated.text, "id");
@@ -5181,8 +5018,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await eventsOf(a.member, foreign.eventsDatabaseId)).toBe(eventsOfA);
     expect(await eventsOf(b.member, own.eventsDatabaseId)).toBe(eventsOfB);
 
-    // B's own series answers 201, then 200 with the same item, and 400 for a date it does not give: the three answers a
-    // foreign series must not get.
+    // The three answers a foreign series must not get.
     const created = await send(b.member, materializeOf(own.seriesId));
     expect(created.status, created.text).toBe(201);
     expect(readString(created.text, "properties", "seriesId")).toBe(own.seriesId);
@@ -5194,9 +5030,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect((await send(b.member, materializeOf(own.seriesId, "2026-10-17"))).status).toBe(400);
     expectNoneOf(await eventsOf(b.member, own.eventsDatabaseId), [foreign.seriesId, foreignOccurrenceId], "B's Events");
   },
-  // B trashes an item of its own here, used by no other case (issue gh-1851). B's list holds that item and its
-  // seeded trashed item and none of A's ids, and A's own list holds A's seeded trashed item, so the absence of A's
-  // rows from B's answer is isolation and not an empty fixture.
+  // A's own list holds A's seeded trashed item, so the absence of A's rows from B's answer is
+  // isolation and not an empty fixture.
   "list trash items": async () => {
     const seededId = readString(
       await sendOk(b.member, {
@@ -5213,9 +5048,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
-  // B archives a database of its own here, used by no other case (issue gh-1873). B's list holds that database and its
-  // seeded archived one and none of A's ids, and A's own list holds A's seeded archived database, so the absence of
-  // A's rows from B's answer is isolation and not an empty fixture.
+  // A's own list holds A's seeded archived database, so the absence of A's rows from B's answer is
+  // isolation and not an empty fixture.
   "list trash databases": async () => {
     const ownId = readString(
       await sendOk(b.member, { method: "POST", path: "/api/databases", body: { name: "Isolation trash probe" } }),
@@ -5227,10 +5061,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(readIdArray(answer.text, "databases")).not.toContain(a.archivedDatabaseId);
     expect(readIdArray(await sendOk(a.member, request), "databases")).toContain(a.archivedDatabaseId);
   },
-  // B asks to restore A's trashed item and archived database (issue gh-1904): both answer `not_found`, exactly as two
-  // random ids do, and A's rows stay trashed. B also restores a trashed item and an archived database of its own,
-  // seeded here and used by no other case, so a `not_found` for A's ids is a refusal and not a route that restores
-  // nothing.
+  // A's trashed item and archived database answer `not_found` exactly as random ids do. B also
+  // restores rows of its own, so `not_found` is a refusal and not a route that restores nothing.
   "restore trash": () =>
     leavesAUnchanged(async () => {
       const ownItemId = readString(
@@ -5288,7 +5120,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }));
     }),
   "approval request detail": async () => {
-    // Both tenants read their own request, so the 404 for the foreign id is a refusal and not a missing route.
     expect(readString(await sendOk(b.member, approvalRequestRead(b.approvalRequestId)), "id")).toBe(
       b.approvalRequestId,
     );
@@ -5303,7 +5134,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "code")).toBe("validation_failed");
   },
-  // B gets a second pending request of its own in this case, so a count that reached A's request would differ by one.
+  // So a count that reached A's request would differ by one.
   "approval request count": async () => {
     await inTenantTransaction(b.tenantId, async (client) => {
       const run = await createAgentRun(client, { triggeredBy: "user", task: "count probe", userId: b.member.userId });
@@ -5409,7 +5240,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     await expectExcludesA(b.member, { method: "GET", path: "/api/semp/threads?kind=chat,item,tick&limit=100" }, [
       b.sempThreadId,
     ]);
-    // Case rows: an Inbox item of each tenant and its item thread, created by the capture write and the send route.
+    // Case rows, created by the capture write and the send route.
     const seedItemThread = async (fixture: TenantFixture) => {
       const databaseId = await databaseIdFor(fixture.tenantId, "inbox");
       const capture = await inTenantTransaction(fixture.tenantId, (client) =>
@@ -5433,7 +5264,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     expect(answer.status).toBe(200);
     expect(readIdArray(answer.text, "rows")).toEqual([]);
-    // Each tenant finds its own item thread by that filter, so the empty answer above is not a filter that matches nothing.
     const bySubject = async (member: Member, subjectId: string) =>
       readIdArray(
         await sendOk(member, { method: "GET", path: `/api/semp/threads?subjectInboxItemId=${subjectId}` }),
@@ -5490,8 +5320,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(own.status).toBe(200);
       expect(own.text).toBe("AB");
     }),
-  // B lists its own project, whose run is in the answer, so an empty list cannot pass for isolation. A's project id
-  // answers B exactly like a random id, an empty list, while A's own request still returns A's run (issue gh-1909).
+  // B's own run is in its answer, so an empty list cannot pass for isolation; A's own request still
+  // returns A's run.
   "list agent runs": async () => {
     const listFor = (projectItemId: string): Request => ({
       method: "GET",
@@ -5508,7 +5338,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
   "semp message retry": async () => {
-    // Case rows: one failed reply in each tenant, played with the production writers of the turn.
+    // Played with the production writers of the turn.
     const seedFailedReply = (fixture: TenantFixture) =>
       inTenantTransaction(fixture.tenantId, async (client) => {
         const sent = await sendSempMessage(client, { text: "Retry isolation", context: [], hasContext: false });
@@ -5539,7 +5369,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       );
       expect(answer.status).toBe(404);
       expect(readString(answer.text, "error", "code")).toBe("not_found");
-      // A's message id in a thread of B's own is not found there either, and answers as a random id does.
+      // A's message id in a thread of B's own is not found there either.
       const mixed = await expectForeignLikeRandom(b.member, [foreign.messageId], ([message]) => ({
         method: "POST",
         path: `/api/semp/threads/${own.threadId}/messages/${message}/retry`,
@@ -5555,7 +5385,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await messageIdsOf(b, own.threadId)).toContain(readString(retried.text, "messageId"));
   },
   "semp message regenerate": async () => {
-    // Case rows: one finished reply that made no changes in each tenant, played with the production writers of the turn.
+    // Played with the production writers of the turn.
     const seedDoneReply = async (fixture: TenantFixture) => {
       const setup: ReplySetup = {
         admin: adminPool,
@@ -5589,14 +5419,14 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       );
       expect(answer.status).toBe(404);
       expect(readString(answer.text, "error", "code")).toBe("not_found");
-      // A's message id in a thread of B's own is not found there either, and answers as a random id does.
+      // A's message id in a thread of B's own is not found there either.
       const mixed = await expectForeignLikeRandom(b.member, [foreign.messageId], ([message]) => ({
         method: "POST",
         path: `/api/semp/threads/${own.threadId}/messages/${message}/regenerate`,
       }));
       expect(mixed.status).toBe(404);
     });
-    // Nothing of A's reply changed: no replacement was queued and the reply is not marked as replaced.
+    // No replacement was queued and the reply is not marked as replaced.
     expect(await messageIdsOf(a, foreign.threadId)).toEqual(foreignMessagesBefore);
     const regenerated = await send(b.member, {
       method: "POST",
@@ -5612,12 +5442,11 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       method: "GET",
       path: `/api/agent-runs/${id}`,
     }));
-    // B's member reads B's own run; a run of B's tenant with another actor answers like an unknown id
-    // (issue gh-1805).
+    // A run of B's tenant with another actor answers like an unknown id.
     const own = await send(b.member, { method: "GET", path: `/api/agent-runs/${b.agentRunId}` });
     expect(own.status, own.text).toBe(200);
     expect(own.text).toContain(b.agentRunId);
-    // Raw fixture: a run's actor must be its own tenant's user (agent_runs_actor_user_id_tenant_fkey) and a
+    // A run's actor must be a user of its own tenant (agent_runs_actor_user_id_tenant_fkey) and a
     // tenant has one user, so the admin connection skips foreign-key triggers for this one insert.
     const otherActorRun = await runInTenant(b.tenantId, () =>
       withTransaction(adminPool, async (client) => {
@@ -5629,12 +5458,11 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       method: "GET",
       path: `/api/agent-runs/${id}`,
     }));
-    // The forged run is removed before the assertions, so no later case meets a run of a foreign actor.
+    // Removed before the assertions, so no later case meets a run of a foreign actor.
     const removed = await adminPool.query("DELETE FROM agent_runs WHERE id = $1", [otherActorRun.id]);
     expect(removed.rowCount).toBe(1);
     expect(otherActor.status).toBe(404);
-    // A message of A answers B like a random id, whether B asks about its own run or A's (issue gh-1889). B's own
-    // reply answers B. A's ids appear in none of the answers.
+    // A message of A answers B like a random id, whether B asks about its own run or A's.
     const ownReply = await seedScopedReply(b.tenantId, b.member.userId);
     const foreignReply = await seedScopedReply(a.tenantId, a.member.userId);
     try {
@@ -5666,19 +5494,19 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }
   },
   "agent run steps": async () => {
-    // A's run has an opening `run_status` event, so an unchecked answer would carry its id as a step id.
+    // A's run has an opening `run_status` event, so an unchecked answer would carry its id as a
+    // step id.
     const foreign = await expectForeignLikeRandom(b.member, [a.agentRunId], ([id]) => ({
       method: "GET",
       path: `/api/agent-runs/${id}/steps`,
     }));
     expect(foreign.status).toBe(404);
     expectNoneOf(foreign.text, [a.agentRunId, `"stepId":"${a.agentRunEventId}"`], "agent run steps");
-    // B's member reads B's own run, whose opening event is its first step.
     const own = await send(b.member, { method: "GET", path: `/api/agent-runs/${b.agentRunId}/steps` });
     expect(own.status, own.text).toBe(200);
     expect(own.text).toContain(`"stepId":"${b.agentRunEventId}"`);
-    // A run of B's tenant with another actor and an event of its own answers like an unknown id (issue gh-1821).
-    // Raw fixture for the actor, as in "agent run detail": the foreign key is skipped for this one insert.
+    // A run of B's tenant with another actor answers like an unknown id; the actor foreign key is
+    // skipped as in "agent run detail".
     const otherActor = await runInTenant(b.tenantId, () =>
       withTransaction(adminPool, async (client) => {
         await client.query("SET LOCAL session_replication_role = replica");
@@ -5699,8 +5527,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(removed.rowCount).toBe(1);
     expect(answer.status).toBe(404);
     expectNoneOf(answer.text, [`"stepId":"${otherActor.eventId}"`], "agent run steps of another actor");
-    // A message of A answers B like a random id, whether B asks about its own run or A's (issue gh-1889); B's own
-    // reply returns its one event as a step.
+    // A message of A answers B like a random id, whether B asks about its own run or A's.
     const ownReply = await seedScopedReply(b.tenantId, b.member.userId);
     const foreignReply = await seedScopedReply(a.tenantId, a.member.userId);
     try {
@@ -5730,13 +5557,13 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       await removeScopedReply(foreignReply);
     }
   },
-  // A retryable run (a failed run of a failed occurrence) is seeded for each tenant inside this case, so a 404 for B shows
-  // the tenant scope and not the eligibility rules. B's retry of A's run answers like a random id, queues no job and leaves
-  // A's run without a successor; B's own run is accepted, and a run of B's tenant with another actor answers the same 404.
+  // A retryable run is seeded for each tenant, so a 404 for B shows the tenant scope and not the
+  // eligibility rules. B's retry of A's run queues no job and leaves it without a successor; a run
+  // of B's tenant with another actor answers the same 404.
   "retry agent run": async () => {
     const seedRetryableRun = (tenant: TenantFixture, userId: string, task: string) =>
       runInTenant(tenant.tenantId, async () => {
-        // Raw SQL: only the sweep inserts an occurrence, and it does so for a due rule at a time the test cannot set.
+        // Only the sweep inserts an occurrence, for a due rule at a time the test cannot set.
         const occurrence = await pool.query<{ id: string }>(
           `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
            VALUES ($1, now(), '{"kind":"interval","minutes":5}'::jsonb, 'failed') RETURNING id`,
@@ -5770,8 +5597,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     };
     const foreignRun = await seedRetryableRun(a, a.member.userId, "retry isolation of A");
     const ownRun = await seedRetryableRun(b, b.member.userId, "retry isolation of B");
-    // Raw fixture: a run's actor must be its own tenant's user (agent_runs_actor_user_id_tenant_fkey) and a tenant has
-    // one user, so the admin connection skips foreign-key triggers for this one insert.
+    // A run's actor must be a user of its own tenant (agent_runs_actor_user_id_tenant_fkey) and a
+    // tenant has one user, so the admin connection skips foreign-key triggers for this one insert.
     const otherActorRun = await runInTenant(b.tenantId, () =>
       withTransaction(adminPool, async (client) => {
         await client.query("SET LOCAL session_replication_role = replica");
@@ -5809,7 +5636,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(await jobsOf(ownRun.runId)).toBe(1);
       expect(await jobsOf(foreignRun.runId)).toBe(0);
     } finally {
-      // The seeded rows go before any later case reads the tenants' runs: the jobs, then the runs, then the occurrences.
+      // Removed before any later case reads the tenants' runs: the jobs, then the runs, then the
+      // occurrences.
       await adminPool.query("SELECT graphile_worker.remove_job($1)", [retryHeartbeatFireJobKey(ownRun.runId)]);
       const removed = await adminPool.query("DELETE FROM agent_runs WHERE id = ANY($1::uuid[])", [
         [foreignRun.runId, ownRun.runId, otherActorRun.id],
@@ -5848,8 +5676,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         path: `/api/projects/${randomUUID()}/mcp-grants/${tool}`,
         body: { granted: true },
       }));
-      // B's own tool registration granted on A's project, against a random project. The route
-      // writes a grant for any project id, so both succeed and differ only by their timestamps.
+      // B's own registration granted on A's project, against a random project. The route writes a
+      // grant for any project id, so both succeed and differ only by their timestamps.
       const grant = (project: string): Request => ({
         method: "PATCH",
         path: `/api/projects/${project}/mcp-grants/${b.mcpToolRegistrationId}`,
@@ -5900,7 +5728,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         }));
         expect(project.status).toBe(404);
       }
-      // B's own project, with A's database.
       const database = await expectForeignLikeRandom(b.member, [a.databaseId], ([id]) => ({
         method: "PATCH",
         path: `/api/projects/${b.projectItemId}/database-grants`,
@@ -5909,8 +5736,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(database.status).toBe(404);
       expect(await storedGrants()).toEqual(before);
     }),
-  // Each tenant's project gets one automation of its own (`origin = 'user'`, switched off so no sweep touches it): B's
-  // list shows B's only, and A's project id answers exactly like a random id (issue gh-1910).
+  // Each project gets one switched-off user automation (no sweep touches it): B lists B's only.
   "project heartbeats": async () => {
     const heartbeatIds: string[] = [];
     for (const fixture of [a, b]) {
@@ -5943,9 +5769,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.status).toBe(404);
     expectNoneOf(answer.text, [...a.ids, aHeartbeatId], "project heartbeats");
   },
-  // B's own fresh project (so its counts are known without leaning on rows other cases change) has one enabled user
-  // automation and one granted tool of B's: B's summary shows exactly those, and A's project id answers exactly like a
-  // random id and carries none of A's ids (issue gh-1935).
+  // A fresh project of B, so its counts are known without leaning on rows other cases change.
   "project agent summary": async () => {
     const projectItemId = await runInTenant(b.tenantId, () => createTestProjectItem(pool));
     await runInTenant(b.tenantId, async () => {
@@ -5988,7 +5812,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: { requiresApproval: false, riskClass: "read" },
       }));
     }),
-  // A's server stays unsynced: the sync would record `syncStatus: "error"` on it, and `leavesAUnchanged` reads the item.
+  // The sync would record `syncStatus: "error"` on A's server, which `leavesAUnchanged` reads.
   "mcp server sync": () =>
     leavesAUnchanged(async () => {
       const answer = await expectForeignLikeRandom(b.member, [a.mcpServerItemId], ([id]) => ({
@@ -6075,7 +5899,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         path: `/api/databases/${id}/properties`,
         body: { key: "probe", name: "Probe", type: "text" },
       }));
-      // A relation from B's own database targeting A's database.
       await expectForeignLikeRandom(b.member, [a.targetDatabaseId], ([targetDatabaseId]) => ({
         method: "POST",
         path: `/api/databases/${b.databaseId}/properties`,
@@ -6127,7 +5950,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }));
       expect(refused.status).toBe(404);
     });
-    // The same request on a property of B is served, so the foreign answer is a refusal of A's row.
+    // The same request on B's property is served, so the foreign answer is a refusal of A's row.
     const bProperty = await caseOptionPropertyId(b, "Isolation option add");
     const own = await send(b.member, {
       method: "POST",
@@ -6144,7 +5967,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "update property option": async () => {
     const aTags = await healthTagsPropertyId(a);
     const label = "Isolation rename probe";
-    // `medication` is a seeded option of A's Health records, so a foreign rename would find its target.
+    // A seeded option of A's Health records, so a foreign rename would find its target.
     await leavesAUnchanged(async () => {
       const refused = await expectForeignLikeRandom(b.member, [aTags], ([id]) => ({
         method: "PATCH",
@@ -6153,7 +5976,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }));
       expect(refused.status).toBe(404);
     });
-    // The same kind of request on a property of B is served, so the foreign answer is a refusal of A's row.
+    // The same kind of request on B's property is served, so the foreign answer is a refusal of A's
+    // row.
     const bProperty = await caseOptionPropertyId(b, "Isolation option update");
     const own = await send(b.member, {
       method: "PATCH",
@@ -6169,7 +5993,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
 
   // --- tenant: views -------------------------------------------------------------------------
   "list views": async () => {
-    // The view list holds curated views only; database-linked ones are listed per database.
+    // Curated views only; database-linked ones are listed per database.
     await expectExcludesA(b.member, { method: "GET", path: "/api/views?limit=200" }, [b.curatedViewId]);
   },
   "view detail": async () => {
@@ -6195,8 +6019,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     leavesAUnchanged(async () => {
       await expectForeignLikeRandom(b.member, [a.viewId], ([id]) => ({ method: "DELETE", path: `/api/views/${id}` }));
     }),
-  // Position 1 moves A's first curated item behind its second, so a foreign write that landed
-  // would change the order A's curated view query returns.
+  // Position 1 moves A's first curated item behind its second, so a foreign write that landed would
+  // change the order.
   "add/reposition curated view item": () =>
     leavesAUnchanged(async () => {
       await curatedItemCases("PUT", { position: 1 });
@@ -6280,7 +6104,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   },
   "create/replace relation": () =>
     leavesAUnchanged(async () => {
-      // Metadata A's existing edge does not carry, so a foreign replace that landed changes it.
+      // Metadata A's edge does not carry, so a foreign replace that landed changes it.
       await relationCases("PUT", { metadata: { writtenBy: "B" } });
     }),
   "set relation": () =>
@@ -6338,7 +6162,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       await relationCases("DELETE", undefined);
     }),
   "list relations": async () => {
-    // A foreign item answers exactly as a random one does, with or without the `propertyKey` filter.
     await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
       method: "GET",
       path: `/api/items/${id}/relations`,
@@ -6349,7 +6172,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
   },
   "list related collections": async () => {
-    // A foreign item answers exactly as a random one does, and B's own related collections name nothing of A's.
     for (const foreignId of [a.itemId, a.targetItemId]) {
       await expectForeignLikeRandom(b.member, [foreignId], ([id]) => ({
         method: "GET",
@@ -6359,14 +6181,13 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     await expectExcludesA(b.member, { method: "GET", path: `/api/items/${b.targetItemId}/related` }, [b.databaseId]);
   },
   "item delete impact": async () => {
-    // A foreign item answers exactly as a random one does, whichever of A's items it is and whatever it is connected to.
     for (const foreignId of [a.itemId, a.targetItemId]) {
       await expectForeignLikeRandom(b.member, [foreignId], ([id]) => ({
         method: "GET",
         path: `/api/items/${id}/delete-impact`,
       }));
     }
-    // B's own item counts B's rows only: two records of an inline database seeded for this case.
+    // Two records of an inline database seeded for this case.
     await runInTenant(b.tenantId, async () => {
       const chokePoint = createChokePoint(pool);
       const inline = await chokePoint.createInlineDatabase({
@@ -6379,8 +6200,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(JSON.parse(own.text)).toMatchObject({ subtreeItemCount: 2, subtreePageCount: 0, linksToOwn: [] });
   },
   "count items": async () => {
-    // A foreign database answers exactly as a random one does: alone, grouped, with the collection filter, and
-    // behind an entry of B's own, where one unresolvable entry fails the whole batch.
+    // Alone, grouped, with the collection filter, and behind an entry of B's own, where one
+    // unresolvable entry fails the whole batch.
     const foreignEntries: Array<(values: readonly string[]) => Record<string, unknown>[]> = [
       ([databaseId]) => [{ databaseId }],
       ([databaseId]) => [{ databaseId, groupBy: a.relationPropertyKey }],
@@ -6395,7 +6216,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }));
       expect(refused.status).toBe(404);
     }
-    // B's own counts name B's databases and the target of B's own edge, and nothing of A's.
     await expectExcludesA(
       b.member,
       {
@@ -6409,8 +6229,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     );
   },
   "database facets": async () => {
-    // A foreign database answers exactly as a random one does: for a text facet, for a relation facet and a path
-    // through it, and under a filter with an open filter.
+    // For a text facet, a relation facet and a path through it, and under a filter with an open
+    // filter.
     const present = { type: "is_not_empty", property: a.propertyKey };
     const foreignBodies: Record<string, unknown>[] = [
       { facets: [a.propertyKey] },
@@ -6425,7 +6245,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }));
       expect(refused.status).toBe(404);
     }
-    // B's own facets name the target of B's own edge, and nothing of A's.
     await expectExcludesA(
       b.member,
       {
@@ -6436,10 +6255,9 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       [b.targetItemId],
     );
   },
-  // A and B each get an Inbox item and a card that creates a company and a person, confirmed through the real route, inside
-  // this case. B's origin read of A's confirmed item answers like a random id and like B's own item made by hand, so the 404
-  // has one body whatever its cause; B's read of its own confirmed item succeeds and names the card, the Inbox item and the
-  // person of B's own confirm and nothing of A's, so the refusal is not a route that refuses everything.
+  // B's origin read of A's confirmed item answers like a random id and like B's own hand-made item,
+  // so the 404 has one body whatever its cause. B's read of its own confirmed item names its own
+  // card, Inbox item and person.
   "item origin": async () => {
     interface ConfirmedCapture {
       cardId: string;
@@ -6518,7 +6336,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     expect(refused.status).toBe(404);
     expect(refused.text).toContain('"not_found"');
-    // B's own item made by hand has no origin row, and its answer is the foreign one to the byte.
+    // No origin row; its answer is the foreign one to the byte.
     const byHand = await send(b.member, { method: "GET", path: originPath(b.itemId) });
     expect(byHand.status).toBe(404);
     expect(byHand.text).toBe(refused.text);
@@ -6531,7 +6349,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     );
     expect(answer.text).toContain("Origin probe of B person");
     expect(answer.text).not.toContain("Origin probe of A");
-    // A reads its own, so the route is not one that refuses a tenant only because of who B is.
     const foreignOwn = await send(a.member, { method: "GET", path: originPath(foreign.companyId) });
     expect(foreignOwn.status, foreignOwn.text).toBe(200);
     expect(foreignOwn.text).toContain(foreign.cardId);
@@ -6565,7 +6382,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       path: `/api/items/${id}/page/changes?since=${since}`,
     }));
     expect(refused.status).toBe(404);
-    // The allowed side: B lists the changes of an item of its own that has no page, an empty list.
     const created = await send(b.member, {
       method: "POST",
       path: `/api/databases/${b.databaseId}/items`,
@@ -6583,7 +6399,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       path: `/api/items/${id}/page.md`,
     }));
     expect(refused.status).toBe(404);
-    // The allowed side: B reads its own page, whose body and token carry none of A's ids.
     const own = await send(b.member, { method: "GET", path: `/api/items/${b.itemId}/page.md` });
     expect(own.status, own.text).toBe(200);
     expectNoneOf(own.text, a.ids, "B's own page.md");
@@ -6591,7 +6406,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "replace page markdown": () =>
     leavesAUnchanged(async () => {
       const markdownHeaders = (etag: string) => ({ "Content-Type": "text/markdown", "If-Match": `"${etag}"` });
-      // A foreign item answers exactly as a random one does, with a current-looking token, and nothing of A's is written.
+      // Even with a current-looking token; nothing of A's is written.
       const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
         method: "PUT",
         path: `/api/items/${id}/page.md`,
@@ -6599,7 +6414,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: "Foreign text",
       }));
       expect(refused.status).toBe(404);
-      // The allowed side: B replaces the page of an item of its own, created inside this case.
       const fresh = readString(
         await sendOk(b.member, {
           method: "POST",
@@ -6622,14 +6436,12 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }),
   "insert page markdown": () =>
     leavesAUnchanged(async () => {
-      // A foreign item answers exactly as a random one does, and nothing of A's page is written.
       const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
         method: "POST",
         path: `/api/items/${id}/page/insert`,
         body: { placement: "end", markdown: "Foreign text" },
       }));
       expect(refused.status).toBe(404);
-      // The allowed side: B inserts into its own page.
       const own = await send(b.member, {
         method: "POST",
         path: `/api/items/${b.itemId}/page/insert`,
@@ -6640,14 +6452,12 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }),
   "create subpage": () =>
     leavesAUnchanged(async () => {
-      // A foreign parent answers exactly as a random one does, and nothing of A's is written.
       const refused = await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
         method: "POST",
         path: `/api/items/${id}/page/subpages`,
         body: { title: "Foreign subpage" },
       }));
       expect(refused.status).toBe(404);
-      // The allowed side: B creates one under B's own item.
       const own = await send(b.member, {
         method: "POST",
         path: `/api/items/${b.itemId}/page/subpages`,
@@ -6663,7 +6473,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const before = await readForeignHost();
     expect(before.status, before.text).toBe(200);
     await leavesAUnchanged(async () => {
-      // A's page answers exactly as a random id does, and so does A's host item, which is not a page at all.
+      // So does A's host item, which is not a page at all.
       for (const foreignId of [foreign.pageItemId, a.itemId]) {
         const refused = await expectForeignLikeRandom(b.member, [foreignId], ([id]) => ({
           method: "POST",
@@ -6671,12 +6481,11 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         }));
         expect(refused.status).toBe(404);
       }
-      // The allowed side: B duplicates its own page.
       const copied = await send(b.member, { method: "POST", path: `/api/items/${own.pageItemId}/page/duplicate` });
       expect(copied.status, copied.text).toBe(201);
       expectNoneOf(copied.text, [...a.ids, foreign.hostItemId, foreign.pageItemId], "B's own duplicate");
     });
-    // The page of A's host still holds exactly the block of its one page: no copy was placed in it.
+    // No copy was placed in it.
     expect(await readForeignHost()).toEqual(before);
   },
   "rename page": async () => {
@@ -6689,7 +6498,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const before = await readForeign();
     expect(before.map((answer) => answer.status)).toEqual([200, 200]);
     await leavesAUnchanged(async () => {
-      // A's page answers exactly as a random id does, and so does A's host item, which is not a page at all.
+      // So does A's host item, which is not a page at all.
       for (const foreignId of [foreign.pageItemId, a.itemId]) {
         const refused = await expectForeignLikeRandom(b.member, [foreignId], ([id]) => ({
           method: "PATCH",
@@ -6698,7 +6507,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         }));
         expect(refused.status).toBe(404);
       }
-      // The allowed side: B renames its own page.
       const renamed = await send(b.member, {
         method: "PATCH",
         path: `/api/items/${own.pageItemId}/page/title`,
@@ -6707,7 +6515,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(renamed.status, renamed.text).toBe(200);
       expectNoneOf(renamed.text, [...a.ids, foreign.hostItemId, foreign.pageItemId], "B's own rename");
     });
-    // A's page keeps its title, on its item and in the block of its host's page.
+    // On its item and in the block of its host's page.
     expect(await readForeign()).toEqual(before);
   },
   "convert page block": async () => {
@@ -6722,21 +6530,19 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const before = await readForeign();
     expect(before.map((answer) => answer.status)).toEqual([200, 200]);
     await leavesAUnchanged(async () => {
-      // A's host answers exactly as a random id does, with A's own block id in the body.
       const refusedParent = await expectForeignLikeRandom(b.member, [foreign.hostItemId], ([id]) => ({
         method: "POST",
         path: `/api/items/${id}/page/convert`,
         body: { blockId: foreignBlockId, type: "text", confirmedPageCount: 1 },
       }));
       expect(refusedParent.status).toBe(404);
-      // A's block id under B's own host answers exactly as a random block id does: B learns nothing about A's blocks.
+      // B learns nothing about A's blocks.
       const refusedBlock = await expectForeignLikeRandom(b.member, [foreignBlockId], ([blockId]) => ({
         method: "POST",
         path: `/api/items/${own.hostItemId}/page/convert`,
         body: { blockId, type: "text", confirmedPageCount: 1 },
       }));
       expect(refusedBlock.status).toBe(400);
-      // The allowed side: B converts the page block of its own host.
       const converted = await send(b.member, {
         method: "POST",
         path: `/api/items/${own.hostItemId}/page/convert`,
@@ -6745,12 +6551,10 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(converted.status, converted.text).toBe(200);
       expectNoneOf(converted.text, [...a.ids, foreign.hostItemId, foreign.pageItemId], "B's own conversion");
     });
-    // A's page is still live and its block still stands in the host's page.
     expect(await readForeign()).toEqual(before);
   },
   "restore page version": () =>
     leavesAUnchanged(async () => {
-      // A foreign item answers exactly as a random one does, and nothing of A's page is written.
       await expectForeignLikeRandom(b.member, [a.itemId], ([id]) => ({
         method: "POST",
         path: `/api/items/${id}/page/restore`,
@@ -6773,8 +6577,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }),
   "upload file": () =>
     leavesAUnchanged(async () => {
-      // The bodies differ by the created ids, so the statuses are compared: B uploading bytes A
-      // already stored must not be told so.
+      // The bodies differ by the created ids, so statuses are compared: B uploading bytes A already
+      // stored must not be told so.
       const upload = (content: string): Request => ({
         method: "POST",
         path: "/api/files",
@@ -6786,7 +6590,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const random = await expectExcludesA(b.member, upload(`ID3 audio of ${randomUUID()}`));
       expect(random.status).toBe(201);
       expect(foreign.status, foreign.text).toBe(random.status);
-      // Issue #1645: A's project as B's attach target answers exactly like a random id, before B's body is read.
+      // Refused before B's body is read.
       const attach = ([target]: readonly string[]): Request => ({
         method: "POST",
         path: "/api/files",
@@ -6803,8 +6607,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }),
   "upload blob": () =>
     leavesAUnchanged(async () => {
-      // B uploading bytes A already stored must never be handed A's blob. The status is not
-      // compared: an earlier case may already have stored the same bytes in B.
+      // B must never be handed A's blob. The status is not compared: an earlier case may already
+      // have stored the same bytes in B.
       const upload = (content: string | Buffer): Request => ({
         method: "POST",
         path: "/api/blobs",
@@ -6819,8 +6623,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }),
   "download blob": async () => {
     await expectForeignLikeRandom(b.member, [a.blobId], ([id]) => ({ method: "GET", path: `/api/blobs/${id}` }));
-    // The conditional branches answer 304 with A's ETag and 416 with A's size to A itself, so
-    // B naming A's content hash or an unsatisfiable range must still get the plain not-found.
+    // The conditional branches answer 304 with A's ETag and 416 with A's size to A itself, so B
+    // naming A's content hash or an unsatisfiable range must still get the plain not-found.
     await expectForeignLikeRandom(b.member, [a.blobId], ([id]) => ({
       method: "GET",
       path: `/api/blobs/${id}`,
@@ -6839,10 +6643,9 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "list account exports": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/account/exports" }, [b.exportId]);
   },
-  // A and B each get a session, a trashed item, an archived database, a mailbox that needs a new sign-in, a Semp
-  // problem and AI spend, seeded here and used by no other case (issue gh-1903). What A gains leaves every figure of
-  // B's summary where it was, and B's summary names B's mailbox and not A's; the same rows in B raise B's figures by
-  // exactly one each (the spend by its cost), so B's unchanged answers are isolation and not an empty fixture.
+  // What A gains leaves every figure of B's summary where it was; the same rows in B raise B's
+  // figures by exactly one each (the spend by its cost), so B's unchanged answers are isolation and
+  // not an empty fixture.
   "account summary": async () => {
     const summaryBody = z.strictObject({
       activeSessions: z.number(),
@@ -6856,7 +6659,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const request: Request = { method: "GET", path: "/api/account/summary" };
     const summaryOfB = async (ownIds: readonly string[], idsOfA: readonly string[]) =>
       summaryBody.parse(JSON.parse((await expectExcludesA(b.member, request, ownIds, idsOfA)).text));
-    // The rows one tenant gains; the extra session is the caller's own second login.
+    // The extra session is the caller's own second login.
     const gain = async (tenant: TenantFixture, costUsd: number) => {
       const session = await signIn(tenant.member.email, tenant.member.password, "ios");
       const itemId = readString(
@@ -6905,7 +6708,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const ofA = await gain(a, 3);
     const afterForeign = await summaryOfB([signedOutOfB], [ofA.mailboxId, ofA.itemId, ofA.databaseId]);
     expect(afterForeign).toEqual(before);
-    // A's own summary holds what A gained, so B's unchanged answer is a refusal to leak and not a fixture that is empty.
     const summaryOfA = summaryBody.parse(JSON.parse(await sendOk(a.member, request)));
     expect(summaryOfA.mailAccountsNeedingReauth.map((mailbox) => mailbox.id)).toContain(ofA.mailboxId);
     expect(summaryOfA.aiCostMonthUsd).toBeGreaterThanOrEqual(3);
@@ -6929,7 +6731,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       problemCount: before.problemCount + 1,
       aiCostMonthUsd: before.aiCostMonthUsd + 5,
     });
-    // The second sessions are this case's own: signing them out leaves the members' sessions as the other cases expect.
+    // Signing out this case's own second sessions leaves the members' sessions as other cases
+    // expect.
     for (const [tenant, session] of [
       [a, ofA.session],
       [b, ofB.session],
@@ -6945,7 +6748,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   },
   "delete own account": () =>
     leavesAUnchanged(async () => {
-      // A's real password is a wrong password for B: B must be refused exactly as for any other.
+      // A's real password is a wrong password for B.
       await expectForeignLikeRandom(b.member, [a.member.password], ([password]) => ({
         method: "POST",
         path: "/api/account/delete",
@@ -6953,7 +6756,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }));
     }),
   "update profile": async () => {
-    // A member of a third tenant calls it: B's user row is a fixture the cases after this one read.
+    // A third tenant calls it: B's user row is a fixture later cases read.
     const callerTenantId = await createTestTenant(adminPool);
     const caller = await signUp(callerTenantId, "member");
     // `users` is a global identity table, read in the system scope the session lookup uses.
@@ -6962,7 +6765,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       if (!user) throw new Error(`no user ${userId}`);
       return user;
     };
-    // The queued jobs whose key names the tenant, read through graphile-worker's public `jobs` view.
+    // Read through graphile-worker's public `jobs` view.
     const jobsOf = async (tenantId: string) => {
       const { rows } = await adminPool.query<{ id: string; key: string | null }>(
         "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
@@ -6975,7 +6778,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     };
     const patch = (body: unknown): Request => ({ method: "PATCH", path: "/api/account/profile", body });
 
-    // The account comes from the session only: A's user id in the body is refused exactly as a random one.
+    // The account comes from the session only.
     const refused = await expectForeignLikeRandom(caller, [a.member.userId], ([userId]) =>
       patch({ locale: "en", userId }),
     );
@@ -6988,7 +6791,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(readString(answer.text, "user", "locale")).toBe("en");
     expectNoneOf(answer.text, a.ids, "update profile");
     expect((await userRow(caller.userId)).locale).toBe("en");
-    // The search rebuild the change queues belongs to the caller's tenant.
+    // The search rebuild belongs to the caller's tenant.
     expect((await jobsOf(callerTenantId)).map((job) => job.key)).toEqual([
       expect.stringContaining("item-search-backfill"),
     ]);
@@ -7049,7 +6852,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     path: `/api/admin/invites/${await createInviteAsAdmin()}/revoke`,
     body: {},
   })),
-  // The target is a member of a third tenant, so deleting it touches neither A nor B.
+  // A member of a third tenant, so deleting it touches neither A nor B.
   "admin delete account": adminCase("admin delete account", "POST", async () => ({
     method: "POST",
     path: `/api/admin/accounts/${adminTarget.userId}/delete`,
@@ -7089,9 +6892,8 @@ interface OwnerProbe {
   label: string;
   ids: string[];
   build: (values: readonly string[]) => Request;
-  /** The status A's own request must get, where the route has a single success answer. */
+  /** Where the route has a single success answer. */
   status?: number;
-  /** Values A's own answer must contain. */
   contains?: string[];
   /** Puts A's row back after a probe that changed it. */
   undo?: () => Promise<void>;
@@ -7266,7 +7068,7 @@ function ownerProbes(): OwnerProbe[] {
     {
       label: "project database grant set",
       ids: [a.projectItemId, a.databaseId],
-      // The database's default access, so A's own request stores nothing and needs no undo.
+      // The database's default access, so A's request stores nothing and needs no undo.
       build: ([project, databaseId]) => ({
         method: "PATCH",
         path: `/api/projects/${project}/database-grants`,
@@ -7293,7 +7095,7 @@ function ownerProbes(): OwnerProbe[] {
     {
       label: "transcript speaker assignment",
       ids: [a.transcriptItemId],
-      // Clearing a key that is not mapped is a success that writes nothing, so no undo is needed.
+      // Clearing an unmapped key writes nothing, so no undo is needed.
       build: call("PUT", ([id]) => `/api/transcripts/${id}/speakers/SPEAKER_00`, { personId: null }),
       status: 200,
     },
@@ -7311,35 +7113,36 @@ function ownerProbes(): OwnerProbe[] {
       label: "confirm proposal",
       ids: [a.proposalItemId],
       build: call("POST", ([id]) => `/api/proposals/${id}/confirm`),
-      // The fixture proposal has no status, so A's own confirm is refused and writes nothing.
+      // The fixture proposal has no status, so A's confirm is refused and writes nothing.
       status: 400,
     },
     {
       label: "revise proposal",
       ids: [a.proposalItemId],
       build: call("POST", ([id]) => `/api/proposals/${id}/revise`, { message: "Use the other Event" }),
-      // The fixture proposal is not a transcript card, so A's own message-only revise is refused and writes nothing.
+      // The fixture proposal is not a transcript card, so A's revise is refused and writes nothing.
       status: 400,
     },
     {
       label: "update proposal values",
       ids: [a.proposalItemId],
       build: call("PATCH", ([id]) => `/api/proposals/${id}/values`, { set: { primary: { name: "Owner edit" } } }),
-      // The fixture proposal has no status, so A's own edit is refused and writes nothing.
+      // The fixture proposal has no status, so A's edit is refused and writes nothing.
       status: 400,
     },
     {
       label: "reset proposal overrides",
       ids: [a.proposalItemId],
       build: call("POST", ([id]) => `/api/proposals/${id}/reset-overrides`),
-      // The fixture proposal has no status, so A's own reset is refused and writes nothing.
+      // The fixture proposal has no status, so A's reset is refused and writes nothing.
       status: 400,
     },
     {
       label: "recompute proposal",
       ids: [a.proposalItemId],
       build: call("POST", ([id]) => `/api/proposals/${id}/recompute`),
-      // The fixture proposal is no card of an Inbox item, so A's own recompute is refused and writes nothing.
+      // The fixture proposal is not an Inbox item card, so A's recompute is refused and writes
+      // nothing.
       status: 400,
     },
     {
@@ -7361,8 +7164,8 @@ function ownerProbes(): OwnerProbe[] {
     {
       label: "mcp tool registration reclassify",
       ids: [a.mcpToolRegistrationId],
-      // The seeded value, so A's registration keeps a classification other than the one B's
-      // foreign reclassify sends, and a cross-tenant write would still change what A reads.
+      // The seeded value differs from what B's foreign reclassify sends, so a cross-tenant write
+      // would change what A reads.
       build: call("PATCH", ([id]) => `/api/mcp-tool-registrations/${id}`, { requiresApproval: true }),
       status: 200,
       contains: ['"requiresApproval":true'],
@@ -7371,7 +7174,8 @@ function ownerProbes(): OwnerProbe[] {
       label: "mcp server sync",
       ids: [a.mcpServerItemId],
       build: call("POST", ([id]) => `/api/mcp-servers/${id}/sync`),
-      // The fixture server has no connectionConfig, so A's own sync reaches the connection factory and is refused there.
+      // The fixture server has no connectionConfig, so A's sync is refused at the connection
+      // factory.
       status: 502,
       contains: ['"reason":"invalid_config"'],
     },
@@ -7448,27 +7252,23 @@ function ownerProbes(): OwnerProbe[] {
 // ---------------------------------------------------------------------------------------------
 
 interface McpProbe {
-  /** `tools/call` with A's ids answers exactly as with random ids. */
   foreignLikeRandom(
     foreign: readonly string[],
     args: (values: readonly string[]) => Record<string, unknown>,
   ): Promise<void>;
-  /**
-   * `tools/call` succeeds, returns none of A's ids (nor of `moreIdsOfA`, rows the case seeded for A itself) and
-   * returns every one of `ownIds`.
-   */
+  /** Also excludes `moreIdsOfA` (rows the case seeded for A) and requires every one of `ownIds`. */
   excludesA(args: Record<string, unknown>, ownIds: readonly string[], moreIdsOfA?: readonly string[]): Promise<void>;
   /**
-   * `tools/call` answers 200 without any id of A (nor of `moreIdsOfA`, rows the case seeded for A itself), whether the
-   * call ran or was held for approval, which a run credential is for an operation that needs it. Returns the answer's
-   * text so the case can tell the two apart; an error in it is not a failure here.
+   * Answers 200 without any id of A, whether the call ran or was held for approval (as a run
+   * credential is for an operation that needs it). Returns the text so the case can tell the two
+   * apart; an error in it is not a failure here.
    */
   touchesNoneOfA(args: Record<string, unknown>, moreIdsOfA: readonly string[]): Promise<string>;
 }
 
 type McpCase = (probe: McpProbe) => Promise<void>;
 
-/** How many days the `page.mergeJournalDuplicates` isolation case has used, one per caller. */
+/** One day per caller. */
 let mergedJournalDays = 0;
 
 const MCP_CASES = {
@@ -7507,7 +7307,7 @@ const MCP_CASES = {
   "property.patch": (p) =>
     p.foreignLikeRandom([a.propertyId], ([propertyId]) => ({ propertyId, patch: { name: "Renamed by B" } })),
   "property.delete": (p) => p.foreignLikeRandom([a.propertyId], ([propertyId]) => ({ propertyId })),
-  // REST-only (issue #1699): MCP answers both as unknown tools, for A's Health records `tags` as for a random id.
+  // REST-only: MCP answers both as unknown tools.
   "property.option.add": async (p) => {
     const aTags = await healthTagsPropertyId(a);
     await p.foreignLikeRandom([aTags], ([propertyId]) => ({ propertyId, label: "Isolation MCP probe" }));
@@ -7627,7 +7427,8 @@ const MCP_CASES = {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
   },
   "relation.related": async (p) => {
-    // `a.targetItemId` has a collection of its own (the database holding the edge to it), which must not be seen.
+    // `a.targetItemId` has a collection of its own (the database holding the edge to it), which
+    // must not be seen.
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
     await p.foreignLikeRandom([a.targetItemId], ([itemId]) => ({ itemId }));
     await p.excludesA({ itemId: b.targetItemId }, [b.databaseId]);
@@ -7667,13 +7468,13 @@ const MCP_CASES = {
     await p.excludesA({ parent: { itemId: b.itemId }, title: "Own subpage" }, []);
   },
   "page.duplicate": async (p) => {
-    // A's page answers exactly as a random id does, and so does A's host item, which is not a page at all.
+    // So does A's host item, which is not a page at all.
     await p.foreignLikeRandom([mcpPages.foreign.pageItemId], ([pageItemId]) => ({ pageItemId }));
     await p.foreignLikeRandom([a.itemId], ([pageItemId]) => ({ pageItemId }));
     await p.excludesA({ pageItemId: mcpPages.own.pageItemId }, []);
   },
   "page.rename": async (p) => {
-    // A's page answers exactly as a random id does, and so does A's host item, which is not a page at all.
+    // So does A's host item, which is not a page at all.
     await p.foreignLikeRandom([mcpPages.foreign.pageItemId], ([pageItemId]) => ({
       pageItemId,
       title: "Foreign title",
@@ -7682,11 +7483,10 @@ const MCP_CASES = {
     await p.excludesA({ pageItemId: mcpPages.own.pageItemId, title: "Own title" }, [mcpPages.own.pageItemId]);
   },
   "page.convertToBlock": async (p) => {
-    // B's page is seeded per caller, because the caller that converts it leaves the page block gone.
+    // Seeded per caller, because the caller that converts it leaves the page block gone.
     const foreignBlockId = await firstBlockIdOfPage(a.member, mcpPages.foreign.hostItemId);
     const own = await seedSubpage(b);
     const ownBlockId = await firstBlockIdOfPage(b.member, own.hostItemId);
-    // A's host answers exactly as a random id does, and so does A's block id under B's own host.
     await p.foreignLikeRandom([mcpPages.foreign.hostItemId], ([parentItemId]) => ({
       parentItemId,
       blockId: foreignBlockId,
@@ -7703,7 +7503,8 @@ const MCP_CASES = {
       { parentItemId: own.hostItemId, blockId: ownBlockId, type: "text", confirmedPageCount: 1 },
       [mcpPages.foreign.hostItemId, mcpPages.foreign.pageItemId, foreignBlockId],
     );
-    // A session converts B's block; a run credential is held for approval or refused, and then the page stays.
+    // A session converts B's block; a run credential is held for approval or refused, and the page
+    // stays.
     if (!answer.includes('"error"')) expect(answer).toContain("trashedPageCount");
   },
   "page.insert": async (p) => {
@@ -7711,8 +7512,7 @@ const MCP_CASES = {
     await p.excludesA({ itemId: b.itemId, placement: "end", markdown: "Own insert" }, []);
   },
   "page.ensureJournalPeriod": async (p) => {
-    // Both tenants have an entry for the day, so the call names no id and resolves the period in B's own Journal:
-    // B must get B's item and document and none of A's.
+    // The call names no id and resolves the period in B's own Journal.
     const ensureDay = (tenant: TenantFixture) =>
       inTenantTransaction(tenant.tenantId, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-16"));
     const ownA = await ensureDay(a);
@@ -7720,8 +7520,8 @@ const MCP_CASES = {
     await p.excludesA({ type: "day", date: "2026-10-16" }, [ownB.itemId, ownB.docId], [ownA.itemId, ownA.docId]);
   },
   "page.mergeJournalDuplicates": async (p) => {
-    // The call names a period and no id, so it resolves in the caller's own Journal. Both tenants hold two live entries of
-    // that day; every call gets a day of its own, because the caller that merges leaves its period without a duplicate.
+    // Both tenants hold two live entries of that day; each call gets its own day, because a merge
+    // leaves its period without a duplicate.
     const period = `2026-12-${String(10 + ++mergedJournalDays)}`;
     const seedEntries = (tenant: TenantFixture) =>
       inTenantTransaction(tenant.tenantId, async (client) => {
@@ -7729,7 +7529,8 @@ const MCP_CASES = {
         if (!journal) throw new Error("Journal database is not seeded");
         const entries: string[] = [];
         for (let n = 0; n < 2; n += 1) {
-          // Two live entries of one period are a state the lazy creation never produces, so the fixture creates them directly.
+          // Lazy creation never produces two live entries of one period, so the fixture creates
+          // them directly.
           const entry = await createItemWithClient(
             client,
             { databaseId: journal.id, properties: { name: `\u{1F4D3} ${period}`, type: "day", period } },
@@ -7752,19 +7553,18 @@ const MCP_CASES = {
 
     const answer = await p.touchesNoneOfA({ type: "day", period }, ownA);
 
-    // A's two entries are live whatever B's caller did.
     expect(await liveOf(a, ownA)).toEqual([...ownA].sort());
     const liveB = await liveOf(b, ownB);
     if (answer.includes('"error"')) {
-      // A run credential is held for approval, and nothing is merged until the user decides.
+      // A run credential is held for approval; nothing is merged until the user decides.
       expect(liveB).toEqual([...ownB].sort());
     } else {
-      // A session merges B's pair and names B's two entries; one of them is in B's Trash.
+      // A session merges B's pair; one of the two is in B's Trash.
       for (const id of ownB) expect(answer).toContain(id);
       expect(liveB).toHaveLength(1);
     }
   },
-  // The probe's version token never matches: MCP answers A's item exactly as it answers a random id, and writes nothing.
+  // The probe's version token never matches, and nothing is written.
   "page.replace": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({
       itemId,
@@ -7773,7 +7573,7 @@ const MCP_CASES = {
     }));
   },
   "page.changes": async (p) => {
-    // The probe instant: after every page document of the fixtures exists and not in the future.
+    // After every fixture page document exists and not in the future.
     const since = new Date().toISOString();
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, since }));
     await p.excludesA({ itemId: b.itemId, since }, []);
@@ -7916,7 +7716,8 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       expect(body).toHaveProperty("lastActivityAt");
       if (!isRecord(body)) throw new Error("Invalid thread response");
       if (thread.kind === "tick") {
-        // Issue #1562: the tick thread's own heartbeat header, and no active run (the fixture's run is the user's).
+        // The tick thread's own heartbeat header, and no active run (the fixture's run is the
+        // user's).
         expect({ heartbeat: body.heartbeat, activeRun: body.activeRun }).toEqual({
           heartbeat: {
             id: a.heartbeatId,
@@ -8320,7 +8121,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
           status: "archived",
           processingMethod: "pageContent",
         });
-        // Older generic writes accepted arbitrary select values; this reproduces a legacy target.
+        // Reproduces a stored select value outside the option set.
         const changed = await client.query<{ id: string }>(
           "UPDATE items SET properties = jsonb_set(properties, '{targetDatabase}', to_jsonb($3::text)) WHERE database_id = $1 AND id = $2 RETURNING id",
           [typesId, unknown.id, "legacyUnknown"],
@@ -8956,7 +8757,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     }
     expect(await grants()).toEqual([]);
 
-    // A session sees the sensitive database closed, opens it, and the agent of the project is let in.
+    // A session sees the sensitive database closed, opens it, and the project's agent is let in.
     expect(accessIn(await sendOk(b.member, { method: "GET", path }), healthId)).toBe("none");
     const opened = await patch(b.member, { databaseId: healthId, access: "write" });
     expect(opened.status, opened.text).toBe(200);
@@ -8997,7 +8798,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect(own).toHaveProperty("blobs.file.blobId", a.blobId);
     const original = own.properties;
     const historical = { ...original, file: { blobId: b.blobId } };
-    // Historical invalid JSONB predates the blob-reference guard; the fixture is tenant-scoped.
+    // Writes invalid JSONB the blob-reference guard would refuse; the fixture is tenant-scoped.
     async function replaceProperties(properties: Record<string, unknown>) {
       await inTenantTransaction(a.tenantId, async (client) => {
         const result = await client.query("UPDATE items SET properties = $3::jsonb WHERE tenant_id = $1 AND id = $2", [
@@ -9062,8 +8863,8 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
         );
         expect(refused.status).toBe(200);
         expect(refused.text).toContain('"error"');
-        // An agent run that ends an active link is asked for approval first (issue #1758), so the member
-        // ends the link and the run's unlink is the no-op of an already broken one.
+        // An agent run that ends an active link is asked for approval first, so the member ends the
+        // link and the run's unlink is the no-op of an already broken one.
         if (caller === mcpRunCredential && action === "unlink") {
           await send(b.member, { method: "POST", path: `/api/items/${own}/links/note/unlink` });
         }
@@ -9076,9 +8877,9 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
   });
 
   it("answers A's own ids differently from random ids on every probed route, so a foreign answer is a real refusal", async () => {
-    // Positive control for the tenant cases: for each id they probe, A naming its own row must
-    // take another branch than A naming a random id. Mutating probes are idempotent for A's rows
-    // or are undone right after; the destructive routes share their ids with a read probed here.
+    // Positive control for the tenant cases: for each id they probe, A naming its own row must take
+    // another branch than A naming a random id. Mutating probes are idempotent for A's rows or
+    // undone right after; the destructive routes share their ids with a read probed here.
     for (const probe of ownerProbes()) {
       const random = probe.ids.map(() => randomUUID());
       const own = await send(a.member, probe.build(probe.ids));

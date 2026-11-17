@@ -41,7 +41,6 @@ function count(entries: ItemCountEntryInput[], now?: Date) {
   return cp.countItemsBatch(entries, { resolver, now });
 }
 
-/** The live items of a database, counted by a plain statement of the test's own as the expected value. */
 async function liveItems(databaseId: string): Promise<number> {
   const { rows } = await withTransaction(pool, (client) =>
     client.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1 AND deleted_at IS NULL", [
@@ -61,7 +60,6 @@ function byKey(groups: ItemCountGroup[]): ItemCountGroup[] {
   });
 }
 
-/** What a refused count reports, with the requested id masked so two requests can be compared. */
 async function notFoundAnswer(databaseId: string, entries: ItemCountEntryInput[]): Promise<Record<string, unknown>> {
   try {
     await count(entries);
@@ -127,7 +125,6 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
       }
 
       expect(await count(entries)).toEqual(expected);
-      // The same entries in another order come back in that order.
       expect(await count([...entries].reverse())).toEqual([...expected].reverse());
     }));
 
@@ -411,7 +408,6 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
         key: "stage",
         name: "Stage",
         type: "select",
-        // Deliberately not in alphabetical order, and with an option no item uses.
         config: { options: [{ key: "todo" }, { key: "doing" }, { key: "done" }, { key: "blocked" }] },
       });
       const stages: unknown[] = ["done", "zeta", "doing", "todo", "done", "alpha", "done", "", null, undefined, "todo"];
@@ -517,7 +513,6 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
       await seedSystem(pool);
       const tasks = await database("tasks");
       await make("tasks", { name: "Foreign task" });
-      // The other tenant counts its own database, so the refusal below is not a missing row.
       expect(await count([{ databaseId: tasks.id }])).toEqual([{ databaseId: tasks.id, count: 1 }]);
       return tasks.id;
     });

@@ -3,32 +3,18 @@ import { ValidationError } from "../errors.js";
 import type { McpToolClassification } from "./mcpToolAnnotationClassification.js";
 
 /**
- * `mcp_tool_registrations` (issue #124): one row per tool a discovery sync has last seen on
- * an `mcpServers` item, keyed `(mcp_server_item_id, tool_name)`. Discoverability (this table)
- * and per-project visibility (`mcpProjectGrantsStore.ts`) are independent facts — see this
- * issue's Context — so a registration's `active`/schema snapshot is entirely separate from
- * whether any project has granted the tool.
+ * One row per tool a sync last saw on an `mcpServers` item, keyed `(mcp_server_item_id, tool_name)`.
+ * Discoverability is independent of per-project grants (`mcpProjectGrantsStore.ts`).
  *
- * `upsertMcpToolRegistration` is the sync-facing write (issue #125, "Synchronize tools only
- * on human request", owns calling it): it snapshots the tool's name/schema/description/active
- * state from a live MCP `tools/list` call. It never touches `display_label`, `risk_class` or
- * `requires_approval`, so it is the one write of this table that `index.ts` exports. `display_label` is user-owned
- * and survives a re-sync untouched; its one other writer is `mcpToolLabelSuggestion.ts`, which fills a label only
- * where there is none (docs/adr/2026-11-14-mcp-tool-label-suggestions-fill-only-empty-display-labels.md).
+ * `upsertMcpToolRegistration` is the only exported write: it never touches `display_label`, `risk_class` or
+ * `requires_approval`. `display_label` is user-owned; label suggestions fill only an empty one. `risk_class` and
+ * `requires_approval` are written by the sync only while `classification_source` is `annotation`; a person's
+ * change sets it to `manual` for good. See docs/architecture/agents-approvals-and-ai.md#capabilities-and-mcp-grants.
  *
- * `risk_class` and `requires_approval` have two writers with a one-way handoff
- * ([[2026-11-14-mcp-tool-classification-is-owned-by-the-annotation-sync-until-a-person-sets-it]]): the sync writes
- * them while `classification_source` is `annotation`, through `upsertClassifiedMcpToolRegistration`, and a person's
- * change (`mcpGrantsAdminStore.ts`) sets it to `manual`, after which no sync rewrites them.
- *
- * The user-only `risk_class`/`requires_approval` mutations live in `mcpGrantsAdminStore.ts`, and the classifying
- * upsert lives here, and all of them are deliberately not re-exported from this package's `index.ts`: keeping them
- * off `@semprec/data`'s public surface means `agent-runtime` (already a dependent of this
- * package) has no importable path to them at all, per this issue's "agents have no write path
- * to grants" acceptance criterion. `mcpSync.ts` and the tests of this package reach the classifying upsert by its
- * relative path.
+ * The classifying upsert and the user-only mutations stay off `index.ts` so `agent-runtime` has no importable path
+ * to them; `mcpSync.ts` and tests use relative paths.
  */
-/** User-owned localized label; each locale is optional. */
+/** Each locale is optional. */
 export interface McpToolDisplayLabel {
   cs?: string;
   en?: string;
@@ -77,7 +63,7 @@ export function parseStoredMcpToolDisplayLabel(value: unknown): McpToolDisplayLa
   return result;
 }
 
-/** Exported for `mcpGrantsAdminStore.ts` only — not part of this package's public `index.ts` surface. */
+/** For `mcpGrantsAdminStore.ts` only; not exported from `index.ts`. */
 export function rowToRegistration(row: McpToolRegistrationRow): McpToolRegistration {
   return {
     id: row.id,
@@ -102,20 +88,18 @@ export interface UpsertMcpToolRegistrationInput {
   active?: boolean;
 }
 
-/** The input of the classifying upsert, which is not on the package's public surface. */
+/** Not exported from `index.ts`. */
 export interface UpsertClassifiedMcpToolRegistrationInput extends UpsertMcpToolRegistrationInput {
   /**
-   * The classification derived from the tool's annotations. A new row stores it (the column defaults,
-   * `unclassified` with approval, when it is omitted); an existing row takes it only while its
-   * `classification_source` is `annotation`.
+   * A new row stores it (column defaults, `unclassified` with approval, when omitted); an existing row takes it only
+   * while `classification_source` is `annotation`.
    */
   classification?: McpToolClassification;
 }
 
 /**
- * Creates or refreshes a tool's discovery snapshot and never writes `risk_class` or `requires_approval`: a new row
- * gets the column defaults and an existing row keeps both. This is the signature `@semprec/data` exports. It copies
- * the named fields only, so a `classification` that reaches it at run time (past the type) is dropped, not written.
+ * A new row gets the column defaults and an existing row keeps both. Copies only named fields, so a
+ * `classification` smuggled past the type is dropped.
  */
 export async function upsertMcpToolRegistration(
   client: Queryable,
@@ -130,19 +114,12 @@ export async function upsertMcpToolRegistration(
   });
 }
 
-/**
- * The sync's write: `upsertMcpToolRegistration` plus the classification. On an existing row `risk_class` and
- * `requires_approval` change only when `input.classification` is given and the row's `classification_source` is
- * `annotation`; a `manual` row keeps both columns while its schema, description and `active` are still refreshed.
- * Not exported from `index.ts`, see the header.
- */
+/** A `manual` row keeps its classification while schema, description and `active` are refreshed. */
 export async function upsertClassifiedMcpToolRegistration(
   client: Queryable,
   input: UpsertClassifiedMcpToolRegistrationInput,
 ): Promise<McpToolRegistration> {
-  // `JSON.stringify(undefined)` returns `undefined`, not a string, which `pg` would otherwise
-  // bind as SQL NULL — turning a caller bug into an opaque `tool_schema` NOT NULL violation
-  // instead of a clear validation error at this module's boundary.
+  // `JSON.stringify(undefined)` is `undefined`, which `pg` would bind as NULL and turn into an opaque NOT NULL violation.
   if (input.toolSchema === undefined) {
     throw new ValidationError("mcp_tool_registrations.tool_schema is required (received undefined)");
   }
@@ -184,7 +161,7 @@ export async function getMcpToolRegistration(client: Queryable, id: string): Pro
   return rows[0] ? rowToRegistration(rows[0]) : null;
 }
 
-/** Batched `getMcpToolRegistration`: the rows that exist for `ids`, in no particular order. */
+/** In no particular order. */
 export async function getMcpToolRegistrationsByIds(client: Queryable, ids: string[]): Promise<McpToolRegistration[]> {
   if (ids.length === 0) return [];
   const { rows } = await client.query<McpToolRegistrationRow>(
@@ -206,13 +183,8 @@ export async function listMcpToolRegistrationsForServer(
 }
 
 /**
- * Sync-facing reconciliation (issue #125): marks inactive every currently-active registration
- * for this server whose `tool_name` was not among the names a sync pass just upserted — a
- * tool the server stopped advertising (removed or renamed) loses `active` rather than its row,
- * preserving its audit identity (and any `risk_class`/`requires_approval` a human already set)
- * for if/when a tool by that name reappears. `= ANY($2::text[])` (not `IN`) also does the right
- * thing when `keptToolNames` is empty (every active row for this server goes inactive), unlike
- * a bare `NOT IN ()`.
+ * A tool the server stopped advertising loses `active`, not its row, preserving audit identity and any human
+ * classification if it reappears. `= ANY(::text[])` handles an empty `keptToolNames`, unlike `NOT IN ()`.
  */
 export async function deactivateMcpToolRegistrationsNotIn(
   client: Queryable,

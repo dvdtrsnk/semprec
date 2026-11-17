@@ -37,14 +37,10 @@ import type { ItemRow } from "../types.js";
 const logger = createLogger("library-metadata");
 
 /**
- * Config-driven mapping (issue #25): which property keys this run is allowed to write,
- * and which external source to read from — swapping the source never changes the job's
- * contract, only this object's `source`/mapping fields. The single schema both the
- * enqueue side (libraryMetadataActions.ts, which extends it with `databaseId`) and the
- * job payload parsing side (worker.ts) validate against, so the two never drift apart.
+ * Which property keys a run may write and which source it reads; shared by the enqueue side
+ * (libraryMetadataActions.ts) and the worker payload parsing so the two never drift.
  */
 export const libraryMetadataJobConfigSchema = z.object({
-  /** Discriminates which fetcher a caller-supplied `LibraryMetadataFetcher` resolves to. */
   source: z.string(),
   coverKey: z.string(),
   secondaryRatingKey: z.string().optional(),
@@ -71,10 +67,7 @@ export interface LibraryMetadataFetchResult {
   isbn?: string;
 }
 
-/**
- * The worker accepts an injected metadata fetcher. Its default is a no-op; the API queue
- * composition supplies the configured library metadata dispatcher.
- */
+/** Default is a no-op; the API queue composition supplies the configured dispatcher. */
 export type LibraryMetadataFetcher = (
   item: ItemRow,
   config: LibraryMetadataJobConfig,
@@ -83,10 +76,8 @@ export type LibraryMetadataFetcher = (
 export const noopLibraryMetadataFetcher: LibraryMetadataFetcher = async () => ({});
 
 /**
- * The alternative matches of a run in the form the store takes: the run's source (the configured one when the
- * result names none) on each, and the author and year of an entry joined into its subtitle. An entry without a
- * cover URL is dropped here, and the store drops the entries whose URL fails its check. No source means no
- * candidate can be stored, so the result is empty.
+ * Candidates without a cover URL are dropped (the store also drops URLs failing its check); with no source
+ * nothing can be stored.
  */
 function toCoverCandidates(
   candidates: LibraryMetadataFetchResult["candidates"],
@@ -108,10 +99,8 @@ function toCoverCandidates(
 }
 
 /**
- * Resolves the database's automation problem once a job completed an item and, afterwards, no item of the
- * database has an automation error left (issue #1915), in the caller's open transaction. The problem key's
- * lock is taken before the check, so a failing job of another item of the database either committed its
- * error first and keeps the problem active, or raises after this transaction and starts a new problem.
+ * The problem key's lock is taken before the check, so a concurrent failing job of another item either
+ * committed its error first (problem stays) or raises after this commits (new problem).
  */
 async function resolveAutomationProblemWhenClear(client: PoolClient, databaseId: string): Promise<void> {
   const dedupeKey = automationProblemKey(databaseId);
@@ -130,12 +119,7 @@ export interface EnqueueLibraryMetadataInput {
   config: LibraryMetadataJobConfig;
 }
 
-/**
- * Also seeds the `item_automation` row (idempotent) so a row always exists before its
- * first processing attempt can run. Called both from the onItemEvent trigger action (one
- * item, just created) and from the daily retry sweep action (many items, already existing
- * `item_automation` rows) — `ensureItemAutomation`'s no-op-on-conflict behavior covers both.
- */
+/** Also seeds the `item_automation` row (idempotent) so it exists before the first attempt. */
 export async function enqueueLibraryMetadataProcessing(
   client: PoolClient,
   input: EnqueueLibraryMetadataInput,
@@ -157,25 +141,14 @@ export interface ProcessLibraryMetadataPayload {
 }
 
 /**
- * The job body (registered in worker.ts as `CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS`).
- * `locked` is the one status the heartbeat may never touch — skipped outright, covering
- * both "never enqueued for a locked row" (the retry sweep selects 'error' and 'notFound') and
- * "locked mid-flight" (a job already queued when the user locks it).
- *
- * On failure, `item_automation` records the error and this rethrows so graphile-worker's
- * own retry/backoff (`max_attempts: 3` on this job) takes over; on the final failed
- * attempt the row is left in 'error', picked up again by the next daily retry sweep.
+ * A `locked` row is never touched. On failure the error is recorded and rethrown so graphile-worker's
+ * retry (`maxAttempts: 3`) applies; after the last attempt the row stays 'error' for the daily retry sweep.
  */
 export interface ProcessLibraryMetadataHelpers {
   job: { id: string };
 }
 
-/**
- * `helpers` defaults to a freshly generated id: only graphile-worker's real per-attempt job id
- * (threaded through by worker.ts) makes the `automation_error` notification's `transitionInstance`
- * (issue #149) dedupe correctly across retries of the *same* attempt — callers that don't care
- * about that can omit it entirely.
- */
+/** Pass the real per-attempt job id so the `automation_error` notification dedupes across replays. */
 export async function handleProcessLibraryMetadataTask(
   pool: Pool,
   payload: ProcessLibraryMetadataPayload,
@@ -198,9 +171,7 @@ export async function handleProcessLibraryMetadataTask(
   }
   if (automation?.status === "locked") return;
   if (!item || item.deletedAt) {
-    // Settles the row instead of leaving it exactly as found: a job enqueued right before
-    // the item was soft-deleted would otherwise leave a 'pending'/'error' row that the daily
-    // retry sweep keeps re-enqueuing forever for an item that no longer exists to enrich.
+    // Settle the row, or the daily retry sweep would re-enqueue a deleted item forever.
     await withTransaction(pool, (client) => markItemAutomationDone(client, payload.itemId));
     return;
   }
@@ -236,11 +207,7 @@ export async function handleProcessLibraryMetadataTask(
         committed = true;
         retained = candidateRetained;
       });
-      // Re-checked under `FOR UPDATE` inside this same transaction: the plain read above
-      // only decided whether it was worth calling `fetcher` at all — a user could still lock
-      // the row while that fetch was in flight. Without this, the property write below would
-      // land on a since-locked item even though `markItemAutomationDone` (guarded by
-      // `WHERE status != 'locked'`) would then silently no-op.
+      // Re-checked under `FOR UPDATE`: the user may have locked the row while the fetch was in flight.
       const current = await lockItemAutomation(client, payload.itemId);
       if (!current || current.status === "locked") {
         callbackFinished = true;
@@ -253,8 +220,7 @@ export async function handleProcessLibraryMetadataTask(
         callbackFinished = true;
         return;
       }
-      // Every run that did not fail replaces the item's candidates (a run with none leaves it with none), in this
-      // transaction and after the item row lock taken above.
+      // A successful run always replaces the candidates, after the item row lock above.
       await replaceCoverCandidates(
         client,
         payload.itemId,
@@ -358,8 +324,7 @@ export async function handleProcessLibraryMetadataTask(
       return;
     }
     const message = "Library metadata processing failed";
-    // Issue #149: notification lands in the same transaction as the error record, so a
-    // replayed job (same job id, same `transitionInstance`) never duplicates it.
+    // Same transaction as the error record, so a replayed job never duplicates the notification.
     await withTransaction(pool, async (client) => {
       const automation = await lockItemAutomation(client, payload.itemId);
       if (!automation || automation.status === "locked") return;

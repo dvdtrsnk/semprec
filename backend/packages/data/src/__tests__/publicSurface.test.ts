@@ -1,8 +1,6 @@
 /**
- * Guards the choke-point split (the `[choke-point-split NN/36]` issue batch): it freezes the public
- * surface of `@semprec/data` — its runtime exports, the methods of the `createChokePoint()` object and
- * the key type exports — so moving code between modules cannot silently change the API. Editing the
- * lists below is legitimate only in a pull request whose issue explicitly changes the public API.
+ * Freezes the public surface of `@semprec/data` (runtime exports, `createChokePoint()` methods, key type
+ * exports). Edit these lists only in a change that deliberately alters the public API.
  */
 import { afterAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";

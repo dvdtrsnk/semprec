@@ -3,9 +3,8 @@ import { runAsSystem } from "@semprec/shared";
 import { logger } from "./logger.js";
 
 /**
- * The cross-process request to cancel one running Semp turn
- * (docs/adr/2026-11-13-a-voice-stop-command-cancels-one-semp-turn-through-a-notification.md). Its payload is the JSON
- * text `{"tenantId":"<uuid>","assistantMessageId":"<uuid>"}`, built by Postgres.
+ * Cross-process request to cancel one running Semp turn; payload
+ * `{"tenantId":"<uuid>","assistantMessageId":"<uuid>"}`, built by Postgres.
  */
 export const SEMP_TURN_CANCEL_CHANNEL = "semp_turn_cancel";
 
@@ -21,9 +20,8 @@ export interface SempTurnCancelRequest {
 }
 
 /**
- * Asks the process that runs the turn answering `assistantMessageId` to cancel it. The request is a Postgres
- * notification: it carries no answer, and nothing records that it was made. A process that does not run that turn
- * ignores it. Outside a transaction it is delivered at once; inside one, when that transaction commits.
+ * Asks the process running the turn to cancel it via a Postgres notification: no answer, nothing recorded.
+ * Inside a transaction it is delivered on commit.
  */
 export async function requestSempTurnCancel(client: Pool | PoolClient, request: SempTurnCancelRequest): Promise<void> {
   await client.query(
@@ -32,7 +30,7 @@ export async function requestSempTurnCancel(client: Pool | PoolClient, request: 
   );
 }
 
-/** The assistant messages of `threadId` whose turn is running, oldest first, in the current tenant scope. */
+/** Oldest first, in the current tenant scope. */
 export async function listRunningSempTurnIds(client: Pool | PoolClient, threadId: string): Promise<string[]> {
   const { rows } = await client.query<{ id: string }>(
     "SELECT id FROM semp_messages WHERE thread_id = $1 AND role = 'assistant' AND status = 'running' ORDER BY created_at, id",
@@ -41,7 +39,6 @@ export async function listRunningSempTurnIds(client: Pool | PoolClient, threadId
   return rows.map((row) => row.id);
 }
 
-/** Returns the two ids of a `{ tenantId, assistantMessageId }` payload, or `null` for anything else. */
 function parseCancelPayload(payload: string): SempTurnCancelRequest | null {
   let parsed: unknown;
   try {
@@ -69,12 +66,10 @@ export interface SempTurnCancelListener {
 }
 
 /**
- * Listens on `SEMP_TURN_CANCEL_CHANNEL` over one dedicated client and calls `onCancel` for every well-formed request.
- * `onCancel` is synchronous: it only looks the turn up in the caller's memory. A request is not persisted, so one made
- * while this listener is reconnecting is lost, and so is one for a turn the process no longer runs; the person who gave
- * the command can give it again. A payload that is not exactly the two uuids is logged by channel and dropped, and a
- * handler that throws is logged by error name and does not stop the listener. After a connection error it reconnects
- * with capped exponential backoff (200 ms to 5 s). The initial connect is not retried: its failure rejects this function.
+ * Calls the synchronous `onCancel` for every well-formed request on one dedicated client. Requests are not
+ * persisted: one sent while reconnecting, or for a turn this process does not run, is lost, and the user can
+ * repeat the command. Invalid payloads and throwing handlers are logged and do not stop the listener. Connection
+ * errors reconnect with capped exponential backoff; the initial connect is not retried.
  */
 export async function startSempTurnCancelListener(
   pool: Pool,
@@ -111,9 +106,8 @@ export async function startSempTurnCancelListener(
     }
 
     /**
-     * Opens a client and runs `LISTEN` on it; every failure releases the client before rethrowing. A connection error
-     * before the LISTEN completed is the failing query's own rejection, so only an error of the kept client starts a
-     * reconnect.
+     * Every failure releases the client before rethrowing. An error before LISTEN completed is the query's own
+     * rejection, so only an error of the kept client starts a reconnect.
      */
     async function connect(): Promise<void> {
       const next = await pool.connect();

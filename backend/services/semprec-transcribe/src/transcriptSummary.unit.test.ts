@@ -16,11 +16,7 @@ const SEGMENTS = [
   { speaker: "SPEAKER_01", text: "I will send the pricing tomorrow.", startsAt: 12.5, endsAt: 14 },
 ];
 
-/**
- * SHA-256 of `JSON.stringify` of the meetingNotes response schema. The gateway's
- * `schemaValidation.unit.test.ts` asserts the same digest for the literal it compiles, so the schema
- * the request builder sends and the one the gateway compiler is proven to accept are the same bytes.
- */
+/** The gateway's `schemaValidation.unit.test.ts` asserts the same digest, so both sides use the same bytes. */
 const MEETING_NOTES_SCHEMA_SHA256 = "481e33795b2172342979a4ed0ceb3fdc008043895bb4bdbde8595bee0f9bb6dc";
 
 function weekdayOf(date: string, timeZone: string): string {
@@ -156,11 +152,7 @@ describe("normalizeMeetingNotes", () => {
 });
 
 describe("a relative due date (stubbed model)", () => {
-  /**
-   * A deterministic stand-in for the model: it reads the recording date line of the actual request
-   * and resolves "tomorrow" from it. It proves the request carries the date the model needs and
-   * that normalization keeps a valid result; it is not evidence of a live model's quality.
-   */
+  /** Resolves "tomorrow" from the request's date line; proves the date is sent, not a model's quality. */
   function stubbedModel(content: string, answer: "tomorrow" | "invalid"): MeetingNotes {
     const match = /Recording date: (\d{4})-(\d{2})-(\d{2})/.exec(content);
     if (!match) throw new Error("The request has no recording date");

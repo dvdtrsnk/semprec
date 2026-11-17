@@ -37,7 +37,6 @@ const eventRow = z.object({ id: z.string(), properties: z.object({ name: z.strin
 const FORBIDDEN = { status: 403, code: "forbidden", details: { field: "kind" } };
 const LAST_OWN = { status: 409, code: "last_own_calendar" };
 
-/** Every delete and restore the choke point ran its hooks for in this file, with who made it. */
 const trashes: Array<{
   op: "delete" | "restore";
   itemId: string;
@@ -47,7 +46,6 @@ const trashes: Array<{
 }> = [];
 /** The item whose trash the recording hook fails, standing for a later step of a cascade that fails. */
 let failDeleteOf: string | undefined;
-/** The item whose restore the recording hook fails. */
 let failRestoreOf: string | undefined;
 registerItemDeleteHook(async ({ item, writerKind, agentRunId, actingUserId }) => {
   trashes.push({ op: "delete", itemId: item.id, writerKind, agentRunId, actingUserId });
@@ -58,7 +56,6 @@ registerItemRestoreHook(async ({ item, writerKind, agentRunId, actingUserId }) =
   if (item.id === failRestoreOf) throw new Error("injected restore failure");
 });
 
-/** A tenant with one English-speaking user, so its seeded calendars are named `Personal`, `Work` and so on. */
 async function seededTenant(): Promise<string> {
   const tenantId = await createTestTenant(admin);
   await createUser(admin, { tenantId, email: `${randomUUID()}@example.com`, passwordHash: "unused", locale: "en" });
@@ -66,7 +63,6 @@ async function seededTenant(): Promise<string> {
   return tenantId;
 }
 
-/** The error a write was refused with, or `undefined` when it was stored. */
 function refusal(write: Promise<unknown>): Promise<unknown> {
   return write.then(
     () => undefined,
@@ -74,7 +70,6 @@ function refusal(write: Promise<unknown>): Promise<unknown> {
   );
 }
 
-/** Resolves once a backend of this database waits for an advisory lock in a statement like the default-mark lock. */
 async function waitForDefaultMarkLockWaiter(): Promise<void> {
   for (let attempt = 0; attempt < 250; attempt += 1) {
     const { rows } = await admin.query<{ wait_event: string | null }>(
@@ -116,7 +111,6 @@ describe("calendar trash hooks (issue gh-1803)", () => {
     await admin.end();
   });
 
-  /** The calendars and Events of the tenant in scope; every write of a test goes through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -134,7 +128,6 @@ describe("calendar trash hooks (issue gh-1803)", () => {
       if (!row) throw new Error(`Calendar ${name} is not live`);
       return row.id;
     };
-    /** The ids of the live calendars whose `isDefault` is true, sorted. */
     const defaults = async () =>
       (await calendars())
         .filter((candidate) => candidate.properties.isDefault === true)
@@ -162,10 +155,7 @@ describe("calendar trash hooks (issue gh-1803)", () => {
       );
       return Object.fromEntries(rows.map((row) => [row.id, row.epoch]));
     };
-    /**
-     * Sets the creation time of calendars. The choke point stamps `created_at` itself, and the seeded calendars
-     * share one transaction's time, so the order the successor is chosen by has no other way to be set.
-     */
+    /** Sets `created_at`, which orders the successor: the choke point stamps it and seeded calendars share one time. */
     const setCreatedAt = async (names: string[], createdAt: string) => {
       for (const name of names) {
         const id = await calendarId(name);
@@ -206,10 +196,7 @@ describe("calendar trash hooks (issue gh-1803)", () => {
     };
   }
 
-  /**
-   * Runs `change` in a transaction that stays open until the returned `commit` is called, and resolves once
-   * `change` has run, so the caller starts its own write while the change is uncommitted.
-   */
+  /** Runs `change` in a transaction left open until `commit` is called, so the caller can race it. */
   async function heldOpen(change: (client: PoolClient) => Promise<unknown>): Promise<{ commit: () => Promise<void> }> {
     let release: () => void = () => {};
     const released = new Promise<void>((resolve) => {
@@ -323,7 +310,6 @@ describe("calendar trash hooks (issue gh-1803)", () => {
             writer: USER,
           }),
         );
-        // Before the commit no other transaction sees the move.
         expect(await f.defaults()).toEqual([personal]);
         await held.commit();
 
@@ -411,7 +397,7 @@ describe("calendar trash hooks (issue gh-1803)", () => {
         const f = await setup();
         const personal = await f.calendarId("Personal");
         const work = await f.calendarId("Work");
-        // A default calendar in the Trash is a state of before these hooks: only a raw write reaches it now.
+        // Only a raw write reaches a default calendar in the Trash.
         await withTransaction(runtime, (client) =>
           client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
             f.calendarsId,
@@ -437,7 +423,6 @@ describe("calendar trash hooks (issue gh-1803)", () => {
         const f = await setup();
         const personal = await f.calendarId("Personal");
         const event = await f.eventIn("Standup", personal);
-        // The same state of before these hooks: the only default is in the Trash, and so is its Event.
         await withTransaction(runtime, (client) =>
           client.query("UPDATE items SET deleted_at = now() WHERE id = ANY($1::uuid[])", [[personal, event]]),
         );
@@ -669,7 +654,6 @@ describe("calendar trash hooks (issue gh-1803)", () => {
   });
 
   describe("the order of the locks", () => {
-    /** Holds the advisory lock of the default mark in a transaction that stays open. */
     const holdDefaultMark = (f: Awaited<ReturnType<typeof setup>>) =>
       heldOpen((client) =>
         client.query("SELECT pg_advisory_xact_lock(hashtextextended('calendars-default:' || $1::text, 0))", [
@@ -743,7 +727,6 @@ describe("calendar trash hooks (issue gh-1803)", () => {
         const f = await setup();
         const personal = await f.calendarId("Personal");
         const work = await f.calendarId("Work");
-        // Holds the lock, the row of Work and, after clearing it, the row of Personal.
         const switched = await heldOpen((client) =>
           updateItemWithClient(
             client,
@@ -759,7 +742,6 @@ describe("calendar trash hooks (issue gh-1803)", () => {
           await deleting;
         }
         expect(await deleting).toBeUndefined();
-        // The delete took the lock last, found Personal no longer the default and left Work the one default.
         expect(await f.defaults()).toEqual([work]);
         expect((await f.calendars()).map((row) => row.id)).not.toContain(personal);
       }));

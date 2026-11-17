@@ -1,19 +1,11 @@
-// Issue gh-1957: the three calendar write tools of an agent, declared in `calendarModuleManifest.ts`. Each handler runs
-// the handler of the route that owns the same write (`createRespondToInvitationRouteHandler`, issue gh-1944, and the
-// task-in-event handlers, issue #1764) for the user of the run, so the validation, the writes and the payload are those
-// of the app and nothing is duplicated.
+// The calendar write tools of an agent. Each handler runs the route handler that owns the same write, so
+// validation, writes and payload are those of the app.
 //
-// The manifest declares all three with `requiresApproval`, so neither an agent session nor a run credential on `/mcp`
-// runs a handler on the call: the call files a `moduleTool` approval request and the handler runs once, after the user
-// approved it (docs/adr/2026-11-12-module-agent-tools-that-require-approval-run-through-a-moduletool-request.md). What
-// the handlers write is still the agent's write: the route handlers take the writer, and these tools pass
-// `{ writerKind: "agent", agentRunId, agentProjectItemId, onBehalfOfUserId }` and no human writer, so the Event, the
-// `hostEvents` edge and every write hook see an agent under the run and the per-database grants of the run's project
-// apply. The manifest also declares them with `mcp`, so a human `/mcp` session runs the `...UserTool` handlers below as
-// its user without an approval, written as an agent acting for that user with the external-client marker and no run
-// (docs/adr/2026-11-14-calendar-tools-over-mcp-are-gated-for-a-run-credential-and-run-as-the-user-for-a-session.md).
-// Constrained by: docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md,
-// docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md
+// The manifest declares them with `requiresApproval`: a run's call files a `moduleTool` approval request and the
+// handler runs after approval. The write is still the agent's (`writerKind: "agent"` under the run), so write hooks
+// and the run project's per-database grants apply. A human `/mcp` session runs the `...UserTool` handlers as its
+// user without approval, written as an agent with the external-client marker and no run
+// (docs/architecture/domain-calendar-tasks-and-media.md#calendar-tools-over-mcp).
 import type { Pool } from "pg";
 import { z } from "zod";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
@@ -58,32 +50,22 @@ export const calendarRemoveTaskFromEventArgsSchema = z
   })
   .describe("Take a task out of an event. A person approves every call before it runs.");
 
-/** What a calendar tool answers: the payload of its route as a JSON string, or the refusal of the route as an error. */
 export interface CalendarAgentToolResult {
   error: boolean;
   result: string;
-  /**
-   * Set by a tool whose answer carries content of a sensitive database, so that the stored tool result is redacted
-   * (docs/adr/2026-11-13-sensitive-tool-results-are-marked-by-the-tool-and-stored-redacted.md).
-   */
+  /** Marks a result carrying sensitive-database content, so the stored tool result is redacted. */
   sensitive?: true;
 }
 
 export type CalendarAgentTool<Args> = (runId: string, args: Args) => Promise<CalendarAgentToolResult>;
 
-/** A calendar tool as a human `/mcp` session runs it: as the session's user, who has no run (issue gh-1957). */
 export type CalendarUserTool<Args> = (userId: string, args: Args) => Promise<CalendarAgentToolResult>;
 
-/** Who calls a calendar tool: a run (an agent session or a run credential) or the user of a human `/mcp` session. */
 type CalendarToolCaller = { kind: "run"; runId: string } | { kind: "user"; userId: string };
 
-/** The body of a calendar tool, written once for both callers. */
 type CalendarToolWork = (userId: string, writer: WriterIdentity) => Promise<unknown>;
 
-/**
- * The refusal of a route as a tool result: the status the route would answer, its error code and message, and the
- * `field` it names. Another tenant's id is refused exactly as an unknown one is, because the handlers refuse it so.
- */
+/** Another tenant's id is refused exactly as an unknown one, because the route handlers refuse it so. */
 export function refusal(error: ChokePointError): CalendarAgentToolResult {
   const details: unknown = error.details;
   const field: unknown = typeof details === "object" && details !== null ? Reflect.get(details, "field") : undefined;
@@ -99,12 +81,8 @@ export function refusal(error: ChokePointError): CalendarAgentToolResult {
 }
 
 /**
- * Runs `work` for the caller as an agent. A run is the user of the run, written as the agent of that run; a human
- * session is its user, written as an agent acting for that user with the external-client marker and no run or project
- * (docs/adr/2026-11-13-an-external-ai-client-on-mcp-is-refused-sensitive-databases.md). A `ChokePointError` the work
- * throws (a 400, 403, 404 or 409 of the route) is the tool's error result; anything else is not an answer of the tool
- * and propagates, so the caller records a failed call. A run without a project is a 403: the capability of the tools is
- * granted per project, so a run that has none holds none.
+ * A `ChokePointError` from `work` is the tool's error result; anything else propagates so the call is recorded as
+ * failed. A run without a project is a 403: tool capability is granted per project.
  */
 async function asAgent(
   pool: Pool,
@@ -136,7 +114,6 @@ async function asAgent(
   }
 }
 
-/** The work of `calendar.respondToInvitation`, shared by the run and the user handler. */
 function respondToInvitationWork(
   pool: Pool,
   args: z.infer<typeof calendarRespondToInvitationArgsSchema>,
@@ -155,7 +132,6 @@ function respondToInvitationWork(
   };
 }
 
-/** The work of `calendar.placeTaskInEvent`, shared by the run and the user handler. */
 function placeTaskInEventWork(pool: Pool, args: z.infer<typeof calendarPlaceTaskInEventArgsSchema>): CalendarToolWork {
   const put = createTaskHostEventPutRouteHandler(pool);
   return async (userId, writer) => {
@@ -167,7 +143,6 @@ function placeTaskInEventWork(pool: Pool, args: z.infer<typeof calendarPlaceTask
   };
 }
 
-/** The work of `calendar.removeTaskFromEvent`, shared by the run and the user handler. */
 function removeTaskFromEventWork(
   pool: Pool,
   args: z.infer<typeof calendarRemoveTaskFromEventArgsSchema>,
@@ -182,32 +157,19 @@ function removeTaskFromEventWork(
   };
 }
 
-/**
- * `calendar.respondToInvitation { invitationId, response, calendarId? }`: `POST /api/calendar/invitations/:id/respond`
- * for the user of the run, written as the agent of the run. The result is the invitation item the route answers with, as
- * JSON. An answer sends the iMIP reply to the organizer after its transaction commits (issue gh-1953), which is why the
- * manifest requires approval of a run.
- */
+/** The answer sends the iMIP reply to the organizer after commit, which is why a run needs approval. */
 export function createCalendarRespondToInvitationTool(
   pool: Pool,
 ): CalendarAgentTool<z.infer<typeof calendarRespondToInvitationArgsSchema>> {
   return (runId, args) => asAgent(pool, { kind: "run", runId }, respondToInvitationWork(pool, args));
 }
 
-/**
- * `calendar.placeTaskInEvent { taskId, eventId }`: `PUT /api/tasks/:id/host-events/:eventId` for the user of the run.
- * The result is the `{ taskId, hostEvents }` body the route answers with.
- */
 export function createCalendarPlaceTaskInEventTool(
   pool: Pool,
 ): CalendarAgentTool<z.infer<typeof calendarPlaceTaskInEventArgsSchema>> {
   return (runId, args) => asAgent(pool, { kind: "run", runId }, placeTaskInEventWork(pool, args));
 }
 
-/**
- * `calendar.removeTaskFromEvent { taskId, eventId }`: `DELETE /api/tasks/:id/host-events/:eventId` for the user of the
- * run. The result is the `{ taskId, hostEvents }` body the route answers with.
- */
 export function createCalendarRemoveTaskFromEventTool(
   pool: Pool,
 ): CalendarAgentTool<z.infer<typeof calendarRemoveTaskFromEventArgsSchema>> {
@@ -215,9 +177,8 @@ export function createCalendarRemoveTaskFromEventTool(
 }
 
 /**
- * The human `/mcp` session's `calendar.respondToInvitation`: the same route handler for the session's user, without an
- * approval request (a session has no run to file one for), so the answer is sent to the organizer at once. The resolver
- * validates the arguments with the schema of the run tool before it calls the handler.
+ * No approval request (a session has no run to file one for), so the answer is sent at once. The resolver
+ * validates the arguments with the run tool's schema first.
  */
 export function createCalendarRespondToInvitationUserTool(
   pool: Pool,
@@ -225,14 +186,12 @@ export function createCalendarRespondToInvitationUserTool(
   return (userId, args) => asAgent(pool, { kind: "user", userId }, respondToInvitationWork(pool, args));
 }
 
-/** The human `/mcp` session's `calendar.placeTaskInEvent`; see `createCalendarRespondToInvitationUserTool`. */
 export function createCalendarPlaceTaskInEventUserTool(
   pool: Pool,
 ): CalendarUserTool<z.infer<typeof calendarPlaceTaskInEventArgsSchema>> {
   return (userId, args) => asAgent(pool, { kind: "user", userId }, placeTaskInEventWork(pool, args));
 }
 
-/** The human `/mcp` session's `calendar.removeTaskFromEvent`; see `createCalendarRespondToInvitationUserTool`. */
 export function createCalendarRemoveTaskFromEventUserTool(
   pool: Pool,
 ): CalendarUserTool<z.infer<typeof calendarRemoveTaskFromEventArgsSchema>> {

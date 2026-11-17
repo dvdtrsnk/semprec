@@ -164,7 +164,6 @@ describe("choke-point databaseOps", () => {
   });
 
   it("keeps appearance null for a row whose insert omits both columns", async () => {
-    // The insert omits both columns: the schema gives them no default.
     const { rows } = await pool.query<{ icon: string | null; color: string | null }>(
       "INSERT INTO databases (name, system) VALUES ($1, false) RETURNING icon, color",
       ["Legacy"],
@@ -214,7 +213,6 @@ describe("choke-point databaseOps", () => {
       const recipes = await chokePoint.createDatabase({ name: "Recipes", key: "recipes", system: true });
       const client = await pool.connect();
       const statements: string[] = [];
-      // A recording view of the client; the pooled client itself stays unpatched.
       const recording = new Proxy(client, {
         get(target, property, receiver) {
           if (property !== "query") return Reflect.get(target, property, receiver) as unknown;
@@ -307,7 +305,6 @@ describe("choke-point databaseOps", () => {
     });
 
     it("reads false for a row whose insert omits overview_hidden, from a NOT NULL column that defaults to false", async () => {
-      // The insert omits the column, so the schema's default applies.
       const { rows } = await pool.query<{ overview_hidden: boolean }>(
         "INSERT INTO databases (name, system) VALUES ($1, false) RETURNING overview_hidden",
         ["Legacy"],
@@ -351,7 +348,6 @@ describe("choke-point databaseOps", () => {
         const recipesB = await runInTenant(tenantB, create);
 
         await runInTenant(tenantB, async () => {
-          // Tenant A's database is answered like an id that does not exist, and stays as it was.
           for (const id of [recipesA.id, randomUUID()]) {
             await expect(
               runtimeChokePoint.patchDatabase(id, { overviewHidden: true }, undefined, metadataResolver),

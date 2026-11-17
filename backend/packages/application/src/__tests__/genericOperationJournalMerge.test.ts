@@ -21,7 +21,7 @@ import {
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
-// `page.mergeJournalDuplicates` of an agent run through the generic operation gateway (issue #2017): the call is held
+// `page.mergeJournalDuplicates` of an agent run through the generic operation gateway: the call is held
 // for approval, the approved request merges the entries once, and the grant on the Journal database decides who may ask.
 
 const metadataResolver: CollectionMetadataResolver = {
@@ -81,8 +81,8 @@ async function setGrant(actor: AuthenticatedActor, access: AgentDatabaseAccess) 
 
 /** Marks the Journal restricted or open again: the grants model restricts only what is sensitive or user-created. */
 async function setJournalSensitive(sensitive: boolean): Promise<void> {
-  // A non-sensitive system database is always open and its grant rows are ignored (docs/adr/2026-11-12-per-database-agent-grants.md),
-  // so the one way to make the grant on Journal decide is the flag the product sets on the Health and sleep databases.
+  // A non-sensitive system database is always open and its grant rows are ignored, so the sensitive flag is the only
+  // way to make the Journal grant decide.
   await pool.query(`UPDATE databases SET sensitive = $2 WHERE id = $1`, [journal.id, sensitive]);
 }
 

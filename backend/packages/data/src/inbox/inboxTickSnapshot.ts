@@ -21,37 +21,32 @@ import {
 export interface ProposalComputationInput {
   recognition?: boolean;
   activeTypes?: RecognitionType[];
-  /** The Inbox item the proposal is for. */
   sourceItem: ItemRow;
-  /** The Inbox item's resolved, recognized type. */
   type: ItemRow | null;
   entityKind: ComputedProposalEntityKind;
-  /** Resolved target database id for `entityKind: 'database'`; absent for `'pageContent'`, where the target page is itself part of the content decision. */
+  /** Absent for `'pageContent'`, where the target page is part of the content decision. */
   targetDatabaseId?: string;
-  /** The module id of the target database, for `entityKind: 'database'`; the primary operation of a multi-step answer must write to it. */
+  /** The primary operation of a multi-step answer must write to this module. */
   targetModuleId?: string;
-  /** The tenant's Journal database id, for `entityKind: 'journalEntry'` (issue gh-1982); the server-owned `target` of the envelope. */
+  /** For `journalEntry`: the server-owned `target` of the envelope. */
   journalDatabaseId?: string;
-  /** The source item's date (`YYYY-MM-DD`), for `entityKind: 'journalEntry'`: the day the entry lands on when the answer names none. */
+  /** For `journalEntry`: the day the entry lands on when the answer names none. */
   sourceDate?: string;
-  /** The language (the person's `users.locale`, e.g. `cs`) the proposal's person-facing texts must be written in. */
+  /** The language the person-facing texts must be written in. */
   locale: string;
-  /** The project the heartbeat belongs to (`ActionContext.projectItemId`); the model call is attributed to it. */
+  /** The model call is attributed to this project. */
   projectItemId: string;
-  /** The stored state of the card this is a recompute for (issue gh-1987); absent for a first computation. */
+  /** Absent for a first computation. */
   previousProposal?: PreviousProposalState;
 }
 
-/** The parts of an existing card's state a recompute must respect: only those that are set (neither absent nor null). */
+/** Only the parts that are set (neither absent nor null). */
 export interface PreviousProposalState {
-  /** The last automated proposal. */
   aiProposal?: unknown;
   history?: unknown;
-  /** The keys of the proposal the person edited. */
   userEditedKeys?: unknown;
 }
 
-/** The set parts of `card`'s `aiProposal`, `history` and `userEditedKeys`; `undefined` when none is set or there is no card. */
 function previousProposalState(card: ItemRow | null): PreviousProposalState | undefined {
   if (!card) return undefined;
   const { aiProposal, history, userEditedKeys } = card.properties;
@@ -65,7 +60,6 @@ function previousProposalState(card: ItemRow | null): PreviousProposalState | un
 
 export interface ProposalComputationResult {
   candidates?: RecognitionCandidate[];
-  /** Server-derived identity of the candidate and destination used to normalize recognition output. */
   recognitionBinding?: {
     candidate: RecognitionCandidate;
     type: RecognitionType | null;
@@ -73,44 +67,30 @@ export interface ProposalComputationResult {
     targetDatabaseId: string | null;
   };
   /**
-   * The target page id, for `entityKind: 'pageContent'` — ignored for `'database'`, whose target is always the type's resolved
-   * `targetDatabase` id. For `'journalEntry'` the target is server-owned, so a result that carries one is refused.
+   * For `pageContent` only; a `database` target is always the type's `targetDatabase`. A `journalEntry` target is
+   * server-owned, so a result carrying one is refused.
    */
   target?: string;
   properties: Record<string, unknown>;
   relations?: Record<string, string[]>;
-  /**
-   * For a single-step `entityKind: 'database'` answer only: the page sections the created item gets on confirm
-   * (issue gh-1974), stored on the envelope as `pageSections`. Ignored for a multi-step answer and for the other kinds.
-   */
+  /** Single-step `database` answers only; stored as `pageSections` and applied on confirm. */
   pageSections?: ProposalPageSection[];
-  /**
-   * For a single-step `entityKind: 'database'` answer only: the select options the answer proposes to create (issue
-   * gh-1994), stored on the envelope as `newOptions`; a value of `properties` names one as `{ newOption: "<label>" }`.
-   * Ignored for a multi-step answer and for the other kinds.
-   */
+  /** Single-step `database` answers only; a `properties` value references one as `{ newOption: "<label>" }`. */
   newOptions?: ProposalNewOption[];
   invalidProposal?: "workspaceReference" | "unrepresentableOperations";
   /**
-   * Present only when the answer has more than one operation (at most `MAX_PROPOSAL_OPERATIONS`) or an operation
-   * marked `primary` (issue gh-1992); then `buildProposalEnvelope` stores a multi-step envelope. A single unmarked
-   * operation is returned as `properties`.
+   * Present only for more than one operation or an operation marked `primary`, which makes a multi-step envelope. A
+   * single unmarked operation is returned as `properties`.
    */
   operations?: ProposalComputationOperation[];
-  /** The model's localized explanation, stored on the card after trimming and capping at 500 characters. */
+  /** Trimmed and capped at 500 characters when stored. */
   reason?: string;
-  /** The model's confidence in the proposal. Not read by the tick until issue #1495. */
   confidence?: number;
 }
 
 /**
- * The content-level decision (issue #223): which project/page an Inbox source becomes,
- * or which property values fill its target database row. Backed by an LLM call — prompt
- * engineering is out of this issue's scope, so this is a pluggable/injected function, the
- * same shape as `scheduler/actions.ts`'s `RunAgentFn`/`coreAgentRunAction`. Must never
- * write to any target database or page itself (issue #223's "no target write" guarantee)
- * — it only computes values in memory; `createSemprecTickAction` is solely responsible
- * for writing the resulting envelope into `processingProposals`.
+ * The injected model call that decides what an Inbox source becomes. It must never write to any target database or
+ * page; it only computes values, and `createSemprecTickAction` alone writes the envelope.
  */
 export type ComputeSemprecProposalFn = (input: ProposalComputationInput) => Promise<ProposalComputationResult>;
 
@@ -130,13 +110,12 @@ export interface TickSnapshot {
   locale: string;
 }
 
-/** The source item's `date` when it is a string; its form is checked with the rest of the envelope. */
+/** Its form is checked with the rest of the envelope. */
 function sourceItemDate(item: ItemRow): string | undefined {
   const date = item.properties.date;
   return typeof date === "string" ? date : undefined;
 }
 
-/** The input of the computation function for `snapshot`; `projectItemId` is the heartbeat's project. */
 export function tickComputationInput(snapshot: TickSnapshot, projectItemId: string): ProposalComputationInput {
   const previousProposal = previousProposalState(snapshot.existingProposal);
   return {
@@ -157,9 +136,8 @@ export function tickComputationInput(snapshot: TickSnapshot, projectItemId: stri
 }
 
 /**
- * The envelope of a `journalEntry` snapshot: `target` is the Journal database the snapshot resolved, `date` defaults to
- * the source item's date, and an area is dropped when the answer also names a project, because the area of a Journal
- * entry is derived from its project. Throws a `ValidationError` for a result that carries a `target` of its own.
+ * `date` defaults to the source item's date. An area is dropped when the answer names a project, because the entry's
+ * area derives from its project. A result with its own `target` is a `ValidationError`.
  */
 function buildJournalEntryEnvelope(snapshot: TickSnapshot, result: ProposalComputationResult): ProposalEnvelope {
   if (result.target !== undefined)
@@ -179,10 +157,7 @@ function buildJournalEntryEnvelope(snapshot: TickSnapshot, result: ProposalCompu
   };
 }
 
-/**
- * `buildProposalEnvelope` with the `ValidationError` it raises for a result it refuses returned instead of thrown, so
- * the write phase records the refusal the way it records an envelope that fails validation (`needsClarification`).
- */
+/** Returns the refusal instead of throwing, so the write phase records it as `needsClarification`. */
 export function buildTickEnvelope(
   snapshot: TickSnapshot,
   result: ProposalComputationResult,
@@ -195,14 +170,14 @@ export function buildTickEnvelope(
   }
 }
 
-/** Combines the external call's result with the snapshot into a stored envelope — no I/O. */
+/** Pure: no I/O. */
 export function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalComputationResult): ProposalEnvelope {
   if (snapshot.entityKind === "journalEntry") return buildJournalEntryEnvelope(snapshot, result);
   if (snapshot.entityKind === "database") {
     if (!snapshot.targetDatabaseId)
       throw new Error(`Snapshot for Inbox item ${snapshot.item.id} (entityKind 'database') has no targetDatabaseId`);
     const operations = result.operations?.slice(0, MAX_PROPOSAL_OPERATIONS);
-    // A marked operation (issue gh-1992) is a multi-step answer even alone: its primary step stands for the record.
+    // A marked operation is multi-step even alone: its primary step stands for the record.
     if (operations && (operations.length > 1 || operations.some((operation) => operation.primary === true))) {
       const steps = buildProposalSteps(operations, snapshot.targetModuleId);
       const primary = steps.find((step) => step.role === "primary")!;
@@ -229,7 +204,7 @@ export function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalCo
   return { entityKind: "pageContent", target: result.target, properties: result.properties };
 }
 
-/** Resolve model-only heading text after the source fingerprint is revalidated. */
+/** Runs only after the source fingerprint is revalidated. */
 export async function resolveModelPagePlacement(
   client: PoolClient,
   envelope: ProposalEnvelope,

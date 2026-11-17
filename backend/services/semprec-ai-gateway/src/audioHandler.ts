@@ -9,10 +9,8 @@ import { logger } from "./logger.js";
 import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
 
 /**
- * Loopback-only route (never internet-facing — see `serve.ts`'s bind-to-127.0.0.1 comment), so
- * this cap only guards against a runaway caller, not a hostile one: it has to fit a whole
- * normalized recording (`mediaNormalization.ts`'s ~7 MB/hour Opus output) base64-encoded, which
- * inflates size by about a third, comfortably covering a multi-hour recording.
+ * Loopback-only, so this guards against a runaway caller, not a hostile one. Fits a multi-hour
+ * normalized recording (~7 MB/hour Opus) base64-encoded.
  */
 const MAX_BODY_BYTES = 150 * 1024 * 1024;
 
@@ -26,7 +24,7 @@ export interface AudioHandlerOptions {
   transcriptionProvider: TranscriptionProvider;
   pyannotePricePerAudioHour: number;
   deepInfraPricePerAudioHour: number;
-  /** Operator-wide safety caps (`AI_GLOBAL_*_CAP_USD`), checked on every reservation against all tenants' spend. */
+  /** Operator-wide caps across all tenants' spend. */
   globalCaps: GlobalAiCaps;
 }
 
@@ -55,7 +53,7 @@ export async function readJsonBody(req: IncomingMessage, maxBytes: number = MAX_
   }
 }
 
-/** Constant-time so a network caller can't recover `AI_GATEWAY_INTERNAL_TOKEN` byte-by-byte from response timing. */
+/** Constant-time, so the token cannot be recovered from response timing. */
 export function tokensMatch(provided: string, expected: string): boolean {
   const providedBuf = Buffer.from(provided);
   const expectedBuf = Buffer.from(expected);
@@ -164,13 +162,7 @@ export function abortOnDisconnect(res: ServerResponse): AbortSignal {
   return abort.signal;
 }
 
-/**
- * Handles `POST /internal/diarize` and `POST /internal/transcribe` for issue #182 — the gateway's
- * audio routes, mirroring `completeHandler.ts`'s auth/validation/error-mapping shape. Each
- * dispatches to `@semprec/ai-gateway`'s `diarize()`/`transcribe()` so budget-checking and
- * `ai_gateway_calls` accounting (audio_seconds/cost_usd, no token columns, no agent_run_id or
- * project_item_id, and an `operation` naming the route) are identical to every other gateway call.
- */
+/** `POST /internal/diarize` and `/internal/transcribe`, accounted through `diarize()`/`transcribe()`. */
 export function createAudioRequestListener(pool: Pool, options: AudioHandlerOptions) {
   async function handleDiarize(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = validateBody(await readJsonBody(req), true);
@@ -297,11 +289,7 @@ export function createAudioRequestListener(pool: Pool, options: AudioHandlerOpti
     })();
   }
 
-  /**
-   * Same rationale as `completeHandler.ts`: keeping the boundary synchronous confines a rejection
-   * that escapes the try/catch above to a 500 for that one request instead of an unhandled
-   * rejection that takes the whole process down.
-   */
+  /** Synchronous boundary: an escaped rejection fails one request with a 500, not the process. */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the audio request listener");

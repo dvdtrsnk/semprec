@@ -93,7 +93,7 @@ describe("derived value creation guard", () => {
     };
     return { cp, db, property };
   }
-  /** An Event's create requires a date (issue #1663); the other owners need none. */
+  /** An Event's create requires a date; the other owners need none. */
   const dated = (owner: string): Record<string, string> => (owner === "events" ? { date: "2026-10-16" } : {});
   it("rejects each configured side with a live project and allows it without one", async () => {
     await runInTenant(tenant, async () => {
@@ -327,9 +327,9 @@ describe("derived value creation guard", () => {
     });
   });
   /*
-   * The edge writes below queue issue #1652's search reindex jobs, which are added at each transaction's
-   * pre-commit flush (R1 D1): the holder's edge holds no queue row while it waits at the barrier, whether or not
-   * an earlier search enqueue of this tenant committed first ("warm") or none did ("cold").
+   * The edge writes below queue search reindex jobs, which are added at each transaction's pre-commit
+   * flush: the holder's edge holds no queue row while it waits at the barrier, whether an earlier search
+   * enqueue of this tenant committed first ("warm") or none did ("cold").
    */
   it.each(["cold", "warm"] as const)(
     "reports busy while a real project insertion holds the definition and rejects after commit (%s search enqueue)",

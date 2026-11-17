@@ -3,7 +3,6 @@ import { computeTaskHostState, type TaskHostEvent } from "../taskHostEventState.
 
 const ZONE = "Europe/Prague";
 
-/** An event with only the fields a case names; the others are empty, as for an all-day event. */
 function hostEvent(eventId: string, addedAt: string, fields: Partial<TaskHostEvent> = {}): TaskHostEvent {
   return { eventId, addedAt, date: null, endDate: null, timeFrom: null, timeTo: null, ...fields };
 }

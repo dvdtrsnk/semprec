@@ -61,7 +61,6 @@ interface PropertySnapshot {
   owner_process: string | null;
 }
 
-/** The Books and Movies databases of the tenant `id`, seeded through the runtime role. */
 async function seedTenantLibrary(id: string): Promise<SeededLibrary> {
   return runInTenant(id, async () => {
     await seedSystem(runtime);
@@ -269,7 +268,6 @@ describe("library cover override and retry (issue gh-1793)", () => {
       setInvalidationHook((event) => events.push(event));
       return events;
     }
-    /** Runs the queued metadata job of `scope` with a fetcher that finds the title at `source` and a cover. */
     async function runQueuedJob(source: "openLibrary" | "tmdb", fill: Record<string, unknown>): Promise<void> {
       const registry = createActionRegistry();
       registry.set(LIBRARY_METADATA_TRIGGER_ACTION_ID, createLibraryMetadataTriggerAction(runtime));
@@ -330,7 +328,6 @@ describe("library cover override and retry (issue gh-1793)", () => {
         });
         expect(await automationOf(itemId)).toMatchObject({ status: "pending", source: null });
         expect(await queuedJobs(itemId)).toBe(1);
-        // Another item of the same database keeps its own choice.
         expect((await propertiesOf(databaseOf(), sibling)).properties).toMatchObject({ coverRemoved: true });
 
         await runQueuedJob(source, fill);

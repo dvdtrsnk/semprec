@@ -45,9 +45,8 @@ let chokePoint: ChokePoint;
 let tenant: string;
 
 /**
- * Armed by the tests that need a trash which leaves the recorded position of the page unusable. Hooks cannot be
- * unregistered, so this one runs for every trash of the file and does nothing unless a test armed it. It is registered
- * after the domain hooks, so the position `pageItemDeleteHook` recorded exists when it runs.
+ * Armed by tests that need a trash leaving the page's recorded position unusable. Registered after the domain
+ * hooks, so `pageItemDeleteHook`'s position exists when it runs.
  */
 let tamperWithRecordedPosition: ((doc: Y.Doc, pageId: string) => void) | null = null;
 registerItemDeleteHook(async ({ client, item }) => {
@@ -87,7 +86,6 @@ function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant):
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
-/** A plain item of a database of its own: the host whose notes hold the subpages under test. */
 async function createHost(tenantId = tenant): Promise<{ itemId: string; databaseId: string }> {
   return runInTenant(tenantId, async () => {
     const database = await chokePoint.createDatabase({ name: `Hosts ${randomUUID()}` });
@@ -130,7 +128,6 @@ async function docIdOf(itemId: string): Promise<string> {
   return doc.id;
 }
 
-/** The stored blocks of an item's page in document order, and its `trashedPages` map. */
 async function readDocument(itemId: string): Promise<DocumentView> {
   const docId = await docIdOf(itemId);
   return inTenant(async (client) => {
@@ -155,13 +152,11 @@ async function readDocument(itemId: string): Promise<DocumentView> {
   });
 }
 
-/** An edit of an item's page as an editor makes it over the sync socket, outside the page operations. */
 async function editDocument(itemId: string, edit: (doc: Y.Doc) => void): Promise<void> {
   const docId = await docIdOf(itemId);
   await runInTenant(tenant, () => mutateDoc(runtime, docId, "user", edit));
 }
 
-/** The authors of the stored updates of an item's page, oldest first. */
 async function updateAuthors(itemId: string): Promise<string[]> {
   const docId = await docIdOf(itemId);
   const { rows } = await inTenant((client) =>
@@ -170,7 +165,6 @@ async function updateAuthors(itemId: string): Promise<string[]> {
   return rows.map((row) => row.created_by);
 }
 
-/** Whether each item is live, in the order given; a missing row fails the test. */
 async function liveStates(...itemIds: string[]): Promise<boolean[]> {
   return runInTenant(tenant, async () => {
     const states: boolean[] = [];
@@ -212,7 +206,7 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   throw new Error("Expected the call to be rejected");
 }
 
-/** Everything a refused conversion must leave as it was: the live states and the parent's document with its updates. */
+/** What a refused conversion must leave as it was. */
 async function snapshotOf(parentItemId: string, pageItemIds: string[]): Promise<unknown> {
   return {
     live: await liveStates(...pageItemIds),
@@ -221,7 +215,6 @@ async function snapshotOf(parentItemId: string, pageItemIds: string[]): Promise<
   };
 }
 
-/** A host whose notes hold the text blocks `first` and `second`, with the ids of both. */
 async function hostWithTwoBlocks(): Promise<{ host: string; first: string; second: string; databaseId: string }> {
   const { itemId: host, databaseId } = await createHost();
   await runInTenant(tenant, () => writePageTextBlocks(runtime, host, ["first", "second"]));
@@ -230,7 +223,6 @@ async function hostWithTwoBlocks(): Promise<{ host: string; first: string; secon
   return { host, first, second, databaseId };
 }
 
-/** Resolves once a statement on this test database waits for a lock, and fails after ten seconds. */
 async function lockWait(): Promise<void> {
   const deadline = Date.now() + 10_000;
   for (;;) {
@@ -244,11 +236,9 @@ async function lockWait(): Promise<void> {
   }
 }
 
-/** Makes the later stored updates of `itemId`'s page that `author` writes fail inside the database. */
 async function failDocumentWritesOf(itemId: string, author: CreatedBy): Promise<void> {
   const docId = await docIdOf(itemId);
-  // Fault injection inside the document write itself: no production input makes the append fail. The document id and
-  // the author reach the trigger through a scratch table, not interpolated into its body.
+  // No production input makes the append fail; the ids reach the trigger through a scratch table.
   await admin.query("CREATE TABLE fail_page_convert_test_docs (doc_id uuid PRIMARY KEY, created_by text NOT NULL)");
   await admin.query("INSERT INTO fail_page_convert_test_docs (doc_id, created_by) VALUES ($1, $2)", [docId, author]);
   await admin.query("GRANT SELECT ON fail_page_convert_test_docs TO PUBLIC");
@@ -343,7 +333,6 @@ describe("page.convertToBlock (issue #1876)", () => {
     const pages = [checklist.pageItemId, notes.pageItemId, deeper.pageItemId];
     const before = await snapshotOf(host, pages);
 
-    // The user was shown one page less than there are now, and one page more.
     for (const confirmedPageCount of [2, 4]) {
       const error = await rejection(convert({ parentItemId: host, blockId: checklist.blockId, confirmedPageCount }));
       expect(error).toBeInstanceOf(ConflictError);
@@ -435,7 +424,7 @@ describe("page.convertToBlock (issue #1876)", () => {
         if (!item) throw new Error("Missing page");
         await chokePoint.softDeleteItem(item.databaseId, trashed.pageItemId);
       });
-      // A page block over the names the page page operations cannot make: an editor can store any `pageId`.
+      // An editor can store any `pageId`, including names the page operations cannot make.
       const named = {
         inTrash: trashed.pageItemId,
         ofAnotherParent: elsewhere.pageItemId,
@@ -479,7 +468,6 @@ describe("page.convertToBlock (issue #1876)", () => {
       expect(error).toBeInstanceOf(ValidationError);
       expect(error).toMatchObject({ details: { field: "blockId", reason: "not_a_subpage" } });
       expect(await snapshotOf(host, [page.pageItemId])).toEqual(before);
-      // The first block converts: it is the one the trash removes.
       const converted = await convert({ parentItemId: host, blockId: page.blockId, confirmedPageCount: 1 });
       expect(converted.trashedPageCount).toBe(1);
     });
@@ -525,8 +513,7 @@ describe("page.convertToBlock (issue #1876)", () => {
     const notes = await createSubpage(checklist.pageItemId, "Notes");
     const pages = [checklist.pageItemId, notes.pageItemId];
     const before = await snapshotOf(host, pages);
-    // The trash's own update of the document is authored as the writer (`ai_agent`) and goes through; the update of the
-    // new block is authored `user` and fails.
+    // The trash's own update is authored `ai_agent` and goes through; the new block's update is authored `user` and fails.
     await failDocumentWritesOf(host, "user");
 
     const error = await rejection(
@@ -649,7 +636,6 @@ describe("page.convertToBlock (issue #1876)", () => {
     const error = await converting;
     expect(error).toBeInstanceOf(ValidationError);
     expect(error).toMatchObject({ details: { field: "blockId", reason: "not_a_subpage" } });
-    // The page stays in the Trash once, and the document holds neither the page block nor a converted block.
     expect(await liveStates(page.pageItemId)).toEqual([false]);
     expect((await readDocument(host)).blocks.map((block) => block.type)).toEqual(["text", "text"]);
   });
@@ -675,7 +661,6 @@ describe("page.convertToBlock (issue #1876)", () => {
             { parent: { itemId: notes.pageItemId }, title: "Created meanwhile" },
             "user",
           );
-          // The user was shown two pages: the page and the nested one.
           converting = convert({ parentItemId: host, blockId: checklist.blockId, confirmedPageCount: 2 }).then(
             () => null,
             (error: unknown) => error,
@@ -690,7 +675,6 @@ describe("page.convertToBlock (issue #1876)", () => {
     const error = await converting;
     expect(error).toBeInstanceOf(ConflictError);
     expect(error).toMatchObject({ details: { currentPageCount: 3 } });
-    // Nothing was trashed, and the row lock of the nested page is free again.
     expect(await liveStates(checklist.pageItemId, notes.pageItemId)).toEqual([true, true]);
     expect(
       await inTenant((client) => lockItemById(client, pagesDatabaseId, notes.pageItemId).then((row) => row?.id)),

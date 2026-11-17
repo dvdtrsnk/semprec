@@ -4,10 +4,8 @@ import type { SempReplyStep, SempReplyStepParams, SempReplyStepStatus, SempReply
 import { sempUuid } from "./sempReplyToolCalls.js";
 
 /**
- * Reads `semp_messages.steps` back as the steps `projectSempReplySteps` wrote (issue #1887). The column is
- * `jsonb`, so a value that a hand-written backfill or a later migration left in another shape is checked here
- * instead of cast: it throws `Malformed semp_messages.steps in database row`, or, for a step kind or status
- * outside the known set, `Unknown step kind in database row` / `Unknown step status in database row`.
+ * `semp_messages.steps` is `jsonb`, so a value left in another shape by a backfill or migration is checked here
+ * instead of cast, throwing a `... in database row` error.
  */
 
 const STEP_KINDS = ["tool", "model"] as const;
@@ -108,7 +106,7 @@ function parseStep(value: unknown): SempReplyStep {
   };
 }
 
-/** The steps stored in a `semp_messages.steps` column; `undefined` for a `null` column (a reply with no stored summary). */
+/** `undefined` for a `null` column (a reply with no stored summary). */
 export function parseStoredSempReplySteps(value: unknown): SempReplyStep[] | undefined {
   if (value === null) return undefined;
   return Array.isArray(value) ? (value as unknown[]).map(parseStep) : malformed();

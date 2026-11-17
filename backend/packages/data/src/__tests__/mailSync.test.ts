@@ -165,7 +165,10 @@ function holdMoveBaseline(pool: Pool): { reached: Promise<number>; release: () =
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-/** The Mailbox item id for ingest cases that exercise no mailbox-scoped behavior — `ingestEmailMessage` only uses it as its dedup scope. */
+/**
+ * The Mailbox item id for ingest cases without mailbox-scoped behavior: `ingestEmailMessage` only uses it
+ * as its dedup scope.
+ */
 const TEST_MAILBOX_ITEM_ID = randomUUID();
 
 async function databaseIdFor(moduleId: string): Promise<string> {
@@ -174,7 +177,10 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** A minimal, structurally valid one-page PDF containing exactly `text`, with a correct xref table (real byte offsets) so pdf-parse/pdfjs-dist parses it via its normal path. */
+/**
+ * A minimal valid one-page PDF containing exactly `text`, with a correct xref table so pdf-parse parses
+ * it via its normal path.
+ */
 function buildMinimalPdf(text: string): Buffer {
   const objects: string[] = [];
   objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
@@ -274,8 +280,8 @@ describe("email module seed (issue #26)", () => {
       "senderPeople",
     ]);
     expect(emailProps.find((p) => p.key === "sender")).toMatchObject({ owner: "system" });
-    // The two triage flags are the exception: user state, written through the generic
-    // item-update path by the mailbox client (issue #97).
+    // The two triage flags are the exception: user state, written through the generic item-update path by
+    // the mailbox client.
     expect(emailProps.find((p) => p.key === "read")).toMatchObject({ owner: "user", type: "checkbox" });
     expect(emailProps.find((p) => p.key === "flagged")).toMatchObject({ owner: "user", type: "checkbox" });
   });
@@ -493,8 +499,7 @@ describe("conversation threading (issue #26)", () => {
     ]);
     expect(before[0].count).toBe("2");
 
-    // Bridges the two previously-separate threads: both are found as ancestors, so this
-    // resolves to a merge instead of a fresh thread.
+    // Bridges two separate threads: both are found as ancestors, so this resolves to a merge.
     const mergedThreadId = await withTransaction(pool, (client) =>
       resolveThreadId(client, { messageId: "<bridge@x>", references: ["<a1@x>", "<b1@x>"] }),
     );
@@ -757,7 +762,6 @@ describe("per-mailbox message identity (issue #674)", () => {
     return rows[0]!.id;
   }
 
-  /** Two Mailbox items, each with its own INBOX Folder linked through Folders.mailbox. */
   async function setUpTwoMailboxes() {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
@@ -1274,10 +1278,8 @@ describe("attachment ingest (issue #26)", () => {
       ),
     );
 
-    // A minimal but structurally valid one-page PDF, with a correct xref table (real byte
-    // offsets, not placeholders) — pdf-parse (pdfjs-dist under the hood) needs that to parse
-    // via its normal path rather than falling back to a lossy recovery heuristic that
-    // (verified while writing this test) can silently truncate the extracted text.
+    // A minimal valid one-page PDF with a correct xref table: pdf-parse otherwise falls back to a lossy
+    // recovery heuristic that can truncate the extracted text.
     const minimalPdf = buildMinimalPdf("UniqueInvoiceKeyword");
 
     const result = await withTransaction(pool, (client) =>
@@ -1323,9 +1325,8 @@ describe("attachment ingest (issue #26)", () => {
       ),
     );
 
-    // Mirrors the real IMAP adapter: openStream() returns a lazy Readable synchronously, and
-    // the cap violation only surfaces as a stream error once something actually consumes it —
-    // never as a synchronous throw from openStream() itself.
+    // Mirrors the real IMAP adapter: openStream() returns a lazy Readable synchronously, and the cap
+    // violation surfaces as a stream error on consumption, never as a synchronous throw.
     async function* oversizedChunks() {
       yield Buffer.from("first-chunk");
       throw new AttachmentCapExceededError("IMAP attachment exceeded the cap");
@@ -1493,8 +1494,8 @@ describe("HTML sanitization (issue #26)", () => {
     expect(sanitized).toContain("hi");
   });
 
-  // A protocol-relative source names a remote host without a scheme (R1 F1). The forms below are the
-  // ones the sanitizer is known to classify as protocol-relative today; entities reach it decoded.
+  // A protocol-relative source names a remote host without a scheme. These are the forms the sanitizer
+  // classifies as protocol-relative; entities reach it decoded.
   const PROTOCOL_RELATIVE_SOURCES = [
     ["two slashes", "//tracker.example/p.gif"],
     ["two backslashes", "\\\\tracker.example\\p.gif"],
@@ -1591,8 +1592,8 @@ describe("full-text search over Emails (issue #26)", () => {
     await withTransaction(pool, (client) =>
       reindexItemSearch(client, { itemId: newerId, databaseId: emailsId, text: "quarterly report" }),
     );
-    // Backdate the older row directly — both reindexItemSearch calls above ran within the same
-    // instant, so without this the recency blend would have nothing to actually distinguish.
+    // Backdate the older row: both reindexItemSearch calls ran within the same instant, so the recency blend
+    // would have nothing to distinguish.
     await pool.query(`UPDATE item_search_index SET updated_at = now() - interval '90 days' WHERE item_id = $1`, [
       olderId,
     ]);
@@ -1745,7 +1746,7 @@ describe("full-text search over Emails (issue #26)", () => {
             }),
           );
 
-        // Legacy row: no flags reported at ingest at all, the documented default is unread/unflagged.
+        // Legacy row without flags reported at ingest: the default is unread/unflagged.
         const legacy = await ingest("<legacy@x>", undefined);
         const readOnly = await ingest("<read@x>", [IMAP_SEEN_FLAG]);
         const flaggedOnly = await ingest("<flagged@x>", [IMAP_FLAGGED_FLAG]);
@@ -1784,9 +1785,8 @@ describe("periodic search reindex sweep (issue #26)", () => {
 
   it("indexes an Emails item that was written outside ingestEmailMessage's own standard path", async () => {
     const emailsId = await databaseIdFor("emails");
-    // Direct choke-point item creation, bypassing ingestEmailMessage/reindexItemSearch entirely
-    // — the exact "migration/backfill wrote outside the standard path" scenario the sweep
-    // exists for.
+    // Direct choke-point item creation, bypassing ingestEmailMessage/reindexItemSearch: the out-of-band write
+    // the sweep exists for.
     const item = await withTransaction(pool, (client) =>
       createItemWithClient(
         client,
@@ -1963,7 +1963,7 @@ describe("IMAP reconcile core (issue #26)", () => {
       selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
       fetchMessagesSince: async (_path, sinceUid) => {
         fetchCallCount++;
-        expect(sinceUid).toBe(1); // reset back to the start, not resumed from the old uidnext
+        expect(sinceUid).toBe(1);
         return [];
       },
     });
@@ -2033,14 +2033,14 @@ describe("IMAP reconcile core (issue #26)", () => {
       await withTransaction(pool, (client) => reconcileImapAccount(client, secondPassImap, params));
 
       const { rows: emailRows } = await pool.query(`SELECT id FROM items WHERE database_id = $1`, [emailsId]);
-      expect(emailRows).toHaveLength(1); // still one Emails item, not a duplicate
+      expect(emailRows).toHaveLength(1);
 
       const { rows: edgeRows } = await pool.query(
         `SELECT metadata FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2)`,
         [folderRelationPropertyId, emailRows[0].id],
       );
-      expect(edgeRows).toHaveLength(1); // one edge, updated in place — not a second, stale-generation edge
-      expect(edgeRows[0].metadata).toEqual({ uid: 1 }); // carries the new UID, not the pre-reset one
+      expect(edgeRows).toHaveLength(1); // one edge, updated in place
+      expect(edgeRows[0].metadata).toEqual({ uid: 1 });
     },
   );
 
@@ -2147,10 +2147,8 @@ describe("IMAP reconcile core (issue #26)", () => {
       );
       expect(Number(edgeCount[0].count)).toBe(3); // All Mail + \Inbox + Work
 
-      // A second pass re-observing the same message with one label dropped removes only that
-      // label's edge, keeping the physical All Mail edge and the other label. The fake client's
-      // fetchMessagesSince ignores the sinceUid it's called with (same as every other fake
-      // client in this file) so it can simply re-report uid 1 with a narrowed label set.
+      // A second pass re-observing the message with one label dropped removes only that label's edge. The fake
+      // client ignores `sinceUid`, so it can re-report uid 1 with a narrowed label set.
       const gmailImapRelabeled = fakeImapClient({
         listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
         selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
@@ -3296,8 +3294,7 @@ describe("mail sync job error handling (issue #26)", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0].purpose).toBe("imap_sync");
 
-      // The user-visible Mailbox.syncStatus (distinct from the internal mail_account_sync_state
-      // bookkeeping above) also reflects the failure — this is what the mailbox UI would show.
+      // The user-visible Mailbox.syncStatus (distinct from mail_account_sync_state) also reflects the failure.
       const item = await withTransaction(pool, (client) =>
         client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
       );
@@ -3351,10 +3348,8 @@ describe("mail sync job error handling (issue #26)", () => {
         mailboxesDatabaseId: mailboxesId,
       };
 
-      // A brand-new folder's very first reconcile pass never even looks at
-      // fetchVanishedSince/fetchAllUids (imapReconcile.ts: nothing to diff against yet) — a
-      // first, uneventful pass establishes real uidvalidity/uidnext state so the second pass
-      // below actually reaches (and can fail inside) the vanished-UID check.
+      // A new folder's first reconcile pass never calls fetchVanishedSince/fetchAllUids (nothing to diff
+      // against), so a first pass establishes uidvalidity/uidnext and the second reaches the vanished-UID check.
       const passOneImap: ImapMailClient = {
         appendMessage: async () => {},
         getCapabilities: async () => new Set(),
@@ -3399,9 +3394,8 @@ describe("mail sync job error handling (issue #26)", () => {
             },
           },
         ],
-        // No QRESYNC (getCapabilities returns an empty set) and uidvalidity is already known
-        // (set by passOneImap above) -> imapReconcile.ts's non-CONDSTORE fallback path, which
-        // diffs via fetchAllUids.
+        // No QRESYNC and a known uidvalidity: imapReconcile.ts's non-CONDSTORE fallback, which diffs via
+        // fetchAllUids.
         fetchVanishedSince: async () => null,
         fetchAllUids: async () => {
           throw new Error("boom after the attachment was already written");
@@ -3419,7 +3413,6 @@ describe("mail sync job error handling (issue #26)", () => {
 
       expect(writtenKeys).toHaveLength(1);
       expect(deletedKeys).toEqual(writtenKeys);
-      // The transaction rolled back, so no Files item or Email item exists for it either.
       const { rows } = await pool.query(`SELECT count(*) FROM items WHERE database_id = $1`, [emailsId]);
       expect(rows[0].count).toBe("0");
     },
@@ -3844,8 +3837,8 @@ describe("mail sync job error handling (issue #26)", () => {
       expect(first?.failingSince).toBeNull();
       expect(first?.lastFailureKind).toBeNull();
 
-      // A second identical pass moves the success timestamp, keeps the initial sync, and leaves
-      // the already-'ok' Mailboxes item untouched.
+      // A second identical pass moves the success timestamp, keeps the initial sync, and leaves the 'ok'
+      // Mailboxes item untouched.
       const updatedAfterFirst = await readUpdatedAt();
       await run(healthy);
       const second = await readState();
@@ -3961,8 +3954,7 @@ describe("mail sync job error handling (issue #26)", () => {
     await withTransaction(pool, (client) =>
       ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
     );
-    // Deliberately no storeCredential call, same as the "no stored credential" test below —
-    // reaches `recordSyncError` without needing a real adapter failure.
+    // No storeCredential call: reaches `recordSyncError` without a real adapter failure.
 
     const moduleIds = {
       emailsDatabaseId: emailsId,
@@ -4001,7 +3993,6 @@ describe("mail sync job error handling (issue #26)", () => {
     const { rows: afterReplay } = await pool.query(`SELECT id FROM notifications WHERE source_id = $1`, [mailbox.id]);
     expect(afterReplay).toHaveLength(1);
 
-    // A later, independent failure (a new job) is a different transition and does insert.
     await expect(
       handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, {}, moduleIds, noopStorage, {
         job: { id: "job-2" },
@@ -4057,9 +4048,8 @@ describe("mail sync job error handling (issue #26)", () => {
     await withTransaction(pool, (client) =>
       ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
     );
-    // Deliberately no storeCredential call: handleSyncMailAccountTask's own "no stored
-    // credential" throw fires before the reconcile transaction ever opens, exercising the same
-    // code path a real decrypt failure would.
+    // No storeCredential call: handleSyncMailAccountTask's "no stored credential" throw fires before the
+    // reconcile transaction opens, the same path a decrypt failure takes.
 
     await expect(
       handleSyncMailAccountTask(
@@ -4114,8 +4104,7 @@ describe("mail sync job error handling (issue #26)", () => {
     }));
     const adapters: MailSyncAdapterFactory = { createImapClient };
 
-    // On current code, this rejects with a NotFoundError from the closing syncStatus write and
-    // the adapter has already run — this test discriminates exactly that.
+    // A NotFoundError from the closing syncStatus write after the adapter already ran would fail this test.
     await expect(
       handleSyncMailAccountTask(
         pool,
@@ -4206,7 +4195,6 @@ describe("mailbox Semp problem raised by the sync job (issue #1506)", () => {
     };
   }
 
-  /** A Mailbox with its sync state and, when `withCredential`, a stored app password. */
   async function createMailbox(withCredential: boolean): Promise<string> {
     const { mailboxesDatabaseId } = await seededModuleIds();
     const mailbox = await withTransaction(pool, (client) =>
@@ -4372,7 +4360,6 @@ describe("mailbox Semp problem raised by the sync job (issue #1506)", () => {
     await createOwner();
     const mailboxId = await createMailbox(true);
 
-    // A completed pass with no problem to resolve changes nothing.
     await syncPass(mailboxId, { createImapClient: async () => completingImap });
     expect(await mailProblems(mailboxId)).toEqual([]);
 
@@ -4788,9 +4775,8 @@ describe("person <-> email linkage determinism (issue #93)", () => {
     await withTransaction(pool, (client) =>
       reindexPersonEmails(client, alice.id, ["  Alice@Example.com ", "ALICE@EXAMPLE.COM"]),
     );
-    // Both variants normalize to the same address — this must not attempt to claim it twice
-    // (email PRIMARY KEY would reject a literal duplicate insert) and must resolve identically
-    // regardless of how a later lookup happens to be cased.
+    // Both variants normalize to one address: it must be claimed once (the email PRIMARY KEY rejects a
+    // duplicate) and resolve identically whatever the lookup's case.
     expect(await withTransaction(pool, (client) => lookupPersonIdByEmail(client, "alice@example.com"))).toBe(alice.id);
     expect(await withTransaction(pool, (client) => lookupPersonIdByEmail(client, "Alice@Example.com"))).toBe(alice.id);
 
@@ -4846,8 +4832,8 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
 
     const fetched = await client.fetchMessagesSince("INBOX", 1);
 
-    // Confirms the fetch actually walked into a real message's body (calling `download`) rather
-    // than trivially seeing no flag mutation because nothing was fetched at all.
+    // Proves the fetch reached a real message body (`download` was called), so no flag mutation is not
+    // merely an empty fetch.
     expect(fetched).toHaveLength(1);
     expect(fetched[0]!.message.bodyText).toBeDefined();
     expect(raw.calls).toContain("download");
@@ -5033,9 +5019,8 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
         const key = query.bodyParts?.[0]?.key;
         if (!key) throw new Error("missing partial range");
         fetches += 1;
-        // 1600 = MAX_ATTACHMENT_BYTES (104_857_600) / IMAP_PARTIAL_FETCH_BYTES (65_536), both
-        // private to imapFlowClient.ts so not importable here — the number of full-size chunks
-        // needed to reach the cap exactly.
+        // 1600 = MAX_ATTACHMENT_BYTES (104_857_600) / IMAP_PARTIAL_FETCH_BYTES (65_536), both private to
+        // imapFlowClient.ts: the full-size chunks needed to reach the cap exactly.
         return { bodyParts: new Map([[key, fetches <= 1600 ? fullChunk : Buffer.from("x")]]) };
       },
     });
@@ -5073,8 +5058,7 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
     // @ts-expect-error - "\Deleted" is not a WritableImapFlag
     void client.setMessageFlag("INBOX", 42, "\\Deleted", true);
   }
-  // Referenced so `noUnusedLocals` keeps the guard above: unlike parameters, a local
-  // declaration gets no leading-underscore exemption from tsc.
+  // Referenced so `noUnusedLocals` keeps the guard above: a local gets no leading-underscore exemption.
   void _typeAssertion_setMessageFlagRejectsNonCanonicalFlags;
 
   it("isImapConnectionLimitError recognizes a provider's simultaneous-connection BYE, not an ordinary connection failure", () => {
@@ -5092,8 +5076,8 @@ describe("IMAP PEEK vs explicit mark-read (issue #94)", () => {
   });
 
   it("does not misclassify a TLS/other pre-auth closure as a connection-limit rejection just because it shares imapflow's ClosedAfterConnectTLS code", () => {
-    // imapflow assigns this same code to *any* pre-auth server closure (cert failures, a
-    // suspended account, maintenance) — only the reason text, not the code alone, may decide this.
+    // imapflow assigns this code to any pre-auth server closure (cert failures, a suspended account,
+    // maintenance); only the reason text may decide this.
     const tlsFailure = Object.assign(new Error("TLS handshake error"), {
       code: "ClosedAfterConnectTLS",
       reason: "TLS certificate error",
@@ -5160,8 +5144,7 @@ describe("per-account IMAP concurrency limiter (issue #94)", () => {
 
     expect(secondStarted).toBe(false); // still queued behind `first` at the original limit of 1
 
-    // A later call for the same account raises the limit to 2 — `second` should be released
-    // right away rather than waiting for `first` to finish first.
+    // A later call for the same account raises the limit to 2, so `second` is released right away.
     await limiter.run("account-raise", 2, async () => {});
     expect(secondStarted).toBe(true);
 
@@ -5186,8 +5169,8 @@ describe("per-account IMAP concurrency limiter (issue #94)", () => {
   });
 
   it("bounds a limit raise's wake-up to the capacity that actually freed up, not every queued waiter", async () => {
-    // Resolves once pending microtasks (a woken waiter's `run()` continuation) have had a chance
-    // to settle, without advancing real time.
+    // Resolves once pending microtasks (a woken waiter's `run()` continuation) settled, without advancing
+    // real time.
     const flushMicrotasks = () => new Promise<void>((resolve) => setImmediate(resolve));
 
     const limiter = createImapConnectionLimiter();
@@ -5209,15 +5192,13 @@ describe("per-account IMAP concurrency limiter (issue #94)", () => {
     await flushMicrotasks();
     expect(concurrent).toBe(1);
 
-    // Raising the limit to 3 must free up exactly two more slots (3 - 1 active), not all three
-    // remaining waiters — this is the capacity-bound the limiter must enforce.
+    // Raising the limit to 3 frees exactly two more slots (3 - 1 active), not all three waiters.
     const raised = runTask(3);
     await flushMicrotasks();
     expect(concurrent).toBe(3);
     expect(maxConcurrent).toBe(3);
 
-    // Release the first task so the queue drains; every queued task eventually runs, and the
-    // limit is never exceeded as later waiters get woken to backfill freed slots.
+    // Release the first task: every queued task eventually runs and the limit is never exceeded.
     for (let i = 0; i < 10 && releasers.length > 0; i++) {
       releasers.splice(0).forEach((release) => release());
       await flushMicrotasks();
@@ -5244,8 +5225,7 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     const filesId = await databaseIdFor("files");
     const mailboxesId = await databaseIdFor("mailboxes");
 
-    // Pre-seeded to 'ok' (not left unset) so the assertion below actually proves the status
-    // gets updated on this path, rather than merely being indistinguishable from "never touched".
+    // Pre-seeded to 'ok' so the assertion proves the status is updated on this path.
     const mailbox = await withTransaction(pool, (client) =>
       createItemWithClient(
         client,
@@ -5266,9 +5246,8 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
       },
     };
 
-    // Resolves rather than rejecting: a connection-limit rejection is contention, not a hard
-    // failure, and must not also trigger graphile-worker's own immediate job retry on top of
-    // the delayed sweep-driven retry recorded below.
+    // Resolves rather than rejecting: a connection-limit rejection is contention, and must not trigger
+    // graphile-worker's immediate retry on top of the sweep-driven retry recorded below.
     await handleSyncMailAccountTask(
       pool,
       { mailboxItemId: mailbox.id },
@@ -5289,8 +5268,8 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
     // midpoint, distinguishing it from `recordSyncError`'s fixed backoff.
     expect(new Date(state!.nextExpectedActivityAt!).getTime()).toBeGreaterThan(Date.now() + 8 * 60 * 1000);
 
-    // Mail genuinely isn't syncing right now, so syncStatus reflects that like any other
-    // failure — it clears back to 'ok' the same way, via the next successful pass.
+    // Mail is not syncing, so syncStatus reflects it like any failure and clears to 'ok' on the next
+    // successful pass.
     const item = await withTransaction(pool, (client) =>
       client.query(`SELECT properties FROM items WHERE id = $1`, [mailbox.id]),
     );
@@ -5427,9 +5406,8 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
         mailboxesDatabaseId: mailboxesId,
       };
 
-      // connectionLimit: 1 forces genuine contention between two concurrent passes for this
-      // account — at the default limit of 2 (imapConnectionLimitForProvider) they never wait and
-      // this test would pass vacuously even on the unfixed code.
+      // connectionLimit: 1 forces contention between two concurrent passes; at the default limit of 2 they
+      // never wait and this test would pass vacuously.
       const mailbox = await withTransaction(pool, (client) =>
         createItemWithClient(client, { databaseId: mailboxesId, properties: { name: "M", connectionLimit: 1 } }),
       );
@@ -5440,7 +5418,6 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
         storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
       );
 
-      // A real (not fake/recording) limiter — the point of this test is genuine queueing.
       const limiter = createImapConnectionLimiter();
 
       let releaseFirst: () => void = () => {};
@@ -5479,8 +5456,8 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
         close: async () => {},
       };
 
-      // The first pass takes the account's only slot and holds it (blocked inside `selectFolder`,
-      // with its write transaction's connection checked out) until `releaseFirst()` is called.
+      // The first pass takes the account's only slot and holds it (blocked in `selectFolder`, its write
+      // transaction's connection checked out) until `releaseFirst()`.
       const firstPass = handleSyncMailAccountTask(
         pool,
         { mailboxItemId: mailbox.id },
@@ -5505,9 +5482,8 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
         limiter,
       );
 
-      // Waits until the second pass's own credential fetch (which happens before it ever calls
-      // the limiter) has been logged — proof it has run its prologue/credential work and is now
-      // either calling or blocked in `imapConnectionLimiter.run`, not still doing earlier work.
+      // Waits until the second pass's credential fetch (before it calls the limiter) has been logged, so it is
+      // calling or blocked in `imapConnectionLimiter.run`.
       for (;;) {
         const { rows } = await pool.query(`SELECT count(*) FROM credential_access_log WHERE item_id = $1`, [
           mailbox.id,
@@ -5515,13 +5491,11 @@ describe("mail sync connection-limit backoff (issue #94)", () => {
         if (Number(rows[0].count) >= 2) break;
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
-      // One more tick so the second pass's synchronous `imapConnectionLimiter.run(...)` call (and
-      // its internal queueing) has actually run.
+      // One more tick so the second pass's synchronous `imapConnectionLimiter.run(...)` call has run.
       await new Promise((resolve) => setTimeout(resolve, 20));
 
-      // The second pass is queued behind the first (limit 1, one already active) — it must not
-      // have checked out a database connection while it waits. On the unfixed code, the write
-      // transaction opened before the limiter wait, so this would be +1.
+      // The second pass is queued behind the first and must not have checked out a database connection while
+      // it waits: the write transaction opens after the limiter wait.
       expect(checkedOut() - baseline).toBe(0);
 
       releaseFirst();
@@ -5691,7 +5665,6 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     return rows[0];
   }
 
-  /** One Mailbox with one Folder, and the params reconcileImapFolder needs for it. */
   async function setUpFolder() {
     const [emailsId, foldersId, filesId, mailboxesId] = await Promise.all([
       databaseIdFor("emails"),
@@ -5737,7 +5710,10 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
     return { emailsId, mailbox, folder, params };
   }
 
-  /** Ingests one message (uid 1, unread/unflagged) via reconcileImapFolder's own initial-sync pass, so mail_folder_sync_state carries real uidnext/uidvalidity for the second pass to build on. */
+  /**
+   * Ingests one message (uid 1, unread/unflagged) via reconcileImapFolder's initial-sync pass, so
+   * mail_folder_sync_state carries uidnext/uidvalidity for the second pass.
+   */
   async function ingestFirstMessage(
     params: Awaited<ReturnType<typeof setUpFolder>>["params"],
     overrides: Partial<ImapMailClient> = {},
@@ -5915,8 +5891,8 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
       await chokePoint.updateItem({ databaseId: emailsId, itemId: first.itemId, propertiesPatch: { read: true } });
       expect(await flagStateRowFor(first.itemId, "read")).toEqual({ desired_state: true, current_state: false });
 
-      // A later fetchMessagesSince pass re-observes the same message, still carrying the old
-      // (unread) flag value the provider had before the pending write-back has had a chance to run.
+      // A later fetchMessagesSince pass re-observes the message with the old (unread) flag value, before the
+      // pending write-back ran.
       const second = await withTransaction(pool, (client) => ingestEmailMessage(client, ingestArgs));
       expect(second.created).toBe(false);
       expect(second.itemId).toBe(first.itemId);
@@ -6012,9 +5988,8 @@ describe("flag observation convergence and IMAP known-UID re-fetch (issue #681)"
         // The pending `read` write survives untouched...
         expect(item?.properties.read).toBe(true);
         expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: false });
-        // ...while `flagged`, which had no pending write, converges to the observation — proof
-        // recordObservedMailMessageFlags ran for both properties in this one call, not just the
-        // one that happened to change the item.
+        // ...while `flagged`, which had no pending write, converges to the observation: both properties were
+        // recorded in this one call.
         expect(item?.properties.flagged).toBe(true);
         expect(await flagStateRowFor(itemId, "flagged")).toEqual({ desired_state: true, current_state: true });
       },
@@ -6223,7 +6198,7 @@ describe("queued sync status forward repair (issue #1497)", () => {
     let functionCreated = false;
     let triggerCreated = false;
     try {
-      // first comes exclusively from randomUUID() and contains only hexadecimal digits and hyphens.
+      // `first` comes from randomUUID() and contains only hexadecimal digits and hyphens.
       await pool.query(`CREATE FUNCTION test_sync_repair_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN IF NEW.item_id = '${first}'::uuid THEN PERFORM pg_advisory_xact_lock(421305122); END IF; RETURN NEW; END $$`);
       functionCreated = true;

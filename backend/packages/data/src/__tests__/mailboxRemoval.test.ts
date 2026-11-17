@@ -40,14 +40,12 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 
-/** A Mailboxes item with two Folders, each related to it through the production folder edge. */
 interface TestMailbox {
   id: string;
   inbox: string;
   archive: string;
 }
 
-/** Everything the removal writes or deletes for one mailbox, as stored. */
 interface MailboxSnapshot {
   item: Array<{ properties: unknown; updatedAt: string; deletedAt: string | null }>;
   credential: Array<{ ciphertext: string; nonce: string }>;
@@ -76,12 +74,10 @@ let runtime: Pool;
 let chokePoint: ChokePoint;
 let tenant: string;
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
-/** A connected mailbox: a credential, an account sync state, a sync state for both folders and server settings. */
 async function createConnectedMailbox(
   client: PoolClient,
   name: string,
@@ -100,7 +96,6 @@ async function createConnectedMailbox(
   return mailbox;
 }
 
-/** A mailbox that never connected: the item with `syncStatus` `ok` and its two folders, and none of the four kinds of rows. */
 async function createBareMailbox(client: PoolClient, name: string): Promise<TestMailbox> {
   const mail = await resolveMailModuleIds(client);
   const { rows } = await client.query<{ id: string }>(
@@ -127,7 +122,6 @@ async function createBareMailbox(client: PoolClient, name: string): Promise<Test
   return { id: mailbox.id, inbox: await folder("inbox"), archive: await folder("archive") };
 }
 
-/** Reads the mailbox's rows in `tenantId`'s scope, so a row of another tenant is absent from the snapshot. */
 function snapshot(mailbox: TestMailbox, tenantId = tenant): Promise<MailboxSnapshot> {
   return inTenant(async (client) => {
     const item = await client.query<{ properties: unknown; updatedAt: string; deletedAt: string | null }>(
@@ -167,7 +161,6 @@ function remove(mailboxItemId: string, tenantId = tenant): Promise<boolean> {
   );
 }
 
-/** The trashed item of a removed mailbox: in the trash, with `syncStatus` `needsReauthorization`. */
 function expectTrashedAsNeedsReauthorization(after: MailboxSnapshot): void {
   expect(after.item).toHaveLength(1);
   expect(after.item[0]?.deletedAt).not.toBeNull();
@@ -175,14 +168,13 @@ function expectTrashedAsNeedsReauthorization(after: MailboxSnapshot): void {
 }
 
 /**
- * Makes every row delete from `table` fail until the returned function runs. A trigger is the only
- * way to fail one statement of the removal's transaction; no production code exposes that seam.
+ * Makes every row delete from `table` fail until the returned function runs. A trigger is the only way
+ * to fail one statement of the removal's transaction.
  */
 async function failDeletesFrom(table: (typeof DELETED_TABLES)[number]): Promise<() => Promise<void>> {
   await admin.query(`CREATE FUNCTION test_mailbox_removal_fail() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN RAISE EXCEPTION 'test mailbox removal failure'; END $$`);
-  // `table` is one of the literals of DELETED_TABLES, so it cannot break out of the statement;
-  // CREATE TRIGGER and DROP TRIGGER accept no bind parameters.
+  // `table` is one of the literals of DELETED_TABLES; CREATE/DROP TRIGGER accept no bind parameters.
   await admin.query(
     `CREATE TRIGGER test_mailbox_removal_fail BEFORE DELETE ON ${table} FOR EACH ROW EXECUTE FUNCTION test_mailbox_removal_fail()`,
   );
@@ -192,7 +184,6 @@ async function failDeletesFrom(table: (typeof DELETED_TABLES)[number]): Promise<
   };
 }
 
-/** The passes of these tests ingest no attachment, so nothing is written to storage. */
 const unusedStorage: BlobStorageWriter = {
   writeStream() {
     throw new Error("writeStream is not used by this test");
@@ -204,9 +195,8 @@ const unusedStorage: BlobStorageWriter = {
 };
 
 /**
- * Stub providers of an account without messages, one per sync mode. `calls` lists every provider call
- * a pass made, in order. `folders` are the IMAP folder paths, and `onSelectFolder` runs before the
- * IMAP stub answers the selection of a folder.
+ * Stub providers of an account without messages, one per sync mode. `calls` lists every provider call in
+ * order; `onSelectFolder` runs before the IMAP stub answers a folder selection.
  */
 function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: string) => Promise<void> } = {}): {
   calls: string[];
@@ -266,7 +256,6 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
   };
 }
 
-/** One `mailAccountSync` pass through the production handler, in the tenant's scope on the runtime role. */
 function syncPass(
   mailboxItemId: string,
   adapters: MailSyncAdapterFactory,
@@ -278,7 +267,6 @@ function syncPass(
   });
 }
 
-/** A promise with its resolver, for the explicit signals of the concurrent tests. */
 function signal<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve: (value: T) => void = () => {};
   const promise = new Promise<T>((settle) => {
@@ -287,7 +275,6 @@ function signal<T = void>(): { promise: Promise<T>; resolve: (value: T) => void 
   return { promise, resolve };
 }
 
-/** Waits for `reached`, and fails as soon as `work` ends first: its work was meant to stop at that point. */
 function reachedBeforeEnd<T>(reached: Promise<T>, work: Promise<unknown>, what: string): Promise<T> {
   return Promise.race([
     reached,
@@ -297,7 +284,6 @@ function reachedBeforeEnd<T>(reached: Promise<T>, work: Promise<unknown>, what: 
   ]);
 }
 
-/** The backends of this database that wait for a lock, with the kind of lock each waits for. */
 async function lockWaits(): Promise<Array<{ pid: number; lock: string }>> {
   const { rows } = await admin.query<{ pid: number; lock: string }>(
     `SELECT pid, wait_event AS lock FROM pg_stat_activity
@@ -306,7 +292,6 @@ async function lockWaits(): Promise<Array<{ pid: number; lock: string }>> {
   return rows;
 }
 
-/** The backends that wait for a lock backend `holder` holds. */
 async function backendsBlockedBy(holder: number): Promise<number[]> {
   const { rows } = await admin.query<{ pid: number }>(
     "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) ORDER BY pid",
@@ -317,7 +302,7 @@ async function backendsBlockedBy(holder: number): Promise<number[]> {
 
 /**
  * How many transaction ids backend `pid` holds. A transaction gets its id with its first row lock or
- * write, so none means that it holds no row lock and has written nothing.
+ * write, so none means no row lock and no write.
  */
 async function transactionIdsHeldBy(pid: number): Promise<number> {
   const { rows } = await admin.query<{ held: number }>(
@@ -545,9 +530,8 @@ describe("mailbox removal (gh-1690)", () => {
         const providers = stubProviders({ folders: ["inbox", "archive"] });
         const holderBackend = signal<number>();
         const released = signal();
-        // A row lock is the only way to stop the removal between two of its statements. It holds the
-        // guard and has deleted the credential and both sync states when it waits here, uncommitted,
-        // at its last delete.
+        // A row lock is the only way to stop the removal between two statements. When it waits here it holds the
+        // guard and has deleted the credential and both sync states, uncommitted, at its last delete.
         const holder = inTenant(async (client) => {
           await client.query<{ held: number }>(
             "SELECT 1 AS held FROM mail_account_server_settings WHERE mailbox_item_id = $1 FOR UPDATE",
@@ -601,10 +585,9 @@ describe("mailbox removal (gh-1690)", () => {
     );
 
     /**
-     * One IMAP pass of `mailbox` during which `change` happens after the pass has read the mailbox, its
-     * sync state and its credential and before its write transaction: the connection limiter grants
-     * the slot in between. Returns the provider calls the pass made and the mailbox's rows right after
-     * `change`.
+     * One IMAP pass of `mailbox` during which `change` happens after the pass read the mailbox, its sync
+     * state and credential and before its write transaction (the connection limiter grants the slot in
+     * between). Returns the provider calls and the mailbox's rows right after `change`.
      */
     async function passAfter(
       mailbox: TestMailbox,
@@ -624,15 +607,14 @@ describe("mailbox removal (gh-1690)", () => {
       return { calls: providers.calls, changed };
     }
 
-    /** What a pass that did no work called: it opens its connection before its first statement, and closes it. */
     const NO_RECONCILE = ["createImapClient", "close"];
 
     it("makes a pass do no work for a live mailbox whose sync state was deleted while the pass waited for its connection", async () => {
       const mailbox = await inTenant((client) => createConnectedMailbox(client, "Work"));
 
       const { calls, changed } = await passAfter(mailbox, async () => {
-        // The store's delete, called directly: the removal deletes the row of a mailbox it trashes, and
-        // since issue gh-2032 the restore of that mailbox inserts one again.
+        // The store's delete, called directly: the removal deletes the row of a mailbox it trashes, and the
+        // restore of that mailbox inserts one again.
         expect(await inTenant((client) => deleteMailAccountSyncState(client, mailbox.id))).toBe(true);
       });
 
@@ -655,7 +637,7 @@ describe("mailbox removal (gh-1690)", () => {
         expect(await runInTenant(tenant, () => chokePoint.restoreItem(mailboxes, mailbox.id))).not.toBeNull();
       });
 
-      // The restore hook of issue gh-2032 gave the mailbox a default sync state, and nothing else back.
+      // The restore hook gave the mailbox a default sync state, and nothing else back.
       expect(changed).toMatchObject({ ...REMOVED, accountState: [{ syncMode: "imap" }] });
       expect(changed.item[0]?.deletedAt).toBeNull();
       expect(changed.item[0]?.properties).toMatchObject({ syncStatus: "needsReauthorization" });
@@ -722,7 +704,6 @@ describe("mailbox removal (gh-1690)", () => {
   });
 
   describe("the bounded wait for the sync guard (sp-98129c34)", () => {
-    /** A second transaction that holds the mailbox's sync guard until `release()`; `ended` settles once it has ended. */
     function holdSyncGuard(mailboxItemId: string): {
       held: Promise<void>;
       release: () => void;
@@ -738,7 +719,6 @@ describe("mailbox removal (gh-1690)", () => {
       return { held: Promise.race([held.promise, ended]), release: released.resolve, ended };
     }
 
-    /** Cleanup members that record a call: a removal that rolled back must not reach any of them. */
     function recordingCleanup(): { calls: string[]; dependencies: MailboxRemovalCleanupDependencies } {
       const calls: string[] = [];
       return {
@@ -885,8 +865,8 @@ describe("mailbox removal (gh-1690)", () => {
           try {
             await lockMailboxSync(client, randomUUID());
 
-            // A bound that is applied and put back would leave the setting as it was, so the sent statements
-            // are what shows that the sync pass's wait is not bounded.
+            // A bound applied and put back would leave the setting unchanged, so the sent statements show that the
+            // sync pass's wait is not bounded.
             const sent = query.mock.calls.map(([statement]) =>
               typeof statement === "string" ? statement : (statement as { text?: string }).text,
             );
@@ -1060,7 +1040,7 @@ describe("mailbox removal (gh-1690)", () => {
 
   describe("DELETE /api/mail/mailboxes/:id handler", () => {
     function call(id: string, userId: string, tenantId = tenant) {
-      // The empty custom-route container: these tests are about the removal, not its cleanup (issue gh-2030).
+      // The empty custom-route container: these tests are about the removal, not its cleanup.
       const handler = createMailboxRemovalRouteHandler(runtime, {});
       return runInTenant(tenantId, () => handler({ params: { id }, identity: { user: { id: userId } } }));
     }

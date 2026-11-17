@@ -18,19 +18,15 @@ import {
 } from "@semprec/data";
 
 /**
- * Fixtures of the reply-scoped reads of an agent run (issue #1889): a chat run (`unit = session`) that holds several
- * replies, each played with the production writers the turn handler of `semprec-agents` uses (`sendSempMessage`,
- * `claimSempMessage`, `startSempMessageTurn`, `insertAgentRunEvent`, `buildSempReplySummary` and
- * `finishSempMessageTurn`).
+ * Reply-scoped read fixtures: a chat run (`unit = session`) with several replies, each played with the production
+ * writers the `semprec-agents` turn handler uses.
  */
 
-/** The start of the fixed clock the played events are stamped with. */
 export const CLOCK_START = Date.parse("2026-11-01T10:00:00.000Z");
 
 export interface ReplySetup {
-  /** The superuser pool: it only stamps event times (see `playReply`). */
+  /** Only stamps event times. */
   admin: Pool;
-  /** The runtime-role pool every production write goes through. */
   pool: Pool;
   tenant: string;
   userId: string;
@@ -43,12 +39,11 @@ export interface ChatRun {
 
 export interface ToolCallSpec {
   toolCallId: string;
-  /** The call ends with a failed result. */
   fails?: boolean;
 }
 
 export interface PlayedReply {
-  /** The message the reply answers; `null` for a reply that answers none. */
+  /** `null` for a reply that answers none. */
   userMessageId: string | null;
   assistantMessageId: string;
   runId: string;
@@ -57,7 +52,6 @@ export interface PlayedReply {
   lastEventId: string;
 }
 
-/** A chat run of the tenant's user with its thread. */
 export async function createChatRun(setup: ReplySetup): Promise<ChatRun> {
   return runInTenant(setup.tenant, async () => {
     const threadId = await withTransaction(setup.pool, createSempChatThread);
@@ -72,7 +66,7 @@ export async function createChatRun(setup: ReplySetup): Promise<ChatRun> {
   });
 }
 
-/** How a played reply ends: `done`, `error` (no last event is stored, as for a failed turn) or `running` (not finished). */
+/** `error` stores no last event, as for a failed turn; `running` is not finished. */
 export type ReplyEnd = "done" | "error" | "running";
 
 function eventSpecs(input: { startMs: number; toolCalls: ToolCallSpec[]; answer: string }) {
@@ -119,10 +113,8 @@ function eventSpecs(input: { startMs: number; toolCalls: ToolCallSpec[]; answer:
 }
 
 /**
- * Stores the events of a reply on `run`, starts its message's turn on the first of them and, unless `end` is
- * `running`, finishes it with the summary the turn handler builds. The event times are stamped by a raw `UPDATE`
- * on the admin pool because the production writer stamps `now()` and the durations asserted by the tests need a
- * clock the test controls.
+ * Event times are stamped by a raw `UPDATE` on the admin pool because the production writer stamps `now()` and
+ * the asserted durations need a clock the test controls.
  */
 async function playTurnOf(
   setup: ReplySetup,
@@ -163,10 +155,7 @@ async function playTurnOf(
   return { runId: run.runId, eventIds };
 }
 
-/**
- * One reply of `run`: the user's message `userText`, the queued assistant message that answers it, claimed and played
- * through its turn. Every call of `toolCalls` is a `tool_use` event and its result.
- */
+/** Every call of `toolCalls` is a `tool_use` event and its result. */
 export async function playReply(
   setup: ReplySetup,
   run: ChatRun,
@@ -180,10 +169,7 @@ export async function playReply(
   });
 }
 
-/**
- * Claims the queued assistant message `assistantMessageId` of `run` and plays its turn, as `playReply` does for the
- * message `sendSempMessage` queued. `userMessageId` is the message it answers, `null` for none.
- */
+/** As `playReply` does, for an already queued message; `userMessageId` is `null` for none. */
 export async function playQueuedAssistant(
   setup: ReplySetup,
   run: ChatRun,
@@ -223,11 +209,9 @@ function playedReply(
 }
 
 /**
- * A queued assistant message of the thread that answers `replyTo` (`null` for none), inserted by SQL because the
- * retry of issue #1926 also needs a failed reply to retry and enqueues a turn, and no production write makes a reply
- * that answers no message; the insert has the shape `insertSempUserTurn` gives the first assistant message. Its
- * `attempt` is one above that of the latest attempt at the same reply, as the retry numbers it, and its `created_at`
- * is later than every message stored before it.
+ * Inserted by SQL because no production write makes a reply that answers no message; shaped as
+ * `insertSempUserTurn` gives the first assistant message. Its `attempt` is one above the latest attempt at the
+ * same reply, as the retry numbers it, and its `created_at` is later than every earlier message.
  */
 export async function queueAssistantMessage(setup: ReplySetup, run: ChatRun, replyTo: string | null): Promise<string> {
   return runInTenant(setup.tenant, () =>
@@ -246,7 +230,6 @@ export async function queueAssistantMessage(setup: ReplySetup, run: ChatRun, rep
   );
 }
 
-/** A `pending` approval request of the run whose tool call is `toolCallId`; its id. */
 export function createApproval(setup: ReplySetup, runId: string, toolCallId: string | null): Promise<string> {
   return runInTenant(setup.tenant, async () => {
     const request = await createPendingApprovalRequest(setup.pool, {
@@ -261,7 +244,7 @@ export function createApproval(setup: ReplySetup, runId: string, toolCallId: str
   });
 }
 
-/** One settled token call of the run, attributed to `messageId` the way the gateway attributes a model call. */
+/** Attributed to `messageId` the way the gateway attributes a model call. */
 export function settleCall(
   setup: ReplySetup,
   runId: string,

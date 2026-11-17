@@ -65,7 +65,7 @@ async function waitForReadable(stream: Readable, signal: AbortSignal | undefined
   if (!outcome.ok) throw outcome.error;
 }
 
-/** Opens `storageKey` in one root, or `null` when its file does not exist. Waits for the first `readable` event so a missing file is known before any header is written; any other read error propagates. */
+/** Waits for the first `readable` event so a missing file is known before any header is written. */
 async function openIn(
   storage: BlobStorageWriter,
   storageKey: string,
@@ -100,11 +100,8 @@ async function openIn(
 }
 
 /**
- * Opens a blob's bytes from whichever storage root holds them. Content-hash deduplication lets an
- * upload and a mail attachment share one blob, so the bytes can lie in either root (see ADR
- * 2026-10-18-tenant-export-cross-root-blob-lookup). Tries `primary`, and only on `ENOENT` the same
- * key in `alternate`; any other read error is thrown without a second attempt. `null` when neither
- * root has the file.
+ * Dedup lets an upload and a mail attachment share one blob, so the bytes may lie in either root. Falls back to
+ * `alternate` only on `ENOENT`; any other error is thrown.
  */
 export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<Readable | null> {
   input.signal?.throwIfAborted();
@@ -137,10 +134,7 @@ export async function openBlobFromRoots(input: OpenBlobFromRootsInput): Promise<
   }
 }
 
-/**
- * The root to try first for a blob: the mail attachments root when the blob has a `mail_attachments`
- * row for the tenant in scope, otherwise the files root.
- */
+/** The mail root when the blob has a `mail_attachments` row, otherwise the files root. */
 export async function primaryRootForBlob(client: BlobRootQueryable, blobId: string): Promise<BlobRootName> {
   const { rows } = await client.query<{ in_mail: boolean }>(
     `SELECT EXISTS (SELECT 1 FROM mail_attachments m

@@ -46,7 +46,6 @@ let cp: ChokePoint;
 
 type DatabaseKey = "events" | "inbox" | "inboxItemTypes" | "people" | "processingProposals" | "projects" | "tasks";
 
-/** The database and relation property ids of one seeded tenant. */
 interface Schema {
   db: Record<DatabaseKey, string>;
   eventProject: string;
@@ -108,7 +107,6 @@ async function seedTenant(): Promise<{ tenant: string; schema: Schema }> {
   });
 }
 
-/** Runs `fn` in the tenant, as every request and job of that tenant does. */
 function inTenant<T>(world: Pick<World, "tenant">, fn: () => Promise<T>): Promise<T> {
   return runInTenant(world.tenant, fn);
 }
@@ -178,12 +176,11 @@ async function buildWorld(): Promise<World> {
   return { tenant, schema, me, alice, bob, web, bathroom, event };
 }
 
-/** One entry of the item create's `relations` (issue #1590), resolved to the tenant's property. */
+/** One entry of the item create's `relations`, resolved to the tenant's property. */
 function relation(relationPropertyId: string, targetItemId: string): InitialItemRelation {
   return { kind: "resolved", relationPropertyId, targetItemIds: [targetItemId] };
 }
 
-/** `relations: [{ propertyKey: "sourceEvents", targetItemIds: [event] }]` of the item create. */
 function fromEvent(world: World, eventId = world.event): InitialItemRelation {
   return relation(world.schema.taskSourceEvents, eventId);
 }
@@ -209,7 +206,6 @@ async function createTask(
   return created.id;
 }
 
-/** The items a relation of `itemId` points to, sorted. */
 async function related(world: World, relationPropertyId: string, itemId: string): Promise<string[]> {
   const edges = await inTenant(world, () => cp.listItemRelations(itemId, relationPropertyId));
   return (edges ?? []).map((edge) => edge.targetItemId).sort();
@@ -235,7 +231,6 @@ interface LinkRow {
 const LINK_ROWS_OF_ITEM =
   "SELECT property_key, rule_key, state FROM value_links WHERE item_id = $1 ORDER BY property_key";
 
-/** The stored link rows of a task, read through the runtime role inside the tenant. */
 async function linkRows(world: World, taskId: string): Promise<LinkRow[]> {
   return inTenant(world, async () => (await pool.query<LinkRow>(LINK_ROWS_OF_ITEM, [taskId])).rows);
 }
@@ -260,7 +255,6 @@ async function writtenState(world: World): Promise<{ tasks: string[]; links: num
   });
 }
 
-/** How many propagation jobs are queued, for any tenant. */
 async function queuedPropagationJobs(): Promise<number> {
   const { rows } = await admin.query<{ count: number }>(
     "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE task_identifier = $1",
@@ -270,11 +264,7 @@ async function queuedPropagationJobs(): Promise<number> {
   return rows[0].count;
 }
 
-/**
- * Runs the queued value-link propagation jobs through the registered worker task, in repeated passes until
- * none is left. A queue that never empties fails the test instead of letting an assertion about an unchanged
- * value pass by accident.
- */
+/** Drains propagation jobs in passes; a queue that never empties fails instead of letting an unchanged value pass. */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
   const handler = createCoreTaskList(pool, createActionRegistry())[taskName];
@@ -340,23 +330,19 @@ async function createTaskCard(world: World, result: ProposalComputationResult): 
 
 const sorted = (ids: string[]): string[] => [...ids].sort();
 
-/** The source list of a link that names one Event as the source of `propertyKey`. */
 function eventSource(eventId: string, title: string, propertyKey: string) {
   return [{ kind: "item", itemId: eventId, databaseKey: "events", title, propertyKey }];
 }
 
-/** The ids of the items a task's link of `propertyKey` names as its sources, sorted; empty without a link. */
 async function sourceIds(world: World, taskId: string, propertyKey: "people" | "project"): Promise<string[]> {
   const sources = (await linksOf(world, taskId))[propertyKey]?.sources ?? [];
   return sorted(sources.map((source) => (source.kind === "item" ? source.itemId : "")));
 }
 
-/** `POST /api/items/:id/links/:propertyKey/relink` of a signed-in user. */
 function relink(world: World, taskId: string, propertyKey: "people" | "project"): Promise<unknown> {
   return inTenant(world, () => cp.relinkValue({ itemId: taskId, propertyKey }, ACTING_USER_ID));
 }
 
-/** Records the invalidations `fn` publishes; the hook is cleared again afterwards. */
 async function capturingInvalidations(fn: () => Promise<unknown>): Promise<InvalidationEvent[]> {
   const events: InvalidationEvent[] = [];
   setInvalidationHook((event) => events.push(event));
@@ -372,9 +358,8 @@ const itemUpdatesOf = (events: InvalidationEvent[], itemId: string): Invalidatio
   events.filter((event) => event.scope === "item" && event.op === "update" && event.itemId === itemId);
 
 /**
- * Removes the relation whose inverse side is the Tasks property `propertyId`, both properties and the
- * definition: the schema of a tenant before the cutover that adds the pair has run. Raw SQL on the admin pool,
- * because no API removes a property of a system database. The relation must hold no edge.
+ * Removes the relation pair (both properties and the definition) to model a tenant without it. Raw SQL: no API
+ * removes a system database property. The relation must hold no edge.
  */
 async function removeRelationPair(propertyId: string): Promise<void> {
   const definition = await admin.query<{ other: string }>(
@@ -955,9 +940,8 @@ describe("a task from an Event's action item inherits the Event's project and pe
 
     it("reads from the relation definition which item of the edge is the task", async () => {
       const world = await buildWorld();
-      // Every tenant has the pair as the seed declares it, from `Events.actionItems`, so the Event is the first
-      // item of each edge. No API or migration turns the definition around; raw SQL on the admin pool does it
-      // here, before any edge exists, to show that the hook takes the side from the definition.
+      // Seeded pairs start from `Events.actionItems`, so the Event is item A. Raw SQL flips the definition before any
+      // edge exists, to show the hook takes the side from the definition.
       const turned = await admin.query(
         `UPDATE relation_definitions SET property_id_a = property_id_b, property_id_b = property_id_a
          WHERE property_id_b = $1`,

@@ -10,13 +10,9 @@ import {
 } from "./approvalRequestsStore.js";
 
 /**
- * Announces, once the transaction on `client` has committed, that `request` changed: one
- * `approvalRequest` invalidation addressed to the owner of the request (the actor user of its run),
- * the `agentRuns` invalidation of the run (its display status derives from its pending approvals),
- * the `badgeCounts` invalidation of the same owner (the owner's pending-decision count counts the
- * request while it is pending), and, when the run belongs to a Semp thread, the `sempThread`
- * invalidation of that thread. A rollback announces nothing. Call it in the transaction of the write
- * that changed the request, and only when that write changed a row.
+ * After commit (nothing on rollback): `approvalRequest` and `badgeCounts` to the run's actor, `agentRuns` for the
+ * run (its display status depends on pending approvals), and `sempThread` when the run has a thread. Call only when
+ * the write changed a row.
  */
 export async function publishApprovalRequestChange(
   client: PoolClient,
@@ -36,11 +32,7 @@ export async function publishApprovalRequestChange(
   if (run.thread_id !== null) publishSempThreadInvalidation(client, run.tenant_id, run.thread_id);
 }
 
-/**
- * `createPendingApprovalRequest` followed by `publishApprovalRequestChange` when the call inserted
- * the row. A repeated creation for the same `(agentRunId, toolCallId)` returns the existing request
- * and announces nothing, because it wrote nothing.
- */
+/** A repeated `(agentRunId, toolCallId)` wrote nothing, so it announces nothing. */
 export async function createPendingApprovalRequestAndPublish(
   client: PoolClient,
   input: CreatePendingApprovalRequestInput,

@@ -34,7 +34,7 @@ export interface GraphChangedMessage {
 }
 
 export interface GraphDeltaResult {
-  /** true = the stored `deltaLink` came back `410 Gone`/`resyncRequired` — caller must run a full resync. */
+  /** true = `410 Gone`/`resyncRequired`; the caller must run a full resync. */
   invalidated: boolean;
   newDeltaLink: string;
   changes: GraphChangedMessage[];
@@ -47,7 +47,7 @@ export interface GraphMailClient {
     destination: "archive" | "deleteditems" | "inbox" | "sentitems",
   ): Promise<GraphMoveResult>;
   listFolders(): Promise<GraphFolderRef[]>;
-  /** `deltaLink: null` = initial/full-resync fetch (mailbox-wide `/me/messages/delta`, not per-folder — see the migration's `graph_delta_link` note). */
+  /** `deltaLink: null` = full mailbox-wide fetch. */
   fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult>;
   patchMessage(
     messageId: string,
@@ -79,22 +79,16 @@ export interface ReconcileGraphAccountParams {
   attachmentsRelationPropertyId: string;
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
-  /** This mailbox's registered addresses (`Mailboxes.addresses`) — deliveredToAddress's alias-fallback precedence (mail/deliveredTo.ts, issue #93). Defaults to `[]`. */
+  /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
   mailboxAliases?: string[];
 }
 
 /**
- * Graph mail folders are a tree, one message per folder (like IMAP, unlike Gmail's labels) —
- * `/messages/delta`'s `deltaLink` replaces IMAP's UIDVALIDITY/CONDSTORE dance the same way
- * `historyId` does for Gmail. A message reappearing under a different `parentFolderId` is a
- * move: this drops the stale folder edge the same way the vanished/label-diff handling does
- * for the other two adapters.
- */
-/**
- * Deliberately does not catch-and-record its own failures: this whole pass runs inside one
- * caller-owned transaction (mailSyncJob.ts), so an error-recording write here would itself be
- * undone by the same rollback that the re-thrown error triggers. See
- * mailSyncJob.ts's `handleSyncMailAccountTask` for where sync failures actually get recorded.
+ * Graph messages live in exactly one folder; one reappearing under a different `parentFolderId`
+ * is a move, so its stale folder edge is dropped.
+ *
+ * Does not record its own failures: the pass runs in the caller's transaction, so such a write
+ * would be rolled back with it. mailSyncJob.ts records sync failures.
  */
 export async function reconcileGraphAccount(
   dbClient: PoolClient,

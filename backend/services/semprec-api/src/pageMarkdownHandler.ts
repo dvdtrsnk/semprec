@@ -20,18 +20,17 @@ import { logger } from "./logger.js";
 
 const PAGE_MARKDOWN_PATH = /^\/api\/items\/([^/]+)\/page\.md$/;
 
-/** Whether `pathname` is `/api/items/:id/page.md`; `app.ts` routes only a `GET` of it to the read and a `PUT` of it to the replace. */
+/** `app.ts` routes only `GET` and `PUT` of it here. */
 export function isPageMarkdownPath(pathname: string): boolean {
   return PAGE_MARKDOWN_PATH.test(pathname);
 }
 
 /**
- * `GET /api/items/:id/page.md` (issue #1678): the page as canonical Markdown with a strong `ETag` that is its
- * content version. Like `blobsHandler.ts`, this cannot go through `createAdapterRequestListener`, because the
- * response body is `text/markdown` and not a JSON envelope, so it is a bespoke listener sharing the adapter's
- * authentication and error contract. The read is the `page.get` catalog operation with `format: "markdown"`, so REST,
- * MCP and agents reach one implementation. The item is resolved in the caller's tenant before anything else, so a
- * foreign item answers exactly like an unknown one, and no conditional-request branch exists to tell them apart.
+ * Canonical Markdown with a strong `ETag` that is its content version. A bespoke listener because
+ * the body is `text/markdown`, not a JSON envelope. Dispatches `page.get` with `format:
+ * "markdown"`, so REST, MCP and agents share one implementation. The item is resolved in the
+ * caller's tenant first, so a foreign item answers like an unknown one, and no conditional-request
+ * branch exists to tell them apart.
  */
 export function createPageMarkdownRequestListener(pool: Pool, service: GenericApplicationPort) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -40,7 +39,7 @@ export function createPageMarkdownRequestListener(pool: Pool, service: GenericAp
       const identity = await authenticateRequest(pool, req);
       const page = await runInTenant(identity.tenantId, async () => {
         const match = PAGE_MARKDOWN_PATH.exec(url.pathname);
-        // Group 1 of PAGE_MARKDOWN_PATH is not optional, so a successful match always captured it.
+        // Group 1 of PAGE_MARKDOWN_PATH is not optional.
         const itemId = assertUuid(match?.[1] ?? "", "id");
         return dispatchGenericOperation(service, "page.get", restActor(identity.user.id), {
           itemId,
@@ -77,7 +76,7 @@ export function createPageMarkdownRequestListener(pool: Pool, service: GenericAp
   };
 }
 
-/** Who made a request to a page write route: a run credential's caller (`credentialCaller`), or else a session. `userId` is the user the request acts for. */
+/** `userId` is the user the request acts for. */
 interface PageWriteCaller {
   tenantId: string;
   credentialCaller: RunCredentialCaller | null;
@@ -85,9 +84,8 @@ interface PageWriteCaller {
 }
 
 /**
- * Resolves the caller of a page write route that accepts two kinds (docs/adr/2026-11-09-page-insert-authentication-reuses-scoped-run-callers.md):
- * an MCP run credential presented as a bearer token, else the session `authenticateRequest` resolves. The tenant comes
- * from the credential or the session only.
+ * An MCP run credential presented as a bearer token, else the session. The tenant comes from the
+ * credential or the session only.
  */
 async function resolvePageWriteCaller(
   pool: Pool,
@@ -106,26 +104,22 @@ async function resolvePageWriteCaller(
 
 const PAGE_INSERT_PATH = /^\/api\/items\/([^/]+)\/page\/insert$/;
 
-/** The request body cap, the same as the JSON adapter's. */
+/** The same cap as the JSON adapter's. */
 const MAX_INSERT_BODY_BYTES = 1 * 1024 * 1024;
 
-/** Whether `pathname` is `/api/items/:id/page/insert`; `app.ts` routes only a `POST` of it here. */
+/** `app.ts` routes only a `POST` of it here. */
 export function isPageInsertPath(pathname: string): boolean {
   return PAGE_INSERT_PATH.test(pathname);
 }
 
 /**
- * `POST /api/items/:id/page/insert` (issue #1679): inserts Markdown into the page at a placement, dispatching the
- * `page.insert` catalog operation. The path is the one the issue's Task names (accepted ADR
- * 2026-10-28-page-operation-family says `/page/blocks`; see 2026-11-09-page-http-routes-and-subpage-paths-follow-delivery-contracts).
- * It is a bespoke listener because it accepts two kinds of caller (docs/adr/2026-11-09-page-insert-authentication-reuses-scoped-run-callers.md):
- *  - an MCP run credential presented as a bearer token, resolved by the same `resolveRunCredentialCaller` as `/mcp`:
- *    the write goes through `GenericOperationGateway.invoke` with the credential's capability set, so an operation
- *    the credential was not granted answers like an unknown one (404) and the stored update is authored `ai_agent`;
- *  - anything else is authenticated exactly as every adapter route is (`authenticateRequest`: the session cookie or a
- *    session bearer) and dispatched as a person, authored `user`.
- * The tenant comes from the credential or the session only, the body is capped and strictly checked, and errors use
- * the adapter's closed error contract.
+ * A bespoke listener because it accepts two kinds of caller:
+ * - an MCP run credential (resolved by `resolveRunCredentialCaller`, as for `/mcp`), written
+ * through `GenericOperationGateway.invoke` with the credential's capabilities: an ungranted
+ * operation answers like an unknown one (404) and the update is authored `ai_agent`;
+ * - anything else authenticated like every adapter route and dispatched as a person, authored
+ * `user`.
+ * The body is capped and strictly checked, and errors use the adapter's closed error contract.
  */
 export function createPageInsertRequestListener(
   pool: Pool,
@@ -141,7 +135,7 @@ export function createPageInsertRequestListener(
         const body = requireJsonObjectBody(await readJsonBody(req, { maxBytes: MAX_INSERT_BODY_BYTES }));
         const unexpected = Object.keys(body).find((key) => !["placement", "markdown", "blockIds"].includes(key));
         if (unexpected !== undefined) throw new ValidationError("Unexpected insert field", { field: unexpected });
-        // Group 1 of PAGE_INSERT_PATH is not optional, so a successful match always captured it.
+        // Group 1 of PAGE_INSERT_PATH is not optional.
         const itemId = assertUuid(PAGE_INSERT_PATH.exec(url.pathname)?.[1] ?? "", "id");
         const input = { itemId, placement: body.placement, markdown: body.markdown, blockIds: body.blockIds };
         if (credentialCaller !== null) {
@@ -176,15 +170,15 @@ export function createPageInsertRequestListener(
   };
 }
 
-/** The request body cap of a replace, the same as an insert's. */
+/** The same cap as an insert's. */
 const MAX_REPLACE_BODY_BYTES = 1 * 1024 * 1024;
 
-/** `"<token>"`: the one strong entity-tag form `GET /api/items/:id/page.md` sends, whose token is base64url. */
+/** The one strong entity-tag form `GET /api/items/:id/page.md` sends; the token is base64url. */
 const STRONG_ETAG = /^"([A-Za-z0-9_-]+)"$/;
 
 /**
- * The version token `If-Match` names, or `null` when the header is absent. A value that is not one quoted strong
- * entity-tag (a weak tag, a list, `*`, an unquoted token) is a `ValidationError` on `If-Match`.
+ * `null` when absent. Anything but one quoted strong entity-tag (a weak tag, a list, `*`, an
+ * unquoted token) is a `ValidationError` on `If-Match`.
  */
 function ifMatchEtag(req: IncomingMessage): string | null {
   const header = req.headers["if-match"];
@@ -194,7 +188,7 @@ function ifMatchEtag(req: IncomingMessage): string | null {
   return token;
 }
 
-/** The request body as UTF-8 text, bounded by `MAX_REPLACE_BODY_BYTES`; the body must be declared `text/markdown`, in UTF-8 when it names a charset. */
+/** Must be declared `text/markdown`, in UTF-8 when it names a charset. */
 async function readMarkdownBody(req: IncomingMessage): Promise<string> {
   const [mediaType = "", ...parameters] = (req.headers["content-type"] ?? "").split(";").map((part) => part.trim());
   const charset = parameters.map((part) => /^charset=(.*)$/i.exec(part)?.[1]).find((value) => value !== undefined);
@@ -213,16 +207,13 @@ async function readMarkdownBody(req: IncomingMessage): Promise<string> {
 }
 
 /**
- * `PUT /api/items/:id/page.md` (issue #1765): replaces the whole body of the page with the `text/markdown` request
- * body when `If-Match` carries the page's current `ETag` (the token `GET` sent), dispatching the `page.replace` catalog
- * operation. A missing `If-Match` is `428`; a token that is not the current one is `409` with the current `ETag` in the
- * response header; success is `200` with the new `ETag` and `{ trashedPages }`, the subpages the new Markdown no longer
- * links, which the operation sent to the trash. Authentication, tenant and error contract are the ones of
- * `createPageInsertRequestListener`: a run credential is passed to the gateway, anything else is a session (authored
- * `user`). A run credential's `page.replace` is held for approval: the gateway answers `403 approval_required`, writes
- * nothing and creates no `ai_agent` block, and the approved request is replayed authored `user` (issue #1844); a
- * credential without `core.item.write` is answered like an unknown operation (404). The tenant is resolved before
- * the item, so a foreign item answers like an unknown one, and `If-Match` is checked without reading the item.
+ * Requires `If-Match` with the current `ETag`: missing is 428, stale is 409 with the current `ETag`
+ * header; success is 200 with the new `ETag` and `{ trashedPages }` (subpages the new Markdown no
+ * longer links). Callers are resolved as in `createPageInsertRequestListener`. A run credential's
+ * replace is held for approval (403 `approval_required`, nothing written) and the approved request
+ * is replayed authored `user`; one without `core.item.write` answers like an unknown operation
+ * (404). The tenant is resolved before the item, so a foreign item answers like an unknown one, and
+ * `If-Match` is checked without reading the item.
  */
 export function createPageReplaceRequestListener(
   pool: Pool,
@@ -240,7 +231,7 @@ export function createPageReplaceRequestListener(
         return;
       }
       const replaced = await runInTenant(tenantId, async () => {
-        // Group 1 of PAGE_MARKDOWN_PATH is not optional, so a successful match always captured it.
+        // Group 1 of PAGE_MARKDOWN_PATH is not optional.
         const itemId = assertUuid(PAGE_MARKDOWN_PATH.exec(url.pathname)?.[1] ?? "", "id");
         const input = { itemId, markdown: await readMarkdownBody(req), expectedEtag };
         if (credentialCaller !== null) {

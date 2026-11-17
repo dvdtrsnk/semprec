@@ -25,10 +25,8 @@ const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
 /**
- * The shared harness of the page HTTP tests: a runtime-role pool (so row-level security applies, never the
- * superuser pool), two tenants each with a signed-in user, and the real dispatcher on a loopback port.
- * `start` opens the pools once, `reset` rebuilds the tenants, users and server for one test, `stop` releases
- * everything; a failure in one release never hides another.
+ * Shared harness of the page HTTP tests: a runtime-role pool (so row-level security applies), two tenants each with a
+ * signed-in user, and the real dispatcher on a loopback port. A failure in one release never hides another.
  */
 export class PageHttpHarness {
   admin!: Pool;
@@ -89,7 +87,7 @@ export class PageHttpHarness {
     return { Authorization: `Bearer ${token}` };
   }
 
-  /** The `Cookie` header of a new web-platform session of the user of `tenantId` (the bearer sessions above are native). */
+  /** A web-platform session cookie; the bearer sessions above are native. */
   async webSessionCookie(tenantId: string): Promise<string> {
     const email = this.emails.get(tenantId);
     if (email === undefined) throw new Error(`Tenant ${tenantId} has no signed-in user`);
@@ -97,7 +95,6 @@ export class PageHttpHarness {
     return `semprec_session=${encodeURIComponent(token)}`;
   }
 
-  /** A plain item of a database of its own in `tenantId`: the host of the page under test. */
   async createHost(tenantId: string): Promise<string> {
     return runInTenant(tenantId, async () => {
       const chokePoint = createChokePoint(this.runtime);
@@ -106,10 +103,7 @@ export class PageHttpHarness {
     });
   }
 
-  /**
-   * A restricted MCP run credential of a project agent of `tenantId` with exactly `capabilities`, acting for the
-   * tenant's user; returns the bearer token a caller presents.
-   */
+  /** A restricted MCP run credential of a project agent with exactly `capabilities`, acting for the tenant's user. */
   async mintRunCredential(tenantId: string, capabilities: CapabilityId[]): Promise<string> {
     await runInTenant(tenantId, () => seedSystem(this.runtime));
     const minted = await runInTenant(tenantId, async () => {
@@ -129,7 +123,6 @@ export class PageHttpHarness {
     return minted.token;
   }
 
-  /** The id of the page document of `itemId`; throws when there is none. */
   async docIdOf(tenantId: string, itemId: string): Promise<string> {
     const { rows } = await runInTenant(tenantId, () =>
       this.runtime.query<{ id: string }>(`SELECT id FROM docs WHERE item_id = $1`, [itemId]),

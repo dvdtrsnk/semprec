@@ -87,7 +87,6 @@ interface MailFixture {
   userId: string;
   mailboxId: string;
   draftsFolderId: string;
-  /** The thread of one received message, the Threads item of that thread, and the received message. */
   threadId: string;
   threadItemId: string;
   receivedId: string;
@@ -105,7 +104,6 @@ const ctx = (params: Record<string, string>, body: unknown) => ({
   identity: { user: { id: randomUUID(), locale: "en" } },
 });
 
-/** A mailbox "Personal" with Drafts, Sent and Inbox folders and one received message in `tenantId`. */
 async function setupMail(tenantId: string): Promise<MailFixture> {
   const userId = userByTenant.get(tenantId);
   if (userId === undefined) throw new Error("Missing user");
@@ -189,7 +187,6 @@ interface DraftRef {
   updatedAt: string;
 }
 
-/** A draft of the fixture's mailbox made through the real create route; `overrides` replace fields of the body. */
 async function newDraft(f: MailFixture, overrides: Record<string, unknown> = {}): Promise<DraftRef> {
   const created = await inT(
     () =>
@@ -214,7 +211,6 @@ async function newDraft(f: MailFixture, overrides: Record<string, unknown> = {})
   return { id: created.body.id, updatedAt: created.body.updatedAt };
 }
 
-/** The draft written by Semp's own writer shape: a reply to the received message of the fixture. */
 const replyTo = (f: MailFixture) => ({ threadId: f.threadId, mode: "reply", sourceEmailId: f.receivedId });
 
 async function editDraft(f: MailFixture, draft: DraftRef, fields: Record<string, unknown>): Promise<void> {
@@ -232,7 +228,6 @@ interface RunOptions {
   threadId?: string;
 }
 
-/** An agent run of the fixture's user, in a fresh project that has no permission unless `projectItemId` says otherwise. */
 async function newRun(f: MailFixture, options: RunOptions = {}): Promise<AgentRunRow> {
   return inT(async () => {
     const projectItemId = options.projectItemId ?? (await createTestProjectItem(runtime));
@@ -263,7 +258,6 @@ function adaptersFor(transport: RecordingTransport): MailSendAdapterFactory {
   return sendAdapters(transportFor(transport));
 }
 
-/** What a send by an agent does: reads the draft as the composition root would, and calls `sendDraftEmail` as the run. */
 async function agentSend(
   f: MailFixture,
   draftId: string,
@@ -324,7 +318,6 @@ async function counts(tenantId: string): Promise<{ requests: number; claims: num
   return rows[0] ?? { requests: -1, claims: -1, notifications: -1 };
 }
 
-/** The draft is as it was made: no claim, no `sent_at`, still linked to Drafts. */
 async function expectDraftUntouched(f: MailFixture, draftId: string): Promise<void> {
   const row = await admin.query<{ sent_at: Date | null }>("SELECT sent_at FROM mail_drafts WHERE email_item_id = $1", [
     draftId,
@@ -412,7 +405,6 @@ describe("approval of a mail send by an agent (issue gh-1913)", () => {
         description: { key: "approval.emailSend", params: { mailboxName: MAILBOX_NAME, recipientCount: 3 } },
       });
       expect(hash).toMatch(/^[0-9a-f]{64}$/);
-      // The Cc and Bcc recipients are in the hash only, not in the payload.
       expect(JSON.stringify(request.payload)).not.toContain(SECRET.address);
       await expectDraftUntouched(f, draft.id);
       expect(approvalAnnouncements).toEqual([request.id]);
@@ -640,7 +632,6 @@ describe("approval of a mail send by an agent (issue gh-1913)", () => {
       const request = await agentSend(f, draft.id, run);
       await deliver(f, request.id, adaptersFor(transport));
 
-      // Nothing was approved, so the delivery of the job finds a pending request and does nothing.
       expect(transport.sent).toHaveLength(0);
       expect((await reload(f, request.id)).status).toBe("pending");
       await expectDraftUntouched(f, draft.id);
@@ -968,7 +959,6 @@ describe("approval of a mail send by an agent (issue gh-1913)", () => {
         return handler;
       };
 
-      // `decide` enqueues the approvalExecute job of an approved request in the request's tenant.
       await decide(f, withTransports.id, "approved");
       await runOnce({
         pgPool: runtime,
@@ -992,7 +982,6 @@ describe("approval of a mail send by an agent (issue gh-1913)", () => {
       const draft = await newDraft(f);
       const request = await agentSend(f, draft.id, await newRun(f));
       await decide(f, request.id, "approved");
-      // The delivery that made this claim died before it recorded an outcome.
       await inT(
         () => withTransaction(runtime, (client) => claimApprovalRequestExecution(client, request.id)),
         f.tenant,

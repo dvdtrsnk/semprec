@@ -19,7 +19,6 @@ let eventsId: string;
 
 const storedRow = z.object({ properties: z.record(z.string(), z.unknown()), updated_at: z.string() });
 
-/** The values issue #1714 refuses as `alertMinutes`: a label and the value. */
 const ALERT_REFUSALS: Array<[string, unknown]> = [
   ["7", 7],
   ["-5", -5],
@@ -31,7 +30,6 @@ const ALERT_REFUSALS: Array<[string, unknown]> = [
   ["false", false],
 ];
 
-/** The values issue #1714 refuses as `travelMinutes`: a label and the value. */
 const TRAVEL_REFUSALS: Array<[string, unknown]> = [
   ["20", 20],
   ["0", 0],
@@ -44,7 +42,6 @@ const TRAVEL_REFUSALS: Array<[string, unknown]> = [
   ["false", false],
 ];
 
-/** The stored row of an item, read in the tenant's own scope. */
 async function stored(itemId: string, databaseId = eventsId) {
   return runInTenant(tenant, async () => {
     const { rows } = await pool.query<Record<string, unknown>>(
@@ -73,7 +70,6 @@ function patch(itemId: string, propertiesPatch: Record<string, unknown>) {
   return runInTenant(tenant, () => cp.updateItem({ databaseId: eventsId, itemId, propertiesPatch }));
 }
 
-/** The `ValidationError` a write fails with, so a case can assert its field and that nothing else threw. */
 async function rejection(write: Promise<unknown>): Promise<ValidationError> {
   const error: unknown = await write.then(
     () => undefined,
@@ -84,9 +80,8 @@ async function rejection(write: Promise<unknown>): Promise<ValidationError> {
 }
 
 /**
- * An Event holding values outside the allowed sets. Synthetic legacy state: the reminder-values hooks refuse
- * such a value on every write, so only a row stored before issue #1714 can hold one; the choke point cannot
- * produce it.
+ * An Event holding values outside the allowed sets. Synthetic legacy state: the reminder-values hooks
+ * refuse such a value on every write, so the choke point cannot produce it.
  */
 async function legacyEvent(values: Record<string, unknown>): Promise<string> {
   const item = await create({ name: "Legacy", date: "2026-10-16" });

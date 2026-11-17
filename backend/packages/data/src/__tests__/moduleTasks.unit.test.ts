@@ -15,7 +15,6 @@ function fakeRegistry(definitions: ModuleTaskDefinition[]): ModuleRegistry {
   return { getTaskDefinitions: async () => definitions } as unknown as ModuleRegistry;
 }
 
-/** Answers the tenant task wrapper's status lookup with an active tenant. */
 const fakeHelpers = {
   query: async () => ({ rows: [{ status: "active" }] }),
 } as never;

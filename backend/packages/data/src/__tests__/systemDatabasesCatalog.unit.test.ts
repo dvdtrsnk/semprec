@@ -3,11 +3,7 @@ import { ModuleRegistry, resolveCatalogLabel } from "@semprec/module-registry";
 import { resolveProperty } from "../manifest/catalogResolution.js";
 import type { PropertyRow, PropertyType } from "../types.js";
 
-/**
- * The systemDatabases module's cs/en catalogs, covering all ten system databases (issue
- * #146, building on the reference Tasks catalog issue #236 shipped) — proving the registry
- * loads and resolves them correctly end to end.
- */
+/** The systemDatabases module's cs/en catalogs, loaded and resolved through the registry. */
 function manifestPath(fileName: string): string {
   return new URL(`../${fileName}`, import.meta.url).href;
 }
@@ -16,7 +12,7 @@ const SYSTEM_DATABASES_PATH = manifestPath("seed/systemDatabasesModuleManifest.j
 
 describe("systemDatabases reference i18n catalog (issue #236)", () => {
   beforeAll(async () => {
-    // Warm the cold manifest import once (#1240): 1.1-1.6 s idle, up to ~10 s under load (#1237); 30 s is ~3x margin.
+    // Warms the cold manifest import once so test timing does not depend on order.
     await import(SYSTEM_DATABASES_PATH);
   }, 30_000);
 
@@ -28,7 +24,7 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
     expect(catalogs?.en["database.tasks.name"]).toBe("Tasks");
     expect(catalogs?.cs["database.tasks.name"]).toBe("Úkoly");
     expect(catalogs?.en["property.tasks.status.option.notDone"]).toBe("Open");
-    // Issue #1668: the open status reads "Nehotovo" / "Open", and `missed` "Nesplněno" / "Missed".
+    // The open status reads "Nehotovo" / "Open", and `missed` "Nesplněno" / "Missed".
     expect(catalogs?.cs["property.tasks.status.option.notDone"]).toBe("Nehotovo");
     expect(catalogs?.en["property.tasks.status.option.missed"]).toBe("Missed");
     expect(catalogs?.cs["property.tasks.status.option.missed"]).toBe("Nesplněno");
@@ -36,7 +32,6 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
     expect(catalogs?.en["database.areas.name"]).toBe("Areas");
     expect(catalogs?.cs["database.areas.name"]).toBe("Oblasti");
 
-    // A key with no entry in either locale falls all the way through to the raw key.
     expect(catalogs?.en["database.notARealDatabase.name"]).toBeUndefined();
   });
 

@@ -4,7 +4,6 @@ import { parseFilterNode, type FilterNode } from "../../views/filterTree.js";
 import { parseViewConfig } from "../../views/viewConfig.js";
 import { TASKS_TODAY_VIEW_KEY, tasksTodayFilter, tasksVisibleFilter } from "../todayView.js";
 
-/** The conditions of a tree in depth-first order, as `type property[ preset]` strings. */
 function conditions(node: FilterNode): string[] {
   switch (node.type) {
     case "and":

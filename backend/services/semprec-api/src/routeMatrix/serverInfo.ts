@@ -1,6 +1,5 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/server-info` path family. */
 export const SERVER_INFO_ROUTES: RouteMatrixEntry[] = [
   {
     name: "server identity",

@@ -3,18 +3,18 @@ import type { Pool } from "pg";
 import { createAdapterRequestListener, type AdapterHandler } from "./adapterRoute.js";
 
 /**
- * A single method+path route wired through the #238 adapter — the shared shape every concrete
- * route family this service mounts compiles down to, whether it comes from a module manifest's
- * `customRoutes` (issue #239's `mountCustomRoutes`) or a generic resource family owned by this
- * service itself (issue #240's databases/properties routes). No route gets its own auth or error
- * path; both go through `createAdapterRequestListener`.
+ * Every route family compiles down to this, whether from a module manifest's `customRoutes` or a
+ * family owned by this service; all go through `createAdapterRequestListener`.
  */
 export interface RouteDefinition {
   method: string;
-  /** e.g. `/api/databases/:id` — a `:name` segment is captured and handed to the handler as `ctx.params.name`. */
+  /** A `:name` segment is captured as `ctx.params.name`. */
   path: string;
   handler: AdapterHandler;
-  /** Admin-only route: members get 403 `admin_required` and the handler runs in system scope. Required for every `/api/admin/` path. */
+  /**
+   * Members get 403 `admin_required` and the handler runs in system scope. Required for every
+   * `/api/admin/` path.
+   */
   admin?: true;
 }
 
@@ -25,12 +25,11 @@ interface CompiledRoute {
   listener: (req: IncomingMessage, res: ServerResponse) => void;
 }
 
-/** Escapes every regex metacharacter in a literal path segment before it's spliced into the compiled matcher. */
 function escapeRegExp(segment: string): string {
   return segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Compiles `/api/proposals/:id/confirm` into a matcher that captures `id`, in declaration order. */
+/** Captures params in declaration order. */
 function compilePath(path: string): { matcher: RegExp; paramNames: string[] } {
   const paramNames: string[] = [];
   const pattern = path
@@ -51,9 +50,8 @@ function pathnameOf(req: IncomingMessage): string {
 }
 
 /**
- * Compiles a route table into a dispatcher: returns `true` (having already written the response)
- * for a request matching one of `routes`, `false` otherwise, so a caller can fall through to
- * whatever else it mounts.
+ * Returns `true` (response already written) for a matching request, `false` otherwise so the caller
+ * can fall through.
  */
 export function mountRoutes(
   pool: Pool,
@@ -67,7 +65,7 @@ export function mountRoutes(
     const listener = createAdapterRequestListener(pool, route.handler, {
       admin: route.admin === true,
       extractParams: (req) => {
-        // dispatchRoute already tested this pattern before calling this closure's enclosing listener.
+        // dispatchRoute already tested this pattern.
         const match = pathnameOf(req).match(matcher)!;
         return Object.fromEntries(paramNames.map((name, index) => [name, match[index + 1] as string]));
       },

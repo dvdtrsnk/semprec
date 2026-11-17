@@ -28,7 +28,6 @@ export const SEMP_BUSY_ERROR_MESSAGE = "Semp is already handling another message
 
 export type SempTurnResult = { ok: true; message: string | null } | { ok: false; error: string };
 
-/** What a reconstruction needs to know about the thread being woken: the thread to read and the project its run will belong to. */
 export interface SempThreadWake {
   threadId: string;
   projectItemId: string;
@@ -36,28 +35,22 @@ export interface SempThreadWake {
 }
 
 /**
- * The thread a turn belongs to. A tick thread's runs belong to its heartbeat's project, so it
- * carries that project item id; chat and item threads run in the Semprec project, which the
+ * A tick thread's runs belong to its heartbeat's project; chat and item threads run in the Semprec project, which the
  * registry resolves per wake.
  */
 export type SempThread =
   { threadId: string; kind: "chat" | "item" } | { threadId: string; kind: "tick"; projectItemId: string };
 
 /**
- * Wake-time inheritance port: given the pool and the woken thread, returns prior
- * conversation context to seed a freshly woken session's `initialState.messages` with, or null
- * when there is none to inherit (a conversation's very first-ever wake). #119's real
- * implementation, `createReconstructConversationHistory`, enumerates this conversation's prior
- * `agent_runs` rows (every row with `triggered_by='user'`, `unit='session'`, no parent and this
- * thread's `thread_id`, in order), folds their `agent_run_events` into an `Entry[]` tree, and
- * compacts it when oversized. Options without a `compaction` adapter fall back to a stub that
- * always returns null, matching the pre-#119 behavior.
+ * Wake-time inheritance port: returns prior conversation context to seed a freshly woken session's
+ * `initialState.messages`, or null on a conversation's first wake. The real implementation is
+ * `createReconstructConversationHistory`; without it, a stub always returns null.
  */
 export type ReconstructConversationHistory = (pool: Pool, wake: SempThreadWake) => Promise<ReconstructedHistory | null>;
 
 const stubReconstructConversationHistory: ReconstructConversationHistory = async () => null;
 
-/** #119's real `ReconstructConversationHistory`: closes over a `CompactionAdapter` so `SempConversationOptions` only needs the plain two-arg seam shape every caller (and every existing test) already expects. */
+/** Closes over a `CompactionAdapter` so `SempConversationOptions` keeps the plain two-arg seam shape. */
 export function createReconstructConversationHistory(compaction: CompactionAdapter): ReconstructConversationHistory {
   return (pool, { threadId }) =>
     reconstructHistoryEntries(pool, { threadId, triggeredBy: "user", parentRunId: null }, compaction);
@@ -82,9 +75,8 @@ async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<vo
 }
 
 /**
- * Records the `run_status` event for a close attempt that did not throw: the status this close
- * wrote, or — when another writer had already finished the run — the status that writer stored,
- * read back since it may differ from `status`.
+ * Records the `run_status` event for a close that did not throw: the status written, or, when another writer had
+ * already finished the run, the status that writer stored.
  */
 async function pushClosedRunStatus(
   pool: Pool,
@@ -104,22 +96,19 @@ async function pushClosedRunStatus(
 
 export interface SempConversationOptions {
   /**
-   * Builds the session factory for one run. `send()` calls it with the run row it created for a
-   * waking turn, after the run is `running` and before the first prompt, so the session's tools
-   * bind to that run's id. A test double can return a constant factory.
+   * Builds the session factory for one run. Called after the run is `running` and before the first prompt, so the
+   * session's tools bind to that run's id.
    */
   createAgentSessionForRun: (
     run: AgentRunRow,
     currentSempMessage?: { current: string | null },
   ) => Promise<CreateAgentSession>;
   /**
-   * Resolves the waking tenant's own Semprec project item id — `agent_runs.project_item_id` for
-   * a chat or item thread's wake run (a tick thread supplies its heartbeat's project instead and
-   * this is not called). Called once per such wake, inside the caller's tenant scope, before
-   * history reconstruction and run creation.
+   * Resolves the tenant's Semprec project item id for a chat or item thread's wake run (tick threads supply their
+   * heartbeat's project). Called once per wake, inside the tenant scope, before reconstruction and run creation.
    */
   resolveProjectItemId: (pool: Pool) => Promise<string>;
-  /** Defaults to the always-empty stub; pass `createReconstructConversationHistory(compactionAdapter)` for the real #119 reconstruction. */
+  /** Defaults to the always-empty stub. */
   reconstructHistory?: ReconstructConversationHistory;
 }
 
@@ -155,12 +144,11 @@ interface ThreadConversation {
   tenantId: string;
   threadId: string;
   entry: ConversationRegistryEntry | null;
-  /** Set for the span of a brand-new wake, before it has an entry to be `busy` on its own behalf. */
+  /** Set for the span of a new wake, before it has an entry to be `busy` on. */
   waking: boolean;
   /**
-   * Set by `dropTenant`. A turn or pause in flight closes the run as `error` once it settles; a
-   * failed close keeps the entry and retries. `send()` rejects a dropped conversation as busy
-   * until its entry is gone.
+   * Set by `dropTenant`. A turn or pause in flight closes the run as `error` once it settles; a failed close keeps the
+   * entry and retries. `send()` rejects a dropped conversation as busy until its entry is gone.
    */
   dropped?: boolean;
 }
@@ -182,24 +170,15 @@ class PauseSupersededByDrop extends Error {
 }
 
 /**
- * Manages Semp's ongoing conversation with each tenant's user through the same in-memory,
- * TTL-based session reuse issue #229's `DelegationRegistry` uses for delegated sessions, with
- * one crucial difference at TTL expiry: a delegated session's `agent_runs` row *is* the whole
- * task, so expiry finishes it as `done` and forgets it for good. Semp's conversation with the
- * user never "finishes" that way — expiry only *pauses* it. Each wake (the very first message
- * ever, or the first message after a pause) opens a new `agent_runs` row, seeded through
- * `reconstructHistory` with whatever came before, but the conversation itself stays resumable
- * indefinitely: there is no persisted "closed" state for it to be in, and no caller-supplied key
- * to resume it by — the next `send()` call, a minute or a month later, just resumes it.
+ * Semp's ongoing conversation with each tenant's user, with TTL-based in-memory session reuse. Unlike a delegated
+ * session, TTL expiry only pauses the conversation: each wake (first message ever, or first after a pause) opens a new
+ * `agent_runs` row seeded through `reconstructHistory`, and there is no persisted closed state.
  *
- * One conversation per thread, multiplexed by the tenant id of the scope `send()` runs in and the
- * thread id it is given: each `(tenant, thread)` has its own in-memory session, busy flag, waking
- * flag, dropped flag and TTL timer. Threads and tenants never wait on each other; a second
- * concurrent turn in the same thread is rejected as busy. Ordering of turns within a thread is
- * the turn queue's job, not this registry's.
+ * One conversation per `(tenant, thread)`, each with its own session, busy/waking/dropped flags and TTL timer. A second
+ * concurrent turn in the same thread is rejected as busy; ordering turns is the turn queue's job.
  */
 export class SempConversation {
-  /** Keyed by `conversationKey(tenantId, threadId)`; holds only live conversations (a key is deleted once its state is idle again). */
+  /** Holds only live conversations; a key is deleted once its state is idle again. */
   private readonly conversations = new Map<string, ThreadConversation>();
 
   constructor(
@@ -208,7 +187,7 @@ export class SempConversation {
     private readonly ttlMs: number = DEFAULT_TTL_MS,
   ) {}
 
-  /** Test/shutdown seam: cancels every thread's pending TTL timer so a process can exit cleanly. */
+  /** Test/shutdown seam: cancels every pending TTL timer so the process can exit. */
   clear(): void {
     for (const state of this.conversations.values()) {
       if (state.entry) clearTimeout(state.entry.ttlTimer);
@@ -235,21 +214,13 @@ export class SempConversation {
   }
 
   /**
-   * Discards every thread conversation of `tenantId` after its tenant was deactivated, clearing
-   * their TTL timers; other tenants are untouched. Each thread is then handled independently.
-   * With no turn in flight, the wake run is closed as `error` with the code `cancelled` and the entry
-   * removed. With a turn in flight (`busy` or `waking`), the conversation is marked dropped and the
-   * turn is not aborted: once it settles, its run is closed as `error` and its entry discarded
-   * instead of being kept. A TTL pause in progress also holds the entry `busy`: it checks the drop
-   * inside its own transaction after its `done` update and before `COMMIT`, rolls that update back,
-   * and closes the run as `error` the same way; a failed pause does the same instead of
-   * rescheduling. Only a drop arriving once the pause's `COMMIT` was sent finds the run already
-   * `done`, as it would after any finished pause.
+   * Discards every conversation of a deactivated tenant. With no turn in flight the wake run is closed as `error`
+   * (`cancelled`) and the entry removed. A turn in flight (`busy` or `waking`) is not aborted: it is marked dropped and
+   * its run closed as `error` once it settles. A TTL pause in progress checks the drop after its `done` update and
+   * before `COMMIT`, rolls back and closes as `error`; only a drop arriving after that `COMMIT` finds the run `done`.
    *
-   * Like `pause()`, the entry is only removed once the close succeeded: a failed close keeps it,
-   * still dropped, and retries on a timer, so the run is never left `running` with nothing in
-   * memory to close it. A call for a tenant with no conversation, or one already dropped, does
-   * nothing.
+   * The entry is removed only once the close succeeded; a failed close keeps it and retries on a timer, so the run is
+   * never left `running` with nothing in memory to close it.
    */
   async dropTenant(tenantId: string): Promise<void> {
     const states = [...this.conversations.values()].filter((state) => state.tenantId === tenantId);
@@ -265,10 +236,7 @@ export class SempConversation {
     await this.closeDropped(state, entry);
   }
 
-  /**
-   * Closes a dropped conversation's run as `error` inside its tenant, then removes its entry. On a
-   * failure the entry stays, holding a timer that runs this again.
-   */
+  /** On failure the entry stays, holding a timer that runs this again. */
   private async closeDropped(state: ThreadConversation, entry: ConversationRegistryEntry): Promise<void> {
     const { tenantId, threadId } = state;
     entry.busy = true;
@@ -280,8 +248,8 @@ export class SempConversation {
       if (state.entry === entry) state.entry = null;
       this.releaseIfIdle(state);
     } catch (err) {
-      // Only the error's name: a Postgres error's detail can carry the failing `agent_runs` row,
-      // whose `task` is the user's prompt, and logs are not tenant-scoped.
+      // Only the error's name: a Postgres error's detail can carry the `agent_runs` row, whose `task` is the user's
+      // prompt, and logs are not tenant-scoped.
       logger.error(
         { errorName: errorName(err), errorCode: "cancelled", tenantId, threadId, agentRunId: entry.agentRunId },
         "SempConversation: failed to close dropped run, will retry",
@@ -303,7 +271,6 @@ export class SempConversation {
     }
   }
 
-  /** Drops the thread's key once it is back to `{ entry: null, waking: false }`. */
   private releaseIfIdle(state: ThreadConversation): void {
     const key = conversationKey(state.tenantId, state.threadId);
     if (this.conversations.get(key) === state && !state.entry && !state.waking) this.conversations.delete(key);
@@ -328,9 +295,8 @@ export class SempConversation {
     const key = conversationKey(tenantId, thread.threadId);
     const state = this.conversations.get(key);
 
-    // Busy check and reservation happen synchronously, before any `await` below, so a
-    // concurrent call in the same tenant always observes one of these and is rejected rather
-    // than racing to dispatch against, or wake alongside, the in-flight one.
+    // Busy check and reservation happen synchronously, before any `await`, so a concurrent call is rejected instead of
+    // racing the in-flight one.
     if (state?.entry?.busy || state?.waking || state?.dropped) {
       return { ok: false, error: SEMP_BUSY_ERROR_MESSAGE };
     }
@@ -358,10 +324,8 @@ export class SempConversation {
               sempMessageId,
             );
           } catch (err) {
-            // A broken turn leaves the underlying AgentSession in an unknown state — close the
-            // run as error and drop the entry rather than leaving a busy-cleared but unusable
-            // session around for the next message to reuse. The conversation itself is
-            // unaffected: the next send() just wakes a fresh run, same as after a TTL pause.
+            // A broken turn leaves the AgentSession in an unknown state: close the run as error and drop the entry. The
+            // next send() wakes a fresh run, as after a TTL pause.
             state.entry = null;
             clearTimeout(entry.ttlTimer);
             this.releaseIfIdle(state);
@@ -478,7 +442,7 @@ export class SempConversation {
     entry.ttlTimer = this.scheduleTtl(state);
   }
 
-  /** The callback re-enters the tenant explicitly: it never relies on whatever scope is active when the timer fires. */
+  /** Re-enters the tenant explicitly, never relying on the scope active when the timer fires. */
   private scheduleTtl(state: ThreadConversation): ReturnType<typeof setTimeout> {
     const { tenantId, threadId } = state;
     const timer = setTimeout(() => {
@@ -492,24 +456,14 @@ export class SempConversation {
   }
 
   /**
-   * 24 hours of inactivity (default) pauses the conversation: the in-memory session is dropped
-   * and its wake run finished as `done`, so `agent_runs` doesn't accumulate rows the in-memory
-   * state has already forgotten about. Unlike `DelegationRegistry.expire`, nothing here marks
-   * the *conversation* itself as finished — there is no such state — so the next `send()` call,
-   * whenever it arrives, just wakes a brand-new run through `reconstructHistory` instead of
-   * finding an entry to reuse.
+   * Inactivity (default 24h) drops the in-memory session and finishes its wake run as `done`, so `agent_runs` does not
+   * keep rows memory has forgotten. The next `send()` wakes a new run through `reconstructHistory`.
    *
-   * The entry is only cleared once both DB writes succeed — a transient DB failure here
-   * reschedules another attempt on the same cadence instead of losing track of the entry (which
-   * would otherwise leave its `agent_runs` row stuck at `running` forever with nothing left in
-   * memory to close it). A run another writer already finished is logged and still cleared: its
-   * row is terminal either way, and its run_status event records the status that writer stored
-   * (read back after the lost close, since it may have been `error`) rather than `done`.
+   * The entry is cleared only once both DB writes succeed; a DB failure reschedules, so the row is never stuck
+   * `running`. A run another writer already finished is logged and cleared, recording the status that writer stored.
    *
-   * Claims the entry as `busy` synchronously, before its first `await` — the same invariant
-   * `send()`'s own busy check relies on — so a `send()` arriving mid-pause never reuses a
-   * session whose run this is in the middle of finishing as `done`; it observes `busy` and is
-   * rejected instead, same as if a turn were in flight.
+   * Claims the entry as `busy` synchronously, before the first `await`, so a `send()` arriving mid-pause is rejected
+   * instead of reusing a session being finished.
    */
   private async pause(state: ThreadConversation, strict = false): Promise<void> {
     const entry = state.entry;
@@ -518,8 +472,7 @@ export class SempConversation {
     try {
       const closed = await withTransaction(this.pool, async (client) => {
         const updated = await finishAgentRun(client, entry.agentRunId, "done", null);
-        // Read after the update and before `COMMIT`, so a drop that arrived while the update ran
-        // still rolls it back and the run closes as `error` below.
+        // Read before `COMMIT`, so a drop during the update still rolls it back.
         if (state.dropped) throw new PauseSupersededByDrop();
         return updated;
       });
@@ -531,7 +484,6 @@ export class SempConversation {
         logger.error({ err, agentRunId: entry.agentRunId }, "SempConversation: failed to close paused run, will retry");
       }
       entry.busy = false;
-      // A tenant dropped while this pause held the entry closes its run as `error` instead.
       if (state.dropped) {
         try {
           await this.closeDropped(state, entry);

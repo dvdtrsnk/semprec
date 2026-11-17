@@ -16,7 +16,7 @@ export interface InviteMailer {
 
 const DEFAULT_SEND_TIMEOUT_MS = 30_000;
 
-/** Same shape as `escapeHtml` in `auth/passwordResetMail.ts`: the invite URL is escaped before it reaches the HTML body. */
+/** Same as `escapeHtml` in `auth/passwordResetMail.ts`. */
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -26,11 +26,7 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-/**
- * The app's transactional SMTP path for account invitations (issue #1040), built the way
- * `NodemailerPasswordResetMailer` is. `timeoutMs` keeps an unresponsive SMTP server from holding the
- * send open indefinitely.
- */
+/** SMTP mailer for account invitations; `timeoutMs` keeps an unresponsive server from holding the send open. */
 export class NodemailerInviteMailer implements InviteMailer {
   constructor(
     private readonly transporter: Pick<Transporter, "sendMail">,

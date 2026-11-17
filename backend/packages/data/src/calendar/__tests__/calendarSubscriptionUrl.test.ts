@@ -19,9 +19,7 @@ let admin: Pool;
 let runtime: Pool;
 
 const USER: WriterIdentity = { writerKind: "user" };
-/** An /mcp client on a human session: an agent writer without run ids. */
 const MCP: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: randomUUID() };
-/** An agent run: an agent writer that carries the run and its project item. */
 const AGENT_RUN: WriterIdentity = {
   writerKind: "agent",
   agentRunId: randomUUID(),
@@ -36,7 +34,7 @@ const WRITERS: Array<[string, WriterIdentity]> = [
 
 const INVALID_URL = { status: 400, code: "validation_failed", details: { field: "subscriptionUrl" } };
 
-/** The URLs the baseline refuses (docs/adr/2026-09-27-ssrf-protection-for-stored-outbound-urls.md), by what is wrong. */
+/** The URLs the SSRF baseline refuses, by what is wrong. */
 const REFUSED_URLS: Array<[string, string]> = [
   ["a plain http scheme", "http://example.com/a.ics"],
   ["an IPv4 literal host", "https://127.0.0.1/a.ics"],
@@ -56,7 +54,6 @@ const REFUSED_URLS: Array<[string, string]> = [
 
 const itemRow = z.object({ properties: z.record(z.string(), z.unknown()) });
 
-/** A tenant with one English-speaking user, so its calendars are seeded as `Personal`, `Work` and so on. */
 async function seededTenant(): Promise<string> {
   const tenantId = await createTestTenant(admin);
   await createUser(admin, { tenantId, email: `${randomUUID()}@example.com`, passwordHash: "unused", locale: "en" });
@@ -64,7 +61,6 @@ async function seededTenant(): Promise<string> {
   return tenantId;
 }
 
-/** The refusal a write was rejected with, or `undefined` when it was stored. */
 function refusal(write: Promise<unknown>): Promise<unknown> {
   return write.then(
     () => undefined,
@@ -90,7 +86,6 @@ describe("calendar subscription URL (issue gh-1925)", () => {
     tenant = await seededTenant();
   });
 
-  /** The calendars of the tenant in scope; every write of a test goes through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const calendars = (await cp.listDatabases()).find((database) => database.ownerModuleId === CALENDARS_MODULE_ID);
@@ -114,7 +109,6 @@ describe("calendar subscription URL (issue gh-1925)", () => {
           { allowedSystemKeys: ["kind"], systemOwnerProcess: CALENDAR_MODULE_ID },
         ),
       );
-    /** The stored properties of a calendar, read in the tenant's scope. */
     const stored = async (calendarId: string) => {
       const { rows } = await withTransaction(runtime, (client) =>
         client.query("SELECT properties FROM items WHERE database_id = $1 AND id = $2", [calendarsId, calendarId]),
@@ -416,7 +410,6 @@ describe("calendar subscription URL property (issue gh-1925)", () => {
     id: z.string(),
   });
 
-  /** The `subscriptionUrl` definition of a tenant's Calendars database, in every column that describes it. */
   async function definitions(tenantId: string) {
     const { rows } = await admin.query<Record<string, unknown>>(
       `SELECT p.id, p.key, p.name, p.type, p.config, p.locked, p.owner, p.owner_process

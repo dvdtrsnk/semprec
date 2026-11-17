@@ -6,7 +6,7 @@ import { logger } from "./logger.js";
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 60_000;
 export const DRAIN_POLL_INTERVAL_MS = 50;
 export const POOL_END_TIMEOUT_MS = 5_000;
-/** How long shutdown waits for the deactivation listener's in-flight handlers before moving on. */
+/** How long shutdown waits for the deactivation listener's in-flight handlers. */
 export const LISTENER_CLOSE_TIMEOUT_MS = 5_000;
 
 export interface QueueRuntimeHandle {
@@ -15,25 +15,27 @@ export interface QueueRuntimeHandle {
 
 export interface CreateGracefulShutdownOptions {
   server: Server;
-  /** The tenant deactivation listener; closed first, so no deactivation handler runs against a closing sync server or mail root. */
+  /** Closed first, so no deactivation handler runs against a closing sync server or mail root. */
   tenantDeactivationListener: { close(): Promise<void> };
   syncServer: { close(): Promise<void> };
   voiceServer: { close(): Promise<void> };
   queueRuntime: QueueRuntimeHandle;
   /**
-   * The Gmail Pub/Sub dispatcher (issue #1739), absent when this process hosts no Gmail watch; stopped
-   * after the HTTP drain and before `mailLiveSync`
-   * (docs/adr/2026-10-29-gmail-pubsub-dispatcher-stops-before-the-mail-live-sync-root.md).
+   * Absent when this process hosts no Gmail watch; stopped after the HTTP drain and before
+   * `mailLiveSync`.
    */
   gmailPubSubDispatcher?: { stop(): Promise<void> };
   mailLiveSync: { stop(): Promise<void> };
   pool: Pool;
   logger: Logger;
-  /** Defaults to `SHUTDOWN_DRAIN_TIMEOUT_MS`; exists only so a test can shrink the drain bound below `vitest.integration.config.ts`'s 30 s `testTimeout`. */
+  /** Lets a test shrink the drain bound below the integration `testTimeout`. */
   drainTimeoutMs?: number;
 }
 
-/** Drains in-flight HTTP connections: resolves once `server.close()`'s callback fires, or once `drainTimeoutMs` elapses and `closeAllConnections()` forces it. */
+/**
+ * Resolves once `server.close()` calls back, or once `drainTimeoutMs` elapses and
+ * `closeAllConnections()` forces it.
+ */
 function drainServer(server: Server, drainTimeoutMs: number, logger: Logger, signal: string): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
@@ -61,7 +63,7 @@ function drainServer(server: Server, drainTimeoutMs: number, logger: Logger, sig
   });
 }
 
-/** Ends `pool`, bounded by `POOL_END_TIMEOUT_MS` so a hung or unreachable database can never stall shutdown indefinitely. */
+/** Bounded by `POOL_END_TIMEOUT_MS` so a hung database cannot stall shutdown. */
 function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
   return new Promise((resolve) => {
     let settled = false;
@@ -95,10 +97,9 @@ function endPool(pool: Pool, logger: Logger, signal: string): Promise<void> {
 }
 
 /**
- * Closes the tenant deactivation listener, bounded by `LISTENER_CLOSE_TIMEOUT_MS`: its `close()`
- * waits for handler calls in flight, and a handler stopping a mailbox lifecycle can take as long as
- * that lifecycle's `start()` or `stop()`. Past the bound shutdown moves on; the handler still
- * running then races the sync server's and the mail root's own close.
+ * Its `close()` waits for in-flight handlers, and a handler stopping a mailbox lifecycle can take
+ * as long as that lifecycle's `start()` or `stop()`. Past the bound shutdown moves on, and a
+ * still-running handler races the sync server's and mail root's own close.
  */
 function closeListener(listener: { close(): Promise<void> }, logger: Logger, signal: string): Promise<void> {
   return new Promise((resolve) => {
@@ -136,21 +137,20 @@ function closeListener(listener: { close(): Promise<void> }, logger: Logger, sig
 }
 
 /**
- * Builds `semprec-api`'s shutdown sequence: close the tenant deactivation listener (its handler
- * calls into the sync server and the mail live-sync root, so it stops before either does; bounded
- * by `LISTENER_CLOSE_TIMEOUT_MS`), close the sync server (every `/api/sync` client gets
- * close code 1012 and its `LISTEN` client is released — otherwise each upgraded socket keeps
- * `server.close()` from settling until the drain bound), then stop accepting new HTTP connections
- * and drain in-flight requests (intake), stop the Gmail Pub/Sub dispatcher when there is one (issue #1739:
- * its loop ends, a pull still in flight returns within the transport's request timeout, and what it pulled
- * but did not hand off stays unacknowledged for Pub/Sub to redeliver), stop the mail live-sync root (issue
- * #650 — before the queue runtime, because a hosted lifecycle's `start()` enqueues a `mailAccountSync`
- * job, so no new enqueue can race the runner's stop), stop the queue runtime issue #91 hosts in this same
- * process (`queueRuntime.stop()` awaits its `Runner.stop()`), then end the pool. Per
- * `docs/adr/2026-09-17-shutdown-ordering-with-late-heartbeat-stop.md`'s rejected-alternative
- * note, this ordering is specific to this service — it names no heartbeat step, unlike
- * `semprec-ai-gateway`'s. The dispatcher's place is recorded in
- * `docs/adr/2026-10-29-gmail-pubsub-dispatcher-stops-before-the-mail-live-sync-root.md`.
+ * Order:
+ * 1. Tenant deactivation listener (its handler calls into the sync server and the mail root, so it
+ * stops before either).
+ * 2. Sync server: clients get close code 1012 and its `LISTEN` client is released; otherwise
+ * upgraded sockets keep `server.close()` from settling.
+ * 3. HTTP intake and drain.
+ * 4. Gmail Pub/Sub dispatcher, if any: an in-flight pull returns within the transport timeout, and
+ * anything pulled but not handed off stays unacknowledged for redelivery.
+ * 5. Mail live-sync root, before the queue runtime, because a lifecycle's `start()` enqueues a
+ * `mailAccountSync` job that must not race the runner's stop.
+ * 6. Queue runtime.
+ * 7. Pool.
+ * This ordering is specific to this service and has no heartbeat step
+ * (docs/architecture/agents-approvals-and-ai.md#process-lifecycle).
  */
 export function createGracefulShutdown(options: CreateGracefulShutdownOptions): (signal: string) => Promise<void> {
   const {
@@ -191,7 +191,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       try {
         await gmailPubSubDispatcher.stop();
       } catch (err) {
-        // Its name only: a Pub/Sub transport failure must not put a request's token into the log.
+        // Its name only: a transport failure must not put a request's token into the log.
         logger.error(
           { errorName: err instanceof Error ? err.name : typeof err, signal },
           "gmailPubSubDispatcher.stop() failed",
@@ -223,10 +223,8 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
 }
 
 /**
- * Wires both `SIGTERM` and `SIGINT` to the injected `shutdown`. Uses `on`, not `once`: `once`
- * removes the listener after the first signal, so a second SIGTERM during a drain of up to
- * `SHUTDOWN_DRAIN_TIMEOUT_MS` would fall through to Node's default action and kill the process
- * mid-teardown. `shutdown()`'s own idempotency makes a repeat signal harmless.
+ * `on`, not `once`: with `once` a second SIGTERM during the drain would fall through to Node's
+ * default action and kill the process mid-teardown. `shutdown()` is idempotent.
  */
 export function registerShutdownSignals(shutdown: (signal: string) => Promise<void>): void {
   for (const signal of ["SIGTERM", "SIGINT"] as const) {

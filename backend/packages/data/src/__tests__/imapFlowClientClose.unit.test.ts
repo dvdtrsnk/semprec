@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import { logger } from "../mail/logger.js";
 
-/** The LOGOUT deadline `ImapFlowMailClient.close()` waits for before it closes the socket without an answer. */
 const LOGOUT_TIMEOUT_MS = 10_000;
 
 interface ConnectionBehaviour {
@@ -11,7 +10,6 @@ interface ConnectionBehaviour {
   close?: () => void;
 }
 
-/** An `ImapFlowMailClient` over a stub connection that counts the LOGOUT and close calls it receives. */
 function clientWith(behaviour: ConnectionBehaviour) {
   const calls = { logout: 0, close: 0 };
   const connection = {

@@ -2,11 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
 import { isAgentRunEventId, isUuid, type AgentDeltaChunk } from "./protocolV1.js";
 
-/**
- * One durable channel for every recoverable realtime message kind — structured-data
- * invalidation and binary CRDT update references are distinguished only by `type` on this shared
- * channel. The ephemeral agent typing stream intentionally has its own channel below.
- */
+/** The one durable channel for every recoverable realtime message kind, distinguished by `type`. */
 export const REALTIME_CHANNEL = "semprec_events";
 /** Ephemeral typing traffic is deliberately isolated from durable realtime references. */
 export const AGENT_STREAM_CHANNEL = "semprec_agent_stream";
@@ -14,12 +10,9 @@ const MAX_AGENT_STREAM_NOTIFY_BYTES = 7_500;
 const AGENT_STREAM_CHUNK_BYTES = 7_000;
 
 /**
- * Every message here stays a thin reference — an identifier plus just enough to let a
- * client skip a stale echo, never a durable row's content (issue #161). The API fetches
- * whatever a client needs from REST after receiving one of these, with one deliberate
- * exception: `notification_created` carries only `notificationId` on this channel, but
- * `@semprec/realtime`'s WS fan-out fetches the full row before broadcasting it, since a
- * notification's `title` is pre-rendered text with no second enforcement layer.
+ * Every message is a thin reference (an identifier plus enough to skip a stale echo), never a durable row's content;
+ * clients fetch over REST. `notification_created` carries only `notificationId` here, but the WS fan-out sends the full
+ * row (see `syncServer.ts`).
  */
 export type RealtimeMessage =
   | {
@@ -71,15 +64,11 @@ export type RealtimeMessage =
   | { type: "notification_read_state"; userId: string; notificationIds: string[] }
   | { type: "session_revoked"; sessionId: string };
 
-/**
- * Postgres caps a NOTIFY payload at ~8000 bytes; every message here stays a couple
- * hundred bytes at most, well under that cap, since none of them carry a durable row's
- * content — see `RealtimeMessage`'s doc comment.
- */
+/** Postgres caps a NOTIFY payload at ~8000 bytes; these thin messages stay a couple hundred bytes. */
 export async function publishRealtimeMessage(pool: Pool | PoolClient, message: RealtimeMessage): Promise<void> {
   if (message.type === "session_revoked") {
-    // Sessions are global identity rows revoked from scopes that are not the owner's tenant, so the
-    // tenant comes from the session's user (the same binding the socket gets), not the publisher's scope.
+    // Sessions are revoked from scopes other than the owner's tenant, so the tenant comes from the session's user (the
+    // socket's binding), not the publisher's scope.
     await pool.query(
       `SELECT pg_notify($1, json_build_object(
          'tenantId',
@@ -103,8 +92,8 @@ export async function publishRealtimeMessage(pool: Pool | PoolClient, message: R
 }
 
 /**
- * Wraps `messageJson` in `{ tenantId, message }` inside Postgres, so the tenant is always computed
- * from the publisher's own scope and can never be supplied by the message body.
+ * The envelope is built inside Postgres, so the tenant always comes from the publisher's scope and never from the
+ * message body.
  */
 async function publishEnveloped(pool: Pool | PoolClient, channel: string, messageJson: string): Promise<void> {
   await pool.query(
@@ -125,9 +114,8 @@ function serializedBytes(message: AgentStreamMessage): number {
 }
 
 /**
- * Sends an intentionally non-durable typing delta. A single Postgres NOTIFY payload must stay
- * below its ~8 KiB ceiling, so unusually large JSON values are split into independently valid
- * base64 pieces. The receiver forwards the chunk metadata unchanged for the client to reassemble.
+ * Non-durable typing delta. NOTIFY payloads must stay below ~8 KiB, so large values are split into independently valid
+ * base64 pieces that the client reassembles.
  */
 export async function publishAgentRunDelta(
   pool: Pool | PoolClient,
@@ -149,9 +137,8 @@ export async function publishAgentRunDelta(
   )
     throw new Error("Invalid Semp delta identity");
   const identity = attributed ? { sempMessageId, afterEventId, deltaSequence } : {};
-  // `JSON.stringify` drops an object key whose value is `undefined`, and `parseAgentStreamMessage`
-  // requires a `delta` key to be present — normalize so an explicit `undefined` delta still
-  // round-trips instead of being silently dropped on the fast (unchunked) path below.
+  // `JSON.stringify` drops an `undefined` key but `parseAgentStreamMessage` requires `delta`; normalize so an explicit
+  // `undefined` still round-trips.
   const single: AgentStreamMessage = {
     type: "agent_run_delta",
     agentRunId,
@@ -189,11 +176,8 @@ function isOptionalString(value: unknown): value is string | undefined {
 }
 
 /**
- * Validates a NOTIFY payload against `RealtimeMessage`'s closed catalog before the listener trusts
- * its shape — this channel only ever carries this process's own `publishRealtimeMessage` writes,
- * but treating a parsed external payload as already-typed (a bare `as RealtimeMessage`) would let a
- * malformed or unexpected payload flow through as if it were valid. Returns `null`, never throws,
- * so the caller can drop an unrecognized message the same way it already drops unparsable JSON.
+ * Validates a NOTIFY payload against the closed catalog instead of trusting a cast. Returns `null`, never throws, so
+ * the caller drops it like unparsable JSON.
  */
 export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -292,7 +276,7 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
         return { type: "invalidation", scope: "mcpServers" };
       }
       if (value.scope === "notificationPreferences" || value.scope === "badgeCounts" || value.scope === "account") {
-        // Per-user: a message that names no valid user has no socket it may go to, so it is malformed.
+        // Per-user: no valid user means no socket it may go to, so it is malformed.
         return isUuid(value.userId) ? { type: "invalidation", scope: value.scope, userId: value.userId } : null;
       }
       if (value.scope === "inboxCards") {
@@ -353,7 +337,6 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
   }
 }
 
-/** Validates a payload from the separate ephemeral agent stream channel before it reaches a socket. */
 export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null {
   if (typeof raw !== "object" || raw === null) return null;
   const value = raw as Record<string, unknown>;

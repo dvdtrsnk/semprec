@@ -15,7 +15,7 @@ import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway } from "../genericOperationGateway.js";
 
 // The operations of the generic catalog that are keyed by the id of a property, a view, an item's page or by a database
-// without reading its items (issue #1998): an external client on `/mcp` is refused the sensitive databases there as
+// without reading its items: an external client on `/mcp` is refused the sensitive databases there as
 // well, while REST and every open database keep working.
 
 const metadataResolver: CollectionMetadataResolver = {

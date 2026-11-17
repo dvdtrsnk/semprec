@@ -19,9 +19,8 @@ import {
 import { replyOutcomeOfStoredSteps, type ReplyOutcome } from "./replyOutcome.js";
 
 /**
- * The custom-route handler shape this file's export is cast to by `semprec-api`'s mount (issue #239), duck-typed
- * here as in `aiUsageRouteHandler.ts`. `req.url` carries the query string; the adapter always supplies the
- * caller, whose id scopes the runs and whose `users.locale` the labels and error summaries are written in.
+ * Duck-typed custom-route shape the API mount casts this export to. The caller's id scopes the runs and its
+ * `users.locale` localizes labels and summaries.
  */
 interface ListAgentRunsRouteRequestContext {
   req: { url?: string };
@@ -35,72 +34,47 @@ const MAX_LIMIT = 100;
 
 const projectItemIdSchema = z.uuid();
 
-/** One attempt of a heartbeat occurrence, as its row lists it (issue gh-1914). */
 export interface ProjectAgentRunAttempt {
   id: string;
-  /** The attempt number of the run (`agent_runs.attempt`). */
   attempt: number;
   startedAt: string;
-  /** `durationMs` of the run detail (`durationMsOf`). */
   durationMs: number | null;
-  /** The attempt's own cost (`getAgentRunCosts`), rounded to 15 significant digits as the row's `costUsd` is. */
+  /** Rounded like the row's `costUsd`. */
   costUsd: number;
-  /** `displayStatus` of the run detail for this attempt. */
   displayStatus: AgentRunDisplayStatus;
 }
 
 /**
- * One row of the project's list (issues gh-1909, gh-1914 and gh-1932). A row stands for one run, for one heartbeat
- * occurrence (then it is the occurrence's latest attempt, and `attempts` lists every attempt), or for one answer of
- * a chat run (then `messageId` names the assistant message and the row describes that answer alone).
+ * A row is one run, one heartbeat occurrence (its latest attempt, with `attempts` listing all), or one answer of a
+ * chat run (`messageId` set; the row describes that answer alone).
  */
 export interface ProjectAgentRunListRow {
-  /** The row's run; the several rows of one chat run share it, so a row is told apart by `messageId`. */
+  /** Shared by the rows of one chat run; `messageId` tells them apart. */
   id: string;
-  /** The row's run, as `id` is: the id a client names the run by. */
   agentRunId: string;
-  /** The assistant message of a row that stands for one answer of a chat run (the latest attempt); `null` on every other row. */
+  /** `null` except on an answer row. */
   messageId: string | null;
   /**
-   * The `project_heartbeats.name` of the run's heartbeat for a run that names one, otherwise the run's `task`. For
-   * an answer row the text of the user message the answer replies to; for an answer to a system message without
-   * text (an approval outcome) the title of its `system_key` in the caller's locale; the run's `task` when the
-   * answer replies to neither.
+   * The heartbeat name, else the run's `task`. An answer row uses the user message text, else the localized
+   * `system_key` title of a text-less system message, else the run's `task`.
    */
   title: string;
-  /** The stored `agent_runs.triggered_by`. */
   triggeredBy: TriggeredBy;
-  /**
-   * The label of `triggeredBy` in the caller's locale (`agentRun.trigger.<triggeredBy>` of the agent run catalog).
-   * An answer row of a heartbeat tick thread, which the user started by a follow-up question or an approval, has
-   * the label of `heartbeat`, the one of the tick.
-   */
+  /** An answer row in a heartbeat tick thread keeps the `heartbeat` label, even for a follow-up or approval turn. */
   triggerLabel: string;
-  /** The start of the row's run: the latest attempt for an occurrence; the start of the message's turn for an answer row. */
   startedAt: string;
-  /**
-   * `durationMs` of the run detail (`durationMsOf`) of the row's run; durations of attempts are not summed. For an
-   * answer row the `duration_ms` stored on the message, `null` until its turn ended.
-   */
+  /** Attempt durations are not summed. An answer row uses the message's `duration_ms` (`null` until the turn ends). */
   durationMs: number | null;
   /**
-   * The sum of the AI gateway costs of the row's run (`getAgentRunCosts`), `0` for a run without calls; for an
-   * occurrence the sum over all of its attempts; rounded to 15 significant digits to drop binary floating-point
-   * noise, like the `costUsd` of each attempt, so a row with one attempt equals its entry. For an answer row the
-   * sum of the calls attributed to the message (`getSempMessageCosts`), never the cost of the whole chat run.
+   * An occurrence sums all its attempts. An answer row sums only the calls attributed to its message, never the
+   * whole chat run.
    */
   costUsd: number;
-  /**
-   * `displayStatus` of the run detail: `deriveRunDisplayStatus` over the run, its pending approvals and its reply.
-   * For an answer row the same function over the message: its status, its reply outcome and the pending approvals
-   * of the tool calls of its turn.
-   */
+  /** An answer row derives it from the message's status, reply outcome and its turn's pending approvals. */
   displayStatus: AgentRunDisplayStatus;
-  /** The bare reason of a run whose `displayStatus` is `error` in the caller's locale (`agentRunErrorFields`); `null` otherwise. */
   errorSummary: string | null;
-  /** The attempt number of the row's run (`agent_runs.attempt`): `1` for a run that retries nothing; `semp_messages.attempt` for an answer row. */
   attempt: number;
-  /** Present exactly on a row of a heartbeat occurrence: all its attempts, `attempt` ascending. */
+  /** Present exactly on a heartbeat occurrence row, `attempt` ascending. */
   attempts?: ProjectAgentRunAttempt[];
 }
 
@@ -119,7 +93,6 @@ function parseLimit(raw: string | null): number {
   return limit;
 }
 
-/** The `name` of every heartbeat the runs name, by heartbeat id, in one statement. */
 async function readHeartbeatNames(client: PoolClient, runs: readonly AgentRunRow[]): Promise<Map<string, string>> {
   const ids = [...new Set(runs.flatMap((run) => (run.heartbeatId === null ? [] : [run.heartbeatId])))];
   if (ids.length === 0) return new Map();
@@ -130,7 +103,6 @@ async function readHeartbeatNames(client: PoolClient, runs: readonly AgentRunRow
   return new Map(rows.map((row) => [row.id, row.name]));
 }
 
-/** The number of pending approval requests of every run in `runIds` that has one, by run id, in one statement. */
 async function readPendingApprovalCounts(client: PoolClient, runIds: readonly string[]): Promise<Map<string, number>> {
   if (runIds.length === 0) return new Map();
   const { rows } = await client.query<{ agent_run_id: string; pending: number }>(
@@ -144,12 +116,9 @@ async function readPendingApprovalCounts(client: PoolClient, runIds: readonly st
 }
 
 /**
- * The number of pending approval requests that belong to each of the answers `messageIds`, by message id, in one
- * statement. A request belongs to the answer whose turn made its tool call, as the reply-scoped run detail counts
- * it (`getAgentRunDetail` with a reply): the request's tool call id is a `toolCallId` of the steps stored on the
- * message, or of a `tool_use` event in the message's event range, which ends at the message's `event_to_id` and, for a
- * turn that stored none, before the first event of the next reply of the run. A request stored without a tool call id
- * belongs to no answer.
+ * Matches the reply-scoped run detail: a request belongs to the answer whose turn made its tool call (a
+ * `toolCallId` of the message's stored steps, or of a `tool_use` in its event range; a turn without `event_to_id`
+ * ends before the next reply's first event). A request without a tool call id belongs to no answer.
  */
 async function readPendingApprovalCountsOfAnswers(
   client: PoolClient,
@@ -181,54 +150,39 @@ async function readPendingApprovalCountsOfAnswers(
   return new Map(rows.map((row) => [row.message_id, row.pending]));
 }
 
-/** What the display status of one run was derived from; the row of the run reads the reply for its error summary. */
 interface RunStatusReading {
   displayStatus: AgentRunDisplayStatus;
   replyOutcome: ReplyOutcome | null;
 }
 
 /**
- * A cost as the list shows it: rounded to 15 significant digits, the precision a double holds for every decimal,
- * which drops binary floating-point noise (a gateway call settled at 0.30000000000000004 shows as 0.3). A cost
- * needing more than that was already beyond what a number in the response can carry. Every cost of a row goes
- * through here, the row's own and each attempt's, so the one entry of a single-attempt row equals the row.
+ * 15 significant digits drops binary floating-point noise (0.30000000000000004 shows as 0.3). Every cost of a
+ * row goes through here, so a single-attempt row equals its one attempt entry.
  */
 function roundCost(cost: number): number {
   return Number(cost.toPrecision(15));
 }
 
-/** The sum of `costs`, which are already rounded by `roundCost`, rounded again so that 0.1 and 0.2 sum to 0.3. */
+/** Rounded again so that 0.1 and 0.2 sum to 0.3. */
 function sumCosts(costs: readonly number[]): number {
   return roundCost(costs.reduce((total, cost) => total + cost, 0));
 }
 
-/** What the row of one answer of a chat run is read from: the batched reads of `projectRows`. */
 interface AnswerRowContext {
   locale: string;
   catalogs: Awaited<ReturnType<typeof getAgentRunCatalogs>>;
-  /** The cost of every answer's message, already rounded. */
   messageCosts: ReadonlyMap<string, number>;
-  /** The pending approval requests of every answer (`readPendingApprovalCountsOfAnswers`). */
   pendingOfMessages: ReadonlyMap<string, number>;
 }
 
-/**
- * What the display status of a run is derived from for the reply stored on a message: a queued or running reply is
- * a run that is `running`, a failed one is `error`, and a reply that is done is `done`.
- */
 function runStatusOfReply(status: ProjectAgentRunAnswer["status"]): AgentRunRow["status"] {
   if (status === "error") return "error";
   return status === "done" ? "done" : "running";
 }
 
 /**
- * The row of one answer of a chat run (issue gh-1932): the run `run` and the latest attempt `answer` of one of its
- * assistant messages. The start, duration, cost, status, error and attempt are those of the message, and the
- * display status and the error summary are derived by the functions that derive them for a run
- * (`deriveRunDisplayStatus`, `agentRunErrorFields`) from the message: a reply that is done and left a failed tool
- * call (issue #1890) reads `error` with the reason of that reply, as a run's reply does. The trigger label is the one
- * of a tick for an answer in a heartbeat tick thread, a turn the user started by a follow-up or an approval, and
- * the one of the user otherwise.
+ * Start, duration, cost, status, error and attempt come from the message; display status and error summary go
+ * through the same functions as a run's, so a done reply that left a failed tool call reads `error`.
  */
 async function projectAnswerRow(
   run: AgentRunRow,
@@ -270,14 +224,9 @@ async function projectAnswerRow(
 }
 
 /**
- * The rows of `entries`, in their order (issues gh-1909, gh-1914 and gh-1932). The runs of the occurrences the
- * rows stand for are read in one statement, and the cost, the heartbeat names and the pending approval counts of
- * all of those runs are each read in at most one statement however many runs there are; the costs and the pending
- * approval counts of all the answer rows are likewise one statement each, and none when there is no answer row. A
- * run that closed as `done` has its reply read with one statement of its own (`getAgentRunReplyOutcome`), as the
- * run detail does, because the display status of a finished run depends on whether its reply left a failed tool
- * call (issue #1890); an attempt that failed has no reply read, and an answer row has none either, because its
- * message carries the steps its reply is judged by.
+ * Every batched read is one statement regardless of row count (none for answer data when there is no answer
+ * row). Only a run closed as `done` gets its reply read, because its display status depends on whether the reply
+ * left a failed tool call; an answer row is judged by the steps stored on its message.
  */
 async function projectRows(
   client: PoolClient,
@@ -369,15 +318,10 @@ async function projectRows(
 }
 
 /**
- * `GET /api/agent-runs?projectItemId=&limit=` (issues gh-1909, gh-1914 and gh-1932): the most recent runs of one
- * project that the session user started, newest first, as `{ rows }` of `ProjectAgentRunListRow`, shaped for
- * exactly one consumer, the project's agent page (`single-consumer-read`). `projectItemId` is required and must be a
- * UUID; `limit` defaults to 20 and takes an integer from 1 to 100, and counts rows; anything else is a
- * `ValidationError`. The rows are those of `listProjectAgentRuns`: the session user's own runs, never a
- * supervisor's, with one row per heartbeat occurrence, which carries its attempts, and one row per answer of a chat
- * run instead of one for the run, which carries the `messageId` of the answer. A project id that is unknown, or that belongs to another tenant,
- * answers `{ rows: [] }`, as any id that holds no run of the caller does. The tenant and the user come only from
- * the session, and the reads share one REPEATABLE READ snapshot.
+ * `GET /api/agent-runs?projectItemId=&limit=`, shaped for the project's agent page only. `limit` (default 20,
+ * 1-100) counts rows. Only the session user's own runs, never a supervisor's. An unknown or foreign project id
+ * answers `{ rows: [] }`. Tenant and user come only from the session; all reads share one REPEATABLE READ
+ * snapshot.
  */
 export function createListAgentRunsRouteHandler(pool: Pool) {
   return async (ctx: ListAgentRunsRouteRequestContext): Promise<CustomRouteResult> => {

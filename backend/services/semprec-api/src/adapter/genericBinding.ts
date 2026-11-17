@@ -11,14 +11,9 @@ import {
 } from "@semprec/shared";
 
 /**
- * Validates `raw` against operation `K`'s own Zod schema from `GENERIC_OPERATION_BINDINGS` —
- * converting a failure into this adapter's `ValidationError` contract, since a `ZodError` itself
- * isn't one of the errors `adapterRoute.ts` catches. Exported (issue #789) so a route calling a
- * `GenericApplicationPort` method outside the 44-operation catalog — e.g.
- * `patchPropertyWithDatabase` — can still validate its input against the same operation's schema
- * before calling that method directly, instead of going through `dispatchGenericOperation`. See
- * `docs/adr/2026-10-01-rest-only-port-extension-methods.md` for when a catalog-external port
- * method like this is appropriate and what it must satisfy.
+ * Converts a `ZodError` into `ValidationError`, which `adapterRoute.ts` catches. Exported so a
+ * route calling a REST-only port method outside the generic catalog (e.g.
+ * `patchPropertyWithDatabase`) validates against the same schema.
  */
 export function parseOperationInput<K extends GenericOperationName>(operation: K, raw: unknown): InputByOperation[K] {
   const binding = GENERIC_OPERATION_BINDINGS[operation] as {
@@ -46,11 +41,8 @@ export function parseOperationInput<K extends GenericOperationName>(operation: K
 }
 
 /**
- * The one place a REST route turns an assembled command object into a binding dispatch (issue
- * #219): validates `raw` via `parseOperationInput`, then calls `binding.invoke(service, actor,
- * input)`. No route hand-assembles a binding's output shape; `binding.invoke`'s return value is
- * what feeds the route's response envelope (or, for the confirmation-shaped operations, is sent
- * as-is).
+ * No route hand-assembles a binding's output shape: `binding.invoke`'s return value feeds the
+ * response envelope or is sent as-is.
  */
 export async function dispatchGenericOperation<K extends GenericOperationName>(
   service: GenericApplicationPort,
@@ -69,7 +61,7 @@ export async function dispatchGenericOperation<K extends GenericOperationName>(
   return binding.invoke(service, actor, input);
 }
 
-/** A REST human actor derives from the authenticated session's user id alone — no `runId`/`agentProjectItemId` (those are agent-only, populated by #220's composition root). */
+/** Derived from the session's user id alone; `runId`/`agentProjectItemId` are agent-only. */
 export function restActor(userId: string): AuthenticatedActor {
   return { userId, restSession: true };
 }

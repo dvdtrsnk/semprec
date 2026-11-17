@@ -4,10 +4,7 @@ import type { PropertyRow } from "../types.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * The blob ids a database envelope's `properties` name through the `file` and `image` properties of its target, in
- * the spelling the envelope has them. A value that is not `{ blobId: <uuid> }` names none.
- */
+/** The blob ids the envelope's `file`/`image` properties name; a value that is not `{ blobId: <uuid> }` names none. */
 export function blobIdsOfEnvelopeProperties(
   properties: Record<string, unknown>,
   propertiesByKey: ReadonlyMap<string, PropertyRow>,
@@ -23,11 +20,9 @@ export function blobIdsOfEnvelopeProperties(
 }
 
 /**
- * Holds `FOR KEY SHARE` on every blob the envelope names until the transaction that stores the envelope ends
- * ([[2026-11-15-an-open-proposal-keeps-the-blobs-its-envelope-names]]). A blob whose last reference is the open card is
- * kept by `deleteBlobIfUnreferenced`; the lock closes the interval before the card commits, in which a collection that
- * already chose the blob would still delete it. A blob that does not exist is not refused here: the write of the item
- * that confirm creates refuses it, as it always did.
+ * Holds `FOR KEY SHARE` on every blob the envelope names until the storing transaction ends, so a collection that
+ * already chose a blob whose last reference is this card cannot delete it before the card commits. A missing blob is
+ * refused later, by the item write at confirm.
  */
 export async function lockEnvelopeBlobReferences(
   client: PoolClient,

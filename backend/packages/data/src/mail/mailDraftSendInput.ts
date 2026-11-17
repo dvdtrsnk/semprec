@@ -1,7 +1,5 @@
-// Reads one saved Semprec draft into the input `sendDraftEmail` takes (issue gh-1896), in the caller's transaction and
-// tenant. The send route (mail/mailDraftSend.ts) and the approval of an agent's send (mail/mailSendApproval.ts, issue
-// gh-1913) both build what is sent, or what is approved, from here, so that the two cannot describe different drafts.
-// Constrained by: docs/adr/2026-11-13-a-discarded-mail-draft-loses-its-row-and-draft-writers-lock-the-item-before-the-row.md
+// Reads one saved draft into the input `sendDraftEmail` takes. The send route and the approval of an agent's send both
+// build from here, so they cannot describe different drafts.
 import type { PoolClient } from "pg";
 import { getBlob } from "../blobs/blobsStore.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";
@@ -16,7 +14,6 @@ import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { OutgoingAttachmentMissingError, type OutgoingAttachmentInput } from "./outgoingMime.js";
 import type { SendEmailModuleIds, UserSendEmailInput } from "./send.js";
 
-/** What `sendDraftEmail` is given for a draft, the ids of the mail module it needs, and the mailbox the draft leaves from. */
 export interface PreparedSend {
   input: UserSendEmailInput;
   moduleIds: SendEmailModuleIds;
@@ -29,9 +26,8 @@ function textProperty(item: ItemRow, key: string): string {
 }
 
 /**
- * The thread a sent draft's message is in: its `mail_message_meta` row's thread, translated to the live thread when it
- * was merged away, and the draft's own thread for a draft whose row says it was sent but has no such message (a
- * draft marked sent by something other than `sendDraftEmail`). `null` when neither exists.
+ * The thread of a sent draft's message, translated to the live thread when merged away; falls back to the draft's own
+ * thread when no such message exists (a draft marked sent elsewhere). `null` when neither exists.
  */
 export async function sentThreadOf(
   client: PoolClient,
@@ -49,11 +45,8 @@ interface ReplyContext {
 }
 
 /**
- * The reply headers of a draft in mode `reply` or `replyAll`: `In-Reply-To` is the Message-ID of its source message
- * and `References` that message's own references followed by it. The provider's conversation id comes along only
- * from a source message of the draft's own mailbox, since another mailbox's id names a conversation this one does
- * not have. A draft in another mode, without a source message or whose source has no `mail_message_meta` row carries
- * none of them.
+ * `In-Reply-To` and `References` of a `reply`/`replyAll` draft. The provider's conversation id is taken only from a
+ * source of the draft's own mailbox, since another mailbox's id names a conversation this one does not have.
  */
 async function replyContextOf(client: PoolClient, draft: MailDraft): Promise<ReplyContext> {
   if ((draft.mode !== "reply" && draft.mode !== "replyAll") || draft.sourceEmailItemId === null) return {};
@@ -70,10 +63,8 @@ async function replyContextOf(client: PoolClient, draft: MailDraft): Promise<Rep
 
 /**
  * Locks the draft's Emails item and then its `mail_drafts` row (the order of every draft writer) and reads what
- * `sendDraftEmail` needs, in the caller's transaction and tenant. The refusals are, in this order: 404 for an id that
- * names no live Emails item (another tenant's included), 409 `mail_draft_not_editable` for an item without a row,
- * 409 `mail_draft_already_sent` with `{ emailId, threadId }` for a sent draft, 400 for a draft with no recipient in
- * To, Cc or Bcc, 404 for a mailbox that is gone. The sender, the mailbox's state and its Sent folder are checked by
+ * `sendDraftEmail` needs. Refusals, in order: 404 no live item, 409 `mail_draft_not_editable` without a row, 409
+ * `mail_draft_already_sent`, 400 no recipient, 404 mailbox gone. Sender, mailbox state and Sent folder are checked by
  * `sendDraftEmail`.
  */
 export async function prepareSend(client: PoolClient, draftItemId: string): Promise<PreparedSend> {
@@ -117,14 +108,13 @@ export async function prepareSend(client: PoolClient, draftItemId: string): Prom
       mailboxesDatabaseId: ids.mailboxesDatabaseId,
       folderRelationPropertyId: folderProperty.id,
       mailboxFolderRelationPropertyId: mailboxFolderProperty.id,
-      // The keys the email module seeds (seed/seedEmailModule.ts).
       senderPeopleKey: "senderPeople",
       recipientsPeopleKey: "recipientsPeople",
     },
     input: {
       mailboxItemId: draft.mailboxItemId,
       draftItemId,
-      // The send route is for the user; an agent's send goes through approval (issue gh-1913).
+      // An agent's send goes through approval instead.
       actor: { type: "user" },
       from: { address: draft.fromAddress },
       to: draft.to,

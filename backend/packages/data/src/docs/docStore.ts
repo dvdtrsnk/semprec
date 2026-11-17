@@ -51,12 +51,7 @@ function assertKind(doc: DocRow, expected: DocKind): void {
   }
 }
 
-/**
- * The client-scoped counterpart to `createDocStore(pool).putBlock` below, for a caller
- * that needs the block append to commit atomically with its own structured-data write
- * (issue #105's proposal confirm: the block append and the Processing proposal's
- * `confirmed` lock must both land, or neither does).
- */
+/** For a caller whose block append must commit atomically with its own structured-data write. */
 export async function putBlockWithClient(
   client: PoolClient,
   itemId: string,
@@ -72,12 +67,8 @@ export async function putBlockWithClient(
 }
 
 /**
- * The client-scoped removal of blocks from a page, for a caller that needs it to commit atomically with its own
- * structured-data write (issue #1943's undo of a confirmed proposal: the removal of the blocks the confirm inserted and
- * the card's return to `proposed` must both land, or neither does). Removes each block of `blockIds` that the page
- * still holds, from the block map and from the order, and returns the ids it removed; an id the page no longer holds
- * (the user deleted that block) is skipped, and an item without a page document removes none. The caller holds the
- * row lock of the page item.
+ * For a caller whose block removal must commit atomically with its own write (e.g. undoing a confirmed proposal).
+ * Skips ids the page no longer holds and returns the ids removed. The caller holds the page item's row lock.
  */
 export async function deleteBlocksWithClient(
   client: PoolClient,
@@ -103,22 +94,8 @@ export interface DocVersion {
 }
 
 /**
- * The doc/CRDT store: a separate, independent mechanism from the structured-data
- * choke-point (issue #23, point 1 — two parallel persistence-and-merge mechanisms by
- * deliberate design, not unified into one consistency model). Every write here goes
- * through this factory, mirroring the choke-point's single-writer discipline for its
- * own tables.
- *
- * The `origin: CreatedBy` accepted by every write below (including `"ai_agent"`) is an
- * explicit, issue-scoped exception to the state-writes skill's "agent code never
- * writes state directly, only proposes" rule — the same class of exception that rule
- * already carves out for "the issue that introduces the choke-point itself". Issue
- * #23, point 4, steps 3-5 explicitly designs a direct agent write path (load doc,
- * `doc.transact(fn, 'ai_agent')`, persist the resulting update), with `created_by`
- * attribution as the audit mechanism in place of an approval-queue/`confirm` flow that
- * doesn't exist yet in this codebase (agent-runtime is still an empty stub). Once an
- * approval queue exists for CRDT docs, agent-originated writes should route through it
- * like everything else; until then, this is the sanctioned mechanism.
+ * The CRDT document store: a persistence mechanism deliberately separate from the structured-data choke point, with
+ * this factory as its single writer. `origin` (including `"ai_agent"`) is stored as `created_by` for attribution.
  */
 export function createDocStore(pool: Pool) {
   return {
@@ -130,11 +107,7 @@ export function createDocStore(pool: Pool) {
       return withTransaction(pool, (client) => docsStore.getDocByItemId(client, itemId));
     },
 
-    /**
-     * The summary of a page. For an agent's project or an external client (`reader`, issue #1998) the reader needs read
-     * access to the database that owns the page, checked first in the read's own transaction (`assertAgentPageAccess`);
-     * the same holds for every method of this store that takes the parameter.
-     */
+    /** Every method taking `reader` checks its access to the page's owner database first, in the same transaction. */
     async getPageSummary(itemId: string, locale: string, limit?: number, reader?: DatabaseReader) {
       return withTransaction(pool, async (client) => {
         await assertAgentPageAccess(client, reader, itemId, "read");
@@ -142,7 +115,6 @@ export function createDocStore(pool: Pool) {
       });
     },
 
-    /** The page as canonical Markdown plus its version token (issue #1678); never creates a document. */
     async readPageMarkdown(itemId: string, reader?: DatabaseReader) {
       return withTransaction(pool, async (client) => {
         await assertAgentPageAccess(client, reader, itemId, "read");
@@ -150,7 +122,6 @@ export function createDocStore(pool: Pool) {
       });
     },
 
-    /** Inserts Markdown into a page (issue #1679) in one transaction; the caller supplies the write's origin. */
     async insertPageMarkdown(itemId: string, input: InsertPageMarkdownInput, reader?: DatabaseReader) {
       return withTransaction(pool, async (client) => {
         await assertAgentPageAccess(client, reader, itemId, "write");
@@ -158,17 +129,13 @@ export function createDocStore(pool: Pool) {
       });
     },
 
-    /** Replaces a page's body from Markdown under the version token the caller read (issue #1765) in one transaction. */
     async replacePageMarkdown(itemId: string, input: ReplacePageMarkdownInput) {
       return withTransaction(pool, (client) => replacePageMarkdown(client, itemId, input));
     },
 
     /**
-     * What was written to the page of `itemId` since `options.since` by `options.by` (issue #1680). The item is read in
-     * the caller's tenant like any item read, so a foreign or unknown id is one `NotFoundError`; an item without a page
-     * document has no changes (`[]`), and then only the future check applies since there is no history to bound `since`.
-     * An agent's access is checked in this lookup transaction, before the history is replayed in its own snapshot
-     * transaction (`listPageChanges`), so a revoke that commits between the two is not seen by that replay.
+     * Access is checked in the lookup transaction, before the replay in its own snapshot transaction, so a revoke
+     * committing between the two is not seen by the replay.
      */
     async listPageChanges(
       itemId: string,
@@ -202,7 +169,6 @@ export function createDocStore(pool: Pool) {
       });
     },
 
-    /** Creates one subpage (issue #1676) in one transaction; `origin` is derived server-side from the caller. */
     async createSubpage(
       input: PageCreateSubpageInput,
       origin: CreatedBy,
@@ -211,7 +177,6 @@ export function createDocStore(pool: Pool) {
       return withTransaction(pool, (client) => createSubpageWithClient(client, input, origin, reader));
     },
 
-    /** Copies a subpage with every page nested in it (issue #1722) in one transaction; see `duplicatePageWithClient`. */
     async duplicatePage(
       pageItemId: string,
       options: DuplicatePageOptions,
@@ -223,7 +188,6 @@ export function createDocStore(pool: Pool) {
       });
     },
 
-    /** Renames a subpage (issue #1725) in one transaction; `origin` is derived server-side from the caller. */
     async renamePage(input: PageRenameInput, origin: CreatedBy, reader?: DatabaseReader): Promise<PageRenameOutput> {
       return withTransaction(pool, async (client) => {
         await assertAgentPageAccess(client, reader, input.pageItemId, "write");
@@ -231,7 +195,6 @@ export function createDocStore(pool: Pool) {
       });
     },
 
-    /** Restyles a `page` block into another block type and trashes its page tree (issue #1876) in one transaction; see `convertPageToBlockWithClient`. */
     async convertPageToBlock(
       input: PageConvertToBlockInput,
       options: ConvertPageToBlockOptions,
@@ -306,7 +269,6 @@ export function createDocStore(pool: Pool) {
       return { kind: "canvas", elements: canvas.listCanvasElements(doc) };
     },
 
-    /** Restores the page of `itemId` to `at` as one `user` update (issue #1617); see `docPageRestore.ts`. */
     async restoreVersion(itemId: string, at: Date, reader?: DatabaseReader): Promise<PageRestoreOutput> {
       return withTransaction(pool, async (client) => {
         await assertAgentPageAccess(client, reader, itemId, "write");

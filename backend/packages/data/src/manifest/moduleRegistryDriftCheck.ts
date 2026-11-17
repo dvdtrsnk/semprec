@@ -29,26 +29,16 @@ export async function findOrphanedOwnerProcessIds(
 }
 
 export interface CreateModuleRegistryDriftCheckOptions {
-  /** The registry's currently active heartbeat action ids (see manifest/knownActionIds.ts). */
   activeHeartbeatActionIds: ReadonlySet<string>;
-  /** The registry's currently active process/module ids that may own a system property. */
   activeProcessIds: ReadonlySet<string>;
 }
 
 /**
- * `moduleRegistry.checkDrift` (issue #112): detects *live* drift that load-time manifest
- * validation cannot see, because it can only run once, at startup — a live DB can still be
- * edited manually afterwards. Each run re-diffs the two mechanical sources of drift against
- * the registry's current active ids and republishes/resolves findings accordingly; this is
- * deliberately narrower than manifest/driftCheck.ts's `core.driftCheck` (which additionally
- * anchors its orphan check to one project's freshly generated manifest) — this check is
- * tenant-wide and purely mechanical, comparing ids/values only. It must never compare prose
- * (AGENT.md) guidance to permissions; that semantic half belongs to a separate, later check.
+ * Detects live DB drift that load-time manifest validation cannot see. Tenant-wide and purely
+ * mechanical (ids/values only); it must never compare prose guidance with permissions.
  *
- * Idempotent under concurrent runs: `publishFinding` dedupes new findings on
- * `(tenant_id, kind, dedupe_key)` via a partial unique index, and `resolveFindingsNotIn` only updates
- * rows that are still unresolved, so two overlapping runs never duplicate or double-resolve
- * a finding.
+ * Safe under concurrent runs: `publishFinding` dedupes via a partial unique index and
+ * `resolveFindingsNotIn` only touches unresolved rows.
  */
 export function createModuleRegistryDriftCheckAction(
   pool: Pool,

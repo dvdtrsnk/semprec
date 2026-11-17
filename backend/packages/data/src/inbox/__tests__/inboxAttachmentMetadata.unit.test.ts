@@ -8,7 +8,7 @@ import {
   inboxAttachmentMetadataSchema,
 } from "../inboxAttachmentMetadata.js";
 
-// Issue gh-1965: the boundary between a voice note and a recording, and the shapes the metadata job writes and reads.
+// The boundary between a voice note and a recording, and the shapes the metadata job writes and reads.
 
 describe("audioKindForDuration", () => {
   it("keeps the boundary of issue gh-1978 at 120 seconds", () => {

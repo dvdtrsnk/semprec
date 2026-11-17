@@ -8,40 +8,34 @@ import type { AgentRunEventRow } from "../agentRuns/agentRunEventsStore.js";
 import { isRedactedResult, toolResultFailed } from "../agentRuns/agentRunStepPages.js";
 
 /**
- * One tool call of a Semp turn as the reply summaries (issues #1860 and #1885) read it: the stored
- * `tool_use` and `tool_result` events matched on `toolCallId`. Neither the arguments nor the result are part
- * of what a summary stores; they are read only to take structured facts from them.
+ * One tool call of a Semp turn: its `tool_use` and `tool_result` events matched on `toolCallId`. Arguments and
+ * result are read only for structured facts and are never stored by a summary.
  */
 export interface SempToolCall {
   toolCallId: string;
   /** The id of the call's first stored event; ids are bigints kept as strings. */
   firstEventId: string;
-  /** The model-facing name of the tool. */
   name: string;
-  /** Set for a generic operation. */
   operation: GenericOperationName | undefined;
-  /** Set for an MCP tool. */
   mcp: McpToolEventIdentity | undefined;
   /** The call's arguments; `{}` when the call event is missing or its arguments are no object. */
   args: Readonly<Record<string, unknown>>;
   /** The item and database the call's arguments name; set for a generic operation only, never for an MCP tool. */
   targetItemId: string | undefined;
   targetDatabaseId: string | undefined;
-  /** When the call's first stored event was written. */
   startedAt: string;
   /** The parsed result; `null` for a call that has none (the turn ended before it returned). */
   result: ToolResultEventPayload | null;
-  /** When the result was stored; `null` without a result. */
   resultAt: string | null;
   /** The result says the call failed (`isError` or `details.error`). */
   failed: boolean;
-  /** The stored result is the marker of a result redacted as sensitive (issue #1827). */
+  /** The stored result is the redaction marker of a sensitive result. */
   redacted: boolean;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** `value` as a lower-case uuid, else `null`: ids that the model wrote into arguments are only looked up when they are one. */
+/** Model-written ids are only looked up when they are a uuid. */
 export function sempUuid(value: unknown): string | null {
   return typeof value === "string" && UUID.test(value) ? value.toLowerCase() : null;
 }
@@ -51,8 +45,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Matches the tool events of one turn on `toolCallId`, in the order of each call's first event. A result whose
- * call event is outside the events (or malformed) is still a call. An event that does not parse is skipped.
+ * Matches the turn's tool events on `toolCallId`, ordered by each call's first event. A result without its call
+ * event is still a call; an event that does not parse is skipped.
  */
 export function pairSempToolCalls(events: readonly AgentRunEventRow[]): SempToolCall[] {
   const calls: SempToolCall[] = [];
@@ -122,9 +116,8 @@ function firstResultText(result: unknown): string | null {
 }
 
 /**
- * The item a successful item operation answered with, from its stored result (`Item.id`, `Item.databaseId`).
- * `null` for a call without a result, a redacted result and an answer that is not such a JSON object: a
- * result is the operation's output text, so a text that is not JSON is an expected outcome, not an error.
+ * The item a successful item operation returned. `null` without a result, for a redacted result, or when the
+ * result text is not such a JSON object (an expected outcome, not an error).
  */
 export function sempToolCallResultItem(call: SempToolCall): { id: string; databaseId: string } | null {
   if (call.result === null || call.redacted) return null;
@@ -141,9 +134,8 @@ export function sempToolCallResultItem(call: SempToolCall): { id: string; databa
 }
 
 /**
- * The id of the item a successful `item.create` created: the id of its result, else the `createdItemId` the tool
- * kept in the result's details, which is stored whole when the result text is redacted as sensitive (a create in a
- * sensitive database). The id names nothing of the item's content; callers still look it up in the tenant's scope.
+ * The result id, else `details.createdItemId`, which survives redaction of a sensitive result. Callers still look
+ * it up in the tenant's scope.
  */
 export function sempToolCallCreatedItemId(call: SempToolCall): string | null {
   return sempUuid(sempToolCallResultItem(call)?.id ?? call.result?.details?.createdItemId);

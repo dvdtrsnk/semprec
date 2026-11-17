@@ -23,7 +23,6 @@ let runtime: Pool;
 const USER = { writerKind: "user" } as const;
 const DAY = "2026-10-22";
 
-/** What the timeline answers for an Event, in either shape. */
 const entrySchema = z.object({ id: z.string(), kind: z.string(), attendance: z.literal("tentative").nullable() });
 
 interface Seeded {
@@ -40,12 +39,11 @@ async function seededTenant(): Promise<Seeded> {
     locale: "en",
   });
   await runInTenant(tenantId, () => seedSystem(runtime));
-  // The sleep nights of a seeded tenant have their own tests (issue #1806); these keep to Events.
+  // The sleep nights of a seeded tenant have their own tests; these keep to Events.
   await hideSleepInCalendar(runtime, tenantId);
   return { tenantId, userId: user.id };
 }
 
-/** The writes and reads of the tenant in scope; the answers go through the respond route, as a user's do. */
 async function setup(userId: string) {
   const cp = createChokePoint(runtime);
   const calendars = z
@@ -60,7 +58,6 @@ async function setup(userId: string) {
 
   const event = async (properties: Record<string, unknown>): Promise<string> =>
     (await cp.createItem({ databaseId: eventsDatabaseId, properties }, userId, userId, USER)).id;
-  /** Creates an invitation and answers it; returns the invitation and the Event the answer made. */
   const answered = async (response: "accepted" | "tentative" | "declined", uid: string, title = "Sprint review") => {
     const invitationId = await createInvitation(runtime, { uid, title }, work);
     const result = await respond(invitationId, response);
@@ -72,7 +69,6 @@ async function setup(userId: string) {
       body: { response },
       identity: { user: { id: userId } },
     });
-  /** The id of the Event an invitation links to, through the Events created by its answer. */
   const eventOf = async (before: Set<string>): Promise<string> => {
     const ids = (await cp.listItems(eventsDatabaseId, { limit: 100 })).items.map((item) => item.id);
     const created = ids.filter((id) => !before.has(id));

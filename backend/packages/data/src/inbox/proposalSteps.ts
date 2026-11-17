@@ -27,7 +27,7 @@ import {
   type EdgeRecorder,
 } from "./proposalEdgeRecording.js";
 
-/** What a `fileFromAttachment` step resolved to: the Files item, the attachment it moved, and whether this step created the item. */
+/** A `fileFromAttachment` step's Files item, the attachment it moved, and whether the step created the item. */
 export interface FileFromAttachmentResult {
   ref: string;
   fileItemId: string;
@@ -35,31 +35,27 @@ export interface FileFromAttachmentResult {
   created: boolean;
 }
 
-/** The item the primary step wrote or changed. */
 export interface ExecutedProposalSteps {
   primaryItemId: string;
   primaryDatabaseId: string;
-  /** Ids of the items `create` steps and newly created Files items wrote, in execution order; patched and linked items are not listed. */
+  /** Items `create` steps and new Files items wrote, in execution order; patched and linked items are not listed. */
   createdItemIds: string[];
-  /** One entry per `fileFromAttachment` step, in execution order. */
   fileFromAttachments: FileFromAttachmentResult[];
   executedSteps: Array<{ ref: string; itemId: string; databaseId: string }>;
-  /** The edges the steps wrote or deleted on items that already existed (a link step, an update step), for the undo. */
+  /** Edges written or deleted on pre-existing items, for the undo. */
   recordedEdges: EdgeRecorder;
 }
 
 interface StepWriteContext {
   writer: WriterIdentity;
   actingUserId: string | undefined;
-  /** The Inbox item the proposal is for, or null when it has none (a transcript card); a `fileFromAttachment` step takes its attachment from here. */
+  /** `null` for a transcript card; `fileFromAttachment` takes its attachment from here. */
   sourceInboxItemId: string | null;
-  /** `ref` of every step executed so far -> the id of the item it created or changed. */
   itemIdsByRef: Map<string, string>;
-  /** Collects the edges `link` and `update` steps write and delete; the edges of a newly created item stay with it and are not recorded. */
+  /** Edges `link` and `update` steps write and delete; a new item's edges stay with it and are not recorded. */
   recorder: EdgeRecorder;
 }
 
-/** What one step wrote: the item it resolved to, and for a `fileFromAttachment` step the attachment it moved. */
 interface StepOutcome {
   itemId: string;
   databaseId: string;
@@ -73,7 +69,6 @@ function guardedRelationKeys(step: ProposalStep): string[] {
   ].sort();
 }
 
-/** Locks the existing rows and relation definitions needed by update preconditions. */
 async function lockUpdatePreconditions(client: PoolClient, steps: ProposalStep[]): Promise<void> {
   const updates = steps.filter((step) => step.op === "update" && step.itemId !== undefined);
   const itemIds = [...new Set(updates.flatMap((step) => (step.itemId ? [step.itemId] : [])))].sort();
@@ -113,7 +108,6 @@ async function lockUpdatePreconditions(client: PoolClient, steps: ProposalStep[]
   }
 }
 
-/** Compares the locked current state immediately before applying an update step. */
 async function assertUpdateBefore(
   client: PoolClient,
   step: ProposalStep,
@@ -137,8 +131,7 @@ async function assertUpdateBefore(
   const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
   await withStepRef(step.ref, async () => {
     const patch = step.properties ?? {};
-    // The tenant zone is read and validated again here, under the item lock this confirmation holds; an
-    // invalid stored zone propagates instead of refusing the confirmation (readProposalTimezone).
+    // Re-read under the item lock this confirmation holds; an invalid stored zone propagates instead of refusing.
     const prepared =
       Object.keys(patch).length > 0
         ? await prepareUserItemPatch(properties, patch, database, item, await readProposalTimezone(client))
@@ -169,7 +162,7 @@ function refsOf(relations: StepRelationTargets | undefined): string[] {
   );
 }
 
-/** Orders active steps so that a step comes after every step whose `ref` it names; ties keep envelope order. */
+/** Orders active steps after every step whose `ref` they name; ties keep envelope order. */
 function orderByRefDependencies(steps: ProposalStep[]): ProposalStep[] {
   const byRef = new Map(steps.map((step) => [step.ref, step]));
   const ordered: ProposalStep[] = [];
@@ -187,7 +180,7 @@ function orderByRefDependencies(steps: ProposalStep[]): ProposalStep[] {
   return ordered;
 }
 
-/** Re-raises a canonical write failure with the step `ref` and the offending `field` in `details`; any other error propagates untouched. */
+/** Re-raises a canonical write failure with the step `ref` and `field` in `details`; other errors propagate. */
 async function withStepDetails<T>(step: ProposalStep, field: string, run: () => Promise<T>): Promise<T> {
   try {
     return await run();
@@ -252,7 +245,7 @@ async function createEdges(
   }
 }
 
-/** Writes one edge; `record` says it is on an item that already existed, so the undo needs to know what the write did to it. */
+/** Writes one edge; `record` marks an edge on an existing item, whose prior state the undo needs. */
 async function writeEdge(
   client: PoolClient,
   ctx: StepWriteContext,
@@ -263,7 +256,6 @@ async function writeEdge(
   else await createRelationWithClient(client, input, undefined, ctx.writer, ctx.actingUserId);
 }
 
-/** Moves an item's relations: deletes the `before` edges that are gone from `after`, then creates the new ones. */
 async function moveEdges(
   client: PoolClient,
   step: ProposalStep,
@@ -295,7 +287,7 @@ async function moveEdges(
   }
 }
 
-/** The `type` value a Files item gets from its blob's mime type: that type when the Files `type` select offers it, otherwise none. */
+/** The Files `type` option for the blob's mime type, or none when the select does not offer it. */
 async function filesTypeOptionFor(
   client: PoolClient,
   filesDatabaseId: string,
@@ -310,15 +302,10 @@ async function filesTypeOptionFor(
 }
 
 /**
- * Moves one attachment of the source Inbox item into Files (issue #1703). The attachment must belong to
- * that Inbox item. The Files item is created unless a live one already names the attachment's blob; in
- * that case the step resolves to the existing item and changes none of its properties or relations. The
- * attachment row is deleted in the same transaction, and the blob stays, because a Files item names it; the derived
- * images of the row are released, and their bytes removed once the transaction commits.
- * The blob row lock makes a concurrent confirm that files the same bytes wait until this transaction ends.
- * If this one committed, that confirm then finds the item created here; if it rolled back, that confirm
- * creates its own. A delete that finds no row, because another confirm moved the attachment first, is a
- * conflict, and the caller's transaction rolls back.
+ * Moves an attachment of the source Inbox item into Files: reuses a live Files item that names the blob (unchanged),
+ * else creates one. The attachment row is deleted in this transaction; the blob stays, its derived images are
+ * released and their bytes removed after commit. The blob row lock makes a concurrent confirm of the same bytes wait,
+ * then find this item or create its own. A delete that finds no row (another confirm moved it first) is a conflict.
  */
 async function executeFileFromAttachment(
   client: PoolClient,
@@ -388,16 +375,14 @@ async function executeFileFromAttachment(
       field: "attachmentId",
     });
   }
-  // The preview and the reduced copy of the attachment (issue gh-1965) are not those of the Files item.
+  // The attachment's derived images are not those of the Files item.
   removeBlobBytesAfterCommit(client, removed.releasedStorageKeys);
   return { itemId: fileItemId, databaseId: filesDatabase.id, created, movedAttachmentId: attachmentId };
 }
 
 /**
- * Moves one attachment of the Inbox item `sourceInboxItemId` into Files as a `fileFromAttachment` step does
- * (`executeFileFromAttachment`: the item is created unless a live Files item already names the blob, the attachment row
- * is deleted), for a caller that has no envelope of steps: the confirm of a recording card. `name` is the Files item's
- * name when it is created. Runs in the caller's transaction. Answers the Files item and whether this call created it.
+ * Moves an attachment of `sourceInboxItemId` into Files like a `fileFromAttachment` step, for callers without steps
+ * (the recording card confirm). `name` is used when the Files item is created. Runs in the caller's transaction.
  */
 export async function moveAttachmentIntoFiles(
   client: PoolClient,
@@ -470,11 +455,9 @@ async function executeStep(client: PoolClient, step: ProposalStep, ctx: StepWrit
 }
 
 /**
- * Executes the active steps of a multi-step envelope in the caller's transaction, each after every
- * step whose `ref` it names. Disabled steps and unreferenced optional steps are not written. A failing
- * write is re-raised with `details: { ref, field }`; the caller's transaction rolls back. Resolves to
- * the primary step's item. `sourceInboxItemId` is the Inbox item the proposal is for, or null; a
- * `fileFromAttachment` step accepts only an attachment of that item.
+ * Executes the active steps in the caller's transaction, each after the steps whose `ref` it names. A failing write
+ * is re-raised with `details: { ref, field }`. Resolves to the primary step's item. A `fileFromAttachment` step
+ * accepts only an attachment of `sourceInboxItemId`.
  */
 export async function executeProposalSteps(
   client: PoolClient,

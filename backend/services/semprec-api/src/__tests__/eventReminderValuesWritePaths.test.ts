@@ -59,14 +59,13 @@ const mcpError = z.object({
   error: z.object({ code: z.number(), message: z.string(), data: z.record(z.string(), z.unknown()) }).strict(),
 });
 
-/** A refusal as REST exposes it: the HTTP status and the error body's `code` and `details`; the body has no message. */
+/** The body has no message. */
 interface RestRefusal {
   status: number;
   code: string;
   details: Record<string, unknown>;
 }
 
-/** A refusal as the agent gateway exposes it: the `ValidationError` it throws. */
 interface GatewayRefusal {
   code: string;
   status: number;
@@ -74,7 +73,7 @@ interface GatewayRefusal {
   details: Record<string, unknown>;
 }
 
-/** A refusal as MCP exposes it: a JSON-RPC error's code, message and `data`. It carries no category string. */
+/** It carries no category string. */
 interface McpRefusal {
   rpcCode: number;
   message: string;
@@ -84,7 +83,7 @@ interface McpRefusal {
 const TRANSPORTS = ["rest", "gateway", "mcp"] as const;
 type Transport = (typeof TRANSPORTS)[number];
 
-/** The values issue #1714 refuses: a label, the field named, and the reminder values of the write. */
+/** A label, the field named, and the reminder values of the write. */
 const REFUSALS: Array<[string, string, Record<string, unknown>]> = [
   ["alertMinutes 7", "alertMinutes", { alertMinutes: 7 }],
   ["alertMinutes -5", "alertMinutes", { alertMinutes: -5 }],
@@ -98,7 +97,7 @@ const REFUSALS: Array<[string, string, Record<string, unknown>]> = [
   ["travelMinutes false", "travelMinutes", { travelMinutes: false }],
 ];
 
-/** The values issue #1714 accepts: a label and the reminder values of the write, which are stored as sent. */
+/** A label and the reminder values of the write, stored as sent. */
 const PASSES: Array<[string, Record<string, unknown>]> = [
   ["alertMinutes 0 and travelMinutes 30", { alertMinutes: 0, travelMinutes: 30 }],
   ["alertMinutes 5 and travelMinutes 15", { alertMinutes: 5, travelMinutes: 15 }],
@@ -127,10 +126,7 @@ async function eventsNamed(name: string): Promise<number> {
   return rows[0]?.count ?? -1;
 }
 
-/**
- * Synthetic legacy state: the reminder-values hooks refuse a value outside the allowed sets on every write, so only a
- * row stored before issue #1714 holds one; no write path can produce it, so it is written with raw SQL.
- */
+/** No write path can produce a disallowed stored value, so it is written with raw SQL. */
 async function storeLegacy(itemId: string, legacy: Record<string, unknown>): Promise<void> {
   const result = await pool.query(
     "UPDATE items SET properties = properties || $3::jsonb WHERE database_id = $1 AND id = $2",
@@ -245,16 +241,15 @@ describe("Events reminder values are judged alike through REST, the agent gatewa
     };
   }
 
-  /** MCP carries a `ValidationError` as JSON-RPC `-32602` (invalid params): its message, and its details as `data`. */
+  /** MCP carries a `ValidationError` as JSON-RPC `-32602` with its details as `data`. */
   async function mcpRefusal(name: string, args: unknown): Promise<McpRefusal> {
     const parsed = mcpError.parse(await mcpCall(name, args));
     return { rpcCode: parsed.error.code, message: parsed.error.message, data: parsed.error.data };
   }
 
   /**
-   * Every exposed part of the three refusals: REST and the gateway carry the same category and status, MCP the
-   * gateway's message, and all three the same details naming `field`. MCP's category is not exposed, so it is not
-   * compared.
+   * REST and the gateway carry the same category and status, MCP the gateway's message, and all three the same
+   * details. MCP does not expose the category, so it is not compared.
    */
   function expectSameRefusal(refusals: { rest: RestRefusal; gateway: GatewayRefusal; mcp: McpRefusal }, field: string) {
     expect(refusals.rest).toEqual({ status: 400, code: "validation_failed", details: { field } });
@@ -286,7 +281,7 @@ describe("Events reminder values are judged alike through REST, the agent gatewa
     return mcpItem(await mcpCall("semprec.item.create", input));
   }
 
-  /** The item a write path answers a patch with; REST must answer 200. */
+  /** REST must answer 200. */
   async function patchVia(
     path: Transport,
     item: { id: string; updatedAt: string },

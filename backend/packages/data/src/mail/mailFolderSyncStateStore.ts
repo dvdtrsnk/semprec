@@ -9,7 +9,6 @@ export interface MailFolderSyncStateRow {
   lastError: string | null;
 }
 
-/** The raw `mail_folder_sync_state` row shape this module reads back from Postgres. */
 type MailFolderSyncStateDbRow = {
   item_id: string;
   uidvalidity: string | null;
@@ -55,9 +54,8 @@ export async function getMailFolderSyncState(
 }
 
 /**
- * A `UIDVALIDITY` change invalidates the entire UID cache for the folder — the server is
- * saying "this folder was rebuilt." Resets `uidnext`/`highestmodseq` so the caller's next
- * pass runs a full reconcile keyed by `Message-ID`, not a blind incremental fetch.
+ * A `UIDVALIDITY` change invalidates the folder's whole UID cache. Resets `uidnext`/`highestmodseq` so the next pass
+ * runs a full reconcile keyed by `Message-ID`.
  */
 export async function resetForUidvalidityChange(
   client: Queryable,
@@ -90,12 +88,7 @@ export async function recordFolderSyncError(client: Queryable, itemId: string, e
   await client.query(`UPDATE mail_folder_sync_state SET last_error = $2 WHERE item_id = $1`, [itemId, error]);
 }
 
-/**
- * Deletes the sync state of every Folders item related to `mailboxItemId` through `Folders.mailbox`,
- * trashed folders included (issue gh-1690); returns the number of rows deleted. Only a folder the IMAP
- * adapter synced has a row. The relation definition is found by the property key on the Folders
- * database, the way `mailboxRemovalImpact.ts` finds it.
- */
+/** Deletes the sync state of every folder related to the mailbox, trashed folders included; returns the row count. */
 export async function deleteMailFolderSyncStatesOfMailbox(
   client: Queryable,
   input: { foldersDatabaseId: string; mailboxItemId: string },
@@ -119,13 +112,9 @@ export async function deleteMailFolderSyncStatesOfMailbox(
 }
 
 /**
- * Deletes the sync state of every Folders item that no mailbox is related to through `Folders.mailbox`,
- * trashed folders included (issue gh-1691); returns the number of rows deleted. The permanent purge
- * deletes a purged mailbox's relation edges before its purge hooks run, so by then
- * `deleteMailFolderSyncStatesOfMailbox` finds none of that mailbox's folders: they are among the folders
- * without a mailbox, next to any folder that had none before. The relation definition is found the way
- * that function finds it; when `foldersDatabaseId` has no `mailbox` relation, nothing is deleted.
- * Constrained by: docs/adr/2026-11-11-mail-purge-hook-takes-the-thread-guard-after-the-purge-locks.md
+ * Deletes the sync state of every folder with no related mailbox, trashed folders included; returns the row count.
+ * The permanent purge deletes a mailbox's relation edges before its purge hooks run, so its folders are found here and
+ * not by `deleteMailFolderSyncStatesOfMailbox`.
  */
 export async function deleteMailFolderSyncStatesOfFoldersWithoutMailbox(
   client: Queryable,

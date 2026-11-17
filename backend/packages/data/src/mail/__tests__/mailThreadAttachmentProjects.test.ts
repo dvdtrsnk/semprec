@@ -28,7 +28,6 @@ function detailOf(tenantId: string, threadId: string) {
   );
 }
 
-/** The number of statements the detail of thread `threadId` runs. */
 function countStatements(threadId: string): Promise<number> {
   return runInTenant(tenant, () =>
     withTransaction(
@@ -47,14 +46,12 @@ function countStatements(threadId: string): Promise<number> {
   );
 }
 
-/** The attachments of all messages of the detail, by file name. */
 function attachmentsByName(detail: Awaited<ReturnType<typeof detailOf>>) {
   return Object.fromEntries(
     detail.messages.flatMap((message) => message.attachments).map((attachment) => [attachment.filename, attachment]),
   );
 }
 
-/** The value-link entry of a file that follows the project of thread item `itemId`. */
 const inheritedFrom = (itemId: string) =>
   expect.objectContaining({
     valueKind: "inherited",
@@ -142,7 +139,7 @@ describe("the project and links of the attachments in the thread detail (issue g
   it("answers project null and no links entry for an attachment that has no project and no value-link row", async () => {
     const world = await setup(tenant);
     const thread = await world.receive("<legacy@example.test>", { attachments: ["legacy.pdf"] });
-    // Raw SQL: an attachment ingested before issue gh-1898 has no link row, and ingest now always writes one.
+    // Raw SQL: an attachment without a link row, which ingest no longer produces.
     const removed = await runInTenant(tenant, () =>
       runtime.query("DELETE FROM value_links WHERE property_key = 'projects'"),
     );

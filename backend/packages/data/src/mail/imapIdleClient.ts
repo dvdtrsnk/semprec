@@ -3,30 +3,15 @@ import type { ImapIdleConnection, ImapIdleFolderTarget, ImapIdleTransport } from
 import { logger } from "./logger.js";
 
 /**
- * Renewed well under the ~30-minute point most IMAP servers close an idle IDLE command at
- * (issue #196: "Renew before 29 minutes") — passed as imapflow's own `maxIdleTime`, which
- * breaks and reissues IDLE on this cadence internally without ever tearing down the
- * connection, so the same socket (and its TLS session) survives across many renewals. This is
- * intentionally shorter than `DEFAULT_HARD_CYCLE_DEADLINE_MS` (imapIdleLifecycle.ts), which
- * recycles the whole connection on a much longer, unrelated cadence.
+ * imapflow's `maxIdleTime`: IDLE is reissued on the same socket before the ~30-minute point at
+ * which servers drop it. Unrelated to the lifecycle's connection-recycling deadline.
  */
 export const IMAP_IDLE_MAX_IDLE_TIME_MS = 25 * 60 * 1000;
 
-/**
- * How long the socket may sit with no data at all (not even a renewed IDLE's tagged response)
- * before imapflow gives up on it — comfortably longer than `IMAP_IDLE_MAX_IDLE_TIME_MS` so a
- * normal renewal round-trip never itself trips this, but still bounded rather than left at
- * imapflow's 5-minute default, which is far shorter than how long this connection is meant to
- * sit quiet between renewals.
- */
+/** Longer than `IMAP_IDLE_MAX_IDLE_TIME_MS` so a renewal never trips it; imapflow's 5-minute default is too short. */
 export const IMAP_IDLE_SOCKET_TIMEOUT_MS = 35 * 60 * 1000;
 
-/**
- * TCP keepalive is not configured here: imapflow enables it unconditionally on every socket it
- * opens (`socket.setKeepAlive(true, 5_000)` in its own connection setup), so there is nothing
- * this module needs to request — a silently-dead connection (a dropped Wi-Fi network, a
- * NAT/firewall that drops idle mappings) is still detected without a full protocol timeout.
- */
+// TCP keepalive needs no configuration: imapflow always enables it on its sockets.
 
 export interface ImapIdleFlowOptions {
   maxIdleTime: number;
@@ -34,12 +19,9 @@ export interface ImapIdleFlowOptions {
 }
 
 /**
- * Builds a connected, authenticated `ImapFlow` client: the composition root's `createClient`
- * returns `openImapFlow`'s result (mailServerConnections.ts), built with the mailbox's stored
- * settings and the IDLE options (`maxIdleTime`, `socketTimeout`). Host and auth resolution is the
- * composition root's job, same delegation `MailSyncAdapterFactory.createImapClient` (mailSyncJob.ts)
- * already uses. The transport never connects a client it receives: it arrives connected
- * (docs/adr/2026-10-29-imap-idle-connections-through-the-shared-imap-connect-step.md).
+ * Returns a connected, authenticated client built by the composition root with the IDLE options;
+ * the transport never connects a client itself (see
+ * docs/architecture/domain-mail-and-inbox.md#server-settings-and-outbound-connections).
  */
 export type CreateIdleTunedImapFlowClient = (
   mailboxItemId: string,
@@ -205,8 +187,7 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
   }
 
   async close(): Promise<void> {
-    // Detach exists/expunge/flags before logout so a final server push during BYE can't still
-    // reach onSignal after the caller considers this connection closed.
+    // Detach listeners before logout so a push during BYE cannot reach onSignal after close.
     const failures: unknown[] = [];
     try {
       this.detachSignalListeners();
@@ -225,12 +206,6 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
   }
 }
 
-/**
- * imapflow-backed `ImapIdleTransport` (issue #196). Not exercised against a live IMAP server in
- * CI, same relationship `ImapFlowMailClient` (imapFlowClient.ts) has to `imapReconcile.ts` —
- * the orchestration this depends on (bounded reconnect, hard-cycle recycling,
- * `imapIdleLifecycle.ts`) is what is actually unit-tested, against a fake transport.
- */
 export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlowClient): ImapIdleTransport {
   return {
     async resolveFolders(mailboxItemId, credential): Promise<ImapIdleFolderTarget[]> {
@@ -245,9 +220,7 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
         const inbox = list.find((f) => f.specialUse === SPECIAL_USE_INBOX);
         const allMail = list.find((f) => f.specialUse === SPECIAL_USE_ALL);
         targets = [inbox, allMail].filter((f): f is NonNullable<typeof f> => Boolean(f)).map((f) => ({ path: f.path }));
-        // A server with neither special-use attribute (plain IMAP without RFC 6154) still has
-        // an INBOX by definition — falling back to it keeps this account under some IDLE
-        // coverage instead of none.
+        // Without RFC 6154 special-use attributes, INBOX still exists (fallback below).
       } catch (error) {
         return closeAfterFailure(client, ended, error);
       }
@@ -270,11 +243,7 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
       } catch (err) {
         return closeAfterFailure(client, ended, err);
       }
-      // EXISTS (new message), EXPUNGE (deletion), and flags (read/flagged toggled from another
-      // client) are exactly the three signal kinds issue #196's Task names; imapflow keeps
-      // emitting all three on this client while its own internal auto-IDLE is active, which it
-      // is by default (`disableAutoIdle` is left unset) for as long as no other command is
-      // in flight — never something this module has to issue an explicit `IDLE` command for.
+      // imapflow's default auto-IDLE keeps emitting these; no explicit IDLE command is needed.
       client.on("exists", onSignal);
       client.on("expunge", onSignal);
       client.on("flags", onSignal);

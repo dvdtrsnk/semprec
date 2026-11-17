@@ -45,7 +45,6 @@ const STANDUP = {
 const WEDNESDAY_9_01 = "2026-10-14T07:01:00.000Z";
 const TWENTY_MINUTES = 20 * 60;
 
-/** A tenant with one English-speaking user, seeded as production seeds one. */
 async function seededTenant(): Promise<{ tenantId: string; userId: string }> {
   const tenantId = await createTestTenant(admin);
   const user = await createUser(admin, {
@@ -77,7 +76,6 @@ describe("matching a recording to a virtual occurrence of a recurring Event (iss
     await admin.end();
   });
 
-  /** The ids of the tenant in scope and its writes; every write of a test goes through the choke point or a store. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -88,7 +86,7 @@ describe("matching a recording to a virtual occurrence of a recurring Event (iss
     };
     const event = async (properties: Record<string, unknown>) =>
       (await cp.createItem({ databaseId: db("events"), properties }, userId, userId, USER)).id;
-    /** A transcript with the computed values steps 1 and 4 leave, which the card reads for its recording facts. */
+    /** With the computed values the card reads for its recording facts. */
     const transcript = async (date: string) =>
       withTransaction(runtime, async (client) => {
         const item = await createItemWithClient(
@@ -104,7 +102,7 @@ describe("matching a recording to a virtual occurrence of a recurring Event (iss
       });
     const match = (transcriptId: string, durationSeconds = TWENTY_MINUTES) =>
       withTransaction(runtime, (client) => matchTranscriptToEvent(client, { transcriptId, durationSeconds }));
-    /** What the worker's match step does with an ambiguous match: the card of its candidates, in one transaction. */
+    /** The worker's handling of an ambiguous match: the card, in one transaction. */
     const propose = (transcriptId: string, recommendation: EventRecommendation | null = null) =>
       withTransaction(runtime, async (client) => {
         const result = await matchTranscriptToEvent(client, { transcriptId, durationSeconds: TWENTY_MINUTES });
@@ -136,7 +134,6 @@ describe("matching a recording to a virtual occurrence of a recurring Event (iss
     const eventIds = async () => (await cp.listItems(db("events"), { limit: 100 })).items.map((item) => item.id).sort();
     const cardIds = async () =>
       (await cp.listItems(db("processingProposals"), { limit: 100 })).items.map((item) => item.id).sort();
-    /** The Event ids linked to the transcript through Transcripts.event. */
     const linked = async (transcriptId: string) =>
       ((await cp.listItemRelations(transcriptId)) ?? [])
         .filter((entry) => entry.propertyKey === "event")
@@ -280,9 +277,7 @@ describe("matching a recording to a virtual occurrence of a recurring Event (iss
       const wednesday = await f.transcript(WEDNESDAY_9_01);
       const thursday = await f.transcript("2026-10-15T07:01:00.000Z");
 
-      // The cancelled 14 October gives no candidate, so the recording gets the new-meeting card.
       expect(await f.match(wednesday)).toBe("suggested");
-      // 15 October is not cancelled, so the same series is a candidate on that day.
       expect(await f.match(thursday)).toEqual({
         outcome: "ambiguous",
         candidates: [{ seriesId: series, occurrenceDate: "2026-10-15" }],

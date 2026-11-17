@@ -45,7 +45,6 @@ import type { DatabaseRow, ItemRow, PropertyRow } from "../types.js";
 import type { RelationExpansionOptions } from "../chokePoint/relationExpansion.js";
 import type { AgentDatabaseAccess } from "../agentGrants/agentDatabaseGrantsStore.js";
 
-// Seeding the system databases of one tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 120_000;
 const FORBIDDEN = { status: 403, code: "forbidden" };
 
@@ -76,7 +75,6 @@ function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return inTenant(() => withTransaction(dataPool, fn));
 }
 
-/** An agent run's writer: the identity `writerIdentityOf` derives for a run credential. */
 function agent(projectItemId: string): WriterIdentity & { writerKind: "agent" } {
   return { writerKind: "agent", agentRunId: randomUUID(), agentProjectItemId: projectItemId };
 }
@@ -120,7 +118,6 @@ const newTranscript = (name = "Doctor visit") =>
 const newInboxEntry = (text = "Visit note") =>
   inTenant(() => cp.createItem({ databaseId: inbox.id, properties: { date: "2026-11-01", time: "10:00", text } }));
 
-/** Links `caller` to `target` through `property` and returns the edge, so a test can remove it again. */
 async function link(property: PropertyRow, caller: ItemRow, target: ItemRow) {
   await inTenant(() =>
     cp.createRelation({ relationPropertyId: property.id, callerItemId: caller.id, targetItemId: target.id }),
@@ -142,7 +139,6 @@ describe("sensitivity inherited through relation edges (issue #1999)", () => {
     dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
-    // An agent run needs a user in the tenant.
     await createUser(adminPool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
     await inTenant(() => seedSystem(dataPool, createViewTypeRegistry()));
     cp = createChokePoint(dataPool);
@@ -153,10 +149,9 @@ describe("sensitivity inherited through relation edges (issue #1999)", () => {
     inbox = await systemDatabase(INBOX_MODULE_ID);
     fileToHealth = await propertyOf(files, "healthRecords");
 
-    // A fixture the API cannot produce: the schemas of the system databases are locked until a code-level
-    // migration changes them, and no system database has a relation to Transcripts, Inbox or (from the Health
+    // The schemas of the system databases are locked and none relates Transcripts, Inbox or (from the Health
     // side) Files yet. The superuser pool unlocks them so the relation properties below are created through
-    // the choke point as a user would create them.
+    // the choke point.
     await adminPool.query("UPDATE databases SET schema_locked = false WHERE id = ANY($1::uuid[])", [
       [health.id, files.id, transcripts.id, inbox.id],
     ]);

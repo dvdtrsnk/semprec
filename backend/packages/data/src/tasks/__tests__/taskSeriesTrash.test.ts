@@ -1,4 +1,4 @@
-// Issue gh-1882: trashing and restoring a whole recurring task series, through the choke point and the runtime role pool.
+// Trashing and restoring a whole recurring task series, through the choke point and the runtime role pool.
 import "../../domainWriteHooks.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
@@ -50,7 +50,6 @@ async function propertyId(databaseKey: string, key: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Writes an edge as the Tasks process, the only writer of `hostEvents`. */
 async function hostEdge(taskId: string, eventId: string): Promise<void> {
   const relationPropertyId = await propertyId("tasks", "hostEvents");
   await runInTenant(tenant, () =>
@@ -87,7 +86,6 @@ async function seriesOf(seriesId: string) {
   return rows.map((row) => seriesRow.parse(row));
 }
 
-/** Resolves once a statement whose text contains `fragment` waits for a lock held by another transaction. */
 async function waitUntilBlocked(fragment: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt++) {
     const { rows } = await admin.query<{ n: number }>(
@@ -100,7 +98,6 @@ async function waitUntilBlocked(fragment: string): Promise<void> {
   throw new Error(`No statement containing '${fragment}' ever waited for a lock`);
 }
 
-/** Holds the locks `acquire` takes in an open transaction until `release` is called; resolves `locked` once they are held. */
 function holdLocks(acquire: (client: PoolClient) => Promise<void>) {
   let release!: () => void;
   const released = new Promise<void>((resolve) => {
@@ -128,10 +125,7 @@ function restore(itemId: string) {
   return runInTenant(tenant, () => cp.restoreItem(databases.tasks!, itemId));
 }
 
-/**
- * A series with three stored instances, built with the module's own writes: the first two were completed and the third
- * is the open one that the series row points at. Returns the instances oldest first.
- */
+/** Built with the module's own writes: two completed instances and the open current one, oldest first. */
 async function seriesOfThree(): Promise<{ seriesId: string; done: [string, string]; open: string }> {
   const first = await create("tasks", { name: "Weekly review", date: "2026-10-12" });
   const seriesId = await runInTenant(tenant, () =>
@@ -300,7 +294,6 @@ describe("trashing and restoring a recurring task series (issue gh-1882)", () =>
     });
 
     describe("an item of a user-created database that names a series", () => {
-      /** An item whose text property `seriesId` holds the id of a live series: nothing but the Tasks module may act on it. */
       async function itemNamingSeries(seriesId: string): Promise<{ databaseId: string; itemId: string }> {
         const notes = await runInTenant(tenant, () => cp.createDatabase({ name: "Notes" }));
         await runInTenant(tenant, () =>
@@ -401,7 +394,7 @@ describe("trashing and restoring a recurring task series (issue gh-1882)", () =>
 
     it("restores only the instances of its epoch and leaves one trashed earlier in the Trash", async () => {
       const { seriesId, done, open } = await seriesOfThree();
-      // Fixture SQL: an instance trashed on its own, which the choke point no longer allows for a series instance.
+      // Fixture SQL: an instance trashed on its own, which the choke point does not allow for a series instance.
       await admin.query("UPDATE items SET deleted_at = now() - interval '1 day' WHERE id = $1", [done[0]]);
       await trash(open);
 
@@ -470,8 +463,7 @@ describe("trashing and restoring a recurring task series (issue gh-1882)", () =>
           callerItemId: open,
           targetItemId: project.id,
         });
-        // The attach makes the file follow the task's project through the link rule `fileProjectsFromTasks`
-        // (issue #1702): the file takes the project and gets the link that records it.
+        // The attach makes the file follow the task's project through `fileProjectsFromTasks`.
         await cp.createRelation({
           relationPropertyId: await propertyId("tasks", "files"),
           callerItemId: open,

@@ -38,7 +38,7 @@ export interface GmailHistoryResult {
   /** true = the stored `historyId` is older than what the API retains (`history.list` 404) — caller must run a full resync. */
   invalidated: boolean;
   newHistoryId: string;
-  /** Deduplicated by message id — a message can appear more than once in one `history.list` window (added, then label-changed); only its latest known state matters here. */
+  /** Deduplicated by message id; only the latest state matters. */
   changedMessageIds: string[];
   removedMessageIds: string[];
 }
@@ -46,12 +46,10 @@ export interface GmailHistoryResult {
 export interface GmailMailClient {
   observeMoveMessage?(messageId: string): Promise<GmailMoveResult>;
   applyMoveStep?(messageId: string, step: "trash" | "untrash" | "add_inbox" | "remove_inbox"): Promise<GmailMoveResult>;
-  /** Used only when no `historyId` is stored yet (first sync, or right after an invalidation-triggered reset). */
   getCurrentHistoryId(): Promise<string>;
   listHistorySince(startHistoryId: string): Promise<GmailHistoryResult>;
-  /** All Mail, full resync path. */
   listAllMessageIds(): Promise<string[]>;
-  /** null = the message no longer exists (raced with a delete between the history event and this fetch). */
+  /** null = the message was deleted after the history event. */
   fetchMessage(id: string): Promise<GmailFetchedMessage | null>;
   listLabels(): Promise<GmailLabelRef[]>;
   modifyMessageLabels(messageId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void>;
@@ -84,7 +82,6 @@ function specialPurposeForLabel(label: GmailLabelRef): string {
   return GMAIL_SYSTEM_FOLDER_PURPOSES[label.id] ?? "none";
 }
 
-/** A label becomes a Folder only when it is a user label or one of the five system folders. */
 function isFolderLabel(label: GmailLabelRef): boolean {
   return label.type === "user" || Object.hasOwn(GMAIL_SYSTEM_FOLDER_PURPOSES, label.id);
 }
@@ -101,23 +98,17 @@ export interface ReconcileGmailAccountParams {
   attachmentsRelationPropertyId: string;
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
-  /** This mailbox's registered addresses (`Mailboxes.addresses`) — deliveredToAddress's alias-fallback precedence (mail/deliveredTo.ts, issue #93). Defaults to `[]`. */
+  /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
   mailboxAliases?: string[];
 }
 
 /**
- * Gmail's history/labelIds model (issue #26): `historyId` + `history.list` replaces IMAP's
- * UIDVALIDITY/CONDSTORE dance in one call; a message's `labelIds` replace per-folder UIDs
- * entirely — the *same* message keeps one id across every label it carries, so this ingests
- * it once (by `Message-ID`, via `ingestEmailMessage`'s own dedup) and links it to every
- * mapped label's Folder item, removing any Folder edge for a label the message no longer
- * carries — the Gmail-side equivalent of IMAP's VANISHED/UID-diff handling.
- */
-/**
- * Deliberately does not catch-and-record its own failures: this whole pass runs inside one
- * caller-owned transaction (mailSyncJob.ts), so an error-recording write here would itself be
- * undone by the same rollback that the re-thrown error triggers. See
- * mailSyncJob.ts's `handleSyncMailAccountTask` for where sync failures actually get recorded.
+ * One Gmail message keeps one id across all its labels, so it is ingested once (deduped by
+ * Message-ID) and linked to every mapped label's Folder; edges for labels it no longer carries
+ * are removed.
+ *
+ * Does not record its own failures: the pass runs in the caller's transaction, so such a write
+ * would be rolled back with it. mailSyncJob.ts records sync failures.
  */
 export async function reconcileGmailAccount(
   dbClient: PoolClient,
@@ -168,12 +159,8 @@ export async function reconcileGmailAccount(
   let newHistoryId: string;
 
   if (!state.gmailHistoryId) {
-    // The cursor is captured *before* listing, not after: a message arriving in the gap
-    // between the two calls would otherwise be silently skipped forever — it wouldn't be in
-    // this pass's listAllMessageIds() result (already fetched), yet newHistoryId would already
-    // be past it, so the next incremental history.list() would never surface it either.
-    // Capturing first means the worst case is re-observing that message on the next pass
-    // (harmless — ingestEmailMessage dedups by Message-ID), not losing it.
+    // Capture the cursor before listing: a message arriving in between is then re-observed
+    // next pass (deduped by Message-ID) instead of being skipped forever.
     newHistoryId = await gmail.getCurrentHistoryId();
     changedIds = await gmail.listAllMessageIds();
   } else {
@@ -223,15 +210,13 @@ export async function reconcileGmailAccount(
       itemId = result.itemId;
     }
 
-    // A message whose current labelIds map to zero known Folder items (a placement label this
-    // pass hasn't discovered yet) is never ingested fresh above — but if it was already known from a prior pass, its stale folder edges
-    // still need dropping, the same as any other label removal.
+    // A message mapping to no known Folder is not ingested above, but if already known its
+    // stale folder edges still need dropping.
     if (!itemId) {
       const existing = await getMailMessageMetaByProviderMessageId(dbClient, fetched.id);
       itemId = existing?.itemId ?? null;
     }
 
-    // Drop any folder edge for a label this message no longer carries.
     if (itemId && !protectedMoveMessageIds?.has(itemId) && !(await hasUnsettledMailMove(dbClient, itemId))) {
       const currentEdges = await listRelationsForItem(dbClient, relationDefinition.id, itemId);
       const mappedSet = new Set(mappedFolderIds);

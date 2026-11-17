@@ -1,27 +1,13 @@
-/** The longest excerpt a search result carries, in characters. */
 const SEARCH_SNIPPET_MAX_CHARS = 160;
 
-/**
- * The `ts_headline` options of an excerpt: one fragment of 8 to 25 words, and no highlight markers, so a client
- * receives plain text. A constant of this module, written into the statement as a literal.
- */
+/** One fragment of 8 to 25 words, no highlight markers, so a client receives plain text. */
 const HEADLINE_OPTIONS = 'StartSel="", StopSel="", MaxFragments=1, MaxWords=25, MinWords=8';
 
 /**
- * The SQL expression of the `snippet` of an item-backed search result (issue #1996), for a statement that reads
- * `item_search_index` and so has its `body` column in scope. `tsquery` is the output of `buildItemSearchQuery` for
- * this statement, and `firstParameter` is the bind position it was built from: the expression refers to the bind
- * parameters that hold the words of the query and adds none of its own, so no word of the query is ever part of the
- * SQL text.
- *
- * The excerpt exists only when the `body` itself matches: the same combined `czech` and `czech_simple` vector and the
- * same tsquery as the index match. Otherwise (a result found only through its title or other properties, or an item
- * without a body) the expression is NULL. The excerpt is built by `ts_headline` over `body` with the `czech_simple`
- * prefix part of the query, which finds a word by its start without regard to accents, and cut to
- * `SEARCH_SNIPPET_MAX_CHARS` characters. A body that matches only through the lemmas of the `czech` configuration has
- * no word `czech_simple` finds, and its excerpt then is the start of the body.
- *
- * Throws a `RangeError` for a query without a word, which has no tsquery to build an excerpt from.
+ * The `snippet` SQL for a statement with `item_search_index.body` in scope. It reuses the bind parameters of
+ * `tsquery` (built from `firstParameter`) and adds none, so no query word is ever SQL text. NULL unless `body` itself
+ * matches with the index's vector and tsquery. The excerpt uses the accent-insensitive `czech_simple` prefix part, so
+ * a body matching only by `czech` lemmas gets its start as the excerpt. Throws `RangeError` for a query without a word.
  */
 export function buildSearchSnippetSql(
   tsquery: { sql: string; params: readonly string[] },

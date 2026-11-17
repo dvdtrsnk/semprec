@@ -13,7 +13,6 @@ import {
 const RUN_ID = "00000000-0000-4000-8000-000000000001";
 const BASE_MS = Date.parse("2026-11-01T10:00:00.000Z");
 
-/** An event of the run with the given id; its time is the id in seconds after a fixed start. */
 function event(id: number, kind: AgentRunEventKind, payload: unknown): AgentRunEventRow {
   return { id: String(id), agentRunId: RUN_ID, kind, payload, at: new Date(BASE_MS + id * 1000).toISOString() };
 }
@@ -77,7 +76,6 @@ function readPage(all: AgentRunEventRow[], after: string, limit: number, runSett
   });
 }
 
-/** Follows `nextCursor` until it is null and returns every page. */
 function readAll(all: AgentRunEventRow[], limit: number, runSettled = false): AgentRunStepPage[] {
   const pages: AgentRunStepPage[] = [];
   let after = "0";
@@ -95,7 +93,6 @@ const withoutFacts = ({ facts: _facts, ...core }: AgentRunStepDraft) => core;
 
 const kinds = (steps: AgentRunStepDraft[]) => steps.map((s) => s.kind);
 
-/** A finished run: start, plan, two sequential tool calls, answer, end. */
 function finishedRun(): AgentRunEventRow[] {
   return [
     status(1, "running"),

@@ -6,19 +6,13 @@ import { FILES_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.
 import { readTranscriptionSourceFileItemId } from "./transcriptionJob.js";
 
 /**
- * Restores a transcript's source Files item together with it (issue #1642): when a Transcripts row
- * is restored from the Trash, the Files item its `link` names is restored in the same transaction,
- * but only while that item is in the Trash with exactly the transcript's deletion epoch, i.e. it was
- * trashed together with it by `DELETE /api/transcripts/:id`. A source trashed on its own at another
- * instant stays in the Trash. Equal timestamps are not a transaction identity: a source trashed on
- * its own at exactly the same microsecond would be restored too.
+ * Restores a transcript's source Files item with it, but only while that item is trashed with exactly
+ * the transcript's deletion epoch (trashed together by `DELETE /api/transcripts/:id`). A source trashed
+ * on its own at the same microsecond would be restored too: timestamps are not transaction identity.
  *
  * The restore cascade already holds the transcript's row lock, the opposite of the pipeline's
- * source-then-transcript order, so the source row is reserved with `FOR UPDATE NOWAIT`: a source
- * another transaction holds fails this restore with PostgreSQL's `55P03` (lock_not_available),
- * which rolls the whole restore back, instead of waiting for it while holding the transcript. See
- * docs/adr/2026-11-08-restore-hooks-carry-exact-deletion-epochs.md. The nested restore runs through
- * the choke point's own restore in this transaction, with the caller's queue routing and writer.
+ * source-then-transcript order, so the source is reserved with `FOR UPDATE NOWAIT`: a contended source
+ * fails the restore with `55P03` instead of waiting while holding the transcript.
  */
 export const transcriptRestoreHook: ItemRestoreHook = async (context) => {
   if (!context.database.system || context.database.ownerModuleId !== TRANSCRIPTS_MODULE_ID) return;

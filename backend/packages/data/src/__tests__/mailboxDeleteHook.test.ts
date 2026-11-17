@@ -28,13 +28,11 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 
-/** A connected mailbox and one of its Folders. */
 interface TestMailbox {
   id: string;
   folder: string;
 }
 
-/** The mailbox's item and the rows a removal deletes, as stored. */
 interface MailboxSnapshot {
   item: Array<{ properties: unknown; updatedAt: string; deletedAt: string | null }>;
   credential: Array<{ ciphertext: string; nonce: string }>;
@@ -50,12 +48,10 @@ let userId: string;
 let mailboxesDatabaseId: string;
 let foldersDatabaseId: string;
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
-/** A mailbox with a credential, a sync state row and server settings, and one Folders item linked to it. */
 function createConnectedMailbox(tenantId = tenant): Promise<TestMailbox> {
   return inTenant(async (client) => {
     const mail = await resolveMailModuleIds(client);
@@ -89,7 +85,6 @@ function createConnectedMailbox(tenantId = tenant): Promise<TestMailbox> {
   }, tenantId);
 }
 
-/** Reads the mailbox's rows in `tenantId`'s scope. */
 function snapshot(mailboxItemId: string, tenantId = tenant): Promise<MailboxSnapshot> {
   return inTenant(async (client) => {
     const item = await client.query<{ properties: unknown; updatedAt: string; deletedAt: string | null }>(
@@ -117,7 +112,6 @@ function snapshot(mailboxItemId: string, tenantId = tenant): Promise<MailboxSnap
   }, tenantId);
 }
 
-/** The jobs queued under the mailbox's removal key, from Graphile Worker's public `jobs` view. */
 async function removalJobs(mailboxItemId: string): Promise<string[]> {
   const { rows } = await admin.query<{ task_identifier: string }>(
     "SELECT task_identifier FROM graphile_worker.jobs WHERE key = $1",
@@ -126,15 +120,15 @@ async function removalJobs(mailboxItemId: string): Promise<string[]> {
   return rows.map((row) => row.task_identifier);
 }
 
-/** `DELETE /api/items/:id` as the generic service makes it: the choke point's trash, with the caller's writer. */
+/**
+ * `DELETE /api/items/:id` as the generic service makes it: the choke point's trash, with the caller's
+ * writer.
+ */
 function genericDelete(databaseId: string, itemId: string, writer: WriterIdentity, tenantId = tenant) {
   return runInTenant(tenantId, () => chokePoint.softDeleteItem(databaseId, itemId, userId, writer));
 }
 
-/**
- * The approval projection of an agent run's `item.delete`, as the approval preflight and the executor
- * of an approved request compute it, in `tenantId`'s scope.
- */
+/** The approval projection of an agent run's `item.delete`, as the preflight and the executor compute it. */
 function deleteProjection(itemId: string, tenantId = tenant) {
   return inTenant(
     (client) => computeDestructiveResourceProjection(client, { operation: "item.delete", input: { itemId } }),
@@ -142,7 +136,6 @@ function deleteProjection(itemId: string, tenantId = tenant) {
   );
 }
 
-/** The rejection of `promise`, failing when it resolves. */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   try {
     await promise;
@@ -152,7 +145,6 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   throw new Error("expected a rejection");
 }
 
-/** The item invalidations emitted while `run` runs, for `itemId`. */
 async function invalidationsOf(itemId: string, run: () => Promise<unknown>): Promise<string[]> {
   const events: InvalidationEvent[] = [];
   setInvalidationHook((event) => events.push(event));
@@ -305,7 +297,7 @@ describe("the Mailboxes item delete hook (gh-2031)", () => {
 
   it("lets DELETE /api/mail/mailboxes/:id remove the mailbox, which trashes it as the system writer", async () => {
     const mailbox = await createConnectedMailbox();
-    // The empty custom-route container: this test is about the removal's trash, not its cleanup (issue gh-2030).
+    // The empty custom-route container: this test is about the removal's trash, not its cleanup.
     const handler = createMailboxRemovalRouteHandler(runtime, {});
 
     let answer: unknown;

@@ -25,7 +25,6 @@ function vevent(...lines: string[]): string {
   return ["BEGIN:VEVENT", ...lines, "END:VEVENT"].join("\r\n");
 }
 
-/** The events of a parse that must have succeeded. */
 function eventsOf(result: ICalendarParseResult): ICalendarEvent[] {
   if (!result.ok) throw new Error(`Parse was rejected as ${result.reason}`);
   return result.events;

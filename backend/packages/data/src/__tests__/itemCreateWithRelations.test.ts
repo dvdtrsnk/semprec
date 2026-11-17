@@ -11,9 +11,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 /**
- * What the create hooks were given for each item inserted into `databaseId`: the initial relations and the
- * number of edges the item had at that point. The hook stays registered for the whole file and records
- * nothing for any other database.
+ * What the create hooks were given for each item inserted into `databaseId`: the initial relations and
+ * the item's edge count at that point. Records nothing for any other database.
  */
 const watched: {
   databaseId: string | null;

@@ -7,23 +7,16 @@ import { extractBearerToken, PayloadTooLargeError, readJsonBody, sendJson } from
 import { logger } from "./logger.js";
 
 export interface SetupHandlerOptions {
-  /**
-   * The deployment's one-time bootstrap secret (#233). Explicit parameter, not read from
-   * `process.env` here, so the caller (`serve.ts`) decides where it comes from.
-   */
+  /** Passed in, not read from `process.env`, so `serve.ts` decides where it comes from. */
   setupToken: string;
 }
 
 const MAX_BODY_BYTES = 64 * 1024;
 
 /**
- * Handles `POST /api/setup` (token via `Authorization: Bearer <token>`) for issue #233 — the
- * only way to create an account in this deployment. Unauthenticated by design (there is no user
- * yet to authenticate as); its safety comes entirely from `bootstrapFirstAccount` refusing to run
- * once any user exists or the bearer token doesn't match `SETUP_TOKEN`, both of which it reports
- * as a plain 404 rather than a 401/403 so the route never confirms or denies "setup is still
- * open" to an unauthenticated caller. #234 builds the web wizard that drives this API; #143 lists
- * it among the documented public route exceptions.
+ * The only way to create the first account. Unauthenticated by design; `bootstrapFirstAccount`
+ * refuses once any user exists or the bearer token does not match `SETUP_TOKEN`, both answered as a
+ * plain 404 so the route never confirms whether setup is still open.
  */
 export function createSetupRequestListener(pool: Pool, options: SetupHandlerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -42,7 +35,8 @@ export function createSetupRequestListener(pool: Pool, options: SetupHandlerOpti
         if (typeof body.password !== "string" || body.password.length === 0) {
           throw new ValidationError("'password' must be a non-empty string");
         }
-        // Validated before any account work, so an invalid name never reaches the bootstrap decision.
+        // Validated before any account work, so an invalid name never reaches the bootstrap
+        // decision.
         const displayName = normalizeDisplayName(body.displayName);
 
         const { email, password } = body;
@@ -74,9 +68,8 @@ export function createSetupRequestListener(pool: Pool, options: SetupHandlerOpti
   }
 
   /**
-   * Same rationale as `authHandler.ts`'s `handleRequestSafely`: keeping the boundary synchronous
-   * confines a rejection that escapes the try/catch above to a 500 for that one request instead
-   * of an unhandled rejection that takes the whole process down.
+   * A synchronous boundary confines an escaped rejection to a 500 for this request instead of an
+   * unhandled rejection ending the process.
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {

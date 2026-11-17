@@ -24,7 +24,6 @@ const errorBody = z.object({
   error: z.object({ code: z.string(), details: z.record(z.string(), z.unknown()).optional() }),
 });
 
-/** A `proposed` Processing proposals card of `tenantId` whose assistant envelope creates a task named `name`. */
 async function createCard(tenantId: string, name: string): Promise<string> {
   return runInTenant(tenantId, () =>
     withTransaction(harness.runtime, async (client) => {
@@ -59,7 +58,7 @@ async function send(
   return { status: response.status, text: await response.text() };
 }
 
-/** The part of a card body that its row holds: the answer of a write and a later read differ in the envelope's `computed` fields only. */
+/** A write's answer and a later read differ in the envelope's `computed` fields only. */
 const rowOf = (text: string): unknown => {
   const { id, updatedAt, properties } = z
     .object({ id: z.string(), updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
@@ -73,7 +72,6 @@ const readCard = async (id: string): Promise<string> => {
   return answer.text;
 };
 
-/** Types a manual title over the card's assistant title through the values route. */
 async function editTitle(id: string, name: string): Promise<void> {
   const edited = await send(harness.headersA, "PATCH", `/api/proposals/${id}/values`, { set: { primary: { name } } });
   expect(edited.status, edited.text).toBe(200);
@@ -83,7 +81,7 @@ describe("POST /api/proposals/:id/reset-overrides over HTTP (issue #1912)", () =
   beforeAll(() => harness.start());
   beforeEach(async () => {
     await harness.reset();
-    // One tenant after the other: concurrent seeding of two tenants deadlocks on the shared partition catalog.
+    // Sequential: concurrent seeding of two tenants deadlocks on the shared partition catalog.
     for (const tenantId of [harness.tenantA, harness.tenantB]) {
       await runInTenant(tenantId, () => seedSystem(harness.runtime));
     }

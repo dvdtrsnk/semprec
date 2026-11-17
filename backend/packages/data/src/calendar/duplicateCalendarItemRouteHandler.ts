@@ -5,10 +5,7 @@ import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 import { duplicateCalendarItem } from "./duplicateCalendarItem.js";
 
-/**
- * Duck-typed the same way `eventParticipantsRouteHandlers.ts` is: matches `semprec-api`'s
- * `AdapterRequestContext` structurally, with no dependency on that service's HTTP types.
- */
+/** Matches `semprec-api`'s `AdapterRequestContext` structurally, without depending on its HTTP types. */
 interface DuplicateCalendarItemRequestContext {
   req: { headers: Record<string, string | string[] | undefined> };
   params: Record<string, string>;
@@ -18,7 +15,7 @@ interface DuplicateCalendarItemRequestContext {
 
 const itemIdSchema = z.uuid();
 
-/** The longest `Idempotency-Key` the route takes; a longer one is refused instead of stored. */
+/** A longer key is refused instead of stored. */
 const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 
 const bodySchema = z
@@ -30,7 +27,6 @@ const bodySchema = z
   })
   .strict();
 
-/** The `Idempotency-Key` header, or `undefined` when the request has none or an empty one. */
 function readIdempotencyKey(headers: DuplicateCalendarItemRequestContext["req"]["headers"]): string | undefined {
   const value = headers["idempotency-key"];
   if (value === undefined || value === "") return undefined;
@@ -46,16 +42,9 @@ function readIdempotencyKey(headers: DuplicateCalendarItemRequestContext["req"][
 }
 
 /**
- * `POST /api/calendar/items/:id/duplicate` (issue gh-1796): copies an Event or a Task to a new date and answers 201
- * with the item envelope of the copy. The body is `{ date, timeFrom?, timeTo?, endDate? }`, each value a string; the
- * copy's date and times are judged by the write rules of its database (a `timeTo` of `24:15` is `validation_failed`
- * on `timeTo` and nothing is stored). An optional `Idempotency-Key` header makes a repeated request answer 201 with
- * the copy the first one created and copy nothing again. `duplicateCalendarItem` describes the copy and the
- * transaction it runs in.
- *
- * An `id` that is not a UUID, a body that is not an object of that shape and an `Idempotency-Key` of more than one
- * header or more than 255 characters are `400 validation_failed` on the field, before the transaction starts. An
- * unknown id, another tenant's item, a trashed item and an item that is neither an Event nor a Task answer the same 404.
+ * `POST /api/calendar/items/:id/duplicate` answers 201 with the copy's item envelope. A repeated
+ * `Idempotency-Key` answers with the first request's copy. Shape errors (non-UUID id, bad body, a repeated or
+ * over-long key) are 400 before the transaction; any not-found case answers the same 404.
  */
 export function createDuplicateCalendarItemRouteHandler(pool: Pool) {
   return async (ctx: DuplicateCalendarItemRequestContext): Promise<{ status: number; item: ItemRow }> => {

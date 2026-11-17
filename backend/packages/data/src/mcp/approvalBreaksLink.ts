@@ -1,13 +1,9 @@
-// Describes the value links an approval-gated write would end (issue #1758): the `breaksLinks` and
-// `endsInheritance` lists of the request view and the `approval.breaksLink` description, read in the
-// same transaction as the request insert. The description names the write that really runs (setting
-// one property of one item to a value, or for a relation property writing that relation) and the
-// link that ends with it; it is never a generic "change the item".
+// Describes the value links an approval-gated write would end, read in the request insert's transaction. The
+// description names the write that actually runs and the link it ends, never a generic "change the item".
 //
-// Template and params (the catalogs are `seed/i18n/{cs,en}.json` and `notifications/i18n/{cs,en}.json`):
+// Template (catalogs `seed/i18n/{cs,en}.json` and `notifications/i18n/{cs,en}.json`):
 //   approval.breaksLink   {itemName, databaseKey, propertyName, sourceItemName, sourceDatabaseKey, newValueName}
 // The params describe the first link; `breaksLinks` lists every link, one entry per link and source.
-// Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import type { DestructiveOperationCheck } from "../chokePoint/destructiveProjection.js";
@@ -18,7 +14,6 @@ import type { BreakingLink, BreakingValueLinks } from "../chokePoint/valueLinkAp
 import { listOnValueLinksFollowing } from "../chokePoint/valueLinksStore.js";
 import type { ApprovalDescription, BreaksLinkEntry, EndsInheritanceEntry } from "./approvalRequestsStore.js";
 
-/** Longest value name a description carries, in characters. */
 const VALUE_NAME_MAX_LENGTH = 200;
 
 type ItemRow = Awaited<ReturnType<typeof itemsStore.getItemsByIds>>[number];
@@ -29,7 +24,7 @@ export interface BreaksLinkApproval {
   endsInheritance: EndsInheritanceEntry[];
 }
 
-/** The operations whose request is a `breaksLink` request; `relation.delete` keeps its own description and risk class. */
+/** `relation.delete` keeps its own description and risk class. */
 export function isLinkDeferralOperation(operation: DestructiveOperationCheck["operation"]): boolean {
   return (
     operation === "item.patch" ||
@@ -61,7 +56,7 @@ async function databaseKeyOf(client: PoolClient, item: ItemRow | undefined): Pro
   return item ? ((await databasesStore.getDatabase(client, item.databaseId))?.key ?? null) : null;
 }
 
-/** The name of the value the write sets on `link`'s property; `null` where the write sets none. */
+/** `null` when the write sets none. */
 async function newValueNameOf(
   client: PoolClient,
   check: DestructiveOperationCheck,
@@ -96,7 +91,7 @@ async function newValueNameOf(
   }
 }
 
-/** The item whose property the write is aimed at; the first description is about its link. */
+/** The first description is about this item's link. */
 function primaryItemId(check: DestructiveOperationCheck): string | null {
   switch (check.operation) {
     case "item.patch":
@@ -111,10 +106,7 @@ function primaryItemId(check: DestructiveOperationCheck): string | null {
   }
 }
 
-/**
- * The lists and, for the operations in `isLinkDeferralOperation`, the description of a request that ends
- * `valueLinks`. Link entries come in the order of the links, the primary item's first.
- */
+/** Entries follow the order of the links, the primary item's first. */
 export async function describeBreakingLinks(
   client: PoolClient,
   check: DestructiveOperationCheck,

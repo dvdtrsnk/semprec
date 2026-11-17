@@ -13,7 +13,6 @@ interface SettingsState {
   itemProperties: Record<string, unknown>;
 }
 
-/** Admin-pool reads of one tenant's provisioned settings database. */
 async function readSettingsState(tenantId: string): Promise<SettingsState> {
   const { rows } = await adminPool.query<{ id: string }>(
     `SELECT id FROM databases WHERE tenant_id = $1 AND owner_module_id = $2 AND system`,

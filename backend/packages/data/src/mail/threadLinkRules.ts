@@ -12,15 +12,10 @@ import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { lookupPersonIdByEmail } from "./personEmailIndexStore.js";
 import { mailThreadCopyCtes } from "./mailThreadListQuery.js";
 
-/** Keys of the two link rules of the Threads database (`mailModuleManifest.ts`). */
 export const THREAD_COMPANY_LINK_RULE_KEY = "threadCompanyFromSender";
 export const THREAD_PROJECT_LINK_RULE_KEY = "threadProjectFromCompany";
 
-/**
- * Domains of public mailbox providers. A sender on one of them says nothing about a company, so the company
- * rule never matches them. An address's domain is compared as a whole, so a subdomain of a listed name is not
- * a freemail domain.
- */
+/** A freemail sender says nothing about a company. Compared as a whole domain, so subdomains do not match. */
 export const FREEMAIL_DOMAINS: ReadonlySet<string> = new Set([
   "gmail.com",
   "googlemail.com",
@@ -40,15 +35,11 @@ export const FREEMAIL_DOMAINS: ReadonlySet<string> = new Set([
   "protonmail.com",
 ]);
 
-/** The statuses of a project that count as active for the project rule. */
 const ACTIVE_PROJECT_STATUSES: ReadonlySet<string> = new Set(["inProgress", "longTerm"]);
 
 const HOST_PATTERN = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
 
-/**
- * The host of a `Companies.web` value, lowercase and without a leading `www.`: the value may be a URL with a
- * scheme, a path or a port, or a bare host. `null` for a value that holds no host.
- */
+/** Lowercase, without `www.`; accepts a URL or a bare host. `null` when the value holds no host. */
 export function webHost(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const text = value.trim();
@@ -66,12 +57,10 @@ export function webHost(value: unknown): string | null {
   return HOST_PATTERN.test(host) ? host : null;
 }
 
-/** Whether a sender's `domain` belongs to the company host `host`: it is equal to it or a subdomain of it. */
 export function domainBelongsToHost(domain: string, host: string): boolean {
   return domain === host || domain.endsWith(`.${host}`);
 }
 
-/** The lowercase domain of an address, or `null` for text with no `@` or an empty domain. */
 export function addressDomain(address: string): string | null {
   const at = address.lastIndexOf("@");
   const domain =
@@ -88,26 +77,19 @@ const NO_RESOLUTION: LinkRuleResolution = { values: [], sources: [] };
 
 const idRows = z.array(z.object({ item_id: z.uuid() }));
 
-/** The Threads item's `mail_threads` id, or `null` when the item is bound to no thread. */
 export async function mailThreadIdOfItem(client: PoolClient, threadItemId: string): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>(`SELECT id FROM mail_threads WHERE item_id = $1`, [threadItemId]);
   return z.array(z.object({ id: z.uuid() })).parse(rows)[0]?.id ?? null;
 }
 
 export interface FirstInboundMessage {
-  /** The Emails item of the message. */
   itemId: string;
-  /** The lowercase address of its author, or `null` when the message has none. */
   senderAddress: string | null;
 }
 
 const firstInboundRow = z.object({ item_id: z.uuid(), address: z.string().nullable() });
 
-/**
- * The first inbound message of a thread: of its live copies, those that are none of the tenant's own mail, are in
- * no Sent folder and in no Drafts folder (the thread actions' `incoming`, `mailThreadActions.ts`), the one with
- * the earliest activity, then the lowest item id. `null` when the thread has none.
- */
+/** Inbound: not the tenant's own mail and in no Sent or Drafts folder. Earliest activity, then lowest item id. */
 export async function firstInboundMessage(client: PoolClient, threadId: string): Promise<FirstInboundMessage | null> {
   const { rows } = await client.query<Record<string, unknown>>(
     `
@@ -127,7 +109,6 @@ LIMIT 1
   return row ? { itemId: row.item_id, senderAddress: row.address === "" ? null : row.address } : null;
 }
 
-/** The live items related to `itemId` through the relation property `propertyKey` of database `databaseKey`. */
 async function relatedLiveItems(client: PoolClient, databaseKey: string, propertyKey: string, itemId: string) {
   const database = await getDatabaseByKey(client, databaseKey);
   const property = database ? await getPropertyByKey(client, database.id, propertyKey) : null;
@@ -140,7 +121,6 @@ async function relatedLiveItems(client: PoolClient, databaseKey: string, propert
   );
 }
 
-/** The companies of the tenant with a web host, as `{ id, host }`. */
 async function companiesWithHost(client: PoolClient): Promise<Array<{ id: string; host: string }>> {
   const database = await getDatabaseByKey(client, COMPANIES_MODULE_ID);
   if (!database) return [];
@@ -165,13 +145,9 @@ function onlyOne<T>(values: T[]): T | null {
 }
 
 /**
- * The company a thread inherits from its sender (the author of its first inbound message):
- * - a freemail domain, or no sender, gives none;
- * - a sender known in `person_email_index` gives the one company of that person's `People.companies` whose web
- *   host matches the sender's domain; the source is the person (`companies`);
- * - an unknown sender gives the one company of the tenant whose web host matches; the source is the sender
- *   domain (`web`).
- * No match and several matches give none.
+ * The sender's company: none for freemail or no sender. A known person gives the one company of
+ * `People.companies` whose host matches the domain; an unknown sender gives the one tenant company that
+ * matches. No match or several matches give none.
  */
 async function resolveThreadCompany(client: PoolClient, threadItemId: string): Promise<LinkRuleResolution> {
   const threadId = await mailThreadIdOfItem(client, threadItemId);
@@ -200,12 +176,7 @@ async function resolveThreadCompany(client: PoolClient, threadItemId: string): P
     : NO_RESOLUTION;
 }
 
-/**
- * The project a thread inherits from its company, whether that company was inherited or entered by the user: the
- * one project of the company's `Companies.projects` whose status is `inProgress` or `longTerm`, for a thread with
- * exactly one company. The source is the company (`projects`). No company, no active project and several
- * active projects give none.
- */
+/** The one active project of the thread's single company (inherited or user-entered); otherwise none. */
 async function resolveThreadProject(client: PoolClient, threadItemId: string): Promise<LinkRuleResolution> {
   const company = onlyOne(await relatedLiveItems(client, THREADS_MODULE_ID, "company", threadItemId));
   if (!company) return NO_RESOLUTION;
@@ -220,13 +191,11 @@ async function resolveThreadProject(client: PoolClient, threadItemId: string): P
     : NO_RESOLUTION;
 }
 
-/** The key of the database an item belongs to, `null` for a missing or trashed item. */
 async function databaseKeyOfItem(client: PoolClient, itemId: string): Promise<string | null> {
   const [item] = await getItemsByIds(client, [itemId]);
   return item ? ((await getDatabase(client, item.databaseId))?.key ?? null) : null;
 }
 
-/** Ids after `afterId` in ascending order, without duplicates, at most `limit`. */
 function pageOf(ids: string[], afterId: string | null, limit: number): string[] {
   return [...new Set(ids)]
     .filter((id) => afterId === null || id > afterId)
@@ -234,17 +203,12 @@ function pageOf(ids: string[], afterId: string | null, limit: number): string[] 
     .slice(0, limit);
 }
 
-/** The id of the relation definition of `Threads.company`, `null` when the tenant has no Threads database. */
 async function threadCompanyDefinitionId(client: PoolClient): Promise<string | null> {
   const database = await getDatabaseByKey(client, THREADS_MODULE_ID);
   const property = database ? await getPropertyByKey(client, database.id, "company") : null;
   return property ? ((await getRelationDefinitionByPropertyId(client, property.id))?.id ?? null) : null;
 }
 
-/**
- * The Threads items bound to a thread that has a message matching `condition`, after `afterId`, in id order. With
- * `withoutCompanyDefinitionId` (the definition of `Threads.company`) only threads that hold no company are listed.
- */
 async function threadItemIdsBySender(
   client: PoolClient,
   condition: "address" | "host",
@@ -276,7 +240,6 @@ async function threadItemIdsBySender(
   return idRows.parse(rows).map((row) => row.item_id);
 }
 
-/** The threads that hold `companyId` as their company: the other side of its edges on the Threads `company` relation. */
 async function threadItemIdsOfCompany(client: PoolClient, companyId: string): Promise<string[]> {
   return (await relatedLiveItems(client, THREADS_MODULE_ID, "company", companyId)).map((thread) => thread.id);
 }
@@ -292,12 +255,8 @@ async function personAddresses(client: PoolClient, personId: string): Promise<st
 }
 
 /**
- * The company rule's resolver. A change of a person's `companies` affects the threads that person wrote and the
- * threads whose company link has the person as its source. A change of a company's `web` (or the creation or
- * restore of a company) affects the threads that hold the company, the threads written from a domain of the
- * company's current host and the threads that hold no company and were written from a domain of another
- * company's host: the old host of the changed company is not known here, and a thread that matched it together
- * with that other company has no company, so it is evaluated again now that the other company may be alone.
+ * A company's old host is not known here, so a `web` change also re-evaluates threads without a company
+ * written from another company's host: they may have matched both companies and now match one.
  */
 export const threadCompanyLinkResolver: LinkRuleResolver = {
   inputs: {
@@ -339,11 +298,6 @@ export const threadCompanyLinkResolver: LinkRuleResolver = {
   },
 };
 
-/**
- * The project rule's resolver. A change of a thread's `company` affects that thread; a change of a company's
- * `projects` affects the threads that hold the company; a change of a project's `status` affects the threads of
- * the companies the project belongs to.
- */
 export const threadProjectLinkResolver: LinkRuleResolver = {
   inputs: {
     edges: [
@@ -368,12 +322,7 @@ export const threadProjectLinkResolver: LinkRuleResolver = {
   },
 };
 
-/**
- * After a new message was ingested and put in its folder: when it is now the first inbound message of its thread,
- * queues the evaluation of both Threads link rules for the thread's item through the propagation entry point, at
- * the budget of a root write, and answers the thread's Threads item id. A message that is not the first inbound one,
- * a thread without an item and an outgoing message queue nothing and answer `null`.
- */
+/** Queues both Threads link rules only when the new message is now its thread's first inbound one. */
 export async function enqueueThreadLinkRulesForFirstInbound(
   client: PoolClient,
   messageItemId: string,

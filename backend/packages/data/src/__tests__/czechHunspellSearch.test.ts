@@ -32,23 +32,20 @@ function testDatabaseUrl(): string {
 }
 
 /**
- * A database of its own per test: the shared test database was migrated by globalSetup
- * without the Czech assets, and activation rewrites the `czech` configuration every other
- * search test reads. Integration test files run serially (fileParallelism: false), so the
- * assets placed in the instance-wide tsearch_data directory below are visible to this file only.
+ * A database of its own per test: activation rewrites the `czech` configuration that other search tests
+ * read. Integration files run serially, so the assets placed in the instance-wide tsearch_data
+ * directory are visible to this file only.
  */
 async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<void> {
   const name = `czech_fts_${randomUUID().replaceAll("-", "")}`;
-  // createPool (not `new Pool`) so a connection this test's own DROP DATABASE ... FORCE
-  // races against a client mid-teardown gets pool.ts's 'error' handler, not an unhandled
-  // EventEmitter exception that crashes the run.
+  // createPool (not `new Pool`) so a connection killed by DROP DATABASE ... FORCE hits pool.ts's 'error'
+  // handler instead of crashing the run.
   const admin = createPool(testDatabaseUrl());
   // UTF8 like production: the embedded instance's template1 is SQL_ASCII, which the text
   // search parser cannot split Czech words in.
   try {
     await admin.query(`CREATE DATABASE "${name}" ENCODING 'UTF8' TEMPLATE template0`);
   } catch (createError) {
-    // admin stays open on success for the cleanup's DROP DATABASE; here nothing will use it again.
     try {
       await admin.end();
     } catch {
@@ -65,8 +62,7 @@ async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<voi
   } catch (error) {
     failure = { error };
   }
-  // Every step runs even when an earlier one rejects, so the database is dropped and both
-  // pools are released; fn's own error wins over cleanup errors, otherwise the first cleanup error.
+  // Every step runs even when an earlier one rejects; fn's own error wins over cleanup errors.
   const cleanup = [() => pool.end(), () => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`), () => admin.end()];
   for (const step of cleanup) {
     try {
@@ -104,7 +100,6 @@ async function removeAssets(pool: Pool): Promise<void> {
   }
 }
 
-/** Calls the schema's activation function, which reports whether the Czech dictionary is in use. */
 async function activateCzechHunspellSearch(pool: Pool): Promise<boolean> {
   const { rows } = await pool.query<{ activated: boolean }>("SELECT activate_czech_hunspell_search() AS activated");
   if (!rows[0]) throw new Error("activate_czech_hunspell_search returned no row");
@@ -132,9 +127,8 @@ async function czechHunspellDictionaryCount(pool: Pool): Promise<number> {
   return rows[0]?.count ?? 0;
 }
 
-/** Seeds the Emails database and indexes one message through the production write path. */
 async function indexEmail(pool: Pool, text: string): Promise<{ emailsId: string; itemId: string }> {
-  // The scratch database's own tenant zero: strict `app_tenant_default()` (#1067) needs a scope.
+  // The scratch database's own tenant zero: strict `app_tenant_default()` needs a scope.
   const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
   const tenantId = tenants[0]?.id;
   if (!tenantId) throw new Error("The scratch database has no tenant");
@@ -179,7 +173,6 @@ describe("Czech Hunspell full-text search (issue #207)", () => {
           await withTransaction(pool, (client) => indexItem(client, invoice.id, { pageText: "Retained page text" }));
           const search = async (text: string): Promise<string[]> => {
             const query = buildItemSearchQuery(text, 2);
-            // The fragment contains only validated parameter positions; input remains bound.
             const { rows } = await withTransaction(pool, (client) =>
               client.query<{ item_id: string }>(
                 `SELECT item_id FROM item_search_index WHERE database_id = $1 AND search_vector @@ ${query.sql} ORDER BY item_id`,

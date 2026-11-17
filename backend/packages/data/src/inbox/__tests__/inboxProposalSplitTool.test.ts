@@ -22,7 +22,6 @@ import { createInboxItemWithClient } from "../inboxStore.js";
 import { createSemprecTickAction } from "../inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../proposalActions.js";
 
-/** The fields of a refusal the split tool answers for a failed check of the write. */
 const refusalSchema = z.object({
   status: z.number(),
   error: z.string(),
@@ -59,7 +58,6 @@ interface ThreadFixture {
   cardId: string;
   threadId: string;
   runId: string;
-  /** The assistant message the run's turn is answering, `running` and stamped with the run. */
   messageId: string;
   tasksId: string;
   eventsId: string;
@@ -107,10 +105,7 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
     if (errors.length) throw new AggregateError(errors, "Split tool fixture cleanup failed", { cause: errors[0] });
   });
 
-  /**
-   * An Inbox item whose card the tick created and the user revised into the Tasks proposal `Buy milk and renew the
-   * passport`, and an item thread with a run whose turn is `running`, as the queued Semp turn leaves it.
-   */
+  /** An Inbox item revised into the Tasks proposal `Buy milk and renew the passport`, with a run whose turn is `running`. */
   async function createCardThread(tenant: string): Promise<ThreadFixture> {
     return runInTenant(tenant, async () => {
       const dbs = await withTransaction(runtime, async (client) => ({
@@ -175,7 +170,6 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
         expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
         await startSempMessageTurn(client, turn.assistantMessageId, run.id, "1");
       });
-      // The fixture's own card writes are not what a test observes.
       events.length = 0;
       return {
         tenant,
@@ -192,7 +186,6 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
     });
   }
 
-  /** The stored card and its version, read through the runtime role inside the tenant. */
   async function readCard(fixture: ThreadFixture, cardId = fixture.cardId) {
     return runInTenant(fixture.tenant, async () => {
       const row = await runtime.query<{ properties: unknown; updated_at: Date }>(
@@ -215,7 +208,6 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
     });
   }
 
-  /** What a refused or failed split must leave behind: the card, every card of the database, the edges and no target item. */
   async function snapshot(fixture: ThreadFixture) {
     return runInTenant(fixture.tenant, async () => {
       const cards = await runtime.query<{ id: string; properties: unknown; updated_at: Date }>(
@@ -235,7 +227,6 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
   const tool = () => createInboxProposalSplitTool(runtime);
   const callRaw = (fixture: ThreadFixture, args: unknown, runId = fixture.runId) =>
     runInTenant(fixture.tenant, () => tool()(runId, args));
-  /** The call as the model makes it: `ifVersion` is the card's current version, unless the test names one. */
   const call = async (fixture: ThreadFixture, args: Record<string, unknown>, runId = fixture.runId) => {
     if ("ifVersion" in args) return callRaw(fixture, args, runId);
     const version = await readCard(fixture, String(args.proposalId)).then(
@@ -438,7 +429,6 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
   it("refuses a split composed from a card the user changed since, and accepts it again from the version the answer carries", async () => {
     const fixture = await createCardThread(owner);
     const seen = (await readCard(fixture)).updatedAt;
-    // The card moves on after the model read it, as a user edit does.
     await runInTenant(owner, () =>
       withTransaction(runtime, (client) =>
         reviseProposalWithClient(client, { processingProposalsDatabaseId: fixture.proposalsId }, fixture.cardId, {
@@ -564,7 +554,6 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
     return false;
   }
 
-  /** Holds the source open in a transaction, optionally removing the card's source edge in it, until `release` runs. */
   function holdSource(fixture: ThreadFixture, removeEdge: boolean) {
     let release: () => void = () => {};
     const released = new Promise<void>((resolve) => {
@@ -652,7 +641,6 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
   });
 });
 
-/** Two valid Tasks cards for the thread's source. */
 function taskCards(fixture: ThreadFixture) {
   return [
     { entityKind: "database", target: fixture.tasksId, properties: { name: "Buy milk" } },
@@ -660,7 +648,6 @@ function taskCards(fixture: ThreadFixture) {
   ];
 }
 
-/** `cards` with the name of the second one replaced. */
 function withName(cards: ReturnType<typeof taskCards>, name: string) {
   return [cards[0], { ...cards[1], properties: { name } }];
 }

@@ -7,51 +7,22 @@ export interface ImapIdleFolderTarget {
   path: string;
 }
 
-/**
- * One bounded IMAP connection dedicated to a single folder, already IDLE-ing. What a real
- * transport (imapIdleClient.ts's imapflow-backed one, or a fake in tests) must provide —
- * `connect` on `ImapIdleTransport` below returns this once the connection is up and IDLE has
- * started; everything from then on is either a signal (delivered through the `onSignal`
- * callback `connect` was given, never through this interface) or the connection ending.
- */
+/** One connection dedicated to a single folder, already IDLE-ing; signals arrive via `onSignal`. */
 export interface ImapIdleConnection {
-  /**
-   * Resolves once this connection has ended, for any reason (server closed it, a socket or
-   * protocol error) — with the error if there was one, `undefined` otherwise. Never rejects:
-   * the caller races this against its own hard-cycle-deadline and stop() timers with
-   * `Promise.race`, and a rejection here would need its own try/catch just for this half of
-   * the race for no benefit, since "the connection ended" is exactly the event being waited
-   * for either way.
-   */
+  /** Resolves with the error (or `undefined`) when the connection ends; never rejects, as it is raced. */
   waitForEnd(): Promise<unknown>;
-  /** Idempotent — safe to call after the connection has already ended on its own. */
+  /** Idempotent. */
   close(): Promise<void>;
 }
 
-/**
- * What a real IMAP-IDLE transport must provide. Deliberately narrower than `ImapMailClient`
- * (imapReconcile.ts): this module never fetches, ingests, or mutates a message — the only
- * thing a signal observed while idling is allowed to do is ask the existing idempotent
- * `enqueueMailAccountSync` job path (mailSyncJob.ts) to reconcile, per issue #196's explicit
- * "No direct Email mutation in callback". `onSignal` is wired to that call inside this file,
- * not exposed for a transport or caller to override.
- */
+/** IDLE never touches messages; a signal only enqueues the idempotent sync job (wired in this file). */
 export interface ImapIdleTransport {
   /**
-   * Discovers the folder paths this account keeps under IDLE — Inbox and an All-Mail-
-   * equivalent folder (issue #196's Task) when the server has one, Inbox alone otherwise
-   * (plain IMAP/iCloud has no such folder). Discovery retries until successful or stopped; the
-   * resolved paths are held for the lifetime of that lifecycle and reused across every hard-cycle recycle
-   * and reconnect. A folder renamed or added while the lifecycle is running is only picked up
-   * the next time the lifecycle is started.
+   * Inbox plus an All-Mail folder when present. Resolved once per `start()` (retried until it
+   * succeeds or stops) and reused across recycles; folder changes are picked up on restart.
    */
   resolveFolders(mailboxItemId: string, credential: string): Promise<ImapIdleFolderTarget[]>;
-  /**
-   * Opens one bounded connection dedicated to `folderPath` and starts IDLE, invoking
-   * `onSignal` for every EXISTS/EXPUNGE/flags notification observed while idling. Rejects if
-   * the connection itself could not be established — the caller applies bounded reconnect
-   * backoff in that case.
-   */
+  /** Calls `onSignal` on EXISTS/EXPUNGE/flags; rejects if the connection cannot be established. */
   connect(
     mailboxItemId: string,
     credential: string,
@@ -60,17 +31,10 @@ export interface ImapIdleTransport {
   ): Promise<ImapIdleConnection>;
 }
 
-/**
- * A live connection is deliberately recycled on this cadence regardless of health — defends
- * against slow state drift a years-long-lived socket could otherwise accumulate (a stuck
- * server-side session, a leaked listener) that a purely error-driven reconnect would never
- * catch. Independent of `maxIdleTime`'s much shorter IDLE-renewal cadence (imapIdleClient.ts),
- * which keeps the same connection alive across many IDLE rounds; this instead tears the whole
- * connection down and opens a fresh one.
- */
+/** Recycle healthy connections anyway, against slow drift (stuck sessions, leaked listeners) errors never surface. */
 const DEFAULT_HARD_CYCLE_DEADLINE_MS = 6 * 60 * 60 * 1000;
 
-/** Bounded reconnect: capped exponential backoff, not a tight retry loop and not a permanent give-up — an account stays active until deactivated, so this keeps trying for as long as that's true. */
+/** Capped exponential backoff; retries for as long as the account stays active. */
 const DEFAULT_RECONNECT_BASE_DELAY_MS = 5_000;
 const DEFAULT_RECONNECT_MAX_DELAY_MS = 5 * 60 * 1000;
 
@@ -79,9 +43,9 @@ export function reconnectBackoffDelayMs(attempt: number, baseMs: number, maxMs: 
 }
 
 export interface CreateBoundedImapIdleLifecycleFactoryOptions {
-  /** Decrypted per-account IMAP credential, fetched fresh on every `start()` — never cached across a stop/restart. */
+  /** Fetched fresh on every `start()`, never cached across restarts. */
   getCredential: (mailboxItemId: string) => Promise<string>;
-  /** Per-account simultaneous-IMAP-connection ceiling (`imapConnectionLimiter.ts`'s provider table) — shared with `mailSyncJob.ts`'s reconcile passes so IDLE connections and reconcile connections both count against the one budget a provider actually enforces (issue #196: "under account connection budget about 15"). */
+  /** Shared with reconcile passes: IDLE and reconcile connections count against one provider budget. */
   getConnectionLimit: (mailboxItemId: string) => Promise<number> | number;
   connectionLimiter?: ImapConnectionLimiter;
   hardCycleDeadlineMs?: number;
@@ -91,12 +55,8 @@ export interface CreateBoundedImapIdleLifecycleFactoryOptions {
 }
 
 /**
- * Builds the bounded-IMAP-IDLE `MailAccountLifecycle` for one account (issue #196) — the piece
- * `mailLiveSyncRoot.ts`'s doc comment anticipates a real transport supplying for the `"imap"`
- * sync mode. `start()` hosts one long-lived, self-healing loop per folder `transport`
- * resolves; `stop()` tears every one of them down and waits for them to actually finish before
- * returning, so a caller can rely on no further `enqueueMailAccountSync` call happening after
- * `stop()` resolves.
+ * `start()` runs one self-healing loop per resolved folder. `stop()` waits for all of them, so no
+ * `enqueueMailAccountSync` call happens after it resolves.
  */
 export function createBoundedImapIdleLifecycleFactory(
   pool: Pool,
@@ -111,9 +71,6 @@ export function createBoundedImapIdleLifecycleFactory(
   return (account: MailLiveSyncAccount): MailAccountLifecycle => {
     let stopped = false;
     let stopResolve: (value: "stop") => void = () => {};
-    // A single promise shared by every in-flight wait (rather than one per call) so `stop()`
-    // only ever needs to resolve one thing, regardless of how many folder loops or reconnect
-    // backoffs happen to be waiting at that moment.
     let stopPromise = new Promise<"stop">((resolve) => {
       stopResolve = resolve;
     });
@@ -154,22 +111,13 @@ export function createBoundedImapIdleLifecycleFactory(
       return delayOrStop(reconnectBackoffDelayMs(attempt, reconnectBaseDelayMs, reconnectMaxDelayMs));
     }
 
-    /**
-     * One connect-idle-close round for one folder, run entirely inside the connection
-     * limiter's slot (`limiter.run` below) — not just the `connect()` call — so a held-open
-     * IDLE session counts against the account's connection budget for as long as it is
-     * actually open, the same budget `mailSyncJob.ts`'s reconcile passes already share
-     * (issue #196: "under account connection budget about 15").
-     */
+    /** Runs wholly inside a limiter slot, so an open IDLE session counts against the connection budget. */
     async function runOneIdleRound(
       folderPath: string,
       credential: string,
     ): Promise<{ kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown }> {
       const connection = await transport.connect(account.mailboxItemId, credential, folderPath, () => {
-        // The only effect a signal is ever allowed to have (issue #196: "No direct Email
-        // mutation in callback") — the existing idempotent, per-account-deduplicated reconcile
-        // path, same one the periodic sweep and the account-discovery restart already use, so
-        // a signal can never race ahead of it into a second, parallel ingestion path.
+        // A signal's only effect: the deduplicated reconcile job, never a parallel ingestion path.
         if (stopped) return;
         const task = enqueueMailAccountSync(pool, account.mailboxItemId)
           .catch((err: unknown) => {
@@ -263,7 +211,7 @@ export function createBoundedImapIdleLifecycleFactory(
           report(folderPath, result.err);
           if (await backoffOrStop(1)) return;
         }
-        // A clean end with no error (the server closed the connection normally) reconnects immediately, same as a recycle.
+        // A clean server close reconnects immediately.
       }
     }
 

@@ -10,45 +10,33 @@ import { assertDescriptionShape, type ApprovalDescription } from "../mcp/approva
 import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { buildSempThreadMessageSearch } from "./sempMessageSearch.js";
 
-/** The stored values of `semp_threads.kind`. */
 export const SEMP_THREAD_KINDS = ["chat", "item", "tick"] as const;
 export type SempThreadKind = (typeof SEMP_THREAD_KINDS)[number];
 
-/** Catalog key of the item thread title template (`seed/i18n`); `{itemName}` is the Inbox item's text. */
+/** Item thread title template key; `{itemName}` is the Inbox item's text. */
 const ITEM_TITLE_KEY = "semp.thread.itemTitle";
 
-/** Visible length of a text preview, in Unicode code points. */
 const PREVIEW_CODE_POINTS = 140;
 
-/**
- * How much of the last message the list query reads to build a preview, in code points. More than
- * the preview shows, because Markdown syntax is removed before the cut.
- */
+/** Code points read for a preview: more than shown, because Markdown syntax is removed before the cut. */
 const PREVIEW_SOURCE_CODE_POINTS = 1000;
 
-/** Position of the first bind parameter after the nine fixed ones of the list query. */
+/** First bind parameter after the nine fixed ones. */
 const FIRST_SEARCH_PARAMETER = 10;
 
-/** What a title is resolved from: the stored kind and title plus the two values read live. */
 export interface SempThreadTitleParts {
   kind: SempThreadKind;
-  /** The stored `semp_threads.title`; only a chat thread has one. */
   title: string | null;
-  /** The current `project_heartbeats.name` of a tick thread's heartbeat. */
   heartbeatName: string | null;
-  /** The current `text` of an item thread's Inbox item; null when the item is in the trash or gone. */
+  /** Null when the item is trashed or gone. */
   subjectText: string | null;
 }
 
 /**
- * The title rule of Semp threads for `locale`, as the thread list applies it. It is one function so
- * that another read that names a thread can resolve the same title; the approval source of issue
- * #1766 calls it. A chat thread has its stored title (null until one is generated), a
- * tick thread its heartbeat's current name, and an item thread the `semp.thread.itemTitle` template
- * filled with the Inbox item's current text. An item thread whose Inbox item has no text, or is
- * gone, has no title. Nothing is stored: a caller passes the values it read in the same request.
- * The text is user content, so it is inserted through a replacer function and a `$` in it is not
- * read as a replacement pattern.
+ * The Semp thread title rule for `locale`, shared by every read that names a thread. Chat: the stored title
+ * (null until generated). Tick: the heartbeat's current name. Item: the `semp.thread.itemTitle` template with the
+ * Inbox item's current text, or no title without one. Nothing is stored. The text is user content, so it is
+ * inserted through a replacer function and `$` is not a replacement pattern.
  */
 export async function loadSempThreadTitleResolver(
   locale: string,
@@ -64,20 +52,15 @@ export async function loadSempThreadTitleResolver(
   };
 }
 
-/** The Inbox subject of an item thread. */
 export interface SempThreadSubject {
   inboxItemId: string;
-  /** The proposal card named when the thread was created; null when none was named. */
+  /** Null when no proposal card was named at creation. */
   proposalId: string | null;
   /** False when the Inbox item is in the trash or gone. */
   exists: boolean;
 }
 
-/**
- * The `subject` object of an item thread: the two ids the thread stores and `exists`, which the
- * caller reads live in the same request. Exported so that the thread detail can return the same
- * shape; the detail response does not call it yet.
- */
+/** `exists` is read live by the caller in the same request. */
 export function mapSempThreadSubject(
   stored: { inboxItemId: string; proposalId: string | null },
   exists: boolean,
@@ -85,7 +68,7 @@ export function mapSempThreadSubject(
   return { inboxItemId: stored.inboxItemId, proposalId: stored.proposalId, exists };
 }
 
-/** Where a page of the list continues: the last row's `last_activity_at` with microseconds, and its id. */
+/** The last row's `last_activity_at` with microseconds, and its id. */
 export interface SempThreadListCursor {
   lastActivityAt: string;
   id: string;
@@ -98,11 +81,7 @@ function encodeCursor(cursor: SempThreadListCursor): string {
   return Buffer.from(`${cursor.lastActivityAt}|${cursor.id}`).toString("base64url");
 }
 
-/**
- * Decodes a `nextCursor` of `listSempThreads`. A value of another shape is a `ValidationError` on
- * `cursor`, and so is an instant that is no calendar time or lies in year zero: Postgres would
- * refuse both as a `timestamptz`.
- */
+/** Malformed cursors and instants Postgres refuses as `timestamptz` (invalid, year zero) are a `ValidationError`. */
 export function parseSempThreadListCursor(value: string): SempThreadListCursor {
   const match = /^[A-Za-z0-9_-]{1,128}$/.test(value)
     ? CURSOR_SHAPE.exec(Buffer.from(value, "base64url").toString("utf8"))
@@ -121,24 +100,20 @@ export function parseSempThreadListCursor(value: string): SempThreadListCursor {
   return { lastActivityAt, id };
 }
 
-/** A system message as a preview: its i18n key and parameters instead of text. */
 export interface SempThreadSystemPreview {
   key: string;
   params: unknown;
 }
 
-/** What can raise an approval request, as the thread list reports it (`SempThreadPendingApproval.sourceKind`). */
 const PENDING_APPROVAL_SOURCE_KINDS = ["genericOperation", "mcpInvoke", "moduleTool"] as const;
 
-/** The newest pending approval request raised by a run of the thread. */
 export interface SempThreadPendingApproval {
-  /** The localisable description snapshotted on the request; null for a request stored without one. */
   description: ApprovalDescription | null;
-  /** What raised the request: a generic operation of this system, a call of an outside MCP tool, or a module agent tool (issue #1791). */
+  /** A generic operation, an outside MCP tool call, or a module agent tool. */
   sourceKind: (typeof PENDING_APPROVAL_SOURCE_KINDS)[number];
 }
 
-/** The heartbeat of a tick thread. `projectName` is null when the project item has no name, is in the trash or is gone. */
+/** `projectName` is null when the project item is unnamed, trashed or gone. */
 export interface SempThreadListHeartbeat {
   id: string;
   name: string;
@@ -150,7 +125,7 @@ export interface SempThreadListRow {
   id: string;
   kind: SempThreadKind;
   title: string | null;
-  /** Null when no message of the thread has text or a system key yet. */
+  /** Null when no message has text or a system key yet. */
   preview: string | SempThreadSystemPreview | null;
   lastActivityAt: string;
   hasPendingApproval: boolean;
@@ -160,21 +135,15 @@ export interface SempThreadListRow {
 }
 
 export interface ListSempThreadsInput {
-  /** The stored kinds to return. */
   kinds: readonly SempThreadKind[];
-  /** Only the thread of this Inbox item, when set. */
   subjectInboxItemId: string | null;
   /**
-   * Only threads that contain this text, without regard to case or diacritics, in the value their
-   * title is resolved from or in the first 140 code points of the stored text of the previewed
-   * message, or in which every word of it is found in the text of some non-system message (see
-   * `listSempThreads`). Null is no filter, and so is a text of which removing the diacritics leaves
-   * nothing.
+   * Case- and diacritic-insensitive text filter (see `listSempThreads`). Null, or a text that folding leaves empty,
+   * is no filter.
    */
   search: string | null;
   cursor: SempThreadListCursor | null;
   limit: number;
-  /** The caller's `users.locale`, for the item thread title template. */
   locale: string;
 }
 
@@ -200,18 +169,11 @@ interface ThreadListDbRow {
   approval_source_kind: string | null;
 }
 
-/**
- * The current `text` of the joined Inbox item `subject`, null unless it is a JSON string. A fixed
- * SQL fragment; no caller input is interpolated.
- */
+/** Null unless the Inbox item's `text` is a JSON string. */
 const SUBJECT_TEXT_SQL = `CASE WHEN jsonb_typeof(subject.properties -> 'text') = 'string'
                  THEN subject.properties ->> 'text' END`;
 
-/**
- * The preview of a thread's last message that has something to show. A system message gives its
- * key and parameters. Text is reduced to plain text and cut to 140 code points, with an ellipsis
- * when the message goes on.
- */
+/** System messages give key and params; text is reduced to plain text and cut with an ellipsis. */
 function previewOf(row: ThreadListDbRow): string | SempThreadSystemPreview | null {
   if (row.preview_system_key !== null) return { key: row.preview_system_key, params: row.preview_system_params };
   if (row.preview_text === null) return null;
@@ -233,44 +195,28 @@ function heartbeatOf(row: ThreadListDbRow, projectNames: Map<string, string | nu
 }
 
 /**
- * One page of the tenant's Semp threads, newest activity first (`last_activity_at DESC, id DESC`),
- * with `nextCursor` set while more rows follow. Runs in the caller's tenant scope; every table it
- * reads is a tenant table under row-level security. Title, heartbeat, project name and
- * `subject.exists` are read at request time and no thread row is written.
+ * One page of the tenant's Semp threads, newest activity first (`last_activity_at DESC, id DESC`). Runs in the
+ * caller's tenant scope under RLS; titles, heartbeats and `subject.exists` are read live and no row is written.
  *
- * The preview is the last message that has text or a system key, so an assistant reply that is
- * still queued or running, or that failed, does not blank the row. `hasPendingApproval` and
- * `pendingApproval` describe the newest pending approval request of a run whose `thread_id` is
- * the thread; a delegated run carries its parent's thread id.
+ * The preview is the last message with text or a system key, so a queued, running or failed reply does not
+ * blank the row. The pending approval is the newest one of a run with this `thread_id`; a delegated run carries
+ * its parent's thread id.
  *
- * `search` (issue #1737) keeps the threads that contain it in either of two values, compared as
- * substrings through `unaccent` and `ILIKE`, before the page is cut. The first is what the title is
- * resolved from: the stored title of a chat, the current heartbeat name of a tick thread, the
- * current Inbox item text of an item thread. The second is the first 140 code points of the stored
- * text of the message the preview shows; the key and parameters of a system message are not
- * searched. That text still has its Markdown syntax, which the shown preview has not: syntax and
- * link targets inside the window can match, and a word the preview shows near its end can lie
- * beyond the window and then does not.
+ * `search` matches, before the page is cut, when any of three rules does:
+ * - substring (`unaccent` + `ILIKE`) of what the title is resolved from;
+ * - substring of the first 140 code points of the previewed message's stored text. That text still has its
+ *   Markdown, so syntax can match and words the preview shows near its end may fall outside the window;
+ * - every word (as `buildItemSearchQuery` splits it) found by lemma or prefix in the search vector of some
+ *   non-system message, across one or several messages.
  *
- * Issue #1783 adds a third rule, and a thread matches when any of the three does. Every word of the
- * search text, as `buildItemSearchQuery` splits it, must be found, by its lemma or as a prefix and
- * without regard to diacritics, in the stored search vector of some non-system message of the
- * thread; the words may be in one message or in different ones. The vector covers the first
- * `SEMP_MESSAGE_SEARCH_MAX_CODE_POINTS` code points of the message, not the window of the preview
- * (`buildSempThreadMessageSearch`).
- *
- * The search text is a bound parameter and the pattern is built from it in the query: the text is
- * folded with `unaccent` first, and a backslash, `%` and `_` in the folded text are escaped after
- * that, so each matches only itself. The order matters because folding itself produces these three
- * characters, for example `%` from a fullwidth percent sign. A text of which folding leaves
- * nothing, such as a lone combining mark, is no filter, as a blank one is.
+ * The pattern is built in SQL from the bound text: folded with `unaccent` first, then `\`, `%` and `_` escaped,
+ * in that order because folding can produce them (e.g. a fullwidth percent sign).
  */
 export async function listSempThreads(
   client: PoolClient,
   input: ListSempThreadsInput,
 ): Promise<{ rows: SempThreadListRow[]; nextCursor: string | null }> {
   const inbox = await getDatabaseByModuleId(client, INBOX_MODULE_ID);
-  // The message rule is fixed SQL with bind placeholders; the words of the search text are bound.
   const messageSearch =
     input.search === null ? null : buildSempThreadMessageSearch(input.search, FIRST_SEARCH_PARAMETER);
   const { rows } = await client.query<ThreadListDbRow>(

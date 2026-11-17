@@ -85,7 +85,6 @@ function pageMarkdown(page: PageStateRead): string {
   return result;
 }
 
-/** One of the day's events in the Journal day response (issue #1721): these fields of its calendar timeline item. */
 type JournalDayEvent = Pick<
   CalendarTimelineItem,
   | "id"
@@ -102,18 +101,14 @@ type JournalDayEvent = Pick<
   | "transcript"
 >;
 
-/** One of the day's birthdays in the Journal day response (issue #2015): these fields of its calendar timeline item. */
 type JournalDayBirthday = Pick<
   CalendarBirthdayTimelineItem,
   "id" | "personId" | "personName" | "title" | "date" | "calendarId"
 >;
 
 /**
- * The events (issue #1721) and the birthdays (issue #2015) of `day` for the Journal day response, both taken from
- * one read of the calendar timeline for the range from `day` to `day`, in the timeline's order. `events` holds
- * the items of kind `event`, all-day Events included; `birthdays` holds the items of kind `birthday`, so a
- * birthday is never an event. Which of them belong to the day is the timeline's decision; any other kind, a
- * public holiday among them, is in neither list.
+ * One timeline read for `day`, in timeline order. Which items belong to the day is the timeline's decision; kinds
+ * other than `event` and `birthday` (public holidays, for example) are in neither list.
  */
 async function readJournalDayTimeline(
   client: PoolClient,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RecipeFetchError, fetchCapped, findHttpsUrl, readPage, type FetchCappedOptions } from "../recipePageFetch.js";
 
-// Issue gh-1974: the request for a recipe page and the reading of what came back.
+// The request for a recipe page and the reading of what came back.
 
 const OPTIONS: FetchCappedOptions = {
   accept: "text/html",
@@ -12,7 +12,6 @@ const OPTIONS: FetchCappedOptions = {
 
 type Fetch = Parameters<typeof fetchCapped>[0];
 
-/** A fetch that answers with `response` and records the request it saw. */
 function answering(response: Response): {
   fetch: Fetch;
   requests: Array<{ url: string; init: RequestInit | undefined }>;
@@ -30,7 +29,6 @@ function answering(response: Response): {
 const html = (body: string, headers: Record<string, string> = {}) =>
   new Response(body, { status: 200, headers: { "content-type": "text/html; charset=utf-8", ...headers } });
 
-/** A body of `text` that notes whether it was cancelled. */
 function watchedBody(text: string): { stream: ReadableStream<Uint8Array>; cancelled(): boolean } {
   let wasCancelled = false;
   const stream = new ReadableStream<Uint8Array>({
@@ -45,7 +43,6 @@ function watchedBody(text: string): { stream: ReadableStream<Uint8Array>; cancel
   return { stream, cancelled: () => wasCancelled };
 }
 
-/** The reason a request failed with, or a thrown error that is not a `RecipeFetchError`. */
 async function failureOf(promise: Promise<unknown>): Promise<string> {
   try {
     await promise;

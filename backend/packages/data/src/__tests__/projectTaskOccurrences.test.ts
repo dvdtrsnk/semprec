@@ -33,7 +33,6 @@ function project(tenantId: string, from: string, to: string, today: string): Pro
   );
 }
 
-/** One line per occurrence: date, then the stored status or `virtual:<status>`. */
 function summary(occurrences: ProjectedTaskOccurrence[]): string[] {
   return occurrences.map((o) =>
     o.virtual
@@ -89,7 +88,6 @@ describe("projectTaskOccurrences (issue #1672)", () => {
     for (const date of ["2026-10-13", "2026-10-14"]) done.push(await occurrence(tenant, tasks, seriesId, date, "done"));
     const missed = await occurrence(tenant, tasks, seriesId, "2026-10-15", "missed");
     const open = await occurrence(tenant, tasks, seriesId, "2026-10-16", "notDone");
-    // Completing the 12 October occurrence on 16 October finds today's occurrence already stored.
     await runInTenant(tenant, () =>
       cp.updateItem({ databaseId: tasks, itemId: firstId, propertiesPatch: { status: "done" } }),
     );
@@ -171,8 +169,7 @@ describe("projectTaskOccurrences (issue #1672)", () => {
   it("projects a trashed occurrence's date as virtual again while the series' repeat rule is on", async () => {
     const { tasks, seriesId } = await seriesStartingOn(tenant, "2026-10-16");
     const trashed = await occurrence(tenant, tasks, seriesId, "2026-10-17", "done");
-    // Fixture SQL: the choke point trashes a whole series and turns its rule off (issue gh-1882), so the occurrence
-    // is trashed on its own, the state of an active series with one trashed occurrence.
+    // Fixture SQL: the choke point trashes a whole series, so the occurrence is trashed on its own here.
     const result = await runInTenant(tenant, () =>
       pool.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL", [
         tasks,
@@ -235,7 +232,7 @@ describe("projectTaskOccurrences (issue #1672)", () => {
 
   it("generates no virtual date before the anchor but returns a stored occurrence dated before it", async () => {
     const { tasks, seriesId, firstId } = await seriesStartingOn(tenant, "2026-10-12");
-    // A materialized fixture dated before the anchor; no delivered writer produces one (#1720 is not built).
+    // A materialized fixture dated before the anchor; no writer produces one yet.
     const early = await occurrence(tenant, tasks, seriesId, "2026-10-10", "done");
     const projected = await project(tenant, "2026-10-09", "2026-10-13", "2026-10-16");
     expect(summary(projected)).toEqual(["2026-10-10 done", "2026-10-12 notDone", "2026-10-13 virtual:missed"]);

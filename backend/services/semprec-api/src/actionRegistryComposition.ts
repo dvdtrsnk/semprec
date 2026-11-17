@@ -44,15 +44,11 @@ import { createAresHttpClient } from "./aresClient.js";
 import { createProposalComputation } from "./proposalComputation.js";
 
 /**
- * The api runtime's heartbeat `ActionRegistry` (issue #641): every seeded action id that
- * `resolveHeartbeatFireTaskName` routes onto `heartbeatFireCore`. `core.agentRun` and
- * `core.journalWeeklyCleanup` belong to the agents runtime
- * (`services/semprec-agents/src/actionRegistryComposition.ts`); `semprec.tick`
- * (issue #1434) is a system process of this runtime, backed by the gateway's `inbox_proposal`
- * operation, and is not registered in the agents runtime.
+ * Every seeded action id `resolveHeartbeatFireTaskName` routes onto `heartbeatFireCore`.
+ * `core.agentRun` and `core.journalWeeklyCleanup` belong to the agents runtime; `semprec.tick` is a
+ * system process of this runtime, backed by the gateway's `inbox_proposal` operation.
  *
- * Builds the gateway client eagerly, so this throws when `AI_GATEWAY_INTERNAL_TOKEN` is
- * unset — `semprec-api` refuses to start without it.
+ * Builds the gateway client eagerly, so this throws when `AI_GATEWAY_INTERNAL_TOKEN` is unset.
  */
 export function createApiActionRegistry(pool: Pool, moduleRegistry: ModuleRegistry): ActionRegistry {
   const gateway = createAiGatewayClientForApi();
@@ -87,8 +83,8 @@ export function createApiActionRegistry(pool: Pool, moduleRegistry: ModuleRegist
     CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID,
     createInvitationReplyAction(pool, { storage: mailAttachmentStorage }),
   );
-  // The reduced copies of Inbox photos are written to the files root by `semprec-transcribe`; a copy that duplicates an
-  // existing blob can lie in the mail attachments root.
+  // Reduced copies of Inbox photos are written to the files root by `semprec-transcribe`; a copy
+  // that duplicates an existing blob can lie in the mail attachments root.
   const filesStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
   registry.set(
     SEMPREC_TICK_ACTION_ID,

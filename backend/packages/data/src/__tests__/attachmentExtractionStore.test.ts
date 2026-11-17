@@ -18,8 +18,7 @@ import {
   type InboxAttachmentSource,
 } from "../inbox/inboxAttachmentsStore.js";
 
-// Issue gh-1970: the `extraction` column of `inbox_attachments`, written once through its store function, and the
-// question the Inbox tick asks before it starts. Run on the runtime role pool, where row-level security applies.
+// Run on the runtime role pool, where row-level security applies.
 
 let adminPool: Pool;
 let runtimePool: Pool;
@@ -56,7 +55,6 @@ interface Seeded {
   attachmentIds: string[];
 }
 
-/** A fresh tenant with an Inbox item that carries one attachment per entry of `mimeTypes`. */
 async function seedTenant(mimeTypes: string[] = ["image/jpeg"]): Promise<Seeded> {
   const tenantId = await createTestTenant(adminPool);
   await runInTenant(tenantId, () => seedSystem(runtimePool));

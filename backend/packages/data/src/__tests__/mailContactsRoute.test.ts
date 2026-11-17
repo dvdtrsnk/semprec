@@ -25,7 +25,7 @@ async function request(query: string) {
   );
 }
 const contactEmailsSchema = z.object({ contacts: z.array(z.object({ email: z.string() })) });
-/** The addresses a search for `q` returns, sorted here so that no expectation depends on the database's collation. */
+/** The addresses a search for `q` returns, sorted here so no expectation depends on collation. */
 async function searchEmails(q: string): Promise<string[]> {
   const response = await request(`q=${encodeURIComponent(q)}`);
   return contactEmailsSchema

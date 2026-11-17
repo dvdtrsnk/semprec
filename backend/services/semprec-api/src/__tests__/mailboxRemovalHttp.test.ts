@@ -23,12 +23,9 @@ import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { createMailLiveSyncControl, type MailLiveSyncControlBinding } from "../mailLiveSyncControl.js";
 
 /**
- * Issue gh-2030 through the production composition path: the real dispatcher mounts the mail
- * module's removal route with the composition root's container, and that container's `mailLiveSync`
- * member is the control `serve.ts` creates and binds to the live-sync root. The data package's
- * `mailboxRemovalProviderCleanup.test.ts` covers every branch of the cleanup and
- * `mailLiveSyncControl.unit.test.ts` the control; this file covers the wiring from the HTTP request
- * to the root and to the provider.
+ * Mailbox removal through the production composition: the real dispatcher mounts the removal route with a container
+ * whose `mailLiveSync` is bound to the live-sync root as `serve.ts` binds it. Cleanup branches and the control are
+ * covered in the data package; this file covers the wiring from the HTTP request to the root and the provider.
  */
 
 const GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
@@ -52,14 +49,12 @@ interface ProviderCall {
   form: URLSearchParams | null;
 }
 
-/** Every provider request of the routes under test, in order. */
 let providerCalls: ProviderCall[] = [];
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-/** Google answering the sign-in of one account and the cleanup of its mailbox. */
 function googleAnswers(address: string): Record<string, () => Response> {
   return {
     [GOOGLE_TOKEN_URL]: () =>
@@ -72,7 +67,6 @@ function googleAnswers(address: string): Record<string, () => Response> {
 
 let providerAnswers: Record<string, () => Response> = {};
 
-/** The composition root's outbound `fetch`: every provider request of the routes under test lands here. */
 const outboundHttp: typeof fetch = async (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
   providerCalls.push({ url, form: init?.body instanceof URLSearchParams ? init.body : null });
@@ -81,7 +75,7 @@ const outboundHttp: typeof fetch = async (input, init) => {
   return answer();
 };
 
-/** The container as `serve.ts` builds it: the OAuth clients, the outbound `fetch` and the given live-sync control. */
+/** As `serve.ts` builds it. */
 function dependenciesWith(control: MailLiveSyncControlBinding): CustomRouteDependencies {
   return {
     oauth: {
@@ -99,7 +93,6 @@ let bearer: Record<string, string>;
 const servers: Server[] = [];
 let roots: MailLiveSyncRoot[] = [];
 
-/** A listening server over the real dispatcher with `customRouteDependencies`, and its base URL. */
 async function listen(customRouteDependencies: CustomRouteDependencies): Promise<string> {
   const dispatch = await createDispatcher(pool, {
     passwordResetMailer: noopMailer,
@@ -139,7 +132,7 @@ async function request(
 const startBody = z.object({ authorizeUrl: z.string() }).strict();
 const completeBody = z.object({ mailboxId: z.uuid() }).strict();
 
-/** Connects a Gmail mailbox through the real sign-in routes, so that its credential is a stored refresh token. */
+/** Through the real sign-in routes, so its credential is a stored refresh token. */
 async function connectGmailMailbox(baseUrl: string): Promise<string> {
   providerAnswers = googleAnswers(`${randomUUID()}@gmail.com`);
   const started = await request(baseUrl, "POST", "/api/mail/mailboxes/oauth/start", { provider: "gmail" });
@@ -154,7 +147,6 @@ async function connectGmailMailbox(baseUrl: string): Promise<string> {
   return completeBody.parse(completed.body).mailboxId;
 }
 
-/** A live-sync root over the runtime pool whose lifecycles record their starts and stops. */
 function recordingRoot(): { root: MailLiveSyncRoot; starts: string[]; stops: string[] } {
   const starts: string[] = [];
   const stops: string[] = [];
@@ -217,7 +209,7 @@ describe("DELETE /api/mail/mailboxes/:id behind the REST adapter (issue gh-2030)
 
     expect(answer).toEqual({ status: 200, body: { id: mailboxId } });
     expect(hosting.stops).toEqual([mailboxId]);
-    // The mailbox has no recorded watch, so the one provider call is the revocation of the token the sign-in stored.
+    // No recorded watch, so the one provider call revokes the stored token.
     expect(providerCalls.map((call) => call.url)).toEqual([GOOGLE_TOKEN_REVOCATION_URL]);
     expect(Object.fromEntries(providerCalls[0]?.form ?? [])).toEqual({ token: SECRETS.refreshToken });
     expect(JSON.stringify(answer.body)).not.toContain("SENTINEL-");

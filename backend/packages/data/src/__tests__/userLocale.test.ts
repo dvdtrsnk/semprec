@@ -28,7 +28,6 @@ async function makeAccount(locale?: SupportedLocale): Promise<Account> {
   return { tenantId, user };
 }
 
-/** Calls `updateUserLocale` on the runtime-role pool, in a transaction of the account's tenant, as the profile route does. */
 function setLocale(account: Account, userId: string, locale: SupportedLocale): Promise<UserRow | null> {
   return runInTenant(account.tenantId, () =>
     withTransaction(pool, (client) => updateUserLocale(client, userId, locale)),
@@ -41,7 +40,7 @@ async function storedUser(userId: string): Promise<UserRow> {
   return user;
 }
 
-/** `xmin` names the transaction that wrote the row version, so an unchanged value means no statement rewrote the row. */
+/** An unchanged `xmin` means no statement rewrote the row. */
 async function rowVersionOf(userId: string): Promise<string> {
   const { rows } = await adminPool.query<{ version: string }>("SELECT xmin::text AS version FROM users WHERE id = $1", [
     userId,
@@ -51,7 +50,6 @@ async function rowVersionOf(userId: string): Promise<string> {
   return row.version;
 }
 
-/** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
 async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
@@ -64,7 +62,6 @@ async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T>
   }
 }
 
-/** Resolves once exactly one backend waits for a lock in a locale update. */
 async function oneLocaleUpdateWaits(): Promise<void> {
   await vi.waitFor(
     async () => {
@@ -150,7 +147,6 @@ describe("updateUserLocale (issue #1704)", () => {
     const firstUpdated = new Promise<void>((resolve) => {
       markFirstUpdated = resolve;
     });
-    // The first transaction has updated the row and has not committed.
     const first = runInTenant(account.tenantId, () =>
       withTransaction(pool, async (client) => {
         const updated = await updateUserLocale(client, account.user.id, "en");
@@ -159,7 +155,6 @@ describe("updateUserLocale (issue #1704)", () => {
         return updated;
       }),
     );
-    // Awaited below; observed here too, so an early failure is never an unhandled rejection.
     first.catch(() => undefined);
     await within(firstUpdated, 10_000, "The first update");
 

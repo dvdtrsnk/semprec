@@ -1,10 +1,6 @@
 import type { Pool } from "pg";
 
-/**
- * Test-only observation of queue state, so tests read Graphile Worker's private backing tables
- * through this module instead of querying them directly. Counts every job row (pending, locked or
- * awaiting retry) whose task has the given identifier.
- */
+/** Test-only: counts every job row (pending, locked or awaiting retry) of `identifier`, so tests never query graphile-worker's private tables themselves. */
 export async function countJobsByIdentifier(pool: Pool, identifier: string): Promise<number> {
   const { rows } = await pool.query<{ count: string }>(
     `SELECT count(*)::text AS count FROM graphile_worker._private_jobs jobs
@@ -15,11 +11,7 @@ export async function countJobsByIdentifier(pool: Pool, identifier: string): Pro
   return Number(rows[0]?.count ?? 0);
 }
 
-/**
- * Test-only read-back of the raw payloads (the envelope as stored) of every job row whose task has
- * the given identifier. The public `graphile_worker.jobs` view does not expose `payload`, so this
- * is the one place that reads it from the private tables.
- */
+/** Test-only: the stored envelopes of every job row of `identifier`; the public `jobs` view does not expose `payload`. */
 export async function readJobPayloadsByIdentifier(pool: Pool, identifier: string): Promise<unknown[]> {
   const { rows } = await pool.query<{ payload: unknown }>(
     `SELECT jobs.payload FROM graphile_worker._private_jobs jobs

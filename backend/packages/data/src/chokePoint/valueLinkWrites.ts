@@ -1,10 +1,6 @@
-// Owns how writes change the state of value links (issue #1516): a user or agent write that changes
-// a linked value ends the link, and the `valueLinks` process may write a user-owned property only
-// while its link is `on`. The state change runs in the writer's own transaction, so it commits or
-// rolls back with the value change. Creating links and the explicit unlink/relink operations are
-// not here.
-// Constrained by: docs/adr/2026-09-10-single-writer-ownership-model.md,
-// docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+// How writes change value-link state: a user or agent write that changes a linked value ends the
+// link, and the `valueLinks` process may write a user-owned property only while its link is `on`.
+// The state change runs in the writer's transaction so it commits or rolls back with the value.
 import type { PoolClient } from "pg";
 import { runAfterCommit } from "../db/pool.js";
 import { ForbiddenError } from "../errors.js";
@@ -25,9 +21,8 @@ export interface BreakValueLinksInput {
 }
 
 /**
- * Ends the `on` links of the given properties when the writer is a user or an agent. A system
- * writer, a missing row and an already broken row change nothing. Returns the ids of the items
- * whose link state changed (the item itself, or none).
+ * Ends the `on` links of the given properties when the writer is a user or an agent. A system writer,
+ * a missing row and an already broken row change nothing. Returns the ids of items whose state changed.
  */
 export async function breakValueLinks(client: PoolClient, input: BreakValueLinksInput): Promise<string[]> {
   if (input.writerKind === "system") return [];
@@ -59,10 +54,7 @@ export interface RelationEdgeLinkTarget {
   databaseId: string;
 }
 
-/**
- * The item properties a relation edge is the value of: item A with the key of the definition's side A
- * property, and item B with the key of side B when the definition has one.
- */
+/** Item A with side A's property key, and item B with side B's when the definition has one. */
 export async function relationEdgeLinkTargets(
   client: PoolClient,
   input: { reldef: RelationDefinitionRow; itemA: string; itemB: string },
@@ -78,10 +70,8 @@ export async function relationEdgeLinkTargets(
 }
 
 /**
- * Ends the links on both sides of a relation edge that was actually added or removed (the sides are
- * `relationEdgeLinkTargets`). Call it only when the edge changed, never for a metadata replacement.
- * Announces every item whose state changed once the transaction commits, so clients refetch `links`.
- * Also the entry point the single-valued replace operation (#1521) calls.
+ * Ends the links on both sides of an edge that was actually added or removed; never call it for a
+ * metadata replacement. Announces every changed item after commit so clients refetch `links`.
  */
 export async function breakValueLinksForRelationEdge(
   client: PoolClient,

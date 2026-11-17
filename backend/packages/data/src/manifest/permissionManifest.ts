@@ -21,7 +21,7 @@ export interface ManifestProperty {
   name: string;
   owner: "user" | "system";
   locked: boolean;
-  /** Resolved select/multi_select option labels (issue #147) — absent for every other property type. */
+  /** select/multi_select only. */
   options?: ManifestPropertyOption[];
 }
 
@@ -30,15 +30,8 @@ export interface ManifestDatabase {
   name: string;
   schemaLocked: boolean;
   /**
-   * Whether an agent run against this project may create/update items here at all
-   * (issue #105's grant separation) — `false` for Inbox and Inbox item types, which the
-   * Semprec project also owns but which are user-managed content the agent only ever
-   * reads (via `semprec.tick`'s own code path, not this manifest) to compute a proposal.
-   * The agent's one write surface is Processing proposals; a target database/page is
-   * never included in any project's grant at all — see `generatePermissionManifest`'s
-   * `owner_project_item_id` scoping, which already excludes the ten hardcoded databases
-   * (they carry no project owner) — so this only needs to additionally narrow Semprec's
-   * own three owned databases down to the one the agent may actually write.
+   * `false` for Inbox and Inbox item types: Semprec owns them but they are user content the agent
+   * only reads. Databases without a project owner never appear in a grant at all.
    */
   writable: boolean;
   properties: ManifestProperty[];
@@ -52,16 +45,10 @@ export interface ManifestHeartbeat {
 }
 
 /**
- * Explicit, whole-project autonomy grants — checked at call time by the relevant choke point,
- * never by the agent itself. `email.send` (mail/send.ts) does not read `autonomous` since issue
- * gh-1913: in v1 every send by an agent needs approval, whatever the project holds. `autonomous: false`
- * is the default for every project unless a human has directly set `emailSendAutonomous: true`
- * on that project item's raw properties (issue #95) via direct DB access — deliberately *not* a
- * property declared in Projects' schema (seed/seedTenDatabases.ts), so this stays specific to
- * the one project (Email) that actually uses it instead of adding an unused field to every
- * other project's row; and deliberately with no declared writer anywhere in this codebase, so
- * granting it can never become reachable through the generic (agent-reachable) item-update
- * path no matter what a future property declaration might otherwise allow.
+ * Whole-project autonomy grants, checked by the choke point, never the agent. `email.send` ignores
+ * `autonomous`: every agent send needs approval in v1. `emailSendAutonomous` is a raw property
+ * set only by direct DB access and deliberately undeclared, so no agent-reachable write path can
+ * ever grant it.
  */
 export interface ManifestCapabilities {
   email: { send: { autonomous: boolean } };
@@ -72,42 +59,22 @@ export interface PermissionManifest {
   databases: ManifestDatabase[];
   heartbeats: ManifestHeartbeat[];
   capabilities: ManifestCapabilities;
-  /** A project run's granted MCP tools (issue #126) — the manifest's fourth source, alongside databases/heartbeats/capabilities. */
   agentTools: McpAgentToolProjection[];
   /**
-   * Active core capabilities plus module capabilities admitted by the run project's database
-   * ownership, per the owned-databases module-tools ADR. The generic adapter intersects this
-   * list with its closed core catalog. Empty without a module registry.
+   * Active core capabilities plus module capabilities admitted by the project's database
+   * ownership. The generic adapter intersects this with its closed catalog. Empty without a registry.
    */
   grantedCapabilities: string[];
 }
 
 export interface GeneratePermissionManifestOptions {
-  /**
-   * Supplies the `cs`/`en` catalogs a database/property/option resolves its display label
-   * against (issue #147). Omitted for callers that only want to confirm the schema is
-   * resolvable at all (e.g. `driftCheck.ts` with no `moduleRegistry`) — in that case every
-   * name/label falls back to the pre-#147 raw-key placeholder below, exactly as before this
-   * option existed.
-   */
+  /** Without it every name/label falls back to the raw-key placeholder. */
   moduleRegistry?: ModuleRegistry;
-  /**
-   * Ignored unless `moduleRegistry` is also given. Defaults to `"en"`, the reference locale.
-   *
-   * `driftCheck.ts`'s heartbeat — the one production caller of this function — resolves this
-   * live from the tenant user's `users.locale` on every run rather than pinning a value here;
-   * see its own comment for why. A caller with a genuine per-request
-   * authenticated user, such as `services/semprec-api/src/schemaHandler.ts`'s sibling
-   * `generateSchemaProjection`, should keep passing that user's locale directly instead.
-   */
+  /** Ignored without `moduleRegistry`. Defaults to `"en"`. */
   locale?: ManifestLocale;
 }
 
-/**
- * Computed synchronously from current schema state, scoped to one project (small,
- * indexed queries — not a scan of the whole system). Never persistently cached: this
- * is called fresh at the start of every agent_run.
- */
+/** Never cached: computed fresh from current schema at the start of every agent run. */
 export async function generatePermissionManifest(
   client: PoolClient,
   projectItemId: string,
@@ -135,7 +102,7 @@ export async function generatePermissionManifest(
 
     const dbName = resolveDatabaseName(db.name, db.key, db.id, catalogs, locale);
     const manifestProperties: ManifestProperty[] = properties.map((p) => {
-      // The manifest keeps its pre-#1360 shape: id, type, filterable and the typed config belong to /api/schema.
+      // id, type, filterable and the typed config belong to /api/schema, not the manifest.
       const { key, name, owner, locked, options, config } = resolveProperty(p, db.key, catalogs, locale);
       return {
         key,

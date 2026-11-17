@@ -48,7 +48,6 @@ async function createUserIn(tenantId: string): Promise<{ id: string; headers: { 
   return { id: user.id, headers: { Authorization: `Bearer ${token}` } };
 }
 
-/** A pending request on a run whose actor is `ownerUserId`, created in `tenantId`'s own scope. */
 async function createPendingRequestIn(tenantId: string, ownerUserId: string): Promise<string> {
   return runInTenant(tenantId, async () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerUserId });
@@ -137,7 +136,7 @@ describe("approval requests across two tenants (issue #1028)", () => {
     expect(aBody.rows.map((row) => row.id)).toEqual([aRequestId]);
   });
 
-  /** The step of a call that asked for `approvalRequestId`, as the turn summary stores it. */
+  /** As the turn summary stores it. */
   function waitingStep(approvalRequestId: string): SempReplyStep {
     return {
       kind: "tool",
@@ -163,10 +162,7 @@ describe("approval requests across two tenants (issue #1028)", () => {
     durationMs: 3,
   };
 
-  /**
-   * A finished assistant reply in `tenantId` whose stored summary holds `steps`, written by the production
-   * writers: the message is sent, claimed, started on a run of `userId` and finished with its summary.
-   */
+  /** Written by the production writers: sent, claimed, started on a run of `userId` and finished with its summary. */
   async function createRepliedThread(
     tenantId: string,
     userId: string,
@@ -224,7 +220,7 @@ describe("approval requests across two tenants (issue #1028)", () => {
     let userB: { id: string; headers: { Authorization: string } };
 
     beforeEach(async () => {
-      // The outer beforeEach started the listener of the approval routes; these tests need the whole API.
+      // The outer beforeEach started only the approval routes; these tests need the whole API.
       await new Promise<void>((resolve) => server.close(() => resolve()));
       userA = await createUserIn(tenantA);
       userB = await createUserIn(tenantB);
@@ -299,7 +295,7 @@ describe("approval requests across two tenants (issue #1028)", () => {
 
       expect(foreignSteps[0]).toHaveProperty("approval", null);
       expect(randomSteps[0]).toHaveProperty("approval", null);
-      // The request is live for its owner, so the null above is the tenant scope, not a missing row.
+      // Proves the null above is the tenant scope, not a missing row.
       const own = await createRepliedThread(tenantA, userA.id, [waitingStep(foreignRequestId)]);
       expect((await readSteps(userA.headers, own.threadId))[0]?.approval).toMatchObject({ status: "pending" });
     });

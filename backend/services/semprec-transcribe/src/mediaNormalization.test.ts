@@ -39,10 +39,9 @@ import {
   speechWindow,
 } from "./__tests__/fixtures/mediaFixtures.js";
 
-// Integration tier although no test here touches the database: every one of them runs the real
-// ffmpeg/ffprobe, which CI installs only after the unit tier (`.github/workflows/ci.yml`).
+// Integration tier without a database: CI installs ffmpeg only after the unit tier.
 
-/** Fails the way a storage backend failing mid-flush would, but only once it has drained ffmpeg's whole output — so ffmpeg itself exits cleanly and the write is the only thing that rejects. */
+/** Rejects only after draining ffmpeg's whole output, so the write is the only failure. */
 function storageFailingAfterDrain(
   storageError: Error,
   deleteBytes: (storageKey: string) => Promise<void>,
@@ -130,8 +129,7 @@ describe("mediaNormalization", () => {
       channels: 1,
       inputSampleRate: 16_000,
     });
-    // 16 kb/s is about 7 MB per hour; libopus's own mono default of 64 kb/s is four times that. The
-    // bound leaves room for the Ogg headers a one-second clip cannot amortize.
+    // libopus's mono default is 64 kb/s; the bound leaves room for Ogg headers on a one-second clip.
     const { durationSeconds } = await probeMedia(fixturePath);
     expect(durationSeconds).not.toBeNull();
     expect((result.byteSize * 8) / durationSeconds!).toBeLessThan(32_000);

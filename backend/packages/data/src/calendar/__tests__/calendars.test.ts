@@ -88,7 +88,6 @@ async function calendars(tenantId: string) {
   });
 }
 
-/** Every calendar edge of the tenant, as `[calendar, event]`, read through its runtime-role scope. */
 async function calendarEdges(tenantId: string): Promise<Array<[string, string]>> {
   return runInTenant(tenantId, async () => {
     const { rows } = await dataPool.query<{ item_a: string; item_b: string }>(

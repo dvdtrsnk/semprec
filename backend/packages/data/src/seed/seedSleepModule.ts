@@ -67,7 +67,7 @@ const NIGHT_PROPERTIES: readonly PropSpec[] = [
   { key: "alarm", type: "checkbox", owner: "user" },
 ];
 
-/** The two plans a tenant starts with; `catalogKey` names the label `seed.sleepPlans.<catalogKey>.name`. */
+/** Label key `seed.sleepPlans.<catalogKey>.name`. */
 const DEFAULT_PLANS = [
   {
     catalogKey: "weekdays",
@@ -80,7 +80,6 @@ const DEFAULT_PLANS = [
   { catalogKey: "weekend", wakeDays: ["sat", "sun"], bedTime: "00:00", wakeTime: "08:30", alarm: false, position: 1 },
 ];
 
-/** Creates one sleep database with its properties and its default `table` view, and returns its id. */
 async function createSleepDatabase(
   client: PoolClient,
   descriptor: { key: string; name: string },
@@ -97,7 +96,7 @@ async function createSleepDatabase(
     sensitive: SENSITIVE_DATABASE_KEYS.includes(descriptor.key),
   });
   for (const spec of properties) {
-    // `name` stays null: the label of each property comes from the module catalog.
+    // `name` stays null: labels come from the module catalog.
     await propertiesStore.createProperty(client, {
       databaseId: database.id,
       key: spec.key,
@@ -117,17 +116,12 @@ async function createSleepDatabase(
 }
 
 /**
- * Seeds the sleep module (issue #1776) into the caller's open transaction: the system project item "Sleep" in
- * the Projects database; the system databases `sleepSettings`, `sleepPlans` and `sleepNights` it owns, each
- * with its properties and a default `table` view; the one-to-one `sleepSettings.area` relation to the Areas
- * database `areasDatabaseId` (issue gh-1833; it has no inverse property and the seeded settings item has no
- * edge); the schema lock of the three; then one settings item and the two default plans. No night item is
- * seeded.
+ * Seeds the sleep module into the caller's transaction: the "Sleep" system project; `sleepSettings`,
+ * `sleepPlans` and `sleepNights` with properties and a `table` view; the one-to-one `sleepSettings.area`
+ * relation to Areas (no inverse, no edge seeded); the schema locks; one settings item and the two default
+ * plans, named from the catalog in the tenant user's language (`cs` without a user). No nights.
  *
- * The two plan names come from the sleep module catalog in the tenant user's language (`cs` while the tenant
- * has no user) and are stored as plain titles.
- *
- * Not idempotent on its own: `seedSystem` calls it once for a new tenant.
+ * Not idempotent: `seedSystem` calls it once per new tenant.
  */
 export async function seedSleepModuleInTransaction(
   client: PoolClient,
@@ -145,7 +139,7 @@ export async function seedSleepModuleInTransaction(
   const create = (descriptor: { key: string; name: string }, properties: readonly PropSpec[]) =>
     createSleepDatabase(client, descriptor, properties, project.id, viewTypeRegistry);
   const settingsId = await create(SLEEP_DATABASE_DESCRIPTORS.settings, SETTINGS_PROPERTIES);
-  // Created before the schema lock below, which `propertiesStore` honours.
+  // Must precede the schema lock below, which `propertiesStore` honours.
   await createRelationPropertyWithClient(client, {
     sourceDatabaseId: settingsId,
     key: SLEEP_SETTINGS_AREA_KEY,

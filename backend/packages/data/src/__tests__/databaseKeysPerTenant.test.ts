@@ -7,7 +7,6 @@ import { ConflictError } from "../errors.js";
 
 let pool: Pool;
 
-/** Runs `fn` in a transaction on the owner role that is always rolled back. */
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
   try {

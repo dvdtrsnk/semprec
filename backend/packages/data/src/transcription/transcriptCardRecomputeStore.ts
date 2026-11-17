@@ -48,32 +48,30 @@ import type { ItemRow } from "../types.js";
 import type { TranscriptCardRecomputePayload } from "./transcriptCardRecompute.js";
 
 /**
- * The guarded read and write of a transcript card's recompute from a user instruction (issue gh-1940). The job is
- * run by `semprec-transcribe` (`docs/adr/2026-11-14-transcript-cards-are-recomputed-by-their-producer-on-instruction.md`);
- * it reads a snapshot here, asks the gateway outside any transaction, and applies the answer here in one transaction
- * that row-locks the card. This module imports `proposalActions.ts` and nothing in `proposalActions.ts` imports it.
+ * Guarded read and write of a transcript card's recompute from a user instruction. The job reads a
+ * snapshot here, asks the gateway outside any transaction, and applies the answer here in one
+ * transaction that row-locks the card. `proposalActions.ts` must not import this module.
  */
 
-/** The text of the history entries this module writes, as the other proposal writers write theirs: English literals. */
+/** History entry texts are English literals, as the other proposal writers write theirs. */
 const APPLIED_FALLBACK_MESSAGE = "Revised by assistant.";
 const UNCHANGED_MESSAGE = "The instruction changed nothing.";
 const DISCARDED_MESSAGE = "The instruction could not be applied: the answer did not fit this card.";
 const FAILED_MESSAGE = "The instruction could not be applied: the recomputation failed.";
 
-/** The `aiVersion` of a card, which a row written before it existed counts as 0. */
+/** A row written before `aiVersion` existed counts as 0. */
 function readAiVersion(properties: Record<string, unknown>): number {
   return typeof properties.aiVersion === "number" ? properties.aiVersion : 0;
 }
 
 const historySchema = z.array(proposalHistoryEntrySchema);
 
-/** The history of a card as the proposal writers read it: a malformed stored value counts as empty. */
+/** A malformed stored value counts as empty. */
 function readHistory(properties: Record<string, unknown>) {
   const parsed = historySchema.safeParse(properties.history);
   return parsed.success ? parsed.data : [];
 }
 
-/** Whether the card's history already answers the instruction: a `threadRevision` entry that names it. */
 function instructionIsAnswered(properties: Record<string, unknown>, instructionEntryId: string): boolean {
   return readHistory(properties).some(
     (entry) => entry.kind === "threadRevision" && entry.instructionEntryId === instructionEntryId,
@@ -85,36 +83,32 @@ const cardContextSchema = z.discriminatedUnion("role", [
   transcriptSpeakerCardContextSchema,
 ]);
 
-/** One item the model may choose as the card's target. `current` marks the target the card proposes now. */
+/** `current` marks the target the card proposes now. */
 export interface TranscriptCardChoice {
   id: string;
   name: string | null;
-  /** What tells the choices apart, by a plain label (`date`, `times`, `project`, `title`, ...); only present values. */
+  /** Plain labels (`date`, `times`, `project`, `title`, ...); only present values. */
   details: Record<string, string>;
   current: boolean;
 }
 
-/** What the recompute call needs of a transcript card, read in one snapshot. Nothing in it is written back as it is. */
 export interface TranscriptCardRecomputeSnapshot {
   proposalId: string;
   instructionEntryId: string;
-  /** The user's instruction, from the history entry it was recorded in. */
   instruction: string;
-  /** The card's `aiVersion` at the snapshot; the write refuses a card that moved since. */
+  /** The write refuses a card that moved since. */
   aiVersion: number;
   role: "event" | "speaker";
-  /** The card's effective proposal as stored; `null` for a card that has none yet. */
   current: ProposalEnvelope | null;
-  /** The `properties` of a `relation` envelope that links an item for this card: its role's relation, and for a speaker card the speaker key. */
+  /** Of a `relation` envelope linking an item for this card: its role's relation, and for a speaker card the speaker key. */
   relationProperties: Record<string, unknown>;
-  /** The property keys the user edited by hand on the card's destination, which the instruction may change only by naming them. */
+  /** User-edited keys on the destination; the instruction may change them only by naming them. */
   editedFields: string[];
   choices: TranscriptCardChoice[];
   transcript: {
     displayName: string | null;
     notes: { title: string; summary: string; shortSummary: string } | null;
   };
-  /** `users.locale` of the tenant's user, the language of the model's reason. */
   locale: string;
 }
 
@@ -124,7 +118,6 @@ async function requireDatabaseId(client: PoolClient, moduleId: string): Promise<
   return database.id;
 }
 
-/** The ids the model may answer with as a `relation` target: the card's own candidates, as a client lists them. */
 function candidateTargetIds(context: z.infer<typeof cardContextSchema>): string[] {
   if (context.role === "speaker") return context.alternatives.map((alternative) => alternative.personId);
   return context.candidates.map((candidate) =>
@@ -132,15 +125,11 @@ function candidateTargetIds(context: z.infer<typeof cardContextSchema>): string[
   );
 }
 
-/** The ids of items the card's current proposal links, which stay a choice: a `relation` envelope's target. */
 function currentRelationTarget(current: ProposalEnvelope | null): string | null {
   return current?.entityKind === "relation" ? current.target : null;
 }
 
-/**
- * Whether the model's choice fits the card: a `relation` to one of the card's candidates or to its current target, or
- * the current new-item (`database`) proposal edited in place. Anything else is not an answer the card can take.
- */
+/** A `relation` to a candidate or the current target, or the current new-item proposal edited in place. */
 function assertChoiceFitsCard(
   context: z.infer<typeof cardContextSchema>,
   current: ProposalEnvelope | null,
@@ -163,7 +152,6 @@ function assertChoiceFitsCard(
 
 const itemNameSchema = z.object({ name: z.string().nullish() });
 
-/** The name of a live item, `null` for a missing or trashed one or an item without a name. */
 function nameOf(item: { deletedAt: string | null; properties: Record<string, unknown> } | undefined): string | null {
   if (!item || item.deletedAt) return null;
   return itemNameSchema.safeParse(item.properties).data?.name ?? null;
@@ -219,7 +207,6 @@ async function readChoices(
   return choices;
 }
 
-/** The name of the live Event the transcript is linked to through its `event` relation, `null` without one. */
 async function readLinkedEventName(client: PoolClient, transcriptsDatabaseId: string, transcriptId: string) {
   const property = await propertiesStore.getPropertyByKey(client, transcriptsDatabaseId, "event");
   const definition = property && (await relationsStore.getRelationDefinitionByPropertyId(client, property.id));
@@ -230,7 +217,7 @@ async function readLinkedEventName(client: PoolClient, transcriptsDatabaseId: st
   return nameOf(event);
 }
 
-/** The keys among `userEditedKeys` that are plain property keys of the card's destination (`primary.<key>`). */
+/** Only plain property keys of the destination (`primary.<key>`). */
 function editedFieldsOf(properties: Record<string, unknown>): string[] {
   const keys = z.array(z.string()).safeParse(properties.userEditedKeys);
   if (!keys.success) return [];
@@ -241,11 +228,10 @@ function editedFieldsOf(properties: Record<string, unknown>): string[] {
 }
 
 /**
- * Reads what the recompute call needs, in the caller's transaction (the task runs it at repeatable read, without
- * locks). `null` when there is nothing to do: the card is gone or in the Trash, is not a `transcript` card, is
- * `confirmed`, `rejected` or invalid because its source was deleted, or its history already answers this
- * instruction (so a retried job after the write makes no second call). Throws `NotFoundError` for an instruction
- * entry the card does not hold, and the usual errors for a card whose stored data cannot be read.
+ * The task runs it at repeatable read, without locks. `null` when there is nothing to do: the card is
+ * gone, trashed, not a `transcript` card, settled, invalid because its source was deleted, or already
+ * answers this instruction (so a retried job makes no second call). Throws `NotFoundError` for an
+ * instruction entry the card does not hold.
  */
 export async function readTranscriptCardRecomputeSnapshot(
   client: PoolClient,
@@ -313,9 +299,8 @@ export async function readTranscriptCardRecomputeSnapshot(
 }
 
 /**
- * What the model answered, once the worker checked its shape. `entityKind` and `target` are `null` when the model
- * found the instruction cannot be satisfied with the card's candidates. `explicitlyChangedKeys` are the property keys
- * of the user-edited fields the instruction names.
+ * `entityKind` and `target` are `null` when the instruction cannot be satisfied with the card's
+ * candidates. `explicitlyChangedKeys` are the user-edited fields the instruction names.
  */
 export interface TranscriptCardAnswer {
   entityKind: "relation" | "database" | null;
@@ -325,18 +310,17 @@ export interface TranscriptCardAnswer {
   reason: string;
 }
 
-/** The most code points of the model's reason a history entry keeps. */
 const REASON_MAX_CODE_POINTS = 300;
 
-/** The model's reason as one trimmed line of at most `REASON_MAX_CODE_POINTS` characters, cut by code point; `null` when blank. */
+/** One trimmed line, cut by code point; `null` when blank. */
 function boundedReason(reason: string): string | null {
   const text = Array.from(reason.replace(/\s+/g, " ").trim());
   return text.length === 0 ? null : text.slice(0, REASON_MAX_CODE_POINTS).join("");
 }
 
 /**
- * Thrown by the write when the card's `aiVersion` is not the one the snapshot read: another writer changed the
- * assistant's proposal while the model was asked. The job fails and runs again against the card as it is.
+ * The card's `aiVersion` moved since the snapshot: another writer changed the assistant's proposal
+ * while the model was asked. The job fails and retries against the card as it is.
  */
 export class TranscriptCardChangedError extends Error {
   readonly code = "transcript_card_changed" as const;
@@ -347,7 +331,7 @@ export class TranscriptCardChangedError extends Error {
   }
 }
 
-/** `skipped`: nothing was written (the card is locked, gone or already answered); the others each wrote one history entry. */
+/** `skipped`: nothing written (locked, gone or already answered); the others each wrote one history entry. */
 export type TranscriptCardRecomputeOutcome = "applied" | "unchanged" | "discarded" | "skipped";
 
 interface LockedCard {
@@ -355,11 +339,7 @@ interface LockedCard {
   card: ItemRow;
 }
 
-/**
- * Row-locks the card and re-checks everything the snapshot decided on: it is a live `transcript` card, not
- * `confirmed`, `rejected` or invalid because its source was deleted, and its history does not answer the instruction
- * yet. `null` when any of that no longer holds.
- */
+/** Re-checks under the row lock everything the snapshot decided on; `null` when any of it no longer holds. */
 async function lockOpenTranscriptCard(
   client: PoolClient,
   input: TranscriptCardRecomputePayload,
@@ -374,7 +354,6 @@ async function lockOpenTranscriptCard(
   return { config, card };
 }
 
-/** Appends one `threadRevision` entry that answers the instruction and writes nothing else of the card. */
 async function writeAnswerEntry(
   client: PoolClient,
   { config, card }: LockedCard,
@@ -399,24 +378,18 @@ async function writeAnswerEntry(
 }
 
 /**
- * Applies the model's answer to a transcript card, in the caller's transaction and under the card's row lock
- * (issue gh-1940). The lock status, the history marker of the instruction and the `aiVersion` are checked on the
- * locked row: a card that is locked or already answered is `skipped`, and one whose `aiVersion` is not
- * `expectedAiVersion` throws `TranscriptCardChangedError` before anything is written.
+ * In the caller's transaction under the card's row lock. A locked or already answered card is
+ * `skipped`; an `aiVersion` other than `expectedAiVersion` throws `TranscriptCardChangedError` before
+ * any write.
  *
- * An `answer` of `null` (the worker could not read it), one that names no target, and one that fails
- * the card's checks (`assertChoiceFitsCard`, then `assertValidEnvelopeForCard` on the composed envelope, whose role
- * rules refuse a switch between an Event card and a speaker card) leave the proposal as it is and add one entry that
- * says so: `discarded` or `unchanged`. An answer whose composed proposal equals the stored one is `unchanged` too.
+ * A `null` answer, one naming no target, or one failing the card's checks (the role rules refuse a
+ * switch between an Event card and a speaker card) leaves the proposal and adds a `discarded` or
+ * `unchanged` entry; an answer equal to the stored proposal is `unchanged` too.
  *
- * Otherwise the answer is stored as the assistant's (`aiProposal`, `aiVersion` + 1) and `proposal` is composed from
- * it with the card's manual values laid over it, as for a revision in an Inbox thread
- * (`retainOverridesForThreadRevision`): a field the user edited keeps their value unless it is in
- * `explicitlyChangedKeys`, and then takes the model's value and stays in `userEditedKeys`. A change of the target
- * drops every manual value, which a `reset` entry lists. The status becomes `proposed` and the entry of kind
- * `threadRevision` carries the instruction's entry id and the model's reason (bounded to
- * `REASON_MAX_CODE_POINTS`). The card's role never changes, the card's own relation edges are not touched and
- * nothing is written to a target database.
+ * Otherwise the answer becomes `aiProposal` (`aiVersion` + 1) and `proposal` lays the manual values
+ * over it as an Inbox thread revision does: a user-edited field keeps its value unless named in
+ * `explicitlyChangedKeys`. A target change drops every manual value (listed in a `reset` entry). The
+ * card's role, its own relation edges and the target databases are never touched.
  */
 export async function applyTranscriptCardRecompute(
   client: PoolClient,
@@ -445,9 +418,8 @@ export async function applyTranscriptCardRecompute(
   if (previous && "unknownKind" in previous) throw unsupportedEntityKindError(previous.entityKind);
   const overrides = parseUserOverrides(card.properties.userOverrides, card.id);
 
-  // A manual key the answer does not name keeps the user's value: it is left out of the revised properties, which
-  // `retainOverridesForThreadRevision` reads as "not touched". The model cannot edit relations, so a card that
-  // keeps its destination keeps the relations it has.
+  // A manual key the answer does not name is left out of the revised properties, which
+  // `retainOverridesForThreadRevision` reads as "not touched". The model cannot edit relations.
   const named = new Set(answer.explicitlyChangedKeys.map((key) => key.replace(/^primary\./, "")));
   const manualKeys = new Set(Object.keys(fieldOverridesOf(overrides, "primary")));
   const revised: ProposalEnvelope = {
@@ -523,9 +495,8 @@ export async function applyTranscriptCardRecompute(
 }
 
 /**
- * The end of a run that cannot succeed (its attempts are used up, or the gateway refused it for good): leaves the
- * card as it was and adds one entry that the instruction could not be applied, under the card's row lock. Skips a
- * card that is locked, gone or already answered, as the write does.
+ * For a run that cannot succeed (attempts used up, or refused for good by the gateway): adds one
+ * "could not be applied" entry under the row lock and skips a locked, gone or answered card.
  */
 export async function recordTranscriptCardRecomputeFailure(
   client: PoolClient,

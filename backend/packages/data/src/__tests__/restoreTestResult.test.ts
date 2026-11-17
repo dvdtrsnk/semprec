@@ -20,7 +20,6 @@ import {
 
 let pool: Pool;
 
-/** Tenant zero's admin by default; a further tenant's user when `tenantId` is given. */
 async function createTestUser(tenantId = getTenantZeroId(), role: "admin" | "member" = "admin"): Promise<string> {
   const passwordHash = await hashPassword("s3cret-password");
   const user = await createUser(pool, {
@@ -63,10 +62,7 @@ const notificationRowSchema = z.object({
 });
 type NotificationRow = z.infer<typeof notificationRowSchema>;
 
-/**
- * The `backup_restore_failed` notifications only. A failure also raises its Semp problem, which writes
- * a `semp_problem` notification per admin (issue #1466); that one is not what these tests assert.
- */
+/** Only `backup_restore_failed`; the failure's Semp problem also writes a `semp_problem` notification per admin. */
 async function listNotifications(): Promise<NotificationRow[]> {
   const { rows } = await pool.query<Record<string, unknown>>(
     `SELECT id, user_id, kind, title, source_table, source_id, payload FROM notifications

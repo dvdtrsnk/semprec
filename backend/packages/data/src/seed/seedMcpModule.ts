@@ -6,8 +6,7 @@ import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { MCP_SERVERS_MODULE_ID } from "./mcpModuleKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
-// Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
-// copy of this helper for the full rationale.
+// Every catalog option `s` becomes `{ key: s }`; see the copy in seedTenDatabases.ts.
 function selectConfig(options: string[]): Record<string, unknown> {
   return { options: options.map((key) => ({ key })) };
 }
@@ -38,24 +37,15 @@ export interface McpModuleResult {
 }
 
 /**
- * Seeds the `mcpServers` system database (issue #123): the "MCP connections are system
- * resources similar to mailboxes" pattern from seedEmailModule.ts, minus the secret itself —
- * a server's credential (if any) lives in `external_credentials` (issue #26), keyed by this
- * database's item id, never as a property here.
+ * Seeds the `mcpServers` system database. A server's credential lives in `external_credentials` keyed by
+ * the item id, never as a property here.
  *
- * `connectionConfig` is stored as a generic `json` property (no dedicated PropertyType exists
- * for a transport-discriminated shape) — its `stdio`/`sse`/`http` strictness is enforced in
- * application code (mcp/mcpConnectionConfig.ts), not by the schema-engine's generic
- * key/type/owner checks, the same division of labour `rollup/config.ts` and
- * `views/*ViewType.ts`'s `validateConfig` already use for a jsonb shape richer than the
- * generic property-type system understands.
+ * `connectionConfig` is a generic `json` property; its transport-specific shape is validated in
+ * mcp/mcpConnectionConfig.ts, not by the schema engine.
  *
- * `syncStatus`/`lastSynced`/`syncError` are `owner: 'system'` — written only by the (issue
- * #125) human-triggered "Synchronize tools" action, never by a proposal/confirm write: the
- * choke point's `createItemWithClient` already refuses a caller-supplied value for a
- * system-owned key, and `assertValidProposalEnvelope` (inboxTickAction.ts) already refuses any
- * proposal envelope that names one, so this ownership by itself is what keeps sync
- * structurally unreachable from the proposal path without any MCP-specific code there.
+ * `syncStatus`/`lastSynced`/`syncError` are system-owned and written only by the "Synchronize tools"
+ * action: the choke point refuses caller values for system keys and `assertValidProposalEnvelope`
+ * refuses envelopes naming them, so sync is unreachable from proposals without MCP-specific code.
  */
 export async function seedMcpModuleInTransaction(
   client: PoolClient,

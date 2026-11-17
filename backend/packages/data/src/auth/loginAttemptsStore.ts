@@ -2,7 +2,6 @@ import type { Pool, PoolClient } from "pg";
 import { requireSingleRow } from "../db/pool.js";
 import type { LoginAttemptRow } from "./types.js";
 
-/** The raw `login_attempts` row shape this module reads back from Postgres. */
 type LoginAttemptDbRow = {
   id: string;
   email: string;
@@ -27,7 +26,7 @@ export interface RecordLoginAttemptInput {
   succeeded: boolean;
 }
 
-/** No FK to `users`: an attempt against an email that doesn't exist is still recorded, for throttling and audit alike. */
+/** No FK to `users`: attempts against unknown emails are recorded too. */
 export async function recordLoginAttempt(
   client: Pool | PoolClient,
   input: RecordLoginAttemptInput,
@@ -40,7 +39,6 @@ export async function recordLoginAttempt(
   return mapRow(requireSingleRow(rows, "login_attempts row"));
 }
 
-/** Count of failed attempts for `email` from `ip` within the last `windowSeconds` — the throttling signal for #140's login endpoint. */
 export async function countRecentFailedAttempts(
   client: Pool | PoolClient,
   email: string,
@@ -56,17 +54,13 @@ export async function countRecentFailedAttempts(
 }
 
 export interface FailureStreak {
-  /** Consecutive failed attempts for this email+IP pair since their last success (or ever, if there is none). */
+  /** Consecutive failures for this email+IP pair since its last success. */
   count: number;
-  /** When the most recent of those failures happened; `null` when `count` is 0. */
+  /** `null` when `count` is 0. */
   lastFailedAt: string | null;
 }
 
-/**
- * The signal #232's exponential lockout is built on: unlike `countRecentFailedAttempts`'s fixed
- * time window, this counts back only to the pair's last *success*, so a lockout naturally lifts
- * as soon as a login succeeds instead of lingering until an unrelated window expires.
- */
+/** Counts back to the pair's last success, so a lockout lifts as soon as a login succeeds. */
 export async function getFailureStreak(client: Pool | PoolClient, email: string, ip: string): Promise<FailureStreak> {
   const { rows } = await client.query<{ count: string; last_failed_at: Date | null }>(
     `SELECT count(*) AS count, max(attempted_at) AS last_failed_at
