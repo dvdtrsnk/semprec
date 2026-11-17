@@ -1,0 +1,53 @@
+import type { RouteMatrixEntry } from "../routeMatrix.js";
+import { EXAMPLE_ID } from "./exampleId.js";
+
+export const EVENTS_ROUTES: RouteMatrixEntry[] = [
+  {
+    name: "event people",
+    method: "GET",
+    path: `/api/events/${EXAMPLE_ID}/people`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "event people replace",
+    method: "PUT",
+    path: `/api/events/${EXAMPLE_ID}/people`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "event person invite",
+    method: "POST",
+    path: `/api/events/${EXAMPLE_ID}/people/${EXAMPLE_ID}/invite`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "event transcript action items",
+    method: "GET",
+    path: `/api/events/${EXAMPLE_ID}/transcript-action-items`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "event tasks",
+    method: "GET",
+    path: `/api/events/${EXAMPLE_ID}/tasks`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "event occurrence materialize",
+    method: "POST",
+    path: `/api/events/series/${EXAMPLE_ID}/occurrences/2026-10-14`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+];

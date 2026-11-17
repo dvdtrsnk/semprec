@@ -5,9 +5,10 @@ Check for architecture and ownership violations:
    choke-point itself.
 2. Two different processes/modules writing to the same table or field without a
    documented ownership handoff — high severity.
-3. A migration that is not additive/backward-compatible (drop, rename, type
-   narrowing, `NOT NULL` without a default) on a table this PR did not just create —
-   critical, unless the linked issue explicitly calls for a breaking change.
+3. After the first production release, a migration that is not
+   additive/backward-compatible (drop, rename, type narrowing, `NOT NULL` without a
+   default) — critical unless the issue calls for the break. Before it, the baseline is
+   edited in place (see rules.md).
 4. New abstraction, config flag, or generalization not required by the linked issue's
    Task section — medium severity (flag it as scope creep, not a style nitpick).
 5. A module reaching into another module's internals instead of its declared
@@ -18,3 +19,6 @@ Check for architecture and ownership violations:
 7. AI/agent code writing persisted state directly instead of producing a proposal
    that goes through the approval queue / `confirm` flow — high severity, even if the
    write itself is correct.
+8. Code that contradicts a rule in `docs/architecture/` without the document being
+   updated in the same pull request — medium. Do not ask for a document or ADR for a
+   local pattern.

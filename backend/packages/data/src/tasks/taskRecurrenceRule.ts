@@ -1,0 +1,55 @@
+import { z } from "zod";
+
+/** Deliberately identical to scheduler/rule.ts's weekdays, which are not exported. */
+const weekday = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
+export type Weekday = z.infer<typeof weekday>;
+
+// camelCase `kind` discriminators, as in scheduler/rule.ts's stored rules.
+const weekdaysRule = z.object({ kind: z.literal("weekdays"), days: z.array(weekday).min(1) });
+const monthDatesRule = z.object({
+  kind: z.literal("monthDates"),
+  dates: z.array(z.number().int().min(1).max(31)).min(1),
+});
+const nthWeekdayRule = z.object({
+  kind: z.literal("nthWeekday"),
+  // n:-1 means "the last given weekday in the month"; 0 is not a valid ordinal.
+  n: z
+    .number()
+    .int()
+    .refine((v) => v !== 0, "n must not be 0"),
+  weekday,
+});
+
+const yearDatesRule = z
+  .object({
+    kind: z.literal("yearDates"),
+    month: z.number().int().min(1).max(12),
+    day: z.number().int().min(1).max(31),
+  })
+  .refine(({ month, day }) => day <= [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!, {
+    message: "Day does not exist in month",
+    path: ["day"],
+  });
+
+export const fixedRecurrenceRuleSchema = z.discriminatedUnion("kind", [
+  weekdaysRule,
+  monthDatesRule,
+  nthWeekdayRule,
+  yearDatesRule,
+]);
+export type FixedRecurrenceRule = z.infer<typeof fixedRecurrenceRuleSchema>;
+
+export const floatingRecurrenceRuleSchema = z.object({
+  unit: z.enum(["days", "weeks", "months"]),
+  n: z.number().int().positive(),
+});
+export type FloatingRecurrenceRule = z.infer<typeof floatingRecurrenceRuleSchema>;
+
+export const TASK_RECURRENCE_MODES = ["fixed", "floating"] as const;
+export type TaskRecurrenceMode = (typeof TASK_RECURRENCE_MODES)[number];
+
+export type TaskRecurrenceRule = FixedRecurrenceRule | FloatingRecurrenceRule;
+
+export function parseTaskRecurrenceRule(mode: TaskRecurrenceMode, raw: unknown): TaskRecurrenceRule {
+  return mode === "fixed" ? fixedRecurrenceRuleSchema.parse(raw) : floatingRecurrenceRuleSchema.parse(raw);
+}

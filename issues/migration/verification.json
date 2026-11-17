@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "repository": "dvdtrsnk/semprec",
+  "exportedAt": "2026-10-27T14:51:08Z",
+  "verifiedAt": "2026-10-27T14:53:59.282Z",
+  "counts": {
+    "issues": 1375,
+    "open": 734,
+    "closed": 641,
+    "comments": 1308,
+    "events": 17493,
+    "parentIssues": 109,
+    "childRelationships": 1193,
+    "handovers": 544,
+    "attachments": 0
+  },
+  "reconciliation": {
+    "allExistingIssueFingerprintsMatch": true,
+    "comparedIssueCount": 1375,
+    "finalListingPageCount": 15,
+    "sourceListingPageCount": 114
+  },
+  "coverage": {
+    "allStates": true,
+    "pullRequestsExcluded": true,
+    "commentCountsMatch": true,
+    "nativeChildCountsMatch": true,
+    "terminalPaginationVerified": true,
+    "closingPullRequestReferencesVerified": true,
+    "originalBodiesPreserved": true,
+    "unavailableAttachments": []
+  },
+  "historicalDiagnostics": 473,
+  "finalReconciliation": {
+    "startedAt": "2026-10-27T15:35:32.308Z",
+    "verifiedAt": "2026-10-27T15:37:04.264Z",
+    "issueCount": 1375,
+    "differences": 0,
+    "finalPageCount": 15,
+    "expectedFinalPageCount": 15
+  },
+  "importedFilesVerified": 6580,
+  "reviewBot": {
+    "commit": "eeb88558a9b6d65b0fc06e624c69c32d2794e6df",
+    "published": true,
+    "pullRequest": 35,
+    "merged": false
+  },
+  "cutoverAt": "2026-10-27T15:39:11.460Z",
+  "consumerVerification": {
+    "id": "gh-1087",
+    "origin": {
+      "id": "gh-1087",
+      "revision": "3e4c11018b6460847fc94385badb58557bb75578",
+      "fileSha256": "eb302d4c61ec62e829b3664a71557d2ee233fbde7be8d9a5b9438f252362004a",
+      "bodySha256": "8f183d1468ccc13176cbb661e0a0e31b462a929f18f3f6dbade9a8df8ad973a5"
+    },
+    "relayHostProtocol": "passed",
+    "reviewBotGitBlobParser": "passed",
+    "identicalBody": true
+  },
+  "migrationPullRequest": {
+    "number": 2036,
+    "draft": true,
+    "merged": false
+  }
+}

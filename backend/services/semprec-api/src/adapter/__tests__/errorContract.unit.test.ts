@@ -1,0 +1,289 @@
+import { describe, expect, it } from "vitest";
+import {
+  ApprovalRequiredError,
+  ConflictError,
+  DuplicateItemError,
+  ForbiddenError,
+  HeartbeatDisabledError,
+  HeartbeatEventTriggeredError,
+  HeartbeatRunningError,
+  MailAttachmentTooLargeError,
+  MailDraftAlreadySentError,
+  MailDraftNotEditableError,
+  NotFoundError,
+  NotRetryableError,
+  OptionLabelExistsError,
+  PropertyLockedError,
+  RetryPendingError,
+  SchemaLockedError,
+  UnsupportedAttachmentTypeError,
+  UnsupportedMediaTypeError,
+  ValidationError,
+  ChokePointError,
+  type ActiveHeartbeatRunSummary,
+  type ItemRow,
+} from "@semprec/data";
+import {
+  ITEM_ERROR_CODES,
+  ITEM_ERROR_STATUS_BY_CODE,
+  publicErrorDetails,
+  statusForError,
+  toErrorResponseBody,
+  toPublicErrorBody,
+  type ItemErrorCode,
+} from "../errorContract.js";
+import { toItemEnvelope } from "../itemEnvelope.js";
+
+const SAMPLE_ITEM: ItemRow = {
+  id: "11111111-1111-1111-1111-111111111111",
+  databaseId: "22222222-2222-2222-2222-222222222222",
+  properties: { title: "Hello" },
+  computed: {},
+  createdAt: "2026-09-11T00:00:00.000Z",
+  updatedAt: "2026-09-11T00:00:00.000Z",
+  deletedAt: null,
+  version: "1",
+};
+
+/**
+ * Every error code produces its documented status and `{ error: { code, details } }` body. The
+ * errors are fixtures; the adapter's job is the mapping.
+ */
+const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointError }> = [
+  {
+    code: "owner_violation",
+    status: 403,
+    error: new ForbiddenError("Owned by another actor", { field: "createdBy" }, "owner_violation"),
+  },
+  {
+    code: "computed_readonly",
+    status: 403,
+    error: new ForbiddenError("computed is read-only", { field: "computed" }, "computed_readonly"),
+  },
+  { code: "schema_locked", status: 403, error: new SchemaLockedError("Schema is locked") },
+  { code: "property_locked", status: 403, error: new PropertyLockedError("Property is locked") },
+  {
+    code: "version_conflict",
+    status: 409,
+    error: new ConflictError("Item was modified since ifVersion was read", { current: SAMPLE_ITEM }),
+  },
+  { code: "validation_failed", status: 400, error: new ValidationError("'title' is required", { field: "title" }) },
+  { code: "not_found", status: 404, error: new NotFoundError("Item not found") },
+  {
+    code: "approval_required",
+    status: 403,
+    error: new ApprovalRequiredError("Requires approval", {
+      approvalRequestId: "33333333-3333-3333-3333-333333333333",
+      link: "/api/approval-requests/33333333-3333-3333-3333-333333333333",
+    }),
+  },
+  {
+    code: "heartbeat_event_triggered",
+    status: 409,
+    error: new HeartbeatEventTriggeredError("This heartbeat fires only from its triggering event"),
+  },
+  {
+    code: "heartbeat_disabled",
+    status: 409,
+    error: new HeartbeatDisabledError("this heartbeat is disabled; enable it before triggering it"),
+  },
+  {
+    code: "heartbeat_running",
+    status: 409,
+    error: new HeartbeatRunningError("this heartbeat is already running or queued", { activeRun: null }),
+  },
+  {
+    code: "not_retryable",
+    status: 409,
+    error: new NotRetryableError("this run cannot be retried"),
+  },
+  {
+    code: "retry_pending",
+    status: 409,
+    error: new RetryPendingError("an automatic attempt may still run"),
+  },
+  {
+    code: "option_label_exists",
+    status: 409,
+    error: new OptionLabelExistsError("the property already has an option with this label", { key: "medication" }),
+  },
+  {
+    code: "duplicate_item",
+    status: 409,
+    error: new DuplicateItemError("A night exception for 2026-10-16 already exists", { field: "night" }),
+  },
+  { code: "mail_draft_already_sent", status: 409, error: new MailDraftAlreadySentError() },
+  { code: "mail_draft_not_editable", status: 409, error: new MailDraftNotEditableError() },
+  { code: "mail_attachment_too_large", status: 413, error: new MailAttachmentTooLargeError(20_971_520, 25_000_000) },
+  {
+    code: "mail_reauthorization_required",
+    status: 409,
+    error: new ChokePointError(409, "mail_reauthorization_required", "The mailbox must be reauthorized"),
+  },
+  {
+    code: "mail_recipient_rejected",
+    status: 422,
+    error: new ChokePointError(422, "mail_recipient_rejected", "The mail server refused a recipient"),
+  },
+  {
+    code: "mail_sent_folder_missing",
+    status: 409,
+    error: new ChokePointError(409, "mail_sent_folder_missing", "The mailbox has no Sent folder yet"),
+  },
+  {
+    code: "unsupported_media_type",
+    status: 415,
+    error: new UnsupportedMediaTypeError("The upload's type is not accepted"),
+  },
+  {
+    code: "unsupported_attachment_type",
+    status: 415,
+    error: new UnsupportedAttachmentTypeError({
+      blobId: "66666666-6666-6666-6666-666666666666",
+      mimeType: "image/heic",
+    }),
+  },
+];
+
+const ACTIVE_RUN: ActiveHeartbeatRunSummary = {
+  id: "44444444-4444-4444-4444-444444444444",
+  status: "running",
+  triggeredBy: "heartbeat",
+  startedAt: "2026-10-29T08:00:00.000Z",
+  threadId: "55555555-5555-5555-5555-555555555555",
+};
+
+describe("error contract (issue #238)", () => {
+  it.each([
+    "mail_auth_failed",
+    "mail_app_password_required",
+    "mail_server_unreachable",
+    "mail_tls_failed",
+    "mail_admin_consent_required",
+    "mail_reauth_wrong_account",
+  ] as const)("maps %s to HTTP 400", (code) => {
+    expect(ITEM_ERROR_CODES).toContain(code);
+    expect(ITEM_ERROR_STATUS_BY_CODE[code]).toBe(400);
+  });
+  for (const fixture of FIXTURES) {
+    it(`maps ${fixture.code} to ${fixture.status} with the documented body`, () => {
+      expect(statusForError(fixture.error)).toBe(fixture.status);
+      const body = toErrorResponseBody(fixture.error);
+      expect(body.error.code).toBe(fixture.code);
+    });
+  }
+
+  it("carries unsupported_attachment_type's blob id and mime type in details", () => {
+    const details = { blobId: "66666666-6666-6666-6666-666666666666", mimeType: "image/heic" };
+    expect(toErrorResponseBody(new UnsupportedAttachmentTypeError(details)).error.details).toEqual(details);
+  });
+
+  it("projects version_conflict's details.current onto the full item envelope as details.currentItem", () => {
+    const error = new ConflictError("conflict", { current: SAMPLE_ITEM });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toEqual({ currentItem: toItemEnvelope(SAMPLE_ITEM) });
+  });
+
+  it("falls through to the generic details branch when current is missing computed", () => {
+    const { computed: _computed, ...currentMissingComputed } = SAMPLE_ITEM;
+    const error = new ConflictError("conflict", { current: currentMissingComputed });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toBeUndefined();
+  });
+
+  it("falls through to the generic details branch when current is missing deletedAt", () => {
+    const { deletedAt: _deletedAt, ...currentMissingDeletedAt } = SAMPLE_ITEM;
+    const error = new ConflictError("conflict", { current: currentMissingDeletedAt });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toBeUndefined();
+  });
+
+  it("carries approval_required's link to the resulting approval request", () => {
+    const error = new ApprovalRequiredError("Requires approval", {
+      approvalRequestId: "33333333-3333-3333-3333-333333333333",
+      link: "/api/approval-requests/33333333-3333-3333-3333-333333333333",
+    });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toEqual({
+      approvalRequestId: "33333333-3333-3333-3333-333333333333",
+      link: "/api/approval-requests/33333333-3333-3333-3333-333333333333",
+    });
+  });
+
+  it("carries option_label_exists's key of the existing option", () => {
+    const body = toErrorResponseBody(new OptionLabelExistsError("label exists", { key: "medication" }));
+    expect(body.error).toEqual({ code: "option_label_exists", details: { key: "medication" } });
+  });
+
+  it("carries duplicate_item's field of the key that is already taken", () => {
+    const body = toErrorResponseBody(new DuplicateItemError("night taken", { field: "night" }));
+    expect(body.error).toEqual({ code: "duplicate_item", details: { field: "night" } });
+  });
+
+  it("falls back to the error's own status for a code outside the closed nine (forward-compatible)", () => {
+    const error = new ForbiddenError("Archived", { field: "databaseId" }, "database_archived");
+    expect(statusForError(error)).toBe(error.status);
+  });
+
+  it("drops details that aren't a flat record of primitives, so internal state can't leak through a future call site", () => {
+    const error = new SchemaLockedError("Schema is locked", { field: "databaseId", offendingRow: SAMPLE_ITEM });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toBeUndefined();
+  });
+
+  it("passes through details that are a flat record of primitives", () => {
+    const error = new PropertyLockedError("Property is locked", { field: "title", locked: true });
+    const body = toErrorResponseBody(error);
+    expect(body.error.details).toEqual({ field: "title", locked: true });
+  });
+
+  it("projects heartbeat_running's details.activeRun to the id, status, trigger, start and thread only", () => {
+    // The run carries more than the contract shows; the projection must not forward it.
+    const run = { ...ACTIVE_RUN, task: "a task text the client must not see", result: "a result" };
+    const error = new HeartbeatRunningError("already running", { activeRun: run });
+    const body = toErrorResponseBody(error);
+    expect(body.error).toEqual({ code: "heartbeat_running", details: { activeRun: ACTIVE_RUN } });
+  });
+
+  it("keeps heartbeat_running's activeRun null while only a fire job is waiting", () => {
+    const body = toErrorResponseBody(new HeartbeatRunningError("already queued", { activeRun: null }));
+    expect(body.error).toEqual({ code: "heartbeat_running", details: { activeRun: null } });
+  });
+
+  it("falls through to the generic branch when heartbeat_running's activeRun is not a run summary", () => {
+    const error = new ForbiddenError("already running", { activeRun: { id: 1 } }, "heartbeat_running");
+    expect(toErrorResponseBody(error).error.details).toBeUndefined();
+  });
+});
+
+describe("bespoke handler error body (issue #638)", () => {
+  it("keeps the message as error and the code, and passes flat details through", () => {
+    const error = new ValidationError("Bad field", { field: "x" });
+    expect(toPublicErrorBody(error)).toEqual({ error: "Bad field", code: error.code, details: { field: "x" } });
+  });
+
+  it("drops nested-object details but keeps error and code", () => {
+    const error = new ConflictError("Version conflict", { current: { id: SAMPLE_ITEM.id } });
+    const body = toPublicErrorBody(error);
+    expect(body).toEqual({ error: "Version conflict", code: error.code, details: undefined });
+  });
+
+  it("drops array details", () => {
+    const body = toPublicErrorBody(new ValidationError("Bad", ["a", "b"]));
+    expect(body.details).toBeUndefined();
+    expect(body.error).toBe("Bad");
+  });
+
+  it("drops string details", () => {
+    const body = toPublicErrorBody(new ValidationError("Bad", "/var/lib/secret"));
+    expect(body.details).toBeUndefined();
+    expect(body.error).toBe("Bad");
+  });
+
+  it("exports publicErrorDetails with the same flat-primitives filter toErrorResponseBody applies", () => {
+    const nested = { field: "databaseId", offendingRow: SAMPLE_ITEM };
+    expect(publicErrorDetails(nested)).toBeUndefined();
+    expect(toErrorResponseBody(new SchemaLockedError("Schema is locked", nested)).error.details).toBeUndefined();
+    expect(publicErrorDetails({ field: "title", locked: true })).toEqual({ field: "title", locked: true });
+  });
+});

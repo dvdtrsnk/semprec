@@ -1,0 +1,2466 @@
+{
+  "implementationBase": "9b4929ba4e672a8f2b0c83a955bdf0679757fcc3",
+  "policy": "Previously completed implementations are recovered, not reimplemented. Planning records retain the owner-directed specifications and await their batch acceptance; provenance and original specifications remain available at implementationBase. Only batch 01 is authorized for this run.",
+  "entries": [
+    {
+      "id": "gh-1434",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "9a45ffef86b008474ee92ac912f4c22a451c6485",
+        "at": "2026-10-29T07:20:04.139Z"
+      },
+      "priorSpecSha256": "9db89302eebea1dc6b63091841909691cb21492c817dae230f05af49c56931dd",
+      "planningSpecSha256": "70af3e3b40eb9c00bba3077f19cc14e678957ab1f01f6d85da1d72db54a95cf8"
+    },
+    {
+      "id": "gh-1415",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "af1ea069dde2edcaab03f2567671f67f075fc3e5",
+        "at": "2026-10-29T06:06:25.757Z"
+      },
+      "priorSpecSha256": "373a8e53aaf51e967f2e00cbc41bc576d269e5d766a2f67f57b15fac05c889f4",
+      "planningSpecSha256": "6bb4446148619faa5b9fee4cc34f6637b702f2160c4d7dd9a62685b85d895654"
+    },
+    {
+      "id": "gh-1426",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "933946ed04780d1d3d8e8b2cbe4dce649ab4d493",
+        "at": "2026-10-29T06:49:16.918Z"
+      },
+      "priorSpecSha256": "55c1b9379aac17b88e797bcbaf3f2763bd48e5373005257bedc48de5e77c5870",
+      "planningSpecSha256": "703c9b0675c941efd3a15210141876064410eda8ca626c12dcdca2a29ed70d13"
+    },
+    {
+      "id": "gh-1403",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "0b8b25733692db1f8282b0cf7d2cab527c885e58",
+        "at": "2026-10-29T10:43:48.126Z"
+      },
+      "priorSpecSha256": "53e5cb351fae8f25c5645c82e6459e72981a50d31093d6f6e21a942a4a00a2f3",
+      "planningSpecSha256": "a301537a502b665cd8d495de93f59552d3afdb9b3ac675cc57507939ff8847d4"
+    },
+    {
+      "id": "gh-1423",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "92f0ec0108ed92d7a56f9065e5f4ddf25ed8d8af",
+        "at": "2026-10-29T06:49:42.637Z"
+      },
+      "priorSpecSha256": "ee368ef8f6c5c1ecfff2668ea891f1fb29758617b5a87e4a88330194b8b72d0b",
+      "planningSpecSha256": "b28b4ac67dad95d9dc3098d8869d0edd90e7b0c3b1f8d96019544cd97d023d6f"
+    },
+    {
+      "id": "gh-1406",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "2d110f4398b23d081d6e588ffd347e39dbf3cea2",
+        "at": "2026-10-28T21:50:19.521Z"
+      },
+      "priorSpecSha256": "bd1a5ebbb8832a8289dd7971d9507ecf2d2be6cca579965d33d9857e12804089",
+      "planningSpecSha256": "53a38b0e06cf11b83645f204975d01ea0faac87c70494246763a0acd3fb3d9b0"
+    },
+    {
+      "id": "gh-1421",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b4ed4bd0ebc4d67314dcf0ae739943f28fb72e50",
+        "at": "2026-10-29T06:07:24.982Z"
+      },
+      "priorSpecSha256": "4c6e42b22ad3382efda08afc940e15289ec058312d3f3fac0fa73fa667acaf77",
+      "planningSpecSha256": "36f405cd16ec0b8d0b09b78fbf73bf5241c4ec4a6d70eb94e66c59b1dbff9ba6"
+    },
+    {
+      "id": "gh-1459",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "74cc32c614b3cc06b592d0ff31713ae36d308ebe",
+        "at": "2026-10-29T07:20:40.382Z"
+      },
+      "priorSpecSha256": "99543af19a921422731e2da9218a1d904bcfb0cd02b8fd9bf8a74206a3fd8ce3",
+      "planningSpecSha256": "08799f92d266790b7e5ab00b0874b7f2aac066857b234d19afb6469537942e3c"
+    },
+    {
+      "id": "gh-1407",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "38da3cfd741cb4864e6f3bca160c7d11240d3f8f",
+        "at": "2026-10-29T06:05:23.913Z"
+      },
+      "priorSpecSha256": "3dece1eea165b34dc15fb64e160add3151f34dbb074c8306428cfe54fe8676ad",
+      "planningSpecSha256": "9bb36fb24ac5d80aaf6b96604fd63d1872778dae0fe0ce253aab887e248d0baa"
+    },
+    {
+      "id": "gh-1411",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "bce0a8d84707f7c2278edb391eb6ad1d78d036af",
+        "at": "2026-10-29T07:19:39.047Z"
+      },
+      "priorSpecSha256": "9e9a83d579efb13c5ae8fd0303c954141a0e30401f6e71548211bf08644bc5d9",
+      "planningSpecSha256": "33c96303e973f1b5f53f5e20d2522ded14fac8d809584593b799c8ee3ed07d4b"
+    },
+    {
+      "id": "gh-1427",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "605bfc8fd235dcd3ea3f2abdc80f9c86512812fa",
+        "at": "2026-10-29T07:44:53.444Z"
+      },
+      "priorSpecSha256": "c2203ea2c7bf7fd0dcc2cbcf6338fcefec71a769eba5dddcf75e2d9a653d5afc",
+      "planningSpecSha256": "9b6720159991c5997a99ce65b5b706359c0417b04b3240bad7d93bf4d101e90e"
+    },
+    {
+      "id": "gh-1528",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "575e1e9d4dbdf97fed0ed3df0d87622159250e60",
+        "at": "2026-10-29T10:07:33.463Z"
+      },
+      "priorSpecSha256": "96b34f669e0962ff52fc2a8e7e34b221b55f04e94f2a1757ca4fbbd92ac215b6",
+      "planningSpecSha256": "900c2cb6d8566bb4409a511d12fe2afab777dfe77105be59cea8f75d2e93f66b"
+    },
+    {
+      "id": "gh-1360",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "0965ac9eb5938f777394b860e6f471c9b74cb1db",
+        "at": "2026-10-29T05:25:06.644Z"
+      },
+      "priorSpecSha256": "6b2f9ed53b4d060a54168b235cae63b7865d2856f5fd5c0735bd9651bbad04cd",
+      "planningSpecSha256": "7ee1d9c24f5550c7c0df83d19aa76c57b48debe4a9cfc50a23ba3ef75b507624"
+    },
+    {
+      "id": "gh-1414",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "bd904421c5eb5433de9ad41a309e44b88eb94047",
+        "at": "2026-10-29T20:44:16.524Z"
+      },
+      "priorSpecSha256": "a1cffac5ed65604107ef23112da85a740813198583e5e9d68e8ee6010494e743",
+      "planningSpecSha256": "783d5d197b3fbccec89902272a114b7125bbf0c397e5d1b29f72b7664dc65d22"
+    },
+    {
+      "id": "gh-1366",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "fcf9c165c0cc0754ceb1cd3d1c5fc000f1114dc4",
+        "at": "2026-10-29T05:26:32.355Z"
+      },
+      "priorSpecSha256": "b95fc37350c9f6da4b68d3c98c2f3093c68c7a5877c7250effb6c26f0811d1ed",
+      "planningSpecSha256": "0ca3cc3e305ceafdb4e4f91f1eca968eb06f1fd8a7a21a4c6484d23637dc5cf7"
+    },
+    {
+      "id": "gh-1371",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "d7eed266c2d6488a8ad535924fa19ac2562c957f",
+        "at": "2026-10-29T05:28:05.328Z"
+      },
+      "priorSpecSha256": "7270c1e573bb24a38aa7aadf5ffed3e4ca450de178301817769bfc253ff7dd48",
+      "planningSpecSha256": "f3d6ee82132325aad6a7f8de88f3a3399c637934864427737d3602594a643c03"
+    },
+    {
+      "id": "gh-1394",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "af1c6e7731ad01839b495b2702a166ee159b9105",
+        "at": "2026-10-29T06:46:15.302Z"
+      },
+      "priorSpecSha256": "199e2fbf1fd51f76e53f3911e54a45470bf3f354f15a774ec8ffdabb7f2b0444",
+      "planningSpecSha256": "c03cd367906ff2496b48d801d68b5abb4e119dda781cefc690e8c6a289e43477"
+    },
+    {
+      "id": "gh-1365",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "88820e107f2e4b5ebccd8470f70184c8c397f684",
+        "at": "2026-10-29T05:26:00.708Z"
+      },
+      "priorSpecSha256": "ff7f772954931231006341a57429e6df6240a405f3d8c37b0a28e3fccfb76534",
+      "planningSpecSha256": "0429371f0dec15eeef7102d118d7da9285468e9bf882910a90a759535e96cd22"
+    },
+    {
+      "id": "gh-1370",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "963c34d0beb7e5ec389c44a75f3de8015fac7132",
+        "at": "2026-10-29T05:27:40.515Z"
+      },
+      "priorSpecSha256": "2262acafa9d35a02f05deff2cfcbe9e57734aa3e50446d411dc217983e17844f",
+      "planningSpecSha256": "fcd1e84c52cb84f4b99c52b5e79b22a901e954c001ffe3527e7c4d4e92f0507b"
+    },
+    {
+      "id": "gh-1372",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "6eabb6e142bea8b001a75ddfd046e727364819a3",
+        "at": "2026-10-29T05:28:29.100Z"
+      },
+      "priorSpecSha256": "cf345608b53e115e98bbfc724f3d2965224d3c4817240a51c1dc8e6da23cc602",
+      "planningSpecSha256": "6830421b129d3dfe3dc062708f58a3f89a6b1dd3124525c99938819e5512960f"
+    },
+    {
+      "id": "gh-1378",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f1713015b49f282578f3921b494b6f94b0149e2b",
+        "at": "2026-10-29T05:59:27.744Z"
+      },
+      "priorSpecSha256": "1bbe8d4cf434205123f6915080b800d3d96672f8c0968940de64b46656d2eea0",
+      "planningSpecSha256": "172c34cf54936363ba7f27a68d27d85b4a1fd561aacaae16e5f55e915c991867"
+    },
+    {
+      "id": "gh-1379",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "17bd923f82c1020d3a89f01d7ba3359c45348f64",
+        "at": "2026-10-29T06:00:00.611Z"
+      },
+      "priorSpecSha256": "b911d7c1625ca5809c1a6207aab4c51034dfe2852962487ddc061541d00d356d",
+      "planningSpecSha256": "3cfdd3a5e38ce3e24e38ac9ddffd2690d2b52f7546ecc2b6b70f41d3cb5ad3c5"
+    },
+    {
+      "id": "gh-1380",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "67defc173fa571a60e62885f39e9e9e589dcae9c",
+        "at": "2026-10-29T06:00:31.055Z"
+      },
+      "priorSpecSha256": "c01482e11d01c2c5e73bf51a03a6948054dd3fcd1be6b939fc2e06592c89b9b5",
+      "planningSpecSha256": "4cfbfd9031bf15d8fbe44c3650bad2df6990539a25740ebef70f058f1c04fb05"
+    },
+    {
+      "id": "gh-1385",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "478feb55fc411ac405c31825bc5229ae1106a53e",
+        "at": "2026-10-29T06:02:13.662Z"
+      },
+      "priorSpecSha256": "2c46c1d3eb9cda422dbc8d8fac7d4a31150caa459c21accba7b4cc8801bf4dfc",
+      "planningSpecSha256": "8e4da04ee1ada252ff9b3c975c1941667dd4662715f0c1a252133225fd347ca8"
+    },
+    {
+      "id": "gh-1400",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "313406c1e0cbea46d56059604625160de98ea878",
+        "at": "2026-10-29T07:15:47.756Z"
+      },
+      "priorSpecSha256": "1e83ed2ed547bd8a7ae82a52c6991beb667f44c15603e7a4283aa5e67a65fdc8",
+      "planningSpecSha256": "f0565b7ab7915e4fa8c6cf962b489fead7f7d9ac0585ec9391e2e2719bc7ae07"
+    },
+    {
+      "id": "gh-1479",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "c832b6aeae3d3852bcb6f179cca6b1e3b483b779",
+        "at": "2026-10-29T08:35:18.607Z"
+      },
+      "priorSpecSha256": "61b3efdeb8786ff7cfbb56ed2753d4b632c0f2a15621211acbb2d6f0c7d46115",
+      "planningSpecSha256": "647683a4712f26f484c3f6649458c0a87fd7e9178d087236f9fb8772f1c02549"
+    },
+    {
+      "id": "gh-1476",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f8bc418b145dccff7030129599a43093a7a0cc08",
+        "at": "2026-10-29T07:48:46.261Z"
+      },
+      "priorSpecSha256": "abd6aac66bd9c8c5950133a0116e93a535d6f334ad076bd750da7f82a939263d",
+      "planningSpecSha256": "c6be8b0bada35466352746c171d9086733fb5c65341c9c313ba03ad447636b19"
+    },
+    {
+      "id": "gh-1486",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "eeaa31b439eb99761ffdadc716682fe20fa68c5e",
+        "at": "2026-10-29T09:21:24.663Z"
+      },
+      "priorSpecSha256": "48297c758cfa99d71e26492400d4d5b87886a5b5b6c31ace9b8bf57b47f55576",
+      "planningSpecSha256": "d77bbc5f9f07fdf937c4b30fdf604baeff02cd6b083febb5922bc69ea134c583"
+    },
+    {
+      "id": "gh-1659",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "a576870a7df3277e336230cba5bb93bff996c7fd",
+        "at": "2026-10-29T10:08:13.463Z"
+      },
+      "priorSpecSha256": "e484f869881b219fc37d45f2aecf7c71f23683e7b746106b08e7258d130d4498",
+      "planningSpecSha256": "8cc07c2bdf31581971eabe2982c5092ee082bda2a6a59ea232e599b4a27f0f93"
+    },
+    {
+      "id": "gh-1716",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "66d36b42b9f2d2e48d150d0e0fc42a3e9653d974",
+        "at": "2026-10-29T10:59:14.522Z"
+      },
+      "priorSpecSha256": "19f7b125c54e1f207a33022e75ffb755d488e09c817e89386c05bfe228aff030",
+      "planningSpecSha256": "c20b843f2b1fe3be890e0f16ae4945b973d6406a46413ca94dd68108678e4207"
+    },
+    {
+      "id": "gh-1390",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "23299f1d2f21b9e54eccedc89ea5a11924cb8d39",
+        "at": "2026-10-28T21:48:49.136Z"
+      },
+      "priorSpecSha256": "44b8cf08402030d518e1b45246002f927213492476740aabc173d2c2c2097d85",
+      "planningSpecSha256": "b1bf91315975d91b1de2be84305355f8cb85c7d2cfb6c52afa9c4d69c435d07b"
+    },
+    {
+      "id": "gh-1417",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "6f27d975876b3d76f5ac4d5c60e3a459e97acc01",
+        "at": "2026-10-29T20:58:13.540Z"
+      },
+      "priorSpecSha256": "598351d47007972a72e9409eaf212b4f82ea2a7079f9272730b5c827314a5e53",
+      "planningSpecSha256": "6c0555302299218e3c9f127db3124ca67649136ce7d6b98e1a18ef1ee52225f9"
+    },
+    {
+      "id": "gh-1419",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "ba9c3d41c70242acca9553da452ddf08f6dd9d5f",
+        "at": "2026-10-29T10:43:49.238Z"
+      },
+      "priorSpecSha256": "129e64b737291d309b931fb51556ff9016f491495368f8c37c27f2f392071dc2",
+      "planningSpecSha256": "337af8821395a0c6aef1f32f864669a1ca3d79dcd14ec721f51db4a6b90f27f6"
+    },
+    {
+      "id": "gh-1425",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5a5b87409ca609cf8f8d31daf5b7b452d62fcd5f",
+        "at": "2026-10-29T06:44:28.937Z"
+      },
+      "priorSpecSha256": "767d092092e2005036fc25296aca849227aebefe03c7a7130d30711a1437865a",
+      "planningSpecSha256": "6a0a2d88f30185946fcad83919e6b691fc5ed2fcde720d0407d3cb5afd1d44e0"
+    },
+    {
+      "id": "gh-1430",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "dcb95bdcd426de2816013fa081a819e77f0368df",
+        "at": "2026-10-29T06:44:59.976Z"
+      },
+      "priorSpecSha256": "4fda952a1fcf0f2b2fb42e0e18c27f5c9abff5afdf2ba8c1a89b1015ef9bbd48",
+      "planningSpecSha256": "df3c8c33439387200a5aceba767fc42d7b2e01f09647b755141e712acd8f5f86"
+    },
+    {
+      "id": "gh-1358",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "37cb96122d3b0b9dad850cefd944b3190cfdefc1",
+        "at": "2026-10-29T05:24:44.213Z"
+      },
+      "priorSpecSha256": "6441aa543e41e6583392e48ca27d0f69a40b24a14ad1459e9a38965aede19a6b",
+      "planningSpecSha256": "d253df9080448163e86be46b6dfb85a4a53bb95e74ac48cb33b40243f147dcc4"
+    },
+    {
+      "id": "gh-1367",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "8370f167e6ff895c2f400b17bfd0f1d3392c60c5",
+        "at": "2026-10-29T06:45:29.079Z"
+      },
+      "priorSpecSha256": "2c3b59e36b924f2a4394f3a3566af6c567ff524685232d38717ae2796d5cde68",
+      "planningSpecSha256": "fed41d3784b147e09645caaadc9f2d96e788bbac3c9fee6386ab7b74a554bdbc"
+    },
+    {
+      "id": "gh-1473",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "3e14e18aa2f3045a39510074408776d9c61d0ee8",
+        "at": "2026-10-29T07:50:09.300Z"
+      },
+      "priorSpecSha256": "03b1977194f9629b48f8c57693d6a68f7f7e980c6b681cc1d830097d98035167",
+      "planningSpecSha256": "8668ed3c5606ad50f2ae430a981077a3de40d631611f3f053dc67a8d0b44ea59"
+    },
+    {
+      "id": "gh-1487",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "7c8a944c68967601ee97250ef5cea1f29c7a88ff",
+        "at": "2026-10-29T09:17:41.984Z"
+      },
+      "priorSpecSha256": "ee85b6d80e0c7edeff755df28688300e59a77e678f843bc23f98ee72c4d30ecf",
+      "planningSpecSha256": "40e9fa707c5c616197275f67ba2c360cd589bdb0130361690883b30117e9322a"
+    },
+    {
+      "id": "gh-1356",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "798f5c7d627746cc3422017bd38f56b1375a9b3e",
+        "at": "2026-10-29T05:23:41.627Z"
+      },
+      "priorSpecSha256": "440ddb9f248af68db25c53e3246c5fa171a7e7b8d3cfc6c2e2a624694ea1b9e0",
+      "planningSpecSha256": "54c8e1b144d4d507465d5a983c7a3b10964cb8d7a7e714ab82193f7f1c0213a5"
+    },
+    {
+      "id": "gh-1478",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5b951b6bef376712f311a1965f2f55f79ddf0889",
+        "at": "2026-10-29T20:53:06.718Z"
+      },
+      "priorSpecSha256": "c170fab29ac4564f95de1064e7a372925327c9ee9e53219c79d0febadaaf971e",
+      "planningSpecSha256": "000e6212874da112fe4d0e70fcc7f9cbc6a5f9239cad6106a8cfb9f9eb2fdddb"
+    },
+    {
+      "id": "gh-1384",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f7d9ed147417397526a9669611d68626928384e0",
+        "at": "2026-10-29T06:01:48.357Z"
+      },
+      "priorSpecSha256": "bac092d437e435433b1e296d27c974b0e39e9ec1f1f59f81abe99d90e49d76d0",
+      "planningSpecSha256": "431d3be2099f887420dfc23811627b7b932ba2b1f8e2e581ec3be52c985bfe12"
+    },
+    {
+      "id": "gh-1468",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "2bf4e17b7ca8b8e5b231332e0224b21b2c86d594",
+        "at": "2026-10-29T07:51:02.659Z"
+      },
+      "priorSpecSha256": "5b1cb7f6000eebf809790c09e595c186e6a78714d2c2253118809540631c187b",
+      "planningSpecSha256": "713a882a016fafd15faf89bef41ba3c9a3f045894c1f67e7271ec7dc6a18d9d2"
+    },
+    {
+      "id": "gh-1483",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "7d6811c79c1d6b9560e8ab10f5159ad3de3a32ad",
+        "at": "2026-10-29T09:20:48.385Z"
+      },
+      "priorSpecSha256": "1887f82cc5ec17903b642a0cb7a946a06bef51df148c7ddcf2b709ea20b36ba2",
+      "planningSpecSha256": "c40e6be4bdd9b83266b38ab8f4c9642ddf5e58a77857b9f9481aff9d7551a0d1"
+    },
+    {
+      "id": "gh-1496",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5fb0ce7ce9c22886757568ef15c8b9181f8b79a9",
+        "at": "2026-10-29T10:50:54.009Z"
+      },
+      "priorSpecSha256": "8246068eaa731de22bd5e620dd15833d775fde70395a49b54441028b94f90872",
+      "planningSpecSha256": "bee53719e9f241939e8bbce0a37053beef63bbbfd198125d86d010a1699396c1"
+    },
+    {
+      "id": "gh-1491",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "0578e8ff46647da6122028e8987ff83719910fce",
+        "at": "2026-10-29T10:00:37.939Z"
+      },
+      "priorSpecSha256": "6f5063398265ae29d73e9c25be9aeb81e264c6201cd426e2205c29454f941bf6",
+      "planningSpecSha256": "75fd86a9900612786afc9bf196fefe681ab79be8b635e5bca959e644a8e23fb7"
+    },
+    {
+      "id": "gh-1452",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "3bca2b07565b4ae2faafd0db2e573bd5da90841c",
+        "at": "2026-10-29T07:44:04.209Z"
+      },
+      "priorSpecSha256": "9603fe08bbd9da1202af8aa6cdaacc7508ed3b23f96aa639c1aa55a295c7a77c",
+      "planningSpecSha256": "a7d418b6d4ccbd4052e0278c24b32579f7fab317db41eb1a1fb2b73aa4e6d4f0"
+    },
+    {
+      "id": "gh-1446",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f8617e26af8ff374c99f81445e1f108c793ed7c8",
+        "at": "2026-10-29T07:54:26.118Z"
+      },
+      "priorSpecSha256": "2dcdf588e0dfb87f91150ef0eb649ae2472453019a3cba5b866070d89c162d7d",
+      "planningSpecSha256": "0dcb68856158e18c3c39497ff657ad69088b5436a155f3db3aaa704ac7493ed9"
+    },
+    {
+      "id": "gh-1560",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f76c4e59c9c2fb6858aa9d18dcdbe6466ab40a37",
+        "at": "2026-10-29T08:36:53.119Z"
+      },
+      "priorSpecSha256": "5475cb58304d1596407100f9aa0730cd03262701412b943bd5e44282d36a1a64",
+      "planningSpecSha256": "e95550f4caa65db29723ee6752ed476acbcad3ec1b8ba0f016d2a4d15528eb1f"
+    },
+    {
+      "id": "gh-1566",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "909babbee9be6ebb4613780990c11711a41f7cd1",
+        "at": "2026-10-29T10:03:31.004Z"
+      },
+      "priorSpecSha256": "e36120b5ac901ffb46e3b136468cbd65e4d769af670bc673574cc9d1de4896c7",
+      "planningSpecSha256": "a9e33204bef72b2130b83678b2c899cb1c5088b4b230406b5e038d859e395f1a"
+    },
+    {
+      "id": "gh-1547",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f4e0daff76d1217d6f780d1f8bcf1013a9b99b5c",
+        "at": "2026-10-29T10:49:42.003Z"
+      },
+      "priorSpecSha256": "e16bd4586ac31eae53ceed84facb771c3eed01ce63735b0d5da05e2558bee068",
+      "planningSpecSha256": "003b60f6d4ebc3a00b6aeb6aae43e33165604ada1b3353494b6e01bf9ff2bf28"
+    },
+    {
+      "id": "gh-1398",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "934467312e6a8cf4c9f3fa89eaa306f89fcd01eb",
+        "at": "2026-10-29T06:04:18.689Z"
+      },
+      "priorSpecSha256": "d62a7687514fb4dcca415b25bd8091f279e52355e7e111b1293e0adf0c3d80e2",
+      "planningSpecSha256": "f7b57d43a25f9e6afbe2f7f1e772489adb5ae163014f5cca72736cf7d8938938"
+    },
+    {
+      "id": "gh-1444",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "4dd1fd37b430192cf4339006c8db4c9ac3b695e8",
+        "at": "2026-10-29T07:21:07.803Z"
+      },
+      "priorSpecSha256": "8682f3e4e2872880b42e73b199d799440344e10e73799bb9554ebb7ed44cad41",
+      "planningSpecSha256": "cfa88fd091de2a8542f9a2ffa7fad607cebd8c25cb3fd51f19ef2e81b1486a93"
+    },
+    {
+      "id": "gh-1420",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "2f2f187a09e6f78417116d18a13e9e8ccf722a32",
+        "at": "2026-10-28T22:32:06.184Z"
+      },
+      "priorSpecSha256": "06fe1d7565361cc2e6ebb4452cbd2c670df785e71f1eead1f684f753b8c81e24",
+      "planningSpecSha256": "cbb6004134c0402c5e9cb3f5829e3c6ce845a556b2b0c7c134b7159c7b23d4c7"
+    },
+    {
+      "id": "gh-1374",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "90fbe8479ee2e111400a3a5d2d9c00b767555629",
+        "at": "2026-10-29T05:29:21.304Z"
+      },
+      "priorSpecSha256": "02985eb7374c3678b9165a55c2db3c10da5c71ade9507239a9c7ad3d3ca5b26b",
+      "planningSpecSha256": "caffe30b00925da771711e623f7077f7412fa8b766232dc1c43baf33e54829e1"
+    },
+    {
+      "id": "gh-1401",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "ffa8d53764573da2dc97a701685e7f6f34724478",
+        "at": "2026-10-29T11:45:37.385Z"
+      },
+      "priorSpecSha256": "7bf8993d518316b823fe2320d4fb1be74a9d9eeba6573e46823864f31b165c06",
+      "planningSpecSha256": "15c2eb897cdd5b440321b84ece7471ecfe2e46ac93b40d71224ff39047a15eec"
+    },
+    {
+      "id": "gh-1564",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "e780fc87120bb90dcc8f387c2ba5dd2b32295533",
+        "at": "2026-10-29T12:49:36.755Z"
+      },
+      "priorSpecSha256": "69f55a6c5f9f9335f16b96fce5195ec60b8df569ecf8f401cc4538e537e4e1a1",
+      "planningSpecSha256": "5b7f3a7d53ce118afb615a8d248792d2f7eb5ec284dd0f277f08d66822dfffb0"
+    },
+    {
+      "id": "gh-1410",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "448a002e9d5f320534dad17f813189e031d807e8",
+        "at": "2026-10-29T10:43:48.967Z"
+      },
+      "priorSpecSha256": "f51d494daacd1f4556f585c59e655ab5e82947c34780552cf1790c0be0e9196f",
+      "planningSpecSha256": "3488e5dea7c7ee8c3e85e04cd49c290a79612d84335731a5c121dc918609d486"
+    },
+    {
+      "id": "gh-1412",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "298c90ad4cdfa7ac819c39816f6c335c7cc8a659",
+        "at": "2026-10-29T10:53:09.874Z"
+      },
+      "priorSpecSha256": "aca61cd3e75f1ebca1eb86f6f53c13b8586fd92d47ff9f616bf1b1dc251e7666",
+      "planningSpecSha256": "c55abaca8db6a461a3f757a665f6193e71afdb3d7e585487cdc1a14e292a4a58"
+    },
+    {
+      "id": "gh-1404",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "1dcd353f3cb9c760db5db2f487972456fcc4a353",
+        "at": "2026-10-29T12:56:38.343Z"
+      },
+      "priorSpecSha256": "3d4fb7b27de74d40d5e2369d8ae6fa3f79f4dd340d947e63283166e475eaaca6",
+      "planningSpecSha256": "8cca2f73ab0fa1721c568679e4978b0b42cf036400cdd32a68a4917b5c06d581"
+    },
+    {
+      "id": "gh-1592",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "63554c23a92e11154078972375dd23abae8a21b1",
+        "at": "2026-10-29T10:58:11.514Z"
+      },
+      "priorSpecSha256": "15698d2539b17a396b1473ab9eecc4e3d379decd63333cc822d0f32f134b3e0e",
+      "planningSpecSha256": "1cf961dddc88ed39221a5a2ab973b58937f2bd7cfefc338216341d6017c95f72"
+    },
+    {
+      "id": "gh-1617",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "94e829ad7bfa68710e604cb7051eab863dc8c6cc",
+        "at": "2026-10-29T13:50:50.002Z"
+      },
+      "priorSpecSha256": "7b6e41e93a699cccfb0b50262bbdaf876e5f495f5cc4cd8fcccc1dd183248d5f",
+      "planningSpecSha256": "bf6b906af75de21b2688bf7a23b9b0c1b55da7d12c96211ce6c9e59391dd1b71"
+    },
+    {
+      "id": "gh-1519",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b2364f9d80676b9f882e9586a25d2d2ba350ddfe",
+        "at": "2026-10-29T08:31:08.068Z"
+      },
+      "priorSpecSha256": "3adee4be6d08e3729bb496f2e00a875e1e67f65c3fcde3810108fec88163756d",
+      "planningSpecSha256": "b743c3fd3a7012f387f5b74bc12fc8058ed1eb24a129fca28915a58034cbd9a2"
+    },
+    {
+      "id": "gh-1437",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f6e99ae60567f157442324a769c487d715cc270c",
+        "at": "2026-10-29T07:19:10.481Z"
+      },
+      "priorSpecSha256": "0b73d13dc736acf023d451a2a6d4ddfa7f97112fafe4623a5422cb1a5e8b99c8",
+      "planningSpecSha256": "7f9ddb4d993517271581a54183c78f5d0e767526eba20f2a5ed1839c12abf956"
+    },
+    {
+      "id": "gh-1391",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "a72b5e03095bddca0564bd95201776abd9b68446",
+        "at": "2026-10-29T06:03:47.859Z"
+      },
+      "priorSpecSha256": "4f4bc6d94d4dec7ccbf25172e27592de4a77add305bdacb26fafed854d2cb6e6",
+      "planningSpecSha256": "8820ec6659cffcf23a4cc09fa6be0148506e34e73599933d24afcbe2b6f6ff04"
+    },
+    {
+      "id": "gh-1450",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "79406becf6d3db837626ce8e14658fe251f93493",
+        "at": "2026-10-29T07:46:13.218Z"
+      },
+      "priorSpecSha256": "a66df8b1441853732332702e2f64e5687555d4ea035a2fa1458a1f095f9b9a30",
+      "planningSpecSha256": "05603b9c615ef1713cf3a96971febd392612a6b6af99c8651c03bf925194edc2"
+    },
+    {
+      "id": "gh-1455",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "7a2914313ee3a260d366df11804b51a9a967b45a",
+        "at": "2026-10-29T08:32:13.356Z"
+      },
+      "priorSpecSha256": "2d9a59f2757be59800c4aa9c753d2320348c411a936fc29e0d7b82f0cd322903",
+      "planningSpecSha256": "f62a3e2010f4eca6579b55da884deafc0ddcf127fec33cf35b08be79cbdba967"
+    },
+    {
+      "id": "gh-1463",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "add1d5409c22139837e0426f04306eb452a87f1b",
+        "at": "2026-10-29T07:45:29.212Z"
+      },
+      "priorSpecSha256": "457677425acf09a53b811d742d46617c635bd546dde561c8786863dbe96d5338",
+      "planningSpecSha256": "72ab5c26e9a8c3d0dacec8543db5379c51a80c37bfb903085af15eaa6f82036a"
+    },
+    {
+      "id": "gh-1368",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "6c099155986903d4aa618e23e5e46c143ccc985b",
+        "at": "2026-10-29T05:27:09.476Z"
+      },
+      "priorSpecSha256": "f785d7df07082bbc0510d14aeccda1a13a226ac33bc7d36b38eff04080ca0848",
+      "planningSpecSha256": "7e4b8eef8dd550ac63e192e3b11e889d855db0da08b79f1a4239e68a87ed262d"
+    },
+    {
+      "id": "gh-1441",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5a90b053c65bd1df73f5dfa9ecddc7f3208c367b",
+        "at": "2026-10-29T13:36:22.304Z"
+      },
+      "priorSpecSha256": "cadc2e6110adbf362d6d464f858d50ffeb809b2dae4fc9230fe2ccda877ac8b7",
+      "planningSpecSha256": "096cd481db2c1868debfbe520b0d47523aa1c25aa350c61e5f56a6fd6dad21e5"
+    },
+    {
+      "id": "gh-1440",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "6565e583dc5a6e8b7567825e5c4e170c46c4daf3",
+        "at": "2026-10-29T07:16:36.159Z"
+      },
+      "priorSpecSha256": "dc4c773b4be2b4ecea7d24fe9eec8cdb004fd3bd8a370552b265d3bbf9017cfc",
+      "planningSpecSha256": "d1e1b39d304b7b594681dae44143426904d1e509e4b1793c0e48d4982f62afff"
+    },
+    {
+      "id": "gh-1443",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "21fa07a672e910a239bac66765211a3bcb8222b6",
+        "at": "2026-10-29T14:50:23.105Z"
+      },
+      "priorSpecSha256": "24601cdc52eb163a52e2a62d9d725958a083cdd6ac6623cd3d69dce95887809b",
+      "planningSpecSha256": "9253ed269c8dea01c55cfff8f263b8513f430151545b492724f343cd187f09a9"
+    },
+    {
+      "id": "gh-1466",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "6d32e65ec8386c28479a50879b8086d7a1f4887b",
+        "at": "2026-10-29T15:41:52.420Z"
+      },
+      "priorSpecSha256": "aa8670dda4c429a738beebad1d8616440ee16def76057f2352a052014df99147",
+      "planningSpecSha256": "5fb133b317df12576032f40eeb465109b8b5cb23940229e1a303f63731e3d237"
+    },
+    {
+      "id": "gh-1445",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "2f334d5bea141f0eb6b715e3cd4fd2bcab5f417d",
+        "at": "2026-10-29T15:28:20.258Z"
+      },
+      "priorSpecSha256": "28a74b4a90c2f72b17ed275c55ddced4ef3682312b3d45d3cbf7cee4722b6e4d",
+      "planningSpecSha256": "1f26adad0654583baa79d3f03cc1af4de947f5044b7a190dd0b5993a4b000668"
+    },
+    {
+      "id": "gh-1470",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "c3079c8e92e3647e5454402adbfdd2b15c858616",
+        "at": "2026-10-29T07:48:14.243Z"
+      },
+      "priorSpecSha256": "9cc54a209be7fe95598c3e9be5a8992ea420a8d140fe7f70bdd6d6f7a1152c7a",
+      "planningSpecSha256": "b1eb6205a7819310f31f799854158e33d758f7bfbe094edbb0ed1594612e6cf6"
+    },
+    {
+      "id": "gh-1703",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "626eab6b1f0192d53b1db292e485f8bf5e15b10b",
+        "at": "2026-10-29T13:41:51.890Z"
+      },
+      "priorSpecSha256": "2bfecdd26cf4fc2424b3b5685a014fa196a774ea4414b6e6ff8961e224a2e11e",
+      "planningSpecSha256": "eeea781d86960fe959e2cbae69142b34f32f0c7726088282cd0fceda5988c56f"
+    },
+    {
+      "id": "gh-1577",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "00b319a5f4d8dc888b6a18c8ca35f5bd761863db",
+        "at": "2026-10-29T08:38:08.974Z"
+      },
+      "priorSpecSha256": "286d0c8325dcda66478843fd0f974f7c40b9ab8384de7a88c4cd7bcd50842503",
+      "planningSpecSha256": "61da3e5be5b052a098a6f902224dfdb227aa11b3fa9ba8cfdb065e9b9f782419"
+    },
+    {
+      "id": "gh-1386",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "0ed392318afe3946501010d14d71a103bb8cba7e",
+        "at": "2026-10-29T06:03:02.693Z"
+      },
+      "priorSpecSha256": "635a08ed11570158a67af0eeab5d16a72d95198dcf3300ad25bd63ad40d287ed",
+      "planningSpecSha256": "145d42433c964cb9fd075c10f0bba48be781b1a1094c5972f44be8b0f7cf0325"
+    },
+    {
+      "id": "gh-1582",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "48b0927fca1d1041688ffcae33e92e7b0cd21640",
+        "at": "2026-10-29T10:06:55.390Z"
+      },
+      "priorSpecSha256": "b12179c7e1a81e489ef98dc9e2e4cccf379479a92eb8440696fb70067d89a351",
+      "planningSpecSha256": "c8b991538978966636c472b97447efb4bc8d9818699f0d7e6e4d24d4910c2c59"
+    },
+    {
+      "id": "gh-1377",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "3317507db9844494a5d34ad69232d7d14f7f0c49",
+        "at": "2026-10-29T05:30:12.053Z"
+      },
+      "priorSpecSha256": "0ff90085cd392dec3de07210feeceafcae8de50d2e6c15c7cf64a063ba68ff60",
+      "planningSpecSha256": "b80a524f9415fbb902e01563c17849b646bce9ac862a21633a1235ea96c1bcb7"
+    },
+    {
+      "id": "gh-1402",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "36871cf4d456c2972bd9e595c1e94ed3020d8cb7",
+        "at": "2026-10-29T06:04:45.139Z"
+      },
+      "priorSpecSha256": "31facc7935e8a3a68ea8c2177b4df6bc132e2512b721fc3ee1a746e6512737ba",
+      "planningSpecSha256": "71fe444963ad4b8dab48457e9ed24e11496607d8dbc5f8156ce6b797548527bf"
+    },
+    {
+      "id": "gh-1492",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "140accfd88e7866842d659c7404e6a1aec57e660",
+        "at": "2026-10-29T09:19:50.984Z"
+      },
+      "priorSpecSha256": "12b5a98ab57f5dbee6ba52fb8573161fdd9d9c3184b53ecfa4e16d597ac530be",
+      "planningSpecSha256": "758919a1c763f4e81f2e2c8f2d7b628494c139db921680570cdd4e38b66159d4"
+    },
+    {
+      "id": "gh-1606",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "63c2113b30eb09f6f4a9df4f9790ba9596271ff9",
+        "at": "2026-10-29T13:29:05.207Z"
+      },
+      "priorSpecSha256": "c853ee7052d9d3d446dd59a99c08b16819d3ea31ac465621bde8937bdb5e0f56",
+      "planningSpecSha256": "16b359ff11061484127ae32e9d113ba711c19a30b7cc709cc496def33df1f99d"
+    },
+    {
+      "id": "gh-1408",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "67c537e3006cbae18f205480c6a54a49d28764e9",
+        "at": "2026-10-29T06:05:51.195Z"
+      },
+      "priorSpecSha256": "389edae9004dd10ed2c12b29fc49230981e6c6bcd1a9b06969d0ed5b7f6a19ac",
+      "planningSpecSha256": "caacb2d64c5498882cf18ed63d92415b0a146e643f4e630452fe21ae06d233cf"
+    },
+    {
+      "id": "gh-1369",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "d30b3cab7866ccdac6f224fdb4592bfc413e62a0",
+        "at": "2026-10-29T10:43:47.598Z"
+      },
+      "priorSpecSha256": "13756fe0b5331efb784a371d454000003caa2c10166b3c62e0e09559549ecb9e",
+      "planningSpecSha256": "686c141ae837e940be1e7766145d255d80d5b2b1d0b4b51357e2176f556ac0de"
+    },
+    {
+      "id": "gh-1375",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "83a49c5c13f4d4f4302deff211128d3dba68a307",
+        "at": "2026-10-29T05:29:47.331Z"
+      },
+      "priorSpecSha256": "14ef091055300f5ffb8a2060f9be1c44614215a9f0670688f73fd0cae0a195b1",
+      "planningSpecSha256": "323695c7f0f6ed6448a0b2febc1f19bcfe39c5f3b5461dd4856795442c2ff453"
+    },
+    {
+      "id": "gh-1381",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "61a64fd188a091d38450d79e415188379ce0ff9e",
+        "at": "2026-10-29T06:00:53.773Z"
+      },
+      "priorSpecSha256": "57240d8f14cb6a450eebc6e3253ca7934a091a110c489a07fa60425aa90aa3f3",
+      "planningSpecSha256": "ec9fb0e63ede4a6ed1605745d81e3fb68f07ae2d3d058a5dff483a46afc9e3df"
+    },
+    {
+      "id": "gh-1396",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "54fbd0bd501ce1e2d414c71f5291611ca0b81866",
+        "at": "2026-10-29T06:58:54.155Z"
+      },
+      "priorSpecSha256": "e82df32aa8e595fce6a5d2737c38188f5ae6aef1bc1f5227e2ed08b740356afb",
+      "planningSpecSha256": "4b35ade82fb3bbbc20f6632b9979a4e805197499d23fef6b4227fa6f34b4a9d0"
+    },
+    {
+      "id": "gh-1399",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f854bbbcda6bb98aae09b0e274e7ebbe434ae95c",
+        "at": "2026-10-29T07:22:22.358Z"
+      },
+      "priorSpecSha256": "5f43992e6afd4e75c9583a7c4d387cb1406f0fdacbe43799ea6a10d0680af971",
+      "planningSpecSha256": "c612336ede34bfbd4933c0d726a2d291f9b59cb22e19cd67892ce7f7d7d9cdad"
+    },
+    {
+      "id": "gh-1465",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "116a14e3c71bae060c629ddb539d2f4e8450af72",
+        "at": "2026-10-29T07:49:14.491Z"
+      },
+      "priorSpecSha256": "620119f1d330898f1b15b195bbe7bb52586c26bba00fd8d595f40ef39cecfc46",
+      "planningSpecSha256": "08189fca432b47db3f935b5c89c1e0e0223bd281fa4bb718172d7a6f5565a50e"
+    },
+    {
+      "id": "gh-1558",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f50d0ca24129afd91b965021fddd8af34db8f6ef",
+        "at": "2026-10-29T12:30:37.391Z"
+      },
+      "priorSpecSha256": "60ed539509260ddd610cc0ad67e9efa6f0e1372b85e3159e4c24de43274f6ad4",
+      "planningSpecSha256": "3f6f27f0d9df16e170ac980d63140b12ad59e27a6c0eb9f49874b02752dafcc0"
+    },
+    {
+      "id": "gh-1405",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "62f91305b821b09b77b457dc662c966eb06f4065",
+        "at": "2026-10-29T10:43:48.412Z"
+      },
+      "priorSpecSha256": "f1598d6a5a2e95e707c153b8952d12387b02aed97b03825f70377ad17e0d1a78",
+      "planningSpecSha256": "ddff02615ffa57b02b4e876aad3ede93f9538b83c851d24608799629b948569d"
+    },
+    {
+      "id": "gh-1539",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "a9ed296bc9c27d319c2a51844cbf70b496be2610",
+        "at": "2026-10-29T08:37:35.475Z"
+      },
+      "priorSpecSha256": "d3aab912f056028bd0f24b11024db3e571bc99687433389ddef7fe93e1f1c045",
+      "planningSpecSha256": "8465f668f36fa8473ffb68deee5d1d88025a5ba1042548f7f91f3721e2dc62fe"
+    },
+    {
+      "id": "gh-1474",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "98673c0fe7535b0ca1b0f14870e3b04fae7cbb2c",
+        "at": "2026-10-29T08:29:56.012Z"
+      },
+      "priorSpecSha256": "a1498c70850668319548e83b4ab93a4e3f30ed4dcb73a503100e51c7107b553a",
+      "planningSpecSha256": "94ebd371e58542e978ac15b904649c362a4e4109205037c83d82f18560659f13"
+    },
+    {
+      "id": "gh-1608",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "8ca6631a9748b977bb02639bf440dbbe3fae96c0",
+        "at": "2026-10-29T09:22:34.137Z"
+      },
+      "priorSpecSha256": "f00a0f3fc56027618a45074022ec0a79d2cee9ff9ca4f1170d87f10e4c3886ae",
+      "planningSpecSha256": "416cc3690e797674bfd2b511f6444775b3d34ff2ccb2c920684da51cccd36b7a"
+    },
+    {
+      "id": "gh-1418",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "fc6a777c46e4efd5dbc5035f7caa5bfe8ece5aca",
+        "at": "2026-10-29T06:06:56.065Z"
+      },
+      "priorSpecSha256": "62d1e09fb584a6535e9fe909589eba7c71e1f97824a5db7532b8ec411924ec94",
+      "planningSpecSha256": "2ced70d82fd818b9be299e4fe29d7e3ad43da91a057e854bb60264b2bdd23f8d"
+    },
+    {
+      "id": "gh-1610",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "127eeb81b5b0a69e7c938438ce7fb7f863cbdf7b",
+        "at": "2026-10-29T10:02:51.614Z"
+      },
+      "priorSpecSha256": "7410db354bc72680602124cb0ff55e3eb5ef8841396e046dfde8e1ba376bf996",
+      "planningSpecSha256": "c668f3fad57a34bc47beef7d6fb0c54df1cbe35931bdc894dd15cead6c65a660"
+    },
+    {
+      "id": "gh-1413",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "1147e8421826bdf14a8fd925711af9d4a42abca9",
+        "at": "2026-10-29T07:16:09.797Z"
+      },
+      "priorSpecSha256": "c255e4d8ae22791f2340d86255e25a993b0bd2477f82781db6eff2d456d6fbb1",
+      "planningSpecSha256": "b6016bae576f551d77fea9aae93ea4c782f8aeb3ac5b22cad935437a547afe2d"
+    },
+    {
+      "id": "gh-1422",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "99f1691cfed4a018137d31d2d80c03fd262b22fd",
+        "at": "2026-10-29T20:54:30.961Z"
+      },
+      "priorSpecSha256": "3d5edf102072cea6862efc3a7709060200f41925eded6fcd88453326fb57d7a5",
+      "planningSpecSha256": "cbe283639c9fac34209ebc63084e4ad10e2e9e9b9ecccf25dcb8ef29e7f6b00f"
+    },
+    {
+      "id": "gh-1536",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "2a9f45439917458377330fc49dacb5396db12a4f",
+        "at": "2026-10-29T21:12:01.601Z"
+      },
+      "priorSpecSha256": "03b635742f605f04665e111a29641218af48970287fa02044d7416ed30955e7a",
+      "planningSpecSha256": "83fc5c7e08c96eb37c925d1a28832a8a672e4bbb7c0380c90242630eef2cf5bb"
+    },
+    {
+      "id": "gh-1516",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "45da30fcadb9305d8a68079da534b470a1607f0c",
+        "at": "2026-10-29T10:51:58.015Z"
+      },
+      "priorSpecSha256": "1740b0f3a3a6ac5a668ced3fa78cb97f93731cb4e7b7e12629b3521138712afa",
+      "planningSpecSha256": "9d93dd52cdd13d01e11162ba291d86ea68f682aa3ab10735ffcb031aadcc533d"
+    },
+    {
+      "id": "gh-1442",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "d4c6d9575eea3c30ef7b875efcbd04ef00c2afeb",
+        "at": "2026-10-29T07:17:51.385Z"
+      },
+      "priorSpecSha256": "bb491b3f77ea82e4e5b632b99f52c4104ac159d8edad5390d8bf8eb1ee22924a",
+      "planningSpecSha256": "7a13c2ddce6d4b821d42aabf921e2b4a2a810487df8fb9c4ae1cf97e2dbd59e5"
+    },
+    {
+      "id": "gh-1467",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "35f8842f8118beb486089c093a534526d3a1c856",
+        "at": "2026-10-29T07:47:02.351Z"
+      },
+      "priorSpecSha256": "5b434cc5dae733e22072e1730fdd9e54896cb964f8a4f004b5e7ebcab568830a",
+      "planningSpecSha256": "1b5b8475dd52a61f3b8ba94868a937b8b85901d7b49fb6431b57cdbc1e8eb405"
+    },
+    {
+      "id": "gh-1472",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "a6e70f002345eeb1960102bbcd27c7b58cb9926d",
+        "at": "2026-10-29T08:32:47.539Z"
+      },
+      "priorSpecSha256": "9e4fe8c65a11d3dc188aa7ea1154598ef80b83dd606d949b7130f529c0619828",
+      "planningSpecSha256": "4369021843987fb43ef64c0d554bcc8458a23d32354556b0b52b8255a42c1797"
+    },
+    {
+      "id": "gh-1477",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "f38397114416c921d385ef9a7b1593603375f6e0",
+        "at": "2026-10-29T09:16:55.395Z"
+      },
+      "priorSpecSha256": "c0d9da1accfa9ee9a9cbb50da5d7dcc9b45631eb3adc7a7bddfc5bd75b4c2607",
+      "planningSpecSha256": "dc8959bf916f95972062a26b18f3838096d60cc5df9cdbf55706dc310c67d044"
+    },
+    {
+      "id": "gh-1448",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "ae3b8c9ea8f11c831695bc9fb3223731610aea69",
+        "at": "2026-10-29T08:33:29.607Z"
+      },
+      "priorSpecSha256": "e5c386d5e4662971e7d953b0a3dfda73875fa97a9730b7d96f2f51cd8f10210c",
+      "planningSpecSha256": "455a0f245e0b319d1df2890c614707815bdde4ea797fd2f01e8a0cf9a1504a19"
+    },
+    {
+      "id": "gh-1458",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "4393e00cb9612f3999768b993ca5dd2f495a1105",
+        "at": "2026-10-29T09:16:18.803Z"
+      },
+      "priorSpecSha256": "6aca717ff7ee4cb067aec91c4155c0f280276e27ad8a3ec67f7ac9ea71869ba9",
+      "planningSpecSha256": "c36a6125a67b829a820286e6d7b00634eac552e5dd663bed151c13d29ee2f070"
+    },
+    {
+      "id": "gh-1435",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "3a347994d38b7d08c23a65e6bc9bd1e372261e77",
+        "at": "2026-10-29T07:17:02.791Z"
+      },
+      "priorSpecSha256": "eb3fc1fd375829fdd330dec65993805132e42a76a333add0ca30ee8a37139de7",
+      "planningSpecSha256": "6503d7d9a41a6607151b663c6df8c41d866df8e0fd8d04eec7d6819e0af1832d"
+    },
+    {
+      "id": "gh-1438",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "415af2cd80d5873535aec948906d3d78203bc4a2",
+        "at": "2026-10-29T07:47:40.138Z"
+      },
+      "priorSpecSha256": "3fd1e7d1be8becd6150bb81620351436f565e64271ea58df151e3dc34af0e631",
+      "planningSpecSha256": "c5f02265f513318de6ee0a9dbbf35e62e60ae763aff1c65719b96638bba4561a"
+    },
+    {
+      "id": "gh-1453",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5a00de720799a27614b09e6707d14f4cd4e7ad19",
+        "at": "2026-10-29T15:01:34.989Z"
+      },
+      "priorSpecSha256": "19bc5f9f050a32359cc54ba577013ba9377cac1b6349c9f1c50a040853a9b288",
+      "planningSpecSha256": "088afe23beb1bbf1003075ecb02600931ad4687cf73993701d4a1b96689947a7"
+    },
+    {
+      "id": "gh-1456",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "2b2681f73b892d72cdf5de3f336ddd272b68660a",
+        "at": "2026-10-29T15:35:27.676Z"
+      },
+      "priorSpecSha256": "833bc636294f907ce3f2ead49093af1762f35ac827a8f38663d5cdcde62054ca",
+      "planningSpecSha256": "040784dcd75d1bbfe22201964243cf55f9191c705c38ef059072a2462883ce03"
+    },
+    {
+      "id": "gh-1614",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "7f0f896bd39279efc964f9ab3339c44c22b2c83f",
+        "at": "2026-10-29T10:06:07.460Z"
+      },
+      "priorSpecSha256": "b1518a552af67746daea9042df1cc5a663767614c596833392faf1224dcec4cc",
+      "planningSpecSha256": "948bf1fbe14f530014b083c00d6d387ff4c31a744309ba036d09bee2dfe8520b"
+    },
+    {
+      "id": "gh-1497",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "a4ec7bbabfab009baf9f3f5c2d98a8101e2cedc2",
+        "at": "2026-10-29T10:50:13.423Z"
+      },
+      "priorSpecSha256": "93664d3e944ec6e4ceb75bb1ff36139dd210be974918deb8e8382fc9db8223b8",
+      "planningSpecSha256": "75df794fd300029649629805e41713e584e7520537cf908ab4560b4441d862d6"
+    },
+    {
+      "id": "gh-1504",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "3b749f6a53b019707042e3849a7f36aae0cd7fb5",
+        "at": "2026-10-29T08:34:49.333Z"
+      },
+      "priorSpecSha256": "a2e74734640fc901afc61c32b952bf8eb12596d4b607945ccea385af4903e18e",
+      "planningSpecSha256": "c611c521f76a9d5cc29288f6fb21bbefcdcd45329d9f486d2f8719841276e7bb"
+    },
+    {
+      "id": "gh-1634",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "929fab2c380aba7e321774677df66831bb113c75",
+        "at": "2026-10-29T21:28:14.310Z"
+      },
+      "priorSpecSha256": "b102cb2a3991f8af9c7d409a5fa5054311238a91241f5ca52091b5de5c3c2a55",
+      "planningSpecSha256": "86d28c951e6dd0bd5f9e5359ce1fed7ef891e7e5f078705c809e458b29aba808"
+    },
+    {
+      "id": "gh-1481",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "fc125d23ef4274f842256b3dbe8dc70953a05163",
+        "at": "2026-10-29T08:33:56.419Z"
+      },
+      "priorSpecSha256": "8642f5e63107c6e2a3ce59fad1d4de5a2aab92361d3cc88dc113359a0e78f820",
+      "planningSpecSha256": "09dc01ed5ad7abd5c53490d3d71c4705c2b3fe0e6065cdf0a48cd8be9ea6a8f8"
+    },
+    {
+      "id": "gh-1505",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "7b4132b78c64912535396b0e79caf45139077798",
+        "at": "2026-10-29T12:46:15.031Z"
+      },
+      "priorSpecSha256": "7890c042e1ea65102683271ec897aa2cb7be0410125a6657c8f1baa23cbe2324",
+      "planningSpecSha256": "0c19100a538925bf2b4bab927e6a8e5dbd95e47d872bc9c02bfa404481e68a46"
+    },
+    {
+      "id": "gh-1508",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "4d252330d5982aa4480427bc713c5d41d965b033",
+        "at": "2026-10-29T14:49:07.325Z"
+      },
+      "priorSpecSha256": "ffa00ec04cd956369354e92f2cdb4d41826d3fec83c0f6091103f2cbe52cf05e",
+      "planningSpecSha256": "4459ca22744fb7cd403266d9c8f0df1710d7f72636408cad953e20a012e4b431"
+    },
+    {
+      "id": "gh-1510",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "6d41daef4c3144ba81db576440e64d1a658beba3",
+        "at": "2026-10-29T21:25:41.894Z"
+      },
+      "priorSpecSha256": "4cda44d66fc35eef7c74e0ab5ee28979e6732acd539024a2ad66e2cbe9894407",
+      "planningSpecSha256": "d78d35dbddd3923938ff0079a32d63df3d13ee5309367089c4d3aaa098783bf4"
+    },
+    {
+      "id": "gh-1484",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "926cd793f62d8b5025fc61fe06674ba25bca391b",
+        "at": "2026-10-29T09:59:57.537Z"
+      },
+      "priorSpecSha256": "9d2b4e90724d767522152de51f273709561e2dc2d7dea6340f185c40fa7506d7",
+      "planningSpecSha256": "8449ececc362545afe22cc0b2b5f73113333f6c4f2a0641e4162372d70be9d15"
+    },
+    {
+      "id": "gh-1493",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "3f66f1d76a635b0a7aefa64f65a763d4dfe1d609",
+        "at": "2026-10-29T10:01:12.202Z"
+      },
+      "priorSpecSha256": "4206db1a2346388a4db4c5e29570245fe48c8ff637e6af505b37a45b3bede23d",
+      "planningSpecSha256": "d684e46779d52f24bf10b5a552fd71cf2d3cc3aeea121eedd2f55b4675895fba"
+    },
+    {
+      "id": "gh-1499",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "ea98f031859c441251179ba887985e72f0d9cf68",
+        "at": "2026-10-29T07:51:40.789Z"
+      },
+      "priorSpecSha256": "2801f8df5b06179dd311fd46b4bfc13251ca7bc62dcaa075e6d22b795829fc0e",
+      "planningSpecSha256": "a7beb6b97eb3527c4c2a4bdc643aa9e7472ae8c475ed7dd82dc831413722bd14"
+    },
+    {
+      "id": "gh-1502",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "ec90e5c8cfa2c138c205294eb58da1ddc6abce54",
+        "at": "2026-10-29T07:53:31.423Z"
+      },
+      "priorSpecSha256": "71203d97651a9a9c619c85fa0522d47aef3ea5968f66130c95903cb017397d79",
+      "planningSpecSha256": "f3dc46101505cc1dd17c3451958eaf047bb9f7c94e9ee865b0641d5c120390fa"
+    },
+    {
+      "id": "gh-1524",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "40b5245ec12d7338cb91db435b0cd37e839d836d",
+        "at": "2026-10-29T09:19:09.775Z"
+      },
+      "priorSpecSha256": "5c9edb7bca398f2dd80bec458e0c209177fae1224706beeac77a8a987088d165",
+      "planningSpecSha256": "f2fdd94caa8803253f879d255e691dc207bb1f81ecd047e96159fcbb7a8c905c"
+    },
+    {
+      "id": "gh-1409",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "9a07f5433bf1597144a50fed9b702dd062dcf529",
+        "at": "2026-10-29T10:43:48.694Z"
+      },
+      "priorSpecSha256": "0bfad153826c248b0d41791a3e5566af9d81332db76eb45a86f23a15a246194e",
+      "planningSpecSha256": "69f78c90c56de6ef13da873ad48ebf71e0675dc3fa09a624788e60fe5d5573b6"
+    },
+    {
+      "id": "gh-1522",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b967b4cf5454b9e4674b92230d86a9685c3f53c0",
+        "at": "2026-10-29T08:36:24.764Z"
+      },
+      "priorSpecSha256": "6561e46252e502302b698ef7642e06d10ba473649b7b81c5bf90a8103bfd1512",
+      "planningSpecSha256": "44ba80e10e2937ca81f37aa3ef2aa8fb0ab8b41447d4eeda9eaf14589eac3780"
+    },
+    {
+      "id": "gh-1526",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "e9edeeccc3d1e377145f136d5eff74d37b9ad2ac",
+        "at": "2026-10-29T10:02:00.891Z"
+      },
+      "priorSpecSha256": "5c449ab3c781fee47304cfbc63c6b4c1eea5b3ad1594bcf3f400575925f509c8",
+      "planningSpecSha256": "619192847437120f5bb4cd204e887aab83e4131244ccd11c3dce61653a5899f3"
+    },
+    {
+      "id": "gh-1534",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "bec3fb22cb21a2e82fafa0131b9b86b53c00dbce",
+        "at": "2026-10-29T10:49:03.418Z"
+      },
+      "priorSpecSha256": "12ae8d08d3872cef3e067c5455e1cea365cc047c2490a26c06145b96a0297382",
+      "planningSpecSha256": "42b613e1f9f18466f866b105cfb9795a0af3139e08523b477fbbf5af63499166"
+    },
+    {
+      "id": "gh-1596",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "c2c7d7250d8080ff27249dea212d6989a787d0b9",
+        "at": "2026-10-29T10:05:10.425Z"
+      },
+      "priorSpecSha256": "c9f6eed54044c4c939e84d857708882b36c18db4e2c8bcaa5e6ff3f0b2d06a4b",
+      "planningSpecSha256": "c7ee5fb5a69d7f7d7020b2af706699b872275a66cf960178680f81ca27847523"
+    },
+    {
+      "id": "gh-1532",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "866e346ebe7454011128c75aad0419885142db8b",
+        "at": "2026-10-29T09:15:14.072Z"
+      },
+      "priorSpecSha256": "90e37b3352228b0ebbf5cce1a75d2ab981683a9ac78dd5a8653092a57f133bd1",
+      "planningSpecSha256": "a2cadbcbe66cc6aec0caf5f0402fb56590037eb0d4879e0fd80213008c033397"
+    },
+    {
+      "id": "gh-1460",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "a291de47ffc1f87d0e4baf64abc0653fa61c86a9",
+        "at": "2026-10-29T17:46:24.141Z"
+      },
+      "priorSpecSha256": "e44257a405dcf39958c07814f54b90bb5cdf75e01e6e164244c214a60875409d",
+      "planningSpecSha256": "054e96f71f0fa245e3615fe5a71dd24146e16f7b01d0365ae39988e58ef5205f"
+    },
+    {
+      "id": "gh-1359",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "89ca4c010b146f79d83b8896d057dbfc2e2f9807",
+        "at": "2026-10-29T10:43:47.332Z"
+      },
+      "priorSpecSha256": "2a32a933690ce666c7d0aae03d70991e11be2d7851d03b58390197e37de5c465",
+      "planningSpecSha256": "8b1981bde5c822bb40c57f65dc2654898c9df18a26049dd44eb9dd9435a86b13"
+    },
+    {
+      "id": "gh-1433",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "356cbc5fd541226920419e3e3675229fd1156683",
+        "at": "2026-10-29T07:17:24.159Z"
+      },
+      "priorSpecSha256": "4fd02e96b5d750b71f90fd177635778e5362bc1df2df6caedd45d8da04231e4a",
+      "planningSpecSha256": "94109f2e62ad48133c213f00c1558173c35201067920b44db2179ba5c1e16de9"
+    },
+    {
+      "id": "gh-1565",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "8226dd33770470d0bb646c37187e467ab852b3de",
+        "at": "2026-10-29T09:21:53.098Z"
+      },
+      "priorSpecSha256": "1e394848a80d5b6736b5c430b69a92bda4bdc56fc36c03c321a5cced9dc30067",
+      "planningSpecSha256": "336a940c123ba123316c79e8166c9a50ab607ae5e6032a3713eff954348f255b"
+    },
+    {
+      "id": "gh-1447",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b6ecf3b6a3e669f24720b18ceae75d4b8c79581a",
+        "at": "2026-10-29T07:18:19.986Z"
+      },
+      "priorSpecSha256": "624d32bc2db6f5b5d7afbe7720f7eca724dc9db511d89d84f360a27965263928",
+      "planningSpecSha256": "e666af15410e1fe614a58b7004a780c86bfaa285cd0ff70b2f52ed03e422b461"
+    },
+    {
+      "id": "gh-1568",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "0b1dade6fbb4297fa2a2f929b6ca7e35a9ad84e6",
+        "at": "2026-10-29T10:52:28.516Z"
+      },
+      "priorSpecSha256": "c8abd0c1e31419a21873cd1e97b74dde247283eaa17a85882d58268547e127c0",
+      "planningSpecSha256": "9ad12366c1b80f4da8083c8f1713064de90088057364a070e7baa522d3a86f60"
+    },
+    {
+      "id": "gh-1527",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b810a17e4a2e0ec9457e83d4f3a4dba646394d03",
+        "at": "2026-10-29T10:04:34.503Z"
+      },
+      "priorSpecSha256": "efbd896baae59907ce3a9dc57febf4c519eacee002070f5e5db6202a5e35d2b4",
+      "planningSpecSha256": "3eb29ce0db868f0f0f00ac7eb395a05d9e0c1201613eba24805a86a0561700a2"
+    },
+    {
+      "id": "gh-1618",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "6859b549296c813c9483dbdc08054c576e5ccfb1",
+        "at": "2026-10-29T10:51:26.241Z"
+      },
+      "priorSpecSha256": "f96c980cde8474aa1f9cf9c0a0e7bed59f62d964a036522298fbac14b3b98d16",
+      "planningSpecSha256": "a3059aceae18b6c55bdd01ff04753c16da8ba441f45d9294d68c1a1e8e9e20d1"
+    },
+    {
+      "id": "gh-1683",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "9bc5d5139f32acd827c610dbbbee8bfcebca7a3b",
+        "at": "2026-10-29T11:44:15.733Z"
+      },
+      "priorSpecSha256": "ad4b803b2117a12c4d0002c49327dfe4001a4c18623e55f15dd8ea2054c1d7d2",
+      "planningSpecSha256": "9a6275ab86e67377080d57da7d8d7ce7f060c48e86aca4d7cc699e8b89597c4c"
+    },
+    {
+      "id": "gh-1728",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "de3f93978484f6550cc64f937580949ed3b9e19f",
+        "at": "2026-10-29T12:24:29.053Z"
+      },
+      "priorSpecSha256": "6f4ca219ae18035ab4a7f08b10ddb800f2812425cbf1b573f2c77194ca587b4e",
+      "planningSpecSha256": "e0794827363f86df483928b1186d6eb6ab9597c88f3d29ca00267e4e206d455b"
+    },
+    {
+      "id": "gh-1383",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "99c061d5c456e0e045bf8d48746ad96bb1d36a90",
+        "at": "2026-10-29T06:01:23.882Z"
+      },
+      "priorSpecSha256": "32f39b67d045ec72a2916f4141e4159fcd096b4fe6a97eee0b94c68c8ff22329",
+      "planningSpecSha256": "609218181fa436ff3f8ff6f249b1021c08f721ee85930776baa79dc0369d5d74"
+    },
+    {
+      "id": "gh-1388",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "2a85011b2f4f7a5f6e8463ce2737e52439f7bfb6",
+        "at": "2026-10-29T06:45:51.939Z"
+      },
+      "priorSpecSha256": "cc4d2ef103f9184b4a1f077bf252111e344f0d7ff0e3f7eae3e2454920ae157e",
+      "planningSpecSha256": "0a45b3528a3dbef9d22475118dac5749a698127bd7c44b4b884573198a20df08"
+    },
+    {
+      "id": "gh-1533",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "9c61d730c7056d42f5b9b68c61571e619b0429cb",
+        "at": "2026-10-29T09:15:45.736Z"
+      },
+      "priorSpecSha256": "c760022333e938cc963673598daa44dd7278d07269a5eb8a9b595b98ee14f1a1",
+      "planningSpecSha256": "c3a33e61f3b10276a069d0fdc1bce7518f1f23f23202d5ea6d55f8afb1af3467"
+    },
+    {
+      "id": "gh-1730",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "4473d57eb8ff6c46f7c82f05a3bbd49b6dc9893e",
+        "at": "2026-10-29T12:25:43.031Z"
+      },
+      "priorSpecSha256": "2c0c03e7d1802b31c33116da63c319043771c21c3370215d2c35b30376b216e6",
+      "planningSpecSha256": "8ff1b20bb653c84aabbe023d8de87690fb29af284f868a3580db427117bea1c9"
+    },
+    {
+      "id": "gh-1773",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "86036953a8facdfbb7e4faf2aae533dae05ac266",
+        "at": "2026-10-29T16:34:12.756Z"
+      },
+      "priorSpecSha256": "a8a531667a796526aa06ea926ae75be2212f1480d7784a640f85f9184e3a4768",
+      "planningSpecSha256": "db1fdb5023dd3c0b76a37d55074bbfb3b6210d2f85e26063fb8cbed76eea6833"
+    },
+    {
+      "id": "gh-1395",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "0c1179955bbacf1f49b9bd03fe0b5288cea6e913",
+        "at": "2026-10-29T07:18:49.751Z"
+      },
+      "priorSpecSha256": "f37e93981d98ab7a0284012d123f780a45ad81c9e01c2c63e22dd28596391ae9",
+      "planningSpecSha256": "a271ba0f103ea5b065af8dfa7d79c3e10b7aba30225b988232a4dbe9cac6f2b8"
+    },
+    {
+      "id": "gh-1362",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5a42124fd69b46db97fb7695f4299094f37db8d6",
+        "at": "2026-10-29T05:25:35.322Z"
+      },
+      "priorSpecSha256": "e7f72a3a91898476d4128e812b715247e78b6558503a33beffedbc9384c46584",
+      "planningSpecSha256": "896abf93ca9b6d09b46bd066fbdf984c9fbca6c08fadaf403d11802fd6744dd4"
+    },
+    {
+      "id": "gh-1557",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "d1e583803225c022d15884ba41ea48439d39e265",
+        "at": "2026-10-29T08:35:51.809Z"
+      },
+      "priorSpecSha256": "ed2983e0892c9948ca31c98272f6782f6bd33e9c29124927c0e9409e7e4c071a",
+      "planningSpecSha256": "35056f33b6b8fb1f10b20de693f7d82059783f650e56bb29d4c73503fa9a9215"
+    },
+    {
+      "id": "gh-1354",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "9aaee0db41740220fa2377f6aae2743257df0cc1",
+        "at": "2026-10-29T05:23:14.816Z"
+      },
+      "priorSpecSha256": "56bac702bed873d25e14272599e934ef635177e54341ba81981117495deee607",
+      "planningSpecSha256": "2f6c7e79e7c9783347d2d016c3421273ed9f83f4e158ffe9bf984e745bf3a267"
+    },
+    {
+      "id": "gh-1512",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "257f5845c6f7692a737edd6044e66c45d4504ed6",
+        "at": "2026-10-29T07:52:22.948Z"
+      },
+      "priorSpecSha256": "9855661e464de2cbbf363770d79229afdb4749bdea9f89992c256866622a272c",
+      "planningSpecSha256": "92952c5dfee51494c5ec466d6065f4e5d61f9e2f2b678e00752f1f1a62402f77"
+    },
+    {
+      "id": "gh-1373",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "78779a68166dfe4287a86d365dcd98c175b00ed0",
+        "at": "2026-10-29T05:29:02.066Z"
+      },
+      "priorSpecSha256": "26fd618b0882576296262a8d737e9b07daa751931d87394d340e84d1f14c60be",
+      "planningSpecSha256": "8c21b4c660d72f38836de9200cd56635e5663c97d98fcee980ee0b71c4201b71"
+    },
+    {
+      "id": "gh-1393",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "6663442def428e0f4f4718d8b4f33dc006dbc1af",
+        "at": "2026-10-29T20:39:34.179Z"
+      },
+      "priorSpecSha256": "920f67ecf7658225a957e6c72ddb922e0f74dd21e82807d7127d45af44eeb407",
+      "planningSpecSha256": "b3ac3264cbe74da906c62afcda0f7880398d2e90b04bc7a3b3c619b3569b0a37"
+    },
+    {
+      "id": "gh-1382",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5ad87d983b89d2c4598b4cc20523e4a6baab1e06",
+        "at": "2026-10-29T10:43:47.864Z"
+      },
+      "priorSpecSha256": "66027fc64273fd5a311f3b610cdaac1bdaa4e156edabb6d84f348b3b607b194a",
+      "planningSpecSha256": "2bb5d63de2180ab8576b015fc28257bac1521ec24825a23c6c09ece9b6e0f390"
+    },
+    {
+      "id": "gh-1416",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "159e01ee92b77bca487c879c751d902be3aecbe7",
+        "at": "2026-10-29T10:48:07.894Z"
+      },
+      "priorSpecSha256": "598fd8467cdc2751e78b5df92ad472ad0b51f3fce9382402fe0d093cafb9dace",
+      "planningSpecSha256": "26dd22d89abac37eb99f593592f06338d19025ca405ccba72bbeac87b50d864a"
+    },
+    {
+      "id": "gh-1428",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "28634904fda5faf241fbf3205295333ac89540cd",
+        "at": "2026-10-29T21:18:38.453Z"
+      },
+      "priorSpecSha256": "72605a1179798cf2d2d27e593b49d382274e2131809e035ae345c7bcd4908a35",
+      "planningSpecSha256": "541ad6dff78a8b88f37c80d03ae2468e0f091b92ae443857b5008c631694da12"
+    },
+    {
+      "id": "gh-1431",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "e7752ae9464f3c983c35a8f6a4498740cc6d61b4",
+        "at": "2026-10-29T06:46:43.643Z"
+      },
+      "priorSpecSha256": "7f958fb24a84ee929f9e66592ecc2b794ed31a26f8cdff4e33d275944486459c",
+      "planningSpecSha256": "71ca93d46b47a686445c243bb49ede8c5cc91154587e5b5656132c98b04714a6"
+    },
+    {
+      "id": "gh-1432",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "ff247da4cc6c2ec25e6183dc0114cf3b65055ccf",
+        "at": "2026-10-29T21:49:27.890Z"
+      },
+      "priorSpecSha256": "bc30f5bbe7c25a36b669f7c9007a01ae527542968904082e7b2633d444c402cd",
+      "planningSpecSha256": "8f48d5503e32994959def548af6927b9d972ee1cfd0e986b0ad43af6d4cda72f"
+    },
+    {
+      "id": "gh-1436",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "8b02c32c63266ac7eefe3f2cf099dbad63a0882e",
+        "at": "2026-10-29T22:06:16.778Z"
+      },
+      "priorSpecSha256": "fc2edb7920fdfd85680e95e9ba2f566df076172e6ab958b282cce77f6366ebca",
+      "planningSpecSha256": "5a58322901a7cf234467cc41dd8ecb024117e44450d29e71e6b6d0e2ff808d68"
+    },
+    {
+      "id": "gh-1439",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "bff789762f69445d319865a0db5420caf6fe77c0",
+        "at": "2026-10-29T22:27:35.667Z"
+      },
+      "priorSpecSha256": "f69b1f52edb832c543c74a10d94e68f37c5e0226a7edf65f3c453d23287071a1",
+      "planningSpecSha256": "a31e3370db8cf2b092e9c85dc040267f2216cc9448e536aceec3985b12c2e98e"
+    },
+    {
+      "id": "gh-1490",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "a846b3d05e4c7ffbfbe5dcbdade6f1b303e9eccd",
+        "at": "2026-10-30T01:20:34.953Z"
+      },
+      "priorSpecSha256": "a22e455f1a9c2b80a15e850eacc3121e5df04cdd9b70c8a8a204c7fd339b866c",
+      "planningSpecSha256": "4ea733cf08e83152ded1f09e9a5ba919c5489272e963d9a4df403632bd3af79c"
+    },
+    {
+      "id": "gh-1525",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b6f3ebc91c46fc1c57a2e4823f5d669c65269ec5",
+        "at": "2026-10-29T09:18:16.876Z"
+      },
+      "priorSpecSha256": "14cf304e68de0983bd7b7653d39aa31ccc34a0426f2469d5a8c1b8dda55d1955",
+      "planningSpecSha256": "8c3b72bf14293dac1e11f0e16c09c7cdaa775a93655bb81982cf407243468b29"
+    },
+    {
+      "id": "gh-1494",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "ef1e866528904baa7d94541a00ac6b2b40a1e305",
+        "at": "2026-10-30T02:00:24.554Z"
+      },
+      "priorSpecSha256": "cfeec5f1f49857b7c88fe4736a77c81421b890df9925435812f8681de98b8920",
+      "planningSpecSha256": "f7cd4c5b2062a4f78aa83d5476c6736a0058cf1d897c3147bc49a0de49ba2a24"
+    },
+    {
+      "id": "gh-1498",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "e936e6ec1b18035aa60bba647cd63f95a396b766",
+        "at": "2026-10-30T02:43:13.584Z"
+      },
+      "priorSpecSha256": "91102e598fb041f8410576417730b4b7a6ab4f94f5fec8333de47e6404b4d5fd",
+      "planningSpecSha256": "501ffa56133fc6a7c38e3609466b6d9ce41cc0226fa72c060e0c4f644094813b"
+    },
+    {
+      "id": "gh-1570",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "4153bd2e2ed26a7646ac3cc623174d917b7120a0",
+        "at": "2026-10-29T12:48:15.328Z"
+      },
+      "priorSpecSha256": "5531ccba9364547f6c8c4f6e55cfc161f93f31d805a0b47bd3bd0231408c157f",
+      "planningSpecSha256": "25b0ad19ea012318e58274135de249c69b7fdcef9a182da065bef606ec2fb315"
+    },
+    {
+      "id": "gh-1637",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "4ba54aaa4613e9ddb2b609fb2080d24446306b28",
+        "at": "2026-10-29T21:40:51.401Z"
+      },
+      "priorSpecSha256": "5027a12a3fb5b3f6817a0fb16a73f3b19d464bff927e12b84d1c1a68132fde59",
+      "planningSpecSha256": "f72b289c6eac537f67b4b6aff553141c77bdd4b4e8c132c9ec7cbbefe877aac7"
+    },
+    {
+      "id": "gh-1753",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b8cad44fffb8a7a2ac89e7be17f9a9da455c94c7",
+        "at": "2026-10-29T22:29:12.043Z"
+      },
+      "priorSpecSha256": "2dc2ce21a2da94fb41de328be4bbd71afaa6e251a0ed2b64cf53401c2a53320e",
+      "planningSpecSha256": "962ffa37453489303ea06ce422342d3778b11f10850db9e8718db3b068a3fae2"
+    },
+    {
+      "id": "gh-1658",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "78cef9c6cc7e53461abcb79770c70b8de73dfcde",
+        "at": "2026-10-29T13:39:24.070Z"
+      },
+      "priorSpecSha256": "3df80c96fc465aab3441ca582a18a870757f1bcaeb9fc780f40f2541594abb81",
+      "planningSpecSha256": "e693edab388bd1d4689c152463bad02eee82f2384cb4b4a48a29c832c079e175"
+    },
+    {
+      "id": "gh-1503",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "86a1603715b3796a334651b67d7bcbe8bda0c953",
+        "at": "2026-10-29T11:38:34.958Z"
+      },
+      "priorSpecSha256": "45a842903ac42af452e5a1f496347972ebb219ea7b09edfd4265b81c639ec9fd",
+      "planningSpecSha256": "1c923e67ea202f04f3b46fe0b9ce68ababaf51c19262c939074fb43bffc30f4f"
+    },
+    {
+      "id": "gh-1506",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5d6e08636ee6a81106aa20241c1fae827da6eda0",
+        "at": "2026-10-29T13:31:20.065Z"
+      },
+      "priorSpecSha256": "f9108f9f7386501464241b6447588182c537b5ba0554a7fa610210706cd18fbe",
+      "planningSpecSha256": "557514601b108ff6ac5e290aac10369555996f267b8a8d6072ad0d61675eacf2"
+    },
+    {
+      "id": "gh-1641",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "31031a737264d2d8f67845f08b37176252be71d4",
+        "at": "2026-10-29T21:59:39.439Z"
+      },
+      "priorSpecSha256": "3b3d909fe21bbecaf402e8752128955478d2f749795be8fba17e07bdf6b839b0",
+      "planningSpecSha256": "891f7d61eb9d0b092116c6d703d1a5d54b008307f58ac982647e2132988f07d6"
+    },
+    {
+      "id": "gh-1550",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "8288c26b37af07bb65c795015add1c80d7340cae",
+        "at": "2026-10-29T22:41:25.480Z"
+      },
+      "priorSpecSha256": "c53f150475f5e53d40ad95a7904198f89acbe02719762c81457d7c8aab56e870",
+      "planningSpecSha256": "0eea93250e3d1b545167bef354aa18d30f6dc545b5cd7f24bde7aa70a5d220ae"
+    },
+    {
+      "id": "gh-1711",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "7c1a16bf7c50bc497a266328aa9e4757cc760c17",
+        "at": "2026-10-29T14:51:37.588Z"
+      },
+      "priorSpecSha256": "8dfb070fbaf6f8ed45aa5c168fc1bbc8ea36f7cf0fb6ec204521ebe61c50fc12",
+      "planningSpecSha256": "b84cbe76e041f1e10b6e7626597f9542d22ecd5bae764a33a0c901f7aba711f4"
+    },
+    {
+      "id": "gh-1357",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "70f5c62cd05d8c789f5683a676157479cfce069b",
+        "at": "2026-10-29T05:24:07.768Z"
+      },
+      "priorSpecSha256": "392ca10d3b4ca0f3edf5e430656547f06ba1d406a1010f02c75bd1f95ec2f6ae",
+      "planningSpecSha256": "9c95c7d2490b739e99ec1673d0502c3c16d5304ee1ce8f0ad6169f7cd0eacfdf"
+    },
+    {
+      "id": "gh-1531",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "89c0993daf83469ba119e4d3053a42d17771d500",
+        "at": "2026-10-29T08:30:23.171Z"
+      },
+      "priorSpecSha256": "97b6c93077be27dd35eab077016ad9fb88cbe84dc76d0da3c88764de79cf17a2",
+      "planningSpecSha256": "4ea90a91fcc0b71912d7cdfbbd56770b377fa27c3347f7aaa69f6ed80ec8ee98"
+    },
+    {
+      "id": "gh-1087",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "26d6d9c276bcdc48c4ce8c0382c557f01dd248c1",
+        "at": "2026-10-29T20:35:14.543Z"
+      },
+      "priorSpecSha256": "5e60b8aa5964e78c98bab065b22ca311f2fbbbb1e7659f3fb07280d5aa6d8030",
+      "planningSpecSha256": "e9a78e8ec3be57f426a8b28bfd5622ba9b45412124aa0d0ea28649c9a045f4c0"
+    },
+    {
+      "id": "gh-1262",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "48a357c3ae2b0d7a63626a3dcca44650b4c8b6cd",
+        "at": "2026-10-29T20:51:28.588Z"
+      },
+      "priorSpecSha256": "76a95f1e8652eaa6591434bde5c851db4de2edd5fe923b256ba89340a12425a6",
+      "planningSpecSha256": "ed2cc161f5cdbfd8835df4119806499cebc51bca9f43f9f257d97bdad0958e96"
+    },
+    {
+      "id": "gh-1387",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "6d5b1f9c2eaf9c96335cb3b17e9946ed7c975fd9",
+        "at": "2026-10-29T21:02:50.803Z"
+      },
+      "priorSpecSha256": "8ba82486bef0a34a9681029d93760a8231e543e950604801a096af3825a113b3",
+      "planningSpecSha256": "2144710fbb013e94cf55454af77c298b758f936472826ad0995061666fb68e97"
+    },
+    {
+      "id": "gh-1449",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "9cf4fa9a05bb67e10556f0b2e1283d8923173eef",
+        "at": "2026-10-29T20:56:54.108Z"
+      },
+      "priorSpecSha256": "66183b9a749bfee6d21805fd7bf437ae3bfeaf1b58b1959311419625e6766ab1",
+      "planningSpecSha256": "fc2ef7435824148787ce19f07e1033308820b638a4cdd9761c0a99a434f920c2"
+    },
+    {
+      "id": "gh-1513",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b160c0c392dbb9ba949321104e0d2672109f2d1a",
+        "at": "2026-10-29T21:17:16.828Z"
+      },
+      "priorSpecSha256": "b7fea105c43b3d6c7cd27cb252bebb2a27c1e5c75764b555bc39af49be2d90d3",
+      "planningSpecSha256": "bbd04f6c9816b7dee35c770d99c00dac3ac063258da4077140404c4e5841874a"
+    },
+    {
+      "id": "gh-1451",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5932d1c5f211d5d3ee32c445bf59740adbf82e40",
+        "at": "2026-10-29T21:13:40.234Z"
+      },
+      "priorSpecSha256": "d4f8abca9aedfc02621ccbb3344ac43e2240627c13f031d3f66df474ee0e7c79",
+      "planningSpecSha256": "d91966dff08aab5f034199fd7b0dbaceb74a3eb6280cac07dceebad68c1214be"
+    },
+    {
+      "id": "gh-1482",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "2869f7479bdd4dcd55482faa21341e83e3064ad0",
+        "at": "2026-10-29T21:43:33.380Z"
+      },
+      "priorSpecSha256": "1ee42af37f062d7427b64c93e06157b3d5a6a351fd762905188d449c7337c7b5",
+      "planningSpecSha256": "069e12010d896b37be19b7bacae96d9dc111fe4daae696e46668dad7d3628485"
+    },
+    {
+      "id": "gh-1454",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "9d8614a3f01e3cd8168115d7bb0995f3f7de0427",
+        "at": "2026-10-29T21:47:25.784Z"
+      },
+      "priorSpecSha256": "889058a902cef2109e0a3fb2d50ccb3e69b5c6ab5bc4b0be9da9d459610b8e57",
+      "planningSpecSha256": "bea5b68a9435e086fd7f63f5d5d684b9aab06b982c42c082445e6b11c663c87c"
+    },
+    {
+      "id": "gh-1457",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "d9a877009238e7bb05a2f11f052fe06c0bc812cf",
+        "at": "2026-10-29T22:03:35.088Z"
+      },
+      "priorSpecSha256": "0c4453e5a1935da17b21f59c8a4ac2f1202c3779b3b32e1c12cc78866d333bfd",
+      "planningSpecSha256": "4294c94177e02c37704ed465f433d9f46f59c400b1d2babbe7369a4d401bca62"
+    },
+    {
+      "id": "gh-1461",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "1c95e00a8cb6bb5af215e967b6e751142eb65830",
+        "at": "2026-10-29T22:26:24.021Z"
+      },
+      "priorSpecSha256": "582baa5bd27484b59d61e3740bab9336bbdaaf83a3f8cad568d6d7ccbb2f3176",
+      "planningSpecSha256": "3a042dae971f0ceba83f4c912afa3b0454bde859d5f114d7bcfee0d4c014cfd8"
+    },
+    {
+      "id": "gh-1480",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "8b376b422a26864bc4ead86dcecce0d4372aa3f5",
+        "at": "2026-10-29T22:37:51.656Z"
+      },
+      "priorSpecSha256": "29d4ccb0eea8a669510611eed5a04552425307cc2369a9da4709e261e08a110b",
+      "planningSpecSha256": "f6138b1a2a0442d6ae473cc4e3684c125d3c1c6583415dd880bd995edee19be9"
+    },
+    {
+      "id": "gh-1501",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "c100ebb9f7d18aac0a554518621a8d51d91405fe",
+        "at": "2026-10-29T22:09:08.793Z"
+      },
+      "priorSpecSha256": "138b69c36292228dc5ce83517a74639c8ff524db8201f60b8f5f0d85ec059cd7",
+      "planningSpecSha256": "1bf3aa2c779ff6b94934c46e87220af5f456bef1c442233a5f87f50677a68a32"
+    },
+    {
+      "id": "gh-1507",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5c7c857877112883e7ae5729876e5a5125ad0a8c",
+        "at": "2026-10-30T04:17:27.184Z"
+      },
+      "priorSpecSha256": "94f6350cbd916c204c1e37a03fdc19ffe69f5580d15114be4ed94f6defc8fedb",
+      "planningSpecSha256": "85e761093d7f4baf402dfa0cc1fb25d0e9d26fa8aac8818c23244a77d6435d9e"
+    },
+    {
+      "id": "gh-1485",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "46fe76806f26754c02fa1c75c6a754a390e9f7a5",
+        "at": "2026-10-29T21:32:14.821Z"
+      },
+      "priorSpecSha256": "d549b1089f20568c4b390a5419f41160df11caadb2dbc5f154d75a884548be2e",
+      "planningSpecSha256": "be87f95979ee4c6c2c4d92e3945f8a3a4adf865b3584f9b1a4fa1495887ddab9"
+    },
+    {
+      "id": "gh-1464",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b996d1c38448971541f59d2b2423ffaeb06deb8a",
+        "at": "2026-10-29T22:39:23.150Z"
+      },
+      "priorSpecSha256": "099736247c9b510bc54fa0a8cc6e79b3fa3f8eaf294a4902a3e77bbc05d2264e",
+      "planningSpecSha256": "acd5a940525a14e2195eba15e5098abc08bfe9216033ca1acba9a2a95106b464"
+    },
+    {
+      "id": "gh-1471",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "acdaf64ea74b846adb2eaea44d0a0a82427b3670",
+        "at": "2026-10-29T21:29:49.342Z"
+      },
+      "priorSpecSha256": "f403272f8d4739ec6b15ea83de51f63d8ed7018db7fb161446dd18e1a2e523dc",
+      "planningSpecSha256": "22e24e1ba68c1a3888ca803e617144928cb52eb65c24500996e21bde26347f32"
+    },
+    {
+      "id": "gh-1469",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "1f66bb6d5f0400008ad14fc0558b128905ca5165",
+        "at": "2026-10-30T00:30:49.166Z"
+      },
+      "priorSpecSha256": "7b4bb2830e4f4a4200bfdea7020c4f9b38304196ac5f71161b96e236a310a643",
+      "planningSpecSha256": "18b3ffff5d7fc35c34870c25fe262fa8c9363428175ba761220989d5d659dda3"
+    },
+    {
+      "id": "gh-1475",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "e7ddc31d62b73040389a0fed774ec271bb841886",
+        "at": "2026-10-30T00:53:19.077Z"
+      },
+      "priorSpecSha256": "6bbceea3021766e3df2d2e3cda3432edb4ead1d7e0e8fdf56443ac4c322e6a68",
+      "planningSpecSha256": "eca655c1dba835ed0a7be9aef161f0c175d9902e89aeb7447781def854b7adb1"
+    },
+    {
+      "id": "gh-1509",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b2e79fad9782fd36734e4dbc25cd5a20e25c8295",
+        "at": "2026-10-30T05:01:49.306Z"
+      },
+      "priorSpecSha256": "68bbda17082473e5be7d8537a3cfa2f1c8d0223e355decc42c35ea57bfb1fe21",
+      "planningSpecSha256": "1052616b5ae7474ac82783702b49194a7083b0e89dc94617e2f891c043f187bc"
+    },
+    {
+      "id": "gh-1518",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "04a60dde01146e5d80c7f28663b83da962acbc66",
+        "at": "2026-10-30T08:08:50.590Z"
+      },
+      "priorSpecSha256": "516eb69d171c45dd7f6ac46f5a2818a89d5c1d0306fd3a3c0102296d3956f64a",
+      "planningSpecSha256": "344a62668dccc43d718455fc9cafd77b769ed41afc35bbffbea943ecbdbc8eef"
+    },
+    {
+      "id": "gh-1604",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b56d8549666b80577b96f74cef29b6205e363b00",
+        "at": "2026-10-29T22:02:15.673Z"
+      },
+      "priorSpecSha256": "c5b41a2a521693450cfd71b640b0398473fdddb39edc2f265532ae07bed20a01",
+      "planningSpecSha256": "3e12b0a18ba0967b72e697134df8cc28d6b2af097d3a0e41d9e10edb56930a2e"
+    },
+    {
+      "id": "gh-1489",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "cc9c1a647ea6cd346c47dd466f0d1d4b21ab0980",
+        "at": "2026-10-29T21:45:51.799Z"
+      },
+      "priorSpecSha256": "0a11547a73d140d6a2e377ce87a4948bea495f7a5a346cd4dbdbd64326f680ca",
+      "planningSpecSha256": "d190bec8f46cf369936d86621b4fa769326a37f9b091bcf139930bd31c26ad4a"
+    },
+    {
+      "id": "gh-1495",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "96d43e775e5da33f4b52cd5844d7119238b58739",
+        "at": "2026-10-30T02:22:34.517Z"
+      },
+      "priorSpecSha256": "a878a7dfe8125a2fa606070572d63d6c074df926bf2788e199ed10040e82733b",
+      "planningSpecSha256": "a83990cea872d09d9a9eac3ce5473ab08f13b9cd0d01f00206cf9a6e06777c2d"
+    },
+    {
+      "id": "gh-1500",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "fb6485d51ad0528f8cd7beb8a9c7e32859ece675",
+        "at": "2026-10-30T03:17:10.239Z"
+      },
+      "priorSpecSha256": "0dc14649d32729cd8e435633c848ad9eee586577a13762a19ae64507f1cb8ad7",
+      "planningSpecSha256": "d499a795900212c6732ea4d974858dc13d2708303ccda02497ff268942f0017d"
+    },
+    {
+      "id": "gh-1514",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "78d0b752d885c52fae52395fd0f49f88aff674b9",
+        "at": "2026-10-30T05:47:38.360Z"
+      },
+      "priorSpecSha256": "8a6c6a89c60d2a3b43c7fdc9f2bdb2aa045fc04bc2c839769ddcfe1409e3e98c",
+      "planningSpecSha256": "718ca9484f1b3a0b7146083e55079a99d79ff89097155eb39f704b32d50d4be3"
+    },
+    {
+      "id": "gh-1515",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "585f2d22d4dbd366cb2195b8dacf5891ac998603",
+        "at": "2026-10-30T06:12:02.775Z"
+      },
+      "priorSpecSha256": "90d29bb45eed99d82abd609328f84319dc4b6b225acc6c05e2d3cb8e28033157",
+      "planningSpecSha256": "ff909f4afc1acbf0fdea73c5ea2a03e71d5653951ed0a2fff32207c7511d75c8"
+    },
+    {
+      "id": "gh-1520",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "b8135e8ec88a81a0baf6f47b8501255d61c2e568",
+        "at": "2026-10-30T09:01:37.839Z"
+      },
+      "priorSpecSha256": "762e41b8dd6fc1d4acbeb9ef6a9e9bb9f87b99b54420f1db758eda0beace3959",
+      "planningSpecSha256": "76badeca12a6260479e2713eeb5df110c98186677915251f34fe1f0737d9379c"
+    },
+    {
+      "id": "gh-1517",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "2fb05fc9a231074413cac5f804d6ca12f3ad398f",
+        "at": "2026-10-30T06:54:29.956Z"
+      },
+      "priorSpecSha256": "7ac1e33a235831065db6bda4cc25e005c3d51ee6ee274005165cc9cb8666a12f",
+      "planningSpecSha256": "211eeacf20985d31a1131aacae043d6f98b451100c6bacdd9d3ed040aad6a82f"
+    },
+    {
+      "id": "gh-1529",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "a7a99fc8ee34e50227d42d35d25b8ef50ef6ef9b",
+        "at": "2026-10-30T09:50:00.230Z"
+      },
+      "priorSpecSha256": "cfa2bf26ad70943805b7fa585d34dfbe858197a4d7952aab35fa61116c9f0796",
+      "planningSpecSha256": "3ec099cb4fea664244e9d7146d92236a669c89588eba9b8344627f80303d1455"
+    },
+    {
+      "id": "gh-1364",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "1527d7cd28964f375d17b34b0bd92afabdc26c93",
+        "at": "2026-10-29T20:40:57.749Z"
+      },
+      "priorSpecSha256": "85f0da25b7475d6a3b136aa2b3da9e5fb94b7b4bb3a463faf6ef095761759074",
+      "planningSpecSha256": "b4a5135abb247756263e15ca4b8ca3d13f86601dee23a34c4154fb88bf2d39eb"
+    },
+    {
+      "id": "gh-1088",
+      "priorState": "closed",
+      "stateReason": "completed",
+      "resolution": {
+        "pullRequests": [],
+        "commit": "5f16f8b14c527f6b12d5bc33ddda7eb5417cfe7f",
+        "at": "2026-10-29T20:45:51.977Z"
+      },
+      "priorSpecSha256": "003971ed5f630d71a99d0528a3fceb0a5db0ebc2b305e357dc08cbb3aa318c55",
+      "planningSpecSha256": "8a052ec8cd63f18b02c65a9679c105ed2e26ac3e91cd6e169fcf428b98c0dd2f"
+    }
+  ]
+}

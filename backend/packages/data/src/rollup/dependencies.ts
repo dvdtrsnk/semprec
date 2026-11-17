@@ -1,0 +1,125 @@
+import type { PoolClient } from "pg";
+import { lockRollupSourceDatabase } from "../chokePoint/databaseRowLocks.js";
+
+export interface RollupDependencyRow {
+  rollupPropertyId: string;
+  relationDefinitionId: string;
+  sourceDatabaseId: string;
+  sourcePropertyKey: string | null;
+}
+
+type RollupDependencyDbRow = {
+  rollup_property_id: string;
+  relation_definition_id: string;
+  source_database_id: string;
+  source_property_key: string | null;
+};
+
+function mapRow(row: RollupDependencyDbRow): RollupDependencyRow {
+  return {
+    rollupPropertyId: row.rollup_property_id,
+    relationDefinitionId: row.relation_definition_id,
+    sourceDatabaseId: row.source_database_id,
+    sourcePropertyKey: row.source_property_key,
+  };
+}
+
+export interface UpsertRollupDependencyInput {
+  rollupPropertyId: string;
+  relationDefinitionId: string;
+  sourceDatabaseId: string;
+  sourcePropertyKey: string | null;
+}
+
+/** Must be called in the same transaction as the write to the rollup property (create or config change). */
+export async function upsertRollupDependency(client: PoolClient, input: UpsertRollupDependencyInput): Promise<void> {
+  await lockRollupSourceDatabase(client, input.sourceDatabaseId);
+  await client.query(
+    `INSERT INTO rollup_dependencies (rollup_property_id, relation_definition_id, source_database_id, source_property_key)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (rollup_property_id) DO UPDATE
+       SET relation_definition_id = EXCLUDED.relation_definition_id,
+           source_database_id = EXCLUDED.source_database_id,
+           source_property_key = EXCLUDED.source_property_key`,
+    [input.rollupPropertyId, input.relationDefinitionId, input.sourceDatabaseId, input.sourcePropertyKey],
+  );
+}
+
+/** Used when deleting a relation property: which rollups elsewhere depend on this relation. */
+export async function findDependenciesByRelationDefinition(
+  client: PoolClient,
+  relationDefinitionId: string,
+): Promise<RollupDependencyRow[]> {
+  const { rows } = await client.query<RollupDependencyDbRow>(
+    `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
+     FROM rollup_dependencies WHERE relation_definition_id = $1`,
+    [relationDefinitionId],
+  );
+  return rows.map(mapRow);
+}
+
+/** Used when retyping a source property: which rollups depend on it as their targetPropertyKey. */
+export async function findDependenciesBySource(
+  client: PoolClient,
+  sourceDatabaseId: string,
+  sourcePropertyKey: string,
+): Promise<RollupDependencyRow[]> {
+  const { rows } = await client.query<RollupDependencyDbRow>(
+    `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
+     FROM rollup_dependencies WHERE source_database_id = $1 AND source_property_key = $2`,
+    [sourceDatabaseId, sourcePropertyKey],
+  );
+  return rows.map(mapRow);
+}
+
+/**
+ * `findDependenciesBySource` for several keys of one database in one statement: the rows of each key in the order
+ * of `sourcePropertyKeys`.
+ */
+export async function findDependenciesBySources(
+  client: PoolClient,
+  sourceDatabaseId: string,
+  sourcePropertyKeys: readonly string[],
+): Promise<RollupDependencyRow[]> {
+  if (sourcePropertyKeys.length === 0) return [];
+  const { rows } = await client.query<RollupDependencyDbRow>(
+    `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
+     FROM rollup_dependencies WHERE source_database_id = $1 AND source_property_key = ANY($2::text[])
+     ORDER BY array_position($2::text[], source_property_key), rollup_property_id`,
+    [sourceDatabaseId, sourcePropertyKeys],
+  );
+  return rows.map(mapRow);
+}
+
+/** Archive and restore of a database: which rollups aggregate its items. Zero rows is the common case. */
+export async function findDependenciesBySourceDatabase(
+  client: PoolClient,
+  sourceDatabaseId: string,
+): Promise<RollupDependencyRow[]> {
+  const { rows } = await client.query<RollupDependencyDbRow>(
+    `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
+     FROM rollup_dependencies WHERE source_database_id = $1`,
+    [sourceDatabaseId],
+  );
+  return rows.map(mapRow);
+}
+
+export async function getRollupDependency(
+  client: PoolClient,
+  rollupPropertyId: string,
+): Promise<RollupDependencyRow | null> {
+  const { rows } = await client.query<RollupDependencyDbRow>(
+    `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
+     FROM rollup_dependencies WHERE rollup_property_id = $1`,
+    [rollupPropertyId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/** For the trash purge dropping an emptied inline database. Zero rows is valid. */
+export async function deleteRollupDependenciesBySourceDatabase(
+  client: PoolClient,
+  sourceDatabaseId: string,
+): Promise<void> {
+  await client.query("DELETE FROM rollup_dependencies WHERE source_database_id = $1", [sourceDatabaseId]);
+}

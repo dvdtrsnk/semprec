@@ -1,4 +1,4 @@
 packages:
   - "packages/*"
-  - "modules/*"
   - "services/*"
+  - "../shared/block-model"

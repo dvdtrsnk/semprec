@@ -1,0 +1,4 @@
+{
+  "journalWeeklyCleanup.task": "Weekly Journal cleanup. Keep the Journal tidy and change nothing else.\n1. Duplicate entries: when a list of duplicated Journal periods follows this text, propose merging the two live entries of each listed period with the page.mergeJournalDuplicates operation, one call per period. The user approves each merge in the Inbox; never remove an entry any other way.\n2. Week summary: if the Journal entry of the week that ends today has no summary yet, open it with page.ensureJournalPeriod (type week) and write a short summary of the week to its page, based on the entries of the days of that week.\n3. Event links: when the text of a day of that week mentions a calendar event without linking it, add the link [Title](semprec://items/<event item id>) to that day's text.",
+  "journalWeeklyCleanup.duplicatesHeading": "Journal periods with more than one live entry (type and period):"
+}

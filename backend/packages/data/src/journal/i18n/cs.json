@@ -1,0 +1,4 @@
+{
+  "journalWeeklyCleanup.task": "Týdenní úklid deníku. Udržuj deník v pořádku a nic jiného neměň.\n1. Duplicitní záznamy: když za tímto textem následuje seznam duplicitních období deníku, navrhni sloučení obou živých záznamů každého uvedeného období operací page.mergeJournalDuplicates, jedno volání na období. Každé sloučení uživatel schvaluje ve schránce; záznam jinak nikdy neodstraňuj.\n2. Shrnutí týdne: pokud záznam deníku za týden, který dnes končí, ještě nemá shrnutí, otevři ho operací page.ensureJournalPeriod (typ week) a zapiš na jeho stránku krátké shrnutí týdne podle záznamů dnů tohoto týdne.\n3. Odkazy na události: když text dne tohoto týdne zmiňuje událost z kalendáře bez odkazu na ni, doplň do textu dne odkaz [Název](semprec://items/<id položky události>).",
+  "journalWeeklyCleanup.duplicatesHeading": "Období deníku s více než jedním živým záznamem (typ a období):"
+}

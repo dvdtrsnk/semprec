@@ -1,0 +1,4 @@
+{
+  "enabled": false,
+  "reason": "Owner-authorized pause while the review provider weekly quota is exhausted. Local review is required before manual merge; set enabled to true to restore automated review."
+}

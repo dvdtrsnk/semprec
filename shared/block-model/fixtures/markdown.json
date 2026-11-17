@@ -1,0 +1,359 @@
+{
+  "description": "Shared Markdown <-> block vectors. Blocks without an id get b1, b2, ... in order. direction: both (default) parses and serializes, parse parses only, serialize serializes only. A parse vector may carry canonical, the Markdown it serializes back to.",
+  "vectors": [
+    {
+      "name": "code formatted soft break",
+      "markdown": "`a`<code><br></code>`b`",
+      "blocks": [{ "type": "text", "text": [{ "insert": "a\nb", "attributes": { "code": true } }] }]
+    },
+    {
+      "name": "code only soft break",
+      "markdown": "<code><br></code>",
+      "blocks": [{ "type": "text", "text": [{ "insert": "\n", "attributes": { "code": true } }] }]
+    },
+    {
+      "name": "significant boundary whitespace",
+      "markdown": "&#x20;&#x9;Hello&#xd;&#xa0;",
+      "blocks": [{ "type": "text", "text": [{ "insert": " \tHello\r\u00a0" }] }]
+    },
+    {
+      "name": "whitespace-only quote and indented list",
+      "markdown": "> &#x20;&#x9;\n\n  - &#x20;x&#x20;",
+      "blocks": [
+        { "type": "quote", "text": [{ "insert": " \t" }] },
+        { "type": "bullet", "indent": 1, "text": [{ "insert": " x " }] }
+      ]
+    },
+    {
+      "name": "inline page link is text",
+      "markdown": "[Title](<semprec://page/p1>)",
+      "blocks": [
+        { "type": "text", "text": [{ "insert": "Title", "attributes": { "link": { "href": "semprec://page/p1" } } }] }
+      ]
+    },
+    {
+      "name": "literal whitespace reference and code",
+      "markdown": "\\&#x20; and `&#x20;`",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [{ "insert": "&#x20; and " }, { "insert": "&#x20;", "attributes": { "code": true } }]
+        }
+      ]
+    },
+    {
+      "name": "project notes sample",
+      "markdown": "## Project notes\n\nBuild `0.4 (52)` is out, see [the spec](https://example.com/spec)\n\n- Release checklist\n  - Tag the build\n- [x] Ship build `0.4 (52)`\n\n> Keep the scope small\n\n[Roadmap](semprec://page/page-roadmap)",
+      "pageTitles": { "page-roadmap": "Roadmap" },
+      "blocks": [
+        { "type": "h2", "text": [{ "insert": "Project notes" }] },
+        {
+          "type": "text",
+          "text": [
+            { "insert": "Build " },
+            { "insert": "0.4 (52)", "attributes": { "code": true } },
+            { "insert": " is out, see " },
+            { "insert": "the spec", "attributes": { "link": { "href": "https://example.com/spec" } } }
+          ]
+        },
+        { "type": "bullet", "text": [{ "insert": "Release checklist" }] },
+        { "type": "bullet", "indent": 1, "text": [{ "insert": "Tag the build" }] },
+        {
+          "type": "todo",
+          "done": true,
+          "text": [{ "insert": "Ship build " }, { "insert": "0.4 (52)", "attributes": { "code": true } }]
+        },
+        { "type": "quote", "text": [{ "insert": "Keep the scope small" }] },
+        { "type": "page", "pageId": "page-roadmap" }
+      ]
+    },
+    {
+      "name": "line-start number in plain text is escaped",
+      "markdown": "16\\. 10. jsme...",
+      "blocks": [{ "type": "text", "text": [{ "insert": "16. 10. jsme..." }] }]
+    },
+    {
+      "name": "line-start markers in plain text are escaped",
+      "markdown": "\\# not a heading\n\n\\- not a list\n\n\\> not a quote\n\n\\[ \\] x\n\n-5 degrees",
+      "blocks": [
+        { "type": "text", "text": [{ "insert": "# not a heading" }] },
+        { "type": "text", "text": [{ "insert": "- not a list" }] },
+        { "type": "text", "text": [{ "insert": "> not a quote" }] },
+        { "type": "text", "text": [{ "insert": "[ ] x" }] },
+        { "type": "text", "text": [{ "insert": "-5 degrees" }] }
+      ]
+    },
+    {
+      "name": "two lines without a blank line are two blocks",
+      "direction": "parse",
+      "markdown": "first line\nsecond line",
+      "canonical": "first line\n\nsecond line",
+      "blocks": [
+        { "type": "text", "text": [{ "insert": "first line" }] },
+        { "type": "text", "text": [{ "insert": "second line" }] }
+      ]
+    },
+    {
+      "name": "soft break is one block",
+      "markdown": "one<br>two",
+      "blocks": [{ "type": "text", "text": [{ "insert": "one\ntwo" }] }]
+    },
+    {
+      "name": "soft break inside bold and a todo",
+      "markdown": "**a<br>b**\n\n- [ ] x<br>y",
+      "blocks": [
+        { "type": "text", "text": [{ "insert": "a\nb", "attributes": { "bold": true } }] },
+        { "type": "todo", "text": [{ "insert": "x\ny" }] }
+      ]
+    },
+    {
+      "name": "unknown block type is preserved by a comment",
+      "markdown": "<!-- semprec:block id=u1 type=callout indent=2 -->\nHeads up",
+      "blocks": [{ "id": "u1", "type": "callout", "indent": 2, "text": [{ "insert": "Heads up" }] }]
+    },
+    {
+      "name": "indent on a non-list block is preserved by a comment",
+      "markdown": "<!-- semprec:block id=h1 type=h2 indent=3 -->\n## Title\n\n<!-- semprec:block id=q1 type=quote indent=1 -->\n> Quoted",
+      "blocks": [
+        { "id": "h1", "type": "h2", "indent": 3, "text": [{ "insert": "Title" }] },
+        { "id": "q1", "type": "quote", "indent": 1, "text": [{ "insert": "Quoted" }] }
+      ]
+    },
+    {
+      "name": "empty text block is carried by a comment",
+      "markdown": "<!-- semprec:block id=e1 type=text indent=0 -->",
+      "blocks": [{ "id": "e1", "type": "text", "text": [] }]
+    },
+    {
+      "name": "ids mode writes a comment before every block",
+      "withIds": true,
+      "markdown": "<!-- semprec:block id=a1 type=text indent=0 -->\nHello\n\n<!-- semprec:block id=a2 type=bullet indent=0 -->\n- one\n<!-- semprec:block id=a3 type=bullet indent=1 -->\n  - two",
+      "blocks": [
+        { "id": "a1", "type": "text", "text": [{ "insert": "Hello" }] },
+        { "id": "a2", "type": "bullet", "text": [{ "insert": "one" }] },
+        { "id": "a3", "type": "bullet", "indent": 1, "text": [{ "insert": "two" }] }
+      ]
+    },
+    {
+      "name": "inline formatting",
+      "markdown": "**bold** and _italic_ and a*b*c and **_both_**",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            { "insert": "bold", "attributes": { "bold": true } },
+            { "insert": " and " },
+            { "insert": "italic", "attributes": { "italic": true } },
+            { "insert": " and a" },
+            { "insert": "b", "attributes": { "italic": true } },
+            { "insert": "c and " },
+            { "insert": "both", "attributes": { "bold": true, "italic": true } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "crossed bold and italic use html tags",
+      "markdown": "x<strong>ab<em>cd</strong>ef</em>y",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            { "insert": "x" },
+            { "insert": "ab", "attributes": { "bold": true } },
+            { "insert": "cd", "attributes": { "bold": true, "italic": true } },
+            { "insert": "ef", "attributes": { "italic": true } },
+            { "insert": "y" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "special characters are escaped",
+      "markdown": "a \\* b \\_x\\_ \\<b> \\`c\\` \\[d\\] e\\\\f snake_case",
+      "blocks": [{ "type": "text", "text": [{ "insert": "a * b _x_ <b> `c` [d] e\\f snake_case" }] }]
+    },
+    {
+      "name": "link with parentheses and formatted text",
+      "markdown": "[**bold** link](<https://example.com/a_(b)>)",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            { "insert": "bold", "attributes": { "bold": true, "link": { "href": "https://example.com/a_(b)" } } },
+            { "insert": " link", "attributes": { "link": { "href": "https://example.com/a_(b)" } } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "code containing a backtick",
+      "markdown": "``a`b``",
+      "blocks": [{ "type": "text", "text": [{ "insert": "a`b", "attributes": { "code": true } }] }]
+    },
+    {
+      "name": "scheme-less link gets https",
+      "direction": "parse",
+      "markdown": "[docs](example.com/x)",
+      "canonical": "[docs](https://example.com/x)",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [{ "insert": "docs", "attributes": { "link": { "href": "https://example.com/x" } } }]
+        }
+      ]
+    },
+    {
+      "name": "alternative markers are accepted on read",
+      "direction": "parse",
+      "markdown": "* star bullet\n* [X] done todo\n3. third\n4. fourth",
+      "canonical": "- star bullet\n- [x] done todo\n1. third\n1. fourth",
+      "blocks": [
+        { "type": "bullet", "text": [{ "insert": "star bullet" }] },
+        { "type": "todo", "done": true, "text": [{ "insert": "done todo" }] },
+        { "type": "number", "text": [{ "insert": "third" }] },
+        { "type": "number", "text": [{ "insert": "fourth" }] }
+      ]
+    },
+    {
+      "name": "inline html is accepted on read",
+      "direction": "parse",
+      "markdown": "<b>x</b> <i>y</i><br/>z <strong>s</strong> <em>e</em>",
+      "canonical": "**x** _y_<br>z **s** _e_",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            { "insert": "x", "attributes": { "bold": true } },
+            { "insert": " " },
+            { "insert": "y", "attributes": { "italic": true } },
+            { "insert": "\nz " },
+            { "insert": "s", "attributes": { "bold": true } },
+            { "insert": " " },
+            { "insert": "e", "attributes": { "italic": true } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "unmatched delimiters stay literal",
+      "direction": "parse",
+      "markdown": "5 * 3 and a_b and 2 ** 4",
+      "canonical": "5 \\* 3 and a_b and 2 \\*\\* 4",
+      "blocks": [{ "type": "text", "text": [{ "insert": "5 * 3 and a_b and 2 ** 4" }] }]
+    },
+    {
+      "name": "indent is clamped on read",
+      "direction": "parse",
+      "markdown": "            - deep",
+      "canonical": "          - deep",
+      "blocks": [{ "type": "bullet", "indent": 5, "text": [{ "insert": "deep" }] }]
+    },
+    {
+      "name": "page link with a title is read as its id",
+      "direction": "parse",
+      "markdown": "[Some title](semprec://page/p-1)",
+      "canonical": "[](semprec://page/p-1)",
+      "blocks": [{ "type": "page", "pageId": "p-1" }]
+    },
+    {
+      "name": "item link round trip",
+      "markdown": "Meeting: [Standup](semprec://items/3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10) at 9",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            { "insert": "Meeting: " },
+            {
+              "insert": "Standup",
+              "attributes": { "link": { "href": "semprec://items/3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10" } }
+            },
+            { "insert": " at 9" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "inline page href line feed uses destination token",
+      "markdown": "[Page](<semprec://page/a&#xa;b>)",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            {
+              "insert": "Page",
+              "attributes": {
+                "link": {
+                  "href": "semprec://page/a\nb"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "angle href preserves literal line feed reference",
+      "markdown": "[Page](<semprec://page/\\&#xa;&#xa;b>)",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            {
+              "insert": "Page",
+              "attributes": {
+                "link": {
+                  "href": "semprec://page/&#xa;\nb"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "page block encodes opaque identifier and resolver line feed",
+      "markdown": "[First<br>Second](semprec://page/a\\u0020b)",
+      "blocks": [
+        {
+          "type": "page",
+          "pageId": "a b"
+        }
+      ],
+      "pageTitles": {
+        "a b": "First\nSecond"
+      }
+    },
+    {
+      "name": "comment preserves unsafe id and unknown type",
+      "markdown": "<!-- semprec:block id=a\\u0020b type=we\\u0020ird indent=0 -->\nx",
+      "blocks": [
+        {
+          "id": "a b",
+          "type": "we ird",
+          "text": [
+            {
+              "insert": "x"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "synthetic empty document writes nothing",
+      "direction": "serialize",
+      "markdown": "",
+      "synthetic": true,
+      "blocks": [{ "type": "text", "text": [] }]
+    }
+  ],
+  "rejections": [
+    {
+      "name": "page link is rejected when pages are not allowed",
+      "markdown": "Intro\n\n[Roadmap](semprec://page/page-roadmap)",
+      "parseOptions": { "allowPage": false },
+      "path": "line 3",
+      "code": "page_not_allowed"
+    }
+  ]
+}

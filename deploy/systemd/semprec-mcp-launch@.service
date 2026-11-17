@@ -1,0 +1,38 @@
+[Unit]
+Description=Semprec stdio MCP server in the sandbox (connection %i)
+
+[Service]
+Type=simple
+User=semprec-mcp
+Group=semprec-mcp
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+SyslogIdentifier=semprec-mcp-launch
+ExecStart=/usr/local/libexec/semprec-mcp-launch
+StateDirectory=semprec-mcp
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/semprec-mcp
+RuntimeMaxSec=300
+MemoryMax=1G
+TasksMax=64
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+InaccessiblePaths=-/opt/semprec/shared -/opt/semprec/data -/var/backups/semprec -/etc/caddy

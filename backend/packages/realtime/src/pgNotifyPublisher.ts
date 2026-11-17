@@ -1,0 +1,411 @@
+import type { Pool, PoolClient } from "pg";
+import { randomUUID } from "node:crypto";
+import { isAgentRunEventId, isUuid, type AgentDeltaChunk } from "./protocolV1.js";
+
+/** The one durable channel for every recoverable realtime message kind, distinguished by `type`. */
+export const REALTIME_CHANNEL = "semprec_events";
+/** Ephemeral typing traffic is deliberately isolated from durable realtime references. */
+export const AGENT_STREAM_CHANNEL = "semprec_agent_stream";
+const MAX_AGENT_STREAM_NOTIFY_BYTES = 7_500;
+const AGENT_STREAM_CHUNK_BYTES = 7_000;
+
+/**
+ * Every message is a thin reference (an identifier plus enough to skip a stale echo), never a durable row's content;
+ * clients fetch over REST. `notification_created` carries only `notificationId` here, but the WS fan-out sends the full
+ * row (see `syncServer.ts`).
+ */
+export type RealtimeMessage =
+  | {
+      type: "invalidation";
+      scope: "item";
+      databaseId: string;
+      itemId: string;
+      op: "create" | "update" | "delete";
+      updatedAt: string;
+      userId?: string;
+    }
+  | { type: "invalidation"; scope: "schema"; databaseId: string; userId?: string }
+  | {
+      type: "invalidation";
+      scope: "relation";
+      databaseId: string;
+      itemId: string;
+      propertyKey: string | null;
+      op: "put" | "delete" | "metadata";
+      userId?: string;
+    }
+  | { type: "invalidation"; scope: "sempThread"; threadId: string }
+  | { type: "invalidation"; scope: "approvalRequest"; approvalRequestId: string; userId?: string }
+  | { type: "invalidation"; scope: "mailThread"; threadId: string; userId?: string }
+  | {
+      type: "invalidation";
+      scope: "agentRuns";
+      projectItemId: string | null;
+      agentRunId: string;
+      userId?: string;
+    }
+  | { type: "invalidation"; scope: "projectAgent"; projectItemId: string }
+  | { type: "invalidation"; scope: "sempStatus" }
+  | { type: "invalidation"; scope: "notificationPreferences"; userId: string }
+  | { type: "invalidation"; scope: "badgeCounts"; userId: string }
+  | { type: "invalidation"; scope: "account"; userId: string }
+  | { type: "invalidation"; scope: "overview" }
+  | { type: "invalidation"; scope: "mcpServers" }
+  | {
+      type: "invalidation";
+      scope: "inboxCards";
+      op: "created" | "updated" | "closed";
+      cardId: string;
+      userId?: string;
+    }
+  | { type: "doc_update"; docId: string; updateId: string; createdBy: string }
+  | { type: "agent_run_event"; agentRunId: string; eventId: string }
+  | { type: "notification_created"; userId: string; notificationId: string }
+  | { type: "notification_read_state"; userId: string; notificationIds: string[] }
+  | { type: "session_revoked"; sessionId: string };
+
+/** Postgres caps a NOTIFY payload at ~8000 bytes; these thin messages stay a couple hundred bytes. */
+export async function publishRealtimeMessage(pool: Pool | PoolClient, message: RealtimeMessage): Promise<void> {
+  if (message.type === "session_revoked") {
+    // Sessions are revoked from scopes other than the owner's tenant, so the tenant comes from the session's user (the
+    // socket's binding), not the publisher's scope.
+    await pool.query(
+      `SELECT pg_notify($1, json_build_object(
+         'tenantId',
+         (SELECT u.tenant_id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = $3::uuid),
+         'message', $2::json)::text)`,
+      [REALTIME_CHANNEL, JSON.stringify(message), message.sessionId],
+    );
+    return;
+  }
+  if (message.type === "invalidation" && message.scope === "relation") {
+    const validated = parseRealtimeMessage(message);
+    if (!validated || validated.type !== "invalidation" || validated.scope !== "relation")
+      throw new Error("Invalid relation invalidation");
+    const serialized = JSON.stringify(validated);
+    const bounded =
+      Buffer.byteLength(serialized, "utf8") <= 7000 ? serialized : JSON.stringify({ ...validated, propertyKey: null });
+    await publishEnveloped(pool, REALTIME_CHANNEL, bounded);
+    return;
+  }
+  await publishEnveloped(pool, REALTIME_CHANNEL, JSON.stringify(message));
+}
+
+/**
+ * The envelope is built inside Postgres, so the tenant always comes from the publisher's scope and never from the
+ * message body.
+ */
+async function publishEnveloped(pool: Pool | PoolClient, channel: string, messageJson: string): Promise<void> {
+  await pool.query(
+    `SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)`,
+    [channel, messageJson],
+  );
+}
+
+type VoiceDeltaIdentity = { sempMessageId?: string; afterEventId?: string; deltaSequence?: number };
+export type AgentStreamMessage = VoiceDeltaIdentity &
+  (
+    | { type: "agent_run_delta"; agentRunId: string; delta: unknown }
+    | { type: "agent_run_delta"; agentRunId: string; delta: string; chunk: AgentDeltaChunk }
+  );
+
+function serializedBytes(message: AgentStreamMessage): number {
+  return Buffer.byteLength(JSON.stringify(message), "utf8");
+}
+
+/**
+ * Non-durable typing delta. NOTIFY payloads must stay below ~8 KiB, so large values are split into independently valid
+ * base64 pieces that the client reassembles.
+ */
+export async function publishAgentRunDelta(
+  pool: Pool | PoolClient,
+  agentRunId: string,
+  delta: unknown,
+  sempMessageId?: string,
+  afterEventId?: string,
+  deltaSequence?: number,
+): Promise<void> {
+  const attributed = sempMessageId !== undefined || afterEventId !== undefined || deltaSequence !== undefined;
+  if (
+    attributed &&
+    (!isUuid(sempMessageId) ||
+      !isAgentRunEventId(afterEventId) ||
+      afterEventId === "0" ||
+      !Number.isSafeInteger(deltaSequence) ||
+      deltaSequence === undefined ||
+      deltaSequence < 1)
+  )
+    throw new Error("Invalid Semp delta identity");
+  const identity = attributed ? { sempMessageId, afterEventId, deltaSequence } : {};
+  // `JSON.stringify` drops an `undefined` key but `parseAgentStreamMessage` requires `delta`; normalize so an explicit
+  // `undefined` still round-trips.
+  const single: AgentStreamMessage = {
+    type: "agent_run_delta",
+    agentRunId,
+    delta: delta === undefined ? null : delta,
+    ...identity,
+  };
+  if (serializedBytes(single) < MAX_AGENT_STREAM_NOTIFY_BYTES) {
+    await publishEnveloped(pool, AGENT_STREAM_CHANNEL, JSON.stringify(single));
+    return;
+  }
+
+  const serialized = JSON.stringify(delta);
+  if (serialized === undefined) throw new Error("Agent run delta is not JSON-serializable");
+  const encoded = Buffer.from(serialized, "utf8").toString("base64");
+  const total = Math.ceil(encoded.length / AGENT_STREAM_CHUNK_BYTES);
+  const id = randomUUID();
+  for (let index = 0; index < total; index += 1) {
+    const chunk: AgentDeltaChunk = { id, index, total, encoding: "base64json" };
+    const message: AgentStreamMessage = {
+      type: "agent_run_delta",
+      agentRunId,
+      ...identity,
+      delta: encoded.slice(index * AGENT_STREAM_CHUNK_BYTES, (index + 1) * AGENT_STREAM_CHUNK_BYTES),
+      chunk,
+    };
+    if (serializedBytes(message) >= MAX_AGENT_STREAM_NOTIFY_BYTES) {
+      throw new Error("Agent run delta chunk exceeds the NOTIFY payload limit");
+    }
+    await publishEnveloped(pool, AGENT_STREAM_CHANNEL, JSON.stringify(message));
+  }
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+/**
+ * Validates a NOTIFY payload against the closed catalog instead of trusting a cast. Returns `null`, never throws, so
+ * the caller drops it like unparsable JSON.
+ */
+export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const value = raw as Record<string, unknown>;
+
+  switch (value.type) {
+    case "invalidation": {
+      if (value.scope === "relation") {
+        if (
+          !isUuid(value.databaseId) ||
+          !isUuid(value.itemId) ||
+          !(value.propertyKey === null || typeof value.propertyKey === "string") ||
+          !(value.op === "put" || value.op === "delete" || value.op === "metadata") ||
+          !(value.userId === undefined || isUuid(value.userId))
+        )
+          return null;
+        return {
+          type: "invalidation",
+          scope: "relation",
+          databaseId: value.databaseId,
+          itemId: value.itemId,
+          propertyKey: value.propertyKey,
+          op: value.op,
+          userId: value.userId,
+        };
+      }
+      if (value.scope === "item") {
+        if (
+          typeof value.databaseId === "string" &&
+          typeof value.itemId === "string" &&
+          (value.op === "create" || value.op === "update" || value.op === "delete") &&
+          typeof value.updatedAt === "string" &&
+          isOptionalString(value.userId)
+        ) {
+          return {
+            type: "invalidation",
+            scope: "item",
+            databaseId: value.databaseId,
+            itemId: value.itemId,
+            op: value.op,
+            updatedAt: value.updatedAt,
+            userId: value.userId,
+          };
+        }
+        return null;
+      }
+      if (value.scope === "schema") {
+        if (typeof value.databaseId === "string" && isOptionalString(value.userId)) {
+          return { type: "invalidation", scope: "schema", databaseId: value.databaseId, userId: value.userId };
+        }
+        return null;
+      }
+      if (value.scope === "sempThread") {
+        return isUuid(value.threadId) ? { type: "invalidation", scope: "sempThread", threadId: value.threadId } : null;
+      }
+      if (value.scope === "approvalRequest") {
+        if (!isUuid(value.approvalRequestId) || !(value.userId === undefined || isUuid(value.userId))) return null;
+        return {
+          type: "invalidation",
+          scope: "approvalRequest",
+          approvalRequestId: value.approvalRequestId,
+          userId: value.userId,
+        };
+      }
+      if (value.scope === "mailThread") {
+        if (!isUuid(value.threadId) || !(value.userId === undefined || isUuid(value.userId))) return null;
+        return { type: "invalidation", scope: "mailThread", threadId: value.threadId, userId: value.userId };
+      }
+      if (value.scope === "agentRuns") {
+        if (
+          !isUuid(value.agentRunId) ||
+          !(value.projectItemId === null || isUuid(value.projectItemId)) ||
+          !(value.userId === undefined || isUuid(value.userId))
+        )
+          return null;
+        return {
+          type: "invalidation",
+          scope: "agentRuns",
+          projectItemId: value.projectItemId,
+          agentRunId: value.agentRunId,
+          userId: value.userId,
+        };
+      }
+      if (value.scope === "projectAgent") {
+        return isUuid(value.projectItemId)
+          ? { type: "invalidation", scope: "projectAgent", projectItemId: value.projectItemId }
+          : null;
+      }
+      if (value.scope === "sempStatus") {
+        return { type: "invalidation", scope: "sempStatus" };
+      }
+      if (value.scope === "overview") {
+        return { type: "invalidation", scope: "overview" };
+      }
+      if (value.scope === "mcpServers") {
+        return { type: "invalidation", scope: "mcpServers" };
+      }
+      if (value.scope === "notificationPreferences" || value.scope === "badgeCounts" || value.scope === "account") {
+        // Per-user: no valid user means no socket it may go to, so it is malformed.
+        return isUuid(value.userId) ? { type: "invalidation", scope: value.scope, userId: value.userId } : null;
+      }
+      if (value.scope === "inboxCards") {
+        if (
+          !(value.op === "created" || value.op === "updated" || value.op === "closed") ||
+          !isUuid(value.cardId) ||
+          !(value.userId === undefined || isUuid(value.userId))
+        )
+          return null;
+        return { type: "invalidation", scope: "inboxCards", op: value.op, cardId: value.cardId, userId: value.userId };
+      }
+      return null;
+    }
+    case "doc_update": {
+      if (
+        typeof value.docId === "string" &&
+        typeof value.updateId === "string" &&
+        typeof value.createdBy === "string"
+      ) {
+        return { type: "doc_update", docId: value.docId, updateId: value.updateId, createdBy: value.createdBy };
+      }
+      return null;
+    }
+    case "agent_run_event": {
+      if (isUuid(value.agentRunId) && isAgentRunEventId(value.eventId)) {
+        return { type: "agent_run_event", agentRunId: value.agentRunId, eventId: value.eventId };
+      }
+      return null;
+    }
+    case "notification_created": {
+      if (typeof value.userId === "string" && typeof value.notificationId === "string") {
+        return { type: "notification_created", userId: value.userId, notificationId: value.notificationId };
+      }
+      return null;
+    }
+    case "notification_read_state": {
+      if (
+        typeof value.userId === "string" &&
+        Array.isArray(value.notificationIds) &&
+        value.notificationIds.every((id) => typeof id === "string")
+      ) {
+        return {
+          type: "notification_read_state",
+          userId: value.userId,
+          notificationIds: value.notificationIds,
+        };
+      }
+      return null;
+    }
+    case "session_revoked": {
+      if (typeof value.sessionId === "string") {
+        return { type: "session_revoked", sessionId: value.sessionId };
+      }
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+export function parseAgentStreamMessage(raw: unknown): AgentStreamMessage | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const value = raw as Record<string, unknown>;
+  if (value.type !== "agent_run_delta" || !isUuid(value.agentRunId) || !("delta" in value)) return null;
+  if (value.sempMessageId !== undefined && !isUuid(value.sempMessageId)) return null;
+  const ordered = value.afterEventId !== undefined || value.deltaSequence !== undefined;
+  if (
+    ordered &&
+    (!isUuid(value.sempMessageId) ||
+      !isAgentRunEventId(value.afterEventId) ||
+      value.afterEventId === "0" ||
+      typeof value.deltaSequence !== "number" ||
+      !Number.isSafeInteger(value.deltaSequence) ||
+      value.deltaSequence < 1)
+  )
+    return null;
+  const identity: VoiceDeltaIdentity = {
+    ...(value.sempMessageId === undefined ? {} : { sempMessageId: value.sempMessageId }),
+    ...(typeof value.afterEventId === "string" && typeof value.deltaSequence === "number"
+      ? { afterEventId: value.afterEventId, deltaSequence: value.deltaSequence }
+      : {}),
+  };
+  if (value.chunk === undefined)
+    return { type: "agent_run_delta", agentRunId: value.agentRunId, delta: value.delta, ...identity };
+  if (typeof value.chunk !== "object" || value.chunk === null || Array.isArray(value.chunk)) return null;
+  const chunk = value.chunk as Record<string, unknown>;
+  if (
+    typeof value.delta !== "string" ||
+    typeof chunk.id !== "string" ||
+    typeof chunk.index !== "number" ||
+    typeof chunk.total !== "number" ||
+    !Number.isInteger(chunk.index) ||
+    !Number.isInteger(chunk.total) ||
+    chunk.index < 0 ||
+    chunk.total <= 0 ||
+    chunk.index >= chunk.total ||
+    chunk.encoding !== "base64json"
+  ) {
+    return null;
+  }
+  return {
+    type: "agent_run_delta",
+    agentRunId: value.agentRunId,
+    ...identity,
+    delta: value.delta,
+    chunk: { id: chunk.id, index: chunk.index, total: chunk.total, encoding: "base64json" },
+  };
+}
+
+/** A NOTIFY payload after validation: the publisher's tenant and the message it published. */
+export interface RealtimeEnvelope<M> {
+  tenantId: string;
+  message: M;
+}
+
+function parseEnvelope<M>(raw: unknown, parseMessage: (inner: unknown) => M | null): RealtimeEnvelope<M> | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  if (!isUuid(value.tenantId)) return null;
+  const message = parseMessage(value.message);
+  return message ? { tenantId: value.tenantId, message } : null;
+}
+
+/** Validates a `semprec_events` payload: a uuid `tenantId` and a valid `RealtimeMessage`, else `null`. */
+export function parseRealtimeEnvelope(raw: unknown): RealtimeEnvelope<RealtimeMessage> | null {
+  return parseEnvelope(raw, parseRealtimeMessage);
+}
+
+/** Validates a `semprec_agent_stream` payload: a uuid `tenantId` and a valid `AgentStreamMessage`, else `null`. */
+export function parseAgentStreamEnvelope(raw: unknown): RealtimeEnvelope<AgentStreamMessage> | null {
+  return parseEnvelope(raw, parseAgentStreamMessage);
+}

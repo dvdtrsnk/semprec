@@ -1,0 +1,7 @@
+{
+  "viewType.table.name": "Table",
+  "viewType.board.name": "Board",
+  "viewType.calendar.name": "Calendar",
+  "viewType.list.name": "List",
+  "viewType.gallery.name": "Gallery"
+}

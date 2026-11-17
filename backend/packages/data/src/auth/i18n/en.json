@@ -1,0 +1,8 @@
+{
+  "mail.passwordReset.subject": "Reset your password",
+  "mail.passwordReset.text": "Use this link to reset your password:\n\n{url}\n\nThis link expires in 30 minutes and can only be used once. If you didn't request this, you can safely ignore this email.",
+  "mail.passwordReset.html": "<p>Use the link below to reset your password. This link expires in 30 minutes and can only be used once.</p><p><a href=\"{url}\">{url}</a></p><p>If you didn't request this, you can safely ignore this email.</p>",
+  "mail.invite.subject": "You have been invited to Semprec",
+  "mail.invite.text": "You have been invited to Semprec. Open this link to create your account:\n\n{url}\n\nThis link expires in 7 days and can only be used once.",
+  "mail.invite.html": "<p>You have been invited to Semprec. Open the link below to create your account. This link expires in 7 days and can only be used once.</p><p><a href=\"{url}\">{url}</a></p>"
+}

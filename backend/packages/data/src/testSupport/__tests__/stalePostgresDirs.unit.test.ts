@@ -1,0 +1,129 @@
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { sweepStalePostgresDirs } from "../stalePostgresDirs.js";
+
+const { stat: realStat } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+const statMock = vi.fn<typeof stat>(realStat);
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    stat: (...args: Parameters<typeof stat>) => statMock(...args),
+  };
+});
+
+const HOUR_MS = 60 * 60 * 1000;
+const NOW = Date.parse("2026-09-30T12:00:00.000Z");
+
+describe("sweepStalePostgresDirs", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), "stale-pg-dirs-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+    statMock.mockClear();
+    statMock.mockImplementation(realStat);
+  });
+
+  async function makeDir(name: string, ageMs: number): Promise<string> {
+    const dir = path.join(root, name);
+    await mkdir(dir);
+    await setAge(dir, ageMs);
+    return dir;
+  }
+
+  async function setAge(dir: string, ageMs: number): Promise<void> {
+    const mtime = new Date(NOW - ageMs);
+    await utimes(dir, mtime, mtime);
+  }
+
+  it("removes a 25h-old directory with no postmaster.pid", async () => {
+    const dir = await makeDir("semprec-pg-nopid", 25 * HOUR_MS);
+
+    const removed = await sweepStalePostgresDirs({ tmpDir: root, now: () => NOW });
+
+    expect(removed).toEqual([dir]);
+  });
+
+  it("removes a 25h-old directory whose postmaster.pid names a dead pid", async () => {
+    const dir = await makeDir("semprec-pg-deadpid", 25 * HOUR_MS);
+    await writeFile(path.join(dir, "postmaster.pid"), "4242\n/some/data/dir\n");
+    await setAge(dir, 25 * HOUR_MS);
+
+    const removed = await sweepStalePostgresDirs({
+      tmpDir: root,
+      now: () => NOW,
+      isPidAlive: (pid) => {
+        expect(pid).toBe(4242);
+        return false;
+      },
+    });
+
+    expect(removed).toEqual([dir]);
+  });
+
+  it("keeps a 25h-old directory whose pid is alive", async () => {
+    const dir = await makeDir("semprec-pg-alivepid", 25 * HOUR_MS);
+    await writeFile(path.join(dir, "postmaster.pid"), "4242\n/some/data/dir\n");
+    await setAge(dir, 25 * HOUR_MS);
+
+    const removed = await sweepStalePostgresDirs({
+      tmpDir: root,
+      now: () => NOW,
+      isPidAlive: () => true,
+    });
+
+    expect(removed).toEqual([]);
+    await expect(stat(dir)).resolves.toBeDefined();
+  });
+
+  it("keeps a 1h-old directory with no pid file", async () => {
+    await makeDir("semprec-pg-fresh", 1 * HOUR_MS);
+
+    const removed = await sweepStalePostgresDirs({ tmpDir: root, now: () => NOW });
+
+    expect(removed).toEqual([]);
+  });
+
+  it("ignores a sibling entry not named semprec-pg-*", async () => {
+    await makeDir("some-other-dir", 25 * HOUR_MS);
+
+    const removed = await sweepStalePostgresDirs({ tmpDir: root, now: () => NOW });
+
+    expect(removed).toEqual([]);
+  });
+
+  it("skips a directory removed by another process between readdir and stat", async () => {
+    await makeDir("semprec-pg-race", 25 * HOUR_MS);
+    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    statMock.mockRejectedValueOnce(enoent);
+
+    const removed = await sweepStalePostgresDirs({ tmpDir: root, now: () => NOW });
+
+    expect(removed).toEqual([]);
+  });
+
+  it("rethrows a stat error that is not ENOENT", async () => {
+    await makeDir("semprec-pg-denied", 25 * HOUR_MS);
+    const eacces = Object.assign(new Error("EACCES"), { code: "EACCES" });
+    statMock.mockRejectedValueOnce(eacces);
+
+    await expect(sweepStalePostgresDirs({ tmpDir: root, now: () => NOW })).rejects.toBe(eacces);
+  });
+
+  it("returns exactly the removed paths", async () => {
+    const stale = await makeDir("semprec-pg-stale", 25 * HOUR_MS);
+    await makeDir("semprec-pg-fresh2", 1 * HOUR_MS);
+    await makeDir("unrelated", 25 * HOUR_MS);
+
+    const removed = await sweepStalePostgresDirs({ tmpDir: root, now: () => NOW });
+
+    expect(removed).toEqual([stale]);
+  });
+});

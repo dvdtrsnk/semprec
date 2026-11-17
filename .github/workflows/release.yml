@@ -4,9 +4,6 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
-
 concurrency:
   group: release-main
   cancel-in-progress: false
@@ -15,6 +12,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,6 +32,10 @@ jobs:
           if [ "$VERSION" = "0.0.0" ]; then
             echo "package.json is still at the unreleased placeholder version (0.0.0) — skipping release."
             exit 0
+          fi
+          if [ "$VERSION" = "null" ]; then
+            echo "::error::backend/package.json has no .version field; refusing to tag a vnull release."
+            exit 1
           fi
           TAG="v${VERSION}"
           if gh release view "$TAG" >/dev/null 2>&1; then

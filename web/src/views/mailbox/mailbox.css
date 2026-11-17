@@ -1,0 +1,340 @@
+.mailbox {
+  display: grid;
+  grid-template-columns: var(--pane-sidebar-width) var(--pane-list-width) 1fr;
+  gap: 1px;
+  background: var(--color-border);
+  height: 100%;
+  min-height: 0;
+}
+
+.mailbox[data-layout="single-pane"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 1fr;
+}
+
+.mailbox__pane {
+  background: var(--color-surface);
+  overflow-y: auto;
+  padding: var(--space-3);
+  min-width: 0;
+}
+
+.mailbox__pane--folders {
+  background: var(--color-surface-raised);
+}
+
+.mailbox__pane-title {
+  font-size: var(--font-size-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-2);
+}
+
+.mailbox__back {
+  justify-self: start;
+  margin: var(--space-2) 0 0 var(--space-2);
+}
+
+.folder-list,
+.message-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.folder-list__item,
+.message-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-1);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--font-size-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.folder-list__item:hover,
+.message-list__item:hover {
+  background: var(--color-surface-sunken);
+}
+
+.folder-list__item[aria-current="true"],
+.message-list__item[aria-current="true"] {
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+}
+
+.folder-list__name,
+.message-list__subject {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-list__unread {
+  flex: 0 0 auto;
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.message-list__item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+  position: relative;
+}
+
+.message-list__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-1);
+}
+
+/* The keyboard cursor is a visible position of its own, not only the browser's focus ring:
+   it stays legible while a row action button inside the row has focus. */
+.message-list__row[data-cursor="true"] {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.message-list__select {
+  flex: 0 0 auto;
+  margin: 0 0 0 var(--space-2);
+}
+
+/* Row actions stay out of the way until the row is hovered or something inside it has focus —
+   `:focus-within` is what keeps them reachable by keyboard, since a control that is only
+   revealed on hover can never be tabbed to. */
+.message-list__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-1);
+  padding-right: var(--space-2);
+  opacity: 0;
+}
+
+.message-list__row:hover .message-list__actions,
+.message-list__row:focus-within .message-list__actions {
+  opacity: 1;
+}
+
+/* A single-pane (touch) layout has no hover to reveal them with, so there they simply show. */
+.mailbox[data-layout="single-pane"] .message-list__actions {
+  opacity: 1;
+}
+
+.message-list__flag {
+  position: absolute;
+  bottom: var(--space-2);
+  right: var(--space-2);
+  color: var(--color-accent);
+}
+
+.selection-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-2);
+  background: var(--color-surface-raised);
+}
+
+.selection-toolbar__count {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.message-list__failure {
+  margin: 0 0 var(--space-2);
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.message-list__sender {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.message-list__item--unread .message-list__subject {
+  font-weight: 600;
+  color: var(--color-unread);
+}
+
+.message-list__unread-dot {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-2);
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+.reading-pane__subject {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-lg);
+}
+
+.reading-pane__envelope {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.reading-pane__envelope dt {
+  font-weight: 600;
+}
+
+.reading-pane__envelope dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.reading-pane__body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.reading-pane__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.reading-pane__no-aliases {
+  margin-top: var(--space-4);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.mailbox__pane-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/*
+ * The compose window floats over the mailbox rather than taking a pane: reading, triaging and
+ * navigating all continue underneath it, which is the point of composing without losing the
+ * reading context. Minimized, it keeps only its title bar — the form is unmounted, its content
+ * is not (that lives in the client's state).
+ */
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  padding: var(--space-3);
+}
+
+.compose--window {
+  position: fixed;
+  right: var(--space-4);
+  bottom: 0;
+  z-index: 10;
+  width: min(32rem, calc(100vw - 2 * var(--space-4)));
+  max-height: min(36rem, 90vh);
+  overflow-y: auto;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  box-shadow: 0 0 var(--space-4) rgb(0 0 0 / 25%);
+}
+
+.compose--minimized {
+  max-height: none;
+}
+
+.compose--inline {
+  margin-top: var(--space-4);
+  background: var(--color-surface-raised);
+}
+
+.compose__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.compose__title {
+  margin: 0;
+  font-size: var(--font-size-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compose__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.compose__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
+}
+
+.compose__field input,
+.compose__field select,
+.compose__field textarea {
+  font: inherit;
+  font-size: var(--font-size-md);
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-1);
+  padding: var(--space-1) var(--space-2);
+}
+
+.compose__field textarea {
+  resize: vertical;
+  min-height: 8rem;
+}
+
+.compose__copies {
+  align-self: flex-start;
+}
+
+.compose__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.compose__saved,
+.compose__error {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.compose__saved {
+  color: var(--color-text-muted);
+}
+
+.compose__error {
+  color: var(--color-danger);
+}

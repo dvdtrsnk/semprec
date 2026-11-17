@@ -1,0 +1,10 @@
+[
+  "packages/data/src/__tests__/backupKeyRestore.test.ts",
+  "packages/data/src/__tests__/identityTablePrivileges.test.ts",
+  "packages/data/src/__tests__/leastPrivilegeRoles.test.ts",
+  "packages/data/src/__tests__/replayTenantDeletionsCommand.test.ts",
+  "packages/data/src/__tests__/runtimeRoleAssertion.test.ts",
+  "packages/data/src/__tests__/tenancyInvariants.test.ts",
+  "packages/data/src/testSupport/__tests__/tenantFixtures.test.ts",
+  "services/semprec-agents/src/__tests__/agentsDatabaseRole.test.ts"
+]

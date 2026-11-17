@@ -1,0 +1,88 @@
+import type { Pool } from "pg";
+import {
+  setInvalidationHook,
+  setInvalidationPublisher,
+  setDocUpdateHook,
+  setAgentRunEventHook,
+  setAgentRunDeltaHook,
+  setNotificationCreatedHook,
+  setNotificationReadStateHook,
+  setSessionRevokedHook,
+  setSempThreadInvalidationHook,
+  setInboxCardsInvalidationHook,
+} from "@semprec/data";
+import { publishAgentRunDelta, publishRealtimeMessage } from "./pgNotifyPublisher.js";
+import { runInTenant } from "@semprec/shared";
+import { logger } from "./logger.js";
+
+/**
+ * Wires the data layer's in-process invalidation hooks to Postgres NOTIFY. Call once at startup in the process that
+ * owns the write path.
+ */
+export function wireRealtimeHooks(pool: Pool): void {
+  const agentRunPublishTails = new Map<string, { promise: Promise<void> }>();
+
+  function enqueueAgentRunEvent(event: { agentRunId: string; eventId: string }): void {
+    const entry = { promise: Promise.resolve() };
+    const preceding = agentRunPublishTails.get(event.agentRunId)?.promise ?? Promise.resolve();
+    entry.promise = preceding
+      .then(() => publishRealtimeMessage(pool, { type: "agent_run_event", ...event }))
+      .catch((err: unknown) => {
+        logger.error({ err }, "Failed to publish agent_run_event realtime message");
+      })
+      .then(() => {
+        if (agentRunPublishTails.get(event.agentRunId) === entry) agentRunPublishTails.delete(event.agentRunId);
+      });
+    agentRunPublishTails.set(event.agentRunId, entry);
+  }
+
+  setInvalidationHook((event) => {
+    // Best-effort fan-out: a failed NOTIFY must not fail (or roll back) the write that triggered it.
+    publishRealtimeMessage(pool, { type: "invalidation", ...event }).catch((err: unknown) => {
+      logger.error({ err }, "Failed to publish invalidation realtime message");
+    });
+  });
+  // Awaited counterpart for a caller that acts on the outcome (the AI gateway's window ledger); it gets the failure and
+  // logs it itself.
+  setInvalidationPublisher((event) => publishRealtimeMessage(pool, { type: "invalidation", ...event }));
+  setDocUpdateHook((event) => {
+    publishRealtimeMessage(pool, { type: "doc_update", ...event }).catch((err: unknown) => {
+      logger.error({ err }, "Failed to publish doc_update realtime message");
+    });
+  });
+  setNotificationCreatedHook((event) => {
+    publishRealtimeMessage(pool, { type: "notification_created", ...event }).catch((err: unknown) => {
+      logger.error({ err }, "Failed to publish notification_created realtime message");
+    });
+  });
+  setNotificationReadStateHook((event) => {
+    publishRealtimeMessage(pool, { type: "notification_read_state", ...event }).catch((err: unknown) => {
+      logger.error({ err }, "Failed to publish notification_read_state realtime message");
+    });
+  });
+  setSessionRevokedHook((event) => {
+    publishRealtimeMessage(pool, { type: "session_revoked", ...event }).catch((err: unknown) => {
+      logger.error({ err }, "Failed to publish session_revoked realtime message");
+    });
+  });
+  setSempThreadInvalidationHook((event) => {
+    const message = { type: "invalidation", scope: "sempThread", threadId: event.threadId } as const;
+    runInTenant(event.tenantId, () => publishRealtimeMessage(pool, message)).catch((err: unknown) => {
+      logger.error({ err }, "Failed to publish sempThread invalidation realtime message");
+    });
+  });
+  setInboxCardsInvalidationHook((event) => {
+    publishRealtimeMessage(pool, { type: "invalidation", scope: "inboxCards", ...event }).catch((err: unknown) => {
+      logger.error({ err }, "Failed to publish inboxCards invalidation realtime message");
+    });
+  });
+  setAgentRunEventHook(enqueueAgentRunEvent);
+  setAgentRunDeltaHook(async (event) => {
+    // A typing update is best effort: its loss must not fail the write it announces.
+    try {
+      await publishAgentRunDelta(pool, event.agentRunId, event.delta);
+    } catch (err) {
+      logger.error({ err, agentRunId: event.agentRunId }, "Failed to publish agent_run_delta realtime message");
+    }
+  });
+}

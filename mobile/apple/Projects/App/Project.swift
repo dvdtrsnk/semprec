@@ -1,0 +1,109 @@
+import ProjectDescription
+import ProjectDescriptionHelpers
+
+let app = ProjectConfiguration.appName
+
+let project = Project(
+    name: "App",
+    options: .options(automaticSchemesOptions: .disabled),
+    settings: SemprecProject.appSettings,
+    targets: [
+        .target(
+            name: app,
+            destinations: SemprecProject.destinations,
+            product: .app,
+            bundleId: ProjectConfiguration.appleBundleId,
+            deploymentTargets: SemprecProject.deploymentTargets,
+            // Tuist's default app plist mixes iOS and macOS keys (a Main storyboard, an armv7 requirement), so the
+            // app lists its keys itself. macOS ignores the UIKit keys; Xcode adds the platform keys of each SDK.
+            infoPlist: .dictionary([
+                "CFBundleDevelopmentRegion": "en",
+                "CFBundleDisplayName": .string(app),
+                "CFBundleExecutable": "$(EXECUTABLE_NAME)",
+                "CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)",
+                "CFBundleInfoDictionaryVersion": "6.0",
+                "CFBundleLocalizations": ["en", "cs"],
+                "CFBundleName": "$(PRODUCT_NAME)",
+                "CFBundlePackageType": "$(PRODUCT_BUNDLE_PACKAGE_TYPE)",
+                "CFBundleShortVersionString": "$(MARKETING_VERSION)",
+                "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
+                "LSApplicationCategoryType": "public.app-category.productivity",
+                "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
+                "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
+                "UIBackgroundModes": ["audio"],
+                "UILaunchScreen": [:],
+                "SemprecDefaultServer": .string(ProjectConfiguration.defaultServer),
+                "UISupportedInterfaceOrientations": [
+                    "UIInterfaceOrientationPortrait",
+                    "UIInterfaceOrientationLandscapeLeft",
+                    "UIInterfaceOrientationLandscapeRight",
+                ],
+                "UISupportedInterfaceOrientations~ipad": [
+                    "UIInterfaceOrientationPortrait",
+                    "UIInterfaceOrientationPortraitUpsideDown",
+                    "UIInterfaceOrientationLandscapeLeft",
+                    "UIInterfaceOrientationLandscapeRight",
+                ],
+            ]),
+            sources: ["Sources/**"],
+            resources: ["Resources/**"],
+            scripts: [SemprecProject.kotlinFrameworkScript(.embed)],
+            dependencies: [
+                .project(target: "CoreKit", path: "../../Modules/Core/CoreKit"),
+                .project(target: "Dependencies", path: "../../Modules/Core/Dependencies"),
+                .project(target: "DesignSystem", path: "../../Modules/Core/DesignSystem"),
+                .project(target: "AccountFeature", path: "../../Modules/Features/Account"),
+                .project(target: "AreasFeature", path: "../../Modules/Features/Areas"),
+                .project(target: "AuthFeature", path: "../../Modules/Features/Auth"),
+                .project(target: "CalendarFeature", path: "../../Modules/Features/Calendar"),
+                .project(target: "CollectionsFeature", path: "../../Modules/Features/Collections"),
+                .project(target: "JournalFeature", path: "../../Modules/Features/Journal"),
+                .project(target: "NotesFeature", path: "../../Modules/Features/Notes"),
+                .project(target: "MailFeature", path: "../../Modules/Features/Mail"),
+                .project(target: "OverviewFeature", path: "../../Modules/Features/Overview"),
+                .project(target: "SempFeature", path: "../../Modules/Features/Semp"),
+                .project(target: "RecordingsFeature", path: "../../Modules/Features/Recordings"),
+                .project(target: "SleepFeature", path: "../../Modules/Features/Sleep"),
+                .project(target: "InboxFeature", path: "../../Modules/Features/Inbox"),
+                .project(target: "TasksFeature", path: "../../Modules/Features/Tasks"),
+                .external(name: "NavigatorUI"),
+            ],
+            settings: .settings(
+                base: SemprecProject.kotlinFrameworkScriptSettings
+                    .merging(["CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": "Entitlements/\(app).entitlements"]) { _, new in new }
+            )
+        ),
+        // The app's tests drive its NavigatorUI stacks directly.
+        SemprecProject.tests(
+            "\(app)Tests",
+            for: app,
+            dependencies: [
+                .project(target: "CoreKit", path: "../../Modules/Core/CoreKit"),
+                .project(target: "OverviewFeature", path: "../../Modules/Features/Overview"),
+                .external(name: "NavigatorUI"),
+            ]
+        ),
+        // XCUITest drives the app from outside, by the accessibility identifiers the app and the features declare; it
+        // compiles their identifier files, since it links none of their modules. iPhone and iPad only: on macOS
+        // XCUITest needs the Accessibility permission to control the app, which a build machine does not grant.
+        .target(
+            name: "\(app)UITests",
+            destinations: [.iPhone, .iPad],
+            product: .uiTests,
+            bundleId: "\(ProjectConfiguration.appleBundleId).\(app)UITests",
+            deploymentTargets: .iOS(ProjectConfiguration.iosMinimum),
+            // The bundle carries the app's version and build, which the About sheet shows.
+            infoPlist: .extendingDefault(with: [
+                "CFBundleShortVersionString": "$(MARKETING_VERSION)",
+                "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
+            ]),
+            sources: [
+                "UITests/**",
+                "Sources/AppIdentifiers.swift",
+            ],
+            dependencies: [.target(name: app)]
+        ),
+    ],
+    additionalFiles: ["Entitlements/**"],
+    resourceSynthesizers: []
+)

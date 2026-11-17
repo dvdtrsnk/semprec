@@ -1,0 +1,322 @@
+import type { Pool, PoolClient } from "pg";
+import { getItemById } from "../chokePoint/itemsStore.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
+import { withTransaction } from "../db/pool.js";
+import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
+import { ValidationError } from "../errors.js";
+import {
+  imapConnectionLimitForProvider,
+  sharedImapConnectionLimiter,
+  type ImapConnectionLimiter,
+} from "./imapConnectionLimiter.js";
+import type { ImapMailClient } from "./imapReconcile.js";
+import type { SyncMode } from "./mailAccountSyncStateStore.js";
+import {
+  createSmtpTransporter,
+  openImapConnection,
+  type MailServerConnectionSettings,
+  type MailServerCredential,
+  type MailSmtpTransporter,
+} from "./mailServerConnections.js";
+import { getMailServerSettings } from "./mailServerSettingsStore.js";
+import { findFolderBySpecialPurpose } from "./folderDiscovery.js";
+import { resolveMailModuleIds, type MailModuleIds } from "./mailModuleIds.js";
+import { IMAP_SEEN_FLAG } from "./messageFlags.js";
+import { logger } from "./logger.js";
+import { createGmailMailTransport } from "./gmailTransport.js";
+import { createGraphMailTransport } from "./graphTransport.js";
+import {
+  MailRecipientRejectedError,
+  MailSendAuthFailedError,
+  MailServerUnreachableError,
+  MailTransportUnavailableError,
+} from "./providerTypes.js";
+import { NodemailerSmtpClient, type RawMailEnvelope } from "./smtpClient.js";
+
+/**
+ * The complete RFC 5322 message is built once (outgoingMime.ts); providers differ only in how the bytes
+ * leave: SMTP for `imap`, Gmail API for `gmail_api`, Microsoft Graph for `graph_api`.
+ */
+export interface MailTransportMessage {
+  raw: Buffer;
+  envelope: RawMailEnvelope;
+  /** Provider thread id of the replied-to message; only the Gmail API transport uses it. */
+  providerThreadId?: string;
+}
+
+export interface MailTransportResult {
+  /** SMTP reports none. */
+  providerMessageId?: string;
+}
+
+export interface MailTransport {
+  send(message: MailTransportMessage): Promise<MailTransportResult>;
+}
+
+export interface MailTransportFactory {
+  /**
+   * Rejects with `ValidationError` when the mailbox has no SMTP settings and with
+   * `MailTransportUnavailableError` when no transport is configured; any other rejection is retryable.
+   */
+  forMailbox(mailboxItemId: string, syncMode: SyncMode): Promise<MailTransport>;
+}
+
+function fieldOf(error: unknown, key: string): unknown {
+  return typeof error === "object" && error !== null ? Reflect.get(error, key) : undefined;
+}
+
+/**
+ * nodemailer reports a failed login as `EAUTH` and a refusal of every recipient as `EENVELOPE` (5xx).
+ * Unknown failures leave as a fixed generic error after the transport has been closed.
+ */
+function mapSmtpSendFailure(error: unknown): Error {
+  if (error instanceof MailServerUnreachableError) return new MailServerUnreachableError();
+  if (error instanceof MailSendAuthFailedError) return new MailSendAuthFailedError();
+  if (error instanceof MailRecipientRejectedError) return new MailRecipientRejectedError();
+  if (fieldOf(error, "code") === "EAUTH") return new MailSendAuthFailedError();
+  const responseCode = fieldOf(error, "responseCode");
+  if (
+    fieldOf(error, "code") === "EENVELOPE" &&
+    fieldOf(error, "command") === "RCPT TO" &&
+    typeof responseCode === "number" &&
+    responseCode >= 500 &&
+    responseCode <= 599
+  ) {
+    return new MailRecipientRejectedError();
+  }
+  return new Error("SMTP submission failed unexpectedly");
+}
+
+export type SmtpTransporterOpener = (
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+) => MailSmtpTransporter;
+
+export type ImapConnectionOpener = (
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+) => Promise<ImapMailClient>;
+
+/** Called once per accepted send after the SMTP connection closed. Its failure never fails the send. */
+export type SentCopySaver = (raw: Buffer) => Promise<void>;
+
+/**
+ * Each send opens its own policy-checked transporter and closes it on every path out. Exported for
+ * protocol tests that need a loopback endpoint the stored settings (standard ports only) cannot name.
+ *
+ * IMAP servers do not file sent mail themselves, so `saveSentCopy` appends a Sent copy; its failure is
+ * logged and does not fail the send, because the message has been delivered.
+ */
+export function createSmtpMailTransport(
+  mailboxItemId: string,
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+  open: SmtpTransporterOpener = createSmtpTransporter,
+  saveSentCopy?: SentCopySaver,
+): MailTransport {
+  return {
+    async send(message) {
+      let transporter: MailSmtpTransporter | undefined;
+      let primary: { value: unknown } | undefined;
+      let sendOutcome: Promise<{ ok: true } | { ok: false; value: unknown }> | undefined;
+      const secondary: unknown[] = [];
+      const diagnostic = (stage: "send" | "close" | "sent_copy") => {
+        try {
+          logger.warn({ mailboxItemId, stage }, "SMTP operation reported a failure");
+        } catch (error) {
+          secondary.push(error);
+        }
+      };
+      try {
+        transporter = open(settings, credential);
+        const owned = transporter;
+        await new NodemailerSmtpClient({
+          sendMail(message) {
+            const operation = owned.sendMail(message);
+            sendOutcome = operation.then(
+              () => ({ ok: true as const }),
+              (value: unknown) => ({ ok: false as const, value }),
+            );
+            return operation;
+          },
+        }).sendRaw({ raw: message.raw, envelope: message.envelope });
+      } catch (error) {
+        primary = { value: error };
+      }
+      if (transporter) {
+        try {
+          transporter.close();
+        } catch (error) {
+          secondary.push(error);
+          diagnostic("close");
+        }
+      }
+      if (sendOutcome) {
+        const settled = await sendOutcome;
+        if (!settled.ok && (!primary || settled.value !== primary.value)) secondary.push(settled.value);
+      }
+      if (primary) {
+        let mapped: Error;
+        try {
+          mapped = mapSmtpSendFailure(primary.value);
+        } catch (classificationError) {
+          secondary.push(classificationError);
+          mapped = new Error("SMTP submission failed unexpectedly");
+        }
+        diagnostic("send");
+        // The original and all secondary values remain local through cleanup and diagnostics.
+        void secondary;
+        throw mapped;
+      }
+      if (saveSentCopy) {
+        try {
+          await saveSentCopy(message.raw);
+        } catch (error) {
+          secondary.push(error);
+          diagnostic("sent_copy");
+        }
+      }
+      void secondary;
+      return {};
+    },
+  };
+}
+
+/** `null` when no sync has discovered a Sent folder for this mailbox yet. */
+async function sentFolderPathOf(
+  client: PoolClient,
+  moduleIds: MailModuleIds,
+  mailboxItemId: string,
+): Promise<string | null> {
+  const mailboxRelation = await getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox");
+  if (!mailboxRelation) throw new Error("Email module schema is missing the Folders.mailbox relation property");
+  const folderId = await findFolderBySpecialPurpose(client, {
+    foldersDatabaseId: moduleIds.foldersDatabaseId,
+    mailboxRelationPropertyId: mailboxRelation.id,
+    mailboxItemId,
+    specialPurpose: "sent",
+  });
+  if (folderId === null) return null;
+  const folder = await getItemById(client, moduleIds.foldersDatabaseId, folderId);
+  const providerId = folder?.properties.providerId;
+  if (typeof providerId !== "string") throw new Error("The Sent folder has no provider path");
+  return providerId;
+}
+
+/**
+ * Gmail and Graph file sent mail themselves; an IMAP server does not, so the raw message is appended
+ * with `\Seen`. The connection goes through the outbound address policy and holds the account's IMAP
+ * connection slot at the sync worker's limit. No Sent folder yet logs `no_sent_folder` and keeps no copy.
+ */
+export function createSentCopySaver(
+  pool: Pool,
+  mailboxItemId: string,
+  credential: MailServerCredential,
+  openImap: ImapConnectionOpener = openImapConnection,
+  limiter: ImapConnectionLimiter = sharedImapConnectionLimiter,
+): SentCopySaver {
+  return async (raw) => {
+    const stored = await getMailServerSettings(pool, mailboxItemId);
+    if (!stored?.imap) {
+      throw new ValidationError(`Mailbox ${mailboxItemId} has no IMAP server settings`, { field: "imap" });
+    }
+    const imapSettings: MailServerConnectionSettings = { endpoint: stored.imap, username: stored.username };
+
+    const { sentPath, connectionLimit } = await withTransaction(pool, async (client) => {
+      const moduleIds = await resolveMailModuleIds(client);
+      const mailbox = await getItemById(client, moduleIds.mailboxesDatabaseId, mailboxItemId);
+      const provider = typeof mailbox?.properties.provider === "string" ? mailbox.properties.provider : undefined;
+      return {
+        sentPath: await sentFolderPathOf(client, moduleIds, mailboxItemId),
+        connectionLimit: imapConnectionLimitForProvider(provider, mailbox?.properties.connectionLimit),
+      };
+    });
+    if (sentPath === null) {
+      logger.warn({ mailboxItemId, reason: "no_sent_folder" }, "The mailbox has no Sent folder yet; no copy was kept");
+      return;
+    }
+
+    await limiter.run(mailboxItemId, connectionLimit, async () => {
+      const imap = await openImap(imapSettings, credential);
+      try {
+        await imap.appendMessage(sentPath, raw, [IMAP_SEEN_FLAG]);
+      } finally {
+        // close() never rejects, so the append's own outcome is the one the saver reports.
+        await imap.close();
+      }
+    });
+  };
+}
+
+export interface MailTransportFactoryOptions {
+  gmailOAuthClient?: { clientId: string; clientSecret: string };
+  graphOAuthClient?: { clientId: string; clientSecret: string };
+  fetchImpl?: typeof fetch;
+  openImapConnection?: ImapConnectionOpener;
+}
+
+/**
+ * Picks the transport of the mailbox's sync mode. For `imap` it decrypts the SMTP password for the
+ * `smtp_send` purpose; `sendDraftEmail` gets the password only through this factory.
+ */
+export function createMailTransportFactory(
+  pool: Pool,
+  options: MailTransportFactoryOptions = {},
+): MailTransportFactory {
+  return {
+    async forMailbox(mailboxItemId, syncMode) {
+      if (syncMode === "gmail_api") {
+        const { gmailOAuthClient, fetchImpl } = options;
+        if (!gmailOAuthClient) {
+          throw new MailTransportUnavailableError("No Gmail OAuth client is configured for this composition root");
+        }
+        return createGmailMailTransport({
+          pool,
+          mailboxItemId,
+          clientId: gmailOAuthClient.clientId,
+          clientSecret: gmailOAuthClient.clientSecret,
+          ...(fetchImpl ? { fetchImpl } : {}),
+        });
+      }
+      if (syncMode === "graph_api") {
+        const { graphOAuthClient, fetchImpl } = options;
+        if (!graphOAuthClient) {
+          throw new MailTransportUnavailableError(
+            "No Microsoft Graph OAuth client is configured for this composition root",
+          );
+        }
+        return createGraphMailTransport({
+          pool,
+          mailboxItemId,
+          clientId: graphOAuthClient.clientId,
+          clientSecret: graphOAuthClient.clientSecret,
+          fetchImpl,
+        });
+      }
+      if (syncMode !== "imap") {
+        // Only a stored value outside the SYNC_MODES union reaches this line.
+        const unnamedMode: string = syncMode;
+        throw new MailTransportUnavailableError(`No mail transport for sync mode ${unnamedMode} is available yet`);
+      }
+      const stored = await getMailServerSettings(pool, mailboxItemId);
+      if (!stored?.smtp) {
+        throw new ValidationError(`Mailbox ${mailboxItemId} has no SMTP server settings`, { field: "smtp" });
+      }
+      const password = await getDecryptedCredential(pool, {
+        itemId: mailboxItemId,
+        actorType: "smtp_send",
+        purpose: "smtp_send",
+      });
+      if (password === null) {
+        throw new MailTransportUnavailableError(`Mailbox ${mailboxItemId} has no stored credential`);
+      }
+      return createSmtpMailTransport(
+        mailboxItemId,
+        { endpoint: stored.smtp, username: stored.username },
+        { password },
+        createSmtpTransporter,
+        createSentCopySaver(pool, mailboxItemId, { password }, options.openImapConnection),
+      );
+    },
+  };
+}

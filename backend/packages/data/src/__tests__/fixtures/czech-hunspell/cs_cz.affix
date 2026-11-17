@@ -1,0 +1,12 @@
+# Test-only subset of the hunspell-cs (cs_CZ) affix file: the feminine -a noun
+# declension rules of its "Z" flag, enough to prove inflected forms lemmatize.
+SET UTF-8
+
+SFX Z Y 7
+SFX Z   a           y          [^aeiouyžščřcjďťň]a
+SFX Z   ra          ře         [^r]ra
+SFX Z   a           u          a
+SFX Z   a           ou         a
+SFX Z   a           ám         a
+SFX Z   a           ách        a
+SFX Z   0           mi         a

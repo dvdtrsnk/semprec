@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_title">Settings</string>
+    <string name="settings_row_about">About</string>
+    <string name="about_title">About Semprec</string>
+    <string name="about_description">This app is a placeholder for the screens to come.</string>
+    <string name="about_version">Version %1$s (%2$s)</string>
+    <string name="about_done">Done</string>
+</resources>

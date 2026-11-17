@@ -1,0 +1,136 @@
+import type { PoolClient } from "pg";
+import type {
+  GuidanceDriftFinding,
+  GuidanceDriftFindingStore,
+  UpsertActiveGuidanceDriftFindingInput,
+} from "@semprec/shared";
+import { validateGuidanceDriftContradiction } from "@semprec/shared";
+import { requireSingleRow } from "../db/pool.js";
+import { NotFoundError } from "../errors.js";
+import { assertKnownValue } from "../dbRowValidation.js";
+import { publishProjectAgentInvalidation } from "../projectAgent/projectAgentInvalidation.js";
+
+interface FindingRow {
+  id: string;
+  project_item_id: string;
+  fingerprint: string;
+  // JSONB with no runtime shape guarantee; `mapRow` validates rather than casts.
+  payload: Record<string, unknown>;
+  status: string;
+  first_seen_at: Date;
+  last_seen_at: Date;
+  resolved_at: Date | null;
+}
+
+function mapRow(row: FindingRow): GuidanceDriftFinding {
+  return {
+    id: row.id,
+    projectItemId: row.project_item_id,
+    fingerprint: row.fingerprint,
+    payload: validateGuidanceDriftContradiction(row.payload, `agent_guidance_drift_findings row ${row.id}`),
+    status: assertKnownValue(["active", "resolved", "dismissed"] as const, row.status, "guidance drift status"),
+    firstSeenAt: row.first_seen_at.toISOString(),
+    lastSeenAt: row.last_seen_at.toISOString(),
+    resolvedAt: row.resolved_at ? row.resolved_at.toISOString() : null,
+  };
+}
+
+const COLUMNS = "id, project_item_id, fingerprint, payload, status, first_seen_at, last_seen_at, resolved_at";
+
+/**
+ * Backed by `unique(project_item_id, fingerprint)`. A write that changes which findings are active publishes the
+ * project's agent invalidation after commit; a no-op publishes nothing.
+ */
+export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClient> = {
+  async listActive(tx, projectItemId) {
+    const { rows } = await tx.query<FindingRow>(
+      `SELECT ${COLUMNS} FROM agent_guidance_drift_findings WHERE project_item_id = $1 AND status = 'active'`,
+      [projectItemId],
+    );
+    return rows.map(mapRow);
+  },
+
+  async upsertActive(tx, input: UpsertActiveGuidanceDriftFindingInput) {
+    // Lock and read first: `ON CONFLICT DO UPDATE` cannot tell "already active" from "was resolved".
+    const { rows: existingRows } = await tx.query<FindingRow & { resolution_choice: string | null }>(
+      `SELECT ${COLUMNS}, resolution_choice FROM agent_guidance_drift_findings
+       WHERE project_item_id = $1 AND fingerprint = $2 FOR UPDATE`,
+      [input.projectItemId, input.fingerprint],
+    );
+    const existing = existingRows[0];
+    const payloadJson = JSON.stringify(input.payload);
+
+    if (!existing) {
+      const { rows } = await tx.query<FindingRow>(
+        `INSERT INTO agent_guidance_drift_findings
+           (project_item_id, fingerprint, payload, status, first_seen_at, last_seen_at)
+         VALUES ($1, $2, $3::jsonb, 'active', $4, $4)
+         RETURNING ${COLUMNS}`,
+        [input.projectItemId, input.fingerprint, payloadJson, input.seenAt],
+      );
+      publishProjectAgentInvalidation(tx, input.projectItemId);
+      return {
+        finding: mapRow(requireSingleRow(rows, "agent_guidance_drift_findings insert")),
+        transitionedToActive: true,
+      };
+    }
+
+    if (existing.status === "dismissed" || (existing.status === "resolved" && existing.resolution_choice !== null)) {
+      return { finding: mapRow(existing), transitionedToActive: false };
+    }
+
+    const wasResolved = existing.status === "resolved";
+    const { rows } = await tx.query<FindingRow>(
+      `UPDATE agent_guidance_drift_findings
+       SET status = 'active', last_seen_at = $2, resolved_at = NULL, payload = $3::jsonb
+       WHERE id = $1
+       RETURNING ${COLUMNS}`,
+      [existing.id, input.seenAt, payloadJson],
+    );
+    if (wasResolved) publishProjectAgentInvalidation(tx, input.projectItemId);
+    return {
+      finding: mapRow(requireSingleRow(rows, "agent_guidance_drift_findings reactivate/observe")),
+      transitionedToActive: wasResolved,
+    };
+  },
+
+  async resolve(tx, findingId, resolvedAt) {
+    const { rows: existingRows } = await tx.query<FindingRow & { resolution_choice: string | null }>(
+      `SELECT ${COLUMNS}, resolution_choice FROM agent_guidance_drift_findings WHERE id = $1 FOR UPDATE`,
+      [findingId],
+    );
+    const existing = existingRows[0];
+    if (!existing) throw new NotFoundError(`Guidance drift finding ${findingId} not found`);
+
+    if (existing.status === "dismissed" || existing.resolution_choice !== null)
+      return { finding: mapRow(existing), transitionedToResolved: false };
+
+    const wasActive = existing.status === "active";
+    const { rows } = await tx.query<FindingRow>(
+      `UPDATE agent_guidance_drift_findings
+       SET status = 'resolved', resolved_at = $2, last_seen_at = $2
+       WHERE id = $1
+       RETURNING ${COLUMNS}`,
+      [findingId, resolvedAt],
+    );
+    if (wasActive) publishProjectAgentInvalidation(tx, existing.project_item_id);
+    return {
+      finding: mapRow(requireSingleRow(rows, "agent_guidance_drift_findings resolve")),
+      transitionedToResolved: wasActive,
+    };
+  },
+  async decide(tx, findingId, decision) {
+    if ((decision.status === "dismissed") !== (decision.choice === "dismiss"))
+      throw new Error("Guidance drift decision status and choice disagree");
+    const result = await tx.query<FindingRow>(
+      `UPDATE agent_guidance_drift_findings
+       SET status = $2, resolution_choice = $3, resolved_by = $4, resolved_at = $5, last_seen_at = $5
+       WHERE id = $1 AND status = 'active' RETURNING ${COLUMNS}`,
+      [findingId, decision.status, decision.choice, decision.userId, decision.at],
+    );
+    if (result.rowCount === 0) throw new NotFoundError("Guidance drift finding not found");
+    const decided = mapRow(requireSingleRow(result.rows, "agent_guidance_drift_findings decide"));
+    publishProjectAgentInvalidation(tx, decided.projectItemId);
+    return decided;
+  },
+};

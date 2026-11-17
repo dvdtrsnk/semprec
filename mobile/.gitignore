@@ -1,0 +1,35 @@
+# Gradle and Kotlin. build/ also holds the Kotlin/Native, SKIE and Xcode-facing framework outputs;
+# .kotlin/ holds Kotlin 2.x project data. local.properties points at the machine's Android SDK.
+.gradle/
+build/
+.kotlin/
+local.properties
+
+# Android Studio and IntelliJ IDEA
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Xcode, Tuist and SwiftPM. Tuist generates every project and the workspace, Derived/ holds the sources it
+# synthesizes and .build/ the dependencies it fetches (apple/Tuist/.build/). apple/Tuist/Package.resolved pins
+# those dependencies and stays tracked.
+*.xcodeproj/
+*.xcworkspace/
+Derived/
+DerivedData/
+xcuserdata/
+.build/
+.swiftpm/
+
+# Signing material and secrets
+.secrets/
+*.jks
+*.keystore
+*.p12
+*.p8
+*.pfx
+*.mobileprovision
+*.pem
+*.key

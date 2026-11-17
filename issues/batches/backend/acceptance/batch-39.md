@@ -1,0 +1,79 @@
+# Batch39 local acceptance
+
+Candidate `f0b30bc0f43a1142c1bc005eb510f028411c84a0`, tree `c1cee6c147b3b10c230e79792c0f248810f6761f`. Local merge: `f4ebc3f878d7105c9bcda4e4f83cd97d42591049`.
+
+**ACCEPT LOCAL IMPLEMENTATION AND GUARDED COMPLETION ONLY; full verify remains FAIL.** Latest owner directive ends the program after local main includes39.
+
+### L1
+
+Accept candidate f0b30bc0f43a1142c1bc005eb510f028411c84a0, tree c1cee6c147b3b10c230e79792c0f248810f6761f, for LOCAL INTEGRATION AND GUARDED COMPLETION ONLY. Actual full verify at968e8571 remains FAIL: lint/format/build/unit165files2720cases and block-model4files172cases passed; integration506files passed/9failed,8353tests passed/10failed/1skipped, one unhandled53300. Its internal E2E is NOT RUN. Current standaloneE2E passed6files48tests; current valueLinkWrites passed101. These results do not compose a fullverifyPASS.
+
+### L2
+
+Candidate-local sequencing exception retains unresolved Semp dropTenant/FIFO/invalidation, PostgreSQL53300, mail fixture DROP, MCP inherited environment-name and MCP restore HTTP-parser SSH-banner failures as FAIL/UNKNOWN. No shared cause, environmental unrelatedness, tenant safety or production correctness is inferred. Four proven paired test contract mismatches received test-only corrections and affected-file proof. Unexplained behavior remains an open release/dependent-feature gate, not a security/privacy/data-loss waiver or automatic future exception.
+
+### L3
+
+Initial R1 atb7c62063 and the sole same-context R2 atce4a57b9 remain historical NOT CLEAR. R2 closed F1-F15/F19 for their exact reported triggers with finite limits; F16/F17 retain failed-current-whole-Semp proof. Parent directly inspected and closed the residual readiness-consumption defect at968e8571 with4files98cases. No R3 or fabricated independent CLEAR. No confirmed scoped privacy/data-loss defect is knowingly waived.
+
+### L4
+
+Retain753evidence rows:253individuallyassessed,453UNKNOWN/unbound,47inherited scope/limit dispositions. They are not all semantically proved by file/tier passes or binding checker. Original R1 reconciliation, immutable handoff and exact run/candidate-owner deltas remain linked. Local completion records a bounded implementation acceptance, not every embedded AC PASS. No new blanket carry is asserted.
+
+### L5
+
+Retain finite lock/date/SQL/harness limits and all source-specific PARTIAL/STATIC/OUTER states. Due selector has finite SQL-vs-TypeScript evidence and locked recheck, not whole-date-domain equivalence or optimizer scan bound. Notes/session tests use local fixtures and finite probes, not live providers. Dismissed reader-first and rollback compatibility remains BLOCKED externally; gh1086 remains byte-identical OPEN/BLOCKED. Live release, rollback, tenant/privacy/security approval are excluded.
+
+### L6
+
+Preserve every historical failed stage, diagnostic PASS, invalidated draft manifest, technical prelaunch failure, broad-HTTP policy episode and authoring/process deviation. The143PASS/2FAIL paired regression remains FAIL at7a463435; only corrected valueLinkWrites was rerun, while3unchangedwholepassedfiles carry. Exact four test paths outside prior narrow releases were explicitly parent-authorized paired fallout; this is not retrospective blanket scope permission.
+
+### L7
+
+Final build passed at968e8571; only4testfiles changed afterward. StandaloneE2E preserves3502dist/buildinfo bytes. Five output hashes match contemporaneous final-build evidence and relevant fixture/explicit resolver entries were checked; no complete historical emitted-output snapshot or universal JS semantic parity is claimed. Observed process identity audits are bounded samples, not proof about unseen descendants or database DROP. TMP/ignored markers/branches/worktree stay untouched.
+
+### L8
+
+After exact preguards merge --no-ff f0b30bc0f43a1142c1bc005eb510f028411c84a0 into feature/backend-delivery at8398416fc8154659a044cfd507f0ba353aec01d7, preserving exact candidate tree. Guarded CLI completion closes9members in declaredorder thenaggregate with resolution.commit=f0b30bc0f43a1142c1bc005eb510f028411c84a0; exactly21metadata paths (10records/10newEnglishhandovers/acceptance39). Preserve body/spec/wholeapproval/alloldhandovers/gh1086. Validate committed metadata/export, then fast-forward LOCAL main by ancestry/CAS, pause watchdog and STOP. No40, push, deploy, develop change, branch/worktree deletion or cleanup.
+
+## Original outer criteria and local dispositions
+
+### A1
+
+PARTIAL/UNKNOWN, not all embedded AC proved; bounded local acceptance only.
+
+### A2
+
+Finite production-path/runtime-role/concurrency/migration evidence; fullintegrationFAIL remains.
+
+### A3
+
+Historical R1/R2NOTCLEAR; parent direct finite closure, no independentCLEAR.
+
+### A4
+
+FAIL, standaloneE2EPASS separate.
+
+### A5
+
+Guardedlocalcompletion authorized only after exact audits.
+
+### A6
+
+STOP_AFTER39; no nextbatch authorized.
+
+## Pinned evidence
+
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/parent-final-verify-audit-01.json` — SHA-256 `2597296bf1e513a339080ef952b2818a158f80be80ab3165a8115e752c48d7d8`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/review-r2/r2-report-01.md` — SHA-256 `6092cd653c1f2946806c2b0f5cab30b87077b4654cb1aeff9faa662ad7a4447d`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/review-r2/r2-input-receipt-01.json` — SHA-256 `1c9b63fcbaf066c4428fa3bf9ba01e7d4b0c49e0a1fdaca28cff4901794b5e82`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/parent-r2-direct-closure-audit-01.json` — SHA-256 `c5890a889ff61f21b550d237020788d9a4415f57a512cb912b7b84d899deedd6`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/r1-followup-handoff-01/MANIFEST.json` — SHA-256 `2c0fb770b7d193e9aec9d820042398843b96b2c2d34c0327cd8c96accf5d02e1`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/r1-followup-handoff-01/candidate-ledger.json` — SHA-256 `820cb427f2c49b96eb5a4307d33dd323a6ce3f45f5d11721ffd626ca482a0e29`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/candidate-postverify-paired-integration-02.result.json` — SHA-256 `f142ff98ce390571923485b0cae32dd650973b179bdf477f88d7032cacc0777a`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/candidate-postverify-value-link-file-01.result.json` — SHA-256 `825b0bf25927a587175150524d5a7021d1a7f8d76544971c9ac8718c971288bd`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/candidate-standalone-e2e-final39-01.result.json` — SHA-256 `20d9571a9766bc6fe5addab8eec18373bb0abacab9b14bc6693a85107fe4735c`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/standalone-e2e-final39-preflight-01.json` — SHA-256 `d78064d3b2e119ce749dc08d365b62a8058ed32a46204d19e9327a98ad35cb63`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/standalone-e2e-final39-postflight-01.json` — SHA-256 `d484c0a8f2430185b92b9ab51584f320b8661b65574d7ad7a2ecc0c5c66ef32e`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/parent-postverify-paired-repair-release-01.json` — SHA-256 `3a7d6287618556e47862c6d12ad526962981700cc1d2698344ea88d23ffb1d13`.
+- `/Users/davidtresnak/.bb/thread-storage/thr_pz39tcih5r/batch-39-run/parent-postverify-single-file-release-01.json` — SHA-256 `f195b2011134baad154c183a379e1d4bb49fe93d832a1fe4b4e121495a2a90db`.

@@ -1,0 +1,553 @@
+import { afterAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import type { Pool } from "pg";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { seedSystem } from "../seed/seedSystem.js";
+import { withTransaction } from "../db/pool.js";
+import { createHeartbeat } from "../scheduler/schedulerStore.js";
+import {
+  coreAgentRunAction,
+  CORE_AGENT_RUN_ACTION_ID,
+  createActionRegistry,
+  type ActionContext,
+} from "../scheduler/actions.js";
+import { createHeartbeatFireAgentTask } from "../scheduler/sweep.js";
+import { AgentRunError } from "../agentRuns/agentRunErrorCodes.js";
+import { createAgentRun, getLatestRunOfOccurrence, listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
+import { logger } from "../scheduler/logger.js";
+import { createUser } from "../auth/usersStore.js";
+import { hashPassword } from "../auth/passwordHash.js";
+
+let pool: Pool;
+
+/** Wraps the real pool so its first `connect()` calls reject with `errors`, in order; later calls delegate. */
+function poolWithFailingConnects(errors: (Error | null)[]): Pool {
+  const remaining = [...errors];
+  return new Proxy(pool, {
+    get(target, prop, receiver) {
+      if (prop === "connect") {
+        return () => {
+          const next = remaining.shift();
+          return next ? Promise.reject(next) : target.connect();
+        };
+      }
+      const value: unknown = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+describe("coreAgentRunAction", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    const passwordHash = await hashPassword("s3cret-password");
+    await createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  it("passes an item id into the persisted and dispatched task while leaving timed tasks unchanged", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const calls: Array<{ task: string; itemId?: string }> = [];
+    const handler = coreAgentRunAction(pool, async (input) => {
+      calls.push({ task: input.task, itemId: input.itemId });
+    });
+    const itemId = "00000000-0000-4000-8000-000000000123";
+    await handler({ task: "Review" }, { heartbeatId, projectItemId, itemId });
+    await handler({ task: "Timed" }, { heartbeatId, projectItemId });
+    expect(calls).toEqual([
+      { task: `Review\nTriggering item id: ${itemId}`, itemId },
+      { task: "Timed", itemId: undefined },
+    ]);
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(runs.map((run) => run.task).sort()).toEqual([`Review\nTriggering item id: ${itemId}`, "Timed"].sort());
+  });
+
+  async function getSemprecProjectId(): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
+    const database = rows[0];
+    if (!database) throw new Error("Missing projects database");
+    const { rows: items } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [
+      database.id,
+    ]);
+    const item = items[0];
+    if (!item) throw new Error("Missing project item");
+    return item.id;
+  }
+
+  async function createTestHeartbeat(): Promise<{ heartbeatId: string; projectItemId: string }> {
+    const projectItemId = await getSemprecProjectId();
+    const heartbeat = await withTransaction(pool, (client) =>
+      createHeartbeat(client, {
+        projectItemId,
+        name: "Process inbox",
+        rule: { kind: "interval", minutes: 1 },
+        actionId: CORE_AGENT_RUN_ACTION_ID,
+        actionConfig: { task: "process the inbox" },
+      }),
+    );
+    return { heartbeatId: heartbeat.id, projectItemId };
+  }
+
+  async function getNotifications(kind: string) {
+    const { rows } = await pool.query<{ kind: string; source_table: string; source_id: string }>(
+      "SELECT kind, source_table, source_id FROM notifications WHERE kind = $1",
+      [kind],
+    );
+    return rows;
+  }
+
+  it("notifies once per failed occurrence: two non-final attempts close silently, the final attempt notifies on its own run", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const handler = coreAgentRunAction(pool, async () => {
+      throw new Error("model failed");
+    });
+    const baseContext: ActionContext = { heartbeatId, projectItemId };
+
+    // Sequential inserts can share a `startedAt` millisecond, so each call's run id is captured by diffing
+    // the run set right after the call returns.
+    const seenRunIds = new Set<string>();
+    async function runAndCaptureNewRunId(isFinalAttempt: boolean): Promise<string> {
+      await expect(handler({}, { ...baseContext, isFinalAttempt })).rejects.toThrow("model failed");
+      const runsAfter = await listAgentRunsByHeartbeat(pool, heartbeatId);
+      const created = runsAfter.find((run) => !seenRunIds.has(run.id));
+      if (!created) throw new Error("expected a new agent run to be created");
+      seenRunIds.add(created.id);
+      return created.id;
+    }
+
+    await runAndCaptureNewRunId(false);
+    await runAndCaptureNewRunId(false);
+    const finalRunId = await runAndCaptureNewRunId(true);
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(runs).toHaveLength(3);
+    for (const run of runs) {
+      expect(run.status).toBe("error");
+      expect(run.errorCode).toBe("internal");
+      expect(run.result).toBe("internal");
+    }
+
+    const notifications = await getNotifications("agent_run_error");
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.source_id).toBe(finalRunId);
+  });
+
+  it("a direct caller with isFinalAttempt omitted gets the pre-existing behaviour: one run, one notification", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const handler = coreAgentRunAction(pool, async () => {
+      throw new Error("model failed");
+    });
+
+    await expect(handler({}, { heartbeatId, projectItemId })).rejects.toThrow("model failed");
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("error");
+    expect(runs[0]!.errorCode).toBe("internal");
+
+    const notifications = await getNotifications("agent_run_error");
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.source_id).toBe(runs[0]!.id);
+  });
+
+  it("never masks the original runAgent error when the close-and-notify transaction itself fails", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    // The first connect is the run-start transaction; the second is the close-and-notify one.
+    const failingPool = poolWithFailingConnects([null, new Error("db down")]);
+    const handler = coreAgentRunAction(failingPool, async () => {
+      throw new Error("model failed");
+    });
+
+    await expect(handler({}, { heartbeatId, projectItemId, isFinalAttempt: true })).rejects.toThrow("model failed");
+
+    const { rows } = await pool.query<{ status: string }>("SELECT status FROM agent_runs WHERE heartbeat_id = $1", [
+      heartbeatId,
+    ]);
+    expect(rows).toHaveLength(1);
+    // The close's connect() rejected, so the run is left running; startup repair closes it.
+    expect(rows[0]!.status).toBe("running");
+
+    const notifications = await getNotifications("agent_run_error");
+    expect(notifications).toHaveLength(0);
+  });
+
+  function loggedText(...spies: MockInstance[]): string {
+    return JSON.stringify(
+      spies.map((spy) => spy.mock.calls),
+      (_key, value: unknown) =>
+        value instanceof Error
+          ? { name: value.name, message: value.message, stack: value.stack, cause: value.cause }
+          : value,
+    );
+  }
+
+  it.each([
+    ["a final attempt", true],
+    ["a non-final attempt", false],
+  ])(
+    "stores the code of a model error as the result of %s, and keeps the exception message and the task out of the row and the logs",
+    async (_label, isFinalAttempt) => {
+      const sentinel = "sentinel-3fa9";
+      const { heartbeatId, projectItemId } = await createTestHeartbeat();
+      const handler = coreAgentRunAction(pool, async () => {
+        throw new AgentRunError("modelError", `provider said ${sentinel}`);
+      });
+      const spies = [vi.spyOn(logger, "error"), vi.spyOn(logger, "warn"), vi.spyOn(logger, "info")];
+      try {
+        await expect(
+          handler({ task: `plan ${sentinel}` }, { heartbeatId, projectItemId, isFinalAttempt }),
+        ).rejects.toThrow(sentinel);
+
+        const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+        expect(runs).toHaveLength(1);
+        expect(runs[0]).toMatchObject({ status: "error", errorCode: "modelError", result: "modelError" });
+        const messages = await pool.query<{ text: string | null }>(
+          "SELECT text FROM semp_messages WHERE agent_run_id = $1",
+          [runs[0]!.id],
+        );
+        expect(messages.rows.every((row) => row.text === null)).toBe(true);
+        expect(loggedText(...spies)).not.toContain(sentinel);
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    },
+  );
+
+  it("logs the run's code and the name of the close error, never the close error itself, when recording the failure fails", async () => {
+    const sentinel = "sentinel-77b2";
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const failingPool = poolWithFailingConnects([null, new Error(`could not write the row of ${sentinel}`)]);
+    const handler = coreAgentRunAction(failingPool, async () => {
+      throw new AgentRunError("modelError", `provider said ${sentinel}`);
+    });
+    const errorSpy = vi.spyOn(logger, "error");
+    try {
+      await expect(
+        handler({ task: `plan ${sentinel}` }, { heartbeatId, projectItemId, isFinalAttempt: true }),
+      ).rejects.toThrow(sentinel);
+
+      const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+      expect(errorSpy.mock.calls).toEqual([
+        [
+          { errorName: "Error", errorCode: "modelError", agentRunId: runs[0]!.id, heartbeatId },
+          "core.agentRun: failed to record failed agent run lifecycle",
+        ],
+      ]);
+      expect(loggedText(errorSpy)).not.toContain(sentinel);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("through the fire task: a core.agentRun heartbeat failing on the final attempt notifies once", async () => {
+    const { heartbeatId } = await createTestHeartbeat();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async () => {
+        throw new Error("model failed");
+      }),
+    );
+    const task = createHeartbeatFireAgentTask(pool, registry);
+
+    const finalHelpers = { job: { id: "job-final", attempts: 3, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await expect(task({ heartbeatId, itemId: "unused" }, finalHelpers)).rejects.toThrow("model failed");
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("error");
+    expect(await getNotifications("agent_run_error")).toHaveLength(1);
+    expect(await getNotifications("heartbeat_error")).toHaveLength(1);
+  });
+
+  it("through the fire task: a core.agentRun heartbeat failing on a non-final attempt notifies zero times", async () => {
+    const { heartbeatId } = await createTestHeartbeat();
+    const registry = createActionRegistry();
+    registry.set(
+      CORE_AGENT_RUN_ACTION_ID,
+      coreAgentRunAction(pool, async () => {
+        throw new Error("model failed");
+      }),
+    );
+    const task = createHeartbeatFireAgentTask(pool, registry);
+
+    const nonFinalHelpers = { job: { id: "job-retry", attempts: 1, max_attempts: 3 } } as Parameters<typeof task>[1];
+    await expect(task({ heartbeatId, itemId: "unused" }, nonFinalHelpers)).rejects.toThrow("model failed");
+
+    const runs = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("error");
+    expect(await getNotifications("agent_run_error")).toHaveLength(0);
+    expect(await getNotifications("heartbeat_error")).toHaveLength(0);
+  });
+
+  async function createOccurrence(heartbeatId: string): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
+       VALUES ($1, now(), '{}', 'queued') RETURNING id`,
+      [heartbeatId],
+    );
+    return rows[0]!.id;
+  }
+
+  it("selects the highest occurrence attempt and breaks ties by start time", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const occurrenceId = await createOccurrence(heartbeatId);
+    expect(await getLatestRunOfOccurrence(pool, occurrenceId)).toBeNull();
+    const first = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "first",
+      projectItemId,
+      heartbeatId,
+      heartbeatOccurrenceId: occurrenceId,
+      attempt: 1,
+    });
+    const older = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "older",
+      projectItemId,
+      heartbeatId,
+      heartbeatOccurrenceId: occurrenceId,
+      attempt: 2,
+    });
+    const newer = await createAgentRun(pool, {
+      triggeredBy: "heartbeat",
+      task: "newer",
+      projectItemId,
+      heartbeatId,
+      heartbeatOccurrenceId: occurrenceId,
+      attempt: 2,
+    });
+    for (const [id, startedAt] of [
+      [first.id, "2026-01-03T00:00:00Z"],
+      [older.id, "2026-01-01T00:00:00Z"],
+      [newer.id, "2026-01-02T00:00:00Z"],
+    ] as const) {
+      const result = await pool.query("UPDATE agent_runs SET started_at = $2::timestamptz WHERE id = $1", [
+        id,
+        startedAt,
+      ]);
+      expect(result.rowCount).toBe(1);
+    }
+    expect((await getLatestRunOfOccurrence(pool, occurrenceId))?.id).toBe(newer.id);
+  });
+
+  it("chains the attempts of one occurrence: fails twice, succeeds on the third", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const occurrenceId = await createOccurrence(heartbeatId);
+    let calls = 0;
+    const handler = coreAgentRunAction(pool, async () => {
+      calls += 1;
+      if (calls < 3) throw new Error("model failed");
+    });
+    for (const attempt of [1, 2]) {
+      await expect(
+        handler({}, { heartbeatId, projectItemId, occurrenceId, attempt, isFinalAttempt: false }),
+      ).rejects.toThrow("model failed");
+    }
+    await handler({}, { heartbeatId, projectItemId, occurrenceId, attempt: 3, isFinalAttempt: true });
+
+    const { rows } = await pool.query<{
+      id: string;
+      attempt: number;
+      retry_of_run_id: string | null;
+      heartbeat_occurrence_id: string;
+      status: string;
+    }>(
+      "SELECT id, attempt, retry_of_run_id, heartbeat_occurrence_id, status FROM agent_runs WHERE heartbeat_id = $1 ORDER BY attempt",
+      [heartbeatId],
+    );
+    expect(rows.map((r) => r.attempt)).toEqual([1, 2, 3]);
+    expect(rows.every((r) => r.heartbeat_occurrence_id === occurrenceId)).toBe(true);
+    expect(rows[0]!.retry_of_run_id).toBeNull();
+    expect(rows[1]!.retry_of_run_id).toBe(rows[0]!.id);
+    expect(rows[2]!.retry_of_run_id).toBe(rows[1]!.id);
+    expect(rows.map((r) => r.status)).toEqual(["error", "error", "done"]);
+    expect((await getLatestRunOfOccurrence(pool, occurrenceId))?.id).toBe(rows[2]!.id);
+    expect(await getNotifications("agent_run_error")).toHaveLength(0);
+  });
+
+  it("chains three failed attempts and notifies only on the last run", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const occurrenceId = await createOccurrence(heartbeatId);
+    const handler = coreAgentRunAction(pool, async () => {
+      throw new Error("model failed");
+    });
+    for (const attempt of [1, 2, 3]) {
+      await expect(
+        handler({}, { heartbeatId, projectItemId, occurrenceId, attempt, isFinalAttempt: attempt === 3 }),
+      ).rejects.toThrow("model failed");
+    }
+    const { rows } = await pool.query<{ id: string; attempt: number; retry_of_run_id: string | null }>(
+      "SELECT id, attempt, retry_of_run_id FROM agent_runs WHERE heartbeat_id = $1 ORDER BY attempt",
+      [heartbeatId],
+    );
+    expect(rows.map((r) => r.attempt)).toEqual([1, 2, 3]);
+    expect(rows[2]!.retry_of_run_id).toBe(rows[1]!.id);
+    const notifications = await getNotifications("agent_run_error");
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.source_id).toBe(rows[2]!.id);
+  });
+
+  it("creates the run unchained when the previous attempt already has a successor", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const occurrenceId = await createOccurrence(heartbeatId);
+    const handler = coreAgentRunAction(pool, async () => {
+      throw new Error("model failed");
+    });
+    await expect(handler({}, { heartbeatId, projectItemId, occurrenceId, attempt: 1 })).rejects.toThrow();
+    const { rows: first } = await pool.query<{ id: string }>("SELECT id FROM agent_runs WHERE heartbeat_id = $1", [
+      heartbeatId,
+    ]);
+    // A foreign successor (not linked to the occurrence) already retried attempt 1.
+    await pool.query(
+      `INSERT INTO agent_runs (retry_of_run_id, attempt, triggered_by, unit, task, actor_user_id, heartbeat_id)
+       SELECT id, 1, 'heartbeat', 'invocation', 'x', actor_user_id, heartbeat_id FROM agent_runs WHERE id = $1`,
+      [first[0]!.id],
+    );
+    await expect(handler({}, { heartbeatId, projectItemId, occurrenceId, attempt: 2 })).rejects.toThrow();
+    const { rows } = await pool.query<{ retry_of_run_id: string | null; heartbeat_occurrence_id: string | null }>(
+      "SELECT retry_of_run_id, heartbeat_occurrence_id FROM agent_runs WHERE attempt = 2 AND heartbeat_occurrence_id IS NOT NULL",
+    );
+    expect(rows).toEqual([{ retry_of_run_id: null, heartbeat_occurrence_id: occurrenceId }]);
+  });
+
+  it("a run without an occurrence stays unlinked with attempt 1", async () => {
+    const { heartbeatId, projectItemId } = await createTestHeartbeat();
+    const handler = coreAgentRunAction(pool, async () => undefined);
+    await handler({}, { heartbeatId, projectItemId });
+    const [run] = await listAgentRunsByHeartbeat(pool, heartbeatId);
+    expect(run).toMatchObject({ heartbeatOccurrenceId: null, attempt: 1, retryOfRunId: null });
+  });
+
+  describe("retry of a failed run (issue #1908)", () => {
+    async function failedFirstAttempt(): Promise<{
+      heartbeatId: string;
+      projectItemId: string;
+      occurrenceId: string;
+      runId: string;
+    }> {
+      const { heartbeatId, projectItemId } = await createTestHeartbeat();
+      const occurrenceId = await createOccurrence(heartbeatId);
+      const failing = coreAgentRunAction(pool, async () => {
+        throw new Error("model failed");
+      });
+      await expect(
+        failing(
+          { task: "Plan the week" },
+          { heartbeatId, projectItemId, occurrenceId, attempt: 1, isFinalAttempt: true },
+        ),
+      ).rejects.toThrow("model failed");
+      const run = await getLatestRunOfOccurrence(pool, occurrenceId);
+      if (!run) throw new Error("the first attempt created no run");
+      return { heartbeatId, projectItemId, occurrenceId, runId: run.id };
+    }
+
+    it("creates the next attempt of the retried run with its task, heartbeat, project and occurrence, and runs the agent with that task", async () => {
+      const { heartbeatId, projectItemId, occurrenceId, runId } = await failedFirstAttempt();
+      const tasks: string[] = [];
+      const handler = coreAgentRunAction(pool, async (input) => {
+        tasks.push(input.task);
+        return { result: "recovered" };
+      });
+
+      // The heartbeat's own action config differs from the retried run's task: the retry repeats the run.
+      await handler({ task: "A newer configured task" }, { heartbeatId, projectItemId, retryOfRunId: runId });
+
+      const retry = await getLatestRunOfOccurrence(pool, occurrenceId);
+      expect(retry).toMatchObject({
+        attempt: 2,
+        retryOfRunId: runId,
+        heartbeatId,
+        projectItemId,
+        heartbeatOccurrenceId: occurrenceId,
+        task: "Plan the week",
+        triggeredBy: "heartbeat",
+        parentRunId: null,
+        status: "done",
+      });
+      expect(tasks).toEqual(["Plan the week"]);
+      expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(2);
+    });
+
+    it("numbers the attempt after the attempt of the retried run, not after the number of runs", async () => {
+      const { heartbeatId, projectItemId, runId } = await failedFirstAttempt();
+      // The retried run is the third attempt: raw SQL, because no producer gives a lone run an attempt of 3.
+      const updated = await pool.query("UPDATE agent_runs SET attempt = 3 WHERE id = $1", [runId]);
+      expect(updated.rowCount).toBe(1);
+      const handler = coreAgentRunAction(pool, async () => undefined);
+
+      await handler({}, { heartbeatId, projectItemId, retryOfRunId: runId });
+
+      const { rows } = await pool.query<{ attempt: number }>(
+        "SELECT attempt FROM agent_runs WHERE retry_of_run_id = $1",
+        [runId],
+      );
+      expect(rows).toEqual([{ attempt: 4 }]);
+    });
+
+    it("starts no agent and creates no run when the retried run already has a successor", async () => {
+      const { heartbeatId, projectItemId, runId } = await failedFirstAttempt();
+      const first = coreAgentRunAction(pool, async () => undefined);
+      await first({}, { heartbeatId, projectItemId, retryOfRunId: runId });
+      const runAgent = vi.fn(async () => undefined);
+      const warn = vi.spyOn(logger, "warn");
+      try {
+        await coreAgentRunAction(pool, runAgent)({}, { heartbeatId, projectItemId, retryOfRunId: runId });
+
+        expect(runAgent).not.toHaveBeenCalled();
+        expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(2);
+        expect(warn).toHaveBeenCalledWith(
+          { heartbeatId, retryOfRunId: runId },
+          "core.agentRun: the run to retry already has a successor; not running",
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("starts no agent and creates no run when the retried run does not exist", async () => {
+      const { heartbeatId, projectItemId } = await createTestHeartbeat();
+      const missing = "00000000-0000-4000-8000-0000000000aa";
+      const runAgent = vi.fn(async () => undefined);
+      const warn = vi.spyOn(logger, "warn");
+      try {
+        await coreAgentRunAction(pool, runAgent)({}, { heartbeatId, projectItemId, retryOfRunId: missing });
+
+        expect(runAgent).not.toHaveBeenCalled();
+        expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(0);
+        expect(warn).toHaveBeenCalledWith(
+          { heartbeatId, retryOfRunId: missing },
+          "core.agentRun: the run to retry does not exist; nothing to run",
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("closes a failing retry as a final failure with one agent_run_error notification on the retry's run", async () => {
+      const { heartbeatId, projectItemId, runId } = await failedFirstAttempt();
+      // The failed first attempt was final, so its notification is the one already there.
+      expect(await getNotifications("agent_run_error")).toHaveLength(1);
+      const handler = coreAgentRunAction(pool, async () => {
+        throw new Error("model failed again");
+      });
+
+      await expect(
+        handler({}, { heartbeatId, projectItemId, retryOfRunId: runId, isFinalAttempt: true }),
+      ).rejects.toThrow("model failed again");
+
+      const retried = await pool.query<{ id: string; status: string }>(
+        "SELECT id, status FROM agent_runs WHERE retry_of_run_id = $1",
+        [runId],
+      );
+      expect(retried.rows).toEqual([{ id: expect.any(String), status: "error" }]);
+      const notifications = await getNotifications("agent_run_error");
+      expect(notifications.map((row) => row.source_id).sort()).toEqual([runId, retried.rows[0]!.id].sort());
+    });
+  });
+});

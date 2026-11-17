@@ -1,0 +1,65 @@
+import { readFile, readdir, rm, stat } from "node:fs/promises";
+import path from "node:path";
+
+export const STALE_POSTGRES_DIR_PREFIX = "semprec-pg-";
+const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function defaultIsPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+export interface SweepStalePostgresDirsOptions {
+  tmpDir: string;
+  now?: () => number;
+  maxAgeMs?: number;
+  isPidAlive?: (pid: number) => boolean;
+}
+
+async function hasLiveOwner(dir: string, isPidAlive: (pid: number) => boolean): Promise<boolean> {
+  let contents: string;
+  try {
+    contents = await readFile(path.join(dir, "postmaster.pid"), "utf8");
+  } catch {
+    return false;
+  }
+  const pid = Number(contents.split("\n", 1)[0]?.trim());
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  return isPidAlive(pid);
+}
+
+/**
+ * Removes `semprec-pg-*` directories from runs that never reached globalSetup teardown, once old enough and with no
+ * live postmaster claiming them.
+ */
+export async function sweepStalePostgresDirs(options: SweepStalePostgresDirsOptions): Promise<string[]> {
+  const { tmpDir, now = Date.now, maxAgeMs = DEFAULT_MAX_AGE_MS, isPidAlive = defaultIsPidAlive } = options;
+
+  const entries = await readdir(tmpDir, { withFileTypes: true });
+  const removed: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(STALE_POSTGRES_DIR_PREFIX)) continue;
+    const dir = path.join(tmpDir, entry.name);
+    let stats;
+    try {
+      stats = await stat(dir);
+    } catch (err) {
+      // ENOENT: already removed by another process. Anything else is a real failure.
+      if (err instanceof Error && "code" in err && err.code === "ENOENT") continue;
+      throw err;
+    }
+    if (now() - stats.mtimeMs < maxAgeMs) continue;
+    if (await hasLiveOwner(dir, isPidAlive)) continue;
+    try {
+      await rm(dir, { recursive: true, force: true });
+      removed.push(dir);
+    } catch {
+      // Another process may already be removing this directory; keep sweeping the rest.
+    }
+  }
+  return removed;
+}

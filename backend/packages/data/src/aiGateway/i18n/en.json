@@ -1,0 +1,17 @@
+{
+  "model.claudeSonnet": "Claude Sonnet",
+  "model.claudeHaiku": "Claude Haiku",
+  "model.whisper": "Whisper",
+  "model.diarization": "Diarization",
+  "operation.agent_turn": "Semp - chat and automatic tasks",
+  "operation.transcription_transcribe": "Recording transcription",
+  "operation.transcription_diarize": "Speaker recognition",
+  "operation.transcript_summary": "Meeting summaries",
+  "operation.transcript_speaker_suggestion": "Speaker suggestions",
+  "operation.agent_guidance_drift": "AGENT.md instruction check",
+  "operation.agent_behavior_drift": "AGENT.md instruction check",
+  "operation.voice": "Voice",
+  "operation.voice_transcribe_stream": "Voice",
+  "operation.voice_synthesize": "Voice",
+  "operation.other": "Other"
+}

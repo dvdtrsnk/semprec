@@ -1,0 +1,126 @@
+# Lints the hand-written Swift of every module and of the app: Sources, Tests and the app's UITests. Tuist manifests,
+# the Tuist-derived sources (Derived/) and fetched packages (Tuist/.build/) are outside these directories.
+
+# The one SwiftLint version this configuration is written for. Any other version stops with an error before it
+# lints, so every machine and editor gives the same verdict.
+swiftlint_version: 0.65.1
+
+included:
+  - Modules/*/*/Sources
+  - Modules/*/*/Tests
+  - Projects/*/Sources
+  - Projects/*/Tests
+  - Projects/*/UITests
+
+opt_in_rules:
+  - empty_count
+  - attributes
+  - closure_spacing
+  - overridden_super_call
+  - operator_usage_whitespace
+  - closure_end_indentation
+  - sorted_imports
+  - force_unwrapping
+  - custom_rules
+  - vertical_whitespace
+
+custom_rules:
+  # Import boundary: CoreKit's sources, and CoreKit's tests that build Kotlin values for its bridge mappings, alone
+  # import the Kotlin framework; features and the app use CoreKit's native ScreenModel types. `included` is a path
+  # regex; the negative lookahead exempts Modules/Core/CoreKit/Sources/ and Modules/Core/CoreKit/Tests/.
+  kmp_framework_outside_corekit:
+    name: "Kotlin framework outside CoreKit"
+    message: "Only CoreKit's sources and tests import SharedSDK. Use CoreKit's ScreenModel types instead."
+    regex: '^\s*(@\w+\s+)*((public|package|internal|fileprivate|private)\s+)?import\s+(\w+\s+)?SharedSDK\b'
+    included: '^(?!.*/Modules/Core/CoreKit/(Sources|Tests)/).*\.swift$'
+    severity: error
+
+  hotfix:
+    name: "Hotfix"
+    message: "Analyze and test this solution to make it more reliable"
+    regex: '//[ ]*HOTFIX.*'
+
+  class_conforming_to_protocol:
+    name: "Class Conforming to Protocol"
+    message: "Conforming to a protocol should be implemented with an extension, not with class definition"
+    regex: 'class (\w+)Impl:(\W+\1).*\{'
+    severity: error
+
+  no_newline_after_class_declaration:
+    name: "No Empty Line After Declaration"
+    message: "There should be one empty line after type or extension declaration line"
+    regex: '^(final |open |static |fileprivate |private |public )*(class|struct|extension|protocol|enum)[^\{]*\{\n(?!\n)'
+    severity: warning
+
+  marked_extension:
+    name: "Marked extension"
+    message: "Extension should be marked"
+    regex: '^\}\n*(^extension)'
+    severity: warning
+    capture_group: 1
+
+  ternary_operator_1:
+    name: "Ternary operator"
+    message: "Ternary operator should have just one condition, move it to function or make extra variable"
+    regex: '\S+ (&&|\|\|) \S+ \? \S+ : \S+'
+    severity: warning
+    capture_group: 1
+
+  ternary_operator_2:
+    name: "Ternary operator"
+    message: "Ternary operator should have just one condition, move it to function or make extra variable"
+    regex: '\S+ (&&|\|\|) \S+ \?\s+\S+\s+: \S+'
+    severity: warning
+    capture_group: 1
+
+  ternary_operator_formatting_1:
+    name: "Ternary operator formatting"
+    message: 'Ternary operator should be formatted like: "condition ?\n ifTrue\n : else"'
+    regex: '(\w+\n[ ]*\?\s+\w+\s+:\s+\w+)'
+    severity: warning
+    capture_group: 1
+
+  ternary_operator_formatting_2:
+    name: "Ternary operator formatting"
+    message: 'Ternary operator should be formatted like: "condition ?\n ifTrue\n : else"'
+    regex: '(\w+\s+\?\n[ ]*\s+\w+[ \t]+:\s+\w+)'
+    severity: warning
+    capture_group: 1
+
+  ternary_operator_formatting_3:
+    name: "Ternary operator formatting"
+    message: 'Ternary operator should be formatted like: "condition ?\n ifTrue\n : else"'
+    regex: '(\w+\s+\?\n[ ]*\s+\w+\s+:[ \t]*\n\s*\w+)'
+    severity: warning
+    capture_group: 1
+
+large_tuple:
+  warning: 3
+  error: 5
+
+cyclomatic_complexity:
+  warning: 15
+  error: 20
+
+type_name:
+  allowed_symbols:
+    - _
+  excluded:
+    - T
+    - U
+    - id
+
+identifier_name:
+  allowed_symbols:
+    - _
+  excluded:
+    - id
+    - i
+    - r
+    - ok
+
+vertical_whitespace:
+  max_empty_lines: 1
+
+nesting:
+  type_level: 3
