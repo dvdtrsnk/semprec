@@ -19,7 +19,7 @@ export async function lockItemBatch(
 ): Promise<Array<{ id: string; properties: Record<string, unknown> }>> {
   const { rows } = await client.query<{ id: string; properties: Record<string, unknown> }>(
     `SELECT id, properties FROM items WHERE database_id = $1 ${input.afterId !== null ? "AND id > $3" : ""}
-     ORDER BY id ASC LIMIT $2 FOR UPDATE${input.skipLocked ? " SKIP LOCKED" : ""}`,
+     ORDER BY id ASC LIMIT $2 FOR NO KEY UPDATE${input.skipLocked ? " SKIP LOCKED" : ""}`,
     input.afterId !== null ? [input.databaseId, input.pageSize, input.afterId] : [input.databaseId, input.pageSize],
   );
   return rows;

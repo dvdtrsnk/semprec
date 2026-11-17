@@ -6,14 +6,14 @@ import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createBlob } from "../blobs/blobsStore.js";
-import { createDatabase, dropDatabaseWithPartition } from "../chokePoint/databasesStore.js";
+import { createDatabase, deleteDatabaseWithItems } from "../chokePoint/databasesStore.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
 import { createProperty } from "../chokePoint/propertiesStore.js";
 import { createView, deleteView } from "../chokePoint/viewsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { withTransaction } from "../db/pool.js";
 import { mutateDocWithClient } from "../docs/docPersistence.js";
-import { deleteDocByItemId, getOrCreateDoc } from "../docs/docsStore.js";
+import { getOrCreateDoc } from "../docs/docsStore.js";
 import { createMailThread } from "../mail/mailMessageMetaStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
@@ -154,8 +154,6 @@ interface Reference {
   table: string;
   column: string;
   parentId: (parents: Parents) => string;
-  /** An items row is routed to its database's partition first, so an unknown database fails with 23514. */
-  unknownParentCode?: string;
   insert: (client: PoolClient, parentId: string, own: Parents) => Promise<unknown>;
 }
 
@@ -223,7 +221,6 @@ const REFERENCES: Reference[] = [
     table: "items",
     column: "database_id",
     parentId: (p) => p.databaseId,
-    unknownParentCode: "23514",
     insert: (client, id) => client.query("INSERT INTO items (database_id, properties) VALUES ($1, '{}')", [id]),
   },
   {
@@ -303,10 +300,10 @@ const REFERENCES: Reference[] = [
     table: "mail_message_meta",
     column: "thread_id",
     parentId: (p) => p.threadId,
-    insert: (client, id) =>
+    insert: (client, id, own) =>
       client.query(
         "INSERT INTO mail_message_meta (item_id, message_id, mailbox_item_id, thread_id) VALUES ($1, $2, $3, $4)",
-        [randomUUID(), `<${randomUUID()}@example.com>`, randomUUID(), id],
+        [own.itemId, `<${randomUUID()}@example.com>`, randomUUID(), id],
       ),
   },
   {
@@ -315,11 +312,11 @@ const REFERENCES: Reference[] = [
     table: "mail_attachments",
     column: "blob_id",
     parentId: (p) => p.blobId,
-    insert: (client, id) =>
+    insert: (client, id, own) =>
       client.query(
         `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, disposition, byte_size)
          VALUES ($1, $2, 'probe.txt', 'text/plain', 'attachment', 1)`,
-        [randomUUID(), id],
+        [own.itemId, id],
       ),
   },
   {
@@ -418,7 +415,7 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
       });
       await expect(
         inTenant(tenantB, (client) => reference.insert(client, randomUUID(), parentsB)),
-      ).rejects.toMatchObject({ code: reference.unknownParentCode ?? "23503" });
+      ).rejects.toMatchObject({ code: "23503" });
       expect(await countReferencing(reference.table, reference.column, foreignId, tenantB)).toBe(0);
     });
 
@@ -439,16 +436,14 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
         { databaseId: database.id, type: "table", name: "Table" },
         createViewTypeRegistry(),
       );
-      await client.query("INSERT INTO view_items (view_id, item_id, position) VALUES ($1, $2, 0)", [
-        view.id,
-        randomUUID(),
-      ]);
+      const item = await insertItem(client, { databaseId: database.id, properties: {} });
+      await client.query("INSERT INTO view_items (view_id, item_id, position) VALUES ($1, $2, 0)", [view.id, item.id]);
       return { databaseId: database.id, viewId: view.id };
     });
     expect(await countReferencing("properties", "database_id", databaseId)).toBe(1);
     expect(await countReferencing("view_items", "view_id", viewId)).toBe(1);
 
-    await inTenant(tenantA, (client) => dropDatabaseWithPartition(client, databaseId));
+    await inTenant(tenantA, (client) => deleteDatabaseWithItems(client, databaseId));
 
     expect(await countReferencing("databases", "id", databaseId)).toBe(0);
     expect(await countReferencing("properties", "database_id", databaseId)).toBe(0);
@@ -478,7 +473,8 @@ describe("tenant-consistent composite foreign keys (issue #1066)", () => {
     for (const table of docChildren) {
       expect(await countReferencing(table, "doc_id", parentsA.docId), table).toBeGreaterThan(0);
     }
-    await inTenant(tenantA, (client) => deleteDocByItemId(client, parentsA.itemId));
+    // No production path deletes a doc on its own: it goes with its item, which other rows here still name.
+    await inTenant(tenantA, (client) => client.query("DELETE FROM docs WHERE item_id = $1", [parentsA.itemId]));
     expect(await countReferencing("docs", "id", parentsA.docId)).toBe(0);
     for (const table of docChildren) {
       expect(await countReferencing(table, "doc_id", parentsA.docId), table).toBe(0);

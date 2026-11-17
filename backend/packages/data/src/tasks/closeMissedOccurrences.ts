@@ -13,7 +13,7 @@ export async function closeMissedOccurrence(
   today: string,
 ): Promise<void> {
   const current = await client.query<{ properties: Record<string, unknown> }>(
-    "SELECT properties FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
+    "SELECT properties FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL FOR NO KEY UPDATE",
     [databaseId, itemId],
   );
   const properties = current.rows[0]?.properties;

@@ -6,7 +6,7 @@ import { getDecryptedCredential, storeCredential } from "../credentials/external
 import { logger } from "../mail/logger.js";
 import { refreshAndPersistAccessToken, type RefreshAndPersistAccessTokenInput } from "../mail/mailOAuthAccess.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, insertItemsWithIds, resetDatabase } from "../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { withTransaction } from "../db/pool.js";
 
@@ -85,6 +85,13 @@ async function stored(itemId: string): Promise<string | null> {
 
 async function seed(token: string): Promise<string> {
   const itemId = randomUUID();
+  // A credential names an existing mailbox item of its tenant (foreign key); the pool's sessions are in tenant zero.
+  const client = await pool.connect();
+  try {
+    await insertItemsWithIds(client, [itemId]);
+  } finally {
+    client.release();
+  }
   await storeCredential(pool, { itemId, credentialType: "oauth2_refresh_token", plaintext: token });
   return itemId;
 }
@@ -172,9 +179,10 @@ describe("refreshAndPersistAccessToken", () => {
     const itemId = randomUUID();
     try {
       await runInTenant(otherTenant, () =>
-        withTransaction(runtimePool, (client) =>
-          storeCredential(client, { itemId, credentialType: "oauth2_refresh_token", plaintext: "owned-token" }),
-        ),
+        withTransaction(runtimePool, async (client) => {
+          await insertItemsWithIds(client, [itemId]);
+          await storeCredential(client, { itemId, credentialType: "oauth2_refresh_token", plaintext: "owned-token" });
+        }),
       );
       const provider = fakeProvider({ rotate: () => "rotated-token" });
       await expect(
@@ -206,13 +214,14 @@ describe("refreshAndPersistAccessToken", () => {
     const otherTenant = await createTestTenant(pool);
     const otherTenantItem = randomUUID();
     await runInTenant(otherTenant, () =>
-      withTransaction(pool, (client) =>
-        storeCredential(client, {
+      withTransaction(pool, async (client) => {
+        await insertItemsWithIds(client, [otherTenantItem]);
+        await storeCredential(client, {
           itemId: otherTenantItem,
           credentialType: "oauth2_refresh_token",
           plaintext: "other-tenant",
-        }),
-      ),
+        });
+      }),
     );
     const operationPool = new Pool({
       connectionString: process.env.TEST_DATABASE_URL,

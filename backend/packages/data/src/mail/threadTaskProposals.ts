@@ -101,7 +101,7 @@ function historyMessage(name: string, subject: string | null): string {
 
 /**
  * Starts with the tenant's mail-thread guard (merged ids resolved; unknown and foreign ids are the same
- * `NotFoundError`), then locks the Threads item `FOR UPDATE`; a trashed one is `NotFoundError` because its card
+ * `NotFoundError`), then locks the Threads item `FOR NO KEY UPDATE`; a trashed one is `NotFoundError` because its card
  * could not be confirmed.
  *
  * Under that lock an existing live `proposed` card with the same name is returned and nothing is written.

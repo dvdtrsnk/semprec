@@ -139,57 +139,6 @@ CREATE FUNCTION public.app_tenant_default() RETURNS uuid
 
 COMMENT ON FUNCTION public.app_tenant_default() IS 'Strict: the tenant of the current scope (app.tenant_id), or NULL outside one. It no longer falls back to the sole tenant.';
 
-CREATE FUNCTION public.create_items_partition(database_id uuid) RETURNS void
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
-    AS $$
-DECLARE
-  partition_name text;
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM public.databases d
-    WHERE d.id = create_items_partition.database_id
-      AND d.tenant_id = (SELECT public.app_tenant_default())
-  ) THEN
-    RAISE EXCEPTION 'create_items_partition: database % is not a database of the current tenant', create_items_partition.database_id
-      USING ERRCODE = 'no_data_found';
-  END IF;
-  partition_name := 'items_p_' || replace(database_id::text, '-', '');
-  EXECUTE format(
-    'CREATE TABLE public.%I (LIKE public.items INCLUDING ALL EXCLUDING INDEXES EXCLUDING COMMENTS)',
-    partition_name
-  );
-  EXECUTE format(
-    'ALTER TABLE public.items ATTACH PARTITION public.%I FOR VALUES IN (%L)',
-    partition_name,
-    database_id
-  );
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.create_items_partition(database_id uuid) FROM PUBLIC;
-GRANT ALL ON FUNCTION public.create_items_partition(database_id uuid) TO semprec_data;
-
-CREATE FUNCTION public.drop_items_partition(database_id uuid) RETURNS void
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
-    AS $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM public.databases d
-    WHERE d.id = drop_items_partition.database_id
-      AND d.tenant_id = (SELECT public.app_tenant_default())
-  ) THEN
-    RAISE EXCEPTION 'drop_items_partition: database % is not a database of the current tenant', drop_items_partition.database_id
-      USING ERRCODE = 'no_data_found';
-  END IF;
-  EXECUTE format('DROP TABLE IF EXISTS public.%I', 'items_p_' || replace(database_id::text, '-', ''));
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.drop_items_partition(database_id uuid) FROM PUBLIC;
-GRANT ALL ON FUNCTION public.drop_items_partition(database_id uuid) TO semprec_data;
-
 CREATE FUNCTION public.enforce_relation_cardinality() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -1229,6 +1178,8 @@ COMMENT ON TABLE public.idempotency_keys IS 'semprec:tenancy=tenant';
 ALTER TABLE ONLY public.idempotency_keys
     ADD CONSTRAINT idempotency_keys_pkey PRIMARY KEY (tenant_id, key);
 
+CREATE INDEX idempotency_keys_tenant_item_idx ON public.idempotency_keys USING btree (tenant_id, item_id);
+
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.idempotency_keys TO semprec_data;
 GRANT SELECT ON TABLE public.idempotency_keys TO semprec_side;
 
@@ -1368,6 +1319,10 @@ ALTER TABLE ONLY public.item_origins
 
 CREATE INDEX item_origins_tenant_proposal_idx ON public.item_origins USING btree (tenant_id, proposal_id);
 
+CREATE INDEX item_origins_tenant_inbox_item_idx ON public.item_origins USING btree (tenant_id, inbox_item_id) WHERE (inbox_item_id IS NOT NULL);
+
+CREATE INDEX item_origins_tenant_source_transcript_idx ON public.item_origins USING btree (tenant_id, source_transcript_id) WHERE (source_transcript_id IS NOT NULL);
+
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.item_origins TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
@@ -1439,19 +1394,27 @@ CREATE TABLE public.items (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     version bigint DEFAULT 1 NOT NULL
-)
-PARTITION BY LIST (database_id);
+);
 
 COMMENT ON TABLE public.items IS 'semprec:tenancy=tenant';
 
 COMMENT ON COLUMN public.items.version IS 'Optimistic-concurrency token (ifVersion): incremented by every write that advances updated_at.';
 
 ALTER TABLE ONLY public.items
-    ADD CONSTRAINT items_pkey PRIMARY KEY (database_id, id);
+    ADD CONSTRAINT items_pkey PRIMARY KEY (id);
 
-CREATE INDEX items_deleted_at_idx ON ONLY public.items USING btree (deleted_at DESC, id) WHERE (deleted_at IS NOT NULL);
+-- The target of every (tenant_id, <item column>) foreign key: FK checks ignore RLS, so naming another tenant's item
+-- fails exactly like naming a random id.
+ALTER TABLE ONLY public.items
+    ADD CONSTRAINT items_tenant_id_id_uq UNIQUE (tenant_id, id);
 
-CREATE INDEX items_props_gin ON ONLY public.items USING gin (properties jsonb_path_ops);
+-- Item reads filter by database and page by id (`listItems`, keyset `(database_id, id)` sweeps).
+CREATE INDEX items_database_id_id_idx ON public.items USING btree (database_id, id);
+
+-- Trash reads and the purge sweep run per tenant: led by tenant_id, a scan reads only the tenant's trashed rows.
+CREATE INDEX items_deleted_at_idx ON public.items USING btree (tenant_id, deleted_at DESC, id) WHERE (deleted_at IS NOT NULL);
+
+CREATE INDEX items_props_gin ON public.items USING gin (properties jsonb_path_ops);
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.items TO semprec_data;
 GRANT SELECT ON TABLE public.items TO semprec_side;
@@ -1663,6 +1626,8 @@ CREATE UNIQUE INDEX mail_drafts_one_unsent_agent_per_thread_uq ON public.mail_dr
 
 CREATE INDEX mail_drafts_tenant_mailbox_idx ON public.mail_drafts USING btree (tenant_id, mailbox_item_id);
 
+CREATE INDEX mail_drafts_tenant_source_email_idx ON public.mail_drafts USING btree (tenant_id, source_email_item_id) WHERE (source_email_item_id IS NOT NULL);
+
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_drafts TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
@@ -1839,6 +1804,8 @@ ALTER TABLE ONLY public.mail_oauth_states
 CREATE UNIQUE INDEX mail_oauth_states_state_hash_uq ON public.mail_oauth_states USING btree (tenant_id, state_hash);
 
 CREATE INDEX mail_oauth_states_tenant_expires_idx ON public.mail_oauth_states USING btree (tenant_id, expires_at);
+
+CREATE INDEX mail_oauth_states_tenant_mailbox_idx ON public.mail_oauth_states USING btree (tenant_id, mailbox_item_id) WHERE (mailbox_item_id IS NOT NULL);
 
 CREATE INDEX mail_oauth_states_user_idx ON public.mail_oauth_states USING btree (user_id);
 
@@ -2359,6 +2326,10 @@ COMMENT ON TABLE public.recording_requests IS 'semprec:tenancy=tenant';
 ALTER TABLE ONLY public.recording_requests
     ADD CONSTRAINT recording_requests_pkey PRIMARY KEY (tenant_id, file_item_id);
 
+CREATE INDEX recording_requests_tenant_event_item_idx ON public.recording_requests USING btree (tenant_id, event_item_id) WHERE (event_item_id IS NOT NULL);
+
+CREATE INDEX recording_requests_tenant_project_item_idx ON public.recording_requests USING btree (tenant_id, project_item_id) WHERE (project_item_id IS NOT NULL);
+
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.recording_requests TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
@@ -2542,6 +2513,8 @@ ALTER TABLE ONLY public.semp_problems
 
 CREATE UNIQUE INDEX semp_problems_active_dedupe_uq ON public.semp_problems USING btree (tenant_id, dedupe_key) WHERE (resolved_at IS NULL);
 
+CREATE INDEX semp_problems_tenant_project_item_idx ON public.semp_problems USING btree (tenant_id, project_item_id) WHERE (project_item_id IS NOT NULL);
+
 CREATE INDEX semp_problems_tenant_active_idx ON public.semp_problems USING btree (tenant_id, last_seen_at DESC, id DESC) WHERE (resolved_at IS NULL);
 
 CREATE UNIQUE INDEX semp_problems_tenant_id_id_uq ON public.semp_problems USING btree (tenant_id, id);
@@ -2582,6 +2555,8 @@ ALTER TABLE ONLY public.semp_threads
 CREATE UNIQUE INDEX semp_threads_item_subject_uq ON public.semp_threads USING btree (tenant_id, subject_inbox_item_id) WHERE (kind = 'item'::text);
 
 CREATE INDEX semp_threads_tenant_activity_idx ON public.semp_threads USING btree (tenant_id, last_activity_at DESC, id DESC);
+
+CREATE INDEX semp_threads_tenant_subject_proposal_idx ON public.semp_threads USING btree (tenant_id, subject_proposal_id) WHERE (subject_proposal_id IS NOT NULL);
 
 CREATE UNIQUE INDEX semp_threads_tick_heartbeat_uq ON public.semp_threads USING btree (tenant_id, heartbeat_id) WHERE (kind = 'tick'::text);
 
@@ -2646,6 +2621,8 @@ COMMENT ON TABLE public.task_recurrence IS 'semprec:tenancy=tenant';
 
 ALTER TABLE ONLY public.task_recurrence
     ADD CONSTRAINT task_recurrence_pkey PRIMARY KEY (item_id);
+
+CREATE INDEX task_recurrence_tenant_trashed_active_item_idx ON public.task_recurrence USING btree (tenant_id, trashed_active_item_id) WHERE (trashed_active_item_id IS NOT NULL);
 
 CREATE UNIQUE INDEX task_recurrence_tenant_series_id_uq ON public.task_recurrence USING btree (tenant_id, series_id);
 
@@ -2803,6 +2780,10 @@ COMMENT ON TABLE public.transcript_action_item_states IS 'semprec:tenancy=tenant
 
 ALTER TABLE ONLY public.transcript_action_item_states
     ADD CONSTRAINT transcript_action_item_states_pkey PRIMARY KEY (tenant_id, transcript_item_id, action_item_id);
+
+CREATE INDEX transcript_action_item_states_tenant_owner_person_idx ON public.transcript_action_item_states USING btree (tenant_id, owner_person_id) WHERE (owner_person_id IS NOT NULL);
+
+CREATE INDEX transcript_action_item_states_tenant_task_item_idx ON public.transcript_action_item_states USING btree (tenant_id, task_item_id) WHERE (task_item_id IS NOT NULL);
 
 GRANT SELECT ON TABLE public.transcript_action_item_states TO semprec_side;
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.transcript_action_item_states TO semprec_data;
@@ -3165,13 +3146,13 @@ ALTER TABLE ONLY public.item_search_index
 ALTER TABLE ONLY public.item_search_index
     ADD CONSTRAINT item_search_index_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
-ALTER TABLE public.items
+ALTER TABLE ONLY public.items
     ADD CONSTRAINT items_database_id_fkey FOREIGN KEY (database_id) REFERENCES public.databases(id);
 
-ALTER TABLE public.items
+ALTER TABLE ONLY public.items
     ADD CONSTRAINT items_database_id_tenant_fkey FOREIGN KEY (tenant_id, database_id) REFERENCES public.databases(tenant_id, id);
 
-ALTER TABLE public.items
+ALTER TABLE ONLY public.items
     ADD CONSTRAINT items_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 ALTER TABLE ONLY public.library_cover_candidates
@@ -3464,6 +3445,143 @@ ALTER TABLE ONLY public.views
 
 ALTER TABLE ONLY public.views
     ADD CONSTRAINT views_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+-- ----------------------------------------------------------------------------------------------------
+-- Foreign keys to items
+--
+-- Every key names (tenant_id, <column>) against items (tenant_id, id), so another tenant's item id fails exactly like
+-- a random one. Every key is checked at commit (DEFERRABLE INITIALLY DEFERRED): a dependent row written before its
+-- item (an idempotency reservation), or before the writer locks the item, takes no lock on the item ahead of the
+-- writer's own row lock, and the purge may delete an item before the dependents its owners remove. Delete actions
+-- (CASCADE, SET NULL) still run at the statement. The behaviour of each column, and why some item columns carry no
+-- key, is the decision table in docs/architecture/data-model-and-writes.md (Storage).
+-- ----------------------------------------------------------------------------------------------------
+
+-- Derived or bookkeeping rows whose removal has no side effect: they go with their item.
+ALTER TABLE ONLY public.agent_database_grants
+    ADD CONSTRAINT agent_database_grants_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_feed_state
+    ADD CONSTRAINT calendar_feed_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.docs
+    ADD CONSTRAINT docs_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.external_credentials
+    ADD CONSTRAINT external_credentials_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.item_automation
+    ADD CONSTRAINT item_automation_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.item_origins
+    ADD CONSTRAINT item_origins_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.item_relations
+    ADD CONSTRAINT item_relations_item_a_tenant_fkey FOREIGN KEY (tenant_id, item_a) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.item_relations
+    ADD CONSTRAINT item_relations_item_b_tenant_fkey FOREIGN KEY (tenant_id, item_b) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.item_search_index
+    ADD CONSTRAINT item_search_index_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.library_cover_candidates
+    ADD CONSTRAINT library_cover_candidates_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_account_server_settings
+    ADD CONSTRAINT mail_account_server_settings_mailbox_item_id_tenant_fkey FOREIGN KEY (tenant_id, mailbox_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_account_sync_state
+    ADD CONSTRAINT mail_account_sync_state_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_attachments
+    ADD CONSTRAINT mail_attachments_message_item_id_tenant_fkey FOREIGN KEY (tenant_id, message_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_drafts
+    ADD CONSTRAINT mail_drafts_email_item_id_tenant_fkey FOREIGN KEY (tenant_id, email_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_folder_sync_state
+    ADD CONSTRAINT mail_folder_sync_state_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_message_flag_sync_state
+    ADD CONSTRAINT mail_message_flag_sync_state_message_item_id_tenant_fkey FOREIGN KEY (tenant_id, message_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_oauth_states
+    ADD CONSTRAINT mail_oauth_states_mailbox_item_id_tenant_fkey FOREIGN KEY (tenant_id, mailbox_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mcp_server_connection_state
+    ADD CONSTRAINT mcp_server_connection_state_mcp_server_item_id_tenant_fkey FOREIGN KEY (tenant_id, mcp_server_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.person_email_index
+    ADD CONSTRAINT person_email_index_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.project_kept_dates
+    ADD CONSTRAINT project_kept_dates_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.recording_requests
+    ADD CONSTRAINT recording_requests_file_item_id_tenant_fkey FOREIGN KEY (tenant_id, file_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.task_recurrence
+    ADD CONSTRAINT task_recurrence_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.transcript_action_item_states
+    ADD CONSTRAINT transcript_action_item_states_transcript_item_id_tenant_fkey FOREIGN KEY (tenant_id, transcript_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.value_links
+    ADD CONSTRAINT value_links_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.view_items
+    ADD CONSTRAINT view_items_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+-- Reserved before its item is inserted in the same transaction (`insertItemWithReplay`).
+ALTER TABLE ONLY public.idempotency_keys
+    ADD CONSTRAINT idempotency_keys_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+-- Rows whose removal has domain side effects (blob release, emptied value links and their invalidations, mail
+-- thread cleanup). The purge deletes them through their owners after the item, in the same transaction; a delete
+-- of a referenced item that leaves one of them behind is refused at commit.
+ALTER TABLE ONLY public.inbox_attachments
+    ADD CONSTRAINT inbox_attachments_inbox_item_id_tenant_fkey FOREIGN KEY (tenant_id, inbox_item_id) REFERENCES public.items(tenant_id, id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_message_meta
+    ADD CONSTRAINT mail_message_meta_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.value_link_sources
+    ADD CONSTRAINT value_link_sources_source_item_id_tenant_fkey FOREIGN KEY (tenant_id, source_item_id) REFERENCES public.items(tenant_id, id) DEFERRABLE INITIALLY DEFERRED;
+
+-- Optional references whose row outlives the item, with the reference dropped.
+ALTER TABLE ONLY public.item_origins
+    ADD CONSTRAINT item_origins_inbox_item_id_tenant_fkey FOREIGN KEY (tenant_id, inbox_item_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (inbox_item_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.item_origins
+    ADD CONSTRAINT item_origins_source_transcript_id_tenant_fkey FOREIGN KEY (tenant_id, source_transcript_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (source_transcript_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_drafts
+    ADD CONSTRAINT mail_drafts_source_email_item_id_tenant_fkey FOREIGN KEY (tenant_id, source_email_item_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (source_email_item_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.recording_requests
+    ADD CONSTRAINT recording_requests_event_item_id_tenant_fkey FOREIGN KEY (tenant_id, event_item_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (event_item_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.recording_requests
+    ADD CONSTRAINT recording_requests_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (project_item_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.semp_problems
+    ADD CONSTRAINT semp_problems_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (project_item_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.semp_threads
+    ADD CONSTRAINT semp_threads_subject_proposal_id_tenant_fkey FOREIGN KEY (tenant_id, subject_proposal_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (subject_proposal_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.task_recurrence
+    ADD CONSTRAINT task_recurrence_trashed_active_item_id_tenant_fkey FOREIGN KEY (tenant_id, trashed_active_item_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (trashed_active_item_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.transcript_action_item_states
+    ADD CONSTRAINT transcript_action_item_states_owner_person_id_tenant_fkey FOREIGN KEY (tenant_id, owner_person_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (owner_person_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.transcript_action_item_states
+    ADD CONSTRAINT transcript_action_item_states_task_item_id_tenant_fkey FOREIGN KEY (tenant_id, task_item_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (task_item_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.views
+    ADD CONSTRAINT views_creator_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, creator_project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE SET NULL (creator_project_item_id) DEFERRABLE INITIALLY DEFERRED;
 
 -- ====================================================================================================
 -- Row-level security

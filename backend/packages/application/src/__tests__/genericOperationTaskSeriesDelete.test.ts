@@ -301,7 +301,7 @@ describe("an agent's item.delete of a recurring task (issue gh-1882)", () => {
       });
       // A writer of the series that holds the open instance, as the advance and the materializing of an occurrence do.
       const holder = withTransaction(pool, async (client) => {
-        await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [second]);
+        await client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [second]);
         markLocked();
         await released;
       });

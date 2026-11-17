@@ -130,7 +130,7 @@ describe("docs (CRDT layer)", () => {
               let blocked = false;
               for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
                 const waiting = await pool.query<{ present: boolean }>(
-                  "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM items%FOR UPDATE%') AS present",
+                  "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM items%FOR NO KEY UPDATE%') AS present",
                   [pid],
                 );
                 blocked = waiting.rows[0]?.present === true;

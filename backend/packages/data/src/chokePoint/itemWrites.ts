@@ -771,7 +771,7 @@ export async function rolloverTaskWithClient(client: PoolClient, input: Rollover
 }
 
 /**
- * The items-row `FOR UPDATE` lock `applyObservedMailMessageFlags` takes before locking
+ * The items-row `FOR NO KEY UPDATE` lock `applyObservedMailMessageFlags` takes before locking
  * `mail_message_flag_sync_state`. Exposed here so mail sync need not import `itemsStore.js`.
  */
 export async function lockItemForObservedMailFlags(

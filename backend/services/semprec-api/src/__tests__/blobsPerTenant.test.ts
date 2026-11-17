@@ -12,6 +12,7 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   reconcileGmailAccount,
   resetDatabase,
   type GmailMailClient,
@@ -402,10 +403,12 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
             contentHash: written.contentHash,
           });
           if (opts.attachment) {
+            const messageItemId = randomUUID();
+            await insertItemsWithIds(client, [messageItemId]);
             await client.query(
               `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, disposition, byte_size)
                VALUES ($1, $2, 'a.txt', 'text/plain', 'attachment', $3)`,
-              [randomUUID(), blob.id, written.byteSize],
+              [messageItemId, blob.id, written.byteSize],
             );
           }
           return blob.id;

@@ -349,8 +349,9 @@ function recordStatements(): { texts: string[]; stop: () => void } {
 }
 
 const READS_PAGES_DATABASE = /FROM databases WHERE owner_module_id = \$1 AND system/;
-const LOCKS_LIVE_SUBPAGES = /properties->>'parentItemId' = \$2 AND deleted_at IS NULL[\s\S]*FOR UPDATE/;
-const LOCKS_EPOCH_SUBPAGES = /properties->>'parentItemId' = \$2 AND deleted_at = \$3::timestamptz[\s\S]*FOR UPDATE/;
+const LOCKS_LIVE_SUBPAGES = /properties->>'parentItemId' = \$2 AND deleted_at IS NULL[\s\S]*FOR NO KEY UPDATE/;
+const LOCKS_EPOCH_SUBPAGES =
+  /properties->>'parentItemId' = \$2 AND deleted_at = \$3::timestamptz[\s\S]*FOR NO KEY UPDATE/;
 const READS_TRASH_EPOCH = /to_char\(deleted_at[\s\S]*FOR SHARE/;
 const WRITES = /^\s*(INSERT|UPDATE|DELETE)\b/i;
 

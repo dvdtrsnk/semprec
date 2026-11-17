@@ -173,25 +173,28 @@ async function findRuntimeRoleViolations(client: Queryable): Promise<TenancyViol
   return violations;
 }
 
-/** Any privilege of a runtime role on an `items_p_*` partition, which RLS on `items` does not cover. */
-async function findPartitionPrivilegeViolations(client: Queryable): Promise<TenancyViolation[]> {
-  const { rows } = await client.query<{ partition_name: string; role_name: string }>(
-    `SELECT c.relname::text AS partition_name, r.rolname::text AS role_name
-       FROM pg_class c
-      CROSS JOIN pg_roles r
-      WHERE c.relnamespace = 'public'::regnamespace
-        AND c.relkind IN ('r', 'p')
-        AND c.relispartition
-        AND c.relname LIKE 'items\\_p\\_%'
-        AND r.rolname = ANY($1::text[])
-        AND has_table_privilege(r.oid, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
-      ORDER BY c.relname, r.rolname`,
-    [RUNTIME_ROLES],
+/**
+ * A foreign key to `items` that is not `(tenant_id, <column>) REFERENCES items (tenant_id, id)`. FK checks ignore RLS,
+ * so a key on the bare item id would accept another tenant's item and answer whether that id exists.
+ */
+async function findItemForeignKeyViolations(client: Queryable): Promise<TenancyViolation[]> {
+  const { rows } = await client.query<{ table_name: string; constraint_name: string }>(
+    `SELECT c.relname::text AS table_name, k.conname::text AS constraint_name
+       FROM pg_constraint k
+       JOIN pg_class c ON c.oid = k.conrelid
+      WHERE k.contype = 'f'
+        AND k.confrelid = to_regclass('public.items')
+        AND (ARRAY(SELECT a.attname::text FROM unnest(k.confkey) WITH ORDINALITY AS u(attnum, ord)
+                     JOIN pg_attribute a ON a.attrelid = k.confrelid AND a.attnum = u.attnum ORDER BY u.ord)
+               IS DISTINCT FROM ARRAY['tenant_id', 'id']
+             OR (SELECT a.attname::text FROM pg_attribute a
+                  WHERE a.attrelid = k.conrelid AND a.attnum = k.conkey[1]) IS DISTINCT FROM 'tenant_id')
+      ORDER BY c.relname, k.conname`,
   );
   return rows.map((row) => ({
-    invariant: "partitionPrivilege",
-    object: row.partition_name,
-    detail: `${row.role_name} holds a table privilege on the partition`,
+    invariant: "itemForeignKey",
+    object: `${row.table_name}.${row.constraint_name}`,
+    detail: "foreign key to items is not over (tenant_id, id)",
   }));
 }
 
@@ -333,7 +336,7 @@ export async function findTenancyViolations(client: Queryable): Promise<TenancyV
     findRowLevelSecurityViolations,
     findStrictDefaultViolations,
     findRuntimeRoleViolations,
-    findPartitionPrivilegeViolations,
+    findItemForeignKeyViolations,
     findDefinerFunctionViolations,
     findForeignKeyViolations,
   ];

@@ -402,7 +402,7 @@ describe("the trash of an Event that hosts a task which it also sources", () => 
         try {
           await client.query("BEGIN");
           await expect(
-            client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE NOWAIT", [task]),
+            client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE NOWAIT", [task]),
           ).rejects.toMatchObject({ code: "55P03" });
           rowLockedWhileWaiting = true;
         } finally {

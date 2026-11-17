@@ -136,12 +136,6 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       ).resolves.toBeDefined();
       await expect(sidePool.query(`SELECT * FROM graphile_worker.jobs LIMIT 1`)).resolves.toBeDefined();
     });
-
-    it("cannot create an items partition", async () => {
-      await expect(sidePool.query(`SELECT create_items_partition($1::uuid)`, [randomUUID()])).rejects.toThrow(
-        /permission denied/,
-      );
-    });
   });
 
   describe("semprec_data", () => {
@@ -160,17 +154,17 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       await expect(dataPool.query(`DELETE FROM items WHERE id = $1`, [secondItemId])).resolves.toBeDefined();
     });
 
-    it("creates a database, its items partition and an item through its own choke point", async () => {
+    it("creates a database and an item through its own choke point", async () => {
       const dataChokePoint = createChokePoint(dataPool);
 
       const db = await dataChokePoint.createDatabase({ name: `Least-privilege data-role ${randomUUID()}` });
       const item = await dataChokePoint.createItem({ databaseId: db.id, properties: {} });
 
       expect(item.databaseId).toBe(db.id);
-      const { rows } = await adminPool.query<{ relname: string }>(`SELECT relname FROM pg_class WHERE relname = $1`, [
-        `items_p_${db.id.replaceAll("-", "")}`,
+      const { rows } = await adminPool.query<{ database_id: string }>(`SELECT database_id FROM items WHERE id = $1`, [
+        item.id,
       ]);
-      expect(rows).toEqual([{ relname: `items_p_${db.id.replaceAll("-", "")}` }]);
+      expect(rows).toEqual([{ database_id: db.id }]);
     });
 
     it("also operates module side tables, via its membership in semprec_side", async () => {
@@ -313,7 +307,7 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     });
 
     it("records desired mail flags as semprec_data and reads them back as semprec_side", async () => {
-      const messageItemId = randomUUID();
+      const messageItemId = (await seedDatabaseAndItem()).item.id;
 
       await withTransaction(dataPool, (client) => recordDesiredMailMessageFlags(client, messageItemId, { read: true }));
 
@@ -325,7 +319,7 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
     });
 
     it("lets semprec_side UPDATE and DELETE mail_message_flag_sync_state rows", async () => {
-      const messageItemId = randomUUID();
+      const messageItemId = (await seedDatabaseAndItem()).item.id;
       await withTransaction(adminPool, (client) =>
         recordDesiredMailMessageFlags(client, messageItemId, { read: true }),
       );

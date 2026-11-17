@@ -1170,8 +1170,8 @@ describe("generic operation MCP contract", () => {
     const headers = await authHeader();
     const footprint = async () =>
       (
-        await pool.query<{ databases: number; properties: number; partitions: number }>(
-          "SELECT (SELECT count(*)::int FROM databases) AS databases, (SELECT count(*)::int FROM properties) AS properties, (SELECT count(*)::int FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions",
+        await pool.query<{ databases: number; properties: number }>(
+          "SELECT (SELECT count(*)::int FROM databases) AS databases, (SELECT count(*)::int FROM properties) AS properties",
         )
       ).rows;
     const before = await footprint();

@@ -69,7 +69,6 @@ describe("PATCH /api/proposals/:id/values over HTTP (issue #1892)", () => {
   beforeAll(() => harness.start());
   beforeEach(async () => {
     await harness.reset();
-    // Sequential: concurrent seeding of two tenants deadlocks on the shared partition catalog.
     for (const tenantId of [harness.tenantA, harness.tenantB]) {
       await runInTenant(tenantId, () => seedSystem(harness.runtime));
     }
@@ -246,7 +245,6 @@ describe("PATCH /api/proposals/:id/values with an Idempotency-Key over HTTP (iss
   beforeAll(() => harness.start());
   beforeEach(async () => {
     await harness.reset();
-    // Sequential: concurrent seeding of two tenants deadlocks on the shared partition catalog.
     for (const tenantId of [harness.tenantA, harness.tenantB]) {
       await runInTenant(tenantId, () => seedSystem(harness.runtime));
     }

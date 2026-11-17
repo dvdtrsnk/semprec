@@ -1345,7 +1345,7 @@ describe("mail live-sync root: seeding under a share lock on the live mailbox", 
     const holderMayEnd = gate();
     const holder = runInTenant(tenantZero(), () =>
       withTransaction(removalPool, async (client) => {
-        await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [locked]);
+        await client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [locked]);
         holderHasLock.release();
         await holderMayEnd.promise;
       }),

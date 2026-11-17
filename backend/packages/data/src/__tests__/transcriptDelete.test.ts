@@ -269,7 +269,7 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
       });
       let failure: unknown;
       await withTransaction(runtime, async (holder: PoolClient) => {
-        const held = await holder.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [f.file.id]);
+        const held = await holder.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [f.file.id]);
         expect(held.rowCount).toBe(1);
         try {
           await f.cp.restoreItem(f.db("transcripts"), f.transcript.id, USER, { writerKind: "user" });

@@ -47,7 +47,7 @@ function syncStateOf(itemId: string, tenantId = tenant): ReturnType<typeof getMa
 }
 
 function tryLockItemForUpdate(itemId: string): Promise<unknown> {
-  return inTenant((client) => client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE NOWAIT", [itemId]));
+  return inTenant((client) => client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE NOWAIT", [itemId]));
 }
 
 /** 55P03 is `lock_not_available`, raised for a `NOWAIT` statement that would have to wait. */
@@ -121,7 +121,7 @@ describe("ensureMailAccountSyncStateOfLiveMailbox (sp-1272c2b9)", () => {
     const holderHasLock = signal();
     const holderMayEnd = signal();
     const holder = inTenant(async (client) => {
-      await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [mailbox.id]);
+      await client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [mailbox.id]);
       holderHasLock.resolve();
       await holderMayEnd.promise;
     });

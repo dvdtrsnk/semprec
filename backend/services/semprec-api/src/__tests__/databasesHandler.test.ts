@@ -673,9 +673,8 @@ describe("database routes (issue #240)", () => {
     const post = (headers: Record<string, string>, body: unknown) =>
       fetch(`${baseUrl}/api/databases`, { method: "POST", headers, body: JSON.stringify(body) });
     const footprint = async () => {
-      const { rows } = await pool.query<{ databases: string; partitions: string; properties: string }>(
+      const { rows } = await pool.query<{ databases: string; properties: string }>(
         `SELECT (SELECT count(*) FROM databases WHERE system = false) AS databases,
-                (SELECT count(*) FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions,
                 (SELECT count(*) FROM properties p JOIN databases d ON d.id = p.database_id WHERE d.system = false) AS properties`,
       );
       return rows[0];

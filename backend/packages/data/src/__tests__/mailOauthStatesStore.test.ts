@@ -19,6 +19,7 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
 } from "../testSupport/testDb.js";
 
@@ -95,9 +96,10 @@ describe("mail OAuth states (issue #1483)", () => {
   it("returns the mailbox id when reauthorizing an existing mailbox", async () => {
     const mailboxItemId = randomUUID();
     const created = await runInTenant(tenantA, () =>
-      withTransaction(pool, (client) =>
-        createMailOauthState(client, { userId: userA, provider: "gmail", mailboxItemId }),
-      ),
+      withTransaction(pool, async (client) => {
+        await insertItemsWithIds(client, [mailboxItemId]);
+        return createMailOauthState(client, { userId: userA, provider: "gmail", mailboxItemId });
+      }),
     );
     const consumed = await consume(tenantA, created.state, userA);
     expect(consumed?.mailboxItemId).toBe(mailboxItemId);

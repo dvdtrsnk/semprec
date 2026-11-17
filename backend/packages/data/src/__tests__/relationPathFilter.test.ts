@@ -40,17 +40,19 @@ async function property(database: string, key: string) {
   return result;
 }
 
-/** Inspect unknown EXPLAIN JSON without casting its shape. */
-function executedPartitions(raw: unknown, result = new Set<string>()): Set<string> {
+/** Every executed (`Actual Loops` > 0) scan of `items`, as `Node Type` and index; inspects unknown EXPLAIN JSON. */
+function executedItemsScans(raw: unknown, result: string[] = []): string[] {
   if (Array.isArray(raw)) {
-    for (const entry of raw) executedPartitions(entry, result);
+    for (const entry of raw) executedItemsScans(entry, result);
   } else if (raw !== null && typeof raw === "object") {
     const name = "Relation Name" in raw ? raw["Relation Name"] : undefined;
     const loops = "Actual Loops" in raw ? raw["Actual Loops"] : undefined;
-    if (typeof name === "string" && name.startsWith("items_p_") && typeof loops === "number" && loops > 0) {
-      result.add(name);
+    if (name === "items" && typeof loops === "number" && loops > 0) {
+      const nodeType = "Node Type" in raw ? raw["Node Type"] : undefined;
+      const indexName = "Index Name" in raw ? raw["Index Name"] : undefined;
+      result.push([nodeType, indexName].filter((part) => typeof part === "string").join(" "));
     }
-    for (const entry of Object.values(raw)) executedPartitions(entry, result);
+    for (const entry of Object.values(raw)) executedItemsScans(entry, result);
   }
   return result;
 }
@@ -210,7 +212,7 @@ describe("relation_path_contains production queries", () => {
     );
   });
 
-  it("EXPLAIN scans only the intermediate database partition for the exact compiled predicate", async () => {
+  it("EXPLAIN probes the intermediate item by index for the exact compiled predicate", async () => {
     const work = await item("areas");
     const project = await item("projects");
     const task = await item("tasks");
@@ -221,6 +223,9 @@ describe("relation_path_contains production queries", () => {
     await inTenantZero(() =>
       withTransaction(pool, async (client) => {
         const metadata = await buildFilterProperties(client, props);
+        // Too few items for the planner to prefer an index; with sequential scans disabled it shows the probe it
+        // takes once items grow.
+        await client.query("SET LOCAL enable_seqscan = off");
         // Use an outer one-row VALUES relation so the only items scan is the intermediate lookup.
         const params: unknown[] = [task.id];
         const predicate = compileFilterNode(parseFilterNode(filter(work.id)), metadata, params);
@@ -228,13 +233,9 @@ describe("relation_path_contains production queries", () => {
           `EXPLAIN (ANALYZE, FORMAT JSON) SELECT 1 FROM (VALUES ($1::uuid)) AS items(id) WHERE ${predicate}`,
           params,
         );
-        expect(executedPartitions(rows[0]?.["QUERY PLAN"])).toEqual(
-          new Set([`items_p_${databases.projects!.replace(/-/g, "")}`]),
-        );
-        const partitions = await client.query<{ count: string }>(
-          "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'items\\_p\\_%'",
-        );
-        expect(Number(partitions.rows[0]?.count)).toBeGreaterThan(2);
+        expect(executedItemsScans(rows[0]?.["QUERY PLAN"])).toEqual([
+          expect.stringMatching(/^Index Scan items_(pkey|database_id_id_idx)$/),
+        ]);
       }),
     );
   });

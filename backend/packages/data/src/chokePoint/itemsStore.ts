@@ -44,7 +44,7 @@ function mapItemRow(row: ItemDbRow): ItemRow {
 
 /**
  * Every database visible under RLS (the current tenant's, archived included). Bound as an array
- * parameter it lets the planner prune `items` partitions, which `= ANY(ARRAY(SELECT ...))` does not.
+ * parameter it is an index condition on `items (database_id, id)`, which `= ANY(ARRAY(SELECT ...))` is not.
  */
 export async function visibleDatabaseIds(client: Queryable): Promise<string[]> {
   const { rows } = await client.query<{ ids: string[] }>(`SELECT coalesce(array_agg(id), '{}') AS ids FROM databases`);
@@ -63,7 +63,7 @@ export async function getItemById(client: Queryable, databaseId: string, itemId:
 export async function lockItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
-     FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE`,
+     FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE`,
     [databaseId, itemId],
   );
   return rows[0] ? mapItemRow(rows[0]) : null;
@@ -96,7 +96,7 @@ export async function lockItemByIdNowait(
 ): Promise<ItemRow | null> {
   const { rows } = await client.query<Record<string, unknown>>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
-     FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE NOWAIT`,
+     FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE NOWAIT`,
     [databaseId, itemId],
   );
   if (!rows[0]) return null;
@@ -309,7 +309,7 @@ export async function softDeleteItem(
 
 /**
  * Locks one item `FOR SHARE` and returns its `deleted_at` in the format of `deletedAtExact`; `null`
- * when live or missing. The share lock makes a trash or restore (`FOR UPDATE`) wait for the caller.
+ * when live or missing. The share lock makes a trash or restore (`FOR NO KEY UPDATE`) wait for the caller.
  */
 export async function lockItemTrashEpoch(
   client: Queryable,
@@ -368,7 +368,7 @@ export async function listItemsByTextProperty(
 ): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version FROM items
-     WHERE database_id = $1 AND properties->>$2 = $3 ORDER BY id${lock ? " FOR UPDATE" : ""}`,
+     WHERE database_id = $1 AND properties->>$2 = $3 ORDER BY id${lock ? " FOR NO KEY UPDATE" : ""}`,
     [databaseId, propertyKey, value],
   );
   return rows.map(mapItemRow);
@@ -393,10 +393,9 @@ export async function findFileItemByBlobId(
 }
 
 /**
- * One keyset page (on the composite primary key) of items trashed before `olderThan`, in non-archived
+ * One keyset page (on `(database_id, id)`) of items trashed before `olderThan`, in non-archived
  * databases of the current tenant: the purge sweep's subtree roots. Items of an archived database go
- * with that database's own purge. Queries the partitioned parent, confined to the tenant by a
- * database-id list resolved under RLS.
+ * with that database's own purge. Confined to the tenant by a database-id list resolved under RLS.
  */
 export async function findItemsDeletedBefore(
   client: Queryable,
@@ -668,8 +667,8 @@ export async function countItemsGrouped(
 }
 
 /**
- * By id alone, without `database_id`: curated views mix databases and cannot supply the partition key.
- * Confined to the tenant's partitions by a database-id list resolved under RLS.
+ * By id alone, without `database_id`: curated views mix databases. Confined to the tenant's databases
+ * by a database-id list resolved under RLS.
  */
 export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];

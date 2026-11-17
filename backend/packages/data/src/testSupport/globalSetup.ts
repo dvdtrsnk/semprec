@@ -83,10 +83,6 @@ export default async function setup(): Promise<() => Promise<void>> {
     // ICU collations need UTF8; initdb picks SQL_ASCII on a C-locale host.
     initdbFlags: ["--encoding=UTF8"],
     postgresFlags: [
-      // `resetDatabase` truncates every table and drops `items_p_*` partitions in one transaction; the default 64
-      // lock slots run out under concurrent test files.
-      "-c",
-      "max_locks_per_transaction=1024",
       // Every worker has its own database and pools; the default 100 connections run out with several workers.
       "-c",
       "max_connections=500",

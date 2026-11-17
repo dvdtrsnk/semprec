@@ -78,7 +78,7 @@ const TITLE_PROPERTY_KEY = "name";
 export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedKeyRegistry">) {
   const { pool, computedKeyRegistry } = deps;
   return {
-    /** One transaction: any failure rolls back the database, its partition and every property. */
+    /** One transaction: any failure rolls back the database and every property. */
     async createDatabaseWithProperties(
       input: databasesStore.CreateDatabaseInput,
       titlePropertyName: string,

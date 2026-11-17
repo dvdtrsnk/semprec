@@ -97,8 +97,8 @@ export const projectAgentGuidanceStore: ProjectAgentGuidanceStore<PoolClient> = 
 };
 
 /**
- * `requireProjectsItem` looks the item up in the Projects database's partition: `items` has no FK target that ties
- * an id to one logical database.
+ * `requireProjectsItem` looks the item up in the Projects database: no foreign key ties an id to one logical
+ * database, and `project_agent_guidance` carries none (its rows outlive a purged project).
  */
 export const guidanceReferenceStore: GuidanceReferenceStore<PoolClient> = {
   async requireProjectsItem(tx, projectItemId) {

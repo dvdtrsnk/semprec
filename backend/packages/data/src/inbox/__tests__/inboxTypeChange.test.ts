@@ -685,7 +685,7 @@ describe("PUT /api/inbox/items/:id/type (issue gh-1947)", () => {
       const holder = await admin.connect();
       try {
         await holder.query("BEGIN");
-        await holder.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [newTypeId]);
+        await holder.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [newTypeId]);
 
         await expect(change(p, itemId, { typeId: newTypeId })).rejects.toMatchObject({
           status: 409,
@@ -707,7 +707,7 @@ describe("PUT /api/inbox/items/:id/type (issue gh-1947)", () => {
       const holder = await admin.connect();
       try {
         await holder.query("BEGIN");
-        await holder.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [cardId]);
+        await holder.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [cardId]);
 
         await expect(change(p, itemId, { typeId: newTypeId })).rejects.toMatchObject({
           status: 409,

@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import "../../domainWriteHooks.js";
-import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { getTestPool, insertItemsWithIds, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, withTenantTransaction } from "../../testSupport/tenantFixtures.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
@@ -311,13 +311,15 @@ describe("GET /api/items/:id/origin (issue gh-1967)", () => {
       const proposalId = randomUUID();
       // Raw insert: the row a confirmed transcript card writes (`resolveItemOriginSource`), whose confirm needs a
       // transcript, its Event and a matched card that this read does not depend on.
-      await withTenantTransaction(runtimePool, tenantA, (client) =>
-        client.query(
+      await withTenantTransaction(runtimePool, tenantA, async (client) => {
+        // The transcript the row names must be an item of the tenant; this read never opens it.
+        await insertItemsWithIds(client, [transcriptId]);
+        await client.query(
           `INSERT INTO item_origins (item_id, proposal_id, source_transcript_id, capture_channel, capture_time_basis)
            VALUES ($1, $2, $3, 'transcript', 'unknown')`,
           [itemId, proposalId, transcriptId],
-        ),
-      );
+        );
+      });
 
       expect(await bodyOf(tenantA, itemId)).toEqual({
         proposalId,
@@ -336,13 +338,16 @@ describe("GET /api/items/:id/origin (issue gh-1967)", () => {
       const capture = await propose(tenantA, justACompany(), "Not the source");
       const itemId = await createByHand(tenantA, "companies", { name: "From a call" });
       // Raw insert: the confirm path writes no Inbox item id on a transcript row, so only a row written by hand can name one.
-      await withTenantTransaction(runtimePool, tenantA, (client) =>
-        client.query(
+      const transcriptId = randomUUID();
+      await withTenantTransaction(runtimePool, tenantA, async (client) => {
+        // The transcript the row names must be an item of the tenant; this read never opens it.
+        await insertItemsWithIds(client, [transcriptId]);
+        await client.query(
           `INSERT INTO item_origins (item_id, proposal_id, inbox_item_id, source_transcript_id, capture_channel, capture_time_basis)
            VALUES ($1, $2, $3, $4, 'transcript', 'unknown')`,
-          [itemId, randomUUID(), capture.inboxItemId, randomUUID()],
-        ),
-      );
+          [itemId, randomUUID(), capture.inboxItemId, transcriptId],
+        );
+      });
 
       const origin = await bodyOf(tenantA, itemId);
 

@@ -82,7 +82,6 @@ describe("POST /api/proposals/:id/reset-overrides over HTTP (issue #1912)", () =
   beforeAll(() => harness.start());
   beforeEach(async () => {
     await harness.reset();
-    // Sequential: concurrent seeding of two tenants deadlocks on the shared partition catalog.
     for (const tenantId of [harness.tenantA, harness.tenantB]) {
       await runInTenant(tenantId, () => seedSystem(harness.runtime));
     }

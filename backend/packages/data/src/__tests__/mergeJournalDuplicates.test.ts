@@ -1143,7 +1143,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
           const { rows } = await runInTenant(tenant, () =>
             withTransaction(pool, (client) =>
               client.query<{ id: string }>(
-                "SELECT id FROM items WHERE database_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR UPDATE NOWAIT",
+                "SELECT id FROM items WHERE database_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR NO KEY UPDATE NOWAIT",
                 [ids.journal, [older, newer]],
               ),
             ),
@@ -1167,7 +1167,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
           runInTenant(tenant, () =>
             withTransaction(pool, (client) =>
               client.query<{ id: string }>(
-                "SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE NOWAIT",
+                "SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE NOWAIT",
                 [ids.journal, itemId],
               ),
             ),

@@ -630,7 +630,7 @@ describe("Event participant edge write hook (issue #1757)", () => {
     for (let attempt = 0; attempt < 250; attempt += 1) {
       const { rows } = await admin.query<{ waiting: number }>(
         `SELECT count(*)::int AS waiting FROM pg_stat_activity
-         WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FOR UPDATE%'`,
+         WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ~ 'FOR (NO KEY )?UPDATE'`,
       );
       if ((rows[0]?.waiting ?? 0) > 0) return;
       await new Promise((resolve) => setTimeout(resolve, 20));

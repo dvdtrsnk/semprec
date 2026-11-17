@@ -167,9 +167,10 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
     [id],
   );
   if (locked.rows.length === 0) return null;
-  // The `database_id` list prunes partitions. It is read by an earlier statement, so under READ COMMITTED a database
-  // committed in between would be missed; the `databases` guard then keeps the blob rather than deleting it from
-  // under a reference. A fresh statement after the lock sees references committed while the lock waited.
+  // The `database_id` list confines the item scans to the tenant's databases. It is read by an earlier statement, so
+  // under READ COMMITTED a database committed in between would be missed; the `databases` guard then keeps the blob
+  // rather than deleting it from under a reference. A fresh statement after the lock sees references committed while
+  // the lock waited.
   const result = await client.query<{ storage_key: string }>(
     `DELETE FROM blobs WHERE tenant_id = app_tenant_default() AND id = $1
        AND NOT EXISTS (SELECT 1 FROM databases WHERE tenant_id = app_tenant_default() AND NOT (id = ANY($3::uuid[])))

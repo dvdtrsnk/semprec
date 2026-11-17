@@ -667,7 +667,7 @@ describe("calendar trash hooks (issue gh-1803)", () => {
       try {
         await client.query("BEGIN");
         try {
-          await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE NOWAIT", [itemId]);
+          await client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE NOWAIT", [itemId]);
           return true;
         } catch (thrown) {
           if (z.object({ code: z.literal("55P03") }).safeParse(thrown).success) return false;

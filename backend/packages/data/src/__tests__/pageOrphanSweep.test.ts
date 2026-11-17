@@ -200,7 +200,7 @@ async function sweepWhileHoldingPageRow(
   let swept: ReturnType<typeof sweep> | undefined;
   try {
     await holder.query("BEGIN");
-    await holder.query("SELECT 1 FROM items WHERE id = $1 FOR UPDATE", [pageItemId]);
+    await holder.query("SELECT 1 FROM items WHERE id = $1 FOR NO KEY UPDATE", [pageItemId]);
     swept = sweep();
     await waitForPendingLock();
     await changeWhileHeld(holder);

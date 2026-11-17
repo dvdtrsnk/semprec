@@ -273,8 +273,3 @@ export async function reactivateTaskRecurrenceAfterTrash(
 export async function setTaskRecurrenceActive(client: Queryable, itemId: string, active: boolean): Promise<void> {
   await client.query(`UPDATE task_recurrence SET active = $2 WHERE item_id = $1`, [itemId, active]);
 }
-
-/** Zero rows is valid. */
-export async function deleteTaskRecurrence(client: Queryable, itemId: string): Promise<void> {
-  await client.query(`DELETE FROM task_recurrence WHERE item_id = $1`, [itemId]);
-}

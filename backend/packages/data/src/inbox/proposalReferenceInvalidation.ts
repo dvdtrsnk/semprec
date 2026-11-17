@@ -42,7 +42,7 @@ async function lockCardsContaining(
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM items
      WHERE database_id = $1 AND deleted_at IS NULL AND properties @> $2::jsonb
-     ORDER BY id FOR UPDATE SKIP LOCKED`,
+     ORDER BY id FOR NO KEY UPDATE SKIP LOCKED`,
     [config.processingProposalsDatabaseId, JSON.stringify(match)],
   );
   const cards: ItemRow[] = [];

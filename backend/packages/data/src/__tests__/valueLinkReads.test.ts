@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
@@ -12,8 +12,25 @@ import {
 import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getValueLinksForItems } from "../chokePoint/valueLinkReads.js";
-import { insertValueLink } from "../chokePoint/valueLinksStore.js";
+import { deleteValueLinkOfProperty, insertValueLink } from "../chokePoint/valueLinksStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
+
+/**
+ * A link source naming an item that does not exist in the link's tenant, observed inside one transaction: the key on
+ * the source is checked only at commit (as within a purge), and the link is deleted again before commit.
+ */
+async function readWithUncheckedSource<T>(
+  client: PoolClient,
+  link: Parameters<typeof insertValueLink>[1],
+  read: () => Promise<T>,
+): Promise<T> {
+  await insertValueLink(client, link);
+  const result = await read();
+  if (!(await deleteValueLinkOfProperty(client, link.itemId, link.propertyKey))) {
+    throw new Error("The link written for the read is expected to be deleted again");
+  }
+  return result;
+}
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -158,21 +175,25 @@ describe("getValueLinksForItems (issue #1403)", () => {
     const live = await makeItem(tasks, "Live task");
     const trashed = await makeItem(tasks, "Trashed task");
     const file = await makeItem(files, "invoice.pdf");
-    await withTransaction(pool, (client) =>
-      insertValueLink(client, {
-        itemId: file.id,
-        propertyKey: "projects",
-        ruleKey: "fileProject",
-        sources: [
-          { kind: "item", sourceItemId: live.id, sourcePropertyKey: "project" },
-          { kind: "item", sourceItemId: trashed.id, sourcePropertyKey: "project" },
-          { kind: "item", sourceItemId: randomUUID(), sourcePropertyKey: "project" },
-        ],
-      }),
-    );
     await chokePoint.softDeleteItem(tasks.id, trashed.id);
 
-    const entry = (await chokePoint.getValueLinksForItems([file.id])).get(file.id)?.projects;
+    const links = await withTransaction(pool, (client) =>
+      readWithUncheckedSource(
+        client,
+        {
+          itemId: file.id,
+          propertyKey: "projects",
+          ruleKey: "fileProject",
+          sources: [
+            { kind: "item", sourceItemId: live.id, sourcePropertyKey: "project" },
+            { kind: "item", sourceItemId: trashed.id, sourcePropertyKey: "project" },
+            { kind: "item", sourceItemId: randomUUID(), sourcePropertyKey: "project" },
+          ],
+        },
+        () => getValueLinksForItems(client, [file.id]),
+      ),
+    );
+    const entry = links.get(file.id)?.projects;
 
     expect(entry?.valueKind).toBe("inherited");
     expect(entry?.sources.map((source) => (source.kind === "item" ? source.itemId : null))).toEqual([live.id]);
@@ -255,16 +276,27 @@ describe("getValueLinksForItems tenant isolation (issue #1403)", () => {
         sources: [{ kind: "item", sourceItemId: aTask.id, sourcePropertyKey: "project" }],
       }),
     );
+    // Committed, so tenant A's read below has a tenant B link to leave out.
     await withTenantTransaction(runtimePool, tenantB, (client) =>
       insertValueLink(client, {
         itemId: bFile.id,
-        propertyKey: "projects",
-        ruleKey: "fileProject",
-        sources: [{ kind: "item", sourceItemId: aTask.id, sourcePropertyKey: "project" }],
+        propertyKey: "company",
+        ruleKey: "fileCompany",
+        sources: [{ kind: "senderDomain", domain: "example.com", sourcePropertyKey: "domains" }],
       }),
     );
-
-    const seenByB = await runInTenant(tenantB, () => choke.getValueLinksForItems([aFile.id, bFile.id]));
+    const seenByB = await withTenantTransaction(runtimePool, tenantB, (client) =>
+      readWithUncheckedSource(
+        client,
+        {
+          itemId: bFile.id,
+          propertyKey: "projects",
+          ruleKey: "fileProject",
+          sources: [{ kind: "item", sourceItemId: aTask.id, sourcePropertyKey: "project" }],
+        },
+        () => runInTenant(tenantB, () => getValueLinksForItems(client, [aFile.id, bFile.id])),
+      ),
+    );
     expect([...seenByB.keys()]).toEqual([bFile.id]);
     expect(seenByB.get(bFile.id)?.projects).toEqual({
       valueKind: "inherited",

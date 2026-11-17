@@ -597,7 +597,7 @@ describe("derived value creation guard", () => {
               await client.query("SAVEPOINT lock_probe");
               try {
                 await client.query(
-                  "SELECT id FROM items WHERE tenant_id = app_tenant_default() AND id = $1 FOR UPDATE NOWAIT",
+                  "SELECT id FROM items WHERE tenant_id = app_tenant_default() AND id = $1 FOR NO KEY UPDATE NOWAIT",
                   [project.id],
                 );
                 throw new Error("Expected project row lock conflict");

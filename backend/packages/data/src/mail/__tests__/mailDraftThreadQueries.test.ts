@@ -32,6 +32,16 @@ async function newThread(): Promise<string> {
   return inTenant(() => withTransaction(runtime, async (client) => (await createMailThread(client)).id));
 }
 
+/** An Email of the tenant for a draft to answer (mail_drafts.source_email_item_id has a key to items). */
+async function newEmail(): Promise<string> {
+  return inTenant(() =>
+    withTransaction(
+      runtime,
+      async (client) => (await createItemWithClient(client, { databaseId: emailsDatabaseId, properties: {} })).id,
+    ),
+  );
+}
+
 async function newDraft(
   threadId: string,
   options: { createdBy?: "user" | "agent"; sourceEmailItemId?: string | null } = {},
@@ -131,7 +141,7 @@ describe("the thread queries of the mail drafts store (issue gh-1941)", () => {
 
   describe("hasDraftOfSourceMessage", () => {
     it("is true for a draft of the thread made in answer to the message, sent or not, by anybody", async () => {
-      const source = randomUUID();
+      const source = await newEmail();
       const thread = await newThread();
       const draft = await newDraft(thread, { sourceEmailItemId: source });
       expect(await hasDraftFor(thread, source)).toBe(true);
@@ -140,17 +150,17 @@ describe("the thread queries of the mail drafts store (issue gh-1941)", () => {
       expect(await hasDraftFor(thread, source)).toBe(true);
 
       const personal = await newThread();
-      const personalSource = randomUUID();
+      const personalSource = await newEmail();
       await newDraft(personal, { createdBy: "user", sourceEmailItemId: personalSource });
       expect(await hasDraftFor(personal, personalSource)).toBe(true);
     });
 
     it("is false for another message, another thread, a discarded draft and a thread without a draft", async () => {
-      const source = randomUUID();
+      const source = await newEmail();
       const thread = await newThread();
       await newDraft(thread, { sourceEmailItemId: source });
       const discardedThread = await newThread();
-      const discardedSource = randomUUID();
+      const discardedSource = await newEmail();
       const discarded = await newDraft(discardedThread, { sourceEmailItemId: discardedSource });
       await inTenant(async () => {
         await createChokePoint(runtime).softDeleteItem(emailsDatabaseId, discarded);
@@ -163,7 +173,7 @@ describe("the thread queries of the mail drafts store (issue gh-1941)", () => {
     });
 
     it("finds the draft of a thread merged into the thread asked about, and none in another tenant", async () => {
-      const source = randomUUID();
+      const source = await newEmail();
       const loser = await newThread();
       const winner = await newThread();
       await newDraft(loser, { sourceEmailItemId: source });

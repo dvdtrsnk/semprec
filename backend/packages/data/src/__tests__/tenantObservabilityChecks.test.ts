@@ -7,11 +7,12 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   withTenantTransaction,
   resetDatabase,
 } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
-import { upsertProcessHeartbeat } from "../health/processHeartbeats.js";
+import { mailSyncProcessName, upsertProcessHeartbeat } from "../health/processHeartbeats.js";
 import { ensureMailAccountSyncState, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
 import { handleObservabilityCheckSystemTask } from "../observability/observabilityCheckSystem.js";
 import { getSystemHealthReport } from "../observability/systemHealthReport.js";
@@ -32,9 +33,12 @@ function runCheck(onPool: Pool): Promise<void> {
 async function addErroredMailbox(tenantId: string): Promise<string> {
   const itemId = randomUUID();
   await withTenantTransaction(pool, tenantId, async (client) => {
+    await insertItemsWithIds(client, [itemId]);
     await ensureMailAccountSyncState(client, { itemId, syncMode: "imap" });
     await recordSyncError(client, itemId, "boom", "other");
   });
+  // The mailbox item is live, so its sync process is expected to beat; only the sync error stalls it.
+  await upsertProcessHeartbeat(pool, { process: mailSyncProcessName(itemId), pid: 1, version: "1.0.0" }, new Date());
   return itemId;
 }
 
@@ -92,6 +96,7 @@ describe("tenant_observability_checks (issue #999)", () => {
 
       expect(await tenantCheckRows()).toEqual([
         { check_key: `mail:${mailboxB}`, tenant_id: tenantB, status: "alerting" },
+        { check_key: `process:mailsync:${mailboxB}`, tenant_id: tenantB, status: "ok" },
       ]);
 
       const zeroReport = await runInTenant(getTenantZeroId(), () =>
@@ -136,6 +141,7 @@ describe("tenant_observability_checks (issue #999)", () => {
 
       expect(await tenantCheckRows()).toEqual([
         { check_key: `mail:${mailboxZero}`, tenant_id: getTenantZeroId(), status: "alerting" },
+        { check_key: `process:mailsync:${mailboxZero}`, tenant_id: getTenantZeroId(), status: "ok" },
       ]);
     });
   });

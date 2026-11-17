@@ -113,7 +113,6 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  // Every seeded tenant adds one items partition per database; wiping them keeps the lock table of the shared Postgres bounded.
   await resetDatabase(admin);
   tenant = await seededTenant();
   vi.useFakeTimers({ toFake: ["Date"] });

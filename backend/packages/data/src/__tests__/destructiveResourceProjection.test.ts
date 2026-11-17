@@ -244,7 +244,9 @@ describe("computeDestructiveResourceProjection of relation.delete locks the endp
     const holder = await pool.connect();
     try {
       await holder.query("BEGIN");
-      const locked = await holder.query<{ id: string }>("SELECT id FROM items WHERE id = $1 FOR UPDATE", [itemId]);
+      const locked = await holder.query<{ id: string }>("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [
+        itemId,
+      ]);
       expect(locked.rows).toHaveLength(1);
       return await body();
     } finally {
@@ -321,19 +323,19 @@ describe("computeDestructiveResourceProjection of relation.delete locks the endp
     expect(projection.valueLinks).toBeUndefined();
   });
 
-  it("still projects an edge whose other endpoint row no longer exists", async () => {
+  it("answers not found for an edge whose other endpoint row was deleted, since the edge went with it", async () => {
     const fixture = await edgeFixture();
-    // The edge table keeps no foreign key to the items of its two ends, so an edge to a purged item can still exist; only raw SQL leaves that state.
+    // Raw SQL: no production write deletes an item row outside the purge. The edge's keys to the items of its two
+    // ends cascade, so an edge to a deleted item cannot remain to be projected.
     await pool.query("DELETE FROM items WHERE id = $1", [fixture.targetItemId]);
-
-    const projection = await withTransaction(pool, (client) =>
-      computeDestructiveResourceProjection(client, fixture.check),
+    const { rows } = await pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM item_relations WHERE item_a = $1 OR item_b = $1",
+      [fixture.callerItemId],
     );
+    expect(rows[0]?.n).toBe(0);
 
-    expect(projection.snapshot.kind).toBe("relation_delete");
-    expect(projection.currentResource).toMatchObject({
-      itemA: expect.any(String),
-      itemB: expect.any(String),
-    });
+    await expect(
+      withTransaction(pool, (client) => computeDestructiveResourceProjection(client, fixture.check)),
+    ).rejects.toThrow(NotFoundError);
   });
 });

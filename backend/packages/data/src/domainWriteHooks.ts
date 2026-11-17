@@ -14,7 +14,6 @@ import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWr
 import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
 import { libraryCoverPreWriteTransform, prepareLibraryCoverWrite } from "./library/libraryCoverHooks.js";
-import { libraryCoverCandidatesPurgeHook } from "./library/libraryCoverCandidatesPurgeHook.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./seed/libraryModuleKeys.js";
 import {
   mailboxConnectionLimitCreateHook,
@@ -87,7 +86,6 @@ import {
 import { registerItemSearchGroup, registerThreadSearchGroup } from "./search/searchGroupRegistry.js";
 import { sempThreadSearchGroup } from "./search/sempThreadSearch.js";
 import { mailGlobalSearchGroup } from "./mail/mailGlobalSearchGroup.js";
-import { calendarFeedStatePurgeHook } from "./calendar/calendarFeedStatePurgeHook.js";
 import { registerCalendarFeedConsumer } from "./calendar/calendarSubscriptionSweep.js";
 import { importSubscribedEvents } from "./calendar/subscribedEventsImport.js";
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
@@ -425,8 +423,6 @@ const itemPurgeHooks: readonly ItemPurgeHook[] = [
   // Purging a Processing proposals card sweeps the expired stored responses of its card actions.
   idempotentResponsesPurgeHook,
   mailItemPurgeHook,
-  libraryCoverCandidatesPurgeHook,
-  calendarFeedStatePurgeHook,
 ];
 
 const relationEdgeWriteHooks: readonly RelationEdgeWriteHook[] = [

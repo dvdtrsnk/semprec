@@ -5,7 +5,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { withFromInbox } from "../chokePoint/itemOriginReads.js";
-import { deleteItemOrigin, insertItemOrigins } from "../inbox/itemOriginsStore.js";
+import { insertItemOrigins } from "../inbox/itemOriginsStore.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -76,7 +76,8 @@ describe("fromInbox flag", () => {
     await markOrigin([removed.id]);
     expect((await chokePoint.findItem(removed.id))?.fromInbox).toBe(true);
 
-    await withTransaction(pool, (client) => deleteItemOrigin(client, removed.id));
+    // An item without its origin row, which only the undo of its proposal produces in production.
+    await withTransaction(pool, (client) => client.query("DELETE FROM item_origins WHERE item_id = $1", [removed.id]));
 
     expect((await chokePoint.findItem(fromTranscript.id))?.fromInbox).toBe(false);
     expect((await chokePoint.findItem(removed.id))?.fromInbox).toBe(false);

@@ -6,8 +6,8 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 
 /**
- * Every ordinary or partitioned table in `public` (partitions via their parent) carries exactly one
- * `semprec:tenancy=tenant|global` comment, written by the migration that creates it.
+ * Every table in `public` carries exactly one `semprec:tenancy=tenant|global` comment, written by the migration
+ * that creates it.
  */
 const GLOBAL_TABLES = [
   "users",
@@ -125,7 +125,6 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
   { table: "properties", columns: ["database_id", "key"], reason: "scoped by the server-generated database id" },
   { table: "relation_definitions", columns: ["property_id_a"], reason: "scoped by the server-generated property id" },
   { table: "relation_definitions", columns: ["property_id_b"], reason: "scoped by the server-generated property id" },
-  { table: "items", columns: ["database_id", "id"], reason: "partition key of items, scoped by the database id" },
   {
     table: "item_relations",
     columns: ["relation_definition_id", "item_a", "item_b"],
@@ -399,7 +398,7 @@ describe("tenancy classification catalog", () => {
     await pool?.end();
   });
 
-  it("classifies every non-partition table in public", async () => {
+  it("classifies every table in public", async () => {
     const offenders = await listUnclassifiedTables(pool);
     expect(
       offenders,
@@ -425,17 +424,6 @@ describe("tenancy classification catalog", () => {
     expect(await listUnclassifiedTables(pool)).toEqual([]);
   });
 
-  it("does not report items partitions", async () => {
-    await resetDatabase(pool);
-    const db = await createChokePoint(pool).createDatabase({ name: "Tenancy catalog partition" });
-    const { rows } = await pool.query<{ relname: string }>(
-      `SELECT relname FROM pg_class WHERE relname = $1 AND relispartition`,
-      [`items_p_${db.id.replaceAll("-", "")}`],
-    );
-    expect(rows).toHaveLength(1);
-    expect(await listUnclassifiedTables(pool)).toEqual([]);
-  });
-
   it("pins the global tables", async () => {
     const comments = await readClassifications(pool, GLOBAL_TABLES);
     for (const table of GLOBAL_TABLES) {
@@ -450,9 +438,7 @@ describe("tenancy classification catalog", () => {
     }
   });
 
-  it("gives every tenant table and items partition a defaulted, foreign-keyed tenant_id", async () => {
-    await resetDatabase(pool);
-    await createChokePoint(pool).createDatabase({ name: "Tenancy catalog tenant_id" });
+  it("gives every tenant table a defaulted, foreign-keyed tenant_id", async () => {
     const { rows } = await pool.query<{
       relname: string;
       typname: string | null;
@@ -474,15 +460,13 @@ describe("tenancy classification catalog", () => {
          LEFT JOIN pg_type t ON t.oid = a.atttypid
          LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
         WHERE n.nspname = 'public'
-          AND (obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
-               OR (c.relkind = 'r' AND c.relispartition AND c.relname LIKE 'items\\_p\\_%'))
+          AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
         ORDER BY c.relname`,
     );
     const byTable = new Map(rows.map((row) => [row.relname, row]));
     for (const table of TENANT_TABLES) {
       expect(byTable.has(table), `${table} is missing from the catalog`).toBe(true);
     }
-    expect(rows.filter((row) => row.relname.startsWith("items_p_")).length).toBeGreaterThan(0);
     for (const row of rows) {
       expect(row.typname, `${row.relname}.tenant_id type`).toBe("uuid");
       expect(row.attnotnull, `${row.relname}.tenant_id NOT NULL`).toBe(true);
@@ -545,9 +529,7 @@ describe("tenancy classification catalog", () => {
     }
   });
 
-  it("keeps the runtime roles non-privileged, table-less owners with no grant on any items partition", async () => {
-    await resetDatabase(pool);
-    await createChokePoint(pool).createDatabase({ name: "Tenancy catalog runtime roles" });
+  it("keeps the runtime roles non-privileged, table-less owners", async () => {
     for (const role of ["semprec_data", "semprec_side"]) {
       const attrs = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = $1`,
@@ -561,19 +543,6 @@ describe("tenancy classification catalog", () => {
         [role],
       );
       expect(owned.rows, `${role} owned relations`).toEqual([]);
-
-      const partitions = await pool.query<{ relname: string; granted: boolean }>(
-        `SELECT c.relname,
-                has_table_privilege($1, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS granted
-           FROM pg_class c
-          WHERE c.relnamespace = 'public'::regnamespace AND c.relispartition AND c.relname LIKE 'items\\_p\\_%'`,
-        [role],
-      );
-      expect(partitions.rows.length, "items partitions exist").toBeGreaterThan(0);
-      expect(
-        partitions.rows.filter((row) => row.granted).map((row) => row.relname),
-        `${role} privileges on items partitions`,
-      ).toEqual([]);
     }
   });
 
@@ -665,12 +634,14 @@ describe("tenancy classification catalog", () => {
   });
 
   it("names the table and column of every foreign key whose twin is removed", async () => {
+    // A key to items is the only key on its column, not the twin of a single-column one (itemForeignKeys.test.ts).
     const { rows: twins } = await pool.query<{ table_name: string; constraint_name: string; column_name: string }>(
       `SELECT c.relname::text AS table_name, k.conname::text AS constraint_name, a.attname::text AS column_name
          FROM pg_constraint k
          JOIN pg_class c ON c.oid = k.conrelid
          JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = k.conkey[2]
         WHERE k.contype = 'f' AND k.conname LIKE '%\\_tenant\\_fkey'
+          AND k.confrelid <> 'public.items'::regclass
           AND c.relnamespace = 'public'::regnamespace AND NOT c.relispartition
         ORDER BY k.conname`,
     );

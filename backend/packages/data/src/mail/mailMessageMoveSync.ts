@@ -280,7 +280,7 @@ async function graphTarget(
      WHERE i.tenant_id = app_tenant_default() AND r.tenant_id = app_tenant_default()
        AND i.database_id = $1 AND i.deleted_at IS NULL AND i.properties ->> 'specialPurpose' = $2
        AND (r.item_a = $3 OR r.item_b = $3) AND (d.property_id_a = $4 OR d.property_id_b = $4)
-     LIMIT 2 FOR UPDATE OF i, r`,
+     LIMIT 2 FOR NO KEY UPDATE OF i, r`,
     [foldersDatabaseId, purpose, mailboxItemId, mailboxFolderPropertyId],
   );
   const id = found.rows[0]?.provider_id;
@@ -553,7 +553,7 @@ async function imapTarget(
      WHERE i.tenant_id = app_tenant_default() AND r.tenant_id = app_tenant_default()
        AND i.database_id = $1 AND i.deleted_at IS NULL AND i.properties ->> 'specialPurpose' = $2
        AND (r.item_a = $3 OR r.item_b = $3) AND (d.property_id_a = $4 OR d.property_id_b = $4)
-     LIMIT 2 FOR UPDATE OF i, r`,
+     LIMIT 2 FOR NO KEY UPDATE OF i, r`,
     [foldersDatabaseId, purpose, mailboxItemId, mailboxFolderPropertyId],
   );
   const item = found.rows[0];

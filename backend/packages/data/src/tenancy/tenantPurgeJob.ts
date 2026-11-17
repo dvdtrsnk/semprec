@@ -16,9 +16,6 @@ import { orderTablesForPurge, type TableForeignKey } from "./tenantPurgeOrder.js
 const ROW_CHUNK = 1000;
 const BLOB_PAGE = 500;
 
-/** Wait for an `items` partition's `ACCESS EXCLUSIVE` lock before the tenant is retried next run. */
-const PARTITION_LOCK_TIMEOUT = "5s";
-
 /** Wait for the job table `LOCK TABLE` or a queue row lock during finalisation before the run fails. */
 const QUEUE_LOCK_TIMEOUT = "2s";
 
@@ -63,14 +60,9 @@ interface BlobPageRow {
   storage_key: string;
 }
 
-interface CatalogTable {
-  name: string;
-  partitioned: boolean;
-}
-
-async function readCatalog(pool: Pool): Promise<{ tables: CatalogTable[]; foreignKeys: TableForeignKey[] }> {
-  const { rows: tableRows } = await pool.query<{ relname: string; relkind: string }>(
-    `SELECT c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+async function readCatalog(pool: Pool): Promise<{ tables: string[]; foreignKeys: TableForeignKey[] }> {
+  const { rows: tableRows } = await pool.query<{ relname: string }>(
+    `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
         AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
       ORDER BY 1`,
@@ -84,7 +76,7 @@ async function readCatalog(pool: Pool): Promise<{ tables: CatalogTable[]; foreig
       WHERE con.contype = 'f' AND n.nspname = 'public' AND NOT child.relispartition AND NOT parent.relispartition`,
   );
   return {
-    tables: tableRows.map((row) => ({ name: row.relname, partitioned: row.relkind === "p" })),
+    tables: tableRows.map((row) => row.relname),
     foreignKeys: fkRows.map((row) => ({ table: row.table_name, referencedTable: row.referenced_table })),
   };
 }
@@ -158,24 +150,6 @@ async function removeTenantDirectories(ctx: PurgeContext): Promise<void> {
   for (const root of ctx.roots) await rm(join(root, ctx.tenantId), { recursive: true, force: true });
 }
 
-/**
- * One transaction per partition (`set_config(…, true)` is `SET LOCAL`). Repeated right before `items` is
- * deleted, catching databases an in-flight writer created meanwhile.
- */
-async function purgePartitions(ctx: PurgeContext): Promise<number> {
-  const { rows } = await ctx.pool.query<{ id: string }>("SELECT id FROM databases WHERE tenant_id = $1 ORDER BY id", [
-    ctx.tenantId,
-  ]);
-  for (const row of rows) {
-    checkpoint(ctx);
-    await withTransaction(ctx.pool, async (client) => {
-      await client.query("SELECT set_config('lock_timeout', $1, true)", [PARTITION_LOCK_TIMEOUT]);
-      await client.query("SELECT drop_items_partition($1)", [row.id]);
-    });
-  }
-  return rows.length;
-}
-
 async function deleteInChunks(ctx: PurgeContext, table: string): Promise<number> {
   const quoted = escapeIdentifier(table);
   let deleted = 0;
@@ -202,18 +176,10 @@ async function deleteInOneStatement(ctx: PurgeContext, table: string): Promise<n
   return result.rowCount ?? 0;
 }
 
-/**
- * Children before parents. Partitioned tables cannot use `ctid` chunking, so they are deleted by predicate
- * after the partitions are dropped again; rows found there mean a new database, and the tenant fails before
- * `databases` so the retry still drops its partition.
- */
+/** Children before parents, so no delete removes a row that a row still to be deleted references. */
 async function purgeRows(ctx: PurgeContext): Promise<number> {
   const { tables, foreignKeys } = await readCatalog(ctx.pool);
-  const order = orderTablesForPurge(
-    tables.map((table) => table.name),
-    foreignKeys,
-  );
-  const partitioned = new Set(tables.filter((table) => table.partitioned).map((table) => table.name));
+  const order = orderTablesForPurge(tables, foreignKeys);
   const selfReferencing = new Set(foreignKeys.filter((fk) => fk.table === fk.referencedTable).map((fk) => fk.table));
 
   let total = 0;
@@ -223,20 +189,7 @@ async function purgeRows(ctx: PurgeContext): Promise<number> {
   ]);
   total += credentials.rowCount ?? 0;
   for (const table of order) {
-    if (table === "items") {
-      logger.info(
-        { tenantId: ctx.tenantId, step: "latePartitions", count: await purgePartitions(ctx) },
-        "tenant_purge_step",
-      );
-    }
-    const count =
-      partitioned.has(table) || selfReferencing.has(table)
-        ? await deleteInOneStatement(ctx, table)
-        : await deleteInChunks(ctx, table);
-    total += count;
-    if (partitioned.has(table) && count > 0) {
-      throw new Error(`Tenant purge deleted ${count} rows of ${table} after its partitions were dropped`);
-    }
+    total += selfReferencing.has(table) ? await deleteInOneStatement(ctx, table) : await deleteInChunks(ctx, table);
   }
   return total;
 }
@@ -286,11 +239,7 @@ async function eraseIdleQueues(client: PoolClient, tenantId: string): Promise<vo
 async function finalise(ctx: PurgeContext): Promise<void> {
   const { tables } = await readCatalog(ctx.pool);
   await withTransaction(ctx.pool, async (client) => {
-    await assertNothingRemains(
-      client,
-      ctx.tenantId,
-      tables.map((table) => table.name),
-    );
+    await assertNothingRemains(client, ctx.tenantId, tables);
     const { rows: users } = await client.query<{ id: string; email: string }>(
       "SELECT id, email FROM users WHERE tenant_id = $1",
       [ctx.tenantId],
@@ -343,7 +292,6 @@ async function purgeTenant(ctx: PurgeContext): Promise<void> {
     logger.info({ tenantId, step: "keys", count: keys.rowCount ?? 0 }, "tenant_purge_step");
     logger.info({ tenantId, step: "jobs", count: await purgeQueuedJobs(ctx) }, "tenant_purge_step");
     logger.info({ tenantId, step: "bytes", count: await purgeBytes(ctx) }, "tenant_purge_step");
-    logger.info({ tenantId, step: "partitions", count: await purgePartitions(ctx) }, "tenant_purge_step");
     logger.info({ tenantId, step: "rows", count: await purgeRows(ctx) }, "tenant_purge_step");
     checkpoint(ctx);
     await removeTenantDirectories(ctx);

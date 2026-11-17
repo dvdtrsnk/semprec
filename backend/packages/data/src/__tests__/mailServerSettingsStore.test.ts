@@ -6,6 +6,7 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
@@ -61,6 +62,7 @@ describe("mail server settings store (issue #1473)", () => {
   it("round-trips settings and the row holds no password", async () => {
     await inRolledBackTransaction(async (client) => {
       const id = randomUUID();
+      await insertItemsWithIds(client, [id]);
       const stored = await upsertMailServerSettings(client, id, VALID);
       expect(stored).toEqual({ mailboxItemId: id, ...VALID });
       expect(await getMailServerSettings(client, id)).toEqual(stored);
@@ -74,6 +76,7 @@ describe("mail server settings store (issue #1473)", () => {
   it("replaces on a second upsert, allows an SMTP-only mailbox and deletes", async () => {
     await inRolledBackTransaction(async (client) => {
       const id = randomUUID();
+      await insertItemsWithIds(client, [id]);
       await upsertMailServerSettings(client, id, VALID);
       const smtpOnly = { imap: null, smtp: VALID.smtp, username: "bob" };
       expect(await upsertMailServerSettings(client, id, smtpOnly)).toEqual({ mailboxItemId: id, ...smtpOnly });
@@ -85,7 +88,9 @@ describe("mail server settings store (issue #1473)", () => {
 
   it("normalizes an upper-case host", async () => {
     await inRolledBackTransaction(async (client) => {
-      const stored = await upsertMailServerSettings(client, randomUUID(), {
+      const id = randomUUID();
+      await insertItemsWithIds(client, [id]);
+      const stored = await upsertMailServerSettings(client, id, {
         ...VALID,
         imap: { host: "IMAP.Example.COM", port: 993, security: "tls" },
       });
@@ -153,6 +158,7 @@ describe("mail server settings store (issue #1473)", () => {
     const id = randomUUID();
     try {
       await withTenantTransaction(runtimePool, tenantA, async (client) => {
+        await insertItemsWithIds(client, [id]);
         await upsertMailServerSettings(client, id, VALID);
         expect(await getMailServerSettings(client, id)).not.toBeNull();
       });

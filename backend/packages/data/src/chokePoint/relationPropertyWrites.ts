@@ -100,7 +100,8 @@ export async function createRelationPropertyWithClient(
     assertRelationSideCreatable(inverseOwner!, input.inverse.ownerProcess, context, "inverse");
   }
 
-  const targetDatabase = await databasesStore.getDatabase(client, input.targetDatabaseId);
+  // Held to commit, so the target cannot be purged between this check and the relation that names it.
+  const targetDatabase = await databasesStore.getDatabaseForKeyShare(client, input.targetDatabaseId);
   if (!targetDatabase) {
     throw new ValidationError(`Target database ${input.targetDatabaseId} does not exist`, {
       field: "targetDatabaseId",

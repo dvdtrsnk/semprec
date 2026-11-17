@@ -382,7 +382,7 @@ export async function enqueueJournalInboxRecomputeForProposal(client: PoolClient
 }
 
 /**
- * Always a full recompute of one day, in one transaction holding `FOR UPDATE` on the day item so overlapping
+ * Always a full recompute of one day, in one transaction holding `FOR NO KEY UPDATE` on the day item so overlapping
  * recomputes serialise and use the latest committed state; the invalidation is announced after the commit.
  */
 export async function recomputeJournalInboxDay(pool: Pool, journalDayItemId: string): Promise<void> {

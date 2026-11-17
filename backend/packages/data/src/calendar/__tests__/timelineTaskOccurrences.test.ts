@@ -17,7 +17,6 @@ import { createTaskOccurrenceMaterializeRouteHandler } from "../../tasks/taskOcc
 import type { TaskRecurrenceRule } from "../../tasks/taskRecurrenceRule.js";
 import {
   deactivateTaskRecurrenceSeries,
-  deleteTaskRecurrence,
   getTaskRecurrenceBySeriesId,
   restartTaskRecurrence,
 } from "../../tasks/taskRecurrenceStore.js";
@@ -188,7 +187,11 @@ function world(tenant: SeededTenant) {
 
   /** Removes the series row of `itemId` as the purge of its trashed item does, and leaves the stored occurrences. */
   const deleteSeriesRow = (itemId: string): Promise<void> =>
-    inTenant(() => withTransaction(pool, (client) => deleteTaskRecurrence(client, itemId)));
+    inTenant(() =>
+      withTransaction(pool, async (client) => {
+        await client.query("DELETE FROM task_recurrence WHERE item_id = $1", [itemId]);
+      }),
+    );
 
   const link = (taskId: string, key: "project" | "people", targetId: string) =>
     inTenant(async () => {

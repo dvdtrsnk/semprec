@@ -34,14 +34,14 @@ export async function setSelfPersonId(
      JOIN properties p ON p.database_id = settings.id AND p.key = 'selfPerson'
      JOIN relation_definitions rd ON rd.property_id_a = p.id
      WHERE settings.owner_module_id = 'systemSettings' AND settings.system = true
-     FOR UPDATE OF singleton`,
+     FOR NO KEY UPDATE OF singleton`,
   );
   const settings = requireSingleRow(rows, "System settings.selfPerson");
   if (personId !== null) {
     const target = await client.query<{ id: string }>(
       `SELECT person.id FROM items person JOIN databases people ON people.id = person.database_id
        WHERE people.owner_module_id = 'people' AND person.id = $1 AND person.deleted_at IS NULL
-       FOR UPDATE OF person`,
+       FOR NO KEY UPDATE OF person`,
       [personId],
     );
     if (!target.rows[0]) throw new NotFoundError("Person not found");

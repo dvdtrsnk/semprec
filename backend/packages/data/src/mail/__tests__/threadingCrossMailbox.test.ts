@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, inTenantZero, resetDatabase } from "../../testSupport/testDb.js";
+import { randomUUID } from "node:crypto";
+import { getTestPool, inTenantZero, insertItemsWithIds, resetDatabase } from "../../testSupport/testDb.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { resolveThreadId } from "../threading.js";
@@ -16,11 +17,13 @@ const tenantIt = (name: string, fn: () => Promise<void>) => it(name, () => inTen
 async function ingest(mailboxItemId: string, messageId: string, refs: string[] = []): Promise<string> {
   return withTransaction(pool, async (client) => {
     const threadId = await resolveThreadId(client, { messageId, inReplyTo: refs.at(-1) ?? null, references: refs });
-    // Historical threading fixture uses mailbox ids without provisioning mailbox items.
+    const itemId = randomUUID();
+    await insertItemsWithIds(client, [itemId]);
+    // Historical threading fixture uses mailbox ids without provisioning mailbox items; the message item is real.
     await client.query(
       `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, envelope)
-     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '{}')`,
-      [mailboxItemId, messageId, refs.at(-1) ?? null, refs, threadId],
+     VALUES ($6, $1, $2, $3, $4, $5, '{}')`,
+      [mailboxItemId, messageId, refs.at(-1) ?? null, refs, threadId, itemId],
     );
     return threadId;
   });
@@ -75,12 +78,17 @@ describe("cross-mailbox threading of one message", () => {
     const second = await withTransaction(pool, (client) => createMailThread(client));
     const [low, high] = [first.id, second.id].sort();
     if (!low || !high) throw new Error("Expected two threads");
-    await pool.query(
-      `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, thread_id, envelope)
-       VALUES (gen_random_uuid(), $1, '<duplicate@x>', $2, '{}'),
-              (gen_random_uuid(), $3, '<duplicate@x>', $4, '{}')`,
-      [mailboxA, high, mailboxB, low],
-    );
+    const [highItem, lowItem] = [randomUUID(), randomUUID()];
+    await withTransaction(pool, async (client) => {
+      await insertItemsWithIds(client, [highItem, lowItem]);
+      // Two existing copies already in different threads, a state ingest itself never leaves behind.
+      await client.query(
+        `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, thread_id, envelope)
+         VALUES ($5, $1, '<duplicate@x>', $2, '{}'),
+                ($6, $3, '<duplicate@x>', $4, '{}')`,
+        [mailboxA, high, mailboxB, low, highItem, lowItem],
+      );
+    });
     const thirdMailbox = "00000000-0000-4000-8000-00000000000c";
     expect(await ingest(thirdMailbox, "<duplicate@x>")).toBe(low);
     const { rows } = await pool.query<{ thread_id: string }>(

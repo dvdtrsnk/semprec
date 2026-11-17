@@ -320,9 +320,11 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       await inheritProjects(file, [task]);
       return task;
     });
-    const foreignLink = await runInTenant(foreign, async () => {
+    // A source must be an item of the link's tenant, so the foreign link names a task of its own.
+    const { foreignLink, foreignTask } = await runInTenant(foreign, async () => {
+      const task = await item("tasks", "Cizí");
       const file = await item("files", "cizi.pdf");
-      return inheritProjects(file, [own]);
+      return { foreignLink: await inheritProjects(file, [task]), foreignTask: task };
     });
     await runInTenant(tenant, async () => {
       await cp.softDeleteItem(await db("tasks"), own);
@@ -332,7 +334,7 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
     await runInTenant(foreign, async () => {
       const rows = await linkRows();
       expect(rows.links.map((row) => row.id)).toEqual([foreignLink]);
-      expect(rows.sources).toEqual([{ link_id: foreignLink, source_item_id: own }]);
+      expect(rows.sources).toEqual([{ link_id: foreignLink, source_item_id: foreignTask }]);
     });
   });
 });

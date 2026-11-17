@@ -441,7 +441,7 @@ export async function lockItemRowsOfLinksSourcedFromItem(
          SELECT l.item_id FROM value_links l
          WHERE l.tenant_id = app_tenant_default()
            AND EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id AND s.source_kind = 'item' AND s.source_item_id = $1))
-     ORDER BY i.id FOR UPDATE OF i`,
+     ORDER BY i.id FOR NO KEY UPDATE OF i`,
     [sourceItemId, ownerModuleId],
   );
 }

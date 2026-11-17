@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
-import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import { getTestPool, insertItemsWithIds, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
 import { withTransaction } from "../../db/pool.js";
 import { MCP_CONNECTION_ERROR_REASONS } from "../mcpConnectionError.js";
@@ -22,6 +22,11 @@ function inZero<T>(fn: () => Promise<T>): Promise<T> {
   return runInTenant(getTenantZeroId(), fn);
 }
 
+/** A server item with this id in the tenant: a connection-state row must name an existing item of its own tenant. */
+function seedServer(id: string, tenantId = getTenantZeroId()): Promise<string> {
+  return runInTenant(tenantId, () => withTransaction(dataPool, (client) => insertItemsWithIds(client, [id])));
+}
+
 async function stateOf(id: string, tenantId = getTenantZeroId()) {
   const states = await runInTenant(tenantId, () => getMcpConnectionStates(dataPool, [id]));
   return states[0];
@@ -33,6 +38,7 @@ describe("mcp_server_connection_state (issue #1450)", () => {
     await resetDatabase(adminPool);
     dataPool ??= await createRuntimeRolePool(adminPool, "semprec_data");
     serverId = randomUUID();
+    await seedServer(serverId);
   });
 
   afterAll(async () => {
@@ -149,9 +155,13 @@ describe("mcp_server_connection_state (issue #1450)", () => {
     );
     expect(rows.rows[0]?.n).toBe("0");
 
-    // The same server id in tenant B is a row of its own and leaves tenant A's untouched.
-    await runInTenant(tenantB, () => recordMcpConnectionSuccess(dataPool, serverId));
-    expect((await stateOf(serverId, tenantB))?.lastErrorReason).toBeNull();
+    // Tenant B's own server is a row of its own and leaves tenant A's untouched. Item ids are unique across tenants,
+    // so tenant B cannot hold a server under tenant A's id.
+    const serverB = randomUUID();
+    await seedServer(serverB, tenantB);
+    await runInTenant(tenantB, () => recordMcpConnectionSuccess(dataPool, serverB));
+    expect((await stateOf(serverB, tenantB))?.lastErrorReason).toBeNull();
+    expect(await stateOf(serverB)).toBeUndefined();
     expect((await stateOf(serverId))?.lastErrorReason).toBe("handshake_failed");
   });
 });

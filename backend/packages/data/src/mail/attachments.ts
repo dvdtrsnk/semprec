@@ -162,9 +162,3 @@ export async function ingestAttachments(
   }
   return { extractedTexts };
 }
-
-/** Returns the number of rows deleted. Leaves the `blobs` rows and Files items in place. */
-export async function deleteMailAttachmentsOfMessage(client: PoolClient, messageItemId: string): Promise<number> {
-  const result = await client.query("DELETE FROM mail_attachments WHERE message_item_id = $1", [messageItemId]);
-  return result.rowCount ?? 0;
-}

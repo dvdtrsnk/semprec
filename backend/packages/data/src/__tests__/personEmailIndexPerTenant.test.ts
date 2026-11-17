@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, insertItemsWithIds, resetDatabase } from "../testSupport/testDb.js";
+import { withTransaction } from "../db/pool.js";
 import { lookupPersonIdByEmail, reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 
 let pool: Pool;
@@ -54,6 +55,8 @@ describe("person_email_index is keyed per tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const p1 = randomUUID();
       const p2 = randomUUID();
+      // The index rows name Person items (person_email_index.item_id has a key to items).
+      await insertItemsWithIds(client, [p1, p2]);
       expect(await reindexPersonEmails(client, p1, ["a@example.com"])).toEqual({ conflicts: [] });
       expect(await reindexPersonEmails(client, p2, ["a@example.com"])).toEqual({ conflicts: ["a@example.com"] });
       expect(await lookupPersonIdByEmail(client, "a@example.com")).toBe(p1);
@@ -70,8 +73,10 @@ describe("person_email_index is keyed per tenant", () => {
       const p2 = randomUUID();
 
       await scopeTo(client, tenantA);
+      await insertItemsWithIds(client, [p1]);
       expect(await reindexPersonEmails(client, p1, ["a@example.com"])).toEqual({ conflicts: [] });
       await scopeTo(client, tenantB);
+      await insertItemsWithIds(client, [p2]);
       expect(await reindexPersonEmails(client, p2, ["a@example.com"])).toEqual({ conflicts: [] });
 
       await scopeTo(client, tenantA);
@@ -91,8 +96,10 @@ describe("person_email_index is keyed per tenant", () => {
       const p2 = randomUUID();
 
       await scopeTo(client, tenantA);
+      await insertItemsWithIds(client, [p1]);
       await reindexPersonEmails(client, p1, ["a@example.com"]);
       await scopeTo(client, tenantB);
+      await insertItemsWithIds(client, [p2]);
       await reindexPersonEmails(client, p2, ["a@example.com"]);
 
       await reindexPersonEmails(client, p2, ["b@example.com"]);
@@ -110,6 +117,8 @@ describe("person_email_index is keyed per tenant", () => {
     const second = await pool.connect();
     const p1 = randomUUID();
     const p2 = randomUUID();
+    // Committed before the race, so both connections see the Person items their rows name.
+    await withTransaction(pool, (client) => insertItemsWithIds(client, [p1, p2]));
     let secondResult: Promise<unknown> | undefined;
     try {
       await first.query("BEGIN");

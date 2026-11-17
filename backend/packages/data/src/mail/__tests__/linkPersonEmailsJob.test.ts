@@ -583,7 +583,10 @@ describe("historical mail links for newly claimed addresses", () => {
     const holder = runInTenant(tenant(), () =>
       withTransaction(holderPool.pool, async (client) => {
         const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [emailsId, later]);
+        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE", [
+          emailsId,
+          later,
+        ]);
         ready(rows[0]!.pid);
         await held;
       }),
@@ -650,7 +653,10 @@ describe("historical mail links for newly claimed addresses", () => {
     const holder = runInTenant(tenant(), () =>
       withTransaction(holderPool.pool, async (client) => {
         const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [emailsId, message]);
+        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE", [
+          emailsId,
+          message,
+        ]);
         ready(rows[0]!.pid);
         await held;
       }),

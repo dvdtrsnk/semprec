@@ -616,7 +616,7 @@ describe("recurring task series (issues #1605, #1670)", () => {
       try {
         const blocker = runInTenant(tenant, () =>
           withTransaction(holder.pool, async (client) => {
-            await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [task.id]);
+            await client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [task.id]);
             locked();
             await released;
           }),
