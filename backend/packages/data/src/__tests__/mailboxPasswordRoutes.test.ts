@@ -159,7 +159,6 @@ interface ConnectOptions {
   dependencies?: MailboxPasswordRouteDependencies;
   throttle?: Throttle | null;
   tenantId?: string;
-  locale?: string;
 }
 
 function connect(body: unknown, options: ConnectOptions = {}): Promise<{ status: number; item: ItemRow }> {
@@ -167,9 +166,7 @@ function connect(body: unknown, options: ConnectOptions = {}): Promise<{ status:
     ...(options.dependencies ?? acceptingVerifier().dependencies),
     throttle: options.throttle === undefined ? recordingThrottle().throttle : (options.throttle ?? undefined),
   });
-  return runInTenant(options.tenantId ?? tenant, () =>
-    handler({ identity: { user: { id: userId, locale: options.locale ?? "en" } }, body }),
-  );
+  return runInTenant(options.tenantId ?? tenant, () => handler({ identity: { user: { id: userId } }, body }));
 }
 
 async function rejectionOf(work: Promise<unknown>): Promise<unknown> {
@@ -474,7 +471,7 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
 
       const answer = await connect(
         { ...ICLOUD_BODY, address: "  Owner@Example.test " },
-        { dependencies: verifier.dependencies, locale: "cs" },
+        { dependencies: verifier.dependencies },
       );
 
       expect(answer.status).toBe(201);
@@ -505,7 +502,7 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       );
 
       expect(answer.status).toBe(201);
-      expect(answer.item.properties).toMatchObject({ name: "Other account", provider: "generic", addresses: ADDRESS });
+      expect(answer.item.properties).toMatchObject({ name: "example.test", provider: "generic", addresses: ADDRESS });
       expect(verifier.calls).toEqual([
         {
           provider: "generic",
@@ -545,14 +542,10 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       });
     });
 
-    it.each([
-      ["cs", "Jiný účet"],
-      ["en", "Other account"],
-      ["de", "Other account"],
-    ])("names a generic mailbox from the mail catalog in the caller's locale (%s)", async (locale, name) => {
-      const answer = await connect(GENERIC_BODY, { locale });
+    it("names a generic mailbox after the domain of its address, in no language", async () => {
+      const answer = await connect({ ...GENERIC_BODY, address: "Person@Mail.Example.TEST" });
 
-      expect(answer.item.properties.name).toBe(name);
+      expect(answer.item.properties.name).toBe("mail.example.test");
     });
 
     it("stores port 143 with starttls when the generic server accepts IMAP only there", async () => {

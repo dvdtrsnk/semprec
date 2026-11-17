@@ -1,12 +1,10 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ChokePointError, RateLimitedError, ValidationError } from "../errors.js";
-import { toManifestLocale } from "../manifest/catalogResolution.js";
 import type { ItemRow } from "../types.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import {
@@ -26,7 +24,7 @@ import {
   MailServerUnreachableError,
   MailTlsFailedError,
 } from "./providerTypes.js";
-import type { RouteBody, RouteUser, RouteLocale } from "../customRoute.js";
+import type { RouteBody, RouteUser } from "../customRoute.js";
 
 /** Gmail and Outlook sign in through OAuth instead. */
 const PASSWORD_MAILBOX_PROVIDERS = ["icloud", "generic"] as const;
@@ -111,14 +109,12 @@ function parseConnectRequest(body: unknown): ConnectRequest {
   };
 }
 
-async function defaultMailboxName(provider: PasswordMailboxProvider, locale: string): Promise<string> {
-  const catalogs = await loadModuleCatalogs(import.meta.url);
-  return resolveCatalogLabel(
-    null,
-    catalogs[toManifestLocale(locale)],
-    catalogs.en,
-    `mail.mailbox.defaultName.${provider}`,
-  );
+/**
+ * The stored name a new mailbox starts with, which the person may rename. It is a name, not a label, so it is in no
+ * language: "iCloud", like "Gmail" and "Outlook", and the domain of the address for any other server.
+ */
+function defaultMailboxName(provider: PasswordMailboxProvider, address: string): string {
+  return provider === "icloud" ? "iCloud" : address.slice(address.lastIndexOf("@") + 1).toLowerCase();
 }
 
 /**
@@ -244,12 +240,12 @@ function requireThrottle(dependencies: MailboxPasswordRouteDependencies): Verifi
  * The password is sealed by `storeCredential` and is in no response and no log line.
  */
 export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencies: MailboxPasswordRouteDependencies) {
-  return async (ctx: RouteBody & RouteUser & RouteLocale): Promise<{ status: number; item: ItemRow }> => {
+  return async (ctx: RouteBody & RouteUser): Promise<{ status: number; item: ItemRow }> => {
     const request = parseConnectRequest(ctx.body);
     // Read per request: a mount without a member must still start.
     const verifyPassword = requireVerifyPassword(dependencies);
     const throttle = requireThrottle(dependencies);
-    const name = await defaultMailboxName(request.provider, ctx.identity.user.locale);
+    const name = defaultMailboxName(request.provider, request.address);
 
     await withTransaction(pool, async (client) => {
       const { mailboxesDatabaseId } = await resolveMailModuleIds(client);

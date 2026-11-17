@@ -7,6 +7,7 @@ import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
 import { ensureMailAccountSyncState, recordGmailActivity, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
+import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 import { createMailboxDetailRouteHandler, createMailboxListRouteHandler } from "../mail/mailboxRouteHandlers.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -87,6 +88,38 @@ describe("mailbox routes", () => {
       expect(after.initialSyncInProgress).toBe(false);
       expect(after.reason).toBe("other");
       expect(JSON.stringify(after)).not.toContain("secret provider text");
+    });
+  });
+  it("counts the messages a mailbox has downloaded while its first sync runs, and no longer once it is done", async () => {
+    await runInTenant(tenant, async () => {
+      const id = await createMailbox();
+      const other = await createMailbox();
+      const cp = createChokePoint(runtime);
+      const emails = (await cp.listDatabases()).find((d) => d.ownerModuleId === "emails");
+      if (!emails) throw new Error("Missing emails database");
+      const ingest = async (mailboxItemId: string, messageId: string) => {
+        const email = await cp.createItem({ databaseId: emails.id, properties: {} });
+        await withTransaction(runtime, (client) =>
+          upsertMailMessageMeta(client, { itemId: email.id, mailboxItemId, messageId, envelope: {} }),
+        );
+      };
+      await ingest(id, "<one@example.test>");
+      await ingest(id, "<two@example.test>");
+      await ingest(other, "<three@example.test>");
+      await withTransaction(runtime, (client) => ensureMailAccountSyncState(client, { itemId: id, syncMode: "imap" }));
+      const detail = createMailboxDetailRouteHandler(runtime);
+
+      expect((await detail({ params: { id } })).body).toMatchObject({
+        initialSyncInProgress: true,
+        syncedMessageCount: 2,
+      });
+      await withTransaction(runtime, (client) =>
+        recordGmailActivity(client, { itemId: id, historyId: "1", nextExpectedActivityAt: new Date("2030-01-01") }),
+      );
+      expect((await detail({ params: { id } })).body).toMatchObject({
+        initialSyncInProgress: false,
+        syncedMessageCount: null,
+      });
     });
   });
   it("reports Graph mode and excludes deleted mailboxes", async () => {

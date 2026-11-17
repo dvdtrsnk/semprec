@@ -14,8 +14,6 @@
   "property.mailboxes.syncStatus.option.never": "Never",
   "property.mailboxes.syncStatus.option.needsReauthorization": "Needs reauthorization",
   "property.mailboxes.folders.name": "Folders",
-  "mail.mailbox.defaultName.icloud": "iCloud",
-  "mail.mailbox.defaultName.generic": "Other account",
   "database.folders.name": "Folders",
   "property.folders.name.name": "Name",
   "property.folders.behavior.name": "Behavior",
