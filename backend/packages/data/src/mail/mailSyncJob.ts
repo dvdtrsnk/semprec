@@ -36,7 +36,7 @@ import { findEmailsMissingSearchIndex, reindexItemSearch } from "./search.js";
 import { logger } from "./logger.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
-import { lockMailboxSync } from "./mailboxSyncGuard.js";
+import { lockMailboxSync, MailboxSyncBusyError } from "./mailboxSyncGuard.js";
 import { raiseProblem, resolveProblem } from "../semp/sempProblemsStore.js";
 import { mailProblemKey } from "../semp/sourceProblemKeys.js";
 
@@ -59,6 +59,9 @@ export interface MailModuleIds {
 
 /** `syncStatus` is `owner: 'system'`, and the sync worker is its declared owning process. */
 const MAILBOX_SYNC_STATUS_ALLOWED_KEYS = ["syncStatus"] as const;
+
+/** How long a pass waits for a mailbox another pass or a removal holds before it is skipped. */
+const MAILBOX_SYNC_PASS_WAIT_MS = 5_000;
 
 function mailSyncFailureKind(error: unknown): "connectionLimit" | "reauthorizationRequired" | "unexpected" {
   if (error instanceof MailConnectionLimitError) return "connectionLimit";
@@ -167,10 +170,11 @@ export async function handleSyncMailAccountTask(
   /**
    * Takes the mailbox's sync guard, which a removal takes first, so no removal runs until this transaction ends, then
    * re-reads the mailbox. `false` (trashed, gone, or no sync state row) means the pass does nothing. The generic trash
-   * takes no guard and can still happen during a pass.
+   * takes no guard and can still happen during a pass. A guard still held after `MAILBOX_SYNC_PASS_WAIT_MS` throws
+   * `MailboxSyncBusyError`: another pass or a removal of this mailbox is running, and the pass is skipped.
    */
   const enterSyncPass = async (client: PoolClient): Promise<boolean> => {
-    await lockMailboxSync(client, payload.mailboxItemId);
+    await lockMailboxSync(client, payload.mailboxItemId, { maxWaitMs: MAILBOX_SYNC_PASS_WAIT_MS });
     const mailbox = await getItemById(client, moduleIds.mailboxesDatabaseId, payload.mailboxItemId);
     if (!mailbox || mailbox.deletedAt) return false;
     return (await getMailAccountSyncState(client, payload.mailboxItemId)) !== null;
@@ -279,7 +283,9 @@ export async function handleSyncMailAccountTask(
           const imap = await adapters.createImapClient!(payload.mailboxItemId, credential);
           try {
             if (!(await enterSyncPass(client))) return false;
-            await reconcileImapAccount(client, imap, shared);
+            const { complete } = await reconcileImapAccount(client, imap, shared);
+            // Committed with this batch, so the backfill continues as soon as the guard is free.
+            if (!complete) await enqueueMailAccountSync(client, payload.mailboxItemId);
           } finally {
             // close() never rejects, so the pass's own error still propagates to the transaction.
             await imap.close();
@@ -326,6 +332,13 @@ export async function handleSyncMailAccountTask(
     // Attachment bytes written this pass are not covered by the rollback. Best-effort cleanup: a cleanup failure must
     // not mask the original error.
     await Promise.all([...writtenKeys].map((key) => trackedStorage.delete(key).catch(() => {})));
+
+    // The running pass or removal decides the mailbox's state; this one has nothing to record. The sweep re-enqueues
+    // an account that is still due.
+    if (err instanceof MailboxSyncBusyError) {
+      logger.info({ mailboxItemId: payload.mailboxItemId }, "Mail sync skipped: another pass holds the mailbox");
+      return;
+    }
 
     // The failure must be recorded in a new transaction; the one that failed is aborted or never existed.
     const message = err instanceof Error ? err.message : String(err);

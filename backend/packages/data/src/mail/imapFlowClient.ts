@@ -481,14 +481,21 @@ export class ImapFlowMailClient implements ImapMailClient {
     };
   }
 
-  async fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]> {
+  async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]> {
     await this.providerCall(() => this.client.mailboxOpen(path));
+    // "*" in a range can include one message below sinceUid on an empty-range edge case.
+    const found = await this.providerCall(() => this.client.search({ uid: `${sinceUid}:*` }, { uid: true }));
+    const uids = (found === false ? [] : found)
+      .filter((uid) => uid >= sinceUid)
+      .sort((a, b) => a - b)
+      .slice(0, limit);
+    if (uids.length === 0) return [];
     const raws: FetchMessageObject[] = [];
     // No `source: true` (see walkBodyStructure); only bounded metadata is fetched here.
     // `labels: true` is a no-op on non-Gmail servers.
     for await (const raw of this.providerStream(() =>
       this.client.fetch(
-        `${sinceUid}:*`,
+        uids.join(","),
         {
           uid: true,
           envelope: true,
@@ -509,7 +516,6 @@ export class ImapFlowMailClient implements ImapMailClient {
         { uid: true },
       ),
     )) {
-      if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
       raws.push(raw);
     }
     // Parsed after the FETCH ends: imapflow keeps it open until every response is read, so a
