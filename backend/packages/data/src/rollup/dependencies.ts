@@ -72,6 +72,25 @@ export async function findDependenciesBySource(
   return rows.map(mapRow);
 }
 
+/**
+ * `findDependenciesBySource` for several keys of one database in one statement: the rows of each key in the order
+ * of `sourcePropertyKeys`.
+ */
+export async function findDependenciesBySources(
+  client: PoolClient,
+  sourceDatabaseId: string,
+  sourcePropertyKeys: readonly string[],
+): Promise<RollupDependencyRow[]> {
+  if (sourcePropertyKeys.length === 0) return [];
+  const { rows } = await client.query<RollupDependencyDbRow>(
+    `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
+     FROM rollup_dependencies WHERE source_database_id = $1 AND source_property_key = ANY($2::text[])
+     ORDER BY array_position($2::text[], source_property_key), rollup_property_id`,
+    [sourceDatabaseId, sourcePropertyKeys],
+  );
+  return rows.map(mapRow);
+}
+
 /** Archive and restore of a database: which rollups aggregate its items. Zero rows is the common case. */
 export async function findDependenciesBySourceDatabase(
   client: PoolClient,
