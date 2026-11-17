@@ -74,8 +74,6 @@ const TENANT_TABLES = [
   "external_credentials",
   "credential_access_log",
   "ai_gateway_calls",
-  "module_migrations",
-  "module_migration_progress",
   "tenant_keys",
   "tenant_observability_checks",
   "tenant_exports",
@@ -205,7 +203,7 @@ const PERMANENT_EXCEPTIONS: { table: string; columns: string[]; reason: string }
   {
     table: "mail_account_sync_state",
     columns: ["graph_subscription_id"],
-    reason: "provider-assigned id that a router function resolves to its tenant (0041)",
+    reason: "provider-assigned id that a router function resolves to its tenant",
   },
 ];
 
@@ -259,18 +257,6 @@ const NEW_UNIQUE_INDEXES: { name: string; table: string; columns: string[]; pred
     table: "manifest_drift_findings",
     columns: ["tenant_id", "kind", "dedupe_key"],
     predicate: "resolved_at IS NULL AND dedupe_key IS NOT NULL",
-  },
-  {
-    name: "module_migrations_pkey",
-    table: "module_migrations",
-    columns: ["tenant_id", "module_id", "database_key", "from_version", "to_version"],
-    predicate: null,
-  },
-  {
-    name: "module_migration_progress_pkey",
-    table: "module_migration_progress",
-    columns: ["tenant_id", "module_id", "database_key", "from_version", "to_version"],
-    predicate: null,
   },
   { name: "docs_tenant_item_id_uq", table: "docs", columns: ["tenant_id", "item_id"], predicate: null },
   ...[
@@ -634,7 +620,7 @@ describe("tenancy classification catalog", () => {
       // pg_get_expr parenthesizes a compound predicate but not a bare column, so compare without parentheses.
       expect(row?.predicate?.replaceAll(/[()]/g, "") ?? null, `${expected.name} predicate`).toBe(expected.predicate);
     }
-    expect(NEW_UNIQUE_INDEXES).toHaveLength(24);
+    expect(NEW_UNIQUE_INDEXES).toHaveLength(22);
   });
 
   /** Issue #1065: the contract step dropped every legacy global key and the dormant resource_grants table. */
@@ -666,16 +652,10 @@ describe("tenancy classification catalog", () => {
           AND c.relnamespace = 'public'::regnamespace
           AND c.relname = ANY($1::text[])
         ORDER BY c.relname`,
-      [["idempotency_keys", "person_email_index", "module_migrations", "module_migration_progress"]],
+      [["idempotency_keys", "person_email_index"]],
     );
     expect(rows).toEqual([
       { table_name: "idempotency_keys", constraint_name: "idempotency_keys_pkey", first_column: "tenant_id" },
-      {
-        table_name: "module_migration_progress",
-        constraint_name: "module_migration_progress_pkey",
-        first_column: "tenant_id",
-      },
-      { table_name: "module_migrations", constraint_name: "module_migrations_pkey", first_column: "tenant_id" },
       { table_name: "person_email_index", constraint_name: "person_email_index_pkey", first_column: "tenant_id" },
     ]);
   });

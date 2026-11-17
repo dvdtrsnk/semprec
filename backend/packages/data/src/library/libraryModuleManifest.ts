@@ -13,8 +13,7 @@ export {
  * Retrofit manifest (module-contract issue #227) for the library module (issue #25): Books
  * and Movies/TV, two instantiations of the generic library contract (see
  * `libraryModuleContract.ts` — an older, unrelated "contract" concept: per-instance
- * property-key slots, not this `ModuleManifest`), sharing `item_automation`
- * (`0005_library_module.sql`) and the `library-grid` view type
+ * property-key slots, not this `ModuleManifest`), sharing the `item_automation` table and the `library-grid` view type
  * (`views/libraryGridViewType.ts`). Its cover/metadata heartbeat actions
  * (`core.libraryMetadataTrigger`, `core.libraryMetadataRetrySweep`,
  * `libraryMetadataActions.ts`) and job (`processLibraryMetadata`,
@@ -69,7 +68,6 @@ export const manifest: ModuleManifest = {
   capabilities: [],
   agentTools: [],
   viewTypes: [LIBRARY_GRID_VIEW_TYPE],
-  migrations: ["0005_library_module.sql"],
   customRoutes: [
     {
       name: "libraryAutomationRetry",

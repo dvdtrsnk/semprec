@@ -1,21 +1,13 @@
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ForbiddenError } from "../errors.js";
 
-const MIGRATION_SQL = await readFile(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0037_views_creator_project_item_id.sql"),
-  "utf8",
-);
-
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-describe("0037_views_creator_project_item_id migration", () => {
+describe("views.creator_project_item_id", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint = createChokePoint(pool);
@@ -26,21 +18,10 @@ describe("0037_views_creator_project_item_id migration", () => {
     await pool?.end();
   });
 
-  it("is purely additive (expand-only) — no DROP, RENAME, or NOT NULL on an existing column", () => {
-    const statements = MIGRATION_SQL.toUpperCase();
-    expect(statements).not.toMatch(/DROP\s+(COLUMN|TABLE)/);
-    expect(statements).not.toMatch(/RENAME/);
-    expect(statements).not.toMatch(/SET\s+NOT\s+NULL/);
-    expect(statements).toContain("ADD COLUMN CREATOR_PROJECT_ITEM_ID");
-  });
-
-  it("a view row provisioned before this migration existed stays creator_project_item_id = NULL and remains readable and adoptable", async () => {
+  it("a view row without a creator project item stays creator_project_item_id = NULL and remains readable and adoptable", async () => {
     const db = await chokePoint.createDatabase({ name: "Tasks" });
-    // Simulates a pre-#87 'ai_agent' row: the column already exists in this schema (migrations
-    // run once, globally, before any test — see testSupport/globalSetup.ts), so "provisioned
-    // before this migration" is modeled the same way every other migration test in this suite
-    // models pre-existing data — a raw insert that never names the new column, the same shape
-    // pre-migration application code would have written.
+    // Simulates a pre-#87 'ai_agent' row: a raw insert that never names creator_project_item_id, the same
+    // shape application code written before the column existed would have produced.
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO views (database_id, type, name, config, is_default, owner_module_id, created_by)
        VALUES ($1, 'table', 'Legacy agent view', '{}'::jsonb, false, NULL, 'ai_agent')

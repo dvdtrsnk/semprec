@@ -34,8 +34,7 @@ export {
 
 /**
  * Retrofit manifest (module-contract issue #227) for the Inbox pipeline (issues #101-#106):
- * Inbox, Inbox item types, and Processing proposals (`0010_inbox_type_processing.sql` — the
- * only DDL-adjacent change; the three databases themselves are seeded through the generic
+ * Inbox, Inbox item types, and Processing proposals (the three databases are seeded through the generic
  * databases/properties mechanism, like the ten hardcoded databases) and the `journal-inbox`
  * view type (`views/journalInboxViewType.ts`). `semprec.tick` (`inboxTickAction.ts`) is this
  * module's own `onItemEvent` heartbeat action (create/update/delete on Inbox), so it is
@@ -117,7 +116,6 @@ export const manifest: ModuleManifest = {
   ],
   viewTypes: [JOURNAL_INBOX_VIEW_TYPE],
   heartbeatActions: [SEMPREC_TICK_ACTION_ID],
-  migrations: ["0010_inbox_type_processing.sql"],
   customRoutes: [
     {
       name: "confirmProposal",

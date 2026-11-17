@@ -18,8 +18,8 @@ import { mintMcpRunCredential, resolveMcpRunCredential } from "../mcp/mcpRunCred
 import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
 
 /**
- * Issue #243: `0040_least_privilege_roles.sql` (run once by `globalSetup.ts` for the whole test
- * run, like every other migration) creates `semprec_data`/`semprec_side` with no password —
+ * Issue #243: the baseline schema (migrated once by `globalSetup.ts` for the whole test run)
+ * creates `semprec_data`/`semprec_side` with no password —
  * real deployments set one out-of-band (issue #175). These tests need to actually log in as
  * each role against the shared embedded-Postgres instance, so they set a test-only password
  * here, once, using the admin pool's superuser privileges. Generated at run time (not a literal)
@@ -117,9 +117,9 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       ).resolves.toBeDefined();
     });
 
-    it("can insert into a bigserial-keyed side table created after 0040 ran", async () => {
+    it("can insert into a bigserial-keyed side table created after the baseline ran", async () => {
       // A table the migrating role creates later, granted the way a migration adding a side table
-      // would grant it: table DML only. Its sequence must be covered by 0047's default privileges.
+      // would grant it: table DML only. Its sequence must be covered by the schema's default privileges.
       // Interpolated because DDL cannot take a bind parameter; safe only because the name is
       // built here from hex UUID characters, never from input.
       const table = `least_privilege_late_${randomUUID().replaceAll("-", "")}`;
@@ -206,19 +206,18 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       "rollup_dependencies",
     ];
     const WRITE_PRIVILEGES = ["INSERT", "UPDATE", "DELETE"];
-    // Written only by semprec_data (migration 0057); semprec_side keeps SELECT on these two only
-    // (migration 0177 revoked the rest); covered by identityTablePrivileges.test.ts.
+    // Written only by semprec_data; semprec_side holds only SELECT on these two; covered by identityTablePrivileges.test.ts.
     const IDENTITY_TABLES = new Set(["users", "tenants"]);
 
-    // Deliberately without UPDATE for both runtime roles (migration 0062): rewriting a key row would
+    // Deliberately without UPDATE for both runtime roles: rewriting a key row would
     // orphan every credential sealed under it, so a key is only ever inserted or deleted (crypto-shred).
     const NO_UPDATE_TABLES = new Set(["tenant_keys", "admin_audit_log", "tenant_deletions"]);
 
-    // Operator configuration written only by semprec-api (migration 0070): the gateway's semprec_side
+    // Operator configuration written only by semprec-api: the gateway's semprec_side
     // may read it but never raise its own caps, and nobody deletes a row (it goes with its tenant).
     // transcript_action_item_states (issue #1754) is written by the API's transcript route and the trash purge:
     // semprec_side reads it, semprec_data runs DML.
-    // agent_runs and approval_requests (migration 0177) create or retarget an actor: the AI gateway reads
+    // agent_runs and approval_requests create or retarget an actor: the AI gateway reads
     // agent_runs to attribute a call, semprec_data runs the DML.
     const READ_ONLY_FOR_SIDE_TABLES = new Set([
       "tenant_ai_budgets",
@@ -226,10 +225,9 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       "agent_runs",
       "approval_requests",
     ]);
-    // Bearer credentials, session secrets, delivery endpoints and admin-plane rows no side process needs
-    // (migration 0177): semprec_side holds no privilege on them, semprec_data holds DML directly.
-    // admin_audit_log (migration 0074) is append-only and tenant_deletions (migration 0079) is the purge
-    // tombstone: semprec_data only inserts. invites (migration 0077) is written by the admin routes only.
+    // Bearer credentials, session secrets, delivery endpoints and admin-plane rows no side process needs: semprec_side holds no privilege on them, semprec_data holds DML directly.
+    // admin_audit_log is append-only and tenant_deletions is the purge
+    // tombstone: semprec_data only inserts. invites is written by the admin routes only.
     const NO_ACCESS_FOR_SIDE_TABLES = new Set([
       "agent_run_mcp_credentials",
       "push_subscriptions",
@@ -240,7 +238,7 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       "admin_audit_log",
       "tenant_deletions",
     ]);
-    // tenant_deletions (migration 0079) is the purge tombstone: semprec_data only inserts.
+    // tenant_deletions is the purge tombstone: semprec_data only inserts.
     const NO_DELETE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log", "tenant_deletions"]);
 
     async function listTables(): Promise<{ name: string; oid: string }[]> {

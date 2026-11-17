@@ -57,7 +57,7 @@ export { createProjectAgentSummaryRouteHandler } from "../mcp/projectAgentSummar
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
- * (this directory) plus the system tables it writes through (`0001_core_schema.sql` — users,
+ * (this directory) plus the system tables it writes through (users,
  * databases, properties, relation_definitions, items, item_relations, project_heartbeats,
  * agent_runs, rollup_dependencies, notifications, idempotency_keys). This is
  * the generic engine every other module builds on, not a business database of its own — it
@@ -144,7 +144,8 @@ export const manifest: ModuleManifest = {
       snapshotExport: "createHeartbeatSetEnabledSnapshot",
     },
   ],
-  migrations: ["0001_core_schema.sql"],
+  // The baseline holds the whole schema of every module that existed before the first release.
+  migrations: ["0001_baseline.sql"],
   customRoutes: [
     {
       name: "sempStatus",

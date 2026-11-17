@@ -8,13 +8,6 @@ const DB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db
 const MIGRATIONS_DIR = path.join(DB_DIR, "migrations");
 const EXAMPLES_DIR = path.join(DB_DIR, "migrationExamples");
 
-/**
- * Written before the check existed (issue #191) and before any release was tagged, so no previous
- * release ever ran against the schema they changed: 0025 adds required columns without defaults to
- * `users`, 0030 drops the `notifications` stub table before recreating it with a new shape.
- */
-const PREDATES_CHECK = ["0025_auth_schema.sql", "0030_notifications_schema.sql"];
-
 const REJECTED_EXAMPLES: Record<string, MigrationCompatibilityRule> = {
   "add-required-column.sql": "addRequiredColumn",
   "change-column-type.sql": "changeColumnType",
@@ -35,17 +28,15 @@ function rulesOf(sql: string): MigrationCompatibilityRule[] {
 }
 
 describe("migrations in this repository", () => {
-  it("are compatible with the previous release, apart from those that predate the check", () => {
+  it("are compatible with the previous release", () => {
     const files = sqlFiles(MIGRATIONS_DIR);
-    expect(files).toEqual(expect.arrayContaining(PREDATES_CHECK));
+    expect(files).toEqual(expect.arrayContaining(["0001_baseline.sql"]));
 
-    const violations = files
-      .filter((file) => !PREDATES_CHECK.includes(file))
-      .flatMap((file) =>
-        findIncompatibleStatements(readFileSync(path.join(MIGRATIONS_DIR, file), "utf8")).map(
-          (f) => `${file}: ${f.rule}: ${f.statement}`,
-        ),
-      );
+    const violations = files.flatMap((file) =>
+      findIncompatibleStatements(readFileSync(path.join(MIGRATIONS_DIR, file), "utf8")).map(
+        (f) => `${file}: ${f.rule}: ${f.statement}`,
+      ),
+    );
     expect(violations).toEqual([]);
   });
 });

@@ -59,7 +59,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     if (!trigger) throw new Error("Heartbeat trigger missing");
     expect(trigger.parseArguments({ heartbeatId: "00000000-0000-4000-8000-000000000000" }).success).toBe(true);
     expect(trigger.parseArguments({ heartbeatId: "not-a-uuid" }).success).toBe(false);
-    expect(await registry.getMigrations()).toEqual([{ moduleId: "schemaCore", migration: "0001_core_schema.sql" }]);
+    expect(await registry.getMigrations()).toEqual([{ moduleId: "schemaCore", migration: "0001_baseline.sql" }]);
   });
 
   it("loads the views manifest and projects the built-in view types", async () => {
@@ -80,10 +80,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(await registry.getDatabases()).toEqual([{ moduleId: "docs", key: PAGES_MODULE_ID, name: "Pages" }]);
     expect(await registry.getTasks()).toEqual([]);
     expect(await registry.getHeartbeatActions()).toEqual([]);
-    expect(await registry.getMigrations()).toEqual([
-      { moduleId: "docs", migration: "0003_docs.sql" },
-      { moduleId: "docs", migration: "0036_doc_history_retention.sql" },
-    ]);
+    expect(await registry.getMigrations()).toEqual([]);
   });
 
   it("loads the ten-system-databases manifest with all ten existing database keys and Journal's view type", async () => {

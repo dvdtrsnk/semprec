@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -21,10 +18,6 @@ import {
  * superuser pool bypasses row-level security); `tenant_observability_checks` stands in for every
  * tenant table, since all of them share the same default and policies.
  */
-const MIGRATION_SQL = await readFile(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0085_strict_tenant_enforcement.sql"),
-  "utf8",
-);
 const SELECT_CHECKS = "SELECT check_key, tenant_id FROM tenant_observability_checks ORDER BY check_key";
 const INSERT_CHECK =
   "INSERT INTO tenant_observability_checks (check_key, status) VALUES ($1, 'ok') RETURNING tenant_id";
@@ -157,32 +150,5 @@ describe("users.tenant_id NOT NULL (issue #1067)", () => {
       [account.id],
     );
     expect(rows).toEqual([{ tenant_id: getTenantZeroId(), role: "admin" }]);
-  });
-
-  it("fails the migration with the guard's exception naming the count while a user has no tenant", async () => {
-    const client = await adminPool.connect();
-    try {
-      await client.query("BEGIN");
-      try {
-        // Raw SQL: the state the guard refuses (a user with no tenant) cannot be produced any other way.
-        await client.query("ALTER TABLE users ALTER COLUMN tenant_id DROP NOT NULL");
-        await client.query("INSERT INTO users (email, password_hash) VALUES ($1, 'unused'), ($2, 'unused')", [
-          `${randomUUID()}@example.com`,
-          `${randomUUID()}@example.com`,
-        ]);
-        await expect(client.query(MIGRATION_SQL)).rejects.toMatchObject({
-          code: "P0001",
-          message: expect.stringContaining("2 users row(s) have a NULL tenant_id") as string,
-        });
-      } finally {
-        await client.query("ROLLBACK");
-      }
-    } finally {
-      client.release();
-    }
-    const { rows } = await adminPool.query<{ attnotnull: boolean }>(
-      "SELECT attnotnull FROM pg_attribute WHERE attrelid = 'public.users'::regclass AND attname = 'tenant_id'",
-    );
-    expect(rows).toEqual([{ attnotnull: true }]);
   });
 });

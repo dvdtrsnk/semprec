@@ -7,10 +7,6 @@ import { z } from "zod";
 import { readPageBlocks, writeBlock, type BlockInput } from "@semprec/block-model";
 import "../domainWriteHooks.js";
 import { DateTime } from "luxon";
-import { copyFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Pool, PoolClient } from "pg";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import {
@@ -24,8 +20,7 @@ import { runInTenant } from "@semprec/shared";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { createPool, withTransaction } from "../db/pool.js";
-import { runMigrations } from "../db/migrate.js";
+import { withTransaction } from "../db/pool.js";
 import { ConflictError, NotFoundError, ProposalLockedError, ValidationError } from "../errors.js";
 import { randomUUID } from "node:crypto";
 import { createItemWithClient, prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -3921,17 +3916,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         ]);
       });
 
-      it("marks an old writer's timestamp unverified", async () => {
-        await pool.query(
-          `INSERT INTO item_origins (item_id, proposal_id, captured_at, capture_channel)
-           VALUES ($1, $2, $3, 'inbox')`,
-          [randomUUID(), randomUUID(), "2026-01-01T00:00:00Z"],
-        );
-        const [row] = await originRows();
-        expect(row?.captured_at?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
-        expect(row?.capture_time_basis).toBe("legacyUnverified");
-      });
-
       it.each([
         ["inboxCapture", null],
         ["unknown", "2026-01-01T00:00:00Z"],
@@ -3944,99 +3928,6 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           ),
         ).rejects.toMatchObject({ code: "23514", constraint: "item_origins_capture_provenance_check" });
       });
-
-      it("preserves populated legacy timestamps when the migration runs", async () => {
-        const migration = await readFile(
-          new URL("../db/migrations/0126_item_origin_capture_time_basis.sql", import.meta.url),
-          "utf8",
-        );
-        await withTransaction(pool, async (client) => {
-          await client.query("CREATE TEMP TABLE item_origins (captured_at timestamptz NOT NULL) ON COMMIT DROP");
-          await client.query("INSERT INTO item_origins (captured_at) VALUES ($1)", ["2026-01-01T00:00:00Z"]);
-          await client.query(migration);
-          const { rows } = await client.query<{ captured_at: Date; capture_time_basis: string }>(
-            "SELECT captured_at, capture_time_basis FROM item_origins",
-          );
-          expect(rows[0]?.captured_at.toISOString()).toBe("2026-01-01T00:00:00.000Z");
-          expect(rows[0]?.capture_time_basis).toBe("legacyUnverified");
-        });
-      });
-
-      it("upgrades populated tenant origins through the migration runner and retains runtime isolation", async () => {
-        const connection = process.env.TEST_DATABASE_URL;
-        if (!connection) throw new Error("Missing TEST_DATABASE_URL");
-        const name = `origin_upgrade_${randomUUID().replaceAll("-", "")}`;
-        const admin = createPool(connection);
-        const url = new URL(connection);
-        url.pathname = `/${name}`;
-        const scratch = createPool(url.toString());
-        const directory = await mkdtemp(path.join(tmpdir(), "semprec-origin-upgrade-"));
-        const migrations = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrations");
-        const current = "0126_item_origin_capture_time_basis.sql";
-        let created = false;
-        let failure: { error: unknown } | undefined;
-        try {
-          await admin.query(`CREATE DATABASE "${name}" ENCODING 'UTF8' TEMPLATE template0`);
-          created = true;
-          for (const file of (await readdir(migrations)).filter((f) => f.endsWith(".sql") && f < current).sort()) {
-            await copyFile(path.join(migrations, file), path.join(directory, file));
-          }
-          await runMigrations(scratch, directory);
-          const tenants = await scratch.query<{ id: string }>("SELECT id FROM tenants");
-          const first = tenants.rows[0]?.id;
-          if (!first) throw new Error("Missing migrated tenant");
-          const second = randomUUID();
-          await scratch.query("INSERT INTO tenants (id, status) VALUES ($1, 'active')", [second]);
-          const firstItem = randomUUID();
-          const secondItem = randomUUID();
-          // Simulate the prior release's writer on the real tenant-scoped table.
-          await scratch.query(
-            `INSERT INTO item_origins (tenant_id, item_id, proposal_id, captured_at, capture_channel)
-             VALUES ($1, $2, $3, '2026-01-01T00:00:00Z', 'inbox'),
-                    ($4, $5, $6, '2026-02-01T00:00:00Z', 'inbox')`,
-            [first, firstItem, randomUUID(), second, secondItem, randomUUID()],
-          );
-          await copyFile(path.join(migrations, current), path.join(directory, current));
-          await runMigrations(scratch, directory);
-          await withTransaction(scratch, async (client) => {
-            await client.query("SET LOCAL ROLE semprec_side");
-            await client.query("SELECT set_config('app.tenant_id', $1, true)", [first]);
-            const { rows } = await client.query<{ item_id: string; captured_at: Date; capture_time_basis: string }>(
-              "SELECT item_id, captured_at, capture_time_basis FROM item_origins",
-            );
-            expect(rows).toHaveLength(1);
-            expect(rows[0]).toMatchObject({ item_id: firstItem, capture_time_basis: "legacyUnverified" });
-            expect(rows[0]?.captured_at.toISOString()).toBe("2026-01-01T00:00:00.000Z");
-          });
-          await withTransaction(scratch, async (client) => {
-            await client.query("SET LOCAL ROLE semprec_side");
-            await client.query("SELECT set_config('app.tenant_id', $1, true)", [second]);
-            const { rows } = await client.query<{ item_id: string; captured_at: Date; capture_time_basis: string }>(
-              "SELECT item_id, captured_at, capture_time_basis FROM item_origins",
-            );
-            expect(rows).toHaveLength(1);
-            expect(rows[0]).toMatchObject({ item_id: secondItem, capture_time_basis: "legacyUnverified" });
-            expect(rows[0]?.captured_at.toISOString()).toBe("2026-02-01T00:00:00.000Z");
-          });
-        } catch (error) {
-          failure = { error };
-        }
-        for (const cleanup of [
-          () => scratch.end(),
-          async () => {
-            if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
-          },
-          () => admin.end(),
-          () => rm(directory, { recursive: true, force: true }),
-        ]) {
-          try {
-            await cleanup();
-          } catch (error) {
-            failure ??= { error };
-          }
-        }
-        if (failure) throw failure.error;
-      }, 120_000);
 
       it("records no guessed time for a revised transcript card", async () => {
         const transcriptsId = await databaseIdFor("transcripts");

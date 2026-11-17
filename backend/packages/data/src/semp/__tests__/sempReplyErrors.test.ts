@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runInTenant } from "@semprec/shared";
 import { AGENT_RUN_ERROR_CODES, AgentRunError, AiBudgetExceededError } from "../../agentRuns/agentRunErrorCodes.js";
@@ -159,21 +157,8 @@ describe("why a Semp reply failed (issue #1907)", () => {
     await setup?.admin.end();
   });
 
-  describe("the constraints of the migration", () => {
-    it("are validated by a migration of their own, so that the scan does not run under the lock of the ALTER TABLE", async () => {
-      const read = (file: string) =>
-        readFile(fileURLToPath(new URL(`../../db/migrations/${file}`, import.meta.url)), "utf8");
-      const statements = (sql: string) =>
-        sql
-          .split("\n")
-          .filter((line) => !line.startsWith("--"))
-          .join("\n");
-      // Every migration runs in one transaction: a VALIDATE CONSTRAINT in the file of the ADD CONSTRAINT would hold
-      // the ACCESS EXCLUSIVE lock of the ALTER TABLE through the scan.
-      expect(statements(await read("0160_semp_messages_error.sql"))).not.toMatch(/VALIDATE\s+CONSTRAINT/i);
-      const validation = statements(await read("0161_validate_semp_messages_error.sql"));
-      expect(validation).toMatch(/VALIDATE\s+CONSTRAINT\s+semp_messages_error_code_check/i);
-      expect(validation).toMatch(/VALIDATE\s+CONSTRAINT\s+semp_messages_error_params_check/i);
+  describe("the constraints of the schema", () => {
+    it("are both validated", async () => {
       const { rows } = await setup.admin.query<{ conname: string; convalidated: boolean }>(
         `SELECT conname, convalidated FROM pg_constraint
           WHERE conrelid = 'semp_messages'::regclass

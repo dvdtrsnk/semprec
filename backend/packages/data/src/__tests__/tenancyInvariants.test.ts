@@ -263,7 +263,7 @@ describe("findTenancyViolations", () => {
           `ALTER TABLE ${ownedBySide} OWNER TO semprec_side`,
         ]),
       ).toEqual([
-        // semprec_data inherits semprec_side (0040_least_privilege_roles.sql), so it is flagged for both owners.
+        // semprec_data inherits semprec_side (granted by the schema), so it is flagged for both owners.
         {
           invariant: "runtimeRole",
           object: "semprec_data",

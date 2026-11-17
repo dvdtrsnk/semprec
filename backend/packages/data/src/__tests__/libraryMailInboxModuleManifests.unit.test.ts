@@ -80,7 +80,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(await registry.getViewTypes()).toEqual([LIBRARY_GRID_VIEW_TYPE]);
     expect(await registry.getHeartbeatActions()).toEqual([]);
     expect(await registry.getTasks()).toEqual([]);
-    expect(await registry.getMigrations()).toEqual([{ moduleId: "library", migration: "0005_library_module.sql" }]);
+    expect(await registry.getMigrations()).toEqual([]);
   });
 
   it("declares the automation retry route and the three cover candidate routes with handlers that resolve", async () => {
@@ -162,10 +162,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(workers).toEqual([
       { moduleId: "mailSync", name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" },
     ]);
-    expect(await registry.getMigrations()).toEqual([
-      { moduleId: "mailSync", migration: "0006_mail_sync.sql" },
-      { moduleId: "mailSync", migration: "0007_mail_delivered_to_and_dsn.sql" },
-    ]);
+    expect(await registry.getMigrations()).toEqual([]);
   });
 
   it("loads the Threads database and property labels in both locales", async () => {
@@ -194,9 +191,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(await registry.getViewTypes()).toEqual([JOURNAL_INBOX_VIEW_TYPE]);
     expect(await registry.getHeartbeatActions()).toEqual([SEMPREC_TICK_ACTION_ID]);
     expect(await registry.getTasks()).toEqual([]);
-    expect(await registry.getMigrations()).toEqual([
-      { moduleId: "inboxPipeline", migration: "0010_inbox_type_processing.sql" },
-    ]);
+    expect(await registry.getMigrations()).toEqual([]);
   });
 
   it("loads all three manifests together into one registry with no id/name/database-key/worker collisions", async () => {

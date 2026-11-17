@@ -1,6 +1,4 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -43,11 +41,6 @@ vi.mock("../mcpConnectionFactory.js", async (importOriginal) => {
   };
   return { ...actual, connectMcpServer: connect as typeof ConnectMcpServerFn };
 });
-
-const migrationSql = readFileSync(
-  fileURLToPath(new URL("../../db/migrations/0175_mcp_tool_classification_source.sql", import.meta.url)),
-  "utf8",
-);
 
 let pool: Pool;
 let serverId: string;
@@ -94,11 +87,6 @@ describe("MCP tool classification from annotations (issue gh-1979)", () => {
     );
     serverId = server.id;
     fakeServer.tools = [];
-  });
-
-  afterEach(async () => {
-    // The backfill tests drop the column; the migration is a no-op while the column exists.
-    await pool.query(migrationSql);
   });
 
   afterAll(async () => {
@@ -325,64 +313,15 @@ describe("MCP tool classification from annotations (issue gh-1979)", () => {
     });
   });
 
-  describe("migration 0175 backfill", () => {
-    async function insertPreMigrationRow(name: string, riskClass: string, requiresApproval: boolean): Promise<void> {
-      // Raw SQL: the state of a row that existed before the column did cannot be produced through the store.
-      await pool.query(
-        `INSERT INTO mcp_tool_registrations (mcp_server_item_id, tool_name, tool_schema, risk_class, requires_approval)
-         VALUES ($1, $2, '{}'::jsonb, $3, $4)`,
-        [serverId, name, riskClass, requiresApproval],
-      );
-    }
-
-    async function sources(): Promise<Record<string, string>> {
-      const { rows } = await pool.query<{ tool_name: string; classification_source: string }>(
-        "SELECT tool_name, classification_source FROM mcp_tool_registrations WHERE mcp_server_item_id = $1",
-        [serverId],
-      );
-      return Object.fromEntries(rows.map((row) => [row.tool_name, row.classification_source]));
-    }
-
-    beforeEach(async () => {
-      await pool.query("ALTER TABLE mcp_tool_registrations DROP COLUMN classification_source");
-      await insertPreMigrationRow("defaults", "unclassified", true);
-      await insertPreMigrationRow("approvalOff", "unclassified", false);
-      await insertPreMigrationRow("classSet", "read", true);
-      await insertPreMigrationRow("bothSet", "destructive", false);
+  it("the schema rejects a classification source other than annotation and manual", async () => {
+    await upsertClassifiedMcpToolRegistration(pool, {
+      mcpServerItemId: serverId,
+      toolName: "derived",
+      toolSchema: {},
+      classification: { riskClass: "read", requiresApproval: false },
     });
-
-    it("makes untouched defaults annotation and every other row manual", async () => {
-      await pool.query(migrationSql);
-
-      expect(await sources()).toEqual({
-        defaults: "annotation",
-        approvalOff: "manual",
-        classSet: "manual",
-        bothSet: "manual",
-      });
-    });
-
-    it("changes nothing when it runs a second time, even for a row a sync has derived since", async () => {
-      await pool.query(migrationSql);
-      await upsertClassifiedMcpToolRegistration(pool, {
-        mcpServerItemId: serverId,
-        toolName: "derived",
-        toolSchema: {},
-        classification: { riskClass: "read", requiresApproval: false },
-      });
-      const afterFirstRun = await sources();
-      expect(afterFirstRun.derived).toBe("annotation");
-
-      await pool.query(migrationSql);
-
-      expect(await sources()).toEqual(afterFirstRun);
-    });
-
-    it("rejects a source other than annotation and manual", async () => {
-      await pool.query(migrationSql);
-      await expect(
-        pool.query("UPDATE mcp_tool_registrations SET classification_source = 'system' WHERE tool_name = 'defaults'"),
-      ).rejects.toThrow(/mcp_tool_registrations_classification_source_check/);
-    });
+    await expect(
+      pool.query("UPDATE mcp_tool_registrations SET classification_source = 'system' WHERE tool_name = 'derived'"),
+    ).rejects.toThrow(/mcp_tool_registrations_classification_source_check/);
   });
 });

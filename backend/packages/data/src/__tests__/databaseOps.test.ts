@@ -1,6 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
 import type { Pool, PoolClient } from "pg";
 import {
   createRuntimeRolePool,
@@ -76,15 +75,6 @@ let pool: Pool;
 let chokePoint: ChokePoint;
 // The production resolver over the full registry: `recipes` is the one database it reports as hideable.
 const metadataResolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
-
-/** The text of the migration that adds `databases.overview_hidden`, found by name because its ordinal can move at landing. */
-async function readOverviewHiddenMigration(): Promise<string> {
-  const directory = new URL("../db/migrations/", import.meta.url);
-  const files = (await readdir(directory)).filter((name) => name.endsWith("_database_overview_hidden.sql"));
-  const [file] = files;
-  if (file === undefined || files.length !== 1) throw new Error("expected exactly one overview_hidden migration");
-  return readFile(new URL(file, directory), "utf8");
-}
 
 describe("choke-point databaseOps", () => {
   beforeEach(async () => {
@@ -173,8 +163,8 @@ describe("choke-point databaseOps", () => {
     );
   });
 
-  it("keeps appearance null for rows written in the pre-migration shape", async () => {
-    // The legacy insert omits both columns, as code deployed before migration 0113 did.
+  it("keeps appearance null for a row whose insert omits both columns", async () => {
+    // The insert omits both columns: the schema gives them no default.
     const { rows } = await pool.query<{ icon: string | null; color: string | null }>(
       "INSERT INTO databases (name, system) VALUES ($1, false) RETURNING icon, color",
       ["Legacy"],
@@ -188,22 +178,6 @@ describe("choke-point databaseOps", () => {
       { column_name: "color", is_nullable: "YES", column_default: null },
       { column_name: "icon", is_nullable: "YES", column_default: null },
     ]);
-  });
-
-  it("preserves a row created before the appearance migration", async () => {
-    const migration = await readFile(new URL("../db/migrations/0113_database_icon_color.sql", import.meta.url), "utf8");
-    await withTransaction(pool, async (client) => {
-      await client.query("CREATE TEMP TABLE databases (id uuid PRIMARY KEY, name text NOT NULL) ON COMMIT DROP");
-      await client.query("SET LOCAL search_path = pg_temp");
-      const id = randomUUID();
-      await client.query("INSERT INTO databases (id, name) VALUES ($1, $2)", [id, "Before upgrade"]);
-      await client.query(migration);
-      const { rows } = await client.query<{ id: string; name: string; icon: string | null; color: string | null }>(
-        "SELECT id, name, icon, color FROM databases WHERE id = $1",
-        [id],
-      );
-      expect(rows).toEqual([{ id, name: "Before upgrade", icon: null, color: null }]);
-    });
   });
 
   it("allows the data runtime role to write both appearance columns", async () => {
@@ -332,8 +306,8 @@ describe("choke-point databaseOps", () => {
       ).rejects.toBeInstanceOf(NotFoundError);
     });
 
-    it("reads false for a row written in the pre-migration shape, from a NOT NULL column that defaults to false", async () => {
-      // The legacy insert omits the column, as code deployed before the overview_hidden migration does.
+    it("reads false for a row whose insert omits overview_hidden, from a NOT NULL column that defaults to false", async () => {
+      // The insert omits the column, so the schema's default applies.
       const { rows } = await pool.query<{ overview_hidden: boolean }>(
         "INSERT INTO databases (name, system) VALUES ($1, false) RETURNING overview_hidden",
         ["Legacy"],
@@ -344,22 +318,6 @@ describe("choke-point databaseOps", () => {
         ["overview_hidden"],
       );
       expect(columns.rows).toEqual([{ data_type: "boolean", is_nullable: "NO", column_default: "false" }]);
-    });
-
-    it("gives a row created before the overview_hidden migration the value false and keeps its other columns", async () => {
-      const migration = await readOverviewHiddenMigration();
-      await withTransaction(pool, async (client) => {
-        await client.query("CREATE TEMP TABLE databases (id uuid PRIMARY KEY, name text NOT NULL) ON COMMIT DROP");
-        await client.query("SET LOCAL search_path = pg_temp");
-        const id = randomUUID();
-        await client.query("INSERT INTO databases (id, name) VALUES ($1, $2)", [id, "Before upgrade"]);
-        await client.query(migration);
-        const { rows } = await client.query<{ id: string; name: string; overview_hidden: boolean }>(
-          "SELECT id, name, overview_hidden FROM databases WHERE id = $1",
-          [id],
-        );
-        expect(rows).toEqual([{ id, name: "Before upgrade", overview_hidden: false }]);
-      });
     });
 
     it("allows the data runtime role to write overview_hidden", async () => {
