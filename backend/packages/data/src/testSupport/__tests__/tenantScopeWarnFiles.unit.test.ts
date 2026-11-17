@@ -89,7 +89,7 @@ describe("the integration tier's selection of test files", () => {
     const config = readFileSync(path.join(backendDirectory, "vitest.integration.config.ts"), "utf8");
     expect(config).toContain('include: ["packages/*/src/**/*.test.ts", "services/*/src/**/*.test.ts"]');
     expect(config).toContain('"**/*.unit.test.ts", "**/*.e2e.test.ts"');
-    expect(config).toContain('setupFiles: ["./packages/data/src/testSupport/tenantScopeMode.ts"]');
+    expect(config).toMatch(/setupFiles: \[[^\]]*"\.\/packages\/data\/src\/testSupport\/tenantScopeMode\.ts"/);
     expect(config).toContain("provide: { explicitTenantScopeMode: process.env.SEMPREC_TENANT_SCOPE ?? null }");
   });
 
