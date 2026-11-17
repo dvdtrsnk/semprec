@@ -1,0 +1,105 @@
+package cz.semprec.app.presentation
+
+import cz.semprec.app.domain.CalendarDay
+import cz.semprec.app.domain.CalendarEntry
+import cz.semprec.app.domain.CalendarEntryKind
+import cz.semprec.app.domain.CalendarInfo
+import cz.semprec.app.domain.ClockTime
+import cz.semprec.app.domain.ScheduleEditing
+import cz.semprec.app.domain.layoutTimeline
+
+private const val DEFAULT_COLOR = "#8E8E93"
+private const val GRID_DAYS = 42
+private const val MONTHS_IN_YEAR = 12
+private const val SYSTEM_SLEEP = "sleep"
+private const val SYSTEM_TASKS = "tasks"
+private const val DAYS_BEFORE_GRID = 7
+private const val DAYS_AFTER_GRID = 49
+
+/** The first and the last day of the window that is loaded around [day]: its month grid with a week on each side. */
+internal fun windowOf(day: CalendarDay): Pair<CalendarDay, CalendarDay> {
+    val gridStart = day.startOfMonth().startOfWeek()
+    return gridStart.plusDays(-DAYS_BEFORE_GRID) to gridStart.plusDays(DAYS_AFTER_GRID)
+}
+
+/** The 42 days of the month view of [day]: from the Monday of its first week, six weeks. */
+internal fun monthGridOf(day: CalendarDay): List<String> {
+    val start = day.startOfMonth().startOfWeek()
+    return (0 until GRID_DAYS).map { start.plusDays(it).toString() }
+}
+
+internal fun monthsOf(year: Int): List<CalendarMonthState> = (1..MONTHS_IN_YEAR).map { month ->
+    val first = CalendarDay(year, month, 1)
+    CalendarMonthState(year, month, first.isoDayOfWeek - 1, first.lengthOfMonth())
+}
+
+/** The colour of the calendar an entry belongs to; derived entries follow the system calendar of their kind. */
+internal class CalendarColors(calendars: List<CalendarInfo>) {
+    private val byId = calendars.associateBy { it.id }
+    private val bySystem = calendars.mapNotNull { calendar -> calendar.systemKey?.let { it to calendar.color } }.toMap()
+
+    fun of(entry: CalendarEntry): String {
+        val own = entry.calendarId?.let { byId[it]?.color }
+        val system = when (entry.kind) {
+            CalendarEntryKind.SLEEP -> bySystem[SYSTEM_SLEEP]
+            CalendarEntryKind.TRACE -> bySystem[SYSTEM_TASKS]
+            else -> null
+        }
+        return own ?: system ?: DEFAULT_COLOR
+    }
+}
+
+/** The days of the window with their items laid out, and the sleep bands that fall on each. */
+internal fun dayStatesOf(
+    entries: List<CalendarEntry>,
+    from: CalendarDay,
+    to: CalendarDay,
+    colors: CalendarColors,
+): List<CalendarDayState> {
+    val nights = entries.mapNotNull { entry -> entry.sleep?.let { it.night to it } }.toMap()
+    val days = generateSequence(from) { if (it < to) it.plusDays(1) else null }.toList()
+    return days.map { day ->
+        val items = entries.filter { it.kind != CalendarEntryKind.SLEEP && it.occursOn(day) }
+        CalendarDayState(
+            date = day.toString(),
+            items = items.laidOut(day, colors),
+            sleepEvening = nights[day]?.toState(),
+            sleepMorning = nights[day.plusDays(-1)]?.toState(),
+        )
+    }
+}
+
+private fun CalendarEntry.occursOn(day: CalendarDay): Boolean {
+    val last = endDate
+    return date == day || (kind == CalendarEntryKind.EVENT && last != null && date < day && day <= last)
+}
+
+private fun CalendarEntry.spansDays(): Boolean {
+    val last = endDate
+    return kind == CalendarEntryKind.EVENT && last != null && last > date
+}
+
+private fun List<CalendarEntry>.laidOut(day: CalendarDay, colors: CalendarColors): List<CalendarItem> {
+    val timed = filter { it.isTimedOn(day) }
+    val lanes = layoutTimeline(timed.map { it.minutes().let { range -> range.first..range.last } })
+    val laneOf = timed.zip(lanes).associate { (entry, lane) -> entry.id to lane }
+    return map { entry ->
+        val lane = laneOf[entry.id]
+        entry.toItem(day, colors.of(entry), lane?.column ?: 0, lane?.columns ?: 1)
+    }
+}
+
+internal fun CalendarEntry.isTimedOn(day: CalendarDay): Boolean =
+    date == day && timeFrom != null && !spansDays() &&
+        (kind == CalendarEntryKind.EVENT || kind == CalendarEntryKind.TASK || kind == CalendarEntryKind.TRACE)
+
+/** Where a timed entry is drawn: from its start to its end, or to the end of the short block it gets without one. */
+internal fun CalendarEntry.minutes(): IntRange {
+    val start = timeFrom?.minutes ?: 0
+    val end = if (kind == CalendarEntryKind.EVENT) {
+        effectiveTo?.minutes ?: ScheduleEditing.visibleEnd(schedule) ?: start
+    } else {
+        ScheduleEditing.visibleEnd(schedule) ?: start
+    }
+    return start..maxOf(end, start + ScheduleEditing.STEP_MINUTES).coerceAtMost(ClockTime.DAY_MINUTES)
+}

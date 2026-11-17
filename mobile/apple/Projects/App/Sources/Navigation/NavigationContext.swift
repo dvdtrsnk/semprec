@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// The navigation of one scene: the stack of each tab, registered when the tab's stack appears. There is no
@@ -7,6 +8,9 @@ final class NavigationContext {
 
     // MARK: - Properties
     private var stacks: [AppTab: any StackNavigating] = [:]
+    /// The tabs a router asked to show; the scene selects each one. A subject rather than a stored closure, so that the
+    /// scene's selection, which the scene's state holds, is never held by the context the composition keeps.
+    let tabRequests = PassthroughSubject<AppTab, Never>()
 }
 
 // MARK: - Stack registration
@@ -26,6 +30,11 @@ extension NavigationContext {
 // MARK: - Routing
 extension NavigationContext {
 
+    /// Asks the scene to show `tab`.
+    func select(_ tab: AppTab) {
+        tabRequests.send(tab)
+    }
+
     /// Pushes `destination` onto the stack of `tab`; does nothing before that stack is registered. A destination that
     /// is already on top of that stack, such as the detail of the item a second tap selected again, is not pushed
     /// again; the detail of another item still stacks on top of it.
@@ -37,5 +46,10 @@ extension NavigationContext {
     /// Presents `destination` as a sheet over the stack of `tab`; does nothing before that stack is registered.
     func presentSheet(_ destination: AppDestination, from tab: AppTab) {
         stacks[tab]?.presentSheet(destination)
+    }
+
+    /// Dismisses the sheets presented over the stack of `tab`.
+    func dismissSheets(in tab: AppTab) {
+        stacks[tab]?.dismissPresented()
     }
 }

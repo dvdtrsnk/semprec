@@ -1,0 +1,109 @@
+import CoreKit
+import DesignSystem
+import SwiftUI
+
+/// The layout of a project over the generic item: its status, title, area and deadline, its notes, the agent that
+/// works in it, its tasks and the collections connected to it. The tasks, the mail, the notes and the agent are
+/// screens of other features, reached through the router.
+struct ProjectContent: View {
+
+    // MARK: - Dependencies
+    let state: ItemState
+    let header: ItemHeader
+    let send: (ItemAction) -> Void
+    let show: (ProjectDestination) -> Void
+
+    // MARK: - State
+    @State private var titleDraft = ""
+    @State private var isShowingSettings = false
+
+    // MARK: - Body
+    var body: some View {
+        List {
+            Section { titleBlock.listRowBackground(Color.clear) }
+            Section(header: Text("project.notes", bundle: .module)) {
+                PagePanel(page: state.page, placeholder: "project.notes.placeholder", send: send)
+                destination("project.notes.open", symbol: "doc.text", to: .notes)
+            }
+            Section {
+                destination("project.agent", symbol: "sparkles", to: .agent)
+            }
+            Section(header: Text("project.tasks", bundle: .module)) {
+                destination("project.tasks.all", symbol: "checkmark.circle", to: .tasks)
+            }
+            RelatedSection(related: state.related, send: send)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { isShowingSettings = true } label: { Image(systemName: "slider.horizontal.3") }
+                    .accessibilityLabel(Text("project.settings", bundle: .module))
+                    .accessibilityIdentifier(CollectionsIdentifiers.projectSettings)
+            }
+        }
+        .sheet(isPresented: $isShowingSettings) {
+            ProjectSettingsSheet(state: state, send: send, close: { isShowingSettings = false })
+        }
+        .onAppear { titleDraft = header.title }
+        .onChange(of: header.title) { _, title in titleDraft = title }
+    }
+}
+
+// MARK: - Subviews
+private extension ProjectContent {
+
+    var titleBlock: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+            statusButton
+            TextField(text: $titleDraft, axis: .vertical) { Text("item.title.placeholder", bundle: .module) }
+                .font(.largeTitle.bold())
+                .onSubmit { send(.edit(.rename(titleDraft))) }
+                .accessibilityIdentifier(CollectionsIdentifiers.itemTitle)
+            HStack(spacing: 6) {
+                areaLink
+                if let deadline { Text("·"); Text(deadline) }
+            }
+            .font(.subheadline)
+            .foregroundStyle(Theme.Colors.secondaryText)
+        }
+    }
+
+    @ViewBuilder var statusButton: some View {
+        if case .choices(let options) = field("status")?.content, let status = options.first {
+            Button { isShowingSettings = true } label: { StatusPill(option: status) }.buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder var areaLink: some View {
+        if case .targets(let targets) = field("area")?.content, let area = targets.first {
+            Button { send(.navigate(.openTarget(id: area.id, databaseKey: area.databaseKey))) } label: {
+                Label(area.title, systemImage: "circle.fill")
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(Color(hex: area.color) ?? Theme.Colors.accent)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// "until 31. 1." for a project with a deadline.
+    var deadline: String? {
+        guard case .day(let iso) = field("date")?.content else { return nil }
+        return String(format: String(localized: "project.deadline", bundle: .module), FieldFormat().day(iso))
+    }
+
+    func field(_ key: String) -> FieldView? {
+        state.fields.first { $0.propertyKey == key }
+    }
+
+    func destination(_ title: LocalizedStringKey, symbol: String, to destination: ProjectDestination) -> some View {
+        Button { show(destination) } label: {
+            HStack {
+                Label { Text(title, bundle: .module) } icon: { Image(systemName: symbol) }
+                Spacer()
+                Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .listRowButton()
+        .foregroundStyle(.primary)
+    }
+}

@@ -1,0 +1,55 @@
+import Combine
+import CoreKit
+import Foundation
+
+/// Thin adapter between the recordings screen and its shared screen model: republishes the state, forwards intents and
+/// maps each effect to the router. It owns the model; releasing it closes the shared ViewModel behind the model.
+@MainActor
+final class RecordingsViewModel: ObservableObject {
+
+    // MARK: - Dependencies
+    private let model: any RecordingsScreenModel
+    private let router: any RecordingsRouting
+
+    // MARK: - Published Properties
+    @Published private(set) var state: RecordingsState
+
+    // MARK: - Init
+    init(model: any RecordingsScreenModel, router: any RecordingsRouting) {
+        self.model = model
+        self.router = router
+        state = model.state
+    }
+
+    // MARK: - Methods
+    /// Applies shared state and routes shared effects until the screen's task is cancelled.
+    func observe() async {
+        await model.observe(
+            onState: { [weak self] in self?.state = $0 },
+            onEffect: { [weak self] in self?.route($0) }
+        )
+    }
+
+    func send(_ action: RecordingsAction) {
+        model.send(action)
+    }
+
+    /// Reloads in place and returns once the list is no longer loading, which is what ends a pull to refresh.
+    func refresh() async {
+        model.send(.refresh)
+        for await state in model.states() {
+            if state.phase == .loading { continue }
+            break
+        }
+    }
+}
+
+// MARK: - Private
+private extension RecordingsViewModel {
+
+    func route(_ effect: RecordingsEffect) {
+        switch effect {
+        case .openTranscript(let recordingId): router.showTranscript(recordingId: recordingId)
+        }
+    }
+}

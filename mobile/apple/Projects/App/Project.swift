@@ -28,8 +28,11 @@ let project = Project(
                 "CFBundleShortVersionString": "$(MARKETING_VERSION)",
                 "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
                 "LSApplicationCategoryType": "public.app-category.productivity",
+                "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
+                "UIBackgroundModes": ["audio"],
                 "UILaunchScreen": [:],
+                "SemprecDefaultServer": .string(ProjectConfiguration.defaultServer),
                 "UISupportedInterfaceOrientations": [
                     "UIInterfaceOrientationPortrait",
                     "UIInterfaceOrientationLandscapeLeft",
@@ -48,8 +51,21 @@ let project = Project(
             dependencies: [
                 .project(target: "CoreKit", path: "../../Modules/Core/CoreKit"),
                 .project(target: "Dependencies", path: "../../Modules/Core/Dependencies"),
-                .project(target: "HomeFeature", path: "../../Modules/Features/Home"),
-                .project(target: "SettingsFeature", path: "../../Modules/Features/Settings"),
+                .project(target: "DesignSystem", path: "../../Modules/Core/DesignSystem"),
+                .project(target: "AccountFeature", path: "../../Modules/Features/Account"),
+                .project(target: "AreasFeature", path: "../../Modules/Features/Areas"),
+                .project(target: "AuthFeature", path: "../../Modules/Features/Auth"),
+                .project(target: "CalendarFeature", path: "../../Modules/Features/Calendar"),
+                .project(target: "CollectionsFeature", path: "../../Modules/Features/Collections"),
+                .project(target: "JournalFeature", path: "../../Modules/Features/Journal"),
+                .project(target: "NotesFeature", path: "../../Modules/Features/Notes"),
+                .project(target: "MailFeature", path: "../../Modules/Features/Mail"),
+                .project(target: "OverviewFeature", path: "../../Modules/Features/Overview"),
+                .project(target: "SempFeature", path: "../../Modules/Features/Semp"),
+                .project(target: "RecordingsFeature", path: "../../Modules/Features/Recordings"),
+                .project(target: "SleepFeature", path: "../../Modules/Features/Sleep"),
+                .project(target: "InboxFeature", path: "../../Modules/Features/Inbox"),
+                .project(target: "TasksFeature", path: "../../Modules/Features/Tasks"),
                 .external(name: "NavigatorUI"),
             ],
             settings: .settings(
@@ -58,7 +74,15 @@ let project = Project(
             )
         ),
         // The app's tests drive its NavigatorUI stacks directly.
-        SemprecProject.tests("\(app)Tests", for: app, dependencies: [.external(name: "NavigatorUI")]),
+        SemprecProject.tests(
+            "\(app)Tests",
+            for: app,
+            dependencies: [
+                .project(target: "CoreKit", path: "../../Modules/Core/CoreKit"),
+                .project(target: "OverviewFeature", path: "../../Modules/Features/Overview"),
+                .external(name: "NavigatorUI"),
+            ]
+        ),
         // XCUITest drives the app from outside, by the accessibility identifiers the app and the features declare; it
         // compiles their identifier files, since it links none of their modules. iPhone and iPad only: on macOS
         // XCUITest needs the Accessibility permission to control the app, which a build machine does not grant.
@@ -76,8 +100,6 @@ let project = Project(
             sources: [
                 "UITests/**",
                 "Sources/AppIdentifiers.swift",
-                "../../Modules/Features/Home/Sources/HomeIdentifiers.swift",
-                "../../Modules/Features/Settings/Sources/SettingsIdentifiers.swift",
             ],
             dependencies: [.target(name: app)]
         ),

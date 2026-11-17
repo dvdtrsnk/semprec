@@ -9,4 +9,6 @@ protocol StackNavigating: AnyObject {
 
     func push(_ destination: AppDestination)
     func presentSheet(_ destination: AppDestination)
+    /// Dismisses the sheets presented over the stack.
+    func dismissPresented()
 }

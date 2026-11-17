@@ -1,8 +1,10 @@
 package cz.semprec.app.sdk
 
+import cz.semprec.app.core.FailureKind
 import cz.semprec.app.presentation.DetailPhase
 import cz.semprec.app.presentation.HomeItem
 import cz.semprec.app.presentation.HomePhase
+import cz.semprec.app.presentation.JournalPhase
 import cz.semprec.app.presentation.SettingsRow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -65,6 +67,24 @@ class HomeSDKTest {
     @Test fun `settings lists the about row`() = runTest(dispatcher) {
         val vm = HomeSDK().settingsViewModel()
         assertEquals(listOf(SettingsRow.ABOUT), vm.state.value.rows)
+        vm.close()
+    }
+
+    @Test fun `every diary call returns a new ViewModel`() = runTest(dispatcher) {
+        val sdk = HomeSDK()
+        val diaries = sdk.journal.journalViewModel("2026-10-16") to sdk.journal.journalViewModel("2026-10-16")
+        val subpages = sdk.journal.journalSubpageViewModel("page-1") to sdk.journal.journalSubpageViewModel("page-1")
+        assertNotSame(diaries.first, diaries.second)
+        assertNotSame(subpages.first, subpages.second)
+        listOf(diaries.first, diaries.second).forEach { it.close() }
+        listOf(subpages.first, subpages.second).forEach { it.close() }
+    }
+
+    @Test fun `the diary without a session is unauthorized without a request`() = runTest(dispatcher) {
+        val vm = HomeSDK().journal.journalViewModel("2026-10-16")
+        runCurrent()
+        assertEquals(JournalPhase.ERROR, vm.state.value.phase)
+        assertEquals(FailureKind.UNAUTHORIZED, vm.state.value.failure)
         vm.close()
     }
 }
