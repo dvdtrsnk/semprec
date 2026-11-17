@@ -28,8 +28,8 @@ import {
 } from "../inboxAttachmentsStore.js";
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../journalInboxCompute.js";
 
-// Issue gh-1969: the cached day summary lists each Inbox item's attachments, and the day is recomputed where the
-// attachments change. Everything runs through the runtime role `semprec_data` inside a tenant, with two tenants.
+// The cached day summary lists each Inbox item's attachments, and the day is recomputed where the attachments change.
+// Everything runs through the runtime role `semprec_data` inside a tenant, with two tenants.
 let adminPool: Pool;
 let runtimePool: Pool;
 
@@ -67,7 +67,6 @@ afterAll(async () => {
   await adminPool?.end();
 });
 
-/** Runs `fn` as the runtime role inside the tenant, with the tenant scope that producers of queue jobs read. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTenantTransaction(runtimePool, tenantId, fn));
 }
@@ -113,7 +112,6 @@ interface AttachmentFixture {
   source?: InboxAttachmentSource;
 }
 
-/** Stores a blob and attaches it, as an upload followed by a capture does. */
 async function attach(
   tenant: Tenant,
   inboxItemId: string,
@@ -133,7 +131,6 @@ async function attach(
   });
 }
 
-/** In-memory bytes for `ingestUploadedBlob`, the function `POST /api/blobs` stores an upload with. */
 class MemoryStorage implements BlobStorageWriter {
   readonly bytesByKey = new Map<string, Buffer>();
 
@@ -156,12 +153,10 @@ class MemoryStorage implements BlobStorageWriter {
   }
 }
 
-/** A PDF upload: its storage key ends in `<uuid>-<file name>`. */
 function pdf(fileName = "invoice.pdf", source?: InboxAttachmentSource): AttachmentFixture {
   return { mimeType: "application/pdf", byteSize: 48213, keyName: `${randomUUID()}-${fileName}`, source };
 }
 
-/** The summary the day caches for its Inbox items, parsed from the day item's `computed` value. */
 async function cachedSummary(tenant: Tenant, dayId: string) {
   const day = await inTenant(tenant.id, (client) => getItemById(client, tenant.journalId, dayId));
   return daySummarySchema.parse(day?.computed[JOURNAL_INBOX_COMPUTED_KEY]);
@@ -173,19 +168,17 @@ async function cachedAttachments(tenant: Tenant, dayId: string, inboxItemId: str
   return entry.attachments;
 }
 
-/** Runs the pending recompute jobs through the production task list on the runtime role. */
 async function drainRecomputes(): Promise<void> {
   await runOnce({ pgPool: runtimePool, taskList: createCoreTaskList(runtimePool, createActionRegistry()) });
   expect(await countJobsByIdentifier(adminPool, CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE)).toBe(0);
 }
 
-/** The Journal days with a pending recompute job. */
 async function pendingRecomputeDays(): Promise<string[]> {
   const payloads = await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE);
   return payloads.map((raw) => recomputeJobSchema.parse(raw).payload.journalDayItemId).sort();
 }
 
-/** Removes the pending recompute jobs, so only an enqueue made after this call is observed (as inboxTickRecompute.test.ts does). */
+/** Removes the pending recompute jobs, so only an enqueue made after this call is observed. */
 async function clearRecomputeJobs(): Promise<void> {
   await adminPool.query(
     `DELETE FROM graphile_worker._private_jobs

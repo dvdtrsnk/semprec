@@ -29,7 +29,6 @@ afterAll(async () => {
   await pool?.end();
 });
 
-/** A minimal stand-in for `ws.WebSocket` — just enough surface for `DocSyncRegistry` to use. */
 class FakeSocket {
   readonly OPEN = 1;
   readyState = 1;
@@ -59,7 +58,6 @@ function encodeClientUpdate(update: Uint8Array): Uint8Array {
   return encoding.toUint8Array(encoder);
 }
 
-/** Applies a received sync-step-1/2/update payload to `ydoc`, mirroring a real client. */
 function applyServerPayload(ydoc: Y.Doc, payload: Buffer): void {
   const decoder = decoding.createDecoder(payload);
   const messageType = decoding.readVarUint(decoder);
@@ -124,7 +122,6 @@ describe("createDocSyncRegistry (issue #162)", () => {
       Buffer.from(encodeClientUpdate(capturedUpdate!)),
     );
 
-    // fanOutDocUpdate needs the real doc_updates.id — fetch it from the durable row directly.
     const { rows } = await pool.query<{ id: string }>(
       `SELECT id FROM doc_updates WHERE doc_id = $1 ORDER BY id DESC LIMIT 1`,
       [docId],
@@ -181,8 +178,7 @@ describe("createDocSyncRegistry (issue #162)", () => {
     expect(mergedText).toContain("AAA");
     expect(mergedText).toContain("BBB");
 
-    // Both clients converge to the same state once they apply the same set of updates,
-    // regardless of the order those updates were generated or resent in.
+    // Both clients converge once they apply the same set of updates, whatever the generation or resend order.
     const replay = new Y.Doc();
     replay.gc = false;
     Y.applyUpdate(replay, updatesFromB[0]!);
@@ -212,16 +208,14 @@ describe("createDocSyncRegistry (issue #162)", () => {
       [docId],
     );
     const updateId = rows[0]!.id;
-    // Simulate a concurrent compaction: the row is gone, but its content is retained in
-    // doc_snapshots (loadYDoc/mutateYDoc always fold pending updates back into the snapshot
-    // lazily; here we just delete the row directly to exercise the missing-row path).
+    // Simulates a concurrent compaction: the row is gone while its content stays in doc_snapshots.
     await pool.query(`DELETE FROM doc_updates WHERE id = $1`, [updateId]);
 
     await registry.fanOutDocUpdate(getTenantZeroId(), docId, updateId);
 
     const frame = lastFramePayload(socket, docId);
     const decoder = decoding.createDecoder(frame);
-    // Falls back to a full SyncStep2 resync rather than dropping the fan-out silently.
+    // Falls back to a full SyncStep2 resync instead of silently dropping the fan-out.
     expect(decoding.readVarUint(decoder)).toBe(syncProtocol.messageYjsSyncStep2);
   });
 
@@ -333,7 +327,7 @@ describe("createDocSyncRegistry tenant isolation (issue #1026)", () => {
     await resetDatabase(pool);
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(pool);
-    // Row-level security applies only to a runtime role, so the registry under test reads through one.
+    // RLS applies only to a runtime role, so the registry under test reads through one.
     runtimePool = await createRuntimeRolePool(pool, "semprec_data");
     registry = createDocSyncRegistry(runtimePool);
   });
@@ -423,7 +417,7 @@ describe("createDocSyncRegistry tenant isolation (issue #1026)", () => {
     for (const own of ownDocs.slice(0, 32)) {
       await registry.handleOpen(socket as unknown as never, tenantB, own);
     }
-    // A leaked reservation would have left only 31 slots, so the 32nd own doc would get no SyncStep1.
+    // A leaked reservation would leave 31 slots, so the 32nd doc would get no SyncStep1.
     expect(socket.sent).toHaveLength(32);
 
     // The cap itself still holds: a 33rd document is refused.

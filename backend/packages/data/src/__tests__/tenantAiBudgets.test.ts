@@ -1,48 +1,11 @@
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { seedSystem } from "../seed/seedSystem.js";
 import { getCurrentTenantAiBudget } from "../aiGateway/tenantAiBudgetsStore.js";
-
-const MIGRATION_SQL = await readFile(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations/0070_tenant_ai_budgets.sql"),
-  "utf8",
-);
-
-interface BudgetRow {
-  daily_cap_usd: string | null;
-  monthly_cap_usd: string | null;
-  updated_by: string | null;
-}
 
 let pool: Pool;
 let sidePool: Pool;
 let dataPool: Pool;
-
-async function readRows(): Promise<BudgetRow[]> {
-  const { rows } = await pool.query<BudgetRow>(
-    `SELECT daily_cap_usd, monthly_cap_usd, updated_by FROM tenant_ai_budgets WHERE tenant_id = $1`,
-    [getTenantZeroId()],
-  );
-  return rows;
-}
-
-/** Replaces the settings item's budget properties with exactly `budgets` (a raw JSON object). */
-async function setSettingsBudgets(budgets: Record<string, unknown>): Promise<void> {
-  await pool.query(
-    `UPDATE items SET properties = (properties - 'dailyBudgetUsd' - 'monthlyBudgetUsd') || $1::jsonb
-      WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings' AND system)`,
-    [JSON.stringify(budgets)],
-  );
-}
-
-async function reseed(): Promise<void> {
-  await pool.query(`DELETE FROM tenant_ai_budgets`);
-  await pool.query(MIGRATION_SQL);
-}
 
 describe("tenant_ai_budgets", () => {
   beforeAll(async () => {
@@ -59,67 +22,6 @@ describe("tenant_ai_budgets", () => {
 
   beforeEach(async () => {
     await resetDatabase(pool);
-  });
-
-  describe("seed", () => {
-    it("gives tenant zero the defaults when it has no settings item", async () => {
-      await pool.query(MIGRATION_SQL);
-
-      expect(await readRows()).toEqual([{ daily_cap_usd: "50", monthly_cap_usd: null, updated_by: null }]);
-    });
-
-    it("copies the caps from the settings item", async () => {
-      await seedSystem(pool);
-      await setSettingsBudgets({ dailyBudgetUsd: 10, monthlyBudgetUsd: 200 });
-      await reseed();
-
-      expect(await readRows()).toEqual([{ daily_cap_usd: "10", monthly_cap_usd: "200", updated_by: null }]);
-    });
-
-    it("maps JSON null to NULL", async () => {
-      await seedSystem(pool);
-      await setSettingsBudgets({ dailyBudgetUsd: null, monthlyBudgetUsd: null });
-      await reseed();
-
-      expect(await readRows()).toEqual([{ daily_cap_usd: null, monthly_cap_usd: null, updated_by: null }]);
-    });
-
-    it("maps absent keys to 50 and NULL", async () => {
-      await seedSystem(pool);
-      await setSettingsBudgets({});
-      await reseed();
-
-      expect(await readRows()).toEqual([{ daily_cap_usd: "50", monthly_cap_usd: null, updated_by: null }]);
-    });
-
-    it("clamps a negative cap to 0", async () => {
-      await seedSystem(pool);
-      await setSettingsBudgets({ dailyBudgetUsd: -5, monthlyBudgetUsd: -1 });
-      await reseed();
-
-      expect(await readRows()).toEqual([{ daily_cap_usd: "0", monthly_cap_usd: "0", updated_by: null }]);
-    });
-
-    it("fails naming the property when a cap is neither a number nor null", async () => {
-      await seedSystem(pool);
-      await setSettingsBudgets({ dailyBudgetUsd: "ten" });
-      await pool.query(`DELETE FROM tenant_ai_budgets`);
-
-      await expect(pool.query(MIGRATION_SQL)).rejects.toThrow(/dailyBudgetUsd/);
-      expect(await readRows()).toEqual([]);
-    });
-
-    it("leaves an existing row unchanged when run again", async () => {
-      await seedSystem(pool);
-      await setSettingsBudgets({ dailyBudgetUsd: 10, monthlyBudgetUsd: 200 });
-      await pool.query(MIGRATION_SQL);
-      await pool.query(`UPDATE tenant_ai_budgets SET daily_cap_usd = 7, monthly_cap_usd = NULL`);
-      await setSettingsBudgets({ dailyBudgetUsd: 99, monthlyBudgetUsd: 999 });
-
-      await pool.query(MIGRATION_SQL);
-
-      expect(await readRows()).toEqual([{ daily_cap_usd: "7", monthly_cap_usd: null, updated_by: null }]);
-    });
   });
 
   describe("getCurrentTenantAiBudget", () => {

@@ -210,7 +210,7 @@ describe("view routes (issue #155)", () => {
   });
 
   describe("the Today system view (issue #1798)", () => {
-    /** The seeded Today view of the Tasks database, found by its `systemKey` as a client finds it. */
+    /** Found by its `systemKey`, as a client finds it. */
     async function todayViewId(): Promise<string> {
       const { rows } = await pool.query<{ id: string }>(
         `SELECT v.id FROM views v JOIN databases d ON d.id = v.database_id
@@ -428,9 +428,8 @@ describe("view routes (issue #155)", () => {
       });
       expect(outOfRangeRes.status).toBe(400);
 
-      // A raw literal, not `JSON.stringify(Infinity)` (which serializes to `null`): a JSON
-      // number literal wide enough to overflow float64 parses to `Infinity`, same as any other
-      // out-of-domain value a caller might send.
+      // A raw literal, not `JSON.stringify(Infinity)` (which serializes to `null`): a number
+      // literal wide enough to overflow float64 parses to `Infinity`.
       const infiniteRes = await fetch(`${baseUrl}/api/views/${view.id}/items/${item.id}`, {
         method: "PUT",
         headers,

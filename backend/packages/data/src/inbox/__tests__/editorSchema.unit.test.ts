@@ -18,7 +18,6 @@ const SYSTEM_DATABASES_MANIFEST_PATH = new URL("../../seed/systemDatabasesModule
 const INBOX_MANIFEST_PATH = new URL("../inboxModuleManifest.js", import.meta.url).href;
 const ACTIVE_MODULE_IDS = new Set(["systemDatabases", "inboxPipeline"]);
 
-/** A registry that holds one declaration of `moduleId` and the given catalogs (`undefined` for a module without any). */
 function stubRegistry(
   schema: EditorSchemaDescriptor,
   catalogs: ModuleCatalogs | undefined,
@@ -274,7 +273,6 @@ describe("the editor schemas the modules declare (issue #1825)", () => {
 });
 
 describe("editor schema rules (issue #1928)", () => {
-  /** One step `primary` holding `values`. */
   const single = (values: Record<string, unknown>): EditorStepValues[] => [{ ref: "primary", synthetic: true, values }];
 
   describe("isFieldVisible", () => {

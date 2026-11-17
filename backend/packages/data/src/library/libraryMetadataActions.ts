@@ -9,27 +9,13 @@ import { listRetryableLibraryAutomationForDatabases } from "./itemAutomationStor
 export const LIBRARY_METADATA_TRIGGER_ACTION_ID = "core.libraryMetadataTrigger";
 export const LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID = "core.libraryMetadataRetrySweep";
 
-/**
- * Open backlog point (issue #25, recorded here rather than designed): `processLibraryMetadata`
- * is only one concrete case of a heartbeat action. The future intent is to also use heartbeats
- * to enforce best practices and consistency across system projects generally, not just
- * metadata enrichment — undesigned, no concrete API/schema proposed by this issue.
- */
-
-/** The heartbeat's `action_config` for both library-metadata actions: the job config plus the database it's scoped to. */
 const libraryMetadataActionConfigSchema = libraryMetadataJobConfigSchema.extend({
   databaseId: z.string().uuid(),
 });
 
 /**
- * Registered as an `onItemEvent` ('create') heartbeat action for a library database
- * (Books, Movies/TV): the choke-point's generic "react to an item write" mechanism gives
- * every caller of `createItem` — UI or AI, present or future — the same automation
- * hookup, with no special-cased second path (issue #25's "single path for adding an
- * item"). The action itself only seeds `item_automation` and enqueues the actual
- * `processLibraryMetadata` job; the outer heartbeatFireCore job's own retry is an
- * implementation detail underneath, not the retry policy the issue specifies (that one
- * belongs to the enqueued job itself — see libraryMetadataJob.ts).
+ * `onItemEvent` ('create') action, so every `createItem` caller gets the same automation. It only seeds
+ * `item_automation` and enqueues the job; the retry policy belongs to that job.
  */
 export function createLibraryMetadataTriggerAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -47,12 +33,8 @@ export function createLibraryMetadataTriggerAction(pool: Pool): ActionHandler {
 }
 
 /**
- * Registered as a `dailyTime` heartbeat action for the same project: walks every
- * `item_automation` row left in 'error' or 'notFound' for this library database and
- * re-enqueues a fresh 3-attempt batch for each — the daily catch-up the issue's retry
- * policy names ("once a day until it either succeeds or is manually locked"). `jobKey`
- * dedup (see `libraryMetadataJobKey`) means a row whose retry job is already in flight is
- * a harmless no-op re-enqueue, not a duplicate.
+ * Daily: re-enqueues a fresh 3-attempt batch for every 'error' or 'notFound' row. The `jobKey` makes a row whose
+ * job is already queued a no-op.
  */
 export function createLibraryMetadataRetrySweepAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>) => {

@@ -10,12 +10,10 @@ describe("mergeOps", () => {
     expectTypeOf(merged).toEqualTypeOf<typeof sectionA & typeof sectionB>();
     expectTypeOf(merged.a).toEqualTypeOf<() => number>();
     expectTypeOf(merged.b).toEqualTypeOf<() => string>();
-    // Inline parts: both keys are present with types assignable to the originals.
     const inline: { a: () => number; b: () => string } = mergeOps({ a: () => 1 }, { b: () => "x" });
     expect(inline.a()).toBe(1);
     expect(Object.keys(merged).sort()).toEqual(["a", "b"]);
 
-    // Detached calls prove neither method depends on `this`.
     const { a, b } = merged;
     expect(a()).toBe(1);
     expect(b()).toBe("x");

@@ -13,18 +13,15 @@ const ids = vi.hoisted(() => ({
   message: "66666666-6666-4666-8666-666666666666",
 }));
 
-/** What the mocked session and data layer answer, how often the detail was read and what the usage was read with. */
 const fixtures = vi.hoisted(() => ({
   run: null as AgentRunRow | null,
   locale: "cs",
   detailReads: 0,
   usageReads: [] as { runId: string; locale: string; sempMessageId: string | undefined }[],
-  /** What `resolveAgentRunReply` answers, and the run, message and locale it was asked with. */
   resolution: ((): AgentRunReplyResolution => ({ kind: "notFound" }))(),
   resolveCalls: [] as { runId: string; messageId: string; locale: string }[],
-  /** The reply `getAgentRunDetail` was given, one entry per read. */
+  /** One entry per read. */
   detailReplies: [] as unknown[],
-  /** What `getRetrySuccessorId` answers: the id of the run that retries the run, or null. */
   successorId: null as string | null,
 }));
 
@@ -90,7 +87,7 @@ vi.mock("@semprec/data", async (importOriginal) => ({
   },
 }));
 
-/** A row as `getAgentRun` returns it, forged with the given actor: no database holds it. */
+/** Forged with the given actor: no database holds it. */
 function forgedRun(actorUserId: string): AgentRunRow {
   return {
     id: ids.run,

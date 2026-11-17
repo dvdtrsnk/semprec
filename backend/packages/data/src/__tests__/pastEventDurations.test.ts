@@ -18,7 +18,6 @@ interface Fixture {
   participantsPropertyId: string;
 }
 
-/** One seeded tenant: every write below goes through the choke point on the runtime role pool. */
 async function seedTenant(): Promise<Fixture> {
   const tenantId = await createTestTenant(admin);
   return runInTenant(tenantId, async () => {
@@ -56,7 +55,6 @@ async function createPerson(fixture: Fixture, name: string): Promise<string> {
   );
 }
 
-/** An Event with the given properties, linked to each of `personIds` through `Events.people`. */
 async function createEvent(
   fixture: Fixture,
   personIds: string[],
@@ -137,7 +135,7 @@ describe("readPastEventDurations (issue gh-1993)", () => {
       timeFrom: "09:00",
       timeTo: "10:00",
     });
-    // A write that names timeFrom only gets a timeTo one hour later, so the missing end is set directly.
+    // A write naming only timeFrom gets a timeTo one hour later, so the missing end is set directly.
     const withoutEnd = await createEvent(fixture, [petr], { date: "2026-08-13", timeFrom: "09:00" });
     await admin.query("UPDATE items SET properties = properties - 'timeTo' WHERE id = $1", [withoutEnd]);
     await createEvent(fixture, [petr], { date: "2026-08-14" });

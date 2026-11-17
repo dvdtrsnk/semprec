@@ -7,11 +7,8 @@ import {
 import { logger } from "./logger.js";
 
 /**
- * Generic OAuth2 refresh-token -> access-token exchange (issue #26: "the access token is
- * computed at runtime and never persisted"). Used by both the Gmail and Graph REST clients
- * — the grant itself (RFC 6749 §6) is identical across providers, only the token endpoint
- * and client credentials differ. `clientId`/`clientSecret` are read from the caller's own
- * environment (not `ai-gateway`'s — these aren't AI provider credentials), never logged.
+ * OAuth2 refresh-token grant (RFC 6749 §6), shared by the Gmail and Graph clients. The access token is
+ * computed at runtime and never persisted; client credentials are never logged.
  */
 export interface RefreshAccessTokenInput {
   tokenUrl: string;
@@ -19,15 +16,14 @@ export interface RefreshAccessTokenInput {
   clientSecret: string;
   refreshToken: string;
   scope?: string;
-  /** Replaces the global `fetch` for the token request. Tests inject a fake endpoint here; production leaves it unset. */
+  /** Tests inject a fake endpoint here. */
   fetchImpl?: typeof fetch;
 }
 
 export interface AccessToken {
   accessToken: string;
-  /** Absolute expiry, derived from the provider's `expires_in` (~1h) at call time. */
   expiresAt: Date;
-  /** Present only when the provider returned a non-empty `refresh_token` (Microsoft rotates it on every refresh). */
+  /** Present only when returned non-empty (Microsoft rotates it on every refresh). */
   refreshToken?: string;
 }
 
@@ -75,10 +71,8 @@ export async function refreshAccessToken(input: RefreshAccessTokenInput): Promis
       throw new Error("OAuth token refresh request failed");
     }
     if (!response.ok) {
-      // Never includes `body`/the refresh token itself in the thrown message — only the status.
-      // 400/401 is both Google's and Microsoft's documented status for a revoked/expired refresh
-      // token (`invalid_grant`) — a credential problem the user must fix, not a transient/network
-      // failure worth silently retrying (issue #26: `sync_status = 'needsReauthorization'`).
+      // Only the status is thrown, never the body. 400/401 is Google's and Microsoft's status for a
+      // revoked/expired refresh token: a credential problem for the user, not worth retrying.
       controller.abort();
       try {
         await response.body?.cancel();
@@ -167,9 +161,7 @@ export interface ExchangeAuthorizationCodeInput {
   clientSecret: string;
   redirectUri: string;
   code: string;
-  /** The PKCE verifier whose S256 challenge was sent on the authorization request. */
   codeVerifier: string;
-  /** Replaces the global `fetch` for the token request (see `RefreshAccessTokenInput.fetchImpl`). */
   fetchImpl?: typeof fetch;
 }
 
@@ -204,7 +196,6 @@ function authorizationCleanupDiagnostic(
   }
 }
 
-/** Reads a bounded authorization response before parsing it. */
 async function readAuthorizationBody(response: Response): Promise<string> {
   const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
   if (!reader) throw new Error("OAuth code exchange response has no body");
@@ -242,7 +233,6 @@ async function readAuthorizationBody(response: Response): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/** Reads only the provider's short `error` code and whether the description names an admin-consent AADSTS code. */
 async function readProviderError(response: Response): Promise<{ code: string | null; adminConsent: boolean }> {
   let parsed: unknown;
   try {
@@ -263,9 +253,8 @@ async function readProviderError(response: Response): Promise<{ code: string | n
 }
 
 /**
- * OAuth2 `authorization_code` grant with PKCE (RFC 6749 §4.1.3, RFC 7636 §4.5). Persists
- * nothing; the caller stores the refresh token. No thrown message contains the code, verifier,
- * client secret or any token: only the status and the provider's short error code.
+ * `authorization_code` grant with PKCE. Persists nothing. No thrown message contains the code,
+ * verifier, client secret or any token: only the status and the provider's short error code.
  */
 export async function exchangeAuthorizationCode(
   input: ExchangeAuthorizationCodeInput,
@@ -295,8 +284,8 @@ export async function exchangeAuthorizationCode(
   if (!response.ok) {
     if (response.status === 400 || response.status === 401) {
       const { code: providerCode, adminConsent } = await readProviderError(response);
-      // Classified from the unredacted code: a caller's `code` that is a substring of the provider's
-      // error token blanks `code` below, and the answer must still be recognized as a refused grant.
+      // Classified from the unredacted code: a `code` that is a substring of the provider's error token
+      // blanks `code` below, and the refused grant must still be recognized.
       const grantRefused = providerCode === "invalid_grant";
       const code =
         providerCode &&

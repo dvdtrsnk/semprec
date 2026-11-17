@@ -11,7 +11,6 @@ import {
 import type { EventRecommendation, ItemRow } from "@semprec/data";
 import { buildEventRecommendationRequest, parseEventRecommendationContent } from "./eventRecommendation.js";
 
-/** What step 6 needs from the transcription task, which owns the locks and checkpoints of a run. */
 export interface MatchStepEnvironment {
   pool: Pool;
   transcriptId: string;
@@ -22,20 +21,13 @@ export interface MatchStepEnvironment {
 }
 
 /**
- * Step 6 (`match`, issues #247, #1813 and #1848): links the one Event that overlaps the recording, or
- * creates the transcript's one suggestion card. Only when two or more Events overlap and the
- * `eventRecommendation` checkpoint is absent is one paid `gateway.complete()` call made, to
- * recommend one of them from the meeting notes; zero or one candidate never pays.
+ * Step 6 (`match`): links the one overlapping Event, or creates one suggestion card. Only two or
+ * more candidates cost a paid call, which recommends one from the meeting notes; the recommendation
+ * only shapes the card, never an edge.
  *
- * Bracketed like step 7: a repeatable-read snapshot decides whether a call is due, the call runs
- * outside any transaction, and one transaction then re-locks the transcript, matches again, creates
- * the card and writes the checkpoint on the source Files item together. A replay after that commit
- * makes no second call; a crash before it can repeat the call. A failed call fails the step, and the
- * job retries it. The recommendation only shapes the card; no Event edge is written for it. The
- * match is run again in the write transaction, so a card is made from the candidates of that
- * moment and a recommendation outside them is dropped. A transcript whose `status` is already
- * `done` is not matched at all (issue #1712), checked on the snapshot and again before the write.
- * See docs/adr/2026-11-13-transcription-recommends-the-event-of-an-ambiguous-recording.md.
+ * The call runs outside any transaction; the write transaction re-locks and matches again, so a
+ * recommendation outside the current candidates is dropped. A `done` transcript is not matched,
+ * checked on the snapshot and again before the write.
  */
 export async function runEventMatch(env: MatchStepEnvironment, completionClient: AiGatewayClientPort): Promise<void> {
   const { pool, transcriptId } = env;

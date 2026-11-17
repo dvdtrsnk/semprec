@@ -18,11 +18,7 @@ export interface ModuleLinkRuleProjection extends ModuleLinkRuleDescriptor {
   moduleId: string;
 }
 
-/**
- * A resolver rule of an active module. `resolver` is the module's export `resolverExport` as the module
- * wrote it: the registry checked that it is an object and nothing more, so the caller that runs the rule
- * validates its shape.
- */
+/** A resolver rule of an active module. `resolver` is checked only to be an object; the caller that runs it validates its shape. */
 export interface ModuleLinkResolverRuleProjection {
   moduleId: string;
   key: string;
@@ -76,7 +72,7 @@ export interface ModuleAgentToolDefinition {
   /** The declared capability; absent for a tool that needs none. */
   capability?: string;
   handler: unknown;
-  /** Set for a tool declared with `mcp` (issue gh-1956): the resolved `humanHandlerExport`, untyped like `handler`. */
+  /** Set for a tool declared with `mcp`: the resolved `humanHandlerExport`, untyped like `handler`. */
   mcp?: { humanHandler: unknown };
   argumentSchema: Record<string, unknown>;
   parseArguments: (value: unknown) => { success: true; data: unknown } | { success: false };
@@ -103,10 +99,8 @@ export interface ModuleWorkerProjection {
 }
 
 /**
- * A module custom route's `handlerExport` resolved to the actual imported value — deliberately
- * untyped beyond `unknown`, the same forward-resolution the queue's `ModuleTaskDefinition.handler`
- * uses: `semprec-api` (the only consumer, issue #239) casts it to its own adapter-handler-factory
- * shape after reading it back, so this package never has to depend on `semprec-api`'s HTTP types.
+ * A custom route with its `handlerExport` resolved, left `unknown`: `semprec-api` casts it to its
+ * own handler-factory shape, so this package does not depend on its HTTP types.
  */
 export interface ModuleCustomRouteDefinition {
   moduleId: string;
@@ -121,19 +115,7 @@ export interface ModuleMigrationProjection {
   migration: string;
 }
 
-export interface ModuleDataMigrationProjection {
-  moduleId: string;
-  databaseKey: string;
-  fromVersion: string;
-  toVersion: string;
-  converterExport: string;
-}
-
-/**
- * A module task's payload schema and handler resolved to the actual imported values (not
- * just the export names `ModuleTaskProjection` carries) — what a queue-registration consumer
- * needs to actually validate a payload and run the job.
- */
+/** A module task's payload schema and handler resolved to the imported values. */
 export interface ModuleTaskDefinition {
   moduleId: string;
   name: string;
@@ -142,10 +124,7 @@ export interface ModuleTaskDefinition {
   queueAffinity: ModuleTaskAffinity;
 }
 
-/**
- * A module heartbeat rule kind's schema and next-fire calculator resolved to the actual
- * imported values, for the scheduler to dispatch against.
- */
+/** A module heartbeat rule kind's schema and next-fire calculator resolved to the imported values. */
 export interface ModuleHeartbeatRuleKindDefinition {
   moduleId: string;
   kind: string;
@@ -153,58 +132,16 @@ export interface ModuleHeartbeatRuleKindDefinition {
   nextFireAt: (rule: unknown, timezone: string, after: Date) => Date | null;
 }
 
-/**
- * What the module data migration runner passes a converter besides the item's `properties`
- * (`docs/adr/2026-10-29-module-data-migration-converter-context.md`). `timezone` is the tenant's
- * configured time zone, read once per run after the run's advisory lock is taken. `itemId` is the
- * id of the item being converted. `log` writes one structured entry carrying the item id and
- * `reason`; `reason` is a short code, and no property value may be passed in it.
- */
-export interface ModuleDataMigrationConverterContext {
-  timezone: string;
-  itemId: string;
-  log: (reason: string) => void;
-}
-
-/**
- * A module data migration converter, `(properties, context) => properties`. A converter that does
- * not use `context` may declare only `properties`. Every converter must be idempotent:
- * `converter(converter(p))` deep-equals `converter(p)` (see
- * `docs/adr/2026-09-28-two-pass-skip-locked-module-data-migration.md`). The context is read-only
- * and carries no database access.
- */
-export type ModuleDataMigrationConverter = (
-  properties: Record<string, unknown>,
-  context: ModuleDataMigrationConverterContext,
-) => Record<string, unknown>;
-
-/**
- * A module data migration's converter resolved to the actual imported function, for the
- * module data migration runner (issue #111) to call once per item.
- */
-export interface ModuleDataMigrationDefinition {
-  moduleId: string;
-  databaseKey: string;
-  fromVersion: string;
-  toVersion: string;
-  converter: ModuleDataMigrationConverter;
-}
-
 export interface ModuleRegistryOptions {
-  /**
-   * Task names core itself owns (`CORE_TASK_NAMES` from `@semprec/queue`). A module declaring
-   * one of these fails to load — a module extends the task namespace, it never shadows core.
-   */
+  /** Task names core owns (`CORE_TASK_NAMES`); a module declaring one fails to load. */
   reservedTaskNames?: ReadonlySet<string>;
-  /** Heartbeat rule kinds core itself owns (`dailyTime`, `weekly`, ...) — same override rejection as `reservedTaskNames`. */
+  /** Heartbeat rule kinds core owns (`dailyTime`, `weekly`, ...); same rejection as `reservedTaskNames`. */
   reservedHeartbeatRuleKinds?: ReadonlySet<string>;
 }
 
 /**
- * Resolves which module ids are currently active (`modules.active`), evaluated fresh on every
- * projection call rather than cached at load time — so deactivating a module takes effect
- * immediately without reloading anything. The actual source (system settings, env, ...) is a
- * later module-contract issue; this package only consumes it.
+ * Resolves the active module ids, evaluated on every projection call rather than cached, so
+ * deactivating a module takes effect immediately.
  */
 export type ActiveModuleIdsSource = () => ReadonlySet<string> | Promise<ReadonlySet<string>>;
 
@@ -214,11 +151,8 @@ interface LoadedModule {
 }
 
 /**
- * Loads modules from explicit, caller-supplied paths (never a directory scan — that's a later
- * module-contract issue) and exposes only narrow, typed, activation-filtered projections of
- * each manifest aspect. No method here returns a `ModuleManifest` itself: a consumer that
- * wants a project's databases gets database projections, one that wants agent tools gets tool
- * projections, and so on — never the raw manifest.
+ * Loads modules from explicit paths (never a directory scan) and exposes only narrow,
+ * activation-filtered projections of each manifest aspect, never a `ModuleManifest` itself.
  */
 export class ModuleRegistry {
   private readonly modulesById = new Map<string, LoadedModule>();
@@ -228,7 +162,7 @@ export class ModuleRegistry {
   private readonly agentToolNameOwners = new Map<string, string>();
   private readonly workerNameOwners = new Map<string, string>();
   private readonly heartbeatRuleKindOwners = new Map<string, string>();
-  /** Keyed by `"<method> <path>"` — the fail-fast collision surface issue #239's Task requires. */
+  /** Keyed by `"<method> <path>"`. */
   private readonly customRouteOwners = new Map<string, string>();
   /** Keyed by a card's base kind; one owner per base kind across every loaded module. */
   private readonly editorSchemaBaseKindOwners = new Map<string, string>();
@@ -247,12 +181,9 @@ export class ModuleRegistry {
   }
 
   /**
-   * Imports exactly the module at `path`, validates its manifest's shape and every named
-   * handler/schema export it references, and registers it. Throws synchronously on any
-   * problem — a bad module must fail startup loudly, not degrade silently at runtime — and
-   * never partially registers a rejected module's identifiers. Returns only the loaded
-   * module's id, never the manifest itself: a caller that wants the loaded aspects reads them
-   * back through the narrow projection getters below.
+   * Imports the module at `path`, validates its manifest and every export it references, and
+   * registers it. Throws on any problem so a bad module fails startup, and never partially
+   * registers a rejected module's identifiers. Returns only the module id.
    */
   async loadModule(path: string): Promise<string> {
     const imported = (await import(path)) as Record<string, unknown>;
@@ -278,7 +209,6 @@ export class ModuleRegistry {
     }
 
     this.assertExportsExist(path, manifest, imported);
-    this.assertDataMigrationsReferenceOwnDatabases(path, manifest);
 
     const catalogs = await loadModuleCatalogs(path);
 
@@ -324,10 +254,6 @@ export class ModuleRegistry {
       this.requireSchemaExport(imported, ruleKind.schemaExport, path, `heartbeat rule kind "${ruleKind.kind}"`);
       this.requireFunctionExport(imported, ruleKind.nextFireAtExport, path, `heartbeat rule kind "${ruleKind.kind}"`);
     }
-    for (const dataMigration of manifest.dataMigrations ?? []) {
-      const label = `data migration "${dataMigration.databaseKey}" (${dataMigration.fromVersion} -> ${dataMigration.toVersion})`;
-      this.requireFunctionExport(imported, dataMigration.converterExport, path, label);
-    }
     for (const route of manifest.customRoutes ?? []) {
       this.requireFunctionExport(imported, route.handlerExport, path, `custom route "${route.name}"`);
     }
@@ -340,12 +266,9 @@ export class ModuleRegistry {
   }
 
   /**
-   * Every custom route's `method`+`path` may only ever be claimed once across all loaded
-   * modules — checked here, before anything commits, so a rejected module never leaves a route
-   * claimed. Deliberately its own method rather than folded into `claimCrossModuleIdentifiers`'s
-   * generic `claims` array: the issue's acceptance criteria requires the failure to identify
-   * *both* owning modules by id, which this spells out explicitly rather than relying on that
-   * generic path's "loading \"<file path>\"" phrasing to stand in for the new module's id.
+   * A custom route's `method`+`path` may be claimed once across all loaded modules, checked
+   * before anything commits. Separate from `claimCrossModuleIdentifiers` so the error names both
+   * owning module ids.
    */
   private assertCustomRoutesAvailable(path: string, manifest: ModuleManifest): void {
     const seenInThisManifest = new Map<string, string>();
@@ -374,8 +297,7 @@ export class ModuleRegistry {
   }
 
   /**
-   * A base kind may only ever be declared by one loaded module, whether or not that module is
-   * active: the owner is fixed at load time, as for custom routes, and checked before anything
+   * A base kind may be declared by one loaded module only, active or not; checked before anything
    * commits so a rejected module never leaves a base kind claimed.
    */
   private assertEditorSchemaBaseKindsAvailable(path: string, manifest: ModuleManifest): void {
@@ -396,35 +318,8 @@ export class ModuleRegistry {
   }
 
   /**
-   * A data migration's `databaseKey` must name one of this same manifest's own databases —
-   * a module has no business declaring a data migration for a database it doesn't own.
-   * Checked separately from `claimCrossModuleIdentifiers` (which only ever compares against
-   * *other* modules' claims) since this is a same-manifest, internal-consistency check.
-   */
-  private assertDataMigrationsReferenceOwnDatabases(path: string, manifest: ModuleManifest): void {
-    const ownDatabaseKeys = new Set(manifest.databases.map((db) => db.key));
-    const seen = new Set<string>();
-    for (const dataMigration of manifest.dataMigrations ?? []) {
-      if (!ownDatabaseKeys.has(dataMigration.databaseKey)) {
-        throw new Error(
-          `Data migration loading "${path}" targets database key "${dataMigration.databaseKey}", which this manifest does not declare in "databases"`,
-        );
-      }
-      const key = `${dataMigration.databaseKey}:${dataMigration.fromVersion}:${dataMigration.toVersion}`;
-      if (seen.has(key)) {
-        throw new Error(
-          `Duplicate data migration for database key "${dataMigration.databaseKey}" (${dataMigration.fromVersion} -> ${dataMigration.toVersion}) loading "${path}"`,
-        );
-      }
-      seen.add(key);
-    }
-  }
-
-  /**
-   * A catalog key (`database.<db>.name`, `property.<db>.<property>.option.<option>`, ...) may
-   * only ever be claimed by one module, mirroring `claimCrossModuleIdentifiers` below — checked
-   * against every other already-loaded module's `cs`/`en` catalogs *before* anything about this
-   * module is committed, so a rejected module never leaves a catalog key claimed.
+   * A catalog key may be claimed by one module only, checked against every loaded module's
+   * `cs`/`en` catalogs before anything about this module is committed.
    */
   private assertCatalogKeysAvailable(path: string, catalogs: ModuleCatalogs): void {
     for (const key of new Set([...Object.keys(catalogs.cs), ...Object.keys(catalogs.en)])) {
@@ -463,10 +358,8 @@ export class ModuleRegistry {
   }
 
   /**
-   * A `schemaExport` must structurally look like a zod-style schema (a `safeParse` method) —
-   * checked here, at load time, so a module that points `schemaExport` at the wrong export
-   * fails startup loudly instead of surfacing as a confusing `TypeError` deep inside
-   * `parseHeartbeatRule` the first time a rule of that kind is actually validated.
+   * A `schemaExport` must look like a zod schema (a `safeParse` method), so a wrong export fails at
+   * load instead of as a `TypeError` inside `parseHeartbeatRule` later.
    */
   private requireSchemaExport(
     imported: Record<string, unknown>,
@@ -487,10 +380,8 @@ export class ModuleRegistry {
   }
 
   /**
-   * Checks every identifier this manifest would claim against every owner map *before*
-   * mutating any of them, then commits all claims together — so a module that collides on,
-   * say, its second database key never leaves its first database key registered as owned by
-   * a module that was ultimately rejected and never added to `modulesById`.
+   * Checks every identifier this manifest would claim against every owner map before mutating any,
+   * then commits all claims together, so a rejected module leaves nothing registered.
    */
   private claimCrossModuleIdentifiers(path: string, manifest: ModuleManifest): void {
     const claims: Array<{ owners: Map<string, string>; key: string; label: string; reserved?: ReadonlySet<string> }> = [
@@ -524,9 +415,7 @@ export class ModuleRegistry {
       })),
     ];
 
-    // Two entries of the same kind declared twice within this one manifest (e.g. two
-    // databases with the same key) collide with each other, not with any prior module — the
-    // owner maps alone can't see that until something is actually committed.
+    // Duplicates within this one manifest collide with each other, which the owner maps cannot see before commit.
     const seenInThisManifest = new Set<string>();
     for (const { owners, key, label, reserved } of claims) {
       if (reserved?.has(key)) {
@@ -633,15 +522,12 @@ export class ModuleRegistry {
   }
 
   /**
-   * Validates every loaded module's link rules together, once all modules are loaded: a rule
-   * may name a database of another module, which a single `loadModule` cannot see. Covers all
-   * loaded modules regardless of activation. Throws on an unknown database key, a `via`
-   * database that is neither the source's nor the target's, or a cycle in the property graph
-   * (one node per `databaseKey.propertyKey`, one edge per via rule from source to target). A resolver rule
-   * is checked for its target database only: it has no source or via, so it adds no edge to that graph. The
-   * keys of a rule's `valueFilter` are not checked here: they name a singleton system database that no
-   * manifest declares, so only the manifest schema (their shape) and the seeded-schema drift check
-   * of `@semprec/data` (their existence) cover them.
+   * Validates all loaded modules' link rules together (active or not), since a rule may name
+   * another module's database. Throws on an unknown database key, a `via` database that is neither
+   * the source's nor the target's, or a cycle in the property graph (node per
+   * `databaseKey.propertyKey`, edge per via rule). A resolver rule is checked for its target only.
+   * `valueFilter` keys name a singleton system database no manifest declares, so only the manifest
+   * schema and `@semprec/data`'s seeded-schema drift check cover them.
    */
   validateLinkRules(): void {
     const allRules = [...this.modulesById.values()].flatMap((loaded) => loaded.manifest.linkRules ?? []);
@@ -716,10 +602,9 @@ export class ModuleRegistry {
   }
 
   /**
-   * The agent tools of the active modules whose capability is granted. A tool declared with
-   * `requiresApproval` is left out unless `options.includeApprovalGated` is set, so a caller that
-   * cannot defer a call to an approval request never receives a tool it would run directly. Every
-   * other tool is returned when its `approval` is `none`.
+   * The agent tools of active modules whose capability is granted. `requiresApproval` tools are
+   * left out unless `options.includeApprovalGated`, so a caller that cannot defer a call to an
+   * approval request never runs one directly. Other tools are returned when `approval` is `none`.
    */
   async getAgentToolDefinitions(
     grantedCapabilities: ReadonlySet<string>,
@@ -765,11 +650,7 @@ export class ModuleRegistry {
     );
   }
 
-  /**
-   * `grantedCapabilities` is the set of capabilities actually granted in the current context.
-   * A tool whose `capability` isn't
-   * in that set is filtered out entirely, never returned in a denied state.
-   */
+  /** A tool whose `capability` is not in `grantedCapabilities` is left out entirely, never returned denied. */
   async getAgentTools(grantedCapabilities: ReadonlySet<string>): Promise<ModuleAgentToolProjection[]> {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) =>
@@ -794,10 +675,6 @@ export class ModuleRegistry {
     return active.flatMap((loaded) => (loaded.manifest.heartbeatRuleKinds ?? []).map((ruleKind) => ruleKind.kind));
   }
 
-  /**
-   * Resolves each active module's declared heartbeat rule kinds to their actual imported
-   * schema/next-fire-calculator values, for the scheduler to validate and dispatch against.
-   */
   async getHeartbeatRuleKindDefinitions(): Promise<ModuleHeartbeatRuleKindDefinition[]> {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) =>
@@ -817,10 +694,6 @@ export class ModuleRegistry {
     );
   }
 
-  /**
-   * Resolves each active module's declared tasks to their actual imported payload-schema/handler
-   * values, for the queue to register and dispatch against.
-   */
   async getTaskDefinitions(): Promise<ModuleTaskDefinition[]> {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) =>
@@ -848,37 +721,6 @@ export class ModuleRegistry {
     );
   }
 
-  async getDataMigrations(): Promise<ModuleDataMigrationProjection[]> {
-    const active = await this.getActiveModules();
-    return active.flatMap((loaded) =>
-      (loaded.manifest.dataMigrations ?? []).map((dataMigration) => ({
-        moduleId: loaded.manifest.id,
-        ...dataMigration,
-      })),
-    );
-  }
-
-  /**
-   * Resolves each active module's declared data migrations to their actual imported
-   * converter function, for the module data migration runner (issue #111) to execute.
-   */
-  async getDataMigrationDefinitions(): Promise<ModuleDataMigrationDefinition[]> {
-    const active = await this.getActiveModules();
-    return active.flatMap((loaded) =>
-      (loaded.manifest.dataMigrations ?? []).map((dataMigration) => ({
-        moduleId: loaded.manifest.id,
-        databaseKey: dataMigration.databaseKey,
-        fromVersion: dataMigration.fromVersion,
-        toVersion: dataMigration.toVersion,
-        converter: loaded.exports[dataMigration.converterExport] as ModuleDataMigrationDefinition["converter"],
-      })),
-    );
-  }
-
-  /**
-   * Resolves each active module's declared custom routes to their actual imported handler
-   * value, for `semprec-api` (issue #239) to mount into the flat `/api` namespace at startup.
-   */
   async getCustomRouteDefinitions(): Promise<ModuleCustomRouteDefinition[]> {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) =>
@@ -892,10 +734,7 @@ export class ModuleRegistry {
     );
   }
 
-  /**
-   * Editor schemas of active modules, in load order then declaration order. Each schema is a deep
-   * copy, so a caller cannot change what the registry holds.
-   */
+  /** Editor schemas of active modules, in load then declaration order, as deep copies. */
   async getEditorSchemas(): Promise<ModuleEditorSchemaProjection[]> {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) =>
@@ -912,11 +751,7 @@ export class ModuleRegistry {
     return active.filter((loaded) => loaded.manifest.systemProject).map((loaded) => loaded.manifest.id);
   }
 
-  /**
-   * A module's loaded `cs`/`en` catalogs (issue #236) — `undefined` for an inactive or unknown
-   * module id, never a manifest, matching every other projection here. A module with no `i18n/`
-   * directory still returns `{ cs: {}, en: {} }`, not `undefined`.
-   */
+  /** An active module's `cs`/`en` catalogs (`{ cs: {}, en: {} }` without `i18n/`); `undefined` for an inactive or unknown id. */
   async getCatalogs(moduleId: string): Promise<ModuleCatalogs | undefined> {
     const active = await this.getActiveModules();
     if (!active.some((loaded) => loaded.manifest.id === moduleId)) return undefined;

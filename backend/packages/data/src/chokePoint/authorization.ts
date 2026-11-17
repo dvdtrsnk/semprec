@@ -1,12 +1,6 @@
-// Owns the actor-type authorization boundary for view and `view_items` writes: the `Actor`
-// identity a write is checked against, verification that an `ai_agent` actor names a real
-// Projects item, and the rule that an agent may only write views it created. It does not own
-// the view writes themselves (viewOps.ts), database-level guards (databaseGuards.ts), or
-// per-user ownership checks (there is a single human user).
-// Constrained by:
-// - docs/adr/2026-09-10-agent-identity-verified-against-projects-items.md
-// - docs/adr/2026-09-10-views-are-excluded-from-the-agent-proposal-flow.md
-// - docs/adr/2026-11-13-a-view-system-key-is-unique-per-database-and-written-by-the-system-alone.md
+// The actor-type authorization boundary for view and `view_items` writes: the `Actor` identity,
+// verification that an `ai_agent` names a real Projects item, and that an agent may only write views
+// it created. There is a single human user, so no per-user ownership checks.
 import type { PoolClient } from "pg";
 import { ForbiddenError } from "../errors.js";
 import type { CreatedBy, ViewRow } from "../types.js";
@@ -15,11 +9,9 @@ import * as itemsStore from "./itemsStore.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 /**
- * The caller identity every view/view_items write is checked against (issue #87). `type`
- * mirrors `CreatedBy` (the write's intended kind); `agentProjectItemId` is the server-derived
- * owning Projects item id for an authenticated agent caller — required when `type ===
- * 'ai_agent'`, never present otherwise, and never accepted from a request body (it is set only
- * by whatever authenticates the caller, upstream of the choke-point).
+ * `type` mirrors `CreatedBy`. `agentProjectItemId` is the server-derived Projects item of an
+ * authenticated agent: required when `type === 'ai_agent'`, never present otherwise, and never
+ * accepted from a request body.
  */
 export interface Actor {
   type: CreatedBy;
@@ -35,12 +27,10 @@ function ownerViolation(view: { id: string }, reason: string): ForbiddenError {
 }
 
 /**
- * `config.systemKey` is written by the system alone (issue #1798): a view that carries it is read-only for every actor
- * (`assertViewWritable`), so a key set by a client would mint a view nobody can edit or delete again, and a key chosen
- * ahead of a seed or cutover would take the `(database_id, systemKey)` slot of a system view. The choke-point entry
- * points (`createView`, `patchView`) therefore refuse a config that has the key unless the actor is `system`; the seeds
- * and cutovers create their system views through `viewsStore.createView` directly. The generic application service maps
- * every caller to `user` or `ai_agent`. Presence is the test, not the value, as in `assertViewWritable`.
+ * A view carrying `config.systemKey` is read-only for every actor, so a client-set key would mint an
+ * undeletable view or squat a seed's `(database_id, systemKey)` slot. `createView`/`patchView` refuse
+ * the key unless the actor is `system`; seeds write through `viewsStore.createView`. Presence is the
+ * test, not the value.
  */
 export function assertSystemKeyWritable(config: Record<string, unknown> | undefined, actor: Actor): void {
   if (actor.type === "system" || config === undefined || !Object.hasOwn(config, "systemKey")) return;
@@ -52,12 +42,9 @@ export function assertSystemKeyWritable(config: Record<string, unknown> | undefi
 }
 
 /**
- * Every agent-actor write (view row or `view_items` membership) proves its identity before
- * touching any row: a missing `agentProjectItemId` or one that names no real Projects item is
- * rejected outright, so a cross-agent or legacy-owner check never runs against a forged or
- * dangling identity. A no-op for a 'user'/'system' actor.
- * See [[2026-09-10-agent-identity-verified-against-projects-items]] for why this is a live
- * lookup rather than an FK (partitioned `items` can't express one).
+ * A missing or dangling `agentProjectItemId` is rejected before any row is touched, so ownership
+ * checks never run against a forged identity. A live lookup rather than an FK because partitioned
+ * `items` cannot carry one. No-op for a 'user'/'system' actor.
  */
 export async function assertAuthenticatedAgentIdentity(client: PoolClient, actor: Actor): Promise<void> {
   if (actor.type !== "ai_agent") return;
@@ -87,9 +74,8 @@ export async function assertAuthenticatedAgentIdentity(client: PoolClient, actor
 }
 
 /**
- * Shared by patch/delete on a view and every write to its `view_items` membership. A view whose config carries a
- * `systemKey` (issue #1798) is refused for every actor, human or agent, as `system_owned`. Any other view is only
- * ownership-checked for an agent write; a 'user'/'system' actor passes.
+ * Shared by view patch/delete and every `view_items` write. A view with a `systemKey` is refused for
+ * every actor as `system_owned`; otherwise only an agent write is ownership-checked.
  */
 export function assertViewWritable(view: ViewRow, actor: Actor): void {
   if (Object.hasOwn(view.config, "systemKey")) throw ownerViolation(view, "system_owned");

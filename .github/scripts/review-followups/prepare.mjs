@@ -1,6 +1,6 @@
 /**
  * The triage workflow's `prepare` step of the review follow-ups pipeline
- * (docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md).
+ * (docs/architecture/delivery-and-operations.md).
  *
  *   node prepare.mjs --harvest-issue <n> --out <dir>
  *

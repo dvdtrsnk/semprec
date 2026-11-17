@@ -29,7 +29,6 @@ let dataPool: Pool;
 
 const USER = { writerKind: "user" } as const;
 const DAY = "2026-10-16";
-/** Midnight UTC of `DAY`, written as the route's query takes it. */
 const FROM = "2026-10-16T00:00:00Z";
 const SKIP_MESSAGE = "Reminders feed left out an item";
 
@@ -60,7 +59,6 @@ async function newTenant(): Promise<{ tenantId: string; userId: string }> {
   return { tenantId, userId: user.id };
 }
 
-/** One tenant's fixture writes and feed reads, each in that tenant's scope on the runtime-role pool. */
 function world(tenantId: string, userId: string) {
   const chokePoint = createChokePoint(dataPool);
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenantId, fn);
@@ -93,7 +91,6 @@ function world(tenantId: string, userId: string) {
     await inTenant(() => chokePoint.softDeleteItem(id, itemId));
   }
 
-  /** Moves an Event to `calendarId`, or with `null` removes its calendar edge. */
   async function setCalendar(eventId: string, calendarId: string | null): Promise<void> {
     const id = await databaseId("events");
     await inTenant(async () => {
@@ -106,7 +103,6 @@ function world(tenantId: string, userId: string) {
     });
   }
 
-  /** The id of the seeded calendar named `name`. */
   async function calendar(name: string): Promise<string> {
     const id = await databaseId(CALENDARS_MODULE_ID);
     const rows = z
@@ -117,7 +113,7 @@ function world(tenantId: string, userId: string) {
     return row.id;
   }
 
-  /** Writes stored values the write rules refuse, so raw SQL on the admin pool inside the tenant is the only way. */
+  /** Stores values the write rules refuse, via raw SQL inside the tenant. */
   async function storeRaw(moduleId: string, itemId: string, patch: Record<string, unknown>): Promise<void> {
     const id = await databaseId(moduleId);
     await withTenantTransaction(adminPool, tenantId, async (client) => {
@@ -137,7 +133,7 @@ function world(tenantId: string, userId: string) {
     });
   }
 
-  /** Moves calendars to the Trash by raw SQL, the one way to leave an Event's edge on a calendar that is not live. */
+  /** Raw SQL: the one way to leave an Event's edge on a calendar that is not live. */
   async function trashCalendarsRaw(calendarIds: string[]): Promise<void> {
     await withTenantTransaction(adminPool, tenantId, async (client) => {
       const result = await client.query("UPDATE items SET deleted_at = now() WHERE id = ANY($1::uuid[])", [
@@ -155,7 +151,6 @@ function world(tenantId: string, userId: string) {
       }),
     ).then((result) => result.item.id);
 
-  /** The feed for `query` (the part after `/api/calendar/reminders`), checked to carry exactly the documented fields. */
   async function feed(query: string = `?from=${encodeURIComponent(FROM)}`): Promise<Reminder[]> {
     const result = await inTenant(() =>
       createRemindersFeedRouteHandler(dataPool)({ req: { url: `/api/calendar/reminders${query}` } }),
@@ -165,7 +160,6 @@ function world(tenantId: string, userId: string) {
     return z.array(reminderSchema).parse(JSON.parse(JSON.stringify(result.body)));
   }
 
-  /** The error the feed throws for `query`. */
   async function refusal(query: string): Promise<unknown> {
     return feed(query).then(
       () => {
@@ -394,7 +388,6 @@ describe("upcoming reminders feed (issue gh-1858)", () => {
       const answer = await w.feed();
 
       expect(answer.map((entry) => entry.itemId)).toEqual([earlier, later, ...sameTime]);
-      // The two that fire together are ordered by key, which starts with the item id.
       expect(answer.slice(2).map((entry) => entry.key)).toEqual(
         answer
           .slice(2)
@@ -480,8 +473,7 @@ describe("upcoming reminders feed (issue gh-1858)", () => {
       const w = await newWorld();
       const event = await w.create("events", { name: "No calendar", date: DAY, timeFrom: "10:00", alertMinutes: 15 });
       await w.setCalendar(event, null);
-      // Raw SQL: which calendars may be deleted is decided by other calendar issues, so the default calendar is
-      // stored as trashed directly instead of through a delete those rules may refuse.
+      // Raw SQL: stores the default calendar as trashed without going through delete rules.
       await w.trashCalendarsRaw([await w.calendar("Personal")]);
 
       expect(await w.itemIds()).toEqual([event]);
@@ -492,8 +484,7 @@ describe("upcoming reminders feed (issue gh-1858)", () => {
       const calendar = await w.create("calendars", { name: "Gone", notify: false });
       const event = await w.create("events", { name: "In gone", date: DAY, timeFrom: "10:00", alertMinutes: 15 });
       await w.setCalendar(event, calendar);
-      // Raw SQL: deleting a calendar through the choke point trashes its Events too, so this is the one way to
-      // leave an edge on a calendar that is no longer live.
+      // Raw SQL: deleting through the choke point would trash its Events too.
       await w.trashCalendarsRaw([calendar]);
 
       expect(await w.itemIds()).toEqual([event]);

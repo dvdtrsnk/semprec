@@ -4,38 +4,27 @@ import type { ModuleLinkRuleEndpoint } from "@semprec/module-registry";
 import type { ValueLinkSourceInput } from "../chokePoint/valueLinksStore.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
-/** What a resolver says the target property of one item holds: the related item ids and where they come from. */
 export interface LinkRuleResolution {
-  /** Ids of the items the target relation should hold; at most the values the target property allows. */
+  /** At most the values the target property allows. */
   values: string[];
-  /** The sources recorded on the link, in no particular order. A resolution without values has none. */
+  /** In no particular order; a resolution without values has none. */
   sources: ValueLinkSourceInput[];
 }
 
-/** The changes that make a resolver's answer stale: an edge of a relation property or a plain property. */
 export interface LinkRuleResolverInputs {
   edges: Array<{ databaseKey: string; relationKey: string }>;
   /**
-   * `onAppear`: the creation of an item that holds the property, and its restore from the trash, are inputs too, not
-   * only an update of the property. Off by default: a created item usually has no relations yet, and its relation
-   * edges are inputs of their own.
+   * `onAppear`: an item's creation and restore are inputs too. Off by default: a created item usually has no relations
+   * yet, and its edges are inputs of their own.
    */
   properties: Array<{ databaseKey: string; propertyKey: string; onAppear?: boolean }>;
 }
 
-/**
- * A module's computation of a link rule's value (`ModuleResolverLinkRuleDescriptor`). The module exports an
- * object of this shape and the manifest names the export. The engine runs it inside the caller's tenant
- * transaction; both functions only read.
- */
+/** Exported by a module and named by its manifest. Runs in the caller's tenant transaction; both functions only read. */
 export interface LinkRuleResolver {
   inputs: LinkRuleResolverInputs;
-  /** The value and sources the target property of item `itemId` has now. */
   resolve(client: PoolClient, itemId: string): Promise<LinkRuleResolution>;
-  /**
-   * The items of the rule's target database whose answer a change of `changedItemId` may have changed, in
-   * ascending id order, after `afterId`. The item that carries the target property itself is such an item.
-   */
+  /** Target-database items whose answer `changedItemId` may have changed, ascending after `afterId`, itself included. */
   affectedItemIds(client: PoolClient, changedItemId: string, afterId: string | null, limit: number): Promise<string[]>;
 }
 
@@ -73,10 +62,7 @@ const resolutionSchema = z
 
 const idListSchema = z.array(z.uuid());
 
-/**
- * Checks the export a manifest named as a rule's resolver and wraps it, so what it returns is validated
- * where it enters the engine. A value that is not a resolver fails the load of the rules.
- */
+/** Wraps the export so what it returns is validated where it enters the engine; a non-resolver fails the rule load. */
 export function parseLinkRuleResolver(ruleKey: string, value: object): LinkRuleResolver {
   if (!("inputs" in value) || !("resolve" in value) || !("affectedItemIds" in value))
     throw new Error(`Link rule "${ruleKey}" resolver must declare inputs, resolve and affectedItemIds`);
@@ -94,7 +80,7 @@ export function parseLinkRuleResolver(ruleKey: string, value: object): LinkRuleR
 
 let resolverRulesPromise: Promise<ResolverLinkRule[]> | undefined;
 
-/** The resolver rules of the active modules, validated once per process like `loadLinkRules`. */
+/** Validated once per process like `loadLinkRules`. */
 export function loadResolverLinkRules(): Promise<ResolverLinkRule[]> {
   resolverRulesPromise ??= loadFullModuleRegistry()
     .then(async (registry) =>

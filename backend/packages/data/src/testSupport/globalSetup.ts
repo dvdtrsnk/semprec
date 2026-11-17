@@ -8,27 +8,14 @@ import { Pool } from "pg";
 import { runAsSystem } from "@semprec/shared";
 import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
 import { runMigrations } from "../db/migrate.js";
-import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigration.js";
-import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
-import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
-import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
-import { runLegacyJobEnvelopeStampMigration } from "../tenancy/legacyJobEnvelopeStampMigration.js";
-import { createPool } from "../db/pool.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
-import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 import { preserveFailingExitCode } from "./preserveFailingExitCode.js";
 import { sweepStalePostgresDirs } from "./stalePostgresDirs.js";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { BLOCK_TYPES } from "@semprec/block-model";
 
 /**
- * A fixed port made any second test run on the same machine fail in a way that reads like a
- * broken test suite rather than a port clash: `initdb` succeeds, the postmaster then cannot
- * bind, and vitest reports "No test files found". Two git worktrees of this repo, or two CI
- * jobs sharing a runner, are enough to trigger it.
- *
- * Asking the kernel for a free port still races against whoever binds it in between, so
- * `SEMPREC_TEST_PG_PORT` stays available to pin one explicitly.
+ * A free port, so parallel runs (worktrees, shared CI runners) do not clash; a clash otherwise surfaces as "No test
+ * files found". Probing races, so `SEMPREC_TEST_PG_PORT` can pin one.
  */
 async function choosePort(): Promise<number> {
   const configured = process.env.SEMPREC_TEST_PG_PORT;
@@ -54,7 +41,7 @@ async function choosePort(): Promise<number> {
   });
 }
 
-/** vitest globalSetup: one embedded Postgres instance for the whole test run. */
+/** vitest globalSetup: one embedded Postgres for the whole run. */
 export default async function setup(): Promise<() => Promise<void>> {
   preserveFailingExitCode();
   const sharedPath = fileURLToPath(new URL("../../../shared/src/index.ts", import.meta.url));
@@ -89,13 +76,10 @@ export default async function setup(): Promise<() => Promise<void>> {
     password: "postgres",
     port,
     persistent: false,
-    // ICU collations (`cs-x-icu`, `und-x-icu`; issue #1524) are unusable in a SQL_ASCII database,
-    // which is what initdb picks on a host with the C locale; production (postgres:16-alpine) is UTF8.
+    // ICU collations need UTF8; initdb picks SQL_ASCII on a C-locale host.
     initdbFlags: ["--encoding=UTF8"],
-    // `resetDatabase` truncates every table of the schema in one statement and drops the dynamic
-    // `items_p_*` partitions; with the default of 64 lock slots per transaction the shared lock
-    // table of the whole server runs out under concurrent test files once the schema has grown
-    // ("out of shared memory", hint "increase max_locks_per_transaction").
+    // `resetDatabase` truncates every table and drops `items_p_*` partitions in one transaction; the default 64
+    // lock slots run out under concurrent test files.
     postgresFlags: ["-c", "max_locks_per_transaction=1024"],
   });
 
@@ -151,48 +135,24 @@ export default async function setup(): Promise<() => Promise<void>> {
 
     const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/semprec_test`;
     process.env.TEST_DATABASE_URL = connectionString;
-    // SEMPREC_TENANT_SCOPE is deliberately not set here: the integration tier selects it per test file in
-    // `tenantScopeMode.ts` (`warn` for the files of `tenantScopeWarnFiles.json`, `strict` for every other one),
-    // and `vitest.e2e.config.ts` pins `warn` for the e2e tier in its own `test.env`.
-    // Deterministic 32-byte test key for @semprec/credentials (issue #26) — never used outside tests.
+    // SEMPREC_TENANT_SCOPE is chosen per test file by `tenantScopeMode.ts`; the e2e config pins `warn`.
+    // Deterministic test-only credentials key.
     process.env.CREDENTIALS_MASTER_KEY ??= Buffer.alloc(32, 7).toString("base64");
 
     const pool = new Pool({ connectionString });
-    const tenantPool = createPool(connectionString, { role: "semprec_data" });
-    try {
-      await runAsSystem("test database setup", async () => {
-        await runMigrations(pool);
-        await activateCzechHunspellSearch(pool);
-        await runDocHistoryCutoverMigration(pool);
-        await runAgentRunsActorUserIdCutoverMigration(pool);
-        await runApprovalRequestExecutionStatusCutoverMigration(pool);
-        // Before the tenant cutovers, as in runMigrationsCli.ts: their writes queue search jobs.
-        await ensureQueueSchema(pool);
-        await grantQueueSchemaPrivileges(pool);
-        await runTenantCutoverMigrations(tenantPool);
-        await runHeartbeatFireQueueSplitMigration(pool);
-        await runLegacyJobEnvelopeStampMigration(pool);
-      });
-    } finally {
-      // Logged and swallowed, as runMigrationsCli's endPool does: a throw here would replace the
-      // setup or cutover error that is actually worth reporting.
-      try {
-        await tenantPool.end();
-      } catch (err) {
-        console.error("globalSetup: failed to end the tenant migration pool", err);
-      }
-    }
+    await runAsSystem("test database setup", async () => {
+      await runMigrations(pool);
+      await ensureQueueSchema(pool);
+      await grantQueueSchemaPrivileges(pool);
+    });
 
-    // Tenant zero's id is the stable anchor of every test: `resetDatabase` re-creates it with this id.
+    // `resetDatabase` re-creates tenant zero with this id.
     const sole = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
     const tenantZeroId = sole.rows[0]?.id;
     if (!tenantZeroId) {
       throw new Error("globalSetup: app_sole_tenant() returned NULL after the migrations — tenant zero is missing");
     }
     process.env.TEST_TENANT_ZERO_ID = tenantZeroId;
-    // Test database only: the guard makes a second tenant impossible, and the two-tenant harness
-    // needs one. IF EXISTS keeps this working once the go-live migration removes the guard itself.
-    await pool.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
     await pool.end();
   } catch (err) {
     if (onSignal) {

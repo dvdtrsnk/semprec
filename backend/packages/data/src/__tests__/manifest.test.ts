@@ -99,7 +99,7 @@ describe("permission manifest and drift check", () => {
       ownerProcess: "critics.rate",
     });
 
-    await chokePoint.createDatabase({ name: "NotOwned" }); // should not appear
+    await chokePoint.createDatabase({ name: "NotOwned" });
 
     const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, projectItem.id));
     expect(manifest.databases).toHaveLength(1);
@@ -267,8 +267,7 @@ describe("permission manifest and drift check", () => {
     expect(byName.get("Processing proposals")?.writable).toBe(true);
     expect(byName.get("Inbox")?.writable).toBe(false);
     expect(byName.get("Inbox item types")?.writable).toBe(false);
-    // No target database (Tasks, Journal, ...) is ever part of this project's grant at all —
-    // they carry no owner_project_item_id, so they never appear here regardless of `writable`.
+    // Target databases carry no owner_project_item_id, so they never appear here regardless of `writable`.
     expect(manifest.databases.map((db) => db.name).sort()).not.toContain("Tasks");
     expect(manifest.databases.map((db) => db.name).sort()).not.toContain("Journal");
   });
@@ -439,7 +438,7 @@ describe("permission manifest and drift check", () => {
       config: { options: [{ key: "notDone" }] },
     });
 
-    // No moduleRegistry: pre-#147 raw-key placeholder behavior, unchanged.
+    // No moduleRegistry: raw-key placeholders.
     const noRegistryManifest = await withTransaction(pool, (client) =>
       generatePermissionManifest(client, projectItem.id),
     );
@@ -449,8 +448,7 @@ describe("permission manifest and drift check", () => {
     expect(noRegistryStatus.name).toBe("status");
     expect(noRegistryStatus.options).toEqual([{ key: "notDone", label: "notDone" }]);
 
-    // A stored override on the database, property, and option all win over the catalog,
-    // in every locale.
+    // Stored overrides on the database, property and option win over the catalog in every locale.
     await pool.query(`UPDATE databases SET name = $1 WHERE id = $2`, ["My Tasks", tasksDb.id]);
     await pool.query(`UPDATE properties SET name = $1 WHERE database_id = $2 AND key = 'status'`, [
       "My Status",
@@ -492,8 +490,7 @@ describe("permission manifest and drift check", () => {
       config: { options: [{ key: "notDone" }] },
     });
 
-    // Bypasses the choke point's write-side `assertValidSelectOptions` to simulate a legacy or
-    // directly written row: one option with no string key, one with a numeric label.
+    // Bypasses `assertValidSelectOptions` to simulate a directly written row.
     await pool.query(`UPDATE properties SET config = $1::jsonb WHERE database_id = $2 AND key = 'status'`, [
       JSON.stringify({ options: [{ key: 42 }, { key: "done", label: 99 }, { key: "wontDo" }] }),
       tasksDb.id,
@@ -559,11 +556,10 @@ describe("permission manifest and drift check", () => {
     const moduleRegistry = await systemDatabasesRegistry();
     const action = createDriftCheckAction(pool, { moduleRegistry });
 
-    // Exercises the cs catalog: the action resolves the tenant user's locale live and must not
-    // throw while doing so.
+    // The action resolves the tenant user's locale live (cs catalog).
     await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
 
-    // A locale change (no persisted manifest to go stale) takes effect on the very next run.
+    // No persisted manifest, so a locale change applies on the next run.
     await pool.query(`UPDATE users SET locale = 'en' WHERE id = $1`, [user.id]);
     await expect(action({}, { heartbeatId: "hb", projectItemId: projectItem.id })).resolves.toBeUndefined();
   });
@@ -740,7 +736,6 @@ describe("number filter presets in the schema projection (issue #1622)", () => {
   });
 });
 
-/** The property keys a filter tree names, each with the hop path that leads to its database. */
 function filterKeys(node: FilterNode): string[][] {
   if (node.type === "and" || node.type === "or") return node.nodes.flatMap(filterKeys);
   if (node.type === "not") return filterKeys(node.node);
@@ -750,9 +745,8 @@ function filterKeys(node: FilterNode): string[][] {
 }
 
 /**
- * Every property key a manifest's view hints name (issue #1647) that the seeded database of the same key
- * does not have, as `<database>.<where>: <key path>`. Filters are parsed with the data package's own
- * filter schema first, so a tree that does not parse is reported too.
+ * Property keys named by a manifest's view hints that the seeded database lacks, as
+ * `<database>.<where>: <key path>`. Unparseable filters are reported too.
  */
 async function unknownReferencedKeys(
   client: Parameters<typeof listPropertiesByDatabase>[0],
@@ -890,7 +884,6 @@ describe("quick filters, default sorts and collection and picker filters (issue 
     for (const key of ["events", "tasks"]) {
       expect(byKey.get(key)?.defaultSort, key).toEqual({ property: "date", direction: "asc" });
     }
-    // Every chip label is resolved text, never its catalog key.
     for (const db of databases) {
       for (const chip of db.quickFilters) expect(chip.label, `${db.key}.${chip.key}`).not.toMatch(/^quickFilter\./);
     }
@@ -937,7 +930,6 @@ describe("quick filters, default sorts and collection and picker filters (issue 
       for (const id of [active, longTerm, done, archived, noStatus]) expect(collection.has(id)).toBe(true);
       expect(collection.has(system)).toBe(false);
       expect(collection.has(deactivated)).toBe(false);
-      // The seeded system-module projects are not user projects either.
       const all = await ids(undefined);
       const seeded = [...all].filter(
         (id) => ![active, longTerm, done, archived, noStatus, system, deactivated].includes(id),

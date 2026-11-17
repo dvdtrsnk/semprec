@@ -14,7 +14,6 @@ const PRAGUE = "Europe/Prague";
 type EventInput = Extract<ReminderInput, { kind: "event" }>;
 type TaskInput = Extract<ReminderInput, { kind: "task" }>;
 
-/** An item that is live, not cancelled and on a calendar that notifies. */
 const LIVE = { calendarNotify: true, trashed: false, cancelled: false };
 
 /** An Event on 16 October 2026, a day of summer time in Prague (UTC+2). */
@@ -22,12 +21,10 @@ function event(values: Partial<EventInput> = {}): EventInput {
   return { kind: "event", date: "2026-10-16", ...LIVE, ...values };
 }
 
-/** A Task on 16 October 2026 with notifications on. */
 function task(values: Partial<TaskInput> = {}): TaskInput {
   return { kind: "task", date: "2026-10-16", notifications: true, status: "notDone", ...LIVE, ...values };
 }
 
-/** The fire instant of an input that must have a reminder, with no suppression reason. */
 function fireAt(input: ReminderInput, zone = PRAGUE): string {
   const at = computeReminderFireAt(input, zone);
   if (at === null) throw new Error(`Expected a reminder, got none: ${String(reminderSuppression(input))}`);
@@ -35,12 +32,10 @@ function fireAt(input: ReminderInput, zone = PRAGUE): string {
   return at;
 }
 
-/** The Prague wall clock of an ISO instant. */
 function pragueWallClock(instant: string) {
   return instantToWallClock(new Date(instant), PRAGUE);
 }
 
-/** The `ValidationError` a call fails with. */
 function validationError(call: () => unknown): ValidationError {
   try {
     call();

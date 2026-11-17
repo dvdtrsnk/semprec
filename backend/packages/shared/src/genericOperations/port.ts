@@ -18,7 +18,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 51 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Mapped type over every operation name; exhaustiveness is checked by `_assertOutputByOperationExhaustive` below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -28,11 +28,7 @@ export interface OutputByOperation {
   "database.restore": Database;
   "property.list": Property[];
   "property.get": Property;
-  /**
-   * Every property in `databaseId` whose key is `key` (and whose type is `type`, when given) —
-   * returned as a list rather than one row so a caller can tell no match, exactly one, and an
-   * ambiguous match apart itself.
-   */
+  /** A list, so the caller can tell no match, one match and an ambiguous match apart. */
   "property.getByKey": Property[];
   "property.create": Property;
   "property.patch": Property;
@@ -77,35 +73,26 @@ export interface OutputByOperation {
   "page.convertToBlock": PageConvertToBlockOutput;
   /** One entry per requested facet, in request order. */
   "database.facets": DatabaseFacet[];
-  /** The matches of one query, grouped by type in the fixed order of `SEARCH_GROUP_TYPES` (issue #1842). */
+  /** Grouped by type in the fixed order of `SEARCH_GROUP_TYPES`. */
   search: SearchOutput;
 }
 
-/**
- * One option of a `select` or `multi_select` property as `property.option.add` and `property.option.update` return
- * it (issue #1699). `label` is the option's stored label, or for an option without one its label in the caller's
- * locale from the owning module's catalog, or the raw key the schema projection falls back to when the option has
- * neither.
- */
+/** `label` is the stored label, else the owning module's catalog label in the caller's locale, else the raw key. */
 export interface PropertyOption {
   key: string;
   label: string;
   color?: string;
 }
 
-/** One change a stored update made to the blocks of a page (issue #1680), as `page.changes` lists it. */
+/** One change a stored update made to a page's blocks, as `page.changes` lists it. */
 export interface PageChangeEntry {
-  /** When the update was stored (ISO 8601). */
   at: string;
-  /** The blocks the change touched, in document order (a deleted block in the order it had before the update). */
+  /** In document order; a deleted block in the order it had before the update. */
   blockIds: string[];
   kind: "insert" | "update" | "delete";
 }
 
-/**
- * The Journal entry of a period and its page as `page.ensureJournalPeriod` returns them (issue #1861): the canonical
- * period key and the first and last calendar day of the period, `YYYY-MM-DD`, inclusive.
- */
+/** The canonical period key and its first and last day (`YYYY-MM-DD`, inclusive). */
 export interface PageEnsureJournalPeriodOutput {
   itemId: string;
   docId: string;
@@ -114,12 +101,12 @@ export interface PageEnsureJournalPeriodOutput {
 }
 
 /**
- * What one `page.mergeJournalDuplicates` call did (issue #2017): the entry that stays live and the entry that was
- * merged into it and moved to the Trash, or `{ merged: false }` when the period had no two live entries to merge.
+ * The surviving entry and the one merged into it and trashed, or `{ merged: false }` when there were not two live
+ * entries.
  */
 export type PageMergeJournalDuplicatesOutput = { survivorId: string; mergedItemId: string } | { merged: false };
 
-/** The pages one `page.createSubpage` call created; one element per page (issue #2013 returns several). */
+/** One element per created page. */
 export interface PageCreateSubpageOutput {
   pages: Array<{ pageItemId: string; docId: string; blockId: string }>;
 }
@@ -131,32 +118,28 @@ export interface PageDuplicateOutput {
   blockId: string;
 }
 
-/** The subpage one `page.rename` call named and its title as stored: the requested title after normalization. */
+/** The stored title is the requested one after normalization. */
 export interface PageRenameOutput {
   pageItemId: string;
   title: string;
 }
 
-/**
- * What one `page.convertToBlock` call did (issue #1876): the id of the new block that stands where the `page` block
- * stood, and how many pages went to the Trash, the page itself included.
- */
+/** The new block standing where the `page` block stood, and how many pages (itself included) went to the Trash. */
 export interface PageConvertToBlockOutput {
   blockId: string;
   trashedPageCount: number;
 }
 
 /**
- * The page after one `page.replace` call (issue #1765): its new version token, and the subpages the call sent to the
- * trash because the new Markdown no longer links them, each with the title its link carried, so a client can offer to
- * restore them.
+ * The new version token and the subpages trashed because the Markdown no longer links them, each with its link's title,
+ * so a client can offer to restore them.
  */
 export interface PageReplaceOutput {
   etag: string;
   trashedPages: Array<{ pageItemId: string; title: string }>;
 }
 
-/** `page.get` with `format: "markdown"` (issue #1678): the page body as canonical Markdown plus its version token. */
+/** `page.get` with `format: "markdown"`: canonical Markdown plus the version token. */
 export interface PageMarkdown {
   docId: string | null;
   kind: "page";
@@ -194,12 +177,9 @@ export interface ItemAutomationReadPort {
 }
 
 /**
- * The one transport-independent port every generic-operation binding calls through (issue
- * #252). `packages/application` provides the sole neutral implementation (#219); the REST,
- * AgentTool, and MCP composition roots each inject that same implementation rather than
- * implementing this port themselves (#219/#220). Argument order is fixed: every method takes
- * `(actor, input)`, in that order, matching how `GENERIC_OPERATION_BINDINGS` in `bindings.ts`
- * invokes it — `service[method](actor, input)`, never the reverse.
+ * The one transport-independent port every generic-operation binding calls through. `packages/application` provides the
+ * sole implementation, injected by the REST, AgentTool and MCP composition roots. Every method takes `(actor, input)`
+ * in that order, as `GENERIC_OPERATION_BINDINGS` invokes it.
  */
 export interface GenericApplicationPort {
   listDatabases(
@@ -247,15 +227,9 @@ export interface GenericApplicationPort {
     input: InputByOperation["property.patch"],
   ): Promise<OutputByOperation["property.patch"]>;
   /**
-   * REST-only extension of `patchProperty` (issue #789): the property's owning `Database`, read
-   * inside the same transaction the patch itself commits in, so `PATCH /api/properties/:id` can
-   * resolve catalog/locale without a second, independently-committed `database.get` call after
-   * the patch. Not one of the 47 catalog operations — `OutputByOperation["property.patch"]` (the
-   * shape every MCP/AgentTool `property.patch` call returns) is untouched by this. Only
-   * `services/semprec-api`'s REST handler may call this directly; `mcpHandler.ts` and the
-   * AgentTool composition root never call a catalog-external port method. See
-   * `docs/adr/2026-10-01-rest-only-port-extension-methods.md` for the full set of constraints
-   * this pattern must satisfy.
+   * REST-only extension of `patchProperty`: also returns the owning `Database`, read in the patch's transaction, so
+   * `PATCH /api/properties/:id` needs no second, separately committed read. Not a catalog operation; MCP and AgentTool
+   * never call it (docs/architecture/edges-io-and-errors.md#application-port).
    */
   patchPropertyWithDatabase(
     actor: AuthenticatedActor,

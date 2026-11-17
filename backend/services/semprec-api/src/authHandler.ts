@@ -41,7 +41,6 @@ import {
 } from "./clientIpThrottle.js";
 import { logger } from "./logger.js";
 
-/** Name of the cookie a web client's login response carries the session token in. */
 export const SESSION_COOKIE_NAME = "semprec_session";
 
 function parseCookieHeader(header: string): Record<string, string> {
@@ -62,9 +61,8 @@ function parseCookieHeader(header: string): Record<string, string> {
 }
 
 /**
- * Prefers the `Authorization: Bearer` header (native clients), falling back to the web session
- * cookie. Reports which channel supplied the token alongside it, so the caller can reject a
- * token presented over a channel its platform doesn't use (see `SESSION_DELIVERY_CHANNEL_BY_PLATFORM`).
+ * Prefers `Authorization: Bearer` (native clients), falling back to the web session cookie. Reports
+ * the channel so the caller can reject a token presented over one its platform does not use.
  */
 function extractToken(req: IncomingMessage): { token: string; channel: SessionDeliveryChannel } | null {
   const authHeader = req.headers.authorization;
@@ -85,18 +83,13 @@ function sessionCookieHeader(token: string, maxAgeSeconds: number): string {
 const CLEAR_SESSION_COOKIE = `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
 
 /**
- * The one path from an HTTP request to a verified session, shared by this handler's own
- * `GET /api/auth/session`/`logout`/`revoke` routes and (per issue #143) every other route that
- * adopts auth. Throws `UnauthorizedError` for a missing, invalid, expired, or revoked token, or
- * one presented over a channel its platform doesn't use (a web session via `Bearer`, or a native
- * session via cookie) — callers should let that propagate to a generic 401, never inspect it
- * further; a mismatched channel gets the same opaque failure as a garbage token.
+ * Throws `UnauthorizedError` for a missing, invalid, expired or revoked token, or one presented
+ * over the wrong channel for its platform; callers let it propagate to a generic 401.
  */
 export async function authenticateRequest(pool: Pool, req: IncomingMessage): Promise<AuthenticatedIdentity> {
   const presented = extractToken(req);
   if (!presented) throw new UnauthorizedError();
-  // Authentication resolves the tenant, so it cannot run inside one: `runAsSystem` throws
-  // `TenantScopeConflictError` from within a tenant scope.
+  // Authentication resolves the tenant, so it cannot run inside one.
   const identity = await runAsSystem("authenticate", () =>
     withTransaction(pool, (client) => verifySessionToken(client, presented.token)),
   );
@@ -111,7 +104,7 @@ const NATIVE_DEVICE_KINDS: Record<"ios" | "macos", readonly SessionDeviceKind[]>
   macos: ["mac"],
 };
 
-/** An optional trimmed string field of `1..maxLength` characters; an absent field yields `null`. */
+/** An absent field yields `null`. */
 function optionalDeviceString(value: unknown, field: string, maxLength: number): string | null {
   if (value === undefined) return null;
   const trimmed = typeof value === "string" ? value.trim() : "";
@@ -122,9 +115,8 @@ function optionalDeviceString(value: unknown, field: string, maxLength: number):
 }
 
 /**
- * The device identity a login records. A browser must not be able to claim a device, so a `web`
- * login ignores every body field and takes the name and OS family from its `User-Agent`; a native
- * login's optional fields are validated and a violation is a 400 naming the field.
+ * A browser must not be able to claim a device, so a `web` login ignores the body fields and takes
+ * name and OS family from its `User-Agent`; a native login's fields are validated.
  */
 function parseLoginDevice(
   raw: Record<string, unknown>,
@@ -173,47 +165,38 @@ function isSessionPlatform(value: unknown): value is SessionPlatform {
 const MAX_BODY_BYTES = 64 * 1024;
 
 const REVOKE_SESSION_PATH = /^\/api\/auth\/sessions\/([^/]+)\/revoke$/;
-/** Revokes every other session of the caller and keeps the calling one (issue #1650). */
+/** Keeps the calling session. */
 const REVOKE_OTHER_SESSIONS_PATH = "/api/auth/sessions/revoke-others";
 
 export interface AuthRequestListenerOptions {
-  /** Sends the reset link email; issue #142's SMTP path. */
   passwordResetMailer: PasswordResetMailer;
-  /** Origin the emailed password-reset link is built against, e.g. `https://app.semprec.example`. */
+  /** Origin the emailed password-reset link is built against. */
   appBaseUrl: string;
   /**
-   * Read the login throttle key from the last `X-Forwarded-For` hop instead of the socket peer
-   * (see `clientIpFromRequest`). Only safe behind a proxy that appends that hop; defaults to `false`.
+   * Read the throttle key from the last `X-Forwarded-For` hop instead of the socket peer. Only safe
+   * behind a proxy that appends that hop.
    */
   trustProxy?: boolean;
-  /** Per-client-address throttle for the public routes; defaults to one fresh limiter per listener. */
+  /** Defaults to one fresh limiter per listener. */
   clientIpThrottle?: ClientIpThrottle;
 }
 
 /**
- * Auth-v1's HTTP surface (issue #140): `POST /api/auth/login`, `POST /api/auth/logout`,
- * `POST /api/auth/sessions/:id/revoke`, `GET /api/auth/session`, `PUT /api/auth/self-person`, and (issue #142)
- * `POST /api/auth/password-reset/request` / `POST /api/auth/password-reset/consume`. Unlike this
- * package's other handlers, there is no shared-secret `authToken` gate here — `login` and the
- * password-reset routes are necessarily public, and the session routes gate on a real session
- * via `authenticateRequest` instead. `POST /api/auth/password-change` (issue #1701) gates on a real
- * session too and re-verifies the current password.
+ * No shared-secret gate: `login` and the password-reset routes are necessarily public, and the
+ * session routes authenticate a real session. Password change also re-verifies the current
+ * password.
  *
- * `SESSION_COOKIE_NAME` is one of two ways a request can carry its token; the other is
- * `Authorization: Bearer` (native clients only, per `SESSION_DELIVERY_CHANNEL_BY_PLATFORM`).
- * A `web` login gets its token only via the `Set-Cookie` header — the JSON body omits it, so it
- * is never readable from page JavaScript — while `ios`/`macos` logins get it in the JSON body for
- * Keychain storage and no cookie at all. `authenticateRequest` rejects a token presented over the
- * other channel from the one its platform declared at login.
+ * A `web` login gets its token only via the `httpOnly` cookie, never in the JSON body, so page
+ * JavaScript cannot read it; `ios`/`macos` logins get it in the body for Keychain storage and no
+ * cookie. `authenticateRequest` rejects a token presented over the other channel.
  */
 export function createAuthRequestListener(pool: Pool, options: AuthRequestListenerOptions) {
   const clientIpThrottle = options.clientIpThrottle ?? createClientIpThrottle();
 
   /**
-   * Counts one event for `ip` under `action` and returns its reservation, or answers 429 and returns
-   * `null` when the address is over the limit; callers return before reading the body. The check and
-   * the count are one synchronous step, so concurrent requests from one address cannot all pass the
-   * check before any is counted; a caller releases the reservation for an outcome that must not count.
+   * Answers 429 and returns `null` when over the limit; callers return before reading the body.
+   * Check and count are one synchronous step, so concurrent requests cannot all pass before any is
+   * counted. Release the reservation for an outcome that must not count.
    */
   function acquireOrRefuse(res: ServerResponse, action: ThrottledAction, ip: string): ThrottleReservation | null {
     const acquisition = clientIpThrottle.tryAcquire(action, ip);
@@ -266,10 +249,9 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
             email: body.email,
             password: body.password,
             platform: body.platform,
-            // Throttle key (#635): the failure streak is scoped per (email, ip) and there is
-            // deliberately no per-email aggregate lock — that would let an attacker from any address
-            // lock the owner out everywhere. Per-address scoping only ever locks the attacker's own
-            // address, and Argon2id verification keeps distributed guessing expensive.
+            // The failure streak is scoped per (email, ip), with deliberately no per-email
+            // aggregate lock: that would let an attacker from any address lock the owner out
+            // everywhere. Argon2id keeps distributed guessing expensive.
             ip,
             userAgent,
             device,
@@ -281,11 +263,10 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         }
         reservation.release();
 
-        // Public account fields and role; GET /api/auth/session also resolves the tenant-side person link.
+        // GET /api/auth/session also resolves the tenant-side person link.
         const user = { ...result.user, role: result.role };
-        // Per #141: a browser must never see its token in a readable response body — only the
-        // `httpOnly` cookie carries it. iOS/macOS get it back in the body for Keychain storage
-        // and use it as `Authorization: Bearer` on every later request; they get no cookie.
+        // A browser must never see its token in a readable body; native clients use it as
+        // `Authorization: Bearer` and get no cookie.
         if (body.platform === "web") {
           sendJson(
             res,
@@ -311,13 +292,12 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
           }
           email = body.email;
         } catch (err) {
-          // Every accepted request counts; one that never got past the body read or validation does not.
+          // Every accepted request counts; one that failed body read or validation does not.
           reservation.release();
           throw err;
         }
 
-        // Always 200 with the same body regardless of whether `email` matched an account —
-        // issue #142's "request responses do not disclose whether an email exists".
+        // Always the same 200 body, so the response does not disclose whether an email exists.
         await requestPasswordReset(pool, options.passwordResetMailer, {
           email,
           appBaseUrl: options.appBaseUrl,
@@ -353,7 +333,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         return;
       }
 
-      // Issue #1701: the caller re-enters the current password; `changePassword` keeps the calling session.
+      // `changePassword` keeps the calling session.
       if (req.method === "POST" && url.pathname === "/api/auth/password-change") {
         const identity = await authenticateRequest(pool, req);
         const body = requireJsonObjectBody(await readJsonBody(req, { maxBytes: MAX_BODY_BYTES }));
@@ -364,7 +344,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
           sessionId: identity.session.id,
           currentPassword,
           newPassword,
-          // The same address `login` keys its lockout on, so both count toward one (email, IP) streak.
+          // The same key `login` uses, so both count toward one (email, IP) streak.
           ip: clientIpFromRequest(req, { trustProxy: options.trustProxy ?? false }),
         });
         sendJson(res, 200, { ok: true });
@@ -397,7 +377,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
         return;
       }
 
-      // Issue #1650: matched before REVOKE_SESSION_PATH, whose `:id/revoke` shape it never collides with.
+      // Matched before REVOKE_SESSION_PATH.
       if (req.method === "POST" && url.pathname === REVOKE_OTHER_SESSIONS_PATH) {
         const identity = await authenticateRequest(pool, req);
         const revokedCount = await withTransaction(pool, (client) =>
@@ -410,8 +390,7 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
       const revokeMatch = url.pathname.match(REVOKE_SESSION_PATH);
       if (req.method === "POST" && revokeMatch) {
         const identity = await authenticateRequest(pool, req);
-        // Group 1 of REVOKE_SESSION_PATH is not optional, so a successful match always
-        // captured it; a runtime check here would be unreachable code.
+        // Group 1 of REVOKE_SESSION_PATH is not optional.
         const sessionId = assertUuid(revokeMatch[1]!, "id");
         const revoked = await withTransaction(pool, (client) => revokeUserSession(client, identity.user.id, sessionId));
         sendJson(res, 200, { revoked });
@@ -468,10 +447,9 @@ export function createAuthRequestListener(pool: Pool, options: AuthRequestListen
   }
 
   /**
-   * `http.createServer` discards its listener's return value, so an `async` listener turns any
-   * rejection escaping the try/catch above into an unhandled rejection — which Node answers by
-   * exiting the process. Keeping the boundary synchronous confines it to a 500 for the one
-   * request. Same shape as `setupHandler.ts`.
+   * `http.createServer` discards the listener's return value, so an async rejection would become an
+   * unhandled rejection and exit the process. A synchronous boundary confines it to a 500 for the
+   * one request.
    */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     // Authentication starts as system work; person reads/writes enter the verified tenant scope.

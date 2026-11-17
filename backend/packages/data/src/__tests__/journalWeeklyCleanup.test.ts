@@ -11,7 +11,6 @@ import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { withTransaction } from "../db/pool.js";
 import {
   createJournalWeeklyCleanupAction,
@@ -20,7 +19,6 @@ import {
   JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
   MAX_LISTED_DUPLICATED_PERIODS,
 } from "../journal/journalWeeklyCleanupAction.js";
-import { runJournalWeeklyCleanupCutoverMigration } from "../journal/journalWeeklyCleanupCutoverMigration.js";
 import type { JournalPeriodType } from "../journal/journalPeriods.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { KNOWN_HEARTBEAT_ACTION_IDS } from "../manifest/knownActionIds.js";
@@ -37,11 +35,10 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// The weekly Journal cleanup heartbeat (issue #1883): its seeding for new tenants, its cutover for existing ones, and
-// the action that finds the duplicated periods and starts the agent run. Everything runs on a runtime-role pool inside
-// a tenant scope, the way the workers run it; the merge itself is covered by `journalMergeForWriter.test.ts`.
+// The weekly Journal cleanup heartbeat: its seeding for new tenants and the action that finds duplicated
+// periods and starts the agent run, on a runtime-role pool inside a tenant scope. The merge itself is
+// covered by `journalMergeForWriter.test.ts`.
 
-// Seeding the system databases of a tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 120_000;
 const CS_TASK = readCatalog("cs")["journalWeeklyCleanup.task"];
 const EN_TASK = readCatalog("en")["journalWeeklyCleanup.task"];
@@ -70,7 +67,6 @@ interface HeartbeatShape {
 
 let admin: Pool;
 let pool: Pool;
-/** One calendar day per test, so no test sees the entries of another. */
 let dayCounter = 0;
 
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -113,7 +109,6 @@ async function cleanupHeartbeats(tenant: string): Promise<HeartbeatShape[]> {
   });
 }
 
-/** The Semprec project: the owner project of the System settings database. */
 async function semprecProjectId(tenant: string): Promise<string> {
   return inTenant(tenant, async (client) => {
     const { rows } = await client.query<{ owner_project_item_id: string | null }>(
@@ -126,8 +121,8 @@ async function semprecProjectId(tenant: string): Promise<string> {
 }
 
 /**
- * One live entry of a period. Two live entries of one period are a state the lazy creation never produces (it reuses
- * the live entry), so the fixture creates them directly; entries made one after the other are created first and next.
+ * One live entry of a period. Two live entries of one period never come from the lazy creation, so the
+ * fixture creates them directly.
  */
 async function entry(tenant: string, period: string, name: string, type: JournalPeriodType = "day"): Promise<string> {
   return inTenant(tenant, async (client) => {
@@ -162,7 +157,6 @@ function find(tenant: string, limit = MAX_LISTED_DUPLICATED_PERIODS) {
   return inTenant(tenant, (client) => findDuplicatedJournalPeriods(client, limit));
 }
 
-/** The agent step of a run: records what it was asked to run and finishes the run. */
 function recordingRunAgent(): {
   runAgent: RunAgentFn;
   calls: Array<{ task: string; projectItemId: string; agentRunId: string }>;
@@ -180,7 +174,6 @@ function cleanupContext(heartbeat: HeartbeatShape): ActionContext {
   return { heartbeatId: heartbeat.id, projectItemId: heartbeat.project_item_id };
 }
 
-/** The one cleanup heartbeat of a seeded tenant. */
 async function onlyHeartbeat(tenant: string): Promise<HeartbeatShape> {
   const [heartbeat, ...rest] = await cleanupHeartbeats(tenant);
   if (!heartbeat || rest.length > 0) throw new Error("expected exactly one cleanup heartbeat");
@@ -200,8 +193,8 @@ async function agentRuns(tenant: string) {
 }
 
 /**
- * A tenant that lost its Journal database is a state no production write produces (the system databases are locked),
- * so the fixture removes it with raw SQL on the admin pool to make the duplicate search fail.
+ * A tenant without its Journal database: no production write produces it, so raw SQL on the admin pool
+ * removes it to make the duplicate search fail.
  */
 async function removeJournal(tenant: string): Promise<void> {
   await admin.query(
@@ -211,7 +204,6 @@ async function removeJournal(tenant: string): Promise<void> {
   await admin.query("DELETE FROM databases WHERE tenant_id = $1 AND owner_module_id = 'journal'", [tenant]);
 }
 
-/** Wraps the pool so its first `connect()` calls reject with `errors`, in order (`null` lets that call through). */
 function poolWithFailingConnects(errors: (Error | null)[]): Pool {
   const remaining = [...errors];
   return new Proxy(pool, {
@@ -318,55 +310,6 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
       },
       SEEDING_TEST_TIMEOUT_MS,
     );
-  });
-
-  describe("cutover", () => {
-    it(
-      "gives an existing tenant the same heartbeat, once, and keeps the tenants apart",
-      async () => {
-        const first = { tenant: await seededTenant() };
-        const second = await seededTenantWithUser("en");
-        const expectedFirst = await cleanupHeartbeats(first.tenant);
-        const expectedSecond = await cleanupHeartbeats(second.tenant);
-        // Synthetic previous shape: a tenant seeded before issue #1883 has no cleanup heartbeat.
-        for (const tenant of [first.tenant, second.tenant]) {
-          await inTenant(tenant, async (client) => {
-            const removed = await client.query("DELETE FROM project_heartbeats WHERE action_id = $1", [
-              JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
-            ]);
-            expect(removed.rowCount).toBe(1);
-          });
-        }
-        expect(await cleanupHeartbeats(first.tenant)).toEqual([]);
-
-        await runAsSystem("test:journal-cleanup-cutover", () => runTenantCutoverMigrations(pool));
-        const afterFirstRun = [await cleanupHeartbeats(first.tenant), await cleanupHeartbeats(second.tenant)];
-        expect(afterFirstRun.map((rows) => rows.length)).toEqual([1, 1]);
-        expect(afterFirstRun[0]?.[0]).toMatchObject({
-          name: "Weekly journal cleanup",
-          rule: { kind: "weekly", days: ["sun"], at: "21:00" },
-          action_config: { task: CS_TASK },
-          project_item_id: await semprecProjectId(first.tenant),
-        });
-        expect(afterFirstRun[1]?.[0]).toMatchObject({
-          action_config: { task: EN_TASK },
-          project_item_id: await semprecProjectId(second.tenant),
-        });
-        expect(expectedFirst[0]?.project_item_id).toBe(afterFirstRun[0]?.[0]?.project_item_id);
-        expect(expectedSecond[0]?.project_item_id).toBe(afterFirstRun[1]?.[0]?.project_item_id);
-
-        await runAsSystem("test:journal-cleanup-cutover", () => runTenantCutoverMigrations(pool));
-        expect(await cleanupHeartbeats(first.tenant)).toEqual(afterFirstRun[0]);
-        expect(await cleanupHeartbeats(second.tenant)).toEqual(afterFirstRun[1]);
-      },
-      SEEDING_TEST_TIMEOUT_MS,
-    );
-
-    it("does nothing for a tenant without a Semprec project", async () => {
-      const tenant = await createTestTenant(admin);
-      await runInTenant(tenant, () => runJournalWeeklyCleanupCutoverMigration(pool));
-      expect(await cleanupHeartbeats(tenant)).toEqual([]);
-    });
   });
 
   describe("finding the duplicated periods", () => {
@@ -554,7 +497,6 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
       registry.set(JOURNAL_WEEKLY_CLEANUP_ACTION_ID, createJournalWeeklyCleanupAction(pool, runAgent));
       return createHeartbeatFireAgentTask(pool, registry);
     }
-    /** The final attempt of the job, so a failure is recorded and notified. */
     function finalAttempt(): Parameters<ReturnType<typeof fireTask>>[1] {
       return { job: { id: "job-final", attempts: 3, max_attempts: 3 } } as Parameters<ReturnType<typeof fireTask>>[1];
     }
@@ -619,8 +561,8 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
           const { rows } = await client.query<{ kind: string }>("SELECT kind FROM notifications ORDER BY kind");
           return rows.map((row) => row.kind);
         });
-        // The failed run's close raises the heartbeat's `agents` problem (one semp_problem notification, issue gh-1911);
-        // the failed fire's report merges into that same problem and adds no second one.
+        // The failed run's close raises the heartbeat's `agents` problem; the failed fire's report merges into
+        // that same problem and adds no second one.
         expect(notifications).toEqual(["agent_run_error", "heartbeat_error", "semp_problem"]);
         const problems = await inTenant(tenant, async (client) => {
           const { rows } = await client.query<{ dedupe_key: string; occurrence_count: number }>(

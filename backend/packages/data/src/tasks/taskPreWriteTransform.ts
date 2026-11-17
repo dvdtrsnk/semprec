@@ -18,17 +18,13 @@ import { computeTaskHostState, loadHostEventsRelation, readLiveHostEvents } from
 const CALENDAR_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * The Tasks pre-write transform, registered by `../domainWriteHooks.ts` under `TASKS_MODULE_ID`. It judges the
- * resulting state of a create or a patch (stored values merged with the patch) and returns the properties to
- * store: normalized `date`, `timeFrom` and `timeTo`, the derived `time`, and the `name` checked as non-blank.
- * See docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md and
- * docs/adr/2026-10-29-tasks-date-and-time-rules-in-pre-write-transform.md.
+ * Judges the resulting state of a create or patch (stored values merged with the patch) and returns normalized
+ * `date`, `timeFrom`, `timeTo`, the derived `time` and a non-blank `name`. See
+ * docs/architecture/domain-calendar-tasks-and-media.md#pre-write-transform.
  *
- * A write that names `status` names a nonempty string (issue sp-9cf1be65,
- * docs/adr/2026-11-13-a-task-always-has-a-status.md); a write that does not name it leaves the status alone, so a
- * stored task without one can still be written.
- * Schedule validation runs only when its input keys are named, so a status-only write does not revalidate a
- * legacy schedule. Completion and first-planned-day rules run separately in the managed write.
+ * A write naming `status` must name a nonempty string; one that does not leaves it alone, so a legacy task
+ * without one can still be written. Schedule validation runs only when its keys are named, so a status-only write
+ * does not revalidate a legacy schedule.
  */
 export const prepareTaskWrite = async ({
   stored,
@@ -44,11 +40,7 @@ export const prepareTaskWrite = async ({
   return deriveTimeAndCheckSchedule(stored, patch);
 };
 
-/**
- * `missed` is for the Tasks module and the nightly job (#1677), which write as the system (issue #1668): the transform
- * admits a system writer's `missed` and refuses a user's or an agent's write that names it. Moving away from `missed`,
- * to `done` say, is an ordinary status write.
- */
+/** Only system writers (the Tasks module, the nightly job) may set `missed`; leaving it is an ordinary write. */
 function assertMissedWritable(patch: Record<string, unknown>, writerKind: WriterKind): void {
   if (patch.status === "missed" && writerKind !== "system") {
     throw new ValidationError("Status 'missed' is set only by the system", { field: "status" });
@@ -71,17 +63,13 @@ export const prepareTaskProposal: ItemPreWritePreparation = async ({ stored, pat
   return { patch: prepared, deferredKeys: enteringDone && !Object.hasOwn(patch, "completedOn") ? ["completedOn"] : [] };
 };
 
-/**
- * The Tasks transform: the date, time, completion and since rules of `applyTaskRules`, then, for a create and for a
- * write that names `date`, the stored `effectiveDate` of issue #1780 (`withEffectiveDate`).
- */
+/** `applyTaskRules`, then `effectiveDate` for a create and for a write naming `date`. */
 export const taskPreWriteTransform: ItemPreWriteTransform = async (context) =>
   withEffectiveDate(context, await applyTaskRules(context));
 
 /**
- * Issue #1780: a create and a write that names `date` store the `effectiveDate` the task's host events and its `date`
- * give. A task with no live host event gets its `date`; a create reads no host event, because its edges come after it.
- * A create without a `date` stores no key. Any other write leaves `effectiveDate` to the host state recomputation.
+ * The `effectiveDate` from the task's live host events and `date`. A create reads no host events (its edges come
+ * later) and stores no key without a `date`. Other writes leave it to the host state recomputation.
  */
 async function withEffectiveDate(
   context: ItemPreWriteTransformContext,
@@ -112,7 +100,7 @@ async function applyTaskRules(context: ItemPreWriteTransformContext): Promise<Re
     Object.hasOwn(patch, "status") &&
     status !== old.status &&
     (status === "notDone" || status === "wontDo");
-  // Issue #1668: a past occurrence of a series set back from done to notDone is missed once its next date has come.
+  // A past series occurrence set back from done to notDone is missed once its next date has come.
   const reopenedOccurrence =
     stored !== null &&
     old.status === "done" &&
@@ -161,8 +149,8 @@ async function applyTaskRules(context: ItemPreWriteTransformContext): Promise<Re
   }
   if (stored && Object.hasOwn(patch, "date")) output = { ...output, ...taskSinceRule(old, output, today) };
   if (reopenedOccurrence && typeof old.seriesId === "string" && typeof old.occurrenceDate === "string") {
-    // The rule is read from the series row locked after the item the choke point already locked (items before
-    // `task_recurrence`), so a concurrent rule change commits before this read or waits for this write.
+    // The series row is locked after the item the choke point holds (items before `task_recurrence`), so a concurrent
+    // rule change commits before this read or waits for this write.
     const series = await getTaskRecurrenceBySeriesId(client, old.seriesId, true);
     if (series) {
       const occurrenceDate = old.occurrenceDate;
@@ -173,10 +161,7 @@ async function applyTaskRules(context: ItemPreWriteTransformContext): Promise<Re
   return output;
 }
 
-/**
- * A task always has a status: `null`, an empty string and a non-string are refused. Which strings are allowed stays
- * with `assertSelectValuesKnown`.
- */
+/** `null`, empty and non-strings are refused; which strings are allowed is `assertSelectValuesKnown`'s job. */
 function assertStatusNamed(value: unknown): void {
   if (typeof value !== "string" || value === "") {
     throw new ValidationError("Property 'status' must be a task status", { field: "status" });
@@ -203,10 +188,8 @@ function normalizeCalendarDate(value: unknown): string | null {
 }
 
 /**
- * Issue #1665: a recurring task keeps its date; recurrence is switched off explicitly (`DELETE
- * /api/tasks/:id/recurrence`), never by clearing the date. A task is recurring while its resulting `seriesId` (the
- * patched one when named, else the stored one) is a nonempty string, for a series' current and its past occurrences
- * alike. A write that clears `seriesId` together with the date leaves no series identity and is not refused.
+ * Recurrence is switched off explicitly (`DELETE /api/tasks/:id/recurrence`), never by clearing the date. A task
+ * is recurring while its resulting `seriesId` is nonempty; clearing `seriesId` with the date is allowed.
  */
 function assertNotRecurring(storedProperties: Record<string, unknown>, patch: Record<string, unknown>): void {
   const seriesId = Object.hasOwn(patch, "seriesId") ? patch.seriesId : storedProperties.seriesId;

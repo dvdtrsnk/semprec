@@ -1,6 +1,5 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
@@ -8,27 +7,17 @@ import { invitationIngestHeartbeat } from "../calendar/invitationIngestAction.js
 import { invitationReplyHeartbeat } from "../calendar/invitationReplyAction.js";
 import { requireAffectedRows } from "../db/pool.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
-import type { DatabaseRow, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { EMAILS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
 import { INVITATIONS_MODULE_ID } from "./invitationsKeys.js";
 import { CALENDARS_MODULE_ID } from "./calendarsKeys.js";
 import { EVENTS_MODULE_ID, PEOPLE_MODULE_ID } from "./tenDatabaseKeys.js";
+import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
 /** The `status` options of an invitation; `cancelled` means the organizer cancelled the meeting. */
 const INVITATION_STATUSES = ["pending", "accepted", "tentative", "declined", "acknowledged", "cancelled"] as const;
 
-/** The `kind` options of an invitation. */
 const INVITATION_KINDS = ["invite", "sharedCalendarNotice"] as const;
-
-interface PropSpec {
-  key: string;
-  type: PropertyType;
-  config?: Record<string, unknown>;
-}
-
-const selectConfig = (options: readonly string[]): Record<string, unknown> => ({
-  options: options.map((key) => ({ key })),
-});
 
 /** Every property is system-owned by the calendar module (`seedInvitationsDatabaseInTransaction`). */
 const INVITATION_PROPERTIES: readonly PropSpec[] = [
@@ -47,7 +36,7 @@ const INVITATION_PROPERTIES: readonly PropSpec[] = [
   { key: "kind", type: "select", config: selectConfig(INVITATION_KINDS) },
 ];
 
-/** The one-directional relations, each to a database whose schema is already locked, as `[key, target module id]`. */
+/** One-directional, since their targets' schemas are already locked; `[key, target module id]`. */
 const INVITATION_RELATIONS: ReadonlyArray<readonly [string, string]> = [
   ["suggestedCalendar", CALENDARS_MODULE_ID],
   ["event", EVENTS_MODULE_ID],
@@ -58,21 +47,13 @@ const INVITATION_RELATIONS: ReadonlyArray<readonly [string, string]> = [
 const CALENDAR_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: CALENDAR_MODULE_ID };
 
 /**
- * Seeds the system `invitations` database of the calendar module (issue gh-1901) into the caller's open
- * transaction, owned by the same system project item as `calendarsDatabase`: the incoming meeting
- * invitations that wait for the user's answer. Every property and relation is `owner: 'system'` with the
- * calendar module as owner process, so the generic write path refuses them. The four relations
- * (`suggestedCalendar`, `event`, `sourceEmail`, `mailbox`) are `many_to_many` and one-directional, because
- * the schemas of their targets are locked; the schema of the new database is locked once complete. It
- * creates no rows. It also creates the `calendar.ingestInvitation` heartbeat (issue gh-1929) on the same system project
- * item: it fires on every new Emails item and reads the message's calendar part. A populated tenant that already has
- * the database gets the heartbeat from `calendar/invitationIngestHeartbeatCutoverMigration.ts`. The
- * `calendar.applyInvitationReply` heartbeat (issue gh-1950) is created on the same project item and fires on every new
- * Emails item as well; a populated tenant gets it from `calendar/invitationReplyHeartbeatCutoverMigration.ts`.
+ * Seeds the `invitations` database (incoming meeting invitations awaiting an answer) under the calendar
+ * system project, in the caller's transaction. Everything is system-owned by the calendar module, so the
+ * generic write path refuses it. The four relations are `many_to_many` and one-directional because their
+ * targets are locked. No rows. Also creates the `calendar.ingestInvitation` and
+ * `calendar.applyInvitationReply` heartbeats, both firing on every new Emails item.
  *
- * Not idempotent on its own: `seedSystem` calls it once for a new tenant, and
- * `calendar/invitationsDatabaseCutoverMigration.ts` calls it only for a tenant without an invitations
- * database. The Events, People, Emails and Mailboxes databases must already exist.
+ * Not idempotent: `seedSystem` calls it once per new tenant, after Events, People, Emails and Mailboxes exist.
  */
 export async function seedInvitationsDatabaseInTransaction(
   client: PoolClient,
@@ -86,18 +67,11 @@ export async function seedInvitationsDatabaseInTransaction(
     ownerModuleId: INVITATIONS_MODULE_ID,
     ownerProjectItemId: calendarsDatabase.ownerProjectItemId,
   });
-  for (const spec of INVITATION_PROPERTIES) {
-    // `name` is null like every built-in property of a system database; labels come from the calendar catalog.
-    await propertiesStore.createProperty(client, {
-      databaseId: database.id,
-      key: spec.key,
-      name: null,
-      type: spec.type,
-      owner: "system",
-      ownerProcess: CALENDAR_MODULE_ID,
-      config: spec.config,
-    });
-  }
+  await createProps(
+    client,
+    database.id,
+    INVITATION_PROPERTIES.map((spec) => ({ ...spec, owner: "system", ownerProcess: CALENDAR_MODULE_ID })),
+  );
   for (const [key, targetModuleId] of INVITATION_RELATIONS) {
     const target = await databasesStore.getDatabaseByModuleId(client, targetModuleId);
     if (!target) throw new Error(`The ${targetModuleId} database has not been seeded`);

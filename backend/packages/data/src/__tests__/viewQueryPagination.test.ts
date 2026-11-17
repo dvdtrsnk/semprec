@@ -16,7 +16,6 @@ let chokePoint: ChokePoint;
 
 type Page = (cursor: string | undefined) => Promise<QueryViewResult>;
 
-/** Follows `nextCursor` until it is `null`, returning every page's item ids in order. */
 async function collectPages(page: Page): Promise<{ ids: string[]; pages: number }> {
   const ids: string[] = [];
   let cursor: string | undefined;
@@ -118,7 +117,6 @@ describe("sorted view query pagination (issue #664)", () => {
     }
   });
 
-  /** Ties inside a sort key resolve by item id, so an expected order lists tied rows id-sorted. */
   function byId(...names: string[]): string[] {
     return names.map((name) => ids[name]!).sort();
   }

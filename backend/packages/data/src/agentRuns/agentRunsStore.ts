@@ -24,47 +24,34 @@ export interface AgentRunRow {
   projectItemId: string | null;
   parentRunId: string | null;
   heartbeatId: string | null;
-  /** The run this one retries (issue #1448); `null` for a run that is not a retry. */
   retryOfRunId: string | null;
-  /** The attempt number: 1 unless the creator gave another one (issue #1448). */
   attempt: number;
-  /** The scheduled heartbeat occurrence this run was started for (issue #1458); `null` for a manual or item-event run. */
+  /** `null` for a manual or item-event run. */
   heartbeatOccurrenceId: string | null;
-  /** The Semp thread this run belongs to (issue #1452); `null` for an MCP run or a run with no thread. */
+  /** `null` for an MCP run or a run with no thread. */
   threadId: string | null;
-  /**
-   * The name the MCP client that connected with this run's credential reported about itself (issue
-   * #1788), as `setAgentRunMcpClientName` stored it; `null` when no client name was stored. It is
-   * display text and no authorization decision reads it.
-   */
+  /** Self-reported by the MCP client; display text only, never read by an authorization decision. */
   mcpClientName: string | null;
   triggeredBy: TriggeredBy;
   unit: AgentRunUnit;
   task: string;
   status: AgentRunStatus;
-  /**
-   * The result snapshot of a `done` run. A run closed as `error` since issue #1824 holds its
-   * `errorCode` here; a run closed before then keeps its legacy free text.
-   */
+  /** A run closed as `error` holds its `errorCode` here; older error rows keep legacy free text. */
   result: string | null;
-  /** Why the run failed: set for `status = 'error'` (a row closed before the column existed reads `internal`), `null` otherwise. */
+  /** Set for `status = 'error'` (rows predating the column read `internal`), `null` otherwise. */
   errorCode: AgentRunErrorCode | null;
-  /** Plain object of ids and counters (no user content) a closer attached to the failure, if any. */
+  /** Ids and counters only, no user content. */
   errorDetail: Record<string, unknown> | null;
   startedAt: string;
   finishedAt: string | null;
   /**
-   * The user this run's writes are attributed to (issue #220) — the authenticated session user
-   * for a user-triggered root run that supplied one (`CreateAgentRunInput.userId`), the
-   * current tenant's user for a root run with none to capture (`getTenantUserId` — a
-   * heartbeat/system-triggered run has no session), and copied from the parent run for every
-   * delegated (`parentRunId` set) run. The AgentTool composition root (#220) derives an agent
-   * actor's `userId` from this column alone, never from tool input.
+   * Who this run's writes are attributed to: the session user of a root run that supplied one, else the tenant's
+   * user; a delegated run copies its parent's. Agent actor identity is derived from this column alone, never from
+   * tool input.
    */
   actorUserId: string;
 }
 
-/** The raw `agent_runs` row shape this module reads back from Postgres. */
 type AgentRunDbRow = {
   id: string;
   project_item_id: string | null;
@@ -129,40 +116,23 @@ export interface CreateAgentRunInput {
   projectItemId?: string | null;
   parentRunId?: string | null;
   heartbeatId?: string | null;
-  /** The run this one retries (issue #1448). Defaults to null; `createChainedAgentRun` requires it. */
+  /** `createChainedAgentRun` requires it. */
   retryOfRunId?: string | null;
-  /** The attempt number (issue #1448). Defaults to 1. */
   attempt?: number;
-  /** The scheduled heartbeat occurrence the run is started for (issue #1458). Defaults to null. */
   heartbeatOccurrenceId?: string | null;
-  /**
-   * The Semp thread the run belongs to (issue #1452). When omitted and `parentRunId` is set, the
-   * store copies the parent run's `thread_id`, so every delegation path inherits it; an MCP run
-   * leaves it unset and stays NULL.
-   */
+  /** When omitted and `parentRunId` is set, the parent's `thread_id` is copied, so every delegation inherits it. */
   threadId?: string | null;
   triggeredBy: TriggeredBy;
   unit?: AgentRunUnit;
   task: string;
   /**
-   * The authenticated session user creating this root run (issue #220, AC11). Optional for every
-   * root run, including a `triggeredBy: "user"` one: when supplied, `actor_user_id` reflects who
-   * actually asked for the run; when omitted, the store falls back to the current
-   * tenant's user (`getTenantUserId`). Ignored for a delegated run (`parentRunId` set), which always inherits
-   * its parent's `actorUserId` instead.
+   * The session user creating a root run; when omitted, the tenant's user. Ignored for a delegated run, which
+   * inherits its parent's actor.
    */
   userId?: string;
 }
 
-/**
- * A delegated run (`parentRunId` set) inherits its supervisor's `actorUserId` unchanged. A root
- * run (no parent) uses `userId` when the caller supplied one — the authenticated session user
- * that actually triggered it (issue #220, AC11) — and falls back to the current
- * tenant's user (`getTenantUserId`) only when it didn't, which is correct for every root producer with no
- * session to capture (a heartbeat/system-triggered run). Throws if neither resolves to a user,
- * since a run with no attributable actor can never pass #220's AgentTool actor-derivation
- * invariant.
- */
+/** Throws when no user resolves: a run without an attributable actor could never derive an agent actor. */
 async function resolveActorUserId(
   client: Pool | PoolClient,
   parent: AgentRunRow | null,
@@ -209,11 +179,8 @@ export async function createAgentRun(client: Pool | PoolClient, input: CreateAge
 }
 
 /**
- * Creates the retry of `input.retryOfRunId` and returns it, or `null` when that run was already
- * retried. The unique key on `(tenant_id, retry_of_run_id)` decides this inside the insert
- * (`ON CONFLICT DO NOTHING`), so of two concurrent callers exactly one gets a row. The new run
- * takes its `actor_user_id` from the retried run. Throws `NotFoundError` when the retried run does
- * not exist in the current tenant.
+ * `null` when the run was already retried: the unique key on `(tenant_id, retry_of_run_id)` decides inside the
+ * insert, so of two concurrent callers exactly one gets a row. The retry takes the retried run's actor.
  */
 export async function createChainedAgentRun(
   client: Pool | PoolClient,
@@ -249,16 +216,12 @@ export async function createChainedAgentRun(
   return null;
 }
 
-/** The id of the run that retries `runId`, or `null` when it was not retried. */
 export async function getRetrySuccessorId(client: Pool | PoolClient, runId: string): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>("SELECT id FROM agent_runs WHERE retry_of_run_id = $1", [runId]);
   return rows[0]?.id ?? null;
 }
 
-/**
- * The run of a heartbeat occurrence with the highest `attempt` (ties by `started_at`), or `null`
- * when no run was started for it yet (issue #1458).
- */
+/** Highest `attempt`, ties by `started_at`. */
 export async function getLatestRunOfOccurrence(
   client: Pool | PoolClient,
   occurrenceId: string,
@@ -274,11 +237,7 @@ export async function getLatestRunOfOccurrence(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * The first run of the retry chain `runId` belongs to (issue #1911): the run reached by following
- * `retry_of_run_id` until it is `NULL`; the run itself when it retries nothing. Throws `NotFoundError`
- * when the current tenant scope shows no run with that id.
- */
+/** Follows `retry_of_run_id` to the start of the chain. */
 export async function getRetryChainFirstRunId(client: Pool | PoolClient, runId: string): Promise<string> {
   const { rows } = await client.query<{ id: string }>(
     `WITH RECURSIVE chain AS (
@@ -295,18 +254,11 @@ export async function getRetryChainFirstRunId(client: Pool | PoolClient, runId: 
 }
 
 /**
- * Closes a run that is still `running` and reports whether this call did it. The `status =
- * 'running'` guard lives in the `UPDATE` itself, so of two concurrent closers exactly one wins
- * and the row keeps the first status, result and `finished_at`. Losing that race (the run was
- * already `done`/`error`) is a normal outcome the caller logs, not an error: it returns `false`.
- * Throws `NotFoundError` only when no run with that id exists at all.
+ * The `status = 'running'` guard is in the `UPDATE`, so of two concurrent closers exactly one wins and the row
+ * keeps the first outcome; the loser gets `false` (a normal outcome to log, not an error).
  *
- * A `done` close stores the given result snapshot. An `error` close takes no free text: it stores
- * the canonical `errorCode` as both `error_code` and `result`, so no exception text and no user
- * content remain in the row (issue #1824). `errorDetail` is a plain object of ids and counters.
- *
- * A close this call performed announces the run to its actor (`publishAgentRunInvalidation`); a lost
- * race announces nothing.
+ * An `error` close stores only the canonical `errorCode` (as both `error_code` and `result`), so no exception
+ * text or user content stays in the row. Only a close this call performed announces the run.
  */
 export function finishAgentRun(
   client: Pool | PoolClient,
@@ -346,24 +298,11 @@ export async function finishAgentRun(
 }
 
 /**
- * `finishAgentRun(..., "error", ...)` plus the reference `agent_run_error` notification (issue
- * #149), in the same transaction — every producer that closes a run as `error` (startup-sweep
- * repair, a budget rejection or any other unrecoverable failure surfacing from the model call,
- * a heartbeat-triggered run) calls this one function instead of `finishAgentRun` directly, so the
- * kind has exactly one producer path regardless of how many call sites reach it.
+ * The single producer path for `agent_run_error`: every error close goes through here so the notification and
+ * the run's `agents` problem land in the same transaction as the close.
  *
- * `transitionInstance` is the run's own id: an `agent_runs` row finishes at most once (its
- * `status` only ever leaves `running` a single time), so replaying the same close — a retried
- * caller after a crash before it observed success — is necessarily the same transition, while a
- * different run failing always has a different id.
- *
- * Returns `finishAgentRun`'s result: when the close lost to another writer (`false`), the run's
- * outcome was already decided elsewhere and no notification is written.
- *
- * Also raises the run's `agents` problem in that transaction (issue #1911), see `raiseFailedRunProblem`.
- *
- * Silently skips the notification and the problem when the current tenant has no user, matching
- * `notifyHeartbeatError`.
+ * `transitionInstance` is the run id: a run leaves `running` once, so a replayed close is the same transition.
+ * A lost close (`false`) writes nothing. Skips notification and problem when the tenant has no user.
  */
 export async function finishAgentRunWithErrorNotification(
   client: Pool | PoolClient,
@@ -371,9 +310,8 @@ export async function finishAgentRunWithErrorNotification(
   errorCode: AgentRunErrorCode,
   errorDetail?: Record<string, unknown>,
 ): Promise<boolean> {
-  // `writeNotification` requires an actual transaction client (it's meant to run alongside the
-  // source write it dedupes against) — a caller that only has a bare `pool` gets one opened here
-  // so the close and the notification still land atomically together.
+  // `writeNotification` needs a transaction client, so a bare pool gets one here to keep the close and the
+  // notification atomic.
   if (client instanceof Pool) {
     return withTransaction(client, (c) => finishAgentRunWithErrorNotification(c, agentRunId, errorCode, errorDetail));
   }
@@ -394,12 +332,9 @@ export async function finishAgentRunWithErrorNotification(
 }
 
 /**
- * The `agents` problem of the run `agentRunId` that just failed (issue #1911), raised in the same
- * transaction as its close and its `agent_run_error` notification. A heartbeat tick raises the problem of its
- * heartbeat, so the tick's other reports merge into it; a supervisor or MCP run raises the problem of its
- * retry chain. A failed chat turn raises nothing here, and neither does a heartbeat-triggered run that
- * names no heartbeat. The run's project item is attached only while it still names an item of the tenant's
- * Projects database (`raiseAgentRunProblem` drops a dangling one), so the close never fails on it.
+ * A heartbeat tick raises its heartbeat's problem (merging the tick's other reports); a supervisor or MCP run
+ * raises its retry chain's. A dangling project item is dropped by `raiseAgentRunProblem`, so the close never
+ * fails on it.
  */
 async function raiseFailedRunProblem(client: PoolClient, userId: string, agentRunId: string): Promise<void> {
   const run = await getAgentRun(client, agentRunId);
@@ -408,8 +343,7 @@ async function raiseFailedRunProblem(client: PoolClient, userId: string, agentRu
     await raiseAgentHeartbeatProblem(client, { userId, heartbeatId: run.heartbeatId, occurrenceKey: run.id });
     return;
   }
-  // A chat turn is a problem per reply (issue #1931), and a heartbeat-triggered run that names no heartbeat
-  // has no tick to report.
+  // A chat turn is a problem per reply; a heartbeat-triggered run without a heartbeat has no tick to report.
   if (run.triggeredBy === "user" || run.triggeredBy === "heartbeat") return;
   await raiseAgentRunProblem(client, {
     userId,
@@ -419,14 +353,12 @@ async function raiseFailedRunProblem(client: PoolClient, userId: string, agentRu
   });
 }
 
-/** The longest MCP client name a run stores, in characters as the check on `mcp_client_name` counts them. */
+/** In characters as the `mcp_client_name` check counts them. */
 const MCP_CLIENT_NAME_MAX_LENGTH = 64;
 
 /**
- * What is stored for a name an MCP client reported: the name without control characters and without
- * surrounding whitespace, cut to its first `MCP_CLIENT_NAME_MAX_LENGTH` characters (code points, so
- * a character outside the basic plane is never cut in half) and without whitespace the cut left at
- * its end. `null` when nothing is left.
+ * Strips control characters and surrounding whitespace, then cuts by code points so a surrogate pair is never
+ * split. `null` when nothing is left.
  */
 function sanitizeMcpClientName(name: string): string | null {
   const cleaned = name.replace(/\p{Cc}/gu, "").trim();
@@ -441,12 +373,7 @@ function sanitizeMcpClientName(name: string): string | null {
   return sanitized === "" ? null : sanitized;
 }
 
-/**
- * Stores the name an MCP client reported about itself on the run `runId` (issue #1788) and replaces
- * a name stored before. The value written is `sanitizeMcpClientName(name)`, so a name of control
- * characters and whitespace clears the column. Throws `NotFoundError` when the current tenant scope
- * shows no run with that id.
- */
+/** A name of only control characters and whitespace clears the column. */
 export async function setAgentRunMcpClientName(client: Pool | PoolClient, runId: string, name: string): Promise<void> {
   const updated = await client.query(`UPDATE agent_runs SET mcp_client_name = $2 WHERE id = $1`, [
     runId,
@@ -456,13 +383,9 @@ export async function setAgentRunMcpClientName(client: Pool | PoolClient, runId:
 }
 
 /**
- * `forUpdate` row-locks the run so a concurrent write to its `project_item_id`/`actor_user_id`
- * blocks until the caller's transaction commits or rolls back — `replayApprovedGenericOperation`
- * holds this lock across its provenance check and the operation it re-checks provenance for, so
- * the two can't be split by a race. `forUpdate: true` requires a `PoolClient`, not the broader
- * `Pool | PoolClient`, matching `getTaskRecurrence`'s two-overload pattern: `FOR UPDATE` against a
- * bare `Pool` acquires and immediately auto-commit-releases the lock on that single statement,
- * silently defeating the whole point of locking.
+ * `forUpdate` row-locks the run so a concurrent change of `project_item_id`/`actor_user_id` waits for the
+ * caller's transaction; approved-operation replay holds it across its provenance check and the operation. It
+ * requires a `PoolClient`: on a bare `Pool` the lock would be released as soon as the statement auto-commits.
  */
 export function getAgentRun(client: PoolClient, id: string, forUpdate: true): Promise<AgentRunRow | null>;
 export function getAgentRun(client: Pool | PoolClient, id: string, forUpdate?: false): Promise<AgentRunRow | null>;
@@ -479,7 +402,6 @@ export async function getAgentRun(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** The batched form of `getAgentRun` — for resolving a set of runs (e.g. the approval queue's source-run links) in one query instead of one per row. */
 export async function getAgentRunsByIds(client: Pool | PoolClient, ids: string[]): Promise<AgentRunRow[]> {
   if (ids.length === 0) return [];
   const { rows } = await client.query<AgentRunDbRow>(
@@ -490,21 +412,12 @@ export async function getAgentRunsByIds(client: Pool | PoolClient, ids: string[]
   return rows.map(mapRow);
 }
 
-/** How many parent hops `getRootAgentRuns` follows for one run before it stops climbing. */
 export const AGENT_RUN_ROOT_MAX_HOPS = 32;
 
 /**
- * The root run of each of `runs`, keyed by the id of the given run: the run reached by following
- * `parent_run_id` until a run has no parent. A run without a parent is its own root.
- *
- * The walk has the loop shape of
- * `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md` (one read per level, a
- * missing link stops the walk instead of failing it), for many runs at once: each level reads the
- * parents of all chains that are still climbing in one query, so the number of queries follows the
- * depth of the deepest chain and not the number of runs. A chain stops at the last run it reached
- * when that run's parent is not visible, and after `AGENT_RUN_ROOT_MAX_HOPS` hops. The hop limit
- * stands in for that decision's visited set: it also ends a cycle. The run returned for a chain
- * that stopped early still names a parent.
+ * Each level reads the parents of all still-climbing chains in one query, so the query count follows the deepest
+ * chain, not the number of runs. A chain stops at an invisible parent or after `AGENT_RUN_ROOT_MAX_HOPS` (which
+ * also ends a cycle); the run returned for a chain stopped early still names a parent.
  */
 export async function getRootAgentRuns(
   client: Pool | PoolClient,
@@ -525,12 +438,7 @@ export async function getRootAgentRuns(
   return reached;
 }
 
-/**
- * The audit trail: run history for a heartbeat is a query over agent_runs, no second
- * run-log table. `limit`, when given, bounds the result to the most recent N runs
- * (issue #135's `heartbeat.history`) — omitted, the call returns the full history, as
- * every caller before that issue relied on.
- */
+/** Heartbeat history is a query over agent_runs, not a separate log table. Without `limit`, the full history. */
 export async function listAgentRunsByHeartbeat(
   client: Pool | PoolClient,
   heartbeatId: string,
@@ -544,42 +452,27 @@ export async function listAgentRunsByHeartbeat(
   return rows.map(mapRow);
 }
 
-/** The status of an assistant message of a Semp thread (`semp_messages.status`, set on every assistant message). */
 type SempReplyStatus = "queued" | "running" | "done" | "error";
 
 const SEMP_REPLY_STATUSES: readonly SempReplyStatus[] = ["queued", "running", "done", "error"];
 
-/**
- * One answer of a chat conversation as the project run list reads it (issue gh-1932): the latest attempt of one
- * assistant message of a `session` run that the user started, with what its row shows.
- */
+/** The latest attempt of one assistant message of a user-started `session` run. */
 export interface ProjectAgentRunAnswer {
-  /** The assistant message: the latest attempt of the answer. */
   messageId: string;
-  /** The first event of the message's turn, or `created_at` of the message when retention removed that event. */
+  /** The message's `created_at` once retention removed the first event. */
   startedAt: string;
-  /** `semp_messages.duration_ms`: set when the turn ended, `null` while it runs and for a turn stored without one. */
   durationMs: number | null;
   status: SempReplyStatus;
-  /** The code a failed reply stored; `null` for a reply that did not fail and for a failure stored without one. */
   errorCode: AgentRunErrorCode | null;
-  /** `semp_messages.steps` as the driver returns it; the reader of the column (`replyOutcomeOfStoredSteps`) checks it. */
+  /** Validated by `replyOutcomeOfStoredSteps`. */
   steps: unknown;
-  /** `semp_messages.attempt` of the message: 1 for an answer that was never retried. */
   attempt: number;
-  /** The text of the user message the answer replies to; `null` when it replies to no user message or to one without text. */
   userText: string | null;
-  /** The `system_key` of the system message the answer replies to; `null` when it replies to no system message. */
   systemKey: string | null;
-  /** The kind of the Semp thread the message belongs to. */
   threadKind: SempThreadKind;
 }
 
-/**
- * One row of the project run list: a run of `listProjectAgentRuns`, with `answer` set on the row of one answer of a
- * chat conversation (issue gh-1932) and `null` on every other row. The run's own fields stay those of the run, so
- * several rows of one chat run share them and differ in `answer`.
- */
+/** Several rows of one chat run share the run's fields and differ in `answer`. */
 export type ProjectAgentRunListEntry = AgentRunRow & { answer: ProjectAgentRunAnswer | null };
 
 type ProjectAgentRunListDbRow = AgentRunDbRow & {
@@ -595,14 +488,12 @@ type ProjectAgentRunListDbRow = AgentRunDbRow & {
   answer_thread_kind: string | null;
 };
 
-/** `AGENT_RUN_ROW_COLUMNS` with each column read from the table alias `alias`. */
 function runColumnsOf(alias: string): string {
   return AGENT_RUN_ROW_COLUMNS.split(", ")
     .map((column) => `${alias}.${column}`)
     .join(", ");
 }
 
-/** The `ProjectAgentRunAnswer` of a joined row; `null` for a row of a run that stands for itself. */
 function mapAnswer(row: ProjectAgentRunListDbRow): ProjectAgentRunAnswer | null {
   if (row.answer_message_id === null) return null;
   if (row.answer_started_at === null || row.answer_attempt === null) {
@@ -626,35 +517,21 @@ function mapAnswer(row: ProjectAgentRunListDbRow): ProjectAgentRunAnswer | null 
 }
 
 /**
- * The most recent rows of a project's run list for the user `actorUserId` (issues gh-1909, gh-1914 and gh-1932),
- * newest first by the row's start time, then by the run's `id`, then by the message's id, at most `limit` rows.
- * A run of another actor is not returned, and neither is a run with `triggered_by = 'supervisor'` (a delegated
- * sub-run).
+ * Newest first (row start, then run id, then message id). Other actors' runs and `supervisor` sub-runs are
+ * excluded.
  *
- * A row stands for one run, except in two cases. A heartbeat occurrence that was attempted several times is one
- * row (issue gh-1914): the run with the highest `attempt`, ties by the later `started_at`, then the greater `id`
- * (the `(attempt, started_at)` order of `getLatestRunOfOccurrence`, which has no `id` key, extended by `id` as the
- * last key so that the pick is deterministic), so a row stands at the start time of its latest attempt. A run
- * without `heartbeat_occurrence_id` is a row of its own, except a chat run that owns assistant messages (below).
- * The earlier attempts are dropped by a per-row probe of `agent_runs_occurrence_idx` inside the scan, before
+ * A multi-attempt heartbeat occurrence is one row: the highest `attempt`, then later `started_at`, then greater
+ * `id` for determinism. Earlier attempts are dropped by a per-row probe of `agent_runs_occurrence_idx` before
  * `LIMIT` applies.
  *
- * A `session` run that the user started and that holds assistant messages (issue gh-1932) is not a row itself:
- * each of its answers is, one per assistant message of a reply, standing at the start of the message's turn (its
- * first event, `created_at` of the message when retention removed the event). Attempts of one answer, the
- * assistant messages of a thread that reply to the same message, collapse into the one with the highest
- * `attempt` among the assistant messages that started a run of the list. An assistant message that replies to
- * no message is an answer of its own. A session run whose thread holds no assistant message of it, which every
- * run written before messages existed is, stays one row; one whose every message a later attempt in another run
- * replaced has no row, because the answers it held are listed under the run of their latest attempt. The row
- * carries the answer in `answer`.
+ * A user-started `session` run with assistant messages is replaced by one row per answer, standing at its turn's
+ * start. Attempts replying to the same message collapse into the highest `attempt`; a message replying to no
+ * message is its own answer. A session run without assistant messages stays one row; one whose messages were all
+ * replaced by attempts in other runs has none.
  *
- * `LIMIT` counts the rows after both expansions: the two kinds of rows are each cut at `limit` in their own
- * order, merged, and cut again, so no kind can crowd the other out of the first `limit` rows. The scan of
- * `agent_runs_tenant_project_started_idx` for the runs stops once it has found `limit` of them. The answers are
- * sorted by their start time, which no index covers, so the answers of the project's session runs are read for
- * that sort. An unknown project id, and the id of a project of another tenant that row-level security hides,
- * return no rows; the probes see only the caller's tenant.
+ * Both row kinds are cut at `limit` separately, merged and cut again, so neither crowds out the other. Answers
+ * are sorted by a start time no index covers, so all of the project's session answers are read for the sort.
+ * Row-level security hides other tenants' projects, which return no rows.
  */
 export async function listProjectAgentRuns(
   client: Pool | PoolClient,
@@ -717,11 +594,7 @@ export async function listProjectAgentRuns(
   return rows.map((row) => ({ ...mapRow(row), answer: mapAnswer(row) }));
 }
 
-/**
- * Every run of each of the heartbeat occurrences `occurrenceIds` in the current tenant scope, in one statement
- * (issue gh-1914): ordered by occurrence, then `attempt`, then `started_at` and `id`, ascending. An occurrence
- * with no run, and one of another tenant, has none.
- */
+/** Ordered by occurrence, `attempt`, `started_at`, `id`. */
 export async function listRunsOfOccurrences(
   client: Pool | PoolClient,
   occurrenceIds: readonly string[],
@@ -737,10 +610,7 @@ export async function listRunsOfOccurrences(
   return rows.map(mapRow);
 }
 
-/**
- * The most recently started run of a heartbeat whose `status` is still `running`, or `null`. The
- * manual trigger (issue #1453) reads it to refuse a second run while this one is active.
- */
+/** The manual trigger reads it to refuse a second concurrent run. */
 export async function getRunningAgentRunOfHeartbeat(
   client: Pool | PoolClient,
   heartbeatId: string,
@@ -754,36 +624,25 @@ export async function getRunningAgentRunOfHeartbeat(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * Identifies one dormant conversation's `unit='session'` runs — the filter both Semp's own
- * conversation (#118, `triggered_by='user'`, `parent_run_id` null) and a delegated one (#229,
- * `triggered_by='supervisor'`, `parent_run_id` the supervisor run that key's `DelegationRegistry`
- * entry belongs to) pass to `@semprec/data`'s `listSessionAgentRunEventsFromLastCompaction`
- * (`agentRunEventsStore.ts`) to rebuild an `Entry[]` tree for a freshly woken session (#119).
- */
+/** Selects one dormant conversation's `unit='session'` runs for `listSessionAgentRunEventsFromLastCompaction`. */
 export type SessionAgentRunsFilter =
   | {
       projectItemId: string;
       triggeredBy: TriggeredBy;
-      /** `null` for Semp's own conversation (never delegated); a supervisor run id for a delegated one. */
+      /** `null` for Semp's own conversation; a supervisor run id for a delegated one. */
       parentRunId: string | null;
     }
   | {
       /**
-       * A thread's main conversation (#1560): the user runs of `threadId` with no parent. A delegated
-       * session inherits `thread_id` (#1452) but has a `parent_run_id`, so it never matches this form.
+       * A thread's main conversation. A delegated session inherits `thread_id` but has a `parent_run_id`, so it never
+       * matches.
        */
       threadId: string;
       triggeredBy: "user";
       parentRunId: null;
     };
 
-/**
- * Every run still marked `running` that is visible in the current tenant scope — orphaned after a
- * process restart, since the in-memory session registry that would otherwise be driving them is
- * gone. Startup repair (`@semprec/agent-runtime`'s `repairInterruptedRuns`) is the only caller and
- * calls it once per active tenant.
- */
+/** Orphans of a process restart. Startup repair calls it once per active tenant. */
 export async function listRunningAgentRuns(client: Pool | PoolClient): Promise<AgentRunRow[]> {
   const { rows } = await client.query<AgentRunDbRow>(
     `SELECT ${AGENT_RUN_ROW_COLUMNS}

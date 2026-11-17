@@ -102,7 +102,7 @@ describe("tenant data key store", () => {
     await createTestTenant(pool);
     await expect(
       withTransaction(pool, async (client) => {
-        // `getTestPool` connections start in tenant zero (#1067); this case is the scope-less one.
+        // `getTestPool` connections start in tenant zero; this case is the scope-less one.
         await client.query("SELECT set_config('app.tenant_id', '', true)");
         return getOrCreateTenantDataKey(client);
       }),

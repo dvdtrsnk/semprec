@@ -45,7 +45,6 @@ const peopleBodySchema = z
   })
   .strict();
 
-/** Parses the handler body at the boundary, so every assertion reads a checked shape. */
 function peopleOf(result: { status: number; body: unknown }) {
   expect(result.status).toBe(200);
   return peopleBodySchema.parse(JSON.parse(JSON.stringify(result.body))).people;
@@ -75,7 +74,6 @@ describe("GET /api/events/:id/people (issue #1757)", () => {
     await admin.end();
   });
 
-  /** The writes a fixture is built from, in the tenant in scope, all through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -90,7 +88,6 @@ describe("GET /api/events/:id/people (issue #1757)", () => {
       (await cp.createItem({ databaseId: db("events"), properties: { name, date: "2026-11-16" } })).id;
     const person = async (properties: Record<string, unknown>) =>
       (await cp.createItem({ databaseId: db("people"), properties })).id;
-    /** A participant edge written by the user, the way the generic edge `PUT` writes it. */
     const link = (eventId: string, personId: string, metadata?: Record<string, unknown>) =>
       cp.createRelation(
         { relationPropertyId: eventsPeople.id, callerItemId: eventId, targetItemId: personId, metadata },

@@ -70,15 +70,11 @@ interface Fixture {
   mailboxName: string;
   draftsFolderId: string;
   sentFolderId: string;
-  /** The thread of one received message, the received message and its Message-ID. */
   threadId: string;
   receivedId: string;
   receivedMessageId: string;
-  /** A message of a second mailbox of the tenant that has a `mail_message_meta` row and a provider thread id. */
   otherMailboxReceivedId: string;
-  /** An Emails item with no `mail_message_meta` row: a message that was never ingested. */
   unsyncedSourceId: string;
-  /** A mailbox with no Sent folder. */
   mailboxWithoutSentId: string;
 }
 
@@ -127,7 +123,6 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
     return { db, emailProperties, folderProperties, property };
   }
 
-  /** A Gmail mailbox with Drafts, Sent and Inbox folders and a received message, a second mailbox and a mailbox without Sent. */
   async function setup(provider = "gmail"): Promise<Fixture> {
     const { db, emailProperties, folderProperties, property } = await databaseIds();
     return withTransaction(runtime, async (client) => {
@@ -230,7 +225,6 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
     );
   }
 
-  /** A draft of the fixture's mailbox made through the real create route; `overrides` replace the fields of the body. */
   async function newDraft(f: Fixture, overrides: Record<string, unknown> = {}): Promise<string> {
     const created = await createMailDraftCreateRouteHandler(runtime, { maxFileSizeBytes: 100 * 1024 * 1024 })(
       ctx(
@@ -315,7 +309,7 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
     });
   }
 
-  /** Moves an item to the trash through the choke point, as a delete does; the system writer passes the mailbox hook. */
+  /** Moves an item to the trash through the choke point; the system writer passes the mailbox hook. */
   async function trash(databaseKey: "emails" | "mailboxes", itemId: string): Promise<void> {
     const { db } = await databaseIds();
     await withTransaction(runtime, async (client) => {
@@ -327,7 +321,6 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
     });
   }
 
-  /** The draft is as it was before the call: no claim, no `sent_at`, still in Drafts, and nothing was announced. */
   async function expectDraftUntouched(draftId: string): Promise<void> {
     expect(await claimOf(draftId)).toBeUndefined();
     expect(await sentAtOf(draftId)).toBeNull();
@@ -438,10 +431,10 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
   tenantIt("sends a forward without In-Reply-To, as a thread of its own", async () => {
     const f = await setup();
     const draftId = await newDraft(f, { ...replyTo(f), mode: "forward" });
-    // A forward starts with no recipient (gh-1899); the person addresses it before sending.
+    // A forward starts with no recipient; the person addresses it before sending.
     const read = await createMailDraftReadRouteHandler(runtime)(ctx({ id: draftId }, undefined));
     await createMailDraftUpdateRouteHandler(runtime)(
-      ctx({ id: draftId }, { ifVersion: read.body.updatedAt, to: [PETR] }),
+      ctx({ id: draftId }, { ifVersion: read.body.version, to: [PETR] }),
     );
     const transport = recordingTransport();
 
@@ -455,7 +448,7 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
 
   tenantIt("sends a reply whose source message was never ingested without reply headers", async () => {
     const f = await setup();
-    // The create route (gh-1899) refuses a reply to a message with no ingested metadata, so the draft is written
+    // The create route refuses a reply to a message with no ingested metadata, so the draft is written
     // through the operation underneath it, which only requires a live source item.
     const draft = await runInTenant(tenant, () =>
       withTransaction(runtime, (client) =>
@@ -590,10 +583,9 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
   );
 
   describe("a draft that is written while it is being sent", () => {
-    /** The version the update route wants from a client: what the read route answers. */
     async function versionOf(draftId: string): Promise<string> {
       const read = await createMailDraftReadRouteHandler(runtime)(ctx({ id: draftId }, undefined));
-      return read.body.updatedAt;
+      return read.body.version;
     }
 
     const updateAs = async (draftId: string, fields: Record<string, unknown>) =>
@@ -604,8 +596,8 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
     const discard = (draftId: string) => createMailDraftDiscardRouteHandler(runtime)(ctx({ id: draftId }, undefined));
 
     /**
-     * Runs `action` once, after the send route has read the draft and committed, and before it claims the draft: the
-     * route reads the mailbox's sync state between the two, through `pool.query`.
+     * Runs `action` once, after the send route has read the draft and committed and before it claims the
+     * draft: the route reads the mailbox's sync state between the two, through `pool.query`.
      */
     function betweenReadAndClaim(action: () => Promise<unknown>): void {
       // `pg`'s overloads of `query` do not fit a spy; the route calls it with a text and values only.
@@ -623,7 +615,6 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
       });
     }
 
-    /** A transport that reports it was called and then waits to be released; `inTransport` resolves at the call. */
     function holdingTransport() {
       let release = (): void => {};
       let reached = (): void => {};
@@ -1013,8 +1004,8 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
         properties: { name: "Petr", emails: PETR.address },
       });
       await withTransaction(runtime, (client) => reindexPersonEmails(client, person.id, [PETR.address]));
-      // The address index still maps the recipient to the person after the soft delete, so the finalization's people
-      // link is refused by the choke point and the transaction rolls back after the message was delivered.
+      // The address index still maps the recipient to the soft-deleted person, so the finalization's people link
+      // is refused and the transaction rolls back after the message was delivered.
       await cp.softDeleteItem(db("people"), person.id);
       const transport = recordingTransport();
 
@@ -1053,7 +1044,6 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
   );
 
   describe("through the transports of the mailbox's provider", () => {
-    /** A fake Google: one stored refresh token, and every send is recorded with its thread id and raw message. */
     function fakeGoogle(options: { tokenRefused?: boolean } = {}) {
       const sends: { threadId: string | undefined; raw: Buffer }[] = [];
       const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
@@ -1081,7 +1071,6 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
       return { sends, fetchImpl };
     }
 
-    /** A fake Microsoft: a token endpoint that accepts the stored refresh token and a `sendMail` that records the MIME. */
     function fakeMicrosoft() {
       const sends: Buffer[] = [];
       const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {

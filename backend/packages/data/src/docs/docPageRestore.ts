@@ -1,8 +1,5 @@
-// Restores a page document to the state it had at an earlier instant (issue #1617). The restore is
-// a forward update on the live document: history is never rewritten, and the update is authored
-// `user`, because the restore is an explicit user decision. An agent call is held for approval first,
-// and the approver's decision is the user's.
-// Constrained by: docs/adr/2026-10-28-page-operation-family.md, docs/adr/2026-10-28-block-model-for-page-documents.md
+// Restores a page to an earlier instant as a forward update; history is never rewritten. Authored `user`: an agent
+// call is held for approval, and the approver's decision is the user's.
 import * as Y from "yjs";
 import type { PoolClient } from "pg";
 import { getBlocksMap, getOrderArray, readPageBlocks } from "@semprec/block-model";
@@ -17,18 +14,15 @@ import * as docsStore from "./docsStore.js";
 import { assertAgentPageAccess } from "./pageOwnerDatabase.js";
 import type { DocRow } from "../types.js";
 
-/** The approval-gated check of `page.restoreVersion`, shaped like the choke point's own destructive checks (issue #1617). */
+/** Shaped like the choke point's own destructive checks. */
 export interface PageRestoreCheck {
   operation: "page.restoreVersion";
   input: { itemId: string; at: string };
-  /** The agent's project: its `write` access to the database that owns the page is checked first (issue #1844). */
+  /** Its `write` access to the page's owner database is checked first. */
   agentProjectItemId?: string;
 }
 
-/**
- * The page document of a live item. An unknown or trashed item, an item of another tenant, and an
- * item whose document is not a `page` all answer the same not-found.
- */
+/** Unknown, trashed, foreign and non-page items answer the same not-found. */
 async function requirePageDoc(client: PoolClient, itemId: string): Promise<DocRow> {
   const [item] = await getItemsByIds(client, [itemId]);
   const locked = item ? await lockItemById(client, item.databaseId, itemId) : null;
@@ -39,20 +33,14 @@ async function requirePageDoc(client: PoolClient, itemId: string): Promise<DocRo
   return doc;
 }
 
-/**
- * The document lock shared by document writes (`loadDocWithClient`, `rebaselineDocHistory`):
- * the `doc_snapshots` row, held until the caller's transaction ends. Restore locks the item first.
- */
+/** The same `doc_snapshots` row lock as `loadDocWithClient` and `rebaselineDocHistory`; the item is locked first. */
 async function lockDocument(client: PoolClient, docId: string): Promise<void> {
   await client.query(`SELECT 1 FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE`, [docId]);
 }
 
 /**
- * The approval snapshot of a restore: the page's identity and its last recorded edit. For an agent it first requires
- * write access to the database that owns the page. It checks the
- * same preconditions the restore checks (a live page, a future or unretained `at`) without replaying
- * history, and it never writes. The document lock is taken before the last-edit values are read, so
- * an edit cannot commit between this read and a restore in the same transaction.
+ * Checks the restore's preconditions without replaying history or writing. The document lock is taken before the
+ * last-edit values are read, so no edit can commit between this and a restore in the same transaction.
  */
 export async function computePageRestoreProjection(
   client: PoolClient,
@@ -83,12 +71,7 @@ export async function computePageRestoreProjection(
   return { snapshot: buildResourceSnapshot("page_restore", doc.id, projected), currentResource: projected };
 }
 
-/**
- * Restores the page of `itemId` to its state at `at`, inside the caller's transaction (issue #1617).
- * The live item is locked before the document, so deletion cannot invalidate the restore while it
- * waits. The historical read and the difference see the same document. The difference is applied
- * as one update authored `user`; a restore that changes nothing writes no update.
- */
+/** The item is locked before the document, so a deletion cannot invalidate the restore while it waits. */
 export async function restorePageVersionWithClient(
   client: PoolClient,
   itemId: string,
@@ -112,14 +95,13 @@ export async function restorePageVersionWithClient(
   return { itemId, at: at.toISOString(), blockIds };
 }
 
-/** A block's content as canonical JSON, with each `Y.Text` read as its delta, so two equal blocks compare equal. */
 function blockSnapshot(block: Y.Map<unknown>): string {
   return canonicalizeJson(
     Object.fromEntries(Array.from(block.entries(), ([key, value]) => [key, snapshotValue(value)])),
   );
 }
 
-/** A `Y.Text` delta as this model writes it: string inserts with optional inline attributes. Yjs types `toDelta()` as `any`. */
+/** Yjs types `toDelta()` as `any`. */
 type TextDelta = Array<{ insert?: unknown; attributes?: Record<string, unknown> }>;
 
 function snapshotValue(value: unknown): unknown {
@@ -128,7 +110,6 @@ function snapshotValue(value: unknown): unknown {
   return value;
 }
 
-/** Writes one field of a restored block. Block fields are scalars, `Y.Text` or plain JSON; a nested shared type is written as its JSON. */
 function writeField(block: Y.Map<unknown>, key: string, value: unknown): void {
   if (value instanceof Y.Text) {
     const text = new Y.Text();
@@ -143,13 +124,7 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
-/**
- * The block-level difference between the live document and its historical state, applied to the live
- * document inside its `transact`. A block present now but not then is removed. A block present then
- * but absent or different now is written again from its historical copy (a reset). A block identical
- * in both is not written at all, so the restore never touches a block it does not change. Document
- * order is set to the historical order when it differs.
- */
+/** Never writes a block that is identical in both states. */
 export function applyPageRestore(live: Y.Doc, historical: Y.Doc): void {
   const liveBlocks = getBlocksMap(live);
   const historicalBlocks = getBlocksMap(historical);
@@ -162,8 +137,7 @@ export function applyPageRestore(live: Y.Doc, historical: Y.Doc): void {
     }
     const liveBlock = liveBlocks.get(id);
     if (liveBlock !== undefined && blockSnapshot(liveBlock) === blockSnapshot(historicalBlock)) continue;
-    // Integrate the empty block first and fill it afterwards, as `writeBlock` does: the fields
-    // then land on the live document rather than on a detached prelim map.
+    // Integrate the empty map first so fields land on the live document, not a detached prelim map.
     const restored = new Y.Map<unknown>();
     liveBlocks.set(id, restored);
     for (const [key, value] of historicalBlock.entries()) writeField(restored, key, value);

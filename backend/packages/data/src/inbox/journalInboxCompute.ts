@@ -18,14 +18,10 @@ import type { DatabaseRow, ItemRow } from "../types.js";
 import { listInboxAttachments, type InboxAttachmentSource } from "./inboxAttachmentsStore.js";
 import { parseStoredProposalEnvelope, selectActiveSteps, type ProposalEntityKind } from "./inboxTickAction.js";
 
-/**
- * `items.computed` key (issue #106) each Journal day item caches its rendered-ready list of
- * related Inbox items under — declared into the seed's `ComputedKeyRegistry` (see
- * seed/seedInboxPipeline.ts) so a colliding regular property key on Journal is refused.
- */
+/** Declared into the seed's `ComputedKeyRegistry` so a colliding regular property key on Journal is refused. */
 export const JOURNAL_INBOX_COMPUTED_KEY = "inboxItems";
 
-/** One follow-up step of a multi-step proposal (issue #1489): canonical keys and user data only. */
+/** Canonical keys and user data only. */
 export interface JournalInboxFollowUp {
   databaseKey: string | null;
   name: string | null;
@@ -33,7 +29,7 @@ export interface JournalInboxFollowUp {
   currency: string | null;
 }
 
-/** What a `proposed` card suggests (issue #1489), read from its stored envelope; null for an unknown part. */
+/** Null for an unknown part. */
 export interface JournalInboxProposalSummary {
   entityKind: ProposalEntityKind | null;
   documentKind: string | null;
@@ -48,12 +44,8 @@ export interface JournalInboxProposalSummary {
 }
 
 /**
- * One attachment of an Inbox item as the day's cache holds it (issue gh-1969): ids and facts, never bytes. `blobId` names
- * the original file; the preview is `thumbnailBlobId`, which is `null` until the metadata job has made one and for a
- * file without a picture, and is never the original. `name` is the file name an upload recorded in the blob's storage key,
- * and `null` when the blob was stored without one: a blob made by `POST /api/blobs`, which is what a capture attaches,
- * has no file name in its key, so the `name` of an attachment captured that way is `null` until a store records one. `pageCount` is the page count of the metadata job, which does not count pages today (a PDF
- * records `pages: null`), and `null` until the job has run.
+ * Ids and facts, never bytes. `thumbnailBlobId` is never the original file. `name` is `null` for captured attachments
+ * (bare uuid keys). `pageCount` is currently always `null`: PDFs record `pages: null`.
  */
 export interface JournalInboxAttachmentSummary {
   attachmentId: string;
@@ -66,23 +58,18 @@ export interface JournalInboxAttachmentSummary {
   source: InboxAttachmentSource;
 }
 
-/** One Inbox item's derived, display-ready shape — canonical keys/enum values only (issue #106's "keep canonical stored keys English"); locale labels are resolved client-side. */
+/** Canonical keys and enum values only; locale labels are resolved client-side. */
 export interface JournalInboxItemSummary {
   id: string;
   date: string | null;
   time: string | null;
   text: string | null;
   type: { id: string; name: string; emoji: string } | null;
-  /** The item's current processing-proposal status (see inbox/inboxTypesStore.ts), or null before a proposal exists. */
+  /** Null before a proposal exists. */
   status: string | null;
-  /**
-   * What the day shows for the item (issue #1489): `pending` while no card exists or the card is
-   * `computing`, `failed` for `computeFailed`, otherwise the card's status (null if the card has none).
-   */
   processing: string | null;
-  /** The summary of a `proposed` card (issue #1489); null for every other card state. */
+  /** Null for every card state except `proposed`. */
   proposalSummary: JournalInboxProposalSummary | null;
-  /** The item's attachments in their order (issue gh-1969); `[]` when it has none. */
   attachments: JournalInboxAttachmentSummary[];
 }
 
@@ -108,7 +95,6 @@ async function resolveInboxPipelineDatabases(client: PoolClient): Promise<InboxP
   return { inbox, inboxItemTypes, processingProposals, journal, projects, areas };
 }
 
-/** The Journal day item id a given Inbox item's `journalDay` relation edge points at, or null if unresolved. */
 async function resolveJournalDayItemId(
   client: PoolClient,
   inboxDatabaseId: string,
@@ -123,7 +109,7 @@ async function resolveJournalDayItemId(
   return edge ? relationsStore.otherSide(edge, inboxItemId) : null;
 }
 
-/** The Inbox item id a given Processing proposal's `sourceInbox` relation edge points at, or null (e.g. a `kind: 'transcript'` proposal has none). */
+/** Null when there is no edge, e.g. for a `transcript` proposal. */
 async function resolveSourceInboxItemId(
   client: PoolClient,
   processingProposalsDatabaseId: string,
@@ -142,7 +128,7 @@ async function resolveSourceInboxItemId(
   return edge ? relationsStore.otherSide(edge, proposalId) : null;
 }
 
-/** `processing` (issue #1489): no card or a `computing` card is `pending`, `computeFailed` is `failed`, otherwise the card's status. */
+/** No card or a `computing` card is `pending`, `computeFailed` is `failed`, otherwise the card's status. */
 function processingOf(card: ItemRow | null, status: string | null): string | null {
   if (!card) return "pending";
   if (status === "computing") return "pending";
@@ -179,13 +165,9 @@ async function databaseKeyOf(client: PoolClient, databaseId: string): Promise<st
 }
 
 /**
- * The summary of a `proposed` card (issue #1489), read from its stored `proposal` envelope. The target is the
- * envelope's database for `database` cards and its item for the other kinds; a multi-step envelope's existing
- * item is its primary step's `itemId` when that step updates or links. Project and area are the relation
- * targets of the primary step (or of a single-step envelope) that belong to the Projects or Areas database,
- * whichever relation key carries them. Follow-ups are the active non-primary steps. The items are read in one
- * batch; a deleted item is unknown. No persisted document recognition contract currently exists;
- * integration is tracked with future attachment extraction and summary delivery.
+ * A multi-step envelope's existing item is its primary step's `itemId` when that step updates or links. Project and
+ * area are the primary step's relation targets in the Projects or Areas database, whichever relation key carries them.
+ * Items are read in one batch; a deleted item is unknown.
  */
 async function buildProposalSummary(
   client: PoolClient,
@@ -254,7 +236,7 @@ async function buildProposalSummary(
   };
 }
 
-/** Builds the display-ready Inbox-item list for one Journal day, querying Inbox purely through its `journalDay` relation (issue #106). */
+/** Reads Inbox purely through the `journalDay` relation. */
 async function computeJournalInboxItems(
   client: PoolClient,
   databases: InboxPipelineDatabases,
@@ -272,7 +254,7 @@ async function computeJournalInboxItems(
   const inboxItemIds = dayEdges.map((edge) => relationsStore.otherSide(edge, journalDayItemId));
   if (inboxItemIds.length === 0) return [];
 
-  // Excludes soft-deleted Inbox items (issue #106's "cached state updates after ... deletion") — getItemsByIds filters deleted_at.
+  // getItemsByIds filters soft-deleted items.
   const items = await itemsStore.getItemsByIds(client, inboxItemIds);
 
   const typeProperty = await propertiesStore.getPropertyByKey(client, databases.inbox.id, "type");
@@ -289,7 +271,7 @@ async function computeJournalInboxItems(
     ? await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty.id)
     : null;
 
-  // One read for the whole day; the rows come ordered by item and then position (issue gh-1969).
+  // One read for the whole day, ordered by item then position.
   const attachmentsByItem = new Map<string, JournalInboxAttachmentSummary[]>();
   for (const attachment of await listInboxAttachments(
     client,
@@ -369,7 +351,7 @@ export function journalInboxRecomputeJobKey(journalDayItemId: string): string {
   return `journal-inbox-recompute:${journalDayItemId}`;
 }
 
-/** Enqueues a recompute of one Journal day's cached Inbox-item list; must be called in the same transaction as the triggering write (mirrors rollup/recompute.ts's `enqueueRollupRecompute`). */
+/** Must be called in the same transaction as the triggering write. */
 export async function enqueueJournalInboxRecompute(client: PoolClient, journalDayItemId: string): Promise<void> {
   await enqueueJob(
     client,
@@ -379,7 +361,7 @@ export async function enqueueJournalInboxRecompute(client: PoolClient, journalDa
   );
 }
 
-/** Resolves `inboxItemId`'s Journal day and enqueues its recompute; a no-op if the pipeline databases or the day edge aren't resolvable. */
+/** A no-op when the pipeline databases or the day edge are not resolvable. */
 export async function enqueueJournalInboxRecomputeForInboxItem(client: PoolClient, inboxItemId: string): Promise<void> {
   const databases = await resolveInboxPipelineDatabases(client);
   if (!databases) return;
@@ -388,7 +370,7 @@ export async function enqueueJournalInboxRecomputeForInboxItem(client: PoolClien
   await enqueueJournalInboxRecompute(client, journalDayItemId);
 }
 
-/** Resolves `proposalId`'s source Inbox item (via `sourceInbox`) and its Journal day, then enqueues that day's recompute — for confirm/reject/revise (issue #105), which touch the proposal, not the Inbox item itself. */
+/** For proposal actions, which touch the proposal rather than the Inbox item. */
 export async function enqueueJournalInboxRecomputeForProposal(client: PoolClient, proposalId: string): Promise<void> {
   const databases = await resolveInboxPipelineDatabases(client);
   if (!databases) return;
@@ -400,16 +382,16 @@ export async function enqueueJournalInboxRecomputeForProposal(client: PoolClient
 }
 
 /**
- * The actual recompute: one query for the day's Inbox items, written to `items.computed` (issue #106), always a full recompute of one day's cell. Mirrors rollup/recompute.ts's `recomputeRollupCell`: one transaction holding `FOR UPDATE` on the day item so overlapping recomputes serialise and the list written is computed from the latest committed state, with the invalidation announced only after the commit.
+ * Always a full recompute of one day, in one transaction holding `FOR UPDATE` on the day item so overlapping
+ * recomputes serialise and use the latest committed state; the invalidation is announced after the commit.
  */
 export async function recomputeJournalInboxDay(pool: Pool, journalDayItemId: string): Promise<void> {
   await withTransaction(pool, (client) => recomputeJournalInboxDayWithClient(client, journalDayItemId));
 }
 
 /**
- * `recomputeJournalInboxDay`'s body on the caller's managed transaction: the search job of a Journal
- * day (`search/itemSearchFanout.ts`) runs it in its own transaction, so the day's cache and its
- * document are rewritten by this one owner. It re-resolves the pipeline and locks the day itself.
+ * The search job of a Journal day runs this in its own transaction, so the day's cache and its search document have
+ * one owner. Re-resolves the pipeline and locks the day itself.
  */
 export async function recomputeJournalInboxDayWithClient(client: PoolClient, journalDayItemId: string): Promise<void> {
   const databases = await resolveInboxPipelineDatabases(client);
@@ -424,8 +406,8 @@ export async function recomputeJournalInboxDayWithClient(client: PoolClient, jou
     JOURNAL_INBOX_COMPUTED_KEY,
     items,
   );
-  // The day's search `body` quotes these Inbox entries (issue #1658). Same transaction as the computed write, so
-  // the index never quotes a list that did not commit; the stored page text is kept, so the page is not reconverted.
+  // Same transaction as the computed write, so the index never quotes a list that did not commit; the stored page
+  // text is kept, so the page is not reconverted.
   await indexItem(client, journalDayItemId);
   runAfterCommit(client, () =>
     notifyInvalidation({
@@ -438,11 +420,7 @@ export async function recomputeJournalInboxDayWithClient(client: PoolClient, jou
   );
 }
 
-/**
- * Whether `itemId` is a live item of this tenant's Journal while the Inbox pipeline resolves, the
- * case in which `recomputeJournalInboxDayWithClient` indexes it. A plain read: it decides which owner
- * runs, and that owner locks and re-reads the day itself.
- */
+/** A plain read: it only decides which owner runs, and that owner locks and re-reads the day. */
 export async function isLiveJournalDay(client: PoolClient, itemId: string): Promise<boolean> {
   const databases = await resolveInboxPipelineDatabases(client);
   if (!databases) return false;

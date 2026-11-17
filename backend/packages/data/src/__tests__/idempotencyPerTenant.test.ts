@@ -8,7 +8,6 @@ import { ConflictError } from "../errors.js";
 
 let pool: Pool;
 
-/** Runs `fn` in a transaction on the owner role that is always rolled back. */
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
   let primary: unknown;
@@ -39,7 +38,6 @@ async function scopeTo(client: PoolClient, tenantId: string): Promise<void> {
   await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
 }
 
-/** Adds a second tenant with one database each, and runs as `semprec_data`. */
 async function twoTenants(client: PoolClient) {
   await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
   const { rows } = await client.query<{ id: string }>("SELECT id FROM tenants");

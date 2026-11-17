@@ -1,17 +1,15 @@
 import "../../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../../chokePoint/relationsStore.js";
 import { withTransaction } from "../../db/pool.js";
-import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { loadFullModuleRegistry } from "../../manifest/fullModuleRegistry.js";
 import { generateSchemaProjection } from "../../manifest/schemaProjection.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createMailThread, reassignThread } from "../mailMessageMetaStore.js";
-import { runThreadTasksCutoverMigration } from "../threadTasksCutoverMigration.js";
 
 let admin: Pool;
 let runtime: Pool;
@@ -33,17 +31,6 @@ async function definitionRows(propertyId: string) {
   return rows;
 }
 
-const schemaSnapshot = async () =>
-  (
-    await admin.query<{ property: unknown; definition: unknown }>(
-      `SELECT to_jsonb(p) AS property, to_jsonb(r) AS definition FROM properties p
-       LEFT JOIN relation_definitions r ON r.property_id_a = p.id OR r.property_id_b = p.id
-       WHERE p.database_id = $1 ORDER BY p.id`,
-      [databases.threads],
-    )
-  ).rows;
-
-/** A new mail thread and its Threads item, through the production thread writer. */
 async function newThread(subject: string): Promise<{ threadId: string; itemId: string }> {
   return runInTenant(tenant, () =>
     withTransaction(runtime, async (client) => {
@@ -86,7 +73,7 @@ describe("Threads.tasks relation (issue #1612)", () => {
     await admin.end();
   });
 
-  it("exists on a fresh install as a user-owned one-to-many relation to Tasks, and the cutover adds nothing there", async () => {
+  it("exists on a fresh install as a user-owned one-to-many relation to Tasks", async () => {
     const property = await tasksProperty();
     expect(property).toMatchObject({
       type: "relation",
@@ -95,41 +82,6 @@ describe("Threads.tasks relation (issue #1612)", () => {
       config: { targetDatabaseId: databases.tasks },
     });
     expect(await definitionRows(property!.id)).toEqual([{ cardinality: "one_to_many", property_id_b: null }]);
-    const before = await schemaSnapshot();
-    await runAsSystem("test:thread-tasks", () => runTenantCutoverMigrations(runtime));
-    expect(await schemaSnapshot()).toEqual(before);
-  });
-
-  it("is added to an existing tenant by the cutover, and a second run adds nothing", async () => {
-    const seeded = await tasksProperty();
-    // A tenant whose Threads schema predates issue #1612: the locked schema cannot lose a property publicly.
-    await runInTenant(tenant, async () => {
-      await runtime.query("DELETE FROM relation_definitions WHERE property_id_a = $1", [seeded!.id]);
-      const removed = await runtime.query("DELETE FROM properties WHERE id = $1", [seeded!.id]);
-      expect(removed.rowCount).toBe(1);
-    });
-    await runAsSystem("test:thread-tasks", () => runTenantCutoverMigrations(runtime));
-    const migrated = await tasksProperty();
-    expect(migrated).toMatchObject({
-      type: "relation",
-      owner: "user",
-      name: null,
-      config: { targetDatabaseId: databases.tasks },
-    });
-    expect(await definitionRows(migrated!.id)).toEqual([{ cardinality: "one_to_many", property_id_b: null }]);
-    const before = await schemaSnapshot();
-    await runAsSystem("test:thread-tasks-replay", () => runTenantCutoverMigrations(runtime));
-    expect(await schemaSnapshot()).toEqual(before);
-  });
-
-  it("does nothing in a tenant without a Threads database", async () => {
-    const empty = await createTestTenant(admin);
-    await runInTenant(empty, () => runThreadTasksCutoverMigration(runtime));
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM properties WHERE tenant_id = $1",
-      [empty],
-    );
-    expect(rows[0]?.n).toBe(0);
   });
 
   it("links one thread to several tasks but refuses a second thread for a task that already has one", async () => {

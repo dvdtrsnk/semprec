@@ -2,18 +2,14 @@ import type { PoolClient } from "pg";
 
 export interface PublishFindingInput {
   kind: string;
-  /** Identifies "the same finding" across runs, scoped to `kind` — e.g. the drifted id itself. */
+  /** Identifies the same finding across runs within `kind`, e.g. the drifted id. */
   dedupeKey: string;
   payload: Record<string, unknown>;
 }
 
 /**
- * Inserts a `manifest_drift_findings` row unless an active (unresolved) finding with the same
- * `(kind, dedupeKey)` already exists in the current tenant — the dedupe is per tenant, and the
- * `tenant_id` column default fills the tenant from the scope. The partial unique index
- * `manifest_drift_findings_tenant_active_idx` (migration 0064) is the conflict arbiter and what
- * makes two concurrent callers reporting the same drift race safely: the loser's insert is a
- * no-op instead of a duplicate active finding.
+ * Per-tenant dedupe of active findings. The partial unique index
+ * `manifest_drift_findings_tenant_active_idx` arbitrates, so concurrent reporters cannot duplicate.
  */
 export async function publishFinding(client: PoolClient, input: PublishFindingInput): Promise<void> {
   await client.query(
@@ -23,13 +19,7 @@ export async function publishFinding(client: PoolClient, input: PublishFindingIn
   );
 }
 
-/**
- * Resolves every active finding of `kind` whose `dedupeKey` is not in `stillActiveDedupeKeys` —
- * i.e. whatever the current run no longer reproduces. Naturally idempotent under concurrent
- * runs: a second caller finds zero matching rows left to update, so there is no conflict to
- * resolve. Row-level security confines the update to the current tenant's findings, so another
- * tenant's active findings of the same kind are never resolved.
- */
+/** Resolves what the current run no longer reproduces. Idempotent; RLS confines it to the tenant. */
 export async function resolveFindingsNotIn(
   client: PoolClient,
   kind: string,

@@ -95,7 +95,6 @@ async function matches(client: PoolClient, itemId: string, text: string): Promis
 async function has(itemId: string, text: string): Promise<boolean> {
   return inTenant(() => withTransaction(pool, (client) => matches(client, itemId, text)));
 }
-/** The queued job's run time, read from Graphile Worker's public `jobs` view. */
 async function queuedRunAt(): Promise<Date[]> {
   const result = await admin.query<{ run_at: Date }>(
     "SELECT run_at FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY id",
@@ -103,7 +102,6 @@ async function queuedRunAt(): Promise<Date[]> {
   );
   return result.rows.map((row) => row.run_at);
 }
-/** Drains the queue once with the production API task list. */
 async function runPageTextJobs(): Promise<void> {
   const taskList = createApiCoreTaskList(pool, createActionRegistry());
   const handler = taskList[taskName];

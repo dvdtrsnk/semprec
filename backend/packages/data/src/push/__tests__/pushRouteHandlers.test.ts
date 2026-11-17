@@ -22,11 +22,6 @@ async function makeIdentity(email = "person@example.com") {
   return { user: { id: session.user.id }, session: { id: session.session.id } };
 }
 
-/**
- * Issue #239's `schemaCore`-owned push-subscription custom-route handler factories, exercised
- * directly against the real functions they thinly wrap (#150's `registerPushSubscription`/
- * `revokePushSubscription`).
- */
 describe("push subscription custom route handlers (issue #239)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();

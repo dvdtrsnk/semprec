@@ -62,7 +62,6 @@ function result(
   });
 }
 
-/** A call and its result, as the run log stores them. */
 function played(call: Call, outcome?: Parameters<typeof result>[1]) {
   return [use(call), result(call, outcome)];
 }

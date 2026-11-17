@@ -1,31 +1,15 @@
-/**
- * Dedupe keys of the `agents` problems that heartbeat ticks and agent runs raise (issue #1911).
- * `semp_problems.dedupe_key` is scoped to the tenant, not to the category, so each builder
- * carries its own prefix.
- */
+/** `semp_problems.dedupe_key` is tenant-scoped, not category-scoped, so each key carries a prefix. */
 
-/**
- * The one problem of a heartbeat whose tick fails, whichever of the sweep, the run action or the tick
- * reply reports it and however many attempts and notifications the failure produced.
- */
 export function agentHeartbeatProblemKey(heartbeatId: string): string {
   return `agents:heartbeat:${heartbeatId}`;
 }
 
-/**
- * The one problem of a failed run that is neither a heartbeat tick nor a chat turn, keyed by the first run
- * of its retry chain (the run reached by following `retry_of_run_id` until it is `NULL`) so every attempt
- * of the chain merges into it.
- */
+/** The first run of the retry chain (follow `retry_of_run_id` to `NULL`), so every attempt merges. */
 export function agentRunProblemKey(firstRunId: string): string {
   return `agents:run:${firstRunId}`;
 }
 
-/**
- * The one problem of a Semp reply that failed or came out incomplete (issue #1931), keyed by the message the
- * reply answers (`semp_messages.reply_to_message_id`), so every attempt of that reply, the manual retries of
- * issue #1926 included, merges into it.
- */
+/** Every attempt and manual retry of a reply merges. */
 export function agentReplyProblemKey(replyToMessageId: string): string {
   return `agents:reply:${replyToMessageId}`;
 }

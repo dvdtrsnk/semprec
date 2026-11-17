@@ -5,15 +5,10 @@ import { UUID_RE } from "../docs/pageOwnerDatabase.js";
 import { isAllowedInboxAttachmentMime } from "./attachmentTypes.js";
 import { listInboxAttachments, type InboxAttachmentSource, type NewInboxAttachment } from "./inboxAttachmentsStore.js";
 
-// The attachments of `POST /api/inbox/items` (issue gh-1963): the shape of the body's `attachments`, the check that
-// every named blob may be attached, and the list the capture answers with.
-
-/** The most attachments one capture may carry. */
 export const MAX_CAPTURE_ATTACHMENTS = 10;
 
 const ATTACHMENT_SOURCES: readonly InboxAttachmentSource[] = ["camera", "scan", "photoLibrary", "files", "share"];
 
-/** One attachment as the capture answers with it. `byteSize` is a number, as in the answer of `POST /api/blobs`. */
 export interface CaptureAttachmentResponse {
   attachmentId: string;
   blobId: string;
@@ -31,10 +26,8 @@ function invalidAttachments(message: string): ValidationError {
 }
 
 /**
- * The `attachments` of a capture body: absent means none, otherwise an array of at most `MAX_CAPTURE_ATTACHMENTS`
- * objects holding exactly a UUID string `blobId` and a `source` of the five values, no blob named twice (compared
- * case-insensitively). Every refusal is a `ValidationError` on `attachments`, as is a blob id that is not a UUID, which
- * no blob can have. Whether a blob exists and may be attached is `requireAttachableBlobs`'s question.
+ * Every refusal, including a non-UUID blob id, is a `ValidationError` on `attachments`. Duplicate blob ids are
+ * compared case-insensitively. Existence and type are checked by `requireAttachableBlobs`.
  */
 export function parseCaptureAttachments(value: unknown): NewInboxAttachment[] {
   if (value === undefined) return [];
@@ -66,10 +59,8 @@ export function parseCaptureAttachments(value: unknown): NewInboxAttachment[] {
 }
 
 /**
- * Checks, in the caller's transaction and in the order given, that each attachment names a blob of the caller's tenant
- * and that its stored mime type is one an Inbox attachment may have, and keeps those blobs from being deleted until
- * the transaction ends. A blob that does not exist and one of another tenant are the same `ValidationError` on
- * `attachments`; a blob of a type outside the list is an `UnsupportedAttachmentTypeError` naming it.
+ * Locks the blobs against deletion until the transaction ends. A missing blob and another tenant's blob are the same
+ * `ValidationError`.
  */
 export async function requireAttachableBlobs(client: PoolClient, attachments: NewInboxAttachment[]): Promise<void> {
   if (attachments.length === 0) return;
@@ -85,7 +76,6 @@ export async function requireAttachableBlobs(client: PoolClient, attachments: Ne
   }
 }
 
-/** The attachments of one Inbox item in their order, as the capture answers with them. */
 export async function readCaptureAttachments(
   client: PoolClient,
   inboxItemId: string,

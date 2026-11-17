@@ -28,15 +28,8 @@ import {
 import { logger } from "./logger.js";
 
 /**
- * Writes the reference `heartbeat_error` notification (issue #237) for a heartbeat that just
- * exhausted its retries. `transitionInstance` is the firing queue job's own `id`: stable across
- * that job's own retries (so a crash between this insert and the job's own final failure can't
- * duplicate it on redelivery) but distinct for every new fire — a later, independent failure of
- * the same heartbeat is a different job and so is never deduped away.
- *
- * Also raises the heartbeat's `agents` problem (issue #1911) in the same transaction, which merges with
- * the one the failed run raised. Silently skips both when the current tenant has no user: there is no
- * `users` row to bind them to, and the heartbeat failure itself is still recorded either way.
+ * `transitionInstance` is the queue job id: stable across its retries, new for every later fire. Also
+ * raises the `agents` problem; both are skipped when the tenant has no user.
  */
 async function notifyHeartbeatError(
   client: Parameters<typeof writeNotification>[0],
@@ -57,13 +50,7 @@ async function notifyHeartbeatError(
   await raiseAgentHeartbeatProblem(client, { userId, heartbeatId: heartbeat.id, occurrenceKey: jobId });
 }
 
-/**
- * Records that a heartbeat's handler returned and, for a heartbeat that is not a `core.agentRun`, resolves its
- * `agents` problem in the same transaction (issue #1915): a deterministic action (library processing, drift check
- * and the other core actions) starts no agent run, so the handler returning is the only recovery signal it has.
- * A `core.agentRun` heartbeat is left to the tick that closes its run, because the handler returning only means
- * the run was started or continued, not that the tick recovered.
- */
+/** Deterministic actions start no run, so returning is their recovery signal; `core.agentRun` waits for its tick. */
 async function recordHeartbeatHandlerSuccess(
   client: PoolClient,
   heartbeat: { id: string; actionId: string },
@@ -72,13 +59,7 @@ async function recordHeartbeatHandlerSuccess(
   if (heartbeat.actionId !== CORE_AGENT_RUN_ACTION_ID) await resolveAgentHeartbeatProblem(client, heartbeat.id);
 }
 
-/**
- * Resolved fresh on every call (never cached) so a module activated or deactivated between
- * two sweeps/fires is reflected immediately — the same "always evaluate current activation"
- * contract `ModuleRegistry`'s own projections make. Also the rule-kind registry every production
- * caller of `getSempThread` passes, so a tick thread's header validates its rule as the scheduler does
- * (issue #1562).
- */
+/** Never cached, so module (de)activation is reflected immediately; also used for tick-thread headers. */
 export async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): Promise<HeartbeatRuleKindRegistry> {
   if (!moduleRegistry) return new Map();
   const definitions = await moduleRegistry.getHeartbeatRuleKindDefinitions();
@@ -86,22 +67,12 @@ export async function resolveModuleRuleKinds(moduleRegistry?: ModuleRegistry): P
 }
 
 /**
- * Runs once per active tenant (`forEachActiveTenant`), each tenant inside its own scope, so its
- * heartbeats are scheduled in its own settings timezone and its occurrences and fire jobs carry its
- * `tenant_id`. Per tenant: one transaction per `sweepDueHeartbeats` chunk, looping until a short chunk
- * reports the pass exhausted. A chunk that throws ends only that tenant's pass — the chunks already
- * committed stay committed, the other tenants are still swept, and the helper rethrows the failures
- * together afterwards so the task fails and the remaining due rows are picked up by the retry or next
- * minute's tick.
- *
- * `MAX_SWEEP_CHUNKS_PER_TENANT` bounds one tenant's pass to `MAX_SWEEP_CHUNKS_PER_TENANT *
- * SWEEP_CHUNK_SIZE` (5 000) rows; anything beyond that waits for the next minute's tick, so a tick
- * handles at most active tenants × 5 000 rows and one tenant's backlog cannot use up another's tick.
- * See `docs/adr/2026-10-06-system-work-fans-out-per-tenant.md`.
+ * Per active tenant, one transaction per chunk; a failing chunk ends only that tenant's pass and failures
+ * are rethrown together. Caps a tenant's pass at 5 000 rows per tick so no backlog starves another tenant.
  */
 export const MAX_SWEEP_CHUNKS_PER_TENANT = 50;
 
-/** Registered against the queue's cron table at a static "every minute" entry — no in-process setInterval. */
+/** Scheduled by the queue's every-minute cron entry, not an in-process interval. */
 export async function handleHeartbeatSweepTask(
   pool: Pool,
   moduleRegistry?: ModuleRegistry,
@@ -119,12 +90,7 @@ export async function handleHeartbeatSweepTask(
   });
 }
 
-/**
- * Asserts the heartbeat's action actually belongs on the task name that just dispatched to it
- * (issue #222's split): a job misrouted onto the wrong runtime's fire task — e.g. a stale
- * `heartbeatFireCore` job for an action later changed to `core.agentRun` — fails loudly here
- * instead of running (or silently starting an agent session on the API runtime).
- */
+/** Fails loudly when a job landed on the wrong runtime's fire task instead of running it there. */
 function assertActionAffinity(actionId: string, expectedAffinity: TaskAffinity): void {
   const resolvedTaskName = resolveHeartbeatFireTaskName(actionId);
   const actualAffinity: TaskAffinity = resolvedTaskName === AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT ? "agents" : "api";
@@ -137,20 +103,9 @@ function assertActionAffinity(actionId: string, expectedAffinity: TaskAffinity):
 }
 
 /**
- * Runs the heartbeat's action handler. On the final retry attempt (max_attempts: 3
- * total), a failure is recorded to `last_error` and a `heartbeat_error` notification
- * is written in the same transaction — whether it came from the handler itself or from the
- * preparation (scheduled path only), the affinity check, or the handler lookup that precede it.
- * `payload` carries exactly one of five discriminators (issue #213): `occurrenceId` for a sweep-driven scheduled fire, `itemId` for an `onItemEvent`
- * fire, `triggeredByRunId` for a `heartbeat.trigger` manual fire by an agent, `triggeredByUserId`
- * for a manual fire by a person (issue #1453), or `retryOfRunId` for the retry of a failed run by a
- * person (issue #1908) — zero or more than one is rejected with `validation_failed` rather than guessed at.
- *
- * Shared by both of `heartbeatFire`'s split task names (issue #222) — `createHeartbeatFireCoreTask`
- * and `createHeartbeatFireAgentTask` below are thin wrappers over this with their own
- * `expectedAffinity`, kept as one implementation since the two runtimes will host it as the same
- * handler until #91 gives each its own composition root; `worker.ts`'s single-process test task
- * list registers both.
+ * On the final attempt (of 3), a failure of the handler or its setup is recorded with a `heartbeat_error`
+ * notification. `payload` carries exactly one of `occurrenceId`, `itemId`, `triggeredByRunId`,
+ * `triggeredByUserId`, `retryOfRunId`; otherwise `validation_failed`.
  */
 function createHeartbeatFireTaskForAffinity(
   pool: Pool,
@@ -237,15 +192,13 @@ function createHeartbeatFireTaskForAffinity(
         readClient.release();
       }
     } catch (err) {
-      // The heartbeat's rule kind belongs to a module deactivated between the sweep enqueuing
-      // this job and it running now: degrade the same way the sweep does (record the failure,
-      // don't fire) instead of retrying up to max_attempts and dead-lettering with no
-      // last_error recorded at all — retrying can't un-deactivate the module.
+      // The rule kind's module was deactivated after enqueue: record the failure and do not fire, as the
+      // sweep does; retrying cannot reactivate the module.
       const message = err instanceof Error ? err.message : String(err);
       await recordHeartbeatFailure(pool, payload.heartbeatId, message);
       return;
     }
-    if (!heartbeat) return; // heartbeat was deleted after this job was enqueued
+    if (!heartbeat) return; // deleted after enqueue
 
     const isFinalAttempt = helpers.job.attempts >= helpers.job.max_attempts;
     try {
@@ -275,7 +228,7 @@ function createHeartbeatFireTaskForAffinity(
   };
 }
 
-/** `heartbeatFireCore` (issue #222): every deterministic heartbeat action, including library processing. */
+/** Every deterministic heartbeat action, including library processing. */
 export function createHeartbeatFireCoreTask(
   pool: Pool,
   registry: ActionRegistry,
@@ -284,7 +237,7 @@ export function createHeartbeatFireCoreTask(
   return createHeartbeatFireTaskForAffinity(pool, registry, "api", moduleRegistry);
 }
 
-/** `heartbeatFireAgent` (issue #222): the heartbeat actions that start or continue an agent session (`core.agentRun`, `core.journalWeeklyCleanup`). */
+/** Actions that start or continue an agent session. */
 export function createHeartbeatFireAgentTask(
   pool: Pool,
   registry: ActionRegistry,
@@ -294,17 +247,9 @@ export function createHeartbeatFireAgentTask(
 }
 
 /**
- * The `occurrenceId` branch of `createHeartbeatFireTaskForAffinity` (issue #213, extended by
- * #84's generation protocol): a sweep-driven fire for `dailyTime`/`weekly`/`interval`/`everyNDays`.
- * `prepareHeartbeatOccurrenceFire` does the locking, generation check, snapshot comparison, and
- * (on a genuine first attempt) the scheduling-state update, all before this ever calls the action
- * handler.
- *
- * On the final attempt, a failure of preparation, the affinity check or the handler lookup is
- * closed out by `recordHeartbeatFireSetupFailure` (restoring a floating rule's `next_fire_at` the
- * sweep cleared, recording `last_error`, failing the occurrence) plus the `heartbeat_error`
- * notification; a handler failure is closed out by `recordHeartbeatFailure`/`failHeartbeatOccurrence`.
- * Either way the original error is rethrown so the queue records the job as failed.
+ * Sweep-driven fire; `prepareHeartbeatOccurrenceFire` decides first. On the final attempt a setup failure is
+ * closed out by `recordHeartbeatFireSetupFailure`, a handler failure by `failHeartbeatOccurrence`; the
+ * original error is always rethrown.
  */
 async function runScheduledOccurrenceFire(
   pool: Pool,
@@ -322,9 +267,8 @@ async function runScheduledOccurrenceFire(
   let handler: ActionHandler;
   try {
     const prep = await prepareHeartbeatOccurrenceFire(pool, heartbeatId, occurrenceId, generation, moduleRuleKinds);
-    // "missing": deleted since enqueue; "stale": superseded by a reactivation; "cancelled": disabled
-    // or stale snapshot; "degraded": rule kind's module went inactive (failure already recorded) —
-    // none of these execute the handler.
+    // missing (deleted), stale (superseded by reactivation), cancelled (disabled or stale snapshot),
+    // degraded (module inactive, failure already recorded): none run the handler.
     if (prep.outcome !== "proceed") return;
 
     heartbeat = prep.heartbeat;

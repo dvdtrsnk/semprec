@@ -31,7 +31,7 @@ import { handleObservabilityCheckSystemTask } from "../observability/observabili
 
 let pool: Pool;
 
-/** Storage for the sync pass in the merge test; that pass fails before any write reaches it. */
+/** The sync pass fails before any write reaches storage. */
 const unusedStorage: BlobStorageWriter = {
   writeStream: () => Promise.reject(new Error("storage is not used by this test")),
   delete: () => Promise.reject(new Error("storage is not used by this test")),
@@ -40,7 +40,6 @@ const unusedStorage: BlobStorageWriter = {
   },
 };
 
-/** Tenant zero's admin by default; a further tenant's user when `tenantId` is given. */
 async function createTestUser(tenantId = getTenantZeroId(), role: "admin" | "member" = "admin"): Promise<string> {
   const passwordHash = await hashPassword("s3cret-password");
   const user = await createUser(pool, {
@@ -83,14 +82,13 @@ async function notificationsFor(sourceId: string): Promise<Array<{ kind: string;
   return rows;
 }
 
-/** Fresh beats for every fixed process so an unrelated process never triggers `process_stale` in a test that isn't about it. */
+/** So an unrelated process never triggers `process_stale`. */
 async function markAllProcessesFresh(): Promise<void> {
   for (const process of ["api", "agents", "transcribe", "ai-gateway"]) {
     await upsertProcessHeartbeat(pool, { process, pid: 1, version: "1.0.0" }, new Date());
   }
 }
 
-/** A real Mailbox item (the liveness list joins `items`) plus its sync-state row, in tenant zero. */
 async function createActiveMailbox(): Promise<string> {
   return runInTenant(getTenantZeroId(), () =>
     withTransaction(pool, async (client) => {
@@ -162,12 +160,10 @@ describe("observability.checkSystem (issue #169)", () => {
       { kind: "process_stale", source_table: "observability_checks" },
     ]);
 
-    // A second tick, still stale: state is read from Postgres, not memory, so this also covers
-    // "notifies once across restarts" — a fresh process re-running this task sees the same row.
+    // State is read from Postgres, so this also covers "notifies once across restarts".
     await runCheck();
     expect(await notificationsFor(afterFirst!.id)).toHaveLength(1);
 
-    // Recovery.
     await upsertProcessHeartbeat(pool, { process: "agents", pid: 1, version: "1.0.0" }, new Date());
     await runCheck();
     const afterRecovery = await getCheck("process:agents");
@@ -206,8 +202,7 @@ describe("observability.checkSystem (issue #169)", () => {
     expect(alerting?.status).toBe("alerting");
     expect(await notificationsFor(alerting!.id)).toMatchObject([{ kind: "queue_backlog" }]);
 
-    // Drain to just below the alert threshold but still above the recover threshold (half):
-    // hysteresis must keep this alerting, not flip back to ok.
+    // Below the alert threshold but above the recover threshold: hysteresis keeps it alerting.
     await pool.query(
       `DELETE FROM graphile_worker._private_jobs WHERE id IN (
          SELECT id FROM graphile_worker._private_jobs ORDER BY id LIMIT 21
@@ -275,8 +270,7 @@ describe("observability.checkSystem (issue #169)", () => {
 
     const erroredMailbox = randomUUID();
     await ensureMailAccountSyncState(pool, { itemId: erroredMailbox, syncMode: "imap" });
-    // A connection-limit backoff pushes next_expected_activity_at into the future while last_error
-    // stays set — this account is not "due" for another sync pass, but must still alert.
+    // A connection-limit backoff defers next_expected_activity_at while last_error stays set: not due, but must alert.
     await recordSyncError(pool, erroredMailbox, "boom", "reauthorization");
     await pool.query(
       `UPDATE mail_account_sync_state SET next_expected_activity_at = now() + interval '1 hour' WHERE item_id = $1`,
@@ -401,7 +395,6 @@ describe("observability.checkSystem (issue #169)", () => {
   });
 
   describe("per-mailbox process liveness (issue #1000)", () => {
-    /** `beatAt` is null when the mailbox has never beaten, an ISO timestamp once it has. */
     type LivenessNotificationRow = {
       kind: string;
       source_table: string;
@@ -542,7 +535,6 @@ describe("observability.checkSystem (issue #169)", () => {
       return rows;
     }
 
-    /** A sync-state row whose next pass is already overdue, so the check alerts without any failure. */
     async function overdueMailbox(): Promise<string> {
       const mailboxItemId = randomUUID();
       await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
@@ -578,7 +570,7 @@ describe("observability.checkSystem (issue #169)", () => {
       await createTestUser();
       const mailboxItemId = randomUUID();
       await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
-      // Stored through the store function a failed pass uses; the sync job's own report is covered in mailSync.test.ts.
+      // The sync job's own report is covered in mailSync.test.ts.
       await recordSyncError(pool, mailboxItemId, "token revoked", "reauthorization");
 
       await runCheck();
@@ -679,8 +671,7 @@ describe("observability.checkSystem (issue #169)", () => {
       await runCheck();
       expect(await mailProblems(mailboxItemId)).toMatchObject([{ resolved_at: null }]);
 
-      // Fixture: a successful pass clears last_error. The sync job resolves its own problem in that
-      // pass; this test covers the check's recovery.
+      // Fixture: a successful pass clears last_error; this test covers the check's recovery.
       await pool.query(`UPDATE mail_account_sync_state SET last_error = NULL WHERE item_id = $1`, [mailboxItemId]);
       await runCheck();
 
@@ -900,9 +891,8 @@ describe("observability.checkSystem (issue #169)", () => {
     }
 
     /**
-     * Makes every `notifications` insert for `userId` raise. The id reaches the trigger as a row of a
-     * test table written with a bound parameter, never spliced into the function body; the
-     * SECURITY DEFINER function reads that table as its owner, so the runtime role needs no grant.
+     * The id reaches the trigger through a test table with a bound parameter; the SECURITY DEFINER function
+     * reads it as its owner, so the runtime role needs no grant.
      */
     async function failNotificationsFor(userId: string): Promise<void> {
       await pool.query("CREATE TABLE test_failing_notification_users (user_id uuid PRIMARY KEY)");
@@ -971,8 +961,7 @@ describe("observability.checkSystem (issue #169)", () => {
     });
 
     it("re-alerts the admins already written on each new job id while one admin's write keeps failing", async () => {
-      // The documented at-least-once bound: the rolled-back transition is retried under a new
-      // transitionInstance by the next tick, so dedupe holds only within one job's retries.
+      // At-least-once: the rolled-back transition is retried under a new transitionInstance, so dedupe holds only within one job's retries.
       await runCheck(randomUUID(), runtimePool);
       await makeAgentsStale();
       try {

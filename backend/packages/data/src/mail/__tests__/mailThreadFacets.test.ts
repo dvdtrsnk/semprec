@@ -29,7 +29,6 @@ let storage: LocalFsBlobStorageWriter;
 let tenant: string;
 let foreign: string;
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -72,17 +71,11 @@ async function seededIds(tenantId: string) {
 }
 
 interface SeededThread {
-  /** The Message-ID of the thread's first message, for a reply to refer to. */
   messageId: string;
-  /** The Emails item of that message. */
   emailItemId: string;
 }
 
-/**
- * One tenant's fixture: one mailbox, and every row written through the writers production uses.
- * `behavior` is what a folder of that mailbox is: "folder" as the IMAP and Graph passes write it, or
- * "label" as the Gmail pass writes it.
- */
+/** `behavior` "folder" is how the IMAP and Graph passes write a mailbox's folders, "label" how the Gmail pass does. */
 async function facetsFixture(tenantId: string, behavior: "folder" | "label" = "folder") {
   const ids = await seededIds(tenantId);
   const chokePoint = createChokePoint(runtime);
@@ -95,7 +88,6 @@ async function facetsFixture(tenantId: string, behavior: "folder" | "label" = "f
   });
   const folders = new Map<string, string>();
 
-  /** The mailbox's folder of `specialPurpose`, through folder discovery, created on first use. */
   const folder = async (specialPurpose: string): Promise<string> => {
     const known = folders.get(specialPurpose);
     if (known !== undefined) return known;
@@ -115,11 +107,8 @@ async function facetsFixture(tenantId: string, behavior: "folder" | "label" = "f
   };
 
   /**
-   * One message through the ingest writer; `replyTo` joins it to that thread. `placement` is the
-   * special purpose of its folder, or of each of its folders: the message is then ingested once per
-   * folder under one Message-ID, which leaves one Emails item with an edge to every folder. That is a
-   * Gmail message that carries several labels (`reconcileGmailAccount` ingests it once per label), or
-   * a message that lies in several folders of an IMAP or Graph mailbox.
+   * With several `placement`s the message is ingested once per folder under one Message-ID, leaving one Emails item
+   * with an edge to every folder: a Gmail message with several labels, or an IMAP or Graph message in several folders.
    */
   const message = async (placement: string | readonly string[], replyTo?: SeededThread): Promise<SeededThread> => {
     const messageId = `<${randomUUID()}@example.test>`;
@@ -165,7 +154,6 @@ async function facetsFixture(tenantId: string, behavior: "folder" | "label" = "f
 
   const area = (name: string): Promise<string> => item(ids.areasDatabaseId, name);
 
-  /** A Projects item, in `areaId` through `Projects.area` when one is given. */
   const project = async (name: string, areaId?: string): Promise<string> => {
     const projectId = await item(ids.projectsDatabaseId, name);
     if (areaId !== undefined) {
@@ -180,7 +168,6 @@ async function facetsFixture(tenantId: string, behavior: "folder" | "label" = "f
     return projectId;
   };
 
-  /** Gives the thread of `seeded` the project through `Threads.project`, the relation a user or Semp writes. */
   const assign = async (seeded: SeededThread, projectId: string): Promise<void> => {
     const { rows } = await inTenant(tenantId, (client) =>
       client.query<{ thread_item_id: string | null }>(
@@ -200,14 +187,12 @@ async function facetsFixture(tenantId: string, behavior: "folder" | "label" = "f
     );
   };
 
-  /** One new thread of one message placed as `message` places it, with `projectId` when one is given. */
   const thread = async (placement: string | readonly string[], projectId?: string): Promise<SeededThread> => {
     const seeded = await message(placement);
     if (projectId !== undefined) await assign(seeded, projectId);
     return seeded;
   };
 
-  /** Moves one item to the trash through the choke point and fails if nothing was deleted. */
   const trash = async (databaseId: string, itemId: string): Promise<void> => {
     const deleted = await runInTenant(tenantId, () => chokePoint.softDeleteItem(databaseId, itemId));
     if (deleted === null) throw new Error(`item ${itemId} was not moved to the trash`);
@@ -229,7 +214,6 @@ const facetsBody = z
 
 type FacetsBody = z.infer<typeof facetsBody>;
 
-/** `GET /api/mail/threads/facets?<query>` as `tenantId`, the way the adapter calls it: inside the session's tenant. */
 async function facets(tenantId: string, query = ""): Promise<FacetsBody> {
   const url = `/api/mail/threads/facets${query === "" ? "" : `?${query}`}`;
   const answer = await runInTenant(tenantId, () => createMailThreadFacetsRouteHandler(runtime)({ req: { url } }));
@@ -237,7 +221,6 @@ async function facets(tenantId: string, query = ""): Promise<FacetsBody> {
   return facetsBody.parse(answer.body);
 }
 
-/** The rejection of `GET /api/mail/threads/facets?<query>`, failing when the request is answered. */
 async function refusal(tenantId: string, query: string): Promise<unknown> {
   const url = `/api/mail/threads/facets?${query}`;
   try {
@@ -248,7 +231,6 @@ async function refusal(tenantId: string, query: string): Promise<unknown> {
   throw new Error("expected the facets request to be refused");
 }
 
-/** Rows in the order the route returns them: by id. */
 function byId<T extends { id: string }>(rows: T[]): T[] {
   return [...rows].sort((left, right) => (left.id < right.id ? -1 : 1));
 }
@@ -271,10 +253,8 @@ async function seedScenario(tenantId: string) {
   const garden = await fixture.project("Garden", home);
   const loose = await fixture.project("Loose");
 
-  // Two messages of one thread: one thread, not two.
   const first = await fixture.thread("inbox", website);
   await fixture.message("inbox", first);
-  // Outside the inbox: no box or folder filter applies.
   await fixture.thread("archive", website);
   await fixture.thread("sent", website);
   await fixture.thread("inbox", hiring);
@@ -424,10 +404,8 @@ describe("GET /api/mail/threads/facets (issue gh-1747)", () => {
     const rescued = await fixture.project("Rescued", kept);
     await fixture.thread("junk", spam);
     await fixture.thread("trash", spam);
-    // Two messages in Junk and Trash: still no visible message.
     const junked = await fixture.thread("junk", spam);
     await fixture.message("trash", junked);
-    // One message in Junk and its reply in the inbox: one visible message, so the thread counts once.
     const mixed = await fixture.thread("junk", rescued);
     await fixture.message("inbox", mixed);
 
@@ -443,7 +421,6 @@ describe("GET /api/mail/threads/facets (issue gh-1747)", () => {
       ]),
     );
     expect(answer.projects).toEqual({ total: 1, items: [{ id: rescued, areaId: kept, count: 1 }] });
-    // Selecting the project of the hidden threads finds none of them either.
     expect((await facets(tenant, `projectId=${spam}`)).areas.total).toBe(0);
     expect((await facets(tenant, `areaId=${hidden}`)).projects).toEqual({ total: 0, items: [] });
   });
@@ -468,7 +445,6 @@ describe("GET /api/mail/threads/facets (issue gh-1747)", () => {
       },
       projects: { total: 0, items: [] },
     });
-    // Selecting the project or the area of the hidden thread does not find it either.
     expect((await facets(tenant, `projectId=${website}`)).areas.total).toBe(0);
     expect((await facets(tenant, `areaId=${work}`)).projects).toEqual({ total: 0, items: [] });
   });
@@ -477,9 +453,7 @@ describe("GET /api/mail/threads/facets (issue gh-1747)", () => {
     const gmail = await facetsFixture(tenant, "label");
     const work = await gmail.area("Work");
     const website = await gmail.project("Website", work);
-    // Two labels, neither of them Junk or Trash.
     await gmail.thread(["inbox", "none"], website);
-    // A trashed message that keeps its user label, and a reply in the inbox: the reply is visible.
     const trashed = await gmail.thread(["trash", "none"], website);
     await gmail.message("inbox", trashed);
 

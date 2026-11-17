@@ -66,7 +66,7 @@ async function getNewEmailHeartbeatId(): Promise<string> {
   return rows[0].id;
 }
 
-/** The seeded heartbeat has the answer-expected gate (issue gh-1941); this gateway says that every message expects one. */
+/** The seeded heartbeat has the answer-expected gate; this gateway says every message expects one. */
 const answeringGateway: AiGatewayClientPort = {
   complete: async () => ({ content: { expectsReply: true }, usage: { inputTokens: 1, outputTokens: 1 } }),
 };
@@ -162,7 +162,6 @@ describe("newEmail heartbeat (issue #99)", () => {
           storage: noopStorage,
           storageKeyPrefix: "test",
         });
-        // A message with multiple folder memberships (e.g. Gmail labels) — link the rest too.
         for (const folder of folders.slice(1)) {
           await createRelationWithClient(
             client,
@@ -345,8 +344,7 @@ describe("newEmail heartbeat (issue #99)", () => {
     };
 
     await inTenantZero(() => withTransaction(pool, (client) => ingestEmailMessage(client, input)));
-    // A second sync pass re-observing the same Message-ID (reconciliation) — converges onto
-    // the same item, must not re-fire the newEmail event.
+    // A reconciliation pass re-observing the same Message-ID converges and must not re-fire newEmail.
     await inTenantZero(() => withTransaction(pool, (client) => ingestEmailMessage(client, input)));
     await drainQueue(registry);
 

@@ -20,7 +20,6 @@ import {
 } from "@semprec/data";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -55,7 +54,7 @@ describe("createApiQueueRuntime mail module ids (issue #648)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);
-    // The `mail_sync_error` notification the failed sync writes targets the tenant's user, so bind one.
+    // The failed sync's `mail_sync_error` notification targets the tenant's user.
     await createTenantZeroUser(pool);
     runtime = undefined;
     // `createApiActionRegistry` composes `core.agentGuidanceDrift` eagerly, which requires it.
@@ -84,7 +83,7 @@ describe("createApiQueueRuntime mail module ids (issue #648)", () => {
     runtime = await createApiQueueRuntime(pool, await loadFullModuleRegistry());
     await enqueueJob(pool, CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP, {});
 
-    // Success deletes the row; a failed attempt keeps it with `last_error` set for a backed-off retry.
+    // Success deletes the row; a failed attempt keeps it with `last_error` for a backed-off retry.
     await waitFor(async () => {
       const jobs = await jobsFor(pool, CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP);
       return jobs.length === 0 || jobs.some((job) => job.last_error !== null);
@@ -123,13 +122,11 @@ describe("createApiQueueRuntime mail module ids (issue #648)", () => {
       `SELECT last_error FROM mail_account_sync_state WHERE item_id = $1`,
       [mailbox.id],
     );
-    // The API composition provides the IMAP adapter (issue #1510), which opens the mailbox from its stored
-    // server settings; this mailbox has none, so the adapter step refuses it.
+    // The IMAP adapter opens the mailbox from its stored server settings; this mailbox has none.
     const adapterError = `Mailbox ${mailbox.id} has no IMAP server settings; set the IMAP host before syncing it`;
     expect(rows).toEqual([{ last_error: adapterError }]);
     const synced = await createChokePoint(pool).findItem(mailbox.id);
     expect(synced!.properties.syncStatus).toBe("error");
-    // The handler rethrows after recording the failure, so the job row carries the same adapter error.
     await waitFor(async () =>
       (await jobsFor(pool, CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC)).some((job) => job.last_error !== null),
     );

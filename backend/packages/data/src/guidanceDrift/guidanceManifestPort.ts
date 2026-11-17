@@ -5,12 +5,8 @@ import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 
 /**
- * Concrete `PoolClient` implementation of `@semprec/shared`'s `GuidanceManifestPort` (issue #85):
- * renders the same project/user/locale's permission manifest (#147) the drift action compares
- * byte-for-byte across its read and write transactions. Canonicalized (sorted object keys, no
- * whitespace) via the same `canonicalizeJson` the fingerprint algorithm uses, so the equality
- * check is robust to incidental key-order differences between two renders rather than depending
- * on `generatePermissionManifest`'s object-construction order staying literally identical.
+ * Renders the permission manifest the drift action compares byte-for-byte across its read and write transactions,
+ * canonicalized with `canonicalizeJson` (as the fingerprint is) so key order cannot cause a false mismatch.
  */
 export function createGuidanceManifestPort(moduleRegistry?: ModuleRegistry): GuidanceManifestPort<PoolClient> {
   return {

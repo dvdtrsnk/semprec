@@ -44,8 +44,8 @@ import type { AresClient } from "../aresClient.js";
 import { createProposalComputation } from "../proposalComputation.js";
 import { resolveAttachmentDocuments } from "../proposalAttachmentExtraction.js";
 
-// Issue gh-1970: the proposal computation reads the photos attached to an Inbox item before its own model call, caches
-// what it read on the attachment, and the tick waits for a photo whose metadata job has not run.
+// The proposal computation reads an Inbox item's attached photos before its own model call and caches the result on
+// the attachment; the tick waits for a photo whose metadata job has not run.
 
 const EXTRACTION_OPERATION = "inbox_attachment_extraction";
 const PROPOSAL_OPERATION = "inbox_proposal";
@@ -83,10 +83,10 @@ afterAll(async () => {
   }
 });
 
-/** Opens bytes the way the composition root does: the files root first, then the mail attachments root. */
+/** As the composition root does: the files root first, then the mail attachments root. */
 const openBlob = (storageKey: string) => openBlobFromRoots({ primary: storage, alternate: emptyStorage, storageKey });
 
-/** Counts connections of this database sitting in an open transaction, seen from an unrelated connection. */
+/** Seen from an unrelated connection. */
 async function openTransactionCount(): Promise<number> {
   const { rows } = await pool.query<{ count: string }>(
     `SELECT count(*) FROM pg_stat_activity
@@ -102,10 +102,7 @@ interface StubGateway extends AiGatewayClientPort {
   proposalCalls(): AiGatewayCompletionInput[];
 }
 
-/**
- * A gateway that answers an extraction with `extraction(callNumber)` (a throw is a failed call) and a proposal with
- * `{ properties: { name } }`.
- */
+/** A throwing `extraction` is a failed call; a proposal answers `{ properties: { name } }`. */
 function stubGateway(extraction: (callNumber: number) => unknown): StubGateway {
   const stub: StubGateway = {
     calls: [],
@@ -127,7 +124,6 @@ function stubGateway(extraction: (callNumber: number) => unknown): StubGateway {
 
 const bytesOf = (label: string) => Buffer.from(`\xff\xd8\xff reduced copy ${label}`, "latin1");
 
-/** A register that knows no company; no photo of these tests leads to a Companies proposal. */
 const knowsNoCompany: AresClient = {
   async lookupCompanyByIco() {
     return null;
@@ -162,7 +158,6 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
     semprecProjectId = rows[0]!.id;
   });
 
-  /** An Inbox item of the Task type, captured on 2026-10-16 at 08:12, with no attachment. */
   async function createTaskItem(text: string): Promise<{ itemId: string; typeId: string }> {
     const chokePoint = createChokePoint(pool);
     const type = await chokePoint.createItem({
@@ -185,10 +180,7 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
     return { itemId: item.id, typeId: type.id };
   }
 
-  /**
-   * Attaches one file to the item. `metadata: null` is a file the metadata job has not run on. A reduced copy is written
-   * to storage and named in the metadata only when `reducedBytes` is given. Returns the attachment id.
-   */
+  /** `metadata: null` is a file the metadata job has not run on; a reduced copy is stored only for `reducedBytes`. */
   async function attach(
     itemId: string,
     options: { mimeType: string; metadata: InboxAttachmentMetadata | null; reducedBytes?: Buffer },
@@ -252,7 +244,6 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
     );
   }
 
-  /** The `Attachment documents (JSON)` line of the proposal request, or null when the request has none. */
   function attachmentDocumentsOf(call: AiGatewayCompletionInput | undefined) {
     const message = z.string().parse(call?.messages[0]?.content);
     const prefix = "Attachment documents (JSON): ";
@@ -263,7 +254,7 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
   it("sends the image and the person's text to the gateway and puts what the photo says into the proposal request", async () => {
     const { itemId } = await createTaskItem("Faktura za obklady, zaplatit do pátku");
     const attachmentId = await attach(itemId, photo("invoice"));
-    // The tenant's settings item: raw SQL, because the zone is read from it and this test needs a zone that is not the default.
+    // Raw SQL: the zone is read from the settings item and this test needs a non-default zone.
     await pool.query(
       `UPDATE items SET properties = properties || '{"timezone":"Europe/Lisbon"}'::jsonb
         WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'systemSettings')`,
@@ -295,7 +286,7 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
     expect(proposal?.system).toContain("document data read from the item's attached photos");
     expect(await storedExtractions(itemId)).toEqual([INVOICE_STORED]);
     expect(await proposalCards()).toEqual([expect.objectContaining({ status: "proposed" })]);
-    // Neither the extraction call nor the proposal call runs with a transaction open.
+    // Neither model call runs with a transaction open.
     expect(gateway.openTransactionsDuringCall).toEqual([0, 0]);
   });
 
@@ -347,7 +338,6 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
     expect(await storedExtractions(itemId)).toEqual([null]);
     expect(await proposalCards()).toEqual([expect.objectContaining({ status: "computeFailed", fingerprint: null })]);
 
-    // The failed call left no cache behind, so the next run asks again, stores the answer and proposes.
     const working = stubGateway(() => INVOICE_ANSWER);
     await runTick(working, itemId);
 
@@ -471,9 +461,8 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
     expect(gateway.calls).toEqual([]);
     expect(await proposalCards()).toEqual([]);
 
-    // Creating the item already announced it to its create and update heartbeats, under the same job keys the metadata
-    // write uses, so a job still queued from then would hide a missing announcement. Those jobs are taken out first,
-    // as the queue would have run them.
+    // Creating the item already enqueued heartbeat jobs under the keys the metadata write uses, which would hide a
+    // missing announcement, so they are taken out first.
     const announcedFor = async (): Promise<number> =>
       (await readJobPayloadsByIdentifier(pool, "heartbeatFireCore")).filter(
         (payload) =>
@@ -488,7 +477,7 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
     );
     expect(await announcedFor()).toBe(0);
 
-    // The metadata job's write, which announces an update of the item to its heartbeats (gh-1965).
+    // The metadata job's write announces an update of the item to its heartbeats.
     await inTenantZero(() =>
       withTransaction(pool, (client) =>
         recordMetadata(client, attachmentId, { width: 100, height: 80, pages: null }, bytesOf("late")),
@@ -528,7 +517,6 @@ describe("resolveAttachmentDocuments across tenants (issue gh-1970)", () => {
     await runtimePool?.end();
   });
 
-  /** A tenant whose Inbox item carries one photo with a reduced copy in storage. */
   async function tenantWithPhoto(label: string): Promise<{ tenantId: string; item: ItemRow; attachmentId: string }> {
     const tenantId = await createTestTenant(pool);
     await runInTenant(tenantId, () => seedSystem(runtimePool));
@@ -567,7 +555,6 @@ describe("resolveAttachmentDocuments across tenants (issue gh-1970)", () => {
     const gateway = stubGateway(() => INVOICE_ANSWER);
     const ports = { gateway, openBlob };
 
-    // Tenant A's scope, tenant B's Inbox item: its attachment cannot be listed, so nothing is read or written.
     const crossTenant = await runInTenant(a.tenantId, () =>
       resolveAttachmentDocuments(runtimePool, ports, b.item, randomUUID()),
     );
@@ -579,7 +566,7 @@ describe("resolveAttachmentDocuments across tenants (issue gh-1970)", () => {
     );
     expect(untouched.map((row) => row.extraction)).toEqual([null]);
 
-    // The owner of the item reads it, so the refusal above was the tenant and not a broken fixture.
+    // Proves the refusal above came from the tenant, not a broken fixture.
     const own = await runInTenant(b.tenantId, () =>
       resolveAttachmentDocuments(runtimePool, ports, b.item, randomUUID()),
     );

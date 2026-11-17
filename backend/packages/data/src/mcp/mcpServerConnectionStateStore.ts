@@ -3,12 +3,11 @@ import type { Queryable } from "../db/pool.js";
 import { MCP_CONNECTION_ERROR_REASONS, type McpConnectionErrorReason } from "./mcpConnectionError.js";
 
 /**
- * `mcp_server_connection_state` (issue #1450): the outcome of the last connection a tool call
- * made to each MCP server. A sync keeps its own `syncStatus`/`syncError` on the item and does
- * not write here. Only a fixed reason code is stored, never a message, URL or credential.
+ * The outcome of the last connection a tool call made to each server (sync keeps its own status on the item). Only
+ * a fixed reason code is stored, never a message, URL or credential.
  *
- * The writes are single auto-committed statements: pass the pool, not a caller's transaction
- * client, so a recorded failure survives the rollback of an enclosing unit of work.
+ * Writes are single auto-committed statements: pass the pool, so a recorded failure survives the rollback of an
+ * enclosing transaction.
  */
 export interface McpServerConnectionState {
   mcpServerItemId: string;
@@ -38,7 +37,6 @@ function reason(value: unknown): McpConnectionErrorReason | null {
   return match;
 }
 
-/** A successful connect: `last_connected_at = now()` and the previous error cleared. */
 export async function recordMcpConnectionSuccess(pool: Pool, serverItemId: string): Promise<void> {
   await pool.query(
     `INSERT INTO mcp_server_connection_state (mcp_server_item_id, last_connected_at, last_error_reason)
@@ -49,7 +47,7 @@ export async function recordMcpConnectionSuccess(pool: Pool, serverItemId: strin
   );
 }
 
-/** A failed connect: records the reason and leaves `last_connected_at` as it was. */
+/** Leaves `last_connected_at` as it was. */
 export async function recordMcpConnectionFailure(
   pool: Pool,
   serverItemId: string,
@@ -64,7 +62,7 @@ export async function recordMcpConnectionFailure(
   );
 }
 
-/** The recorded states for `serverItemIds`; a server never called has no entry. */
+/** A server never called has no entry. */
 export async function getMcpConnectionStates(
   client: Queryable,
   serverItemIds: string[],

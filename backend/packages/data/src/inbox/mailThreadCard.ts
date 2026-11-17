@@ -14,30 +14,22 @@ import { assertValidProposalEnvelope } from "./inboxTickAction.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
 
 /**
- * The card of a task that Semp proposes from a mail thread (issue gh-2034), split out of `proposalActions.ts` to keep
- * that file under the ESLint line cap. The card's stored `kind` is `mailThread`; it is linked to the thread's Threads
- * item through the Processing proposals relation `sourceThread`, and its envelope is a `database` envelope for Tasks
- * that carries only the task's `name` and an optional `date`. The task's project and people are not on the card: they
- * come from the thread when the card is confirmed (`createThreadTask`).
+ * Kept out of `proposalActions.ts` for the ESLint line cap. The envelope carries only the task's `name` and optional
+ * `date`; project and people come from the thread at confirm (`createThreadTask`).
  */
 export const MAIL_THREAD_CARD_KIND = "mailThread";
 
-/** The Processing proposals relation from a `mailThread` card to the Threads item it was made for. */
 const SOURCE_THREAD_PROPERTY_KEY = "sourceThread";
 
-/** The only properties of a `mailThread` card's envelope; the bounds are those of the task creation route. */
+/** Bounds match the task creation route. */
 const threadTaskCardPropertiesSchema = z.strictObject({
   name: z.string().min(1).max(THREAD_TASK_NAME_MAX_LENGTH),
   date: z.iso.date().optional(),
 });
 
 /**
- * Refuses an envelope that is not a Tasks `database` envelope with `{ name, date? }` as its properties, each with a
- * `ValidationError` naming the part of the envelope that is wrong as `details.field`: another entity kind
- * (`entityKind`), a multi-step `operations` list, a `relations` entry (`relations`, even an empty object), another
- * target than the Tasks database (`target`), and a property other than `name` and `date` or a value that is not valid
- * for them (`properties`). `assertValidMailThreadCard` runs it before the generic envelope validation, so that the answer
- * names the card's own rule.
+ * Runs before the generic envelope validation so the answer names the card's own rule; each refusal is a
+ * `ValidationError` whose `details.field` names the wrong part. Even an empty `relations` object is refused.
  */
 async function assertMailThreadCardEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
   if (envelope.entityKind !== "database")
@@ -56,9 +48,8 @@ async function assertMailThreadCardEnvelope(client: PoolClient, envelope: Propos
 }
 
 /**
- * The Threads item a `mailThread` card was made for: the other side of its `sourceThread` edge. A card without that
- * edge is a `ValidationError` on `sourceThread`; that includes a card whose thread was purged, because the purge removes
- * every edge of the item. The item may be in the Trash; confirm decides that (409).
+ * A missing edge is a `ValidationError` on `sourceThread`, including a purged thread (the purge removes every edge). A
+ * trashed thread passes; confirm answers 409 for it.
  */
 async function requireSourceThreadItemId(
   client: PoolClient,
@@ -82,19 +73,14 @@ async function requireSourceThreadItemId(
   return relationsStore.otherSide(edge, card.id);
 }
 
-/** What `assertValidMailThreadCard` resolved; assignable to `EnvelopeForCard` of `proposalActions.ts`. */
+/** Assignable to `EnvelopeForCard` of `proposalActions.ts`. */
 export interface MailThreadCardValidation {
   transcriptCardEdge: null;
   targetDatabase: DatabaseRow | null;
-  /** The Threads item of the card's `sourceThread` edge. */
   mailThreadItemId: string;
 }
 
-/**
- * Validates `envelope` against the `mailThread` card `card`, for confirm and for every revise: the card's own rules
- * (`assertMailThreadCardEnvelope`), then the generic envelope validation, then the card's `sourceThread` edge (a
- * `ValidationError` on `sourceThread` when it has none). Throws the first of them that fails.
- */
+/** Card rules, then the generic envelope validation, then the `sourceThread` edge; throws the first failure. */
 export async function assertValidMailThreadCard(
   client: PoolClient,
   config: { processingProposalsDatabaseId: string },
@@ -107,16 +93,12 @@ export async function assertValidMailThreadCard(
   return { transcriptCardEdge: null, targetDatabase, mailThreadItemId };
 }
 
-/** Confirming a proposal is a person's decision, so the task is written as a `user` write (as `proposalActions.ts` does). */
+/** Confirming is a person's decision, so the task is a `user` write. */
 const CONFIRMING_USER_WRITER: WriterIdentity = { writerKind: "user" };
 
 /**
- * The confirm of a `mailThread` card, in the caller's transaction: the task of `createThreadTask` for the Threads item
- * `threadItemId`, named and dated by `properties` (the envelope's, already validated by `assertValidMailThreadCard`
- * and parsed again here), written as a user write for `actingUserId`. The Threads item is locked first; one in the Trash,
- * or one whose row the lock no longer finds (purged after the card's edge was read), is a 409 `conflict` with nothing
- * written, and the card stays `proposed`. A thread purged before the confirm began has no edge left, so the card never
- * gets here: `requireSourceThreadItemId` answers the `sourceThread` validation error. Returns the new Tasks item.
+ * Locks the Threads item first; a trashed thread, or one purged after the edge was read, is a 409 with nothing
+ * written and the card stays `proposed`. Properties are parsed again here.
  */
 export async function confirmMailThreadCard(
   client: PoolClient,

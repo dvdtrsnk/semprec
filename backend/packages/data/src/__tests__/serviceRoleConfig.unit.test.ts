@@ -4,11 +4,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Issue #243's acceptance criterion: "No service outside packages/data is configured with the
- * `semprec_data` connection string." `semprec-api` and `semprec-transcribe` are the two
- * narrow choke-point hosts; every other service's `.env.example` must document
- * `semprec_side` and must never mention `semprec_data`. `semprec-agents` joined them because its
- * agent runs' generic-operation tools write through an in-process choke point. See docs/operations/database-roles.md.
+ * No service outside packages/data may be configured with the `semprec_data` connection string except the
+ * choke-point hosts `semprec-api`, `semprec-transcribe` and `semprec-agents` (in-process choke point for agent
+ * tools); the others document `semprec_side`. See docs/operations/database-roles.md.
  */
 const SERVICES_DIR = path.join(fileURLToPath(import.meta.url), "../../../../../services");
 const CHOKE_POINT_HOSTING_SERVICES = new Set(["semprec-api", "semprec-transcribe", "semprec-agents"]);

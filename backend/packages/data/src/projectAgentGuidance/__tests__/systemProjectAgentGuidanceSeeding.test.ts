@@ -48,7 +48,7 @@ const EXPECTED_MARKDOWN: Record<string, string> = {
   [BOOKS_MODULE_ID]: BOOKS_MARKDOWN,
   [MOVIES_MODULE_ID]:
     "## Purpose\ncatalog movies and TV series watched or planned to watch.\n\n## Allowed\ncreate a Movies/TV item (name/year/type/rating/status) via the generic create-item endpoint, and link 'Watched with' to a Person with a 1-5 rating on the relation.\n\n## Not allowed\nwrite 'cover'/'secondaryRating'/'sourceUrl' — owner: 'system', reserved for the metadata heartbeat regardless of who requests the write.\n\n## General instructions\nuse the same create-item path as the UI; there is no separate AI path.\n",
-  // The Recipes system project (issue #1707).
+  // The Recipes system project.
   [RECIPES_MODULE_ID]:
     "## Purpose\ncatalog the user's recipes; the ingredients and the method are written on each recipe's page.\n\n## Allowed\ncreate or update a Recipes item (name/category/prepMinutes/servings/favorite/photo) via the generic item endpoints.\n\n## Not allowed\nwrite 'photo' with anything other than { blobId } of an image blob of this tenant, or null to clear it — every other value is rejected.\n\n## General instructions\nuse the same item paths as the UI; there is no separate AI path.\n",
 };
@@ -159,8 +159,8 @@ describe("system project guidance seeding (issue #1449)", () => {
   });
 
   it("seeds the guidance in the tenant's scope when the setup route creates the account under the system scope", async () => {
-    // The setup route calls bootstrapFirstAccount under runAsSystem on the runtime role, where a transaction
-    // sees the tenant's system databases as absent. A superuser pool would bypass that row-level security.
+    // The setup route runs bootstrapFirstAccount under runAsSystem on the runtime role, where tenant system databases
+    // look absent; a superuser pool would bypass that RLS.
     const dataPool = await createRuntimeRolePool(pool, "semprec_data");
     try {
       const account = await runAsSystem("setup", () =>

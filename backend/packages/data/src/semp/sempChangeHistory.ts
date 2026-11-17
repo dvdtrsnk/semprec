@@ -9,10 +9,7 @@ import { getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import type { SempReplyChange } from "./sempReplyChanges.js";
 import { resolveSempItemRefs } from "./sempRefHistory.js";
 
-/**
- * Message history cards for the items a reply changed (issue #1888): the entries stored by issue #1885 with the
- * current label, database key and state of each item, resolved for a whole page of messages at once.
- */
+/** Message history cards for the items a reply changed, resolved for a whole page of messages at once. */
 
 /** The stored shape of one entry (`SempReplyChange`), checked because the column is JSONB. */
 const storedChangeSchema = z.object({
@@ -26,7 +23,6 @@ const storedChangeSchema = z.object({
 
 const storedChangesSchema = z.array(z.unknown());
 
-/** The entries of one stored column value that have the stored shape; a value that is not an array has none. */
 function parseStoredChanges(stored: unknown): SempReplyChange[] {
   const entries = storedChangesSchema.safeParse(stored);
   if (!entries.success) return [];
@@ -37,9 +33,8 @@ function parseStoredChanges(stored: unknown): SempReplyChange[] {
 }
 
 /**
- * The keys of the relation properties of each database. A relation is not a property value: the links live in
- * `item_relations`, and an item's `properties` never holds a relation key, so a changed relation key has no value to
- * show and is left out of `resolved.values`. One statement for all the databases of the page.
+ * Relation property keys per database. Links live in `item_relations`, never in `properties`, so a changed
+ * relation key has no value to show.
  */
 async function relationKeysByDatabase(client: PoolClient, databaseIds: string[]): Promise<Map<string, Set<string>>> {
   const keys = new Map<string, Set<string>>();
@@ -57,20 +52,12 @@ async function relationKeysByDatabase(client: PoolClient, databaseIds: string[])
 }
 
 /**
- * The cards of each message of one history page, in the order of `storedChanges` (the `changes` column of each
- * message); a message without a stored entry, whether its column is NULL, empty or unreadable, has `undefined`. An
- * entry that does not have the stored shape is left out.
+ * The cards of each message of one history page, in `storedChanges` order; `undefined` for a message without a
+ * readable entry, and malformed entries are left out.
  *
- * The page is resolved with a fixed number of batched statements, one per kind of lookup, however many cards it
- * holds: the items (the resolver of the reference history, `resolveSempItemRefs`, for label, database key and
- * state), their rows with the read projection, their databases and the sensitive databases they inherit from.
- * Nothing is queried for a page without entries.
- *
- * `resolved.values` is the current value of each changed key that holds a value; a changed relation key (a link made
- * or removed) is left out, since the links are not stored in the item's properties. An item in a sensitive database, or inheriting
- * sensitivity from one (issue #1999), resolves with label, database key and state only, and its card carries no
- * `before` either. An item the tenant scope does not show, or one that is not in the database the entry names, is
- * purged and has no values.
+ * A fixed number of batched statements per page, however many cards; none for a page without entries.
+ * An item in, or inheriting from, a sensitive database resolves with label, database key and state only and
+ * carries no `before`. An item outside the tenant scope or the named database is purged and has no values.
  */
 export async function resolveSempHistoryChanges(
   client: PoolClient,

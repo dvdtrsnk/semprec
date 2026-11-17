@@ -105,7 +105,6 @@ function titleTaskList(): TaskList {
     undefined,
     undefined,
     undefined,
-    undefined,
     gateway,
   );
   const title = registered[CORE_TASK_NAMES.SEMP_THREAD_TITLE];
@@ -253,7 +252,7 @@ describe("Semp title through the real gateway", () => {
   it("keeps user titles, budget refusals and provider failures unchanged", async () => {
     const gateway = createHttpAiGatewayClient({ port, token });
     const manual = await completedChat();
-    // User renaming has no production writer in this batch; this is an existing valid stored state.
+    // User renaming has no production writer; this is a valid stored state.
     await runInTenant(tenant, () =>
       pool.query("UPDATE semp_threads SET title = 'Manual', title_source = 'user' WHERE id = $1", [manual]),
     );
@@ -435,7 +434,7 @@ describe("Semp title through the real gateway", () => {
         withTransaction(pool, async (client) => {
           const locked = await client.query("SELECT id FROM semp_threads WHERE id = $1 FOR UPDATE NOWAIT", [threadId]);
           expect(locked.rowCount).toBe(1);
-          // Renaming has no production writer in this batch; model an existing valid user-set title.
+          // Renaming has no production writer; model a valid user-set title.
           const renamed = await client.query(
             "UPDATE semp_threads SET title = 'User title', title_source = 'user' WHERE id = $1",
             [threadId],

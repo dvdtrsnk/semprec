@@ -7,7 +7,7 @@ import {
   createAresHttpClient,
 } from "../aresClient.js";
 
-// Issue gh-1989: the ARES client against a stubbed `fetch`; nothing here reaches the network.
+// Against a stubbed `fetch`; nothing here reaches the network.
 
 const ICO = "27419363";
 
@@ -21,7 +21,6 @@ function requestUrl(input: string | URL | Request): string {
   return input instanceof URL ? input.href : input.url;
 }
 
-/** A `fetch` that records its calls and answers each with `respond`. */
 function stubFetch(respond: (signal: AbortSignal | null | undefined) => Promise<Response>) {
   const calls: FetchCall[] = [];
   const fetchStub: typeof fetch = async (input, init) => {
@@ -35,7 +34,6 @@ function answer(body: unknown, status = 200): () => Promise<Response> {
   return async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
 }
 
-/** The failure of a lookup that is expected to fail with an `AresLookupError`. */
 async function failureOf(promise: Promise<unknown>): Promise<AresLookupError> {
   const error: unknown = await promise.then(
     () => undefined,
@@ -45,7 +43,7 @@ async function failureOf(promise: Promise<unknown>): Promise<AresLookupError> {
   return error;
 }
 
-/** A stream that errors when `signal` aborts, as the body of an aborted `fetch` does. */
+/** As the body of an aborted `fetch` does. */
 function streamEndingWithAbort(signal: AbortSignal | null | undefined, first?: Uint8Array): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
     start(controller) {

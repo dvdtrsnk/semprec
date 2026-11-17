@@ -9,12 +9,9 @@ import { logger } from "../tenancy/logger.js";
 import { seedProjectAgentGuidanceFromLegacyText } from "./legacyAgentsConversion.js";
 
 /**
- * Gives the system projects of one tenant their guidance rows, owned by `userId` (issue #1449). A system project is
- * resolved from the system database it owns, by that database's stable `owner_module_id`, never by its name, so a
- * renamed system project still gets its text. A project that is missing, deleted or not `systemActive` gets none, and
- * so does a module whose system database is absent. Idempotent: an existing row is left as it is.
- *
- * Runs in the caller's tenant scope, on the caller's transaction.
+ * Seeds guidance for the tenant's system projects, owned by `userId`. A system project is found via its system
+ * database's stable `owner_module_id` (never by name, so renames are fine); missing, deleted or inactive projects are
+ * skipped. Idempotent. Runs in the caller's tenant scope and transaction.
  */
 export async function seedSystemProjectAgentGuidance(client: PoolClient, userId: string): Promise<void> {
   const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
@@ -30,11 +27,9 @@ export async function seedSystemProjectAgentGuidance(client: PoolClient, userId:
 }
 
 /**
- * Runs `seedSystemProjectAgentGuidance` for an account that was just created in `tenantId`, after that account's
- * own transaction committed. The callers create accounts under the system scope (`runAsSystem`), whose transactions
- * see a tenant's rows as absent under row-level security, so the seeding enters the tenant's scope itself. A failure
- * is logged with the tenant id only and rethrown: the account exists by then, and the failure must not be reported as
- * success.
+ * Runs after the new account's transaction committed. Account creation runs under `runAsSystem`, which sees tenant
+ * rows as absent under RLS, so this enters the tenant scope itself. Failures are logged (tenant id only) and
+ * rethrown: the account exists, but the failure must not read as success.
  */
 export async function seedAccountSystemProjectGuidance(pool: Pool, tenantId: string, userId: string): Promise<void> {
   try {

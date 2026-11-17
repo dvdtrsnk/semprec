@@ -30,7 +30,6 @@ const SEGMENTS = [
   { speaker: "SPEAKER_01", text: "I will send the contract.", startsAt: 2.5, endsAt: 5 },
 ];
 
-/** Stored notes with an owned action item (id 0) and one without an owner (id 1). */
 const NOTES = {
   title: "Contract",
   summary: "{SPEAKER_01} sends the contract.",
@@ -73,7 +72,6 @@ async function databaseId(moduleId: string): Promise<string> {
   return database.id;
 }
 
-/** A transcript of the tenant in scope with segments and, unless `notes` is `null`, stored meeting notes. */
 async function createTranscript(notes: unknown = NOTES): Promise<string> {
   const transcripts = await databaseId("transcripts");
   return withTransaction(runtime, async (client) => {
@@ -86,7 +84,6 @@ async function createTranscript(notes: unknown = NOTES): Promise<string> {
   });
 }
 
-/** Creates a person and maps `speaker` of the transcript to them through a `speakers` edge; returns the person's id. */
 async function mapSpeaker(transcriptId: string, speaker: string, name: string): Promise<string> {
   const cp = createChokePoint(runtime);
   const property = (await cp.listProperties(await databaseId("transcripts"))).find((row) => row.key === "speakers");
@@ -107,7 +104,6 @@ function put(transcriptId: string, actionItemId: string, body: unknown) {
   return createTranscriptActionItemStateRouteHandler(runtime)({ params: { id: transcriptId, actionItemId }, body });
 }
 
-/** The `ChokePointError` a call was refused with: its status, code and details. Any other outcome fails the test. */
 async function refusal(call: Promise<unknown>): Promise<{ status: number; code: string; details: unknown }> {
   try {
     await call;
@@ -301,7 +297,6 @@ describe("transcript action item states (issue #1754)", () => {
 
         expect(await storedStates()).toMatchObject([{ transcript_item_id: transcript, action_item_id: 1 }]);
         expect(await storedStates()).toHaveLength(1);
-        // The item is followable again.
         expect(await put(transcript, "0", FOLLOW)).toEqual({ status: 200, body: { actionItemId: 0, state: "noted" } });
         expect((await storedStates()).map((row) => row.action_item_id)).toEqual([0, 1]);
       });
@@ -484,7 +479,6 @@ describe("transcript action item states (issue #1754)", () => {
         expect(await refusal(put(transcript, "0", OPEN))).toEqual(alreadyAdded);
 
         expect(await storedStates()).toEqual(stored);
-        // The transcript's other item is not affected by the refusal.
         expect(await put(transcript, "1", FOLLOW)).toEqual({ status: 200, body: { actionItemId: 1, state: "noted" } });
       });
     });

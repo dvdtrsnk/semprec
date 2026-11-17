@@ -121,7 +121,7 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
       await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
         itemId: itemA.id,
         properties: { title: "b" },
-        ifVersion: itemA.updatedAt,
+        ifVersion: itemA.version,
       });
 
       expect(createdBy).toEqual([{ writerKind: "user" }]);
@@ -141,7 +141,7 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
       await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
         itemId: itemA.id,
         properties: { title: "b" },
-        ifVersion: itemA.updatedAt,
+        ifVersion: itemA.version,
       });
 
       const expected: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: userId };
@@ -192,7 +192,7 @@ describe("writer identity derived from the authenticated actor (issue #1415)", (
       await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
         itemId: itemA.id,
         properties: { title: "b" },
-        ifVersion: itemA.updatedAt,
+        ifVersion: itemA.version,
       });
 
       expect(updatedBy).toEqual([

@@ -2,17 +2,12 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { getValueLinksForItems, type ValueLinkEntry } from "../chokePoint/valueLinkReads.js";
 
-/** The project of an attachment as the thread detail shows it. */
 export interface MailAttachmentProject {
   id: string;
   name: string;
 }
 
-/**
- * What the thread detail adds to an attachment (issue gh-1922): `project` is the project of its Files item, `links`
- * the value-link entry of that property, under the key `project`, and only when the Files item has a value-link row
- * for `Files.projects`.
- */
+/** `links.project` is present only when the Files item has a value-link row for `Files.projects`. */
 export interface MailAttachmentProjects {
   project: MailAttachmentProject | null;
   links: { project?: ValueLinkEntry };
@@ -21,10 +16,8 @@ export interface MailAttachmentProjects {
 const projectRow = z.object({ file_id: z.uuid(), project_id: z.uuid(), project_name: z.string() });
 
 /**
- * One live project per Files item among `$1`: the live project that `Files.projects` of the item reaches. An item with
- * no edge, or only edges to projects in the Trash, has no row. A file with several live projects (the property is
- * many-valued, and a user can add one to the inherited one) answers the one that is first by name and then by item id.
- * The projects are pinned to the Projects database of the tenant. Fixed SQL, `$1` the Files item ids.
+ * One live project per Files item in `$1`; no row for an item without a live project. Several live projects (a user
+ * can add one to the inherited one) answer the first by name, then item id. Pinned to the tenant's Projects database.
  */
 const FILE_PROJECTS_SQL = `
 WITH schema_ids AS (
@@ -45,11 +38,8 @@ JOIN items project ON project.tenant_id = app_tenant_default() AND project.datab
 ORDER BY f.file_id, COALESCE(project.properties->>'name', ''), project.id`;
 
 /**
- * The project and the project link of every Files item in `fileItemIds`, in the caller's transaction and tenant: one
- * statement for the projects (`FILE_PROJECTS_SQL`) and one batched read for the links (`getValueLinksForItems`), so the
- * number of statements does not grow with the number of files. Every id in `fileItemIds` has an entry; a file with no
- * live project reads `project: null`, and a file with no link row for `Files.projects` has no `links.project`. No id
- * means no statement.
+ * Two statements whatever the number of files. Every id gets an entry; a file without a live project reads
+ * `project: null`. No id means no statement.
  */
 export async function readMailAttachmentProjects(
   client: PoolClient,

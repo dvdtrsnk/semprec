@@ -25,17 +25,13 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/** What the next `pool.connect()` of the listener pool does before (or instead of) connecting. */
 type ConnectStep =
   | { kind: "wait"; gate: Promise<void> }
   | { kind: "reject"; error: Error; gate?: Promise<void> }
   | { kind: "failListen" }
   | { kind: "dropDuringListen" };
 
-/**
- * Wraps the dedicated listener pool's `connect()` so a test can see every backend pid the listener connects with, hold
- * a reconnect at a gate, fail it outright, or fail its `LISTEN`. The pool is created per test and ended afterwards.
- */
+/** Records each backend pid the listener uses; lets a test gate or fail a reconnect or its `LISTEN`. */
 function instrumentConnect(pool: Pool): { pids: number[]; steps: ConnectStep[] } {
   const pids: number[] = [];
   const steps: ConnectStep[] = [];
@@ -185,7 +181,6 @@ describe("the Semp turn cancel request", () => {
     for (const payload of invalidPayloads) {
       await admin.query("SELECT pg_notify($1, $2)", [SEMP_TURN_CANCEL_CHANNEL, payload]);
     }
-    // An empty payload is no JSON either.
     await admin.query("NOTIFY semp_turn_cancel");
     const control = request(tenantB);
     await requestSempTurnCancel(admin, control);
@@ -341,7 +336,6 @@ describe("the Semp turn cancel request", () => {
       const first = await send(tenantA, "first");
       const second = await send(tenantA, "second", first.threadId);
       const third = await send(tenantA, "third", first.threadId);
-      // The fourth reply stays queued.
       await send(tenantA, "fourth", first.threadId);
       await runInTenant(tenantA, () =>
         withTransaction(runtime, async (client) => {

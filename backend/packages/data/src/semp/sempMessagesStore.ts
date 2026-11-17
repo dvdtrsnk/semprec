@@ -21,7 +21,7 @@ const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 
   'replyTo', reply_to_message_id, 'run', agent_run_id, 'from', event_from_id, 'to', event_to_id,
   'errorCode', error_code, 'replacedBy', replaced_by_message_id, 'createdAt', created_at, 'updatedAt', updated_at)::text`;
 
-/** Reads the queued assistant for one thread turn under the current tenant; `errorCode` is set for an `error` reply only. */
+/** The queued assistant for one thread turn; `errorCode` is set for an `error` reply only. */
 export async function getSempVoiceDelivery(client: Pool | PoolClient, threadId: string, assistantMessageId: string) {
   const { rows } = await client.query<{
     status: string;
@@ -92,14 +92,10 @@ export async function startSempMessageTurn(
 }
 
 /**
- * Stores the final status of a running assistant message. `summary` (issues #1860 and #1885) is the steps,
- * duration, token totals and changed items of the turn and is written by the same statement as the status, so a
- * message never has a final status without the summary the caller built for it; a caller that has none leaves the
- * four columns NULL.
- * A failed turn stores its `errorCode` and `errorParams` (issue #1907) by that same statement; `errorCode` is
- * optional only for a caller that has no classification (a message closed without a turn), which leaves the
- * columns NULL and reads back as `internal`.
- * Returns false when the message is no longer `running`, in which case nothing is written.
+ * Stores the final status of a running assistant message together with its `summary` and, for a failed turn,
+ * `errorCode`/`errorParams`, in one statement so a final status never lacks what the caller built for it.
+ * Columns the caller has no value for stay NULL; a missing `errorCode` reads back as `internal`.
+ * Returns false, writing nothing, when the message is no longer `running`.
  */
 export async function finishSempMessageTurn(
   client: PoolClient,
@@ -136,11 +132,7 @@ export async function finishSempMessageTurn(
   return result.rowCount === 1;
 }
 
-/**
- * Closes every `running` assistant message of the current tenant as `error` / `interrupted`, the state a turn is
- * left in when its process died, and raises the problem of each reply in the same transaction (issue #1931), as
- * the turn handler does for a turn it interrupted itself. Returns the number of messages closed.
- */
+/** Closes every `running` assistant message as `error`/`interrupted` (its process died) and raises its problem. */
 export async function repairInterruptedSempMessages(client: PoolClient): Promise<number> {
   requireManagedTransaction(client);
   const scope = currentTenantScope();
@@ -210,7 +202,6 @@ export async function insertApprovalOutcomeSystemMessage(
   requireAffectedRows(result, `updating thread '${threadId}' activity`);
 }
 
-/** Raised when a retry is asked for a message that is not the latest failed or incomplete assistant reply of its thread (issue gh-1926). */
 export class SempRetryNotLatestError extends ChokePointError {
   constructor() {
     super(409, "retry_not_latest", "Only the latest failed or incomplete reply of a thread can be retried");
@@ -218,7 +209,6 @@ export class SempRetryNotLatestError extends ChokePointError {
   }
 }
 
-/** The codes of a refused regeneration (issue gh-1930), each with the reason `SempRegenerateRefusedError` carries. */
 const SEMP_REGENERATE_REFUSALS = {
   regenerate_not_latest: "Only the latest finished reply of a thread can be regenerated",
   regenerate_after_writes: "A reply whose turn made changes or requested an approval cannot be regenerated",
@@ -226,7 +216,7 @@ const SEMP_REGENERATE_REFUSALS = {
     "A reply that a compaction checkpoint of the thread already includes cannot be regenerated",
 } as const;
 
-/** Raised when a regeneration is refused (issue gh-1930); `code` is the closed code of the REST error contract. */
+/** `code` is the closed code of the REST error contract. */
 export class SempRegenerateRefusedError extends ChokePointError {
   constructor(code: keyof typeof SEMP_REGENERATE_REFUSALS) {
     super(409, code, SEMP_REGENERATE_REFUSALS[code]);
@@ -239,7 +229,7 @@ interface SempThreadSubject {
   subjectInboxItemId: string | null;
 }
 
-/** Reads the kind and Inbox subject of a thread, under its row lock when `lock` is set. Not visible is `NotFoundError`. */
+/** Under the thread row lock when `lock` is set. */
 async function readSempThreadSubject(client: PoolClient, threadId: string, lock: boolean): Promise<SempThreadSubject> {
   const found = await client.query<{ kind: string; subject_inbox_item_id: string | null }>(
     `SELECT kind, subject_inbox_item_id FROM semp_threads WHERE id = $1${lock ? " FOR UPDATE" : ""}`,
@@ -272,18 +262,14 @@ interface LockedReply {
 }
 
 /**
- * Takes the thread's row lock, the lock every insert of a message of the thread takes, and then the row lock of the
- * message `messageId`, and reads the message with whether it is the latest message of the thread (the order of the
- * history: `created_at`, then `id`). With the lock held, the latest message of the thread cannot change until the
- * transaction ends. A thread, or a message of it, that is not visible in the tenant scope is `NotFoundError`, the
- * same answer as for an id that does not exist.
+ * Takes the thread's row lock (which every message insert takes), then the message's, and reads whether it is the
+ * latest message (`created_at`, `id`); that cannot change until the transaction ends. Not visible in the tenant
+ * scope is `NotFoundError`, as for a missing id.
  *
- * A reply queues a new turn, as a sent message does, so an item thread passes the send guard first
- * (`guardInboxThreadSend`): the Inbox source and the proposal cards are locked and a decided proposal is refused with
- * `ProposalLockedError`, which comes before every check of the reply itself. The guard runs before the thread's lock,
- * the order `sendSempMessage` takes, so a retry or a regeneration and a proposal decision cannot wait on each other
- * in opposite orders. The kind and subject read for it are read again under the lock, and a thread that changed in
- * between is `NotFoundError`.
+ * A reply queues a turn, so an item thread first passes `guardInboxThreadSend`, which locks the Inbox source and
+ * proposal cards and refuses a decided proposal with `ProposalLockedError`. It runs before the thread lock, the
+ * order `sendSempMessage` uses, so retries, regenerations and proposal decisions cannot deadlock. Kind and subject
+ * are re-read under the lock; a change in between is `NotFoundError`.
  */
 async function lockSempReply(client: PoolClient, threadId: string, messageId: string): Promise<LockedReply> {
   const subject = await readSempThreadSubject(client, threadId, false);
@@ -305,12 +291,7 @@ async function lockSempReply(client: PoolClient, threadId: string, messageId: st
   return message;
 }
 
-/**
- * Inserts the next attempt at the reply that `previous` answers, in status `queued`, as the send path inserts an
- * assistant message, and enqueues its turn in the same transaction, so a committed attempt always has a job and a
- * rolled-back one has none. The unique index `semp_messages_reply_attempt_uq` is the second line behind the thread
- * lock the caller holds.
- */
+/** Enqueued in the same transaction, so a committed attempt has a job; the unique index backs up the thread lock. */
 async function queueNextSempReplyAttempt(
   client: PoolClient,
   threadId: string,
@@ -333,14 +314,10 @@ async function queueNextSempReplyAttempt(
 }
 
 /**
- * Queues another attempt of the assistant reply `messageId` of thread `threadId` (issue gh-1926) and returns the id
- * of the new assistant message. The message is retryable when it is the latest message of the thread, an assistant
- * message with a stored `reply_to_message_id` and either `error`, or `done` with an incomplete reply
- * (`replyOutcomeOfStoredSteps`, issue #1890). Anything else is `SempRetryNotLatestError`. Under the thread's row lock
- * a second retry of the same reply, which waited for the lock, finds the new attempt as the latest message and is
- * refused. The new message answers the same message as the retried one with `attempt` + 1. A retry queues a turn as a
- * sent message does, so on an item thread it passes the send guard of the path it reuses first and is refused with
- * `ProposalLockedError` once a proposal of the Inbox item is decided (`lockSempReply`).
+ * Queues another attempt of reply `messageId` and returns the new message id. Retryable only when it is the
+ * thread's latest message, an assistant message with `reply_to_message_id`, and `error` or `done` but incomplete;
+ * otherwise `SempRetryNotLatestError`. A concurrent second retry waits on the thread lock, then finds the new
+ * attempt as latest and is refused. Item threads pass the send guard first (`lockSempReply`).
  */
 export async function retrySempReply(
   client: PoolClient,
@@ -368,11 +345,8 @@ export async function retrySempReply(
 }
 
 /**
- * Whether the turn of a finished reply wrote something or asked to: its stored `changes` are not an empty list (a
- * reply stored without them, before issue #1885, is not known to have made none), a stored step carries an approval
- * request, or an approval request of its run belongs to a tool call of the reply, by the `toolCallId` of a stored
- * step or of a `tool_use` event in the reply's range (events are removed by retention, steps are not). An approval
- * request stored without a tool call id belongs to no reply (`getAgentRunDetail`).
+ * Non-empty stored `changes`, a stored step with an approval request, or a run approval request whose `toolCallId`
+ * matches a stored step or a `tool_use` event in range (retention removes events, not steps).
  */
 async function sempReplyWroteOrAsked(
   client: PoolClient,
@@ -401,24 +375,17 @@ async function sempReplyWroteOrAsked(
 }
 
 /**
- * Queues the next attempt at the latest finished reply `messageId` of thread `threadId` in place of it (issue
- * gh-1930) and returns the id of the new assistant message. The old reply stays stored with its steps; it gets
- * `replaced_by_message_id`, which hides the events of its turn from the history a later wake rebuilds
- * (`listSessionAgentRunEventsFromLastCompaction`). On an item thread the send guard runs before all of this and
- * refuses a decided proposal with `ProposalLockedError` (`lockSempReply`). The checks run in this order under the
- * thread's row lock, and the first that fails is raised as `SempRegenerateRefusedError`:
+ * Queues the next attempt in place of the latest finished reply and returns the new message id. The old reply
+ * stays stored but gets `replaced_by_message_id`, which hides its turn's events from the history a later wake
+ * rebuilds. Item threads pass the send guard first (`lockSempReply`). Under the thread's row lock the first
+ * failing check raises `SempRegenerateRefusedError`:
  *
- * 1. `regenerate_not_latest`: the message is not the latest message of the thread, not an assistant message with
- *    status `done` that answers a message, or has no run range to hide (no run or no event ids stored).
+ * 1. `regenerate_not_latest`: not the latest message, not a `done` assistant reply, or no run range to hide.
  * 2. `regenerate_after_writes`: the turn wrote or asked to (`sempReplyWroteOrAsked`).
- * 3. `regenerate_after_compaction`: a `compaction` event of the thread's conversation has an id above the reply's
- *    `event_to_id`, so the reply is already folded into a checkpoint and cannot be removed from it.
+ * 3. `regenerate_after_compaction`: a later `compaction` event already folded the reply into a checkpoint.
  *
- * The turn of the new attempt is enqueued in the same transaction. A live session that holds the replaced answer in
- * memory is dropped by the turn handler: the replaced message is the latest message the new turn sees besides its
- * own source and reply, its `replacedBy` is part of the token of `getSempMessageToken`, and the session cached the
- * token it had before, so `SempConversation.ensureFresh` finds it stale and pauses it
- * (`2026-11-06-semp-message-order-and-session-freshness`).
+ * The new turn is enqueued in the same transaction. `replacedBy` is part of `getSempMessageToken`, so a live
+ * session that cached the old token is found stale by `SempConversation.ensureFresh` and paused.
  */
 export async function regenerateSempReply(
   client: PoolClient,

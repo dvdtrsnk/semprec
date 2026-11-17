@@ -1,19 +1,13 @@
 import sodium from "libsodium-wrappers";
 
 /**
- * Reversible encryption for third-party secrets the server must present again later
- * (an IMAP password, an OAuth refresh token, an MCP server's API key) — as opposed to a
- * user's own login password (issue #34), which is hashed one-way and never needs to be
- * recovered. Not email-specific: this module is a peer of `data`/`module-registry`/`queue`,
- * used by `packages/data/src/credentials/externalCredentialsStore.ts` for any `items` row
- * that needs a secret (Mailboxes here; MCP servers in issue #31).
+ * Reversible encryption for third-party secrets the server must present again (an IMAP password,
+ * an OAuth refresh token, an MCP server's API key), as opposed to one-way hashed login passwords.
  *
- * `sealSecret`/`openSecret` use XChaCha20-Poly1305 (IETF AEAD) with caller-supplied associated data
- * that binds a ciphertext to its owner. A credential is sealed under its tenant's data key; the
- * deployment master key (`CREDENTIALS_MASTER_KEY`) only wraps and unwraps those per-tenant data keys
- * through `wrapDataKey`/`unwrapDataKey`, and never seals a credential itself
- * (docs/adr/2026-10-05-per-tenant-envelope-encryption.md). The master-key-only secretbox scheme was
- * retired in issue #1069.
+ * `sealSecret`/`openSecret` use XChaCha20-Poly1305 (IETF AEAD) with associated data binding a
+ * ciphertext to its owner. A credential is sealed under its tenant's data key; the deployment
+ * master key (`CREDENTIALS_MASTER_KEY`) only wraps and unwraps those data keys
+ * (docs/architecture/tenancy-and-security.md#third-party-secrets).
  */
 
 let readyPromise: Promise<typeof sodium> | null = null;
@@ -31,13 +25,10 @@ export interface EncryptedSecret {
 export const MASTER_KEY_BYTES = 32;
 
 /**
- * Resolves a versioned master key from the process environment — `CREDENTIALS_MASTER_KEY`
- * for version 1, `CREDENTIALS_MASTER_KEY_V<n>` for a later rotated version
- * (`tenant_keys.master_key_version`). It wraps and unwraps per-tenant data keys only. A single
- * self-hosted deployment's key lives in root-owned `shared/.env` (issue #40), outside git and
- * outside the data backup — never in
- * application config or a database row, and never logged (see `resolveMasterKeyFromEnv`'s
- * callers, which only ever pass the decoded `Buffer` onward, never the raw env string).
+ * Resolves a versioned master key from the environment: `CREDENTIALS_MASTER_KEY` for version 1,
+ * `CREDENTIALS_MASTER_KEY_V<n>` for a rotated version (`tenant_keys.master_key_version`). The key
+ * lives in root-owned `shared/.env`, outside git and the data backup, never in config or a
+ * database row, and is never logged.
  */
 export function resolveMasterKeyFromEnv(keyVersion: number, env: NodeJS.ProcessEnv = process.env): Buffer {
   const varName = keyVersion === 1 ? "CREDENTIALS_MASTER_KEY" : `CREDENTIALS_MASTER_KEY_V${keyVersion}`;

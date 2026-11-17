@@ -1,15 +1,12 @@
 /**
- * The argument values of an MCP approval request as its owner sees them in the detail of one
- * request (issue #2021). Every other client-facing view reduces the payload to its argument names
- * (`approvalRequestsQueue.ts`, `safeSummary`); this is the one place the values leave the server,
- * so they are redacted and bounded first. The decision, with the key list, the bounds and the drop order,
- * is recorded in `docs/adr/2026-11-12-mcp-argument-values-leave-the-server-only-in-the-owners-request-detail.md`.
+ * Owner-only argument values for the detail of one MCP approval request. Every other client-facing view carries
+ * argument names only, so this is the one place values leave the server and they are redacted and bounded first.
+ * See docs/architecture/agents-approvals-and-ai.md#what-a-request-shows.
  */
 
-/** The value that replaces the value of an argument whose key looks like a credential. */
 const REDACTED_VALUE = "[redacted]";
 
-/** A key that contains one of these, in any letter case and at any depth, has its value redacted. */
+/** Matched in any letter case at any depth. */
 const CREDENTIAL_KEY_PARTS = [
   "password",
   "secret",
@@ -21,21 +18,17 @@ const CREDENTIAL_KEY_PARTS = [
   "credential",
 ] as const;
 
-/** The longest string value that is returned whole, in UTF-16 code units (`String.prototype.length`). */
+/** In UTF-16 code units. */
 const MAX_STRING_LENGTH = 2000;
 
-/** The most the JSON text of the returned `arguments` may take, in UTF-8 bytes. */
+/** In UTF-8 bytes. */
 const MAX_ARGUMENTS_BYTES = 16 * 1024;
 
-/**
- * The deepest nesting of a value that is walked. A byte cap does not bound the depth of a document,
- * and the walk is recursive, so a value nested deeper is replaced by `null` instead of being walked.
- */
+/** The walk is recursive and a byte cap does not bound depth, so deeper values become `null`. */
 const MAX_DEPTH = 32;
 
 export interface ApprovalRequestArgumentValues {
   arguments: Record<string, unknown>;
-  /** `true` when a string was shortened, a value was cut for its depth, or an entry did not fit the byte cap. */
   argumentsTruncated: boolean;
 }
 
@@ -48,23 +41,18 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The UTF-8 size of the JSON text of `value`. */
 function jsonBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
-/** `text` cut to `MAX_STRING_LENGTH` code units, without a lone high surrogate at the cut. */
+/** Never leaves a lone high surrogate at the cut. */
 function shortenString(text: string): string {
   const cut = text.slice(0, MAX_STRING_LENGTH);
   const last = cut.charCodeAt(cut.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
-/**
- * `value` with the value of every credential-looking key replaced, every string bounded and nothing
- * nested deeper than `MAX_DEPTH`. Sets `state.truncated` for a string it shortened and a value it
- * replaced for its depth. A value that is not JSON (`undefined`, a function, a bigint) becomes `null`.
- */
+/** Non-JSON values (`undefined`, functions, bigints) become `null`. */
 function sanitize(value: unknown, depth: number, state: { truncated: boolean }): unknown {
   if (typeof value === "string") {
     if (value.length <= MAX_STRING_LENGTH) return value;
@@ -88,13 +76,10 @@ function sanitize(value: unknown, depth: number, state: { truncated: boolean }):
 }
 
 /**
- * `value`, or the part of it whose JSON text takes at most `budget` bytes; `undefined` when not even
- * an empty container or the scalar fits. Sets `state.truncated` for everything dropped.
- * - An array keeps its leading elements and stops at the first one that does not fit whole; that
- *   element is kept in part when it is a container that fits in part, and no element follows it.
- * - An object keeps, in its own order, first every entry that fits whole and then, in the room that
- *   is left, as much of each remaining container entry as fits. A large entry therefore does not
- *   crowd out the small entries after it, such as a recipient or a subject after a long body.
+ * `undefined` when not even an empty container or the scalar fits.
+ * - An array keeps a prefix; the first element that does not fit whole may be kept in part, and nothing follows.
+ * - An object first keeps every entry that fits whole, then fills the rest with parts of remaining containers, so
+ *   a large entry (a long body) does not crowd out small ones after it (recipient, subject).
  */
 function fitToBudget(value: unknown, budget: number, state: { truncated: boolean }): unknown {
   if (jsonBytes(value) <= budget) return value;
@@ -140,17 +125,9 @@ function fitToBudget(value: unknown, budget: number, state: { truncated: boolean
 }
 
 /**
- * The argument values of an MCP approval request (`payload.args`) as they may be shown to the owner
- * in the detail of that one request:
- * - the value of every argument whose key, at any depth, contains `password`, `secret`, `token`,
- *   `apikey`, `api_key`, `authorization`, `cookie` or `credential` in any letter case is replaced by
- *   the string `[redacted]`, whatever its type; the elements of an array have no key and are walked;
- * - a string value longer than 2,000 characters is cut to 2,000 characters, as counted by `length`;
- * - a value nested deeper than 32 levels is replaced by `null`;
- * - the JSON text of the returned `arguments` takes at most 16 KiB (16,384 UTF-8 bytes): entries that
- *   do not fit are dropped, in the way `fitToBudget` describes.
- * `argumentsTruncated` is `true` whenever a string was shortened or a value was replaced or dropped
- * for its depth or the byte cap. A redacted value is not a truncation.
+ * Redacts credential-looking keys (an array's elements have no key and are walked), cuts strings at 2,000
+ * characters, replaces values deeper than 32 levels with `null`, and caps the JSON at 16 KiB (`fitToBudget`).
+ * A redaction is not a truncation.
  */
 export function toApprovalRequestArgumentValues(args: Record<string, unknown>): ApprovalRequestArgumentValues {
   const state = { truncated: false };

@@ -7,7 +7,6 @@ import { withTransaction } from "../db/pool.js";
 import { withFromInbox } from "../chokePoint/itemOriginReads.js";
 import { deleteItemOrigin, insertItemOrigins } from "../inbox/itemOriginsStore.js";
 
-/** Issue #1716: the read-time `fromInbox` flag on item reads and queries. */
 let pool: Pool;
 let chokePoint: ChokePoint;
 

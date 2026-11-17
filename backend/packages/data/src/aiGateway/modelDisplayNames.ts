@@ -11,16 +11,13 @@ const MODEL_FAMILIES: readonly { pattern: RegExp; key: string }[] = [
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
-/** Lazily loaded once per process and reused — `aiGateway/i18n/{cs,en}.json` never changes at runtime. */
+/** Loaded once per process; the catalogs never change at runtime. */
 export function getModelDisplayCatalogs(): Promise<ModuleCatalogs> {
   catalogsPromise ??= loadModuleCatalogs(import.meta.url);
   return catalogsPromise;
 }
 
-/**
- * Localized display name of a stored model id, derived from its family. An id that matches no
- * family is returned unchanged.
- */
+/** An id matching no family is returned unchanged. */
 export function resolveModelDisplayName(catalogs: ModuleCatalogs, locale: string, modelId: string): string {
   const family = MODEL_FAMILIES.find(({ pattern }) => pattern.test(modelId));
   if (family === undefined) return modelId;
@@ -28,10 +25,7 @@ export function resolveModelDisplayName(catalogs: ModuleCatalogs, locale: string
   return resolveCatalogLabel(null, catalogs[manifestLocale], catalogs.en, family.key);
 }
 
-/**
- * Localized label of a stored operation key: requested locale, then English, then the raw key, so
- * an operation without a catalog entry is never hidden.
- */
+/** Falls back to English, then the raw key, so an uncatalogued operation is never hidden. */
 export function resolveOperationLabel(catalogs: ModuleCatalogs, locale: string, operation: string): string {
   const manifestLocale = toManifestLocale(locale);
   const label = resolveCatalogLabel(null, catalogs[manifestLocale], catalogs.en, `operation.${operation}`);

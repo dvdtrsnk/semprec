@@ -7,11 +7,9 @@ import type { TaskRecurrenceMode, TaskRecurrenceRule } from "../tasks/taskRecurr
 import { createTaskRecurrence, type TaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
 
 /**
- * Turns an existing dated Tasks item into the current occurrence of a new series, the state the recurrence route
- * (#1665, not yet built) will produce: `createTaskRecurrence` stores the series with the item's `date` as anchor and
- * its template fields, and the Tasks module's system write puts `seriesId`, `occurrenceDate` and `recurrence` on the
- * item through the choke point. `template` overrides fields of the template taken from the item. Returns the new
- * series id.
+ * Turns a dated Tasks item into the current occurrence of a new series: `createTaskRecurrence` stores the series
+ * (anchored on the item's `date`, with its template fields) and the Tasks system write sets `seriesId`,
+ * `occurrenceDate` and `recurrence` on the item. `template` overrides template fields. Returns the series id.
  */
 export async function startTaskSeries(
   pool: Pool,
@@ -64,10 +62,7 @@ export async function startTaskSeries(
   });
 }
 
-/**
- * Stores one more occurrence of `seriesId` as a Tasks item through the Tasks module's system write, the shape a
- * materialized occurrence has (#1720, not yet built, materializes them from the timeline). Returns the item id.
- */
+/** Stores one more occurrence of `seriesId` through the Tasks system write, shaped as a materialized occurrence. */
 export async function createSeriesOccurrence(
   pool: Pool,
   input: { databaseId: string; seriesId: string; occurrenceDate: string; status: string },

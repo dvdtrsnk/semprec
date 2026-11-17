@@ -38,13 +38,11 @@ const EVENT = { name: "Client meeting", date: "2026-11-16" };
 
 const calendarRow = z.object({ id: z.string(), properties: z.object({ name: z.string() }).passthrough() });
 
-/** The writer kind of every Events.calendar edge write the choke point ran in this file, in order. */
 const calendarEdgeWriters: string[] = [];
 registerRelationEdgeWriteHook(async ({ edgeContext, writer }) => {
   if (edgeContext.property.key === "calendar") calendarEdgeWriters.push(writer.writerKind);
 });
 
-/** A tenant with one English-speaking user, so its seeded calendars are named `Personal`, `Work` and so on. */
 async function seededTenant(): Promise<string> {
   const tenantId = await createTestTenant(admin);
   await createUser(admin, { tenantId, email: `${randomUUID()}@example.com`, passwordHash: "unused", locale: "en" });
@@ -52,7 +50,6 @@ async function seededTenant(): Promise<string> {
   return tenantId;
 }
 
-/** Resolves once a backend of this database waits for a row lock in a `FOR SHARE` read; read through `pg_stat_activity`. */
 async function waitForShareLockWaiter(): Promise<void> {
   for (let attempt = 0; attempt < 250; attempt += 1) {
     const { rows } = await admin.query<{ waiting: number }>(
@@ -87,7 +84,6 @@ describe("default calendar create hook (issue #1761)", () => {
     await admin.end();
   });
 
-  /** The ids and reads of the tenant in scope; every write of a test goes through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -104,10 +100,8 @@ describe("default calendar create hook (issue #1761)", () => {
       if (!row) throw new Error(`Missing calendar ${name}`);
       return row.id;
     };
-    /** The calendars the Event is linked to: exactly one id for an Event that belongs to one calendar. */
     const calendarsOf = async (eventId: string) =>
       ((await cp.listItemRelations(eventId, eventCalendar.id)) ?? []).map((entry) => entry.targetItemId);
-    /** The Events a calendar holds, read from the calendar's side. */
     const eventsIn = async (calendarId: string) =>
       ((await cp.listItemRelations(calendarId)) ?? []).map((entry) => entry.targetItemId);
     const eventIds = async () => (await cp.listItems(db("events"), { limit: 50 })).items.map((item) => item.id);
@@ -118,10 +112,7 @@ describe("default calendar create hook (issue #1761)", () => {
     return { cp, db, calendar, calendarsOf, eventsIn, eventIds, create, createIn };
   }
 
-  /**
-   * Runs `change` in a transaction that stays open until the returned `commit` is called, and resolves
-   * once `change` has run, so the caller starts its own write while the change is uncommitted.
-   */
+  /** Runs `change` in a transaction left open until `commit` is called, so the caller can race it. */
   async function heldOpen(change: (client: PoolClient) => Promise<void>): Promise<{ commit: () => Promise<void> }> {
     let release: () => void = () => {};
     const released = new Promise<void>((resolve) => {
@@ -222,7 +213,6 @@ describe("default calendar create hook (issue #1761)", () => {
               case "system":
                 return f.calendar("Birthdays");
               case "subscription": {
-                // `kind` is written by the calendar module only, so the fixture writes it as that owner process.
                 const item = await withTransaction(runtime, (client) =>
                   createItemWithClient(
                     client,
@@ -258,7 +248,6 @@ describe("default calendar create hook (issue #1761)", () => {
           expect(await f.eventsIn(f.calendar("Personal"))).toEqual([]);
           expect(calendarEdgeWriters).toEqual([]);
         });
-        // The other tenant's calendar holds nothing either.
         await runInTenant(foreign, async () => expect(await (await setup()).eventsIn(foreignWork)).toEqual([]));
       },
     );
@@ -360,7 +349,6 @@ describe("default calendar create hook (issue #1761)", () => {
             throw failure;
           }),
         ).rejects.toBe(failure);
-        // The hook had written the edge inside the transaction, so its absence afterwards is the rollback.
         expect(linkedInside).toEqual([f.calendar("Personal")]);
         expect(await f.eventIds()).toEqual([]);
         expect(await f.eventsIn(f.calendar("Personal"))).toEqual([]);
@@ -383,8 +371,7 @@ describe("default calendar create hook (issue #1761)", () => {
       runInTenant(tenant, async () => {
         const f = await setup();
         const errorLog = vi.spyOn(logger, "error").mockImplementation(() => undefined);
-        // A tenant without a live default is a state of before issue gh-1803: deleting the default calendar now hands
-        // the mark on, so only a raw write puts it in the Trash.
+        // Deleting the default calendar hands the mark on, so only a raw write leaves a tenant without a live default.
         await withTransaction(runtime, (client) =>
           client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
             f.db(CALENDARS_MODULE_ID),
@@ -407,7 +394,6 @@ describe("default calendar create hook (issue #1761)", () => {
         );
         expect(JSON.stringify(errorLog.mock.calls)).not.toContain(EVENT.name);
 
-        // A chosen calendar does not need the default.
         const event = await f.createIn(f.calendar("Work"), { properties: EVENT });
         expect(await f.calendarsOf(event.id)).toEqual([f.calendar("Work")]);
       }));
@@ -421,8 +407,7 @@ describe("default calendar create hook (issue #1761)", () => {
           undefined,
           USER,
         );
-        // Two live defaults are a state the choke point no longer produces (issue #1778); a tenant can hold it
-        // from before that rule, so the mark is written without the calendar row hooks.
+        // The choke point refuses two live defaults, so the mark is written without the calendar row hooks.
         const marked = await withTransaction(runtime, (client) =>
           client.query(
             `UPDATE items SET properties = properties || '{"isDefault": true}'::jsonb WHERE database_id = $1 AND id = $2`,
@@ -439,7 +424,6 @@ describe("default calendar create hook (issue #1761)", () => {
       runInTenant(tenant, async () => {
         const f = await setup();
         const calendarsId = f.db(CALENDARS_MODULE_ID);
-        // Marking Work clears Personal in the same transaction (issue #1778).
         const move = await heldOpen(async (client) => {
           await updateItemWithClient(
             client,
@@ -462,10 +446,9 @@ describe("default calendar create hook (issue #1761)", () => {
 
   describe("a tenant whose calendars are incomplete", () => {
     /**
-     * Removes the `Calendars.events` / `Events.calendar` relation of the tenant, and with `dropCalendars` the
-     * calendars database, its rows and its system project too: the state of a tenant seeded before issue #1600.
-     * The schema is locked and system-owned and no public path removes it, so this runs in the tenant's scope
-     * on the admin pool; that pool bypasses row-level security, so every statement names the tenant's own ids.
+     * Removes the `Calendars.events` / `Events.calendar` relation of the tenant, and with `dropCalendars` the calendars
+     * database too. The schema is locked and system-owned, so this runs on the admin pool, which bypasses row-level
+     * security: every statement names the tenant's own ids.
      */
     async function removeCalendars(tenantId: string, dropCalendars: boolean): Promise<void> {
       const calendarsId = await runInTenant(tenantId, async () => {
@@ -499,7 +482,7 @@ describe("default calendar create hook (issue #1761)", () => {
       });
     }
 
-    it("creates Events normally, without a calendar, in a tenant that has no calendars database", async () => {
+    it("fails the create, with a chosen calendar or without, in a tenant that has no calendars database", async () => {
       const ids = await runInTenant(tenant, async () => {
         const f = await setup();
         return { events: f.db("events"), work: f.calendar("Work") };
@@ -507,18 +490,17 @@ describe("default calendar create hook (issue #1761)", () => {
       await removeCalendars(tenant, true);
       await runInTenant(tenant, async () => {
         const cp = createChokePoint(runtime);
-        const event = await cp.createItem({ databaseId: ids.events, properties: EVENT }, undefined, undefined, USER);
-        // With no calendars database the hook writes nothing, so a chosen calendar is not looked at either.
-        const chosen = await withTransaction(runtime, (client) =>
-          createEventInCalendar(client, { properties: EVENT }, ids.work, { writer: USER }),
-        );
-        for (const created of [event, chosen]) {
-          expect(created.properties).toMatchObject(EVENT);
-          expect(await cp.listItemRelations(created.id)).toEqual([]);
-        }
+        await expect(
+          cp.createItem({ databaseId: ids.events, properties: EVENT }, undefined, undefined, USER),
+        ).rejects.toThrow("Calendars database not found");
+        await expect(
+          withTransaction(runtime, (client) =>
+            createEventInCalendar(client, { properties: EVENT }, ids.work, { writer: USER }),
+          ),
+        ).rejects.toThrow("Calendars database not found");
+        expect((await cp.listItems(ids.events, { limit: 50 })).items).toEqual([]);
         expect(calendarEdgeWriters).toEqual([]);
       });
-      // The other tenant keeps its calendars and its default.
       await runInTenant(foreign, async () => {
         const f = await setup();
         const event = await f.create();

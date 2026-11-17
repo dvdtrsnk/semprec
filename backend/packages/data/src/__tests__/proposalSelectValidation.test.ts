@@ -24,9 +24,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 /**
- * The item writes of confirm, wrapped so a test can see whether one was attempted. The wrapper runs the real
- * write: an unknown key at confirm is refused by this check before any write, and by the item-write check
- * (issue gh-1802) inside the write, with the same field and message, so only the call count tells them apart.
+ * Wrapped so a test can see whether a write was attempted: this check and the item-write check refuse an
+ * unknown key with the same field and message, so only the call count tells them apart.
  */
 vi.mock("../chokePoint/itemWrites.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../chokePoint/itemWrites.js")>();
@@ -72,7 +71,6 @@ async function findProposalForItem(itemId: string) {
   });
 }
 
-/** An Inbox item typed to file into Health records, ticked with the given computed properties and operations. */
 async function tickHealthRecord(
   properties: Record<string, unknown>,
   operations?: ProposalComputationResult["operations"],
@@ -112,7 +110,6 @@ async function reviseHealth(cardId: string, properties: Record<string, unknown>)
   );
 }
 
-/** Confirms a card; the spies on the item writes count only what the confirm itself attempts. */
 async function confirm(cardId: string) {
   clearWriteSpies();
   return withTransaction(pool, (client) =>
@@ -152,11 +149,7 @@ async function readCard(cardId: string) {
   return card;
 }
 
-/**
- * Stores an envelope on a card the way a catalog change after the tick leaves it: the card was proposed with a
- * valid key and the option has left the catalog since. Raw SQL because revise, the only API that rewrites the
- * envelope, now refuses an unknown key.
- */
+/** The state a catalog change after the tick leaves. Raw SQL: revise refuses an unknown key. */
 async function storeEnvelopeProperties(cardId: string, properties: Record<string, unknown>): Promise<void> {
   await pool.query(
     "UPDATE items SET properties = jsonb_set(properties, '{proposal,properties}', $2::jsonb) WHERE id = $1",
@@ -164,7 +157,6 @@ async function storeEnvelopeProperties(cardId: string, properties: Record<string
   );
 }
 
-/** Stores an operations list on a card the way `storeEnvelopeProperties` stores properties. */
 async function storeEnvelopeOperations(cardId: string, operations: unknown): Promise<void> {
   await pool.query(
     "UPDATE items SET properties = jsonb_set(properties, '{proposal,operations}', $2::jsonb) WHERE id = $1",
@@ -172,7 +164,6 @@ async function storeEnvelopeOperations(cardId: string, operations: unknown): Pro
   );
 }
 
-/** A Health record the way an ingest path writes it, so a value outside the catalog can be stored on it. */
 async function createStoredHealthRecord(properties: Record<string, unknown>): Promise<string> {
   const created = await withTransaction(pool, (client) =>
     createItemWithClient(client, { databaseId: healthId, properties }, { writer: { writerKind: "system" } }),
@@ -292,8 +283,7 @@ describe("confirm refuses an unknown select key in a database envelope (issue gh
     const after = await readCard(card.id);
     expect(after.properties.status).toBe("proposed");
     expect(await healthRecordCount()).toBe(0);
-    // Refused by the envelope check before any write; the item-write check would have refused it with the
-    // same error one step later, inside a write that rolled back.
+    // Refused by the envelope check before any write; the item-write check would refuse it with the same error later.
     expect(createItemWithClient).not.toHaveBeenCalled();
     expect(updateItemWithClient).not.toHaveBeenCalled();
   });

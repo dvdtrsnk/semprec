@@ -25,9 +25,7 @@ const ACTING_USER_ID = randomUUID();
 const JOURNAL_REFERENCE = new Date("2026-10-16T12:00:00Z");
 const ZONE = "Europe/Prague";
 const WAIT_MS = 10_000;
-/** The task name that makes the hook below fail with an error that is no refusal. */
 const DEFECT_NAME = "restore hook defect";
-/** The task name that makes the hook below queue an after-commit callback and then refuse with 409. */
 const QUEUE_THEN_CONFLICT_NAME = "queues then conflicts";
 
 const resultSchema = z.object({
@@ -38,11 +36,11 @@ const resultSchema = z.object({
 const bodySchema = z.object({ results: z.array(resultSchema) }).strict();
 type RestoreResult = z.infer<typeof resultSchema>;
 
-/** After-commit side effects of the test hook below; a refused id must leave none. */
+/** A refused id must leave none of these. */
 const hookSideEffects: string[] = [];
 
-// A hook of this file's own, after the production hooks: a defect (an error that is no refusal) for one task name,
-// and a callback queued for after the commit followed by a 409 for another.
+// Registered after the production hooks: a non-refusal defect for one task name, and an after-commit callback
+// followed by a 409 for another.
 registerItemRestoreHook(async ({ client, item }) => {
   if (item.properties.name === DEFECT_NAME) throw new Error("restore hook defect");
   if (item.properties.name === QUEUE_THEN_CONFLICT_NAME) {
@@ -53,13 +51,11 @@ registerItemRestoreHook(async ({ client, item }) => {
 
 let events: InvalidationEvent[] = [];
 
-/** Calls the handler as the adapter does: inside the tenant's scope, with the caller's id and the parsed body. */
 async function restore(body: unknown, tenant = tenantId): Promise<RestoreResult[]> {
   const answer = await runInTenant(tenant, () =>
     createTrashRestoreRouteHandler(dataPool)({ body, identity: { user: { id: ACTING_USER_ID } } }),
   );
   expect(answer.status).toBe(200);
-  // The body as JSON carries it, so a value JSON cannot represent would be noticed.
   return bodySchema.parse(JSON.parse(JSON.stringify(answer.body))).results;
 }
 
@@ -106,7 +102,6 @@ async function archive(databaseId: string, tenant = tenantId): Promise<void> {
   await runInTenant(tenant, () => chokePoint.archiveDatabase(databaseId));
 }
 
-/** A trashed item of the Tasks database. */
 async function trashedTask(name: string, tenant = tenantId): Promise<string> {
   const databaseId = await moduleDatabaseId("tasks", tenant);
   const id = await createItem(databaseId, { name }, tenant);
@@ -114,7 +109,7 @@ async function trashedTask(name: string, tenant = tenantId): Promise<string> {
   return id;
 }
 
-/** The ids among `ids` that are in the Trash, read as the superuser: a ground truth, not an isolation check. */
+/** Read as the superuser: ground truth, not an isolation check. */
 async function trashedAmong(ids: readonly string[]): Promise<string[]> {
   const { rows } = await adminPool.query<{ id: string }>(
     "SELECT id FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NOT NULL ORDER BY id",
@@ -133,7 +128,7 @@ async function archivedAmong(ids: readonly string[]): Promise<string[]> {
 
 const sorted = (ids: readonly string[]): string[] => [...ids].sort();
 
-/** The Journal day entry of 2026-10-16: a second call for the period returns the live one or creates a new entry. */
+/** A second call for the period returns the live entry or creates a new one. */
 async function journalDayEntry(): Promise<string> {
   const journalId = await moduleDatabaseId("journal");
   return runInTenant(tenantId, () =>
@@ -144,7 +139,6 @@ async function journalDayEntry(): Promise<string> {
   );
 }
 
-/** The thin item and schema announcements the handler caused, as sorted `item:<op>:<id>` and `schema:<id>` strings. */
 function announced(): string[] {
   return events
     .flatMap((event) => {
@@ -249,9 +243,8 @@ describe("POST /api/trash/restore (issue gh-1904)", () => {
     const results = await restore({ databaseIds: [databaseId], itemIds: [oldEntry, refusedTask, restoredTask] });
 
     expect(results.map((result) => result.status)).toEqual(["restored", "conflict", "conflict", "restored"]);
-    // The announcements are the single restores': one `update` per restored row, one schema change per database.
     expect(announced()).toEqual(sorted([`item:update:${restoredTask}`, `schema:${databaseId}`]));
-    // The hook queued a callback for after the commit before it refused, and the callback was dropped with its id.
+    // The callback queued before the refusal was dropped with its id.
     expect(hookSideEffects).toEqual([]);
     expect(await trashedAmong([oldEntry, refusedTask, restoredTask])).toEqual(sorted([oldEntry, refusedTask]));
   });
@@ -296,7 +289,6 @@ describe("POST /api/trash/restore (issue gh-1904)", () => {
       { id: task, kind: "item", status: "restored" },
     ]);
     expect(await stateOf()).toEqual(afterFirst);
-    // A live item is not announced again.
     expect(announced()).not.toContain(`item:update:${task}`);
   });
 
@@ -428,7 +420,6 @@ describe("POST /api/trash/restore (issue gh-1904)", () => {
         if (Date.now() > deadline) throw new Error("The restore never waited for the row lock");
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      // The purge the sweep would run: the row is gone when the waiting restore gets its lock.
       await holder.query("DELETE FROM databases WHERE id = $1", [purged]);
       await holder.query("COMMIT");
     } catch (error) {
@@ -480,7 +471,6 @@ describe("POST /api/trash/restore (issue gh-1904)", () => {
 
       const exactly = await restore({ itemIds: ids(50), databaseIds: ids(50) });
       expect(exactly).toHaveLength(100);
-      // 101 entries of which one is repeated are 100 ids.
       const repeated = randomUUID();
       expect(await restore({ itemIds: [...ids(99), repeated, repeated] })).toHaveLength(100);
     });

@@ -5,16 +5,12 @@ import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 import { normalizeWallClockTime } from "../timezone.js";
 
-/** The Events keys whose change is a new revision of the invitation (issue #1599). */
+/** A change of these keys is a new revision of the invitation. */
 const SEQUENCE_KEYS = ["date", "endDate", "timeFrom", "timeTo", "place"] as const;
 
-/** The domain of every UID this transform issues: `<uuid>@semprec`. */
 export const ICAL_UID_DOMAIN = "semprec";
 
-/**
- * A value as a calendar compares it: trimmed text with empty text, `null` and absence the same, and a
- * readable wall-clock time in its normalized `HH:MM` form, so `9:00` and `09:00` are one value.
- */
+/** Trimmed text with empty, `null` and absent the same, and times normalized to `HH:MM`. */
 function effective(key: (typeof SEQUENCE_KEYS)[number], value: unknown): unknown {
   if (typeof value !== "string") return value ?? null;
   const trimmed = value.trim();
@@ -29,12 +25,10 @@ function effective(key: (typeof SEQUENCE_KEYS)[number], value: unknown): unknown
 }
 
 /**
- * The iCalendar identity rules of issue #1599. On create, `icalUid` is `<newUid()>@semprec` and
- * `icalSequence` is 0, replacing any value in the patch; without `newUid` (read-only preparation, which
- * allocates nothing) the UID is left out. On update, `icalUid` and `icalSequence` are never taken from
- * the patch, and the sequence is the stored one plus 1 exactly when the effective value of `date`,
- * `endDate`, `timeFrom`, `timeTo` or `place` in the patch differs from the stored one. It runs after the
- * Events time transform, so the patch already holds normalized times.
+ * On create, `icalUid` is `<newUid()>@semprec` and `icalSequence` 0, overriding the patch; without `newUid`
+ * (read-only preparation) the UID is left out. On update both are never taken from the patch, and the sequence
+ * is incremented exactly when an effective `SEQUENCE_KEYS` value changes. Runs after the Events time transform,
+ * so times are already normalized.
  */
 export function applyEventIcalIdentity(
   stored: ItemRow | null,
@@ -57,11 +51,11 @@ export function applyEventIcalIdentity(
   return { ...rest, icalSequence: sequence + 1 };
 }
 
-/** Registered under `EVENTS_MODULE_ID` after the Events time transform by `../domainWriteHooks.ts`. */
+/** Registered after the Events time transform. */
 export const eventIcalIdentityTransform: ItemPreWriteTransform = async ({ stored, patch }) =>
   applyEventIcalIdentity(stored, patch, randomUUID);
 
-/** The read-only preparation of `eventIcalIdentityTransform`; it allocates no UID. */
+/** Allocates no UID. */
 export const prepareEventIcalIdentity: ItemPreWritePreparation = async ({ stored, patch }) => ({
   patch: applyEventIcalIdentity(stored, patch, undefined),
   deferredKeys: [],

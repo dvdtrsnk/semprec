@@ -138,8 +138,8 @@ describe("assertRelationTargetLinkableWithClient (issue #1426)", () => {
   it("reports a one-to-many target on the single-valued side, but not on the many side", async () => {
     const project = await createItem("projects", { name: "P" });
     const task = await createItem("tasks", { name: "T" });
-    // Tasks.project is the source of the fileProjectsFromTasks link rule (issue #1702), whose propagation is queued
-    // in the writer's tenant, so the write runs in the tenant scope every production write has.
+    // Tasks.project is the source of the fileProjectsFromTasks link rule, whose propagation is queued in
+    // the writer's tenant, so the write runs in a tenant scope as production writes do.
     await runInTenant(getTenantZeroId(), async () =>
       withTransaction(pool, async (client) =>
         createRelationWithClient(client, {

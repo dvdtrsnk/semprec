@@ -64,7 +64,7 @@ describe("journalStore: releasing a stale idempotency reservation", () => {
     );
     const key = `journal:${journalId}:day:2026-08-28`;
 
-    // Simulate a pre-C2 purge: the items row is gone but the reservation was left behind.
+    // A purge that left the reservation behind after the items row was gone.
     await pool.query("DELETE FROM items WHERE id = $1", [first.id]);
 
     const second = await withTransaction(pool, (client) =>

@@ -33,9 +33,8 @@ async function hasLiveOwner(dir: string, isPidAlive: (pid: number) => boolean): 
 }
 
 /**
- * Removes `semprec-pg-*` directories left behind by an embedded-Postgres test run that never
- * reached its vitest globalSetup teardown (killed run, crashed process). A directory is only
- * swept once it is both old enough and has no live postmaster claiming it.
+ * Removes `semprec-pg-*` directories from runs that never reached globalSetup teardown, once old enough and with no
+ * live postmaster claiming them.
  */
 export async function sweepStalePostgresDirs(options: SweepStalePostgresDirsOptions): Promise<string[]> {
   const { tmpDir, now = Date.now, maxAgeMs = DEFAULT_MAX_AGE_MS, isPidAlive = defaultIsPidAlive } = options;
@@ -49,8 +48,7 @@ export async function sweepStalePostgresDirs(options: SweepStalePostgresDirsOpti
     try {
       stats = await stat(dir);
     } catch (err) {
-      // ENOENT: another process may already have removed this directory; nothing to sweep.
-      // Anything else (EACCES, EIO, ...) is a real failure and must surface.
+      // ENOENT: already removed by another process. Anything else is a real failure.
       if (err instanceof Error && "code" in err && err.code === "ENOENT") continue;
       throw err;
     }

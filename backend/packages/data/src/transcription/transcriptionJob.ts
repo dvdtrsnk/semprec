@@ -6,28 +6,23 @@ import { tenantLane } from "../tenancy/tenantLane.js";
 /** The sole process allowed to write Transcriptions' system-owned fields. */
 export const TRANSCRIPTION_OWNER_PROCESS = "transcribe";
 
-/** Issue #180's fixed job-key scheme: a repeat enqueue for the same file converges onto one job (`jobKeyMode` default `'replace'`), satisfying "repeated delivery converges on one job" without any extra dedup check. */
+/** A repeat enqueue for the same file converges onto one job (`jobKeyMode` default `'replace'`). */
 export function transcriptionJobKey(fileItemId: string): string {
   return `transcription-job:${fileItemId}`;
 }
 
-/** The key of the fast `transcriptionCreate` job of a file, the counterpart of `transcriptionJobKey`. */
 export function transcriptionCreateJobKey(fileItemId: string): string {
   return `transcription-create:${fileItemId}`;
 }
 
 const TRANSCRIPTION_SOURCE_LINK_PREFIX = "semprec://items/";
 
-/** The Transcriptions row's `link`: the Files item it was transcribed from, which is also its job's key. */
+/** The Files item it was transcribed from, which is also its job's key. */
 export function transcriptionSourceLink(fileItemId: string): string {
   return `${TRANSCRIPTION_SOURCE_LINK_PREFIX}${fileItemId}`;
 }
 
-/**
- * Reads the Files item id back out of a Transcriptions row's `link` (issue #186's requeue and
- * rerun paths), or `null` when the value is not a link `transcriptionSourceLink` produced — the
- * property is read from a JSONB column, so it is checked here rather than trusted.
- */
+/** `null` when not a link `transcriptionSourceLink` produced: the value comes from JSONB, so it is checked, not trusted. */
 export function readTranscriptionSourceFileItemId(link: unknown): string | null {
   if (typeof link !== "string" || !link.startsWith(TRANSCRIPTION_SOURCE_LINK_PREFIX)) return null;
   const parsed = z.string().uuid().safeParse(link.slice(TRANSCRIPTION_SOURCE_LINK_PREFIX.length));
@@ -44,15 +39,10 @@ export interface EnqueueTranscriptionJobInput {
 }
 
 /**
- * Shared by every producer (the Files `onItemEvent:create` trigger, `POST /api/transcriptions`,
- * the daily requeue sweep and `POST /api/transcriptions/:id/rerun`) so the job-key/task-name
- * pairing can't drift between them. A repeat enqueue replaces a still-queued job under the same
- * key with a fresh batch; one graphile-worker has exhausted is detached from the key and never
- * runs again, while the fresh batch takes the key — either way one runnable job per file. Takes an already-open `client` so a
- * caller can enqueue inside its own transaction (state-writes: the enqueue is the write here,
- * there is nothing else to gate it against). `maxAttempts: 3` with graphile-worker's built-in
- * exponential backoff is the job's retry policy (issue #248); every attempt resumes from the
- * pipeline's checkpoints.
+ * Shared by every producer so the job-key/task-name pairing cannot drift. A repeat enqueue replaces a
+ * still-queued job with a fresh batch; an exhausted job is detached from the key and never runs again,
+ * so there is one runnable job per file. Takes an open `client` so a caller can enqueue inside its own
+ * transaction. Every attempt resumes from the pipeline's checkpoints.
  */
 export async function enqueueTranscriptionJob(client: PoolClient, input: EnqueueTranscriptionJobInput): Promise<void> {
   await enqueueJob(
@@ -63,7 +53,7 @@ export async function enqueueTranscriptionJob(client: PoolClient, input: Enqueue
   );
 }
 
-/** Enqueues the fast create step independently of the long transcription lane. */
+/** Independent of the long transcription lane. */
 export async function enqueueTranscriptionCreate(
   client: PoolClient,
   input: EnqueueTranscriptionJobInput,
@@ -81,10 +71,8 @@ export async function enqueueTranscriptionCreate(
 }
 
 /**
- * Whether a `transcriptionJob` is already queued for this file (`POST /api/transcriptions`'s
- * `transcription_exists` 409 check) — graphile-worker deletes a job row on success, so this only
- * ever reports a still in-flight or failed-but-not-yet-cleared job, not a long-completed one; this
- * issue ships no consumer that ever completes the job, so that gap is out of its scope.
+ * Backs the `transcription_exists` 409 check. graphile-worker deletes a job row on success, so this
+ * only reports a still in-flight or failed-but-not-cleared job.
  */
 export async function findTranscriptionJobId(client: PoolClient, fileItemId: string): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>(
@@ -103,22 +91,16 @@ export async function findTranscriptionCreateJobId(client: PoolClient, fileItemI
 }
 
 /**
- * The inverse of `enqueueTranscriptionCreate` and `enqueueTranscriptionJob` (issue gh-1984): removes the `transcriptionCreate`
- * and the `transcriptionJob` of a file on the caller's open transaction, so the removal commits or rolls back with it.
- * A job no worker has started is deleted; one a worker is running is detached from its key and not retried (`cancelJob`),
- * and a file that has no job removes nothing. It does not touch the Transcripts item a job that already ran created.
+ * On the caller's open transaction, so the removal commits or rolls back with it. An unstarted job is
+ * deleted; a running one is detached from its key and not retried. A Transcripts item an earlier run
+ * created is not touched.
  */
 export async function cancelTranscriptionJobs(client: PoolClient, fileItemId: string): Promise<void> {
   await cancelJob(client, transcriptionCreateJobKey(fileItemId));
   await cancelJob(client, transcriptionJobKey(fileItemId));
 }
 
-/**
- * Issue #180's Task explicitly excludes the actual transcription pipeline ("no special upload
- * endpoint or paid pipeline yet") — this handler only proves the job is well-formed and
- * processable; a later issue replaces this body with the real work (calling the AI gateway,
- * writing the Transcripts item). Deliberately performs no item write of its own.
- */
+/** Only validates the payload; performs no item write of its own. */
 export async function handleTranscriptionJobTask(payload: unknown): Promise<void> {
   transcriptionJobPayloadSchema.parse(payload);
 }

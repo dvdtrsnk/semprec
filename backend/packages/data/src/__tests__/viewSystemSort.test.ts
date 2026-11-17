@@ -1,27 +1,17 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
-import { runItemsCreatedAtBackfillCutoverMigration } from "../db/itemsCreatedAtBackfillCutoverMigration.js";
 import { ValidationError } from "../errors.js";
 import { parseViewConfig } from "../views/viewConfig.js";
 import type { QueryViewResult } from "../views/viewQuery.js";
-import {
-  createRuntimeRolePool,
-  createTestTenant,
-  getTenantZeroId,
-  getTestPool,
-  resetDatabase,
-} from "../testSupport/testDb.js";
+import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let adminPool: Pool;
 let chokePoint: ChokePoint;
 
-/** Follows `nextCursor` to the end, returning the item ids of every page in order. */
 async function collectPages(
   page: (cursor: string | undefined) => Promise<QueryViewResult>,
 ): Promise<{ ids: string[]; pages: number }> {
@@ -48,7 +38,6 @@ async function makeDatabase(name: string): Promise<string> {
   return db.id;
 }
 
-/** Creates `count` items through the production create path inside ONE transaction, so all share `now()`. */
 async function createInOneTransaction(pool: Pool, databaseId: string, titles: string[]): Promise<string[]> {
   return withTransaction(pool, async (client) => {
     const ids: string[] = [];
@@ -80,18 +69,14 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
 
   it("sorts by system createdAt descending with the latest added item first and pages every item exactly once", async () => {
     const databaseId = await makeDatabase("Library");
-    // Seven items share one creation timestamp (one transaction); paging through them at two per page
-    // must still visit each exactly once, ordered by the title and id tie-breaks.
+    // Seven items share one creation timestamp; paging two at a time must visit each once, by title and id tie-breaks.
     const sameInstant = await createInOneTransaction(adminPool, databaseId, ["g", "e", "c", "a", "f", "d", "b"]);
-    // Two consecutive transactions may start within one millisecond, the precision the sort compares at.
-    // The batch is moved one minute into the past on the admin pool (no write path sets created_at) so
-    // that "added later" is a fact of the data rather than of the clock; the seven still share one value.
+    // Moved one minute back (no write path sets created_at) so "added later" is in the data, not the clock.
     const shifted = await adminPool.query(
       "UPDATE items SET created_at = created_at - interval '1 minute' WHERE database_id = $1 AND id = ANY($2::uuid[])",
       [databaseId, sameInstant],
     );
     expect(shifted.rowCount).toBe(sameInstant.length);
-    // Titled "z": a title order would put it last, so being first shows the creation order decided.
     const latest = await chokePoint.createItem({ databaseId, properties: { title: "z" } });
     const sort = [{ system: "createdAt", direction: "desc" }];
 
@@ -123,8 +108,7 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
     const first = await chokePoint.createItem({ databaseId, properties: { title: "a" } });
     const second = await chokePoint.createItem({ databaseId, properties: { title: "b" } });
     const third = await chokePoint.createItem({ databaseId, properties: { title: "c" } });
-    // The edit is a later transaction, so its millisecond is never earlier than the others'; on a tie the
-    // title "z" still sorts it last, so the expected order holds without depending on the clock.
+    // The edit's millisecond is never earlier; on a tie the title "z" still sorts it last.
     await chokePoint.updateItem({ databaseId, itemId: first.id, propertiesPatch: { title: "z" } });
     const sort = [{ system: "updatedAt", direction: "asc" }];
     const { ids, pages } = await collectPages((cursor) =>
@@ -137,7 +121,6 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
   it("keeps a collection's own createdAt property and the system createdAt column apart", async () => {
     const databaseId = await makeDatabase("Imports");
     await chokePoint.createProperty({ databaseId, key: "createdAt", name: "Created at", type: "number" });
-    // Created in this order, so the column order is a, b, c; the property order is the reverse.
     const a = await chokePoint.createItem({ databaseId, properties: { title: "a", createdAt: 3 } });
     const b = await chokePoint.createItem({ databaseId, properties: { title: "b", createdAt: 2 } });
     const c = await chokePoint.createItem({ databaseId, properties: { title: "c", createdAt: 1 } });
@@ -174,8 +157,8 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
     "orders %s at full precision within one millisecond, across pages of one item, in both directions",
     async (field) => {
       const databaseId = await makeDatabase(`Precision ${field}`);
-      // Pair A: the older instant has the later title. Pair B: equal titles, the older instant the larger id.
-      // A millisecond comparison would order each pair by its title or id tie-break, the wrong way round.
+      // Pair A: older instant, later title. Pair B: equal titles, older instant, larger id. A millisecond comparison
+      // would order each pair the wrong way round.
       const [aOld, aNew] = [
         await chokePoint.createItem({ databaseId, properties: { title: "z" } }),
         await chokePoint.createItem({ databaseId, properties: { title: "a" } }),
@@ -204,7 +187,6 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
         expect(ids, direction).toEqual(direction === "asc" ? ascending : [...ascending].reverse());
         expect(pages, direction).toBe(4);
       }
-      // The cursor carries the row's value at full precision.
       const page = await chokePoint.queryDatabaseItems(databaseId, {
         sort: [{ system: field, direction: "asc" }],
         limit: 1,
@@ -229,7 +211,6 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
     const databaseId = await makeDatabase("Cursors");
     const item = await chokePoint.createItem({ databaseId, properties: { title: "a" } });
     const sort = [{ system: "createdAt", direction: "desc" }];
-    // The title tie-break is part of the cursor tuple.
     const cursor = encodeCursor({ v: [value, "a"], id: item.id });
     await expectValidationError(chokePoint.queryDatabaseItems(databaseId, { sort, cursor }), "cursor");
   });
@@ -251,126 +232,5 @@ describe("items.created_at and system-timestamp sorting (issue #1594)", () => {
       [databaseId, created.id],
     );
     expect(rows[0]?.created_at).not.toBe(rows[0]?.updated_at);
-  });
-
-  describe("created_at backfill cutover", () => {
-    let dataPool: Pool;
-
-    beforeAll(async () => {
-      dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
-    });
-
-    afterAll(async () => {
-      await dataPool?.end();
-    });
-
-    const snapshotSchema = z.array(
-      z.object({ id: z.string(), tenant_id: z.string(), created_at: z.string(), updated_at: z.string() }),
-    );
-
-    /** Every item row with its timestamps as full-precision text, so microseconds are compared too. */
-    async function snapshot(): Promise<z.infer<typeof snapshotSchema>> {
-      const { rows } = await adminPool.query<Record<string, unknown>>(
-        "SELECT id::text, tenant_id::text, created_at::text, updated_at::text FROM items ORDER BY id",
-      );
-      return snapshotSchema.parse(rows);
-    }
-
-    /**
-     * Gives the tenant's rows the state `0143_items_created_at.sql` left on an install: `created_at` later
-     * than `updated_at`. The migration has already run for the test database, so its stored missing value
-     * cannot be reproduced through any write; this raw update on the admin pool stands in for it.
-     */
-    async function ageRows(tenantId: string): Promise<void> {
-      const result = await adminPool.query(
-        "UPDATE items SET created_at = updated_at + interval '1 day 0.123456 second' WHERE tenant_id = $1",
-        [tenantId],
-      );
-      expect(result.rowCount).toBeGreaterThan(0);
-    }
-
-    it("sets every old row's created_at to its updated_at across batches and tenants, leaves updated_at alone, and is idempotent", async () => {
-      const zero = getTenantZeroId();
-      const other = await createTestTenant(adminPool);
-      const zeroDatabase = await makeDatabase("Old rows");
-      // One more row than a backfill batch holds, so the cutover takes a second batch.
-      await createInOneTransaction(
-        adminPool,
-        zeroDatabase,
-        Array.from({ length: 501 }, (_, index) => `row ${index}`),
-      );
-      const trashed = await chokePoint.createItem({ databaseId: zeroDatabase, properties: { title: "trashed" } });
-      await chokePoint.softDeleteItem(zeroDatabase, trashed.id);
-      const otherChokePoint = createChokePoint(dataPool);
-      await runInTenant(other, async () => {
-        const db = await otherChokePoint.createDatabase({ name: "Other tenant" });
-        await otherChokePoint.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "title" });
-        await otherChokePoint.createItem({ databaseId: db.id, properties: { title: "theirs" } });
-      });
-      await ageRows(zero);
-      await ageRows(other);
-      const before = await snapshot();
-      expect(before.every((row) => row.created_at > row.updated_at)).toBe(true);
-
-      await runAsSystem("test created_at backfill", () => runTenantCutoverMigrations(dataPool));
-      const after = await snapshot();
-      expect(after.map(({ id, tenant_id, updated_at }) => ({ id, tenant_id, updated_at }))).toEqual(
-        before.map(({ id, tenant_id, updated_at }) => ({ id, tenant_id, updated_at })),
-      );
-      expect(after.filter((row) => row.created_at !== row.updated_at)).toEqual([]);
-      expect(after.filter((row) => row.tenant_id === other)).toHaveLength(1);
-
-      await runInTenant(zero, () => runItemsCreatedAtBackfillCutoverMigration(dataPool));
-      await runInTenant(other, () => runItemsCreatedAtBackfillCutoverMigration(dataPool));
-      expect(await snapshot()).toEqual(after);
-    });
-
-    it("keeps the migration time for a pre-existing row written before its batch, backfills the others and is idempotent", async () => {
-      const zero = getTenantZeroId();
-      const databaseId = await makeDatabase("Window");
-      const [untouched, written] = await createInOneTransaction(adminPool, databaseId, ["untouched", "written"]);
-      // Raw SQL, labeled: the state 0143 left on an install, with fixed instants instead of the clock. Both
-      // rows last changed on 2020-01-01; the ALTER (their created_at) ran on 2020-06-01.
-      const aged = await adminPool.query(
-        `UPDATE items SET updated_at = '2020-01-01T00:00:00Z', created_at = '2020-06-01T00:00:00Z'
-          WHERE database_id = $1 AND id = ANY($2::uuid[])`,
-        [databaseId, [untouched, written]],
-      );
-      expect(aged.rowCount).toBe(2);
-      // A real write between the ALTER and the backfill moves the row's updated_at past its created_at.
-      await chokePoint.updateItem({ databaseId, itemId: written!, propertiesPatch: { title: "written again" } });
-      const fresh = await chokePoint.createItem({ databaseId, properties: { title: "fresh" } });
-      const before = await snapshot();
-      const row = (id: string, rows: typeof before) => rows.find((candidate) => candidate.id === id)!;
-      expect(row(written!, before).updated_at > row(written!, before).created_at).toBe(true);
-
-      await runInTenant(zero, () => runItemsCreatedAtBackfillCutoverMigration(dataPool));
-      const after = await snapshot();
-      // Not written in the window: created_at now equals its updated_at.
-      expect(row(untouched!, after).created_at).toBe(row(untouched!, after).updated_at);
-      // Written in the window: no longer matches the backfill and keeps the migration time.
-      expect(row(written!, after)).toEqual(row(written!, before));
-      expect(row(written!, after).created_at).not.toBe(row(written!, after).updated_at);
-      // Created after the migration: untouched. No updated_at changed.
-      expect(row(fresh.id, after)).toEqual(row(fresh.id, before));
-      expect(after.map(({ id, updated_at }) => ({ id, updated_at }))).toEqual(
-        before.map(({ id, updated_at }) => ({ id, updated_at })),
-      );
-
-      await runInTenant(zero, () => runItemsCreatedAtBackfillCutoverMigration(dataPool));
-      expect(await snapshot()).toEqual(after);
-    });
-
-    it("leaves a row created after the migration untouched", async () => {
-      const zero = getTenantZeroId();
-      const databaseId = await makeDatabase("New rows");
-      const item = await chokePoint.createItem({ databaseId, properties: { title: "new" } });
-      await chokePoint.updateItem({ databaseId, itemId: item.id, propertiesPatch: { title: "newer" } });
-      const before = await snapshot();
-      const row = before.find((candidate) => candidate.id === item.id);
-      expect(row && row.created_at < row.updated_at).toBe(true);
-      await runInTenant(zero, () => runItemsCreatedAtBackfillCutoverMigration(dataPool));
-      expect(await snapshot()).toEqual(before);
-    });
   });
 });

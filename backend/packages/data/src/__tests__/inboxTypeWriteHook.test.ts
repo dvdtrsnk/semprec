@@ -94,8 +94,8 @@ async function countTypes(): Promise<number> {
 }
 
 /**
- * Writes a `targetDatabase` straight into the stored row, the way a type stored before this rule existed
- * looks. The choke point refuses that state now, so the row is the only place a test can put it.
+ * Writes a `targetDatabase` straight into the stored row: the choke point refuses that state, so a raw
+ * row is the only way to put it.
  */
 async function storeTargetDirectly(itemId: string, target: string): Promise<void> {
   const { rows } = await pool.query<{ id: string }>(
@@ -108,8 +108,8 @@ async function storeTargetDirectly(itemId: string, target: string): Promise<void
 }
 
 /**
- * Takes the MCP servers database out of the tenant's module registry, the state of a tenant that does not have the
- * module. Direct SQL is the fixture: the seed always delivers the database and no write removes a system database.
+ * Takes the MCP servers database out of the tenant's module registry, as for a tenant without the module.
+ * Direct SQL: the seed always delivers the database and no write removes a system database.
  */
 async function removeMcpServersDatabase(): Promise<void> {
   const { rows } = await pool.query<{ id: string }>(
@@ -118,7 +118,7 @@ async function removeMcpServersDatabase(): Promise<void> {
   if (rows.length !== 1) throw new Error("Expected exactly one MCP servers database");
 }
 
-/** The same for the Recipes database (issue gh-1974), the second module target. */
+/** The same for the Recipes database. */
 async function removeRecipesDatabase(): Promise<void> {
   const { rows } = await pool.query<{ id: string }>(
     "UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'recipes' RETURNING id",
@@ -126,7 +126,6 @@ async function removeRecipesDatabase(): Promise<void> {
   if (rows.length !== 1) throw new Error("Expected exactly one Recipes database");
 }
 
-/** Each refusal is a 400 `validation_failed` that names the failing field, as the Acceptance criteria state. */
 function refusalFor(field: "processingMethod" | "targetDatabase") {
   return { status: 400, code: "validation_failed", details: { field } };
 }
@@ -170,7 +169,10 @@ const INVALID_CREATES: ReadonlyArray<
   ["an unknown processing method", { processingMethod: "journalEntry" }, "processingMethod"],
 ];
 
-/** The eight hardcoded system databases a 'database' type may target: the ten system databases without journal and transcripts. mcpServers (issue #1973) has its own cases below. */
+/**
+ * The eight hardcoded system databases a 'database' type may target: the ten without journal and
+ * transcripts. mcpServers has its own cases below.
+ */
 const ACCEPTED_TARGETS = [
   "areas",
   "projects",
@@ -453,7 +455,6 @@ describe("Inbox item type write hook: processingMethod and targetDatabase are ch
       const withoutMcp = await createTestTenant(pool);
       const viewTypeRegistry = createViewTypeRegistry();
       await runInTenant(withoutMcp, () => seedSystem(runtime, viewTypeRegistry));
-      // Direct SQL is the fixture: the seed always delivers the database and no write removes a system database.
       const removed = await pool.query(
         "UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'mcpServers' AND tenant_id = $1",
         [withoutMcp],

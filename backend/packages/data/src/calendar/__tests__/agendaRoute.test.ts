@@ -15,7 +15,6 @@ import { hideSleepInCalendar } from "./hideSleepInCalendar.js";
 import { readCalendarTimeline } from "../timelineRead.js";
 import { createCalendarTimelineRouteHandler } from "../timelineRouteHandler.js";
 
-// The real read behind a spy, so a test can see which ranges the route asked the timeline for.
 vi.mock("../timelineRead.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../timelineRead.js")>();
   return { ...actual, readCalendarTimeline: vi.fn(actual.readCalendarTimeline) };
@@ -40,7 +39,6 @@ interface AgendaAnswer {
   nextCursor: string | null;
 }
 
-/** Calls the handler as the adapter does: inside the tenant's scope, with the request URL. */
 async function request(query: string, tenant: string = tenantId): Promise<AgendaAnswer> {
   const result = await runInTenant(tenant, () =>
     createCalendarAgendaRouteHandler(dataPool)({ req: { url: `/api/calendar/agenda${query}` } }),
@@ -51,16 +49,11 @@ async function request(query: string, tenant: string = tenantId): Promise<Agenda
   return { ids: body.items.map((item) => item.id), items: body.items, nextCursor: body.nextCursor };
 }
 
-/** The query parameter that asks for the page after `answer`. */
 function continuing(answer: AgendaAnswer): string {
   if (answer.nextCursor === null) throw new Error("The page has no nextCursor");
   return `&cursor=${answer.nextCursor}`;
 }
 
-/**
- * The ids of the pages of one agenda, each page after the first requested with the `nextCursor` of the page
- * before. It stops after `count` pages, or sooner after a page without a `nextCursor`.
- */
 async function pages(query: string, count: number): Promise<string[][]> {
   const ids: string[][] = [];
   let cursor = "";
@@ -73,12 +66,10 @@ async function pages(query: string, count: number): Promise<string[][]> {
   return ids;
 }
 
-/** The ranges read from the timeline since the spy was last cleared, in the order they were read. */
 function rangesRead(): string[] {
   return vi.mocked(readCalendarTimeline).mock.calls.map(([, input]) => `${input.from}..${input.to}`);
 }
 
-/** A value in the encoding of a `nextCursor`, for the requests that probe what the route accepts as one. */
 function cursorOf(text: string): string {
   return Buffer.from(text).toString("base64url");
 }
@@ -103,7 +94,6 @@ async function create(
   });
 }
 
-/** Runs a write of the tenant's Tasks database through the choke point. */
 async function inTasks<T>(write: (chokePoint: ReturnType<typeof createChokePoint>, databaseId: string) => Promise<T>) {
   return runInTenant(tenantId, async () => {
     const database = await withTransaction(dataPool, (client) => databasesStore.getDatabaseByModuleId(client, "tasks"));
@@ -152,13 +142,10 @@ describe("GET /api/calendar/agenda (issue #1762)", () => {
     const untimedTask = await create("tasks", { name: "Untimed", date: FROM });
     const timedEvent = await create("events", { name: "Timed", date: FROM, timeFrom: "09:00", timeTo: "10:00" });
     const timedTask = await create("tasks", { name: "Timed task", date: FROM, timeFrom: "08:00" });
-    // The page of 5 ends in the middle of 17 October.
     const nextDayEvent = await create("events", { name: "Next day", date: "2026-10-17" });
     const nextDayTask = await create("tasks", { name: "Next day task", date: "2026-10-17" });
-    // 18 October is empty.
     const later = await create("events", { name: "Later", date: "2026-10-19", timeFrom: "10:00" });
     const earlier = await create("events", { name: "Earlier", date: "2026-10-19", timeFrom: "08:00" });
-    // 30 November is in the second window of 31 days.
     const secondWindow = await create("tasks", { name: "Second window", date: "2026-11-30" });
 
     const first = await request(`?from=${FROM}&direction=forward&limit=5`);
@@ -263,7 +250,6 @@ describe("GET /api/calendar/agenda (issue #1762)", () => {
     const twoDaysBackTask = await create("tasks", { name: "Two days back", date: "2026-10-14" });
     const twoDaysBackEvent = await create("events", { name: "Two days back", date: "2026-10-14", timeFrom: "07:00" });
     const sixDaysBack = await create("events", { name: "Six days back", date: "2026-10-10" });
-    // 1 September is in the second window of 31 days going backward.
     const secondWindow = await create("tasks", { name: "Second window", date: "2026-09-01" });
 
     const first = await request(`?from=${FROM}&direction=backward&limit=4`);
@@ -278,7 +264,6 @@ describe("GET /api/calendar/agenda (issue #1762)", () => {
   it("returns an Event of several days once going forward: on from when it began before, else on its first day", async () => {
     const began = await create("events", { name: "Began before", date: "2026-10-14", endDate: "2026-10-20" });
     const onFrom = await create("tasks", { name: "On from", date: FROM });
-    // 10 to 20 November lies across the first two windows, which meet between 15 and 16 November.
     const across = await create("events", { name: "Across windows", date: "2026-11-10", endDate: "2026-11-20" });
     const during = await create("tasks", { name: "During", date: "2026-11-18" });
 
@@ -297,7 +282,6 @@ describe("GET /api/calendar/agenda (issue #1762)", () => {
   it("returns an Event of several days once going backward: on from when it ends after, else on its last day", async () => {
     const endsAfter = await create("events", { name: "Ends after", date: "2026-10-14", endDate: "2026-10-20" });
     const dayBefore = await create("tasks", { name: "Day before", date: "2026-10-15" });
-    // 10 to 20 September lies across the first two windows going backward, which meet between 16 and 15 September.
     const across = await create("events", { name: "Across windows", date: "2026-09-10", endDate: "2026-09-20" });
     const during = await create("tasks", { name: "During", date: "2026-09-12" });
 
@@ -305,7 +289,6 @@ describe("GET /api/calendar/agenda (issue #1762)", () => {
   });
 
   it("scans 366 days and returns a cursor that continues on the day after", async () => {
-    // 16 October 2027 is the 366th day of the scan, 17 October 2027 the first day after it.
     const lastScanned = await create("tasks", { name: "Last scanned day", date: "2027-10-16" });
     const dayAfter = await create("tasks", { name: "Day after the horizon", date: "2027-10-17" });
 
@@ -320,7 +303,6 @@ describe("GET /api/calendar/agenda (issue #1762)", () => {
   });
 
   it("continues backward from the day before the 366 scanned days", async () => {
-    // 16 October 2025 is the 366th day of the backward scan, 15 October 2025 the first day after it.
     const lastScanned = await create("tasks", { name: "Last scanned day", date: "2025-10-16" });
     const dayAfter = await create("tasks", { name: "Day after the horizon", date: "2025-10-15" });
 
@@ -423,7 +405,6 @@ describe("GET /api/calendar/agenda (issue #1762)", () => {
     const page = await request(`?from=${FROM}&direction=forward&limit=1`);
     expect(page.ids).toEqual([first]);
 
-    // While the item is there, the next page continues after it on its day.
     expect((await request(`?from=${FROM}&direction=forward${continuing(page)}`)).ids).toEqual([sameDay, nextDay]);
 
     await trashTask(first);

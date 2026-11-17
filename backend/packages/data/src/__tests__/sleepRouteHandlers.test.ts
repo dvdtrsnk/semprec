@@ -18,10 +18,8 @@ import {
   withTenantTransaction,
 } from "../testSupport/testDb.js";
 
-// A seeded tenant has the settings item (enabled, prepReminder 30 minutes before bed, goal 480 minutes, sound
-// morning, snooze on, muteSemp on, showInCalendar on) and two plans: wake days mon to fri from 23:00 to 06:45
-// with the alarm, and sat and sun from 00:00 to 08:30 without it. Its time zone is Europe/Prague, which is at
-// +02:00 on the dates below. 2026-10-15 is a Thursday.
+// Seeded settings: enabled, prepReminder 30, goal 480, sound morning, snooze, muteSemp and showInCalendar on.
+// Plans in Europe/Prague (+02:00 below): mon-fri 23:00-06:45 with alarm, sat-sun 00:00-08:30 without. 2026-10-15 is a Thursday.
 
 const USER = { writerKind: "user" } as const;
 const RANGE = "?from=2026-10-15&to=2026-10-16";
@@ -65,7 +63,6 @@ interface SleepTenant {
   plansDatabaseId: string;
   nightsDatabaseId: string;
   settingsItemId: string;
-  /** The seeded plans by wake days: `weekdays` is mon to fri, `weekend` is sat and sun. */
   weekdays: { id: string; name: string };
   weekend: { id: string; name: string };
 }
@@ -78,12 +75,11 @@ function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): 
   return runInTenant(tenantId, () => withTransaction(dataPool, fn));
 }
 
-/** Calls the route handler as the adapter does: inside the tenant's scope, with the request URL. */
 function request(tenantId: string, query: string): Promise<{ status: number; body: unknown }> {
   return runInTenant(tenantId, () => sleepNightsGet(dataPool)({ req: { url: `/api/sleep/nights${query}` } }));
 }
 
-/** The 200 answer of the route, parsed from what JSON carries so a value JSON cannot represent would be noticed. */
+/** Parsed from JSON so a value JSON cannot represent would be noticed. */
 async function read(tenantId: string, query: string): Promise<SleepResponse> {
   const result = await request(tenantId, query);
   expect(result.status).toBe(200);
@@ -146,7 +142,7 @@ function patch(t: SleepTenant, databaseId: string, itemId: string, propertiesPat
   );
 }
 
-/** A statement that the write rules of the sleep module (issue gh-1784) would refuse, run as the superuser. */
+/** A statement the sleep module's write rules would refuse, run as the superuser. */
 async function rawSql(t: SleepTenant, sql: string, parameters: unknown[]): Promise<void> {
   await withTenantTransaction(adminPool, t.tenantId, async (client) => {
     await client.query(sql, parameters);
@@ -419,8 +415,8 @@ describe("GET /api/sleep/nights (issue gh-1809)", () => {
   });
 
   it("answers from the state at its start when a plan edit commits between its settings read and its plans read", async () => {
-    // Wraps the connection the route reads on: right after the statement that reads the settings item, a plan
-    // edit commits on another connection. Under READ COMMITTED the plans statement would see the edit.
+    // Right after the settings read, a plan edit commits on another connection; under READ COMMITTED the plans
+    // statement would see it.
     let edited = false;
     const interleavingPool = {
       connect: async () => {

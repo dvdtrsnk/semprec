@@ -20,11 +20,8 @@ function catalogKey(kind: string, resolutionKind: string, params: ResolutionTitl
 }
 
 /**
- * The resolution title of one resolved problem, in `locale` (issue gh-1919). The catalog entry is keyed
- * by the problem kind and the resolution kind (`status.resolved.<resolutionKind>.<kind>`); a pair with
- * no entry gets the generic `status.resolved.unknown` title. A name placeholder is filled from `params`,
- * and replaced by the neutral word `status.resolved.unnamed` when the name could not be read, so a title
- * is never left with a gap.
+ * Resolution title from `status.resolved.<resolutionKind>.<kind>`, falling back to `status.resolved.unknown`.
+ * A missing name is replaced by `status.resolved.unnamed` so the title never has a gap.
  */
 export function renderResolutionTitle(
   catalogs: ModuleCatalogs,

@@ -6,10 +6,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { Pool } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import { createBlob, tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import {
@@ -20,7 +19,6 @@ import {
   setItemAutomationLocked,
 } from "../library/itemAutomationStore.js";
 import { createLibraryAutomationRetryRouteHandler } from "../library/libraryAutomationRouteHandlers.js";
-import { runLibraryCoverOverrideCutoverMigration } from "../library/libraryCoverOverrideCutoverMigration.js";
 import {
   LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
   LIBRARY_METADATA_TRIGGER_ACTION_ID,
@@ -63,7 +61,6 @@ interface PropertySnapshot {
   owner_process: string | null;
 }
 
-/** The Books and Movies databases of the tenant `id`, seeded through the runtime role. */
 async function seedTenantLibrary(id: string): Promise<SeededLibrary> {
   return runInTenant(id, async () => {
     await seedSystem(runtime);
@@ -80,7 +77,7 @@ async function seedTenantLibrary(id: string): Promise<SeededLibrary> {
   });
 }
 
-describe("library cover cutover and retry (issue gh-1793)", () => {
+describe("library cover override and retry (issue gh-1793)", () => {
   let library: SeededLibrary;
 
   beforeAll(async () => {
@@ -112,20 +109,11 @@ describe("library cover cutover and retry (issue gh-1793)", () => {
     expect(rows[0]).toEqual({ rolsuper: false, rolbypassrls: false });
   });
 
-  describe("cutover", () => {
+  describe("the seeded schema", () => {
     async function propertySnapshot(databaseId: string): Promise<PropertySnapshot[]> {
       const { rows } = await runtime.query<PropertySnapshot>(
         `SELECT key, type, owner, name, config, locked, owner_process FROM properties
          WHERE database_id = $1 AND key = ANY($2::text[]) ORDER BY key`,
-        [databaseId, [...COVER_KEYS]],
-      );
-      return rows;
-    }
-
-    async function identities(databaseId: string): Promise<Array<{ id: string; xmin: string }>> {
-      const { rows } = await runtime.query<{ id: string; xmin: string }>(
-        `SELECT id, xmin::text AS xmin FROM properties WHERE database_id = $1 AND key = ANY($2::text[])
-         UNION ALL SELECT id, xmin::text FROM views WHERE database_id = $1 ORDER BY id`,
         [databaseId, [...COVER_KEYS]],
       );
       return rows;
@@ -139,37 +127,10 @@ describe("library cover cutover and retry (issue gh-1793)", () => {
       return rows.map((row) => row.config);
     }
 
-    /** Fixture SQL: puts a tenant back to the schema of a build that had no cover properties. */
-    async function stripCoverSchema(databaseId: string): Promise<void> {
-      await runtime.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
-        databaseId,
-        [...COVER_KEYS],
-      ]);
-      await runtime.query(
-        "UPDATE views SET config = config - 'coverOverrideKey' - 'coverRemovedKey' - 'coverSourceKey' WHERE database_id = $1",
-        [databaseId],
-      );
-    }
-
-    it("gives a tenant seeded before them the same properties and view keys as a fresh seed, through the runner", async () => {
-      const [freshBooks, freshMovies] = await runInTenant(tenantId, async () => [
-        await propertySnapshot(library.booksId),
-        await propertySnapshot(library.moviesId),
-      ]);
-      expect(freshBooks.map((property) => property.key)).toEqual([...COVER_KEYS]);
+    it("gives Books and Movies the cover properties and the library-grid view keys", async () => {
       await runInTenant(tenantId, async () => {
-        await stripCoverSchema(library.booksId);
-        await stripCoverSchema(library.moviesId);
-        expect(await propertySnapshot(library.booksId)).toEqual([]);
-        expect((await viewConfigs(library.moviesId))[0]).not.toHaveProperty("coverOverrideKey");
-      });
-
-      await runAsSystem("test library cover cutover", () => runTenantCutoverMigrations(runtime));
-
-      await runInTenant(tenantId, async () => {
-        expect(await propertySnapshot(library.booksId)).toEqual(freshBooks);
-        expect(await propertySnapshot(library.moviesId)).toEqual(freshMovies);
         for (const databaseId of [library.booksId, library.moviesId]) {
+          expect((await propertySnapshot(databaseId)).map((property) => property.key)).toEqual([...COVER_KEYS]);
           expect((await viewConfigs(databaseId))[0]).toMatchObject({
             coverOverrideKey: "coverOverride",
             coverRemovedKey: "coverRemoved",
@@ -177,73 +138,6 @@ describe("library cover cutover and retry (issue gh-1793)", () => {
           });
         }
       });
-    });
-
-    it("changes nothing on a second run", async () => {
-      await runInTenant(tenantId, async () => {
-        await stripCoverSchema(library.booksId);
-        await stripCoverSchema(library.moviesId);
-        await runLibraryCoverOverrideCutoverMigration(runtime);
-        const first = [await identities(library.booksId), await identities(library.moviesId)];
-        await runLibraryCoverOverrideCutoverMigration(runtime);
-        expect([await identities(library.booksId), await identities(library.moviesId)]).toEqual(first);
-      });
-    });
-
-    it("keeps a property that exists and a view key the tenant already set", async () => {
-      await runInTenant(tenantId, async () => {
-        await stripCoverSchema(library.booksId);
-        await runtime.query(
-          `INSERT INTO properties (database_id, key, name, type, config, locked, owner, owner_process)
-           VALUES ($1, 'coverRemoved', 'Own name', 'checkbox', '{}'::jsonb, false, 'user', NULL)`,
-          [library.booksId],
-        );
-        await runtime.query(
-          'UPDATE views SET config = config || \'{"coverOverrideKey": "ownCover"}\'::jsonb WHERE database_id = $1',
-          [library.booksId],
-        );
-        const existing = (await propertySnapshot(library.booksId)).find((property) => property.key === "coverRemoved");
-
-        await runLibraryCoverOverrideCutoverMigration(runtime);
-
-        const upgraded = await propertySnapshot(library.booksId);
-        expect(upgraded.map((property) => property.key)).toEqual([...COVER_KEYS]);
-        expect(upgraded.find((property) => property.key === "coverRemoved")).toEqual(existing);
-        expect((await viewConfigs(library.booksId))[0]).toMatchObject({
-          coverOverrideKey: "ownCover",
-          coverRemovedKey: "coverRemoved",
-          coverSourceKey: "coverSource",
-        });
-      });
-    });
-
-    it("checks the merged view config with the library-grid schema and rolls the whole cutover back when it is invalid", async () => {
-      await runInTenant(tenantId, async () => {
-        await stripCoverSchema(library.booksId);
-        // Fixture SQL: a config that the view type's schema refuses, which a view write never leaves behind.
-        await runtime.query("UPDATE views SET config = config - 'coverKey' WHERE database_id = $1", [library.booksId]);
-
-        await expect(runLibraryCoverOverrideCutoverMigration(runtime)).rejects.toBeInstanceOf(ValidationError);
-
-        expect(await propertySnapshot(library.booksId)).toEqual([]);
-        expect((await viewConfigs(library.booksId))[0]).not.toHaveProperty("coverOverrideKey");
-      });
-    });
-
-    it("leaves another tenant unchanged and skips a tenant without Books and Movies", async () => {
-      const other = await createTestTenant(admin);
-      const otherLibrary = await seedTenantLibrary(other);
-      await runInTenant(other, () => stripCoverSchema(otherLibrary.booksId));
-      const empty = await createTestTenant(admin);
-      await runInTenant(tenantId, async () => {
-        await stripCoverSchema(library.booksId);
-        await runLibraryCoverOverrideCutoverMigration(runtime);
-        expect((await propertySnapshot(library.booksId)).map((property) => property.key)).toEqual([...COVER_KEYS]);
-      });
-      await runInTenant(other, async () => {
-        expect(await propertySnapshot(otherLibrary.booksId)).toEqual([]);
-      });
-      await runInTenant(empty, () => runLibraryCoverOverrideCutoverMigration(runtime));
     });
 
     it.each(["cs", "en"] as const)(
@@ -374,7 +268,6 @@ describe("library cover cutover and retry (issue gh-1793)", () => {
       setInvalidationHook((event) => events.push(event));
       return events;
     }
-    /** Runs the queued metadata job of `scope` with a fetcher that finds the title at `source` and a cover. */
     async function runQueuedJob(source: "openLibrary" | "tmdb", fill: Record<string, unknown>): Promise<void> {
       const registry = createActionRegistry();
       registry.set(LIBRARY_METADATA_TRIGGER_ACTION_ID, createLibraryMetadataTriggerAction(runtime));
@@ -391,7 +284,6 @@ describe("library cover cutover and retry (issue gh-1793)", () => {
           runtime,
           registry,
           fetcher,
-          undefined,
           undefined,
           undefined,
           undefined,
@@ -436,7 +328,6 @@ describe("library cover cutover and retry (issue gh-1793)", () => {
         });
         expect(await automationOf(itemId)).toMatchObject({ status: "pending", source: null });
         expect(await queuedJobs(itemId)).toBe(1);
-        // Another item of the same database keeps its own choice.
         expect((await propertiesOf(databaseOf(), sibling)).properties).toMatchObject({ coverRemoved: true });
 
         await runQueuedJob(source, fill);

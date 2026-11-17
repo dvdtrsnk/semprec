@@ -27,7 +27,6 @@ let pool: Pool;
 let tenantZero: string;
 let tenantB: string;
 
-/** Seeds the tenant's `systemSettings` database with one settings item carrying `timezone`. */
 async function seedTimezone(tenantId: string, timezone: string): Promise<void> {
   await runInTenant(tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -42,7 +41,6 @@ async function seedTimezone(tenantId: string, timezone: string): Promise<void> {
   );
 }
 
-/** Inserts `count` due `dailyTime` heartbeats into the tenant; returns their ids. */
 async function insertDueHeartbeats(tenantId: string, count: number): Promise<string[]> {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ id: string }>(

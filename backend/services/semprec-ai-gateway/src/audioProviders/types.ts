@@ -56,18 +56,13 @@ export class AudioProviderCallError extends Error {
   }
 }
 
-/**
- * Raw microphone audio the streaming route accepts: PCM signed 16-bit little-endian, mono, 16 kHz
- * (docs/adr/2026-10-28-live-voice-chains-speech-to-text-agent-turn-and-text-to-speech.md). Used to
- * turn forwarded bytes into the seconds a chunk row is settled with.
- */
+/** PCM s16le, mono, 16 kHz; turns forwarded bytes into the seconds a chunk row is settled with. */
 export const STREAM_AUDIO_BYTES_PER_SECOND = 16_000 * 2;
 
 /** What a streaming transcription session reports back; no callback ever carries audio. */
 export interface StreamingTranscriptionEvents {
   /** The running text of the utterance being spoken; replaces the previous partial. */
   onPartial(text: string): void;
-  /** The finished text of one utterance. */
   onFinal(text: string): void;
   /** Called once after `end()` when every committed utterance has been reported as final. */
   onDone(): void;
@@ -98,12 +93,11 @@ export interface StreamingTranscriptionProvider {
   open(request: StreamingTranscriptionOpenRequest): Promise<StreamingTranscriptionSession>;
 }
 
-/** Speech audio the synthesis route returns: PCM signed 16-bit little-endian, mono, 24000 Hz (same ADR). */
+/** PCM s16le, mono, 24 kHz. */
 export const SYNTHESIS_AUDIO_BYTES_PER_SECOND = 24_000 * 2;
 
 export interface SpeechSynthesisRequest {
   text: string;
-  /** One of the provider's `voices`. */
   voice: string;
   /** Aborting it stops the provider request, also while the audio is being read. */
   signal?: AbortSignal;
@@ -122,7 +116,6 @@ export interface SpeechSynthesisStream {
 export interface SpeechSynthesisProvider {
   readonly id: string;
   readonly model: string;
-  /** The voice names this provider accepts. */
   readonly voices: readonly string[];
   /** Starts the provider request; rejects with `AudioProviderCallError` when it cannot be started. */
   synthesize(request: SpeechSynthesisRequest): Promise<SpeechSynthesisStream>;

@@ -4,12 +4,7 @@ import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { expandEventOccurrences, readLiveEventSeries } from "./eventOccurrences.js";
 import type { CalendarEventOccurrence, CalendarTimelineContext } from "./timelineSources.js";
 
-/**
- * The timeline source of the recurring Events (issue gh-1877): every occurrence of every live recurring series
- * whose days overlap the requested range, virtual and real ones, cancelled dates left out
- * (`expandEventOccurrences` describes each). The core Events source leaves the series rows and the occurrence items
- * out, so this source is where they appear, once. A tenant without an Events database has none.
- */
+/** The core Events source leaves series rows and occurrence items out, so they appear here, once. */
 export async function readEventOccurrenceTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,

@@ -14,7 +14,7 @@ export interface BoundaryViolation {
 
 export interface BoundaryCheckResult {
   violations: BoundaryViolation[];
-  /** Every source file dependency-cruiser actually resolved and scanned, for callers that need to prove a specific file was covered, not just that no violation was found for it. */
+  /** Every file dependency-cruiser resolved and scanned, so a caller can prove a file was covered. */
   scannedFiles: string[];
 }
 
@@ -47,10 +47,8 @@ export async function checkModuleBoundaries(
       ruleSet: { forbidden, allowed: [] },
       validate: true,
       baseDir: pBaseDir,
-      // Matches ../../.dependency-cruiser.cjs's own options: a workspace package's node_modules
-      // holds pnpm-hoisted copies of other workspace packages (e.g.
-      // services/semprec-api/node_modules/@semprec/data), which would otherwise be re-discovered
-      // as if they were a separate, non-choke-point importer of the very same source files.
+      // Matches .dependency-cruiser.cjs: a package's node_modules holds pnpm-linked copies of workspace packages,
+      // which would otherwise be scanned again as separate importers of the same sources.
       doNotFollow: {
         path: "node_modules",
       },

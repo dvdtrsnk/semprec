@@ -11,7 +11,7 @@ export interface VapidConfig {
   subject: string;
 }
 
-/** Never provisioned here (issue #150/#151's "provisioning VAPID/APNs secrets" is operations' job) — read lazily, only when a send is actually attempted. */
+/** Provisioned by operations; read lazily on first send. */
 function getVapidConfigFromEnv(): VapidConfig {
   const publicKey = process.env.VAPID_PUBLIC_KEY;
   const privateKey = process.env.VAPID_PRIVATE_KEY;
@@ -23,16 +23,9 @@ function getVapidConfigFromEnv(): VapidConfig {
 }
 
 /**
- * The `web_push` half of issue #151's fanout adapters. A 404/410 from the push service means the
- * subscription is gone (`WebPushError.statusCode`) — the caller pairs that with #150's
- * `revokePushSubscriptionByProviderInvalidation`. Anything else (network failure, 5xx, rate
- * limiting) is treated as transient and left for the job's own retry. The request goes through the
- * current outbound address policy's `https.Agent` (issue #1034): an endpoint whose host resolves to a
- * denied address is `permanent-failure` too, so the caller revokes it exactly as for a 404/410.
- * Missing `VAPID_*` env vars (issue #703) resolve `not-configured` instead of throwing — a
- * server-side gap, not a verdict on this subscription. The message carries `tag: notificationId`
- * (issue #1826), which a service worker can use to close the matching visible notification when
- * a dismiss message names the same id.
+ * 404/410 is permanent; so is an endpoint resolving to an address the outbound policy denies
+ * (SSRF guard). Missing VAPID config is `not-configured`. `tag: notificationId` lets the service
+ * worker close the notification when a dismiss names it.
  */
 export async function sendWebPushNotification(
   target: WebPushTarget,
@@ -43,7 +36,7 @@ export async function sendWebPushNotification(
     target,
     {
       title: payload.title,
-      // Omitted, not null, when the notification has no body (issue #1773).
+      // Omitted, not null, when the notification has no body.
       ...(payload.body === null ? {} : { body: payload.body }),
       linkHref: payload.linkHref,
       notificationId: payload.notificationId,
@@ -53,10 +46,6 @@ export async function sendWebPushNotification(
   );
 }
 
-/**
- * The Web Push message `{ dismiss: [notificationId...] }` of the `pushDismiss` job (issue #1826). The
- * request, the VAPID configuration and the result mapping are `sendWebPushNotification`'s.
- */
 export async function sendWebPushDismiss(
   target: WebPushTarget,
   notificationIds: readonly string[],
@@ -65,7 +54,6 @@ export async function sendWebPushDismiss(
   return sendWebPushMessage(target, { dismiss: notificationIds }, config);
 }
 
-/** Sends one JSON message to one Web Push registration and maps the answer to a `PushSendResult`. */
 async function sendWebPushMessage(
   target: WebPushTarget,
   message: Record<string, unknown>,

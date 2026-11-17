@@ -18,21 +18,17 @@ export interface RelationExpansionOptions {
   relations: Record<string, string[]> | true;
   resolver: CollectionMetadataResolver;
   databaseIds?: string[];
-  /**
-   * The databases whose items the reader may not read (an agent's project, issue #1810). A target in one is
-   * returned as `{ id, hidden: true }` only, at the top level and inside a projected relation property.
-   */
+  /** A target in one is returned only as `{ id, hidden: true }`, at the top level and inside projected relations. */
   unreadableDatabaseIds?: ReadonlySet<string>;
   /**
-   * Also hides a target of a database that inherits sensitivity (Files, Transcripts, Inbox) that is linked to a
-   * database in `unreadableDatabaseIds` (issue #1999). Set for an agent's project only.
+   * Also hides a target of a sensitivity-inheriting database (Files, Transcripts, Inbox) linked to a
+   * database in `unreadableDatabaseIds`. Set for an agent's project only.
    */
   hideInheritedSensitiveTargets?: boolean;
 }
 /**
- * The expansion a restricted reader's read runs under: the relation targets in the databases an agent's project
- * (issue #1810) or an external client (issue #1998) may not read are hidden, and for an agent's project the targets
- * that inherit sensitivity from such a database (issue #1999). A person gets `expansion` untouched.
+ * Hides relation targets in databases the reader may not read, and for an agent's project the targets
+ * inheriting sensitivity from them. A person gets `expansion` untouched.
  */
 export async function expansionForReader(
   client: PoolClient,
@@ -47,7 +43,7 @@ export async function expansionForReader(
   };
 }
 
-/** The ids among `itemIds` that `options` hides because they inherit sensitivity (issue #1999), in one query. */
+/** In one query. */
 async function hiddenInheritedTargetIds(
   client: PoolClient,
   itemIds: readonly string[],
@@ -150,8 +146,9 @@ export async function expandItemRelations(
     computed: unknown;
     created_at: Date;
     updated_at: Date;
+    version: string;
   }>(
-    `SELECT i.id,i.database_id,i.properties,i.computed,i.created_at,i.updated_at FROM items i
+    `SELECT i.id,i.database_id,i.properties,i.computed,i.created_at,i.updated_at,i.version FROM items i
      JOIN databases db ON db.id=i.database_id AND db.archived_at IS NULL
      WHERE i.id=ANY($1::uuid[]) AND i.database_id=ANY($2::uuid[]) AND i.deleted_at IS NULL`,
     [[...new Set(edgeRows.map((e) => e.target_id))], targetDbIds],
@@ -166,6 +163,7 @@ export async function expandItemRelations(
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
         deletedAt: null,
+        version: row.version,
       },
       dbs.get(row.database_id)?.owner_module_id ?? null,
     ),
@@ -177,7 +175,7 @@ export async function expandItemRelations(
     targets.map((item) => item.id),
     options,
   );
-  // A hidden target is neither projected nor looked at again: the reader gets its id and nothing else.
+  // A hidden target is neither projected nor looked at again.
   const readableTargets = targets.filter((item) => !unreadable.has(item.databaseId) && !hiddenInherited.has(item.id));
   const nestedProperties = selections.flatMap(({ property, projection }) =>
     (schemas.get(targetDatabase(property)) ?? []).filter((p) => p.type === "relation" && projection.includes(p.key)),

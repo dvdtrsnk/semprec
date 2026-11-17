@@ -6,7 +6,6 @@ import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.
 let pool: Pool;
 let runner: Runner | undefined;
 
-/** Mirrors mcpSync.test.ts's own helper: polls instead of sleeping a fixed duration. */
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
   await vi.waitFor(
     () => {

@@ -113,7 +113,16 @@ const CONTEXT: ItemUpdateHookContext = {
     archivedAt: null,
     purgeAt: null,
   },
-  item: { id: "item", databaseId: "db", properties: {}, computed: {}, createdAt: "", updatedAt: "", deletedAt: null },
+  item: {
+    id: "item",
+    databaseId: "db",
+    properties: {},
+    computed: {},
+    createdAt: "",
+    updatedAt: "",
+    deletedAt: null,
+    version: "1",
+  },
   propertiesPatch: {},
   writer: SYSTEM_WRITER,
 };

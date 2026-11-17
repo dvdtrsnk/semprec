@@ -1,6 +1,5 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/ai-usage` path family. */
 export const AI_USAGE_ROUTES: RouteMatrixEntry[] = [
   {
     name: "ai usage report",

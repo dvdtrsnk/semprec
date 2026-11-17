@@ -1,44 +1,12 @@
 import type { Pool } from "pg";
-import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import { registerPushSubscription, revokePushSubscription } from "./pushSubscriptionActions.js";
-import { ValidationError } from "../errors.js";
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser, RouteSession } from "../customRoute.js";
+import { requireBodyObject, requireUuidParam } from "../customRoute.js";
 
-/**
- * The custom-route handler shape this file's exports are cast to by `semprec-api`'s mount
- * (issue #239) — duck-typed here, same as `inboxRouteHandlers.ts`, so this package has no
- * reason to import that service's HTTP types.
- */
-interface CustomRouteRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string }; session: { id: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
-
-/**
- * `push_subscriptions.id` is a `uuid` column — a malformed path id must fail as a 400 here rather
- * than reach Postgres, which would throw `22P02 invalid input syntax for type uuid` and surface
- * as a 500. Same check as `transcriptionRouteHandlers.ts`.
- */
-const subscriptionIdSchema = z.string().uuid();
-
-function requireBodyObject(body: unknown): Record<string, unknown> {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    throw new ValidationError("Request body must be a JSON object");
-  }
-  return body as Record<string, unknown>;
-}
-
-/**
- * `POST /api/push-subscriptions` (issue #239's custom-route registration of #150's
- * `registerPushSubscription`) — a cross-database write binding the new row to the caller's own
- * session in one transaction, the "transactional semantics" justification. Thin mapping only:
- * every validation/channel rule lives in `registerPushSubscription` itself.
- */
+/** `POST /api/push-subscriptions`: thin mapping; binds the row to the caller's session in one transaction. */
 export function createRegisterPushSubscriptionRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser & RouteSession): Promise<CustomRouteResult> => {
     const body = requireBodyObject(ctx.body);
     const subscription = await withTransaction(pool, (client) =>
       registerPushSubscription(client, {
@@ -57,16 +25,10 @@ export function createRegisterPushSubscriptionRouteHandler(pool: Pool) {
   };
 }
 
-/**
- * `POST /api/push-subscriptions/:id/revoke` (issue #239's custom-route registration of #150's
- * `revokePushSubscription`) — an explicit revocation scoped to the caller's own subscriptions,
- * committed in its own transaction.
- */
+/** `POST /api/push-subscriptions/:id/revoke`: scoped to the caller's own subscriptions. */
 export function createRevokePushSubscriptionRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = subscriptionIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-    const subscriptionId = parsedId.data;
+  return async (ctx: RouteParams & RouteBody & RouteUser & RouteSession): Promise<CustomRouteResult> => {
+    const subscriptionId = requireUuidParam(ctx.params, "id");
     const revoked = await withTransaction(pool, (client) =>
       revokePushSubscription(client, ctx.identity.user.id, subscriptionId),
     );

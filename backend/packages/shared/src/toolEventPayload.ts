@@ -23,7 +23,7 @@ export interface ToolUseEventPayload extends ToolEventPayload {
   arguments: unknown;
 }
 
-/** One changed property of a successful `item.patch`; `before`/`after` are absent for `longText` and `before` also when the operation reported no previous value. */
+/** `before`/`after` are absent for `longText`; `before` also when the operation reported no previous value. */
 export interface ToolResultChange {
   key: string;
   before?: unknown;
@@ -36,11 +36,11 @@ export interface ToolResultDetails {
   changes?: ToolResultChange[];
   /** The `ChokePointError.code` of a failed generic operation. */
   errorCode?: string;
-  /** The failure kind of a failed MCP tool call (issue #1444). */
+  /** The failure kind of a failed MCP tool call. */
   failureKind?: string;
-  /** The timeout in milliseconds that applied to a timed-out MCP tool call (issue #1444); a positive finite number. */
+  /** The timeout that applied to a timed-out MCP call; a positive finite number. */
   timeoutMs?: number;
-  /** The id of the item a successful `item.create` created; unlike the result text it is kept when that is redacted as sensitive. */
+  /** Kept even when the result text is redacted as sensitive. */
   createdItemId?: string;
 }
 

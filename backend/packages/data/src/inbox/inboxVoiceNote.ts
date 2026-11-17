@@ -10,32 +10,24 @@ import { tenantLane } from "../tenancy/tenantLane.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { listInboxAttachments } from "./inboxAttachmentsStore.js";
 
-// The transcript of the short voice notes of an Inbox item (issue gh-1980): the system-owned `Inbox.transcribedText`
-// property, the job that fills it and the two store functions that job runs on. The handler is `semprec-transcribe`'s
-// `inboxVoiceNoteTranscribe.ts`; it makes the gateway calls and writes the property.
+// The handler is `semprec-transcribe`'s `inboxVoiceNoteTranscribe.ts`; it makes the gateway calls and writes the
+// property through the store functions here.
 
 /**
- * The key of the Inbox property that holds the transcript of the item's voice notes. It is owned by the system, with
- * `TRANSCRIPTION_OWNER_PROCESS` as its owner process, so only the transcribe process writes it, and the person's own
- * `text` is never touched.
+ * System-owned by `TRANSCRIPTION_OWNER_PROCESS`, so only the transcribe process writes it and the person's own `text`
+ * is never touched.
  */
 export const INBOX_TRANSCRIBED_TEXT_KEY = "transcribedText";
 
-/** The payload of an `inboxVoiceNoteTranscribe` job: the Inbox item whose voice notes are transcribed. */
 export const inboxVoiceNoteTranscribePayloadSchema = z.object({ inboxItemId: z.uuid() });
 export type InboxVoiceNoteTranscribePayload = z.infer<typeof inboxVoiceNoteTranscribePayloadSchema>;
 
-/** One job per Inbox item: an enqueue for the same item replaces the job that waits, so a second voice note re-runs it. */
+/** An enqueue for the same item replaces the waiting job, so a second voice note re-runs it. */
 export function inboxVoiceNoteJobKey(inboxItemId: string): string {
   return `inbox-voice-note:${inboxItemId}`;
 }
 
-/**
- * Enqueues the transcription of the voice notes of one Inbox item on the caller's open transaction, so the job exists
- * exactly when the metadata that made the voice note exists. The default `replace` key mode makes a repeat enqueue for
- * the same item replace the waiting job. `maxAttempts: 3` with graphile-worker's backoff is its retry policy; the
- * tenant is the producer's own scope, as for every job (`enqueueJob`).
- */
+/** Enqueued in the caller's transaction, so the job exists exactly when the metadata that made the voice note does. */
 export async function enqueueInboxVoiceNoteTranscribe(client: PoolClient, inboxItemId: string): Promise<void> {
   await enqueueJob(
     client,
@@ -45,25 +37,20 @@ export async function enqueueInboxVoiceNoteTranscribe(client: PoolClient, inboxI
   );
 }
 
-/** A voice note of an Inbox item as the transcription reads it: where its bytes are and how long it is. */
 export interface InboxVoiceNote {
   attachmentId: string;
-  /** The type the blob has as an attachment, always an `audio/` type. */
+  /** Always an `audio/` type. */
   mimeType: string;
   storageKey: string;
-  /** The size of the stored file, in bytes. */
   byteSize: number;
-  /** The probed length, always above zero. */
+  /** Always above zero. */
   durationSeconds: number;
-  /** The file name an upload recorded, or `null` for a blob stored without one. */
   name: string | null;
 }
 
 /**
- * The voice notes of an Inbox item in position order: the audio attachments whose metadata classified them `voiceNote`
- * (`audioKindForDuration`) and gave a length above zero. A recording, a file the metadata job could not read, one whose
- * metadata is not computed yet and one that is not audio are not in the list. `null` when this tenant has no live Inbox
- * item with that id.
+ * Only audio classified `voiceNote` with a positive length; recordings, unreadable files and pending metadata are left
+ * out. `null` when this tenant has no live Inbox item with that id.
  */
 export async function readInboxVoiceNotes(client: PoolClient, inboxItemId: string): Promise<InboxVoiceNote[] | null> {
   const inbox = await getDatabaseByModuleId(client, INBOX_MODULE_ID);
@@ -95,25 +82,18 @@ export async function readInboxVoiceNotes(client: PoolClient, inboxItemId: strin
 
 export interface RecordInboxTranscribedTextInput {
   inboxItemId: string;
-  /** The attachments whose transcripts `text` was joined from, in order: what `readInboxVoiceNotes` returned for the run. */
+  /** What `readInboxVoiceNotes` returned for the run, in order. */
   attachmentIds: string[];
   text: string;
 }
 
-/**
- * What `recordInboxTranscribedText` did: `written` (the property changed), `unchanged` (it already held the text),
- * `gone` (the Inbox item is no longer a live item of this tenant) or `stale` (the item's voice notes are no longer the
- * ones `text` was made from, so nothing was written).
- */
+/** `stale`: the item's voice notes are no longer the ones `text` was made from, so nothing was written. */
 export type RecordedInboxTranscribedText = "written" | "unchanged" | "gone" | "stale";
 
 /**
- * Writes `transcribedText` of an Inbox item through the choke point, as the transcribe process, in the caller's
- * transaction. The item row is locked first, and the voice notes are read again under that lock: the text is written
- * only when they are still the ones it was made from, because a voice note added or deleted while the audio was being
- * transcribed makes the text wrong, and a later run makes it right. A text equal to the stored one (a missing value counts
- * as the empty text) writes nothing, so a rerun with the same result changes no row and announces nothing.
- * `transcribedText` is the only property patched; the person's `text` is never read or written.
+ * Locks the item row and re-reads the voice notes under that lock: a note added or deleted during transcription makes
+ * the text wrong, so it is written only when they still match, and a later run fixes it. An equal text (missing counts
+ * as empty) writes and announces nothing.
  */
 export async function recordInboxTranscribedText(
   client: PoolClient,

@@ -1,16 +1,11 @@
 import type { PoolClient } from "pg";
 import type { Queryable } from "../db/pool.js";
 
-// The per-turn read allowances of an agent run (issue #1849;
-// docs/adr/2026-11-13-a-user-attached-ref-grants-one-turn-read-access.md): the item ids a user attached to the message
-// of the turn that is running, which the run's agent may read without a database grant. The turn's composition root
-// (`semprec-agents`) opens them when the turn starts and clears them when it settles; the access check
-// (`assertAgentDatabaseAccess`) reads them in the transaction of the read it guards.
+// Per-turn read allowances: items a user attached to the running turn's message, which the agent may read without a
+// database grant. `semprec-agents` opens them at turn start and clears them when it settles.
 
 /**
- * Allows the run's agent to read each item id of `itemIds` and nothing else, for the turn that is starting. The ids
- * must come from the persisted, validated refs of the turn's message, never from a tool argument. An id the run
- * already holds is left as it is; an empty list writes nothing.
+ * The ids must come from the persisted, validated refs of the turn's message, never from a tool argument.
  */
 export async function allowItemsForTurn(client: Queryable, runId: string, itemIds: readonly string[]): Promise<void> {
   if (itemIds.length === 0) return;
@@ -22,10 +17,7 @@ export async function allowItemsForTurn(client: Queryable, runId: string, itemId
   );
 }
 
-/**
- * Deletes every allowance of the run, at the start of a turn (a row a crashed turn left behind) and when a turn
- * settles. Returns how many rows it deleted; zero is the normal outcome for a turn without an item ref.
- */
+/** Called at turn start (to drop rows a crashed turn left) and when a turn settles. */
 export async function clearForRun(client: Queryable, runId: string): Promise<number> {
   const result = await client.query("DELETE FROM agent_run_read_allowances WHERE agent_run_id = $1", [runId]);
   return result.rowCount ?? 0;
@@ -36,8 +28,7 @@ interface AllowanceRow {
 }
 
 /**
- * Whether the run holds an allowance for the item. The row is locked `FOR SHARE`, so the `clearForRun` of the turn's
- * end waits for a read that passed on it, and a read that starts after that clear commits finds no row.
+ * Locked `FOR SHARE`, so the turn-end `clearForRun` waits for a read that passed on it, and a later read finds no row.
  */
 export async function isItemAllowed(client: PoolClient, runId: string, itemId: string): Promise<boolean> {
   const { rows } = await client.query<AllowanceRow>(

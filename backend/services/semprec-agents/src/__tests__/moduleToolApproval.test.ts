@@ -132,15 +132,9 @@ function decide(session: Session, requestId: string, decision: "approved" | "rej
 
 /** Runs the worker's `approvalExecute` handler once over the jobs that are due. */
 async function drainApprovalJobs(): Promise<void> {
-  const handler = createCoreTaskList(
-    runtime,
-    createActionRegistry(),
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    registry,
-  )[CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE];
+  const handler = createCoreTaskList(runtime, createActionRegistry(), undefined, undefined, undefined, registry)[
+    CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE
+  ];
   if (!handler) throw new Error("Missing approval handler");
   await runOnce({ pgPool: runtime, taskList: { [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: handler } });
 }

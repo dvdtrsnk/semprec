@@ -41,7 +41,6 @@ describe("approval outcome messages", () => {
   async function fixture(withThread: boolean, withDescription = true) {
     return runInTenant(tenant(), () =>
       withTransaction(runtime, async (client) => {
-        // There is no production chat-thread creation API on this tip.
         const thread = withThread
           ? (await client.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id")).rows[0]
           : null;
@@ -280,7 +279,6 @@ describe("approval outcome messages", () => {
   });
   it("posts one canonical rejection on the decision transaction and ignores redelivery", async () => {
     const { threadId, request } = await fixture(true);
-    // Set an old activity timestamp so the outcome must advance it.
     await runInTenant(tenant(), () =>
       runtime.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [
         threadId,

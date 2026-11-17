@@ -53,7 +53,7 @@ let storageRoot: string;
 let storage: LocalFsBlobStorageWriter;
 let tenant: Tenant;
 
-/** Runs `fn` in one transaction of `owner`, on the runtime role row-level security applies to. */
+/** On the runtime role, so row-level security applies. */
 function inTenant<T>(owner: Tenant, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(owner.id, () => withTransaction(runtime, fn));
 }
@@ -72,7 +72,6 @@ async function databaseId(owner: Tenant, moduleId: string): Promise<string> {
   return database.id;
 }
 
-/** The summary of `owner` for `userId`, read the way the route reads it: inside the tenant, at the fixed clock. */
 function summaryOf(owner: Tenant, userId: string = owner.userId): Promise<OverviewSummary> {
   return runInTenant(owner.id, () => getOverviewSummary(runtime, { ownerUserId: userId, now: NOW }));
 }
@@ -99,7 +98,6 @@ async function task(owner: Tenant, date: string, done = false): Promise<string> 
   return id;
 }
 
-/** A project in `areaId` (none when null) with the given stored properties. */
 async function project(owner: Tenant, areaId: string | null, properties: Record<string, unknown>): Promise<string> {
   const id = await createRecord(owner, "projects", { name: "Project", ...properties });
   if (areaId !== null) {
@@ -141,7 +139,6 @@ async function proposalCard(owner: Tenant): Promise<void> {
   });
 }
 
-/** `count` unread messages in the inbox folder of a new mailbox, through the ingest writer. */
 async function unreadMessages(owner: Tenant, count: number): Promise<void> {
   await inTenant(owner, async (client) => {
     const ids = await resolveMailModuleIds(client);
@@ -193,7 +190,6 @@ async function unreadMessages(owner: Tenant, count: number): Promise<void> {
   });
 }
 
-/** Stores a time zone in the tenant's System settings, the way the user's edit of that setting does. */
 async function setZone(owner: Tenant, timezone: string): Promise<void> {
   await runInTenant(owner.id, async () => {
     const settingsDatabaseId = await withTransaction(runtime, (client) => getSystemSettingsDatabaseId(client));
@@ -202,7 +198,6 @@ async function setZone(owner: Tenant, timezone: string): Promise<void> {
   });
 }
 
-/** The open tasks of the Today view of `owner`, as the view lists them, and the whole list. */
 async function todayList(owner: Tenant): Promise<{ all: string[]; open: string[] }> {
   const tasksId = await databaseId(owner, "tasks");
   const views = await runInTenant(owner.id, () => cp.listViewsByDatabase(tasksId));
@@ -215,7 +210,6 @@ async function todayList(owner: Tenant): Promise<{ all: string[]; open: string[]
   };
 }
 
-/** The filter `item.count` runs for the active projects: user projects whose status is `inProgress` or `longTerm`. */
 const ACTIVE_PROJECTS = {
   type: "and",
   nodes: [

@@ -6,10 +6,9 @@ import { createGenericApplicationService } from "@semprec/application";
 import { createNotification } from "@semprec/notifications";
 import { createHttpAiGatewayClient } from "@semprec/ai-gateway-client";
 
-// One stable export per root, compared with the same export of an `import()` of the source path: a root that
-// resolved to `dist` through its package manifest would hand back a different object. The path is spelled out
-// for a dynamic import because a static relative import across packages fails `tsc` with TS6059 under this
-// service's `rootDir: src`.
+// One stable export per root is compared with the same export of an `import()` of the source path:
+// a root resolved to `dist` would hand back a different object. The path is spelled out because a
+// static relative import across packages fails `tsc` with TS6059 under `rootDir: src`.
 it("resolves the workspace roots of semprec-api to source modules in the e2e tier", async () => {
   const dataPath = fileURLToPath(new URL("../../../../packages/data/src/index.ts", import.meta.url));
   const realtimePath = fileURLToPath(new URL("../../../../packages/realtime/src/index.ts", import.meta.url));

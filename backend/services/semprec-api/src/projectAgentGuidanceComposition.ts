@@ -20,7 +20,6 @@ import { createHttpAiGatewayClient } from "@semprec/ai-gateway-client";
 import type { AiGatewayClientPort } from "@semprec/shared";
 import type { ModuleRegistry } from "@semprec/module-registry";
 
-/** Composes the real `ProjectAgentGuidanceService` from this process's concrete `@semprec/data` stores. */
 export function createProjectAgentGuidanceServiceForApi(pool: Pool): ProjectAgentGuidanceService {
   return createProjectAgentGuidanceService<PoolClient>({
     store: projectAgentGuidanceStore,
@@ -37,9 +36,7 @@ function requireEnv(name: string): string {
 }
 
 /**
- * The HTTP `AiGatewayClientPort` for this process (issue #215's `/internal/complete` route).
  * Throws when `AI_GATEWAY_INTERNAL_TOKEN` is unset, so `semprec-api` refuses to start without it.
- * `createApiActionRegistry` builds it once and shares it between the actions that call the gateway.
  */
 export function createAiGatewayClientForApi(): AiGatewayClientPort {
   return createHttpAiGatewayClient({
@@ -48,12 +45,7 @@ export function createAiGatewayClientForApi(): AiGatewayClientPort {
   });
 }
 
-/**
- * Composes `core.agentGuidanceDrift` (issue #85) from this process's concrete stores and the given
- * gateway client. Registered as the `core.agentGuidanceDrift` heartbeat handler by
- * `createApiActionRegistry` (actionRegistryComposition.ts), which builds it once when
- * `createApiQueueRuntime` composes the api runtime.
- */
+/** Registered as the `core.agentGuidanceDrift` heartbeat handler by `createApiActionRegistry`. */
 export function createAgentGuidanceDriftActionForApi(
   pool: Pool,
   gateway: AiGatewayClientPort,

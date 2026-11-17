@@ -39,7 +39,7 @@ import {
 } from "../audioProviders/types.js";
 import { GENEROUS_GLOBAL_CAPS } from "./globalCaps.js";
 
-/** Voice attribution (#2020): speech rows carry the Semp turn they serve. Fake providers, real Postgres, runtime role. */
+/** Speech rows carry the Semp turn they serve. Fake providers, real Postgres, runtime role. */
 
 const TOKEN = "test-internal-token";
 const PRICE_PER_HOUR = 36;
@@ -111,7 +111,6 @@ interface CallRow {
 let admin: Pool;
 /** The gateway's own pool: the runtime role of the gateway, under row-level security. */
 let sidePool: Pool;
-/** Creates the tenants' runs and messages. */
 let dataPool: Pool;
 let server: Server;
 let port: number;
@@ -220,7 +219,7 @@ async function rows(operation?: string): Promise<CallRow[]> {
   return found;
 }
 
-/** Sends one frame and waits until the gateway has reserved `count` rows of the given tenant, so frames are processed in order. */
+/** Waits for `count` reserved rows, so frames are processed in order. */
 async function waitForRows(tenantId: string, count: number): Promise<void> {
   await waitFor(
     async () => (await rows("voice_transcribe_stream")).filter((r) => r.tenant_id === tenantId).length === count,

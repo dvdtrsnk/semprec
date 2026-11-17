@@ -46,7 +46,6 @@ async function seededArea(): Promise<ItemRow> {
   return seeded;
 }
 
-/** Related items as a facet lists them: the most frequent first, equal counts by id. */
 function byCountThenId(values: DatabaseFacetValue[]): DatabaseFacetValue[] {
   return [...values].sort((left, right) => {
     if (left.count !== right.count) return right.count - left.count;
@@ -77,7 +76,6 @@ const PROJECT_STATUS_ZERO = [
   { value: "archived", label: "Archived", color: "#8E8E93", count: 0 },
 ];
 
-/** The four status options of Projects in option order, with the given counts. */
 function projectStatuses(counts: [number, number, number, number]): DatabaseFacetValue[] {
   return PROJECT_STATUS_ZERO.map((option, index) => ({ ...option, count: counts[index] ?? 0 }));
 }
@@ -106,7 +104,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
     await admin.end();
   });
 
-  /** Six user projects: four in Work (two in progress, one long-term, one done), one in Home, one without an area. */
   async function seedProjects() {
     const work = await make("areas", { name: "Work", color: "#007AFF" });
     const home = await make("areas", { name: "Home" });
@@ -303,7 +300,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       await task("Invite", { status: "done", flagged: true }, launch);
       await task("Dig", { status: "notDone", flagged: true }, garden);
       await task("Call", { status: "notDone", flagged: true });
-      // Outside the filter: neither counted nor open.
       await task("Later", { status: "notDone", flagged: false }, launch);
       const flagged = { type: "equals", property: "flagged", value: true };
       const open = { type: "equals", property: "status", value: "notDone" };
@@ -354,7 +350,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
         },
         { property: "date", all: 4, open: 3, values: [{ value: null, count: 4 }] },
       ]);
-      // The same condition stays in place for a property facet, and without `extra` there is no `open`.
       expect(
         await facets({ databaseId: tasks.id, filter: { type: "and", nodes: [flagged, inHome] }, facets: ["flagged"] }),
       ).toEqual([
@@ -397,7 +392,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
         });
       }
 
-      // The same trees are plain filters for a facet they do not name.
       const [underOr] = await facets({
         databaseId: tasks.id,
         filter: { type: "or", nodes: [done, flagged] },
@@ -423,7 +417,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
     runInTenant(tenant, async () => {
       const board = await cp.createDatabase({ name: "Board" });
       await cp.createProperty({ databaseId: board.id, key: "due", name: "Due", type: "date" });
-      // Thursday 22 October 2026, midday in the tenant zone.
       const now = new Date("2026-10-22T10:00:00.000Z");
       for (const due of ["2026-10-22", "2026-10-23", "2026-09-01"]) {
         await cp.createItem({ databaseId: board.id, properties: { due } });
@@ -432,7 +425,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
         { value: "today", count: 1 },
         { value: "tomorrow", count: 1 },
         { value: "thisWeek", count: 2 },
-        // No item falls into `nextWeek` (26 October to 1 November), so it is absent.
         { value: "thisMonth", count: 2 },
         { value: "upcoming", count: 2 },
         { value: "past", count: 1 },
@@ -731,7 +723,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
         key: "stage",
         name: "Stage",
         type: "select",
-        // Deliberately not in alphabetical order, and with an option no item holds.
         config: { options: [{ key: "idea", label: "Idea", color: "#FF9500" }, { key: "bought" }, { key: "wrapped" }] },
       });
       const stages: unknown[] = ["bought", "zeta", "idea", "bought", "alpha", "", null, undefined];
@@ -870,7 +861,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       expect(
         await facets({
           databaseId: gifts.id,
-          // The facet's own condition is left out, so both choices keep their counts.
           filter: { type: "equals", property: "wrapped", value: true },
           facets: ["wrapped"],
         }),
@@ -953,7 +943,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
         { property: "plain", all: 7, values: [] },
       ]);
 
-      // The open count of a number facet: the gifts of 300, 500 and 900.
       const [withOpen] = await facets({
         databaseId: gifts.id,
         facets: ["height"],
@@ -989,7 +978,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
         const gift = await cp.createItem({ databaseId: gifts.id, properties: {} });
         await cp.createRelation({ relationPropertyId: forArea.id, callerItemId: gift.id, targetItemId: target.id });
       }
-      // One gift for both: counted in each of them and once in all.
       const shared = await cp.createItem({ databaseId: gifts.id, properties: {} });
       for (const target of [first, second]) {
         await cp.createRelation({ relationPropertyId: forArea.id, callerItemId: shared.id, targetItemId: target.id });
@@ -1065,7 +1053,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       const [live] = await facets(request);
       expect(live?.values.map((choice) => choice.count)).toEqual([1, 0, 0]);
 
-      // Raw SQL: no production write archives a system database.
       const archived = await withTransaction(pool, (client) =>
         client.query("UPDATE databases SET archived_at = now() WHERE id = $1", [areas.id]),
       );
@@ -1148,7 +1135,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
             ...byCountThenId([
               { value: hex.id, label: "Hex", color: "#a1B2c3", count: 1 },
               { value: named.id, label: "Named", count: 1 },
-              // Neither a title nor a color: the empty label, and no color.
               { value: bare.id, label: "", count: 1 },
             ]),
             { value: null, count: 0 },
@@ -1229,11 +1215,9 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
         "note",
         "link",
         "broken",
-        // The first key is not a relation, is unknown, or has no definition.
         { path: ["note", "targets"] },
         { path: ["missing", "targets"] },
         { path: ["broken", "plain"] },
-        // The second key is not a relation of the reached database, or is unknown there.
         { path: ["targets", "plain"] },
         { path: ["targets", "missing"] },
       ];

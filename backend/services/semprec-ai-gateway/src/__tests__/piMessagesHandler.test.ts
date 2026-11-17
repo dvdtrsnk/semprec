@@ -111,11 +111,7 @@ async function gatewayCalls(): Promise<AiGatewayCallRow[]> {
   return rows;
 }
 
-/**
- * Real pi providers fill `usage.cost` with `calculateCost`; the faux provider always reports a
- * zero cost, so this relays its events with the cost computed from the model's rates, the way the
- * Anthropic transport does.
- */
+/** The faux provider reports zero cost; this fills it from the model's rates as real transports do. */
 function withCalculatedCost(model: Model<Api>, source: AssistantMessageEventStream): AssistantMessageEventStream {
   const out = createAssistantMessageEventStream();
   void (async () => {
@@ -204,7 +200,7 @@ function terminal(events: PiMessagesEvent[]): PiMessagesEvent {
   return last;
 }
 
-/** A pi-messages model pointed at the test server, the way #647's client configures its session. */
+/** Configured the way the agents' client configures its session. */
 function pointedModel(): Model<"pi-messages"> {
   const model = models.getModel("anthropic", MODEL_ID);
   if (!model) throw new Error("faux model is not registered");
@@ -235,11 +231,7 @@ async function createRun(task: string): Promise<{ id: string }> {
   return createAgentRun(pool, { triggeredBy: "user", task });
 }
 
-/**
- * Polls until every row has reached `status`. On a `done` or `error` event the handler ends the
- * response before `complete()` settles or fails the row, and pi's client resolves a turn on that
- * frame alone, so a row read as soon as the client has the response can still be `reserved`.
- */
+/** The response ends before the row settles, so a row read right after can still be `reserved`. */
 async function waitForStatus(status: string): Promise<AiGatewayCallRow[]> {
   const deadline = Date.now() + 5000;
   for (;;) {

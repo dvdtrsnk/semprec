@@ -16,13 +16,13 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APT_KEYRING_DIR=/etc/apt/keyrings
 readonly APT_SOURCES_DIR=/etc/apt/sources.list.d
 # PostgreSQL rejects dictionary file basenames with uppercase letters, so the assets are
-# installed lowercase; backend migration 0046 references them as cs_cz.
+# installed lowercase; the backend baseline migration references them as cs_cz.
 readonly HUNSPELL_BASENAME=cs_cz
 readonly HUNSPELL_DICT_SOURCE=/usr/share/hunspell/cs_CZ.dic
 readonly HUNSPELL_AFFIX_SOURCE=/usr/share/hunspell/cs_CZ.aff
 
 # Every key lives in exactly one group file, shared/env/<group>.env, installed from
-# shared/env/<group>.env.example (docs/adr/2026-10-03-per-service-secret-groups.md).
+# shared/env/<group>.env.example (docs/architecture/delivery-and-operations.md).
 readonly -a SECRET_GROUPS=(
   postgres
   migrate
@@ -63,7 +63,7 @@ readonly -a FAILURE_SERVICE_UNITS=(
   semprec-failping@.service
 )
 
-# The stdio MCP sandbox (docs/adr/2026-10-17-stdio-mcp-servers-run-in-a-socket-activated-sandbox.md).
+# The stdio MCP sandbox (docs/architecture/delivery-and-operations.md).
 readonly -a MCP_SANDBOX_UNITS=(
   semprec-mcp-launch.socket
   semprec-mcp-launch@.service

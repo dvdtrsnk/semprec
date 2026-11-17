@@ -14,8 +14,7 @@ export const manifest: ModuleManifest = {
   ],
 };
 
-// Exists, but isn't schema-shaped (no `safeParse`) — loadModule must reject this at load time,
-// not let it through to fail confusingly inside parseHeartbeatRule later.
+// Not schema-shaped (no `safeParse`), so loadModule must reject it at load time.
 export const notASchema = { parse: (value: unknown) => value };
 
 export function computeNextFireAt(): Date {

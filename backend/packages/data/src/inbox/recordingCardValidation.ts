@@ -11,10 +11,9 @@ import { getInboxAttachment, type InboxAttachmentRow } from "./inboxAttachmentsS
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
 import { parseRecordingCardProperties, type RecordingCardProperties } from "./recordingCardEnvelope.js";
 
-// The checks of a recording card's envelope (issue gh-1978): `assertValidRecordingEnvelope` is what the envelope has to
-// be wherever it is written, and `assertRecordingEnvelopeFitsCard` is what it has to be on the card that holds it.
+// `assertValidRecordingEnvelope` checks the envelope wherever it is written; `assertRecordingEnvelopeFitsCard` checks
+// it against the card that holds it.
 
-/** The live item `itemId` of the database owned by `moduleId`, or a `ValidationError` on `field`. */
 async function requireLiveItem(client: PoolClient, moduleId: string, itemId: string, field: string): Promise<void> {
   const database = await databasesStore.getDatabaseByModuleId(client, moduleId);
   if (!database) throw new NotFoundError(`Database for module '${moduleId}' not found`);
@@ -24,7 +23,7 @@ async function requireLiveItem(client: PoolClient, moduleId: string, itemId: str
   }
 }
 
-/** The attachment `envelope.target` names, in the current tenant, as an audio attachment; otherwise a `ValidationError` on `target`. */
+/** `envelope.target` as an audio attachment of the current tenant; otherwise a `ValidationError` on `target`. */
 async function requireAudioAttachment(client: PoolClient, target: string): Promise<InboxAttachmentRow> {
   const attachment = UUID_RE.test(target) ? await getInboxAttachment(client, target) : null;
   if (!attachment) {
@@ -41,11 +40,9 @@ async function requireAudioAttachment(client: PoolClient, target: string): Promi
 }
 
 /**
- * Validates a `transcription` envelope as the Inbox tick, a revise and a confirm all need it: no `operations` and no
- * `relations`; `properties` that `parseRecordingCardProperties` accepts; `target` an audio attachment of the current
- * tenant; and, when set, `eventId` a live Events item and `projectId` a live Projects item. Membership of the
- * suggestions in `context.candidates` is not required, so a manual choice of any live Event stays valid. Each refusal
- * is a `ValidationError` naming the field. Returns the parsed properties and the attachment.
+ * Validates a `transcription` envelope wherever it is written: no `operations` or `relations`, parsable properties, an
+ * audio attachment `target` in this tenant, and live `eventId`/`projectId` items when set. The Event need not be one
+ * of `context.candidates`, so a manual choice stays valid.
  */
 export async function assertValidRecordingEnvelope(
   client: PoolClient,
@@ -63,10 +60,7 @@ export async function assertValidRecordingEnvelope(
   return { properties, attachment };
 }
 
-/**
- * The Inbox item `card` was made for: the other side of its `sourceInbox` edge. A card without that edge is a
- * `ValidationError` on `sourceInbox`.
- */
+/** The other side of the card's `sourceInbox` edge; a missing edge is a `ValidationError` on `sourceInbox`. */
 export async function requireSourceInboxItemId(
   client: PoolClient,
   config: { processingProposalsDatabaseId: string },
@@ -82,10 +76,8 @@ export async function requireSourceInboxItemId(
 }
 
 /**
- * Validates a `transcription` envelope against the card that holds it: the card is an `inbox` card (a transcript or a
- * thread card cannot hold one, `entityKind`), and `target` is an attachment of the card's source Inbox item (`target`).
- * Run after `assertValidRecordingEnvelope`, for confirm and for every revise of the card. Returns the source Inbox
- * item's id, the attachment and the parsed properties.
+ * Validates a `transcription` envelope against its card: an `inbox` card whose source Inbox item owns the `target`
+ * attachment. Run after `assertValidRecordingEnvelope` on confirm and every revise.
  */
 export async function assertRecordingEnvelopeFitsCard(
   client: PoolClient,

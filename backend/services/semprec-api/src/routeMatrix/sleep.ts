@@ -1,6 +1,5 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/sleep` path family. */
 export const SLEEP_ROUTES: RouteMatrixEntry[] = [
   {
     name: "sleep nights",

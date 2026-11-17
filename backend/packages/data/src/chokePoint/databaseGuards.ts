@@ -1,18 +1,13 @@
-// Owns the database-level write guards the choke point runs before mutating a database's items or
-// relations. Nothing that performs a write, and no domain-specific guard (view ownership, item
-// creation's idempotent-replay carve-out), belongs here.
-// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+// Database-level write guards the choke point runs before mutating a database's items or relations.
 import type { PoolClient } from "pg";
 import { ForbiddenError, NotFoundError } from "../errors.js";
 import type { DatabaseRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 
 /**
- * The one reusable archived-database guard: blocks every item/relation mutation against an
- * archived database with a canonical 403 `database_archived`, while reads (and restoring the
- * database itself) remain unaffected. Used directly by every item and relation mutation except item
- * creation, which needs the idempotent-replay carve-out in `assertDatabaseWritableForCreate` (in `itemWrites.ts`).
- * Returns the database it checked, for a caller that needs the row next.
+ * Blocks every item/relation mutation against an archived database with 403 `database_archived`;
+ * reads and restoring the database are unaffected. Item creation uses
+ * `assertDatabaseWritableForCreate` instead for its idempotent-replay carve-out.
  */
 export async function assertDatabaseNotArchived(client: PoolClient, databaseId: string): Promise<DatabaseRow> {
   const database = await databasesStore.getDatabase(client, databaseId);

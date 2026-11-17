@@ -12,8 +12,6 @@ const config = resolveStartupConfig(process.env);
 const pool = createPool(config.databaseUrl);
 await assertRuntimeRole(pool);
 
-// Issue #168: this process's own `process_heartbeats` row, re-UPSERTed every 15 seconds for as
-// long as this process is up.
 const heartbeat = startProcessHeartbeat(
   pool,
   { process: "ai-gateway", pid: process.pid, version: process.env.APP_VERSION ?? "0.0.0" },
@@ -26,8 +24,7 @@ const { server, sttStreams } = createGatewayServer(pool, config);
 const shutdown = createGracefulShutdown({ server, pool, heartbeat, logger, closeStreams: () => sttStreams.closeAll() });
 registerShutdownSignals(shutdown);
 
-// Issue #174: bound to loopback explicitly — this process is never a public entry point, only
-// `semprec-api` reaches it, over `http://127.0.0.1:${AI_GATEWAY_PORT}/internal/complete`.
+// Loopback only: this process is never a public entry point.
 server.listen(config.port, "127.0.0.1", () => {
   logger.info({ port: config.port }, "semprec-ai-gateway listening");
 });

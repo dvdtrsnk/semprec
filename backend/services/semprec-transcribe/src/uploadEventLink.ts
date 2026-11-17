@@ -9,12 +9,8 @@ import {
 import type { ItemRow } from "@semprec/data";
 
 /**
- * Step 0's link from a transcript to the Event its upload named (`recording_requests.event_item_id`,
- * issue #1644): writes the Transcripts `event` edge in the caller's transaction, through the choke
- * point. The Event is read from the tenant's Events database with a row lock; when it is not there
- * or is in the Trash, nothing is written and the transcript is left to step 6's match. A missing
- * Events database or Transcripts `event` relation is a broken catalog and throws.
- * See docs/adr/2026-11-10-transcription-create-writes-the-uploads-event.md.
+ * Writes the `event` edge to the Event the upload named, in the caller's transaction. A missing or
+ * trashed Event writes nothing (step 6 matches instead); a missing catalog entry throws.
  */
 export async function linkTranscriptToUploadEvent(
   client: PoolClient,

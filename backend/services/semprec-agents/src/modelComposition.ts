@@ -8,10 +8,7 @@ const GATEWAY_PROVIDER_ID = "semprec-ai-gateway";
 /** Carries the run's tenant scope to the gateway, which validates it and enters that tenant. */
 const TENANT_ID_HEADER = "x-semprec-tenant-id";
 
-/**
- * Upper bound on one model call, SSE stream included: the gateway is a local process, but one
- * that accepts the request and then stops answering must not hold an agent run open forever.
- */
+/** A gateway that stops answering mid-stream must not hold an agent run open forever. */
 const GATEWAY_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** The header the gateway adds to a refusal so a caller can tell its cause without reading the body. */
@@ -51,10 +48,7 @@ export function boundGatewayImagePayload(input: unknown): unknown {
 export interface GatewayModel {
   model: Model<Api>;
   streamFn: StreamFn;
-  /**
-   * Whether this assistant message is the final message of a `streamFn` call that the gateway
-   * refused with `403` and `x-semprec-error-code: budget_exceeded`. False for any other message.
-   */
+  /** True for the final message of a call refused with `403` and `x-semprec-error-code: budget_exceeded`. */
   isBudgetRefusal: (message: AssistantMessage) => boolean;
 }
 
@@ -72,12 +66,8 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 /**
- * The one model every agent session in this process talks to (issue #647): pi's `pi-messages`
- * protocol pointed at `semprec-ai-gateway`, so every call leaves this process only as
- * `POST <AI_GATEWAY_BASE_URL>/messages` with `Authorization: Bearer <AI_GATEWAY_INTERNAL_TOKEN>`
- * — no provider key or provider SDK ever exists here
- * (docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md). Throws naming the first missing
- * variable, so `semprec-agents` refuses to start without all three.
+ * pi's `pi-messages` protocol pointed at semprec-ai-gateway; no provider key or SDK exists here.
+ * Throws naming the first missing variable, so the process refuses to start without all three.
  */
 export function createGatewayModel(env: NodeJS.ProcessEnv): GatewayModel {
   const baseUrl = requireEnv(env, "AI_GATEWAY_BASE_URL");
@@ -115,8 +105,7 @@ export function createGatewayModel(env: NodeJS.ProcessEnv): GatewayModel {
     }),
   );
 
-  // Final messages of calls the gateway refused for the budget, keyed by the message object itself:
-  // the capture is per call (a local in `streamFn`), never a variable shared between sessions.
+  // Keyed by message object; captured per call, never shared between sessions.
   const budgetRefusals = new WeakSet<AssistantMessage>();
 
   return {

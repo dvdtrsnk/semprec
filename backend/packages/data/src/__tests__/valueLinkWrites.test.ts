@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import * as queue from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -38,35 +38,18 @@ import { enqueueRollupRecompute, rollupRecomputeJobKey } from "../rollup/recompu
 import { executeProposalSteps } from "../inbox/proposalSteps.js";
 import { withValueLinkRelationAdmission } from "../chokePoint/valueLinkRelationAdmission.js";
 
-/** Issue #1516: user and agent writes end value links; the valueLinks process needs an `on` link. */
 const USER: WriterIdentity = { writerKind: "user" };
 const AGENT: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: "00000000-0000-4000-8000-000000000003" };
 const VALUE_LINKS = { ownerProcess: VALUE_LINKS_OWNER_PROCESS };
+const BROKEN = { state: "broken" as const, brokenBy: "user" as const, brokenAt: new Date("2026-01-01T00:00:00Z") };
 
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-async function graphileJobHeldBy(jobKey: string, holderPid: number | undefined): Promise<boolean> {
-  // Graphile Worker 0.17.3's public jobs view does not expose the tuple xmax
-  // needed to connect this exact queued row to its transaction lock holder.
-  const result = await pool.query<{ held: boolean }>(
-    `SELECT EXISTS (SELECT 1 FROM graphile_worker._private_jobs j JOIN pg_locks l
-       ON l.transactionid::text = j.xmax::text
-       WHERE j.key = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
-    [jobKey, holderPid],
-  );
-  return result.rows[0]?.held === true;
-}
-
-async function relationAdvisoryHeldBy(definitionId: string, holderPid: number | undefined): Promise<boolean> {
-  const result = await pool.query<{ held: boolean }>(
-    `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted
-       AND classid::bigint = ((hashtextextended($2::text, 0) >> 32) & 4294967295::bigint)
-       AND objid::bigint = (hashtextextended($2::text, 0) & 4294967295::bigint) AND objsubid = 1) AS held`,
-    [holderPid, definitionId],
-  );
-  return result.rows[0]?.held === true;
-}
+type Edge = { relationPropertyId: string; callerItemId: string; targetItemId: string };
+type Fixture = Awaited<ReturnType<typeof setup>>;
+type ParticipantOutcome = { ok: true } | { ok: false; error: unknown };
+type RelationOperation = "create" | "update" | "delete";
 
 async function setup(cp: ChokePoint = chokePoint) {
   const projects = await cp.createDatabase({ name: "Projects" });
@@ -86,6 +69,99 @@ async function setup(cp: ChokePoint = chokePoint) {
   return { files, file, alpha, beta, projectsProperty, filesProperty: filesProperty! };
 }
 
+/** The file's `projects` edge to `target` (alpha by default). */
+function fileEdge(fx: Fixture, target: { id: string } = fx.alpha): Edge {
+  return { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: target.id };
+}
+
+function inTx<T>(runtime: Pool, tenant: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  return runInTenant(tenant, () => withTransaction(runtime, fn));
+}
+
+function protectedUpdate(client: PoolClient, input: Parameters<typeof updateItemWithClient>[1]) {
+  return updateItemWithClient(client, input, { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER });
+}
+
+function protectedWrite(
+  operation: RelationOperation,
+  client: PoolClient,
+  edge: Edge,
+  metadata?: Record<string, unknown>,
+): Promise<unknown> {
+  if (operation === "create")
+    return createRelationWithClient(client, { ...edge, ...(metadata ? { metadata } : {}) }, VALUE_LINKS, SYSTEM_WRITER);
+  if (operation === "update")
+    return updateRelationWithClient(client, { ...edge, metadata: metadata ?? {} }, VALUE_LINKS, SYSTEM_WRITER);
+  return deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+}
+
+function updateAs(
+  writer: WriterIdentity | undefined,
+  databaseId: string,
+  itemId: string,
+  propertiesPatch: Record<string, unknown>,
+  cp: ChokePoint = chokePoint,
+) {
+  return cp.updateItem({ databaseId, itemId, propertiesPatch }, undefined, undefined, writer);
+}
+
+async function pidOf(client: PoolClient): Promise<number | undefined> {
+  return (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+}
+
+function outcomeOf(promise: Promise<unknown>): Promise<ParticipantOutcome> {
+  return promise.then(
+    () => ({ ok: true as const }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+}
+
+function recordEvents(): InvalidationEvent[] {
+  const events: InvalidationEvent[] = [];
+  setInvalidationHook((event) => events.push(event));
+  return events;
+}
+
+function itemEvents(events: InvalidationEvent[], itemId: string): InvalidationEvent[] {
+  return events.filter((event) => event.scope === "item" && event.itemId === itemId);
+}
+
+/** Inserts a link row (on unless `broken`) for each key of `itemId` in `tenant`. */
+function linkIn(
+  runtime: Pool,
+  tenant: string,
+  itemId: string,
+  keys: string | readonly string[],
+  options: { broken?: boolean; ruleKey?: string } = {},
+): Promise<void> {
+  return withTenantTransaction(runtime, tenant, async (client) => {
+    for (const propertyKey of typeof keys === "string" ? [keys] : keys) {
+      await insertValueLink(client, {
+        itemId,
+        propertyKey,
+        ruleKey: options.ruleKey ?? "test",
+        sources: [],
+        ...(options.broken ? BROKEN : {}),
+      });
+    }
+  });
+}
+
+function linksIn(runtime: Pool, tenant: string, itemId: string): Promise<ValueLinkRow[]> {
+  return withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [itemId]));
+}
+
+async function link(itemId: string, propertyKey: string, state?: "broken"): Promise<void> {
+  await withTransaction(pool, (client) =>
+    insertValueLink(client, { itemId, propertyKey, ruleKey: "test", ...(state ? BROKEN : {}), sources: [] }),
+  );
+}
+
+async function linkOf(itemId: string, propertyKey: string): Promise<ValueLinkRow | undefined> {
+  const rows = await withTransaction(pool, (client) => listValueLinksByItemIds(client, [itemId]));
+  return rows.find((row) => row.propertyKey === propertyKey);
+}
+
 async function readStoredLinks(runtime: Pool, tenant: string, itemId: string) {
   return withTenantTransaction(runtime, tenant, async (client) => {
     const result = await client.query<{
@@ -99,9 +175,8 @@ async function readStoredLinks(runtime: Pool, tenant: string, itemId: string) {
       broken_at: string | null;
       updated_at: string;
     }>(
-      `SELECT id, tenant_id, item_id, property_key, rule_key, state, broken_by,
-                      broken_at::text, updated_at::text
-               FROM value_links WHERE tenant_id = $1 AND item_id = $2 ORDER BY id`,
+      `SELECT id, tenant_id, item_id, property_key, rule_key, state, broken_by, broken_at::text, updated_at::text
+       FROM value_links WHERE tenant_id = $1 AND item_id = $2 ORDER BY id`,
       [tenant, itemId],
     );
     return result.rows;
@@ -123,26 +198,126 @@ async function readStoredItem(runtime: Pool, tenant: string, databaseId: string,
        FROM items WHERE tenant_id = $1 AND database_id = $2 AND id = $3`,
       [tenant, databaseId, itemId],
     );
-    if (result.rows.length !== 1) throw new Error("Expected one scoped item");
-    return result.rows[0];
+    const row = result.rows[0];
+    if (result.rows.length !== 1 || !row) throw new Error("Expected one scoped item");
+    return row;
   });
 }
 
-async function link(itemId: string, propertyKey: string, state?: "broken"): Promise<void> {
-  await withTransaction(pool, (client) =>
-    insertValueLink(client, {
-      itemId,
-      propertyKey,
-      ruleKey: "test",
-      ...(state ? { state, brokenBy: "user" as const, brokenAt: new Date("2026-01-01T00:00:00Z") } : {}),
-      sources: [],
-    }),
+async function readJobs() {
+  const result = await pool.query<{
+    key: string | null;
+    locked_at: Date | null;
+    attempts: number;
+    max_attempts: number;
+  }>("SELECT key, locked_at, attempts, max_attempts FROM graphile_worker.jobs ORDER BY key NULLS FIRST");
+  return result.rows;
+}
+
+async function jobCount(key?: string): Promise<string | undefined> {
+  const result = await pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE $1::text IS NULL OR key = $1",
+    [key ?? null],
+  );
+  return result.rows[0]?.count;
+}
+
+/** The stored row of an item, its link rows and the whole queue: what a refused write must leave untouched. */
+async function storedState(runtime: Pool, tenant: string, databaseId: string, itemId: string) {
+  return {
+    item: await readStoredItem(runtime, tenant, databaseId, itemId),
+    links: await readStoredLinks(runtime, tenant, itemId),
+    jobs: await readJobs(),
+  };
+}
+
+async function definitionOf(runtime: Pool, tenant: string, propertyId: string) {
+  const definition = await withTenantTransaction(runtime, tenant, (client) =>
+    relationsStore.getRelationDefinitionByPropertyId(client, propertyId),
+  );
+  if (!definition) throw new Error("Missing relation definition");
+  return definition;
+}
+
+function storedEdges(runtime: Pool, tenant: string, definitionId: string, itemId: string) {
+  return withTenantTransaction(runtime, tenant, (client) =>
+    relationsStore.listRelationsForItem(client, definitionId, itemId),
   );
 }
 
-async function linkOf(itemId: string, propertyKey: string): Promise<ValueLinkRow | undefined> {
-  const rows = await withTransaction(pool, (client) => listValueLinksByItemIds(client, [itemId]));
-  return rows.find((row) => row.propertyKey === propertyKey);
+async function rowLockedBy(
+  table: "items" | "item_relations" | "value_links",
+  id: string,
+  pid: number | undefined,
+): Promise<boolean> {
+  // xmax ties a locked row to its transaction, and pg_locks ties that transaction to its backend.
+  const result = await pool.query<{ held: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM ${table} r JOIN pg_locks l ON l.transactionid::text = r.xmax::text
+       WHERE r.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+    [id, pid],
+  );
+  return result.rows[0]?.held === true;
+}
+
+async function graphileJobHeldBy(jobKey: string, holderPid: number | undefined): Promise<boolean> {
+  // The public jobs view does not expose xmax, needed to tie this queued row to its lock holder.
+  const result = await pool.query<{ held: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM graphile_worker._private_jobs j JOIN pg_locks l
+       ON l.transactionid::text = j.xmax::text
+       WHERE j.key = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
+    [jobKey, holderPid],
+  );
+  return result.rows[0]?.held === true;
+}
+
+async function relationAdvisoryHeldBy(definitionId: string, holderPid: number | undefined): Promise<boolean> {
+  const result = await pool.query<{ held: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted
+       AND classid::bigint = ((hashtextextended($2::text, 0) >> 32) & 4294967295::bigint)
+       AND objid::bigint = (hashtextextended($2::text, 0) & 4294967295::bigint) AND objsubid = 1) AS held`,
+    [holderPid, definitionId],
+  );
+  return result.rows[0]?.held === true;
+}
+
+/** Calls `observe` with the SQL and parameters of every query `client` sends while `body` runs. */
+async function observingQueries<T>(
+  client: PoolClient,
+  observe: (sql: string, params: unknown) => void,
+  body: () => Promise<T>,
+): Promise<T> {
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const original = client.query;
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  client.query = new Proxy(client.query, {
+    apply(query, receiver, args: unknown[]) {
+      observe(typeof args[0] === "string" ? args[0] : "", args[1]);
+      return Reflect.apply(query, receiver, args);
+    },
+  });
+  try {
+    return await body();
+  } finally {
+    client.query = original;
+  }
+}
+
+/** A proposal that rewrites the file's projects to the alpha edge it already has, locking definition and edge. */
+function holdProposal(client: PoolClient, fx: Fixture) {
+  return executeProposalSteps(
+    client,
+    [
+      {
+        ref: "same",
+        op: "update",
+        role: "primary",
+        itemId: fx.file.id,
+        before: { relations: { projects: [fx.alpha.id] } },
+        after: { relations: { projects: [fx.alpha.id] } },
+      },
+    ],
+    { writer: USER, sourceInboxItemId: null },
+  );
 }
 
 function throwFailure(error: unknown): never {
@@ -160,20 +335,6 @@ function combineFailure(
   return { error: new AggregateError(errors, message) };
 }
 
-function requireSuccessful(outcome: { ok: true } | { ok: false; error: unknown }): void {
-  if (!outcome.ok) throwFailure(outcome.error);
-}
-
-function expectFixtureClosed(runtime: Pool | undefined): void {
-  if (!runtime) throw new Error("Missing fixture pool");
-  expect(runtime.ended).toBe(true);
-  expect(runtime.totalCount).toBe(0);
-  expect(runtime.waitingCount).toBe(0);
-  expect(runtime.listenerCount("acquire")).toBe(0);
-  expect(runtime.listenerCount("release")).toBe(0);
-  expect(fixtureCancellations.size).toBe(0);
-}
-
 interface RuntimeOperations {
   run<T>(start: () => Promise<T>): Promise<T>;
   settle(): Promise<void>;
@@ -181,9 +342,13 @@ interface RuntimeOperations {
   consume(operation: Promise<unknown>, expected: unknown): void;
 }
 
-// Local to these serial fixtures: every barrier is released if any owning pool closes early.
 const fixtureCancellations = new Set<Set<() => void>>();
 
+/**
+ * Runs `body` against a fresh runtime-role pool and always closes it. Operations started through `run` are settled
+ * before the pool ends, and an operation's rejection fails the test unless `consume` claimed it; every barrier is
+ * released when cleanup starts, and clients still checked out then are destroyed.
+ */
 async function withRuntimePool<T>(body: (runtime: Pool, operations: RuntimeOperations) => Promise<T>): Promise<T> {
   const runtime = await createRuntimeRolePool(pool, "semprec_data");
   runtime.options.connectionTimeoutMillis = 2500;
@@ -335,11 +500,7 @@ async function bounded<T>(promise: Promise<T>, milliseconds = 8000): Promise<T> 
   }
 }
 
-async function settleOwned<T>(promise: Promise<T>, _getPid: () => number | undefined): Promise<T> {
-  // The enclosing runtime-pool watchdog destroys only checked-out owned clients first.
-  return bounded(promise, 15000);
-}
-
+/** Awaits an operation started through `operations.run`, expects it to reject like `expected` and claims it. */
 async function expectRuntimeRejection(
   operations: RuntimeOperations,
   operation: Promise<unknown>,
@@ -354,26 +515,49 @@ async function expectRuntimeRejection(
   operations.consume(operation, result.error);
 }
 
-type ParticipantOutcome = { ok: true } | { ok: false; error: unknown };
-
-async function settleParticipants<T extends ParticipantOutcome>(
-  user: Promise<T> | undefined,
-  system: Promise<T> | undefined,
-  userPid: () => number | undefined,
-  systemPid: () => number | undefined,
-  consumed: ReadonlySet<T>,
-): Promise<unknown[]> {
-  const owned: Promise<T>[] = [];
-  if (user) owned.push(settleOwned(user, userPid));
-  if (system) owned.push(settleOwned(system, systemPid));
-  const results = await Promise.allSettled(owned);
-  return results.flatMap((result) => {
-    if (result.status === "rejected") return [result.reason];
-    return !result.value.ok && !consumed.has(result.value) ? [result.value.error] : [];
-  });
+/**
+ * Runs `hold` in a transaction on `holderPool` and keeps that transaction open while `body` runs, then lets it
+ * commit (or throw `rollback`). A failure of the body and of the holder are both reported.
+ */
+async function whileHolding(
+  holderPool: Pool,
+  tenant: string,
+  hold: (client: PoolClient) => Promise<unknown>,
+  body: (holderPid: number | undefined) => Promise<void>,
+  rollback?: Error,
+): Promise<void> {
+  const held = barrier();
+  const release = barrier();
+  let holderPid: number | undefined;
+  const holder = outcomeOf(
+    inTx(holderPool, tenant, async (client) => {
+      holderPid = await pidOf(client);
+      await hold(client);
+      held.resolve();
+      await bounded(release.promise);
+      if (rollback) throw rollback;
+    }),
+  );
+  let failure: { error: unknown } | undefined;
+  try {
+    await bounded(held.promise);
+    expect(holderPid).toBeTypeOf("number");
+    await body(holderPid);
+  } catch (error) {
+    failure = { error };
+  } finally {
+    release.resolve();
+    try {
+      const result = await bounded(holder, 15000);
+      if (rollback) expect(result).toEqual({ ok: false, error: rollback });
+      else if (!result.ok) throwFailure(result.error);
+    } catch (error) {
+      failure = combineFailure(failure, [error], "Test and holder cleanup failed");
+    }
+  }
+  if (failure !== undefined) throwFailure(failure.error);
 }
 
-/** Polls a participant's own progress flag (observation only; locks and barriers create the order). */
 async function waitUntil(condition: () => boolean): Promise<void> {
   const deadline = Date.now() + 3000;
   while (!condition()) {
@@ -395,7 +579,111 @@ async function waitBlocked(holderPid: number, competitorPid: number): Promise<vo
   throw new Error(`Expected ${competitorPid} to wait for ${holderPid}`);
 }
 
-describe("value link state on writes (issue #1516)", () => {
+/** Runs `body` with the seeded Tasks database of tenant zero on a fresh runtime pool. */
+async function withSeededTasks(body: (runtime: Pool, cp: ChokePoint, tasksId: string) => Promise<void>) {
+  await seedSystem(pool);
+  await withRuntimePool(async (runtime) => {
+    const cp = createChokePoint(runtime);
+    const tasks = (await runInTenant(getTenantZeroId(), () => cp.listDatabases())).find((db) => db.key === "tasks");
+    if (!tasks) throw new Error("Missing Tasks database");
+    await body(runtime, cp, tasks.id);
+  });
+}
+
+/**
+ * Performs a valueLinks-owned patch of a seeded task with an update heartbeat watching it. Refused: nothing is
+ * stored, queued or announced. Accepted: the patch is stored as `expected`, the heartbeat fires on the write's
+ * client, one item update is announced and the link rows are unchanged. Returns the state before the write.
+ */
+async function expectHandoffTaskWrite(
+  runtime: Pool,
+  task: { databaseId: string; id: string },
+  propertiesPatch: Record<string, unknown>,
+  expected: Record<string, unknown> | "refused",
+) {
+  const tenant = getTenantZeroId();
+  const heartbeat = await withTenantTransaction(runtime, tenant, async (client) => {
+    const project = await client.query<{ id: string }>(
+      "SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.key = 'projects' LIMIT 1",
+    );
+    if (!project.rows[0]) throw new Error("Missing seeded project");
+    return schedulerStore.createHeartbeat(client, {
+      projectItemId: project.rows[0].id,
+      name: "Task update probe",
+      rule: { kind: "onItemEvent", databaseId: task.databaseId, event: "update" },
+      actionId: "noop",
+    });
+  });
+  const jobKey = schedulerStore.heartbeatFireJobKey(heartbeat.id, task.id);
+  const before = await storedState(runtime, tenant, task.databaseId, task.id);
+  expect(before.jobs.some((row) => row.key === jobKey)).toBe(false);
+  const enqueue = vi.spyOn(queue, "enqueueJob");
+  const events = recordEvents();
+  let writeClient: PoolClient | undefined;
+  const write = inTx(runtime, tenant, (client) => {
+    writeClient = client;
+    return protectedUpdate(client, { databaseId: task.databaseId, itemId: task.id, propertiesPatch });
+  });
+  if (expected === "refused") {
+    await expect(write).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+    expect(await storedState(runtime, tenant, task.databaseId, task.id)).toEqual(before);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    return before;
+  }
+  expect((await write).properties).toMatchObject(expected);
+  const after = await storedState(runtime, tenant, task.databaseId, task.id);
+  const stored: unknown = JSON.parse(after.item.properties);
+  expect(stored).toMatchObject(expected);
+  expect(after.links).toEqual(before.links);
+  expect(after.jobs).toContainEqual({ key: jobKey, locked_at: null, attempts: 0, max_attempts: 3 });
+  expect(writeClient).toBeDefined();
+  expect(enqueue).toHaveBeenCalledWith(
+    writeClient,
+    queue.CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE,
+    { heartbeatId: heartbeat.id, itemId: task.id },
+    expect.objectContaining({ jobKey }),
+  );
+  expect(events).toEqual([expect.objectContaining({ scope: "item", itemId: task.id, op: "update" })]);
+  return before;
+}
+
+/** The seeded Inbox of tenant zero, its type relation and a factory for a page-content type. */
+async function seededInbox(cp: ChokePoint) {
+  const tenant = getTenantZeroId();
+  const dbs = await runInTenant(tenant, () => cp.listDatabases());
+  const inbox = dbs.find((db) => db.ownerModuleId === "inbox");
+  const types = dbs.find((db) => db.ownerModuleId === "inboxItemTypes");
+  if (!inbox || !types) throw new Error("Missing Inbox databases");
+  const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
+  if (!property) throw new Error("Missing Inbox type relation");
+  const createType = (client: PoolClient, name = "Page") =>
+    createInboxTypeWithClient(client, {
+      inboxItemTypesDatabaseId: types.id,
+      name,
+      emoji: name.slice(0, 1),
+      processingMethod: "pageContent",
+    });
+  return { inbox, types, property, createType };
+}
+
+/** An Inbox item typed with a new page type, holding an on link of its `type`. */
+function typedInboxItem(runtime: Pool, fx: Awaited<ReturnType<typeof seededInbox>>) {
+  return withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+    const type = await fx.createType(client);
+    const item = await createInboxItemWithClient(client, {
+      inboxDatabaseId: fx.inbox.id,
+      date: "2026-10-01",
+      time: "09:00",
+      text: "Source",
+      type: type.id,
+    });
+    await insertValueLink(client, { itemId: item.id, propertyKey: "type", ruleKey: "test", sources: [] });
+    return { item, type };
+  });
+}
+
+describe("value link state on writes", () => {
   beforeAll(() => {
     pool = getTestPool();
     pool.options.connectionTimeoutMillis = 2500;
@@ -408,427 +696,44 @@ describe("value link state on writes (issue #1516)", () => {
     await resetDatabase(pool);
   });
 
-  it.each([undefined, { marker: "non-error" }])("preserves owned participant failure identity %#", async (original) => {
-    let settled = false;
-    let runtimePool: Pool | undefined;
-    const operation = withRuntimePool(async (runtime, operations) => {
-      runtimePool = runtime;
-      await operations.run(() =>
-        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          await client.query<{ "?column?": number }>("SELECT 1");
-          settled = true;
-        }),
-      );
-      await operations.settle();
-      throwFailure(original);
-    });
-    await expect(operation).rejects.toBe(original);
-    expect(settled).toBe(true);
-    if (!runtimePool) throw new Error("Missing runtime fixture");
-    expect(runtimePool.totalCount).toBe(0);
-    const cleanup = { marker: "cleanup" };
-    const combined = combineFailure({ error: original }, [cleanup], "combined").error;
-    expect(combined).toBeInstanceOf(AggregateError);
-    if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
-    expect(combined.errors[0]).toBe(original);
-    expect(combined.errors[1]).toBe(cleanup);
-    expect(combined.cause).toBe(original);
+  afterEach(() => {
+    setInvalidationHook(() => {});
+    vi.restoreAllMocks();
   });
-
-  it("settles a client delivered after pool cleanup starts without running its transaction", async () => {
-    const tenant = await createTestTenant(pool);
-    const bodyError = new Error("forced body failure");
-    const verifying = barrier();
-    let delivered = false;
-    let transactionRan = false;
-    let operationSettled = false;
-    let observedPool: Pool | undefined;
-    let observedFailure: unknown;
-    const operationErrors: Array<{ value: unknown } | undefined> = [];
-    try {
-      await withRuntimePool(async (runtime, operations) => {
-        observedPool = runtime;
-        runtime.options.verify = (_client, done) => {
-          operations.onCancel(() =>
-            queueMicrotask(() => {
-              delivered = true;
-              done();
-            }),
-          );
-          verifying.resolve();
-        };
-        const operation = operations.run(() =>
-          runInTenant(tenant, () =>
-            withTransaction(runtime, async () => {
-              transactionRan = true;
-            }),
-          ),
-        );
-        void operation.then(
-          () => {
-            operationSettled = true;
-          },
-          (error: unknown) => {
-            operationErrors[0] = { value: error };
-            operationSettled = true;
-          },
-        );
-        await bounded(verifying.promise);
-        throw bodyError;
-      });
-    } catch (error) {
-      observedFailure = error;
-    }
-    expect(observedFailure).toBeInstanceOf(AggregateError);
-    if (!(observedFailure instanceof AggregateError)) throw new Error("Expected combined failure");
-    expect(observedFailure.cause).toBe(bodyError);
-    const captured = operationErrors.filter((entry): entry is { value: unknown } => entry !== undefined);
-    expect(captured.length).toBeGreaterThan(0);
-    expect(observedFailure.errors).toHaveLength(1 + captured.length);
-    expect(observedFailure.errors[0]).toBe(bodyError);
-    for (let index = 0; index < captured.length; index++) {
-      const observed = captured[index];
-      if (!observed) throw new Error("Missing operation failure");
-      expect(observed.value).toBeInstanceOf(Error);
-      expect(observedFailure.errors[index + 1]).toBe(observed.value);
-    }
-    expect(delivered).toBe(true);
-    expect(operationSettled).toBe(true);
-    expect(transactionRan).toBe(false);
-    expectFixtureClosed(observedPool);
-  }, 30000);
-
-  it("preserves a body failure alongside an owned client cleanup error", async () => {
-    const tenant = await createTestTenant(pool);
-    const bodyError = new Error("body failure");
-    const clientError = new Error("owned client error");
-    let observed: unknown;
-    let observedPool: Pool | undefined;
-    try {
-      await withRuntimePool(async (runtime) => {
-        observedPool = runtime;
-        const client = await runInTenant(tenant, () => runtime.connect());
-        client.emit("error", clientError);
-        throw bodyError;
-      });
-    } catch (error) {
-      observed = error;
-    }
-    expect(observed).toBeInstanceOf(AggregateError);
-    if (!(observed instanceof AggregateError)) throw new Error("Expected cleanup errors");
-    expect(observed.errors).toEqual([bodyError, clientError]);
-    expect(observed.cause).toBe(bodyError);
-    expectFixtureClosed(observedPool);
-  }, 30000);
-
-  it("refuses success when the body leaves an owned client checked out", async () => {
-    const tenant = await createTestTenant(pool);
-    let observedPool: Pool | undefined;
-    await expect(
-      withRuntimePool(async (runtime) => {
-        observedPool = runtime;
-        await runInTenant(tenant, () => runtime.connect());
-        return "not a successful fixture";
-      }),
-    ).rejects.toMatchObject({ message: "Test and runtime cleanup failed" });
-    expectFixtureClosed(observedPool);
-  }, 30000);
-
-  it("settles a participant paused before its PID query when cleanup begins", async () => {
-    const tenant = await createTestTenant(pool);
-    const bodyError = new Error("cancel before PID");
-    let ranAfterPid = false;
-    let settled = false;
-    let observedPool: Pool | undefined;
-    let observedFailure: unknown;
-    const operationErrors: Array<{ value: unknown } | undefined> = [];
-    try {
-      await withRuntimePool(async (runtime, operations) => {
-        observedPool = runtime;
-        const started = barrier();
-        const release = barrier();
-        const participant = operations.run(() =>
-          runInTenant(tenant, () =>
-            withTransaction(runtime, async (client) => {
-              started.resolve();
-              await bounded(release.promise);
-              await client.query<{ pg_backend_pid: number }>("SELECT pg_backend_pid()");
-              ranAfterPid = true;
-            }),
-          ),
-        );
-        void participant.then(
-          () => {
-            settled = true;
-          },
-          (error: unknown) => {
-            operationErrors[0] = { value: error };
-            settled = true;
-          },
-        );
-        await bounded(started.promise);
-        throw bodyError;
-      });
-    } catch (error) {
-      observedFailure = error;
-    }
-    expect(observedFailure).toBeInstanceOf(AggregateError);
-    if (!(observedFailure instanceof AggregateError)) throw new Error("Expected combined failure");
-    expect(observedFailure.cause).toBe(bodyError);
-    const captured = operationErrors.filter((entry): entry is { value: unknown } => entry !== undefined);
-    expect(captured.length).toBeGreaterThan(0);
-    expect(observedFailure.errors).toHaveLength(1 + captured.length);
-    expect(observedFailure.errors[0]).toBe(bodyError);
-    for (let index = 0; index < captured.length; index++) {
-      const observed = captured[index];
-      if (!observed) throw new Error("Missing operation failure");
-      expect(observed.value).toBeInstanceOf(Error);
-      expect(observedFailure.errors[index + 1]).toBe(observed.value);
-    }
-    expect(settled).toBe(true);
-    expect(ranAfterPid).toBe(false);
-    expectFixtureClosed(observedPool);
-  }, 30000);
-
-  it.each(["cancel", "undefined", "object"] as const)(
-    "settles a real blocked contender and holder when fixture cleanup starts (%s)",
-    async (control) => {
-      const tenant = await createTestTenant(pool);
-      const bodyError = new Error("stop blocked participants");
-      const late = control === "undefined" ? undefined : { marker: "late runtime participant" };
-      const acquired = barrier();
-      const release = barrier();
-      let holderPid: number | undefined;
-      let contenderPid: number | undefined;
-      let holderSettled = false;
-      let contenderSettled = false;
-      let progressSettled = false;
-      let observedPool: Pool | undefined;
-      let observedFailure: unknown;
-      const operationErrors: Array<{ value: unknown } | undefined> = [];
-      let items: { databaseId: string; heldId: string; progressId: string } | undefined;
-      try {
-        await withRuntimePool(async (runtime, operations) => {
-          observedPool = runtime;
-          const cp = createChokePoint(runtime);
-          const fx = await runInTenant(tenant, () => setup(cp));
-          const progressItem = await runInTenant(tenant, () =>
-            cp.createItem({ databaseId: fx.files.id, properties: { name: "independent" } }),
-          );
-          items = { databaseId: fx.files.id, heldId: fx.file.id, progressId: progressItem.id };
-          const refused = operations.run(() =>
-            runInTenant(tenant, () =>
-              withTransaction(runtime, (client) =>
-                updateItemWithClient(
-                  client,
-                  { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "refused" } },
-                  { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                ),
-              ),
-            ),
-          );
-          await expectRuntimeRejection(operations, refused, { status: 403, code: "owner_violation" });
-          runtime.once("release", () => release.resolve());
-          const holder = operations.run(() =>
-            runInTenant(tenant, () =>
-              withTransaction(runtime, async (client) => {
-                holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                await updateItemWithClient(client, {
-                  databaseId: fx.files.id,
-                  itemId: fx.file.id,
-                  propertiesPatch: { name: "held" },
-                });
-                acquired.resolve();
-                await bounded(release.promise);
-                if (control !== "cancel") throwFailure(late);
-              }),
-            ),
-          );
-          void holder.then(
-            () => {
-              holderSettled = true;
-            },
-            (error: unknown) => {
-              operationErrors[0] = { value: error };
-              holderSettled = true;
-            },
-          );
-          await bounded(acquired.promise);
-          const contenderStarted = barrier();
-          const contender = operations.run(() =>
-            runInTenant(tenant, () =>
-              withTransaction(runtime, async (client) => {
-                contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                contenderStarted.resolve();
-                await updateItemWithClient(client, {
-                  databaseId: fx.files.id,
-                  itemId: fx.file.id,
-                  propertiesPatch: { name: "contender" },
-                });
-              }),
-            ),
-          );
-          void contender.then(
-            () => {
-              contenderSettled = true;
-            },
-            (error: unknown) => {
-              operationErrors[1] = { value: error };
-              contenderSettled = true;
-            },
-          );
-          await bounded(contenderStarted.promise);
-          if (!holderPid || !contenderPid) throw new Error("Missing participant PID");
-          await waitBlocked(holderPid, contenderPid);
-          const progressStarted = barrier();
-          const progressRelease = barrier();
-          const progress = operations.run(() =>
-            runInTenant(tenant, () =>
-              withTransaction(runtime, async (client) => {
-                await updateItemWithClient(client, {
-                  databaseId: fx.files.id,
-                  itemId: progressItem.id,
-                  propertiesPatch: { name: "progress" },
-                });
-                progressStarted.resolve();
-                await bounded(progressRelease.promise);
-              }),
-            ),
-          );
-          void progress.then(
-            () => {
-              progressSettled = true;
-            },
-            (error: unknown) => {
-              operationErrors[2] = { value: error };
-              progressSettled = true;
-            },
-          );
-          await bounded(progressStarted.promise);
-          if (control !== "cancel") {
-            try {
-              throw bodyError;
-            } catch (error) {
-              release.resolve();
-              progressRelease.resolve();
-              await Promise.allSettled([holder, contender, progress]);
-              throwFailure(error);
-            }
-          }
-          throw bodyError;
-        });
-      } catch (error) {
-        observedFailure = error;
-      }
-      expect(observedFailure).toBeInstanceOf(AggregateError);
-      if (!(observedFailure instanceof AggregateError)) throw new Error("Expected combined failure");
-      expect(observedFailure.cause).toBe(bodyError);
-      const captured = operationErrors.filter((entry): entry is { value: unknown } => entry !== undefined);
-      expect(captured.length).toBeGreaterThan(0);
-      expect(observedFailure.errors).toHaveLength(1 + captured.length);
-      expect(observedFailure.errors[0]).toBe(bodyError);
-      for (let index = 0; index < captured.length; index++) {
-        const observed = captured[index];
-        if (!observed) throw new Error("Missing operation failure");
-        if (control === "cancel") expect(observed.value).toBeInstanceOf(Error);
-        else expect(observed.value).toBe(late);
-        expect(observedFailure.errors[index + 1]).toBe(observed.value);
-      }
-      expect(holderSettled).toBe(true);
-      expect(contenderSettled).toBe(true);
-      expect(progressSettled).toBe(true);
-      expectFixtureClosed(observedPool);
-      if (!items) throw new Error("Missing fixture items");
-      const resultItems = items;
-      expect(
-        (await runInTenant(tenant, () => chokePoint.getItem(resultItems.databaseId, resultItems.heldId)))?.properties
-          .name,
-      ).toBe(control === "cancel" ? "a.pdf" : "contender");
-      expect(
-        (await runInTenant(tenant, () => chokePoint.getItem(resultItems.databaseId, resultItems.progressId)))
-          ?.properties.name,
-      ).toBe(control === "cancel" ? "independent" : "progress");
-    },
-    30000,
-  );
 
   afterAll(async () => {
     await pool.end();
   });
 
   describe("plain properties", () => {
-    it("a user write that changes a linked value breaks the link with brokenBy user", async () => {
+    it.each([
+      ["a user write that changes the value breaks it with brokenBy user", USER, "b.pdf", "user"],
+      ["an agent write breaks it with brokenBy agent", AGENT, "b.pdf", "agent"],
+      ["a system write leaves it on", SYSTEM_WRITER, "b.pdf", null],
+      ["a write without a writer identity leaves it on", undefined, "c.pdf", null],
+      ["a user patch that sets the value it already holds leaves it on", USER, "a.pdf", null],
+    ] as const)("%s", async (_name, writer, name, brokenBy) => {
       const { files, file } = await setup();
       await link(file.id, "name");
 
-      await chokePoint.updateItem(
-        { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf" } },
-        undefined,
-        undefined,
-        USER,
-      );
+      await updateAs(writer, files.id, file.id, { name });
 
       const row = await linkOf(file.id, "name");
-      expect(row).toMatchObject({ state: "broken", brokenBy: "user" });
-      expect(row?.brokenAt).not.toBeNull();
-    });
-
-    it("an agent write breaks the link with brokenBy agent", async () => {
-      const { files, file } = await setup();
-      await link(file.id, "name");
-
-      await chokePoint.updateItem(
-        { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf" } },
-        undefined,
-        undefined,
-        AGENT,
-      );
-
-      expect(await linkOf(file.id, "name")).toMatchObject({ state: "broken", brokenBy: "agent" });
-    });
-
-    it("a system write leaves the link on", async () => {
-      const { files, file } = await setup();
-      await link(file.id, "name");
-
-      await chokePoint.updateItem(
-        { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf" } },
-        undefined,
-        undefined,
-        SYSTEM_WRITER,
-      );
-      await chokePoint.updateItem({ databaseId: files.id, itemId: file.id, propertiesPatch: { name: "c.pdf" } });
-
-      expect(await linkOf(file.id, "name")).toMatchObject({ state: "on", brokenBy: null, brokenAt: null });
-    });
-
-    it("a patch that sets the value it already holds leaves the link on", async () => {
-      const { files, file } = await setup();
-      await link(file.id, "name");
-
-      await chokePoint.updateItem(
-        { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "a.pdf" } },
-        undefined,
-        undefined,
-        USER,
-      );
-
-      expect(await linkOf(file.id, "name")).toMatchObject({ state: "on" });
+      if (brokenBy === null) expect(row).toMatchObject({ state: "on", brokenBy: null, brokenAt: null });
+      else {
+        expect(row).toMatchObject({ state: "broken", brokenBy });
+        expect(row?.brokenAt).not.toBeNull();
+      }
     });
 
     it("only the keys whose value changed are broken", async () => {
       const { files, file } = await setup();
       await chokePoint.createProperty({ databaseId: files.id, key: "note", name: "Note", type: "text" });
-      await chokePoint.updateItem({ databaseId: files.id, itemId: file.id, propertiesPatch: { note: "n" } });
+      await updateAs(undefined, files.id, file.id, { note: "n" });
       await link(file.id, "name");
       await link(file.id, "note");
 
-      await chokePoint.updateItem(
-        { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf", note: "n" } },
-        undefined,
-        undefined,
-        USER,
-      );
+      await updateAs(USER, files.id, file.id, { name: "b.pdf", note: "n" });
 
       expect(await linkOf(file.id, "name")).toMatchObject({ state: "broken" });
       expect(await linkOf(file.id, "note")).toMatchObject({ state: "on" });
@@ -837,20 +742,10 @@ describe("value link state on writes (issue #1516)", () => {
     it("two writes keep the first brokenBy and brokenAt", async () => {
       const { files, file } = await setup();
       await link(file.id, "name");
-      await chokePoint.updateItem(
-        { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf" } },
-        undefined,
-        undefined,
-        USER,
-      );
+      await updateAs(USER, files.id, file.id, { name: "b.pdf" });
       const first = await linkOf(file.id, "name");
 
-      await chokePoint.updateItem(
-        { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "c.pdf" } },
-        undefined,
-        undefined,
-        AGENT,
-      );
+      await updateAs(AGENT, files.id, file.id, { name: "c.pdf" });
 
       const second = await linkOf(file.id, "name");
       expect(second).toMatchObject({ state: "broken", brokenBy: "user" });
@@ -860,12 +755,7 @@ describe("value link state on writes (issue #1516)", () => {
     it("a write to an unlinked property changes no link", async () => {
       const { files, file } = await setup();
 
-      await chokePoint.updateItem(
-        { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf" } },
-        undefined,
-        undefined,
-        USER,
-      );
+      await updateAs(USER, files.id, file.id, { name: "b.pdf" });
 
       expect(await linkOf(file.id, "name")).toBeUndefined();
     });
@@ -873,63 +763,47 @@ describe("value link state on writes (issue #1516)", () => {
     it("rolls the link state back together with a failed write", async () => {
       const { files, file } = await setup();
       await link(file.id, "name");
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      try {
-        await expect(
-          withTransaction(pool, async (client) => {
-            await updateItemWithClient(
-              client,
-              { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf" } },
-              { writer: USER },
-            );
-            expect(events).toEqual([]);
-            throw new Error("abort");
-          }),
-        ).rejects.toThrow("abort");
-        expect(events).toEqual([]);
-      } finally {
-        setInvalidationHook(() => {});
-      }
+      const events = recordEvents();
+
+      await expect(
+        withTransaction(pool, async (client) => {
+          await updateItemWithClient(
+            client,
+            { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "b.pdf" } },
+            { writer: USER },
+          );
+          expect(events).toEqual([]);
+          throw new Error("abort");
+        }),
+      ).rejects.toThrow("abort");
+
+      expect(events).toEqual([]);
       expect(await linkOf(file.id, "name")).toMatchObject({ state: "on" });
       expect((await chokePoint.getItem(files.id, file.id))?.properties.name).toBe("a.pdf");
     });
   });
 
   describe("relation edges", () => {
-    it("breaks and announces linked values on both definition sides", async () => {
-      const { file, alpha, projectsProperty } = await setup();
-      await link(file.id, "projects");
-      await link(alpha.id, "files");
+    it("breaks and announces linked values on both definition sides once", async () => {
+      const fx = await setup();
+      await link(fx.file.id, "projects");
+      await link(fx.alpha.id, "files");
       const actorId = randomUUID();
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      try {
-        await chokePoint.createRelation(
-          { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
-          USER,
-          actorId,
-        );
-        expect(events.filter((event) => event.scope === "item")).toHaveLength(2);
-        await chokePoint.createRelation(
-          { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
-          USER,
-          actorId,
-        );
-        expect(events.filter((event) => event.scope === "item")).toHaveLength(2);
-      } finally {
-        setInvalidationHook(() => {});
-      }
-      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "broken", brokenBy: "user" });
-      expect(await linkOf(alpha.id, "files")).toMatchObject({ state: "broken", brokenBy: "user" });
-      for (const itemId of [file.id, alpha.id]) {
-        expect(
-          events.filter((event) => event.scope === "item" && event.itemId === itemId && event.op === "update"),
-        ).toEqual([expect.objectContaining({ userId: actorId })]);
+      const events = recordEvents();
+
+      await chokePoint.createRelation(fileEdge(fx), USER, actorId);
+      expect(events.filter((event) => event.scope === "item")).toHaveLength(2);
+      await chokePoint.createRelation(fileEdge(fx), USER, actorId);
+      expect(events.filter((event) => event.scope === "item")).toHaveLength(2);
+
+      expect(await linkOf(fx.file.id, "projects")).toMatchObject({ state: "broken", brokenBy: "user" });
+      expect(await linkOf(fx.alpha.id, "files")).toMatchObject({ state: "broken", brokenBy: "user" });
+      for (const itemId of [fx.file.id, fx.alpha.id]) {
+        expect(itemEvents(events, itemId)).toEqual([expect.objectContaining({ op: "update", userId: actorId })]);
       }
     });
 
-    it("breaks both sides of a self-edge and announces the item once after commit", async () => {
+    it("breaks both sides of a self-edge after commit only, announcing the item once", async () => {
       const database = await chokePoint.createDatabase({ name: "Self relations" });
       const { property } = await chokePoint.createRelationProperty({
         sourceDatabaseId: database.id,
@@ -943,288 +817,123 @@ describe("value link state on writes (issue #1516)", () => {
       await link(item.id, "outgoing");
       await link(item.id, "incoming");
       const actorId = randomUUID();
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      try {
-        const createSelfEdge = (client: PoolClient) =>
-          createRelationWithClient(
-            client,
-            { relationPropertyId: property.id, callerItemId: item.id, targetItemId: item.id },
-            undefined,
-            USER,
-            actorId,
-          );
-        const rollback = new Error("rollback self-edge");
-        await expect(
-          withTransaction(pool, async (client) => {
-            await createSelfEdge(client);
-            expect(events).toEqual([]);
-            throw rollback;
-          }),
-        ).rejects.toBe(rollback);
-        expect(events).toEqual([]);
-        expect(await linkOf(item.id, "outgoing")).toMatchObject({ state: "on" });
-        expect(await linkOf(item.id, "incoming")).toMatchObject({ state: "on" });
-        await withTransaction(pool, async (client) => {
+      const events = recordEvents();
+      const createSelfEdge = (client: PoolClient) =>
+        createRelationWithClient(
+          client,
+          { relationPropertyId: property.id, callerItemId: item.id, targetItemId: item.id },
+          undefined,
+          USER,
+          actorId,
+        );
+      const rollback = new Error("rollback self-edge");
+
+      await expect(
+        withTransaction(pool, async (client) => {
           await createSelfEdge(client);
           expect(events).toEqual([]);
-        });
-        expect(await linkOf(item.id, "outgoing")).toMatchObject({ state: "broken", brokenBy: "user" });
-        expect(await linkOf(item.id, "incoming")).toMatchObject({ state: "broken", brokenBy: "user" });
-        expect(events.filter((event) => event.scope === "item" && event.itemId === item.id)).toEqual([
-          expect.objectContaining({ userId: actorId }),
-        ]);
-      } finally {
-        setInvalidationHook(() => {});
-      }
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
+      expect(events).toEqual([]);
+      expect(await linkOf(item.id, "outgoing")).toMatchObject({ state: "on" });
+      expect(await linkOf(item.id, "incoming")).toMatchObject({ state: "on" });
+      expect(await chokePoint.listItemRelations(item.id, property.id)).toEqual([]);
+
+      await withTransaction(pool, async (client) => {
+        await createSelfEdge(client);
+        expect(events).toEqual([]);
+      });
+      expect(await linkOf(item.id, "outgoing")).toMatchObject({ state: "broken", brokenBy: "user" });
+      expect(await linkOf(item.id, "incoming")).toMatchObject({ state: "broken", brokenBy: "user" });
+      expect(itemEvents(events, item.id)).toEqual([expect.objectContaining({ userId: actorId })]);
     });
 
-    it("putting a second project edge breaks the file's projects link", async () => {
-      const { file, alpha, beta, projectsProperty } = await setup();
-      await link(file.id, "projects");
-      await chokePoint.createRelation(
-        { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
-        SYSTEM_WRITER,
-      );
-      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "on" });
+    it("a system edge leaves the link on and a second user edge breaks it", async () => {
+      const fx = await setup();
+      await link(fx.file.id, "projects");
+      await chokePoint.createRelation(fileEdge(fx), SYSTEM_WRITER);
+      expect(await linkOf(fx.file.id, "projects")).toMatchObject({ state: "on" });
 
-      await chokePoint.createRelation(
-        { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: beta.id },
-        USER,
-      );
+      await chokePoint.createRelation(fileEdge(fx, fx.beta), USER);
 
-      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "broken", brokenBy: "user" });
+      expect(await linkOf(fx.file.id, "projects")).toMatchObject({ state: "broken", brokenBy: "user" });
     });
 
     it("putting the edge through the project's files property breaks the file's link", async () => {
-      const { file, alpha, filesProperty } = await setup();
-      await link(file.id, "projects");
+      const fx = await setup();
+      await link(fx.file.id, "projects");
 
       await chokePoint.createRelation(
-        { relationPropertyId: filesProperty.id, callerItemId: alpha.id, targetItemId: file.id },
+        { relationPropertyId: fx.filesProperty.id, callerItemId: fx.alpha.id, targetItemId: fx.file.id },
         AGENT,
       );
 
-      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "broken", brokenBy: "agent" });
+      expect(await linkOf(fx.file.id, "projects")).toMatchObject({ state: "broken", brokenBy: "agent" });
     });
 
     it("deleting an edge breaks the link, deleting an absent edge does not", async () => {
-      const { file, alpha, beta, projectsProperty } = await setup();
-      await chokePoint.createRelation({
-        relationPropertyId: projectsProperty.id,
-        callerItemId: file.id,
-        targetItemId: alpha.id,
-      });
-      await link(file.id, "projects");
+      const fx = await setup();
+      await chokePoint.createRelation(fileEdge(fx));
+      await link(fx.file.id, "projects");
 
-      await chokePoint.deleteRelation(
-        { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: beta.id },
-        USER,
-      );
-      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "on" });
+      await chokePoint.deleteRelation(fileEdge(fx, fx.beta), USER);
+      expect(await linkOf(fx.file.id, "projects")).toMatchObject({ state: "on" });
 
-      await chokePoint.deleteRelation(
-        { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
-        USER,
-      );
-      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "broken", brokenBy: "user" });
+      await chokePoint.deleteRelation(fileEdge(fx), USER);
+      expect(await linkOf(fx.file.id, "projects")).toMatchObject({ state: "broken", brokenBy: "user" });
     });
 
     it("putting an existing edge and replacing metadata leave the link on", async () => {
-      const { file, alpha, projectsProperty } = await setup();
-      const edge = { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id };
-      await chokePoint.createRelation(edge);
-      await link(file.id, "projects");
+      const fx = await setup();
+      await chokePoint.createRelation(fileEdge(fx));
+      await link(fx.file.id, "projects");
 
-      await chokePoint.createRelation({ ...edge, metadata: { note: "x" } }, USER);
-      await chokePoint.updateRelation({ ...edge, metadata: { note: "y" } }, USER);
+      await chokePoint.createRelation({ ...fileEdge(fx), metadata: { note: "x" } }, USER);
+      await chokePoint.updateRelation({ ...fileEdge(fx), metadata: { note: "y" } }, USER);
 
-      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "on" });
-    });
-
-    it("a system edge write leaves the link on", async () => {
-      const { file, alpha, projectsProperty } = await setup();
-      await link(file.id, "projects");
-
-      await chokePoint.createRelation({
-        relationPropertyId: projectsProperty.id,
-        callerItemId: file.id,
-        targetItemId: alpha.id,
-      });
-
-      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "on" });
-    });
-
-    it("announces the item whose link state changed after the commit", async () => {
-      const { files, file, alpha, projectsProperty } = await setup();
-      await link(file.id, "projects");
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      try {
-        await withTransaction(pool, async (client) => {
-          await createRelationWithClient(
-            client,
-            { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
-            undefined,
-            USER,
-          );
-          expect(events).toEqual([]);
-        });
-      } finally {
-        setInvalidationHook(() => {});
-      }
-
-      expect(events).toContainEqual(
-        expect.objectContaining({
-          scope: "item",
-          databaseId: files.id,
-          itemId: file.id,
-          op: "update",
-          userId: undefined,
-        }),
-      );
-    });
-
-    it("rolls back the edge and link without publishing an item invalidation", async () => {
-      const { file, alpha, projectsProperty } = await setup();
-      await link(file.id, "projects");
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      try {
-        await expect(
-          withTransaction(pool, async (client) => {
-            await createRelationWithClient(
-              client,
-              { relationPropertyId: projectsProperty.id, callerItemId: file.id, targetItemId: alpha.id },
-              undefined,
-              USER,
-            );
-            expect(events).toEqual([]);
-            throw new Error("abort relation");
-          }),
-        ).rejects.toThrow("abort relation");
-        expect(events).toEqual([]);
-      } finally {
-        setInvalidationHook(() => {});
-      }
-      expect(await linkOf(file.id, "projects")).toMatchObject({ state: "on" });
-      expect(await chokePoint.listItemRelations(file.id, projectsProperty.id)).toEqual([]);
+      expect(await linkOf(fx.file.id, "projects")).toMatchObject({ state: "on" });
     });
   });
 
   describe("valueLinks handoff", () => {
     it.each([
-      ["timeFrom", "missing"],
-      ["timeFrom", "broken"],
-      ["timeFrom", "on"],
-      ["timeTo", "missing"],
-      ["timeTo", "broken"],
-      ["timeTo", "on"],
-    ] as const)("enforces date-off Tasks handoff when the %s link is %s", async (missingKey, state) => {
-      await seedSystem(pool);
-      const tenant = getTenantZeroId();
-      await withRuntimePool(async (runtime) => {
-        const cp = createChokePoint(runtime);
-        const task = await runInTenant(tenant, async () => {
-          const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
-          if (!db) throw new Error("Missing Tasks database");
-          return cp.createItem({
-            databaseId: db.id,
-            properties: { name: "Timed", date: "2026-10-13", timeFrom: "10:00", timeTo: "11:00" },
-          });
-        });
-        await withTenantTransaction(runtime, tenant, async (client) => {
-          for (const propertyKey of ["date", "timeFrom", "timeTo"].filter((key) => key !== missingKey)) {
-            await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
-          }
-          if (state !== "missing") {
-            await insertValueLink(client, {
-              itemId: task.id,
-              propertyKey: missingKey,
-              ruleKey: "test",
-              sources: [],
-              ...(state === "broken"
-                ? { state: "broken" as const, brokenBy: "user" as const, brokenAt: new Date("2026-01-01T00:00:00Z") }
-                : {}),
-            });
-          }
-        });
-        const heartbeat = await withTenantTransaction(runtime, tenant, async (client) => {
-          const project = await client.query<{ id: string }>(
-            "SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.key = 'projects' LIMIT 1",
+      ["timeFrom", "missing", "timed"],
+      ["timeFrom", "broken", "timed"],
+      ["timeFrom", "on", "timed"],
+      ["timeTo", "missing", "timed"],
+      ["timeTo", "broken", "timed"],
+      ["timeTo", "on", "timed"],
+      ["timeFrom", "missing", "undated"],
+      ["timeTo", "missing", "undated"],
+    ] as const)(
+      "enforces the date-off Tasks handoff when the %s link is %s on a %s task",
+      async (key, state, shape) => {
+        await withSeededTasks(async (runtime, cp, tasksId) => {
+          const tenant = getTenantZeroId();
+          const properties =
+            shape === "timed"
+              ? { name: "Timed", date: "2026-10-13", timeFrom: "10:00", timeTo: "11:00" }
+              : { name: "Undated" };
+          const task = await runInTenant(tenant, () => cp.createItem({ databaseId: tasksId, properties }));
+          await linkIn(
+            runtime,
+            tenant,
+            task.id,
+            ["date", "timeFrom", "timeTo"].filter((entry) => entry !== key),
           );
-          if (!project.rows[0]) throw new Error("Missing seeded project");
-          return schedulerStore.createHeartbeat(client, {
-            projectItemId: project.rows[0].id,
-            name: "Dated date-off probe",
-            rule: { kind: "onItemEvent", databaseId: task.databaseId, event: "update" },
-            actionId: "noop",
-          });
-        });
-        const jobKey = schedulerStore.heartbeatFireJobKey(heartbeat.id, task.id);
-        const readJobs = () =>
-          pool.query<{ key: string | null; locked_at: Date | null; attempts: number; max_attempts: number }>(
-            "SELECT key, locked_at, attempts, max_attempts FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
+          if (state !== "missing") await linkIn(runtime, tenant, task.id, key, { broken: state === "broken" });
+
+          await expectHandoffTaskWrite(
+            runtime,
+            task,
+            { date: null },
+            state === "on" ? { date: null, timeFrom: null, timeTo: null, time: null } : "refused",
           );
-        const beforeJobs = (await readJobs()).rows;
-        expect(beforeJobs.some((row) => row.key === jobKey)).toBe(false);
-        const beforeItem = await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id));
-        const beforeStoredItem = await readStoredItem(runtime, tenant, task.databaseId, task.id);
-        const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
-        const events: InvalidationEvent[] = [];
-        const enqueue = vi.spyOn(queue, "enqueueJob");
-        setInvalidationHook((event) => events.push(event));
-        try {
-          let writeClient: PoolClient | undefined;
-          const write = () =>
-            runInTenant(tenant, () =>
-              withTransaction(runtime, (client) => {
-                writeClient = client;
-                return updateItemWithClient(
-                  client,
-                  { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
-                  { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                );
-              }),
-            );
-          if (state === "on") {
-            const result = await write();
-            expect(result.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
-            expect((await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id)))?.properties).toMatchObject({
-              date: null,
-              timeFrom: null,
-              timeTo: null,
-              time: null,
-            });
-            expect((await readJobs()).rows).toContainEqual({
-              key: jobKey,
-              locked_at: null,
-              attempts: 0,
-              max_attempts: 3,
-            });
-            expect(writeClient).toBeDefined();
-            expect(enqueue).toHaveBeenCalledWith(
-              writeClient,
-              queue.CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE,
-              { heartbeatId: heartbeat.id, itemId: task.id },
-              expect.objectContaining({ jobKey }),
-            );
-            expect(events).toEqual([expect.objectContaining({ scope: "item", itemId: task.id, op: "update" })]);
-          } else {
-            await expect(write()).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-            expect(await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id))).toEqual(beforeItem);
-            expect(await readStoredItem(runtime, tenant, task.databaseId, task.id)).toEqual(beforeStoredItem);
-            expect((await readJobs()).rows).toEqual(beforeJobs);
-            expect(enqueue).not.toHaveBeenCalled();
-            expect(events).toEqual([]);
-          }
-          expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
-        } finally {
-          enqueue.mockRestore();
-          setInvalidationHook(() => {});
-        }
-      });
-    });
+        });
+      },
+      30000,
+    );
 
     it.each([
       ["timeFrom", "missing"],
@@ -1236,16 +945,12 @@ describe("value link state on writes (issue #1516)", () => {
     ] as const)(
       "requires an active link for a retained legacy %s canonicalized by a date patch: %s",
       async (key, state) => {
-        await seedSystem(pool);
-        const tenant = getTenantZeroId();
-        await withRuntimePool(async (runtime) => {
-          const cp = createChokePoint(runtime);
-          const db = (await runInTenant(tenant, () => cp.listDatabases())).find((entry) => entry.key === "tasks");
-          if (!db) throw new Error("Missing Tasks database");
+        await withSeededTasks(async (runtime, _cp, tasksId) => {
+          const tenant = getTenantZeroId();
           // Historical valid noncanonical value; current production writes normalize it on entry.
           const task = await withTenantTransaction(runtime, tenant, (client) =>
             itemsStore.insertItem(client, {
-              databaseId: db.id,
+              databaseId: tasksId,
               properties: {
                 name: "Old",
                 date: "2026-10-13",
@@ -1255,456 +960,141 @@ describe("value link state on writes (issue #1516)", () => {
               },
             }),
           );
-          await withTenantTransaction(runtime, tenant, async (client) => {
-            await insertValueLink(client, { itemId: task.id, propertyKey: "date", ruleKey: "test", sources: [] });
-            if (state !== "missing")
-              await insertValueLink(client, {
-                itemId: task.id,
-                propertyKey: key,
-                ruleKey: "test",
-                sources: [],
-                ...(state === "broken"
-                  ? { state: "broken" as const, brokenBy: "user" as const, brokenAt: new Date("2026-01-01T00:00:00Z") }
-                  : {}),
-              });
-          });
-          const heartbeat = await withTenantTransaction(runtime, tenant, async (client) => {
-            const project = await client.query<{ id: string }>(
-              "SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.key = 'projects' LIMIT 1",
-            );
-            if (!project.rows[0]) throw new Error("Missing seeded project");
-            return schedulerStore.createHeartbeat(client, {
-              projectItemId: project.rows[0].id,
-              name: "Task update probe",
-              rule: { kind: "onItemEvent", databaseId: db.id, event: "update" },
-              actionId: "noop",
-            });
-          });
-          const jobKey = schedulerStore.heartbeatFireJobKey(heartbeat.id, task.id);
-          const readJobs = () =>
-            pool.query<{ key: string | null; locked_at: Date | null; attempts: number; max_attempts: number }>(
-              "SELECT key, locked_at, attempts, max_attempts FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
-            );
-          const beforeJobs = (await readJobs()).rows;
-          expect(beforeJobs.some((row) => row.key === jobKey)).toBe(false);
-          const beforeItem = await readStoredItem(runtime, tenant, db.id, task.id);
-          if (!beforeItem) throw new Error("Missing task before update");
-          const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
-          const advanced = await pool.query<{ advanced: boolean }>(
-            "SELECT clock_timestamp() > $1::timestamptz AS advanced",
-            [beforeItem.updated_at],
-          );
-          expect(advanced.rows[0]?.advanced).toBe(true);
-          const events: InvalidationEvent[] = [];
-          const enqueue = vi.spyOn(queue, "enqueueJob");
-          setInvalidationHook((event) => events.push(event));
-          try {
-            let writeClient: PoolClient | undefined;
-            const write = () =>
-              runInTenant(tenant, () =>
-                withTransaction(runtime, (client) => {
-                  writeClient = client;
-                  return updateItemWithClient(
-                    client,
-                    { databaseId: db.id, itemId: task.id, propertiesPatch: { date: "2026-10-14" } },
-                    { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                  );
-                }),
-              );
-            if (state === "on") {
-              const result = await write();
-              expect(result.properties).toMatchObject({
-                date: "2026-10-14",
-                timeFrom: "09:00",
-                timeTo: key === "timeTo" ? null : "10:00",
-                time: key === "timeTo" ? "09:00" : "09:00–10:00",
-              });
-              const afterItem = await readStoredItem(runtime, tenant, db.id, task.id);
-              if (!afterItem) throw new Error("Missing task after update");
-              expect(afterItem).toEqual({
-                ...beforeItem,
-                properties: afterItem.properties,
-                updated_at: afterItem.updated_at,
-              });
-              const persistedProperties: unknown = JSON.parse(afterItem.properties);
-              expect(persistedProperties).toEqual({
-                name: "Old",
-                date: "2026-10-14",
-                // Issue #1780: a write that names `date` stores the effective day; with no host event it is the date.
-                effectiveDate: "2026-10-14",
-                timeFrom: "09:00",
-                timeTo: key === "timeTo" ? null : "10:00",
-                time: key === "timeTo" ? "09:00" : "09:00–10:00",
-              });
-              expect(afterItem.updated_at).not.toBe(beforeItem.updated_at);
-              expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
-              expect((await readJobs()).rows).toContainEqual({
-                key: jobKey,
-                locked_at: null,
-                attempts: 0,
-                max_attempts: 3,
-              });
-              expect(writeClient).toBeDefined();
-              expect(enqueue).toHaveBeenCalledWith(
-                writeClient,
-                queue.CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE,
-                { heartbeatId: heartbeat.id, itemId: task.id },
-                expect.objectContaining({ jobKey }),
-              );
-              expect(events).toEqual([expect.objectContaining({ scope: "item", itemId: task.id, op: "update" })]);
-            } else {
-              await expect(write()).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-              expect(await readStoredItem(runtime, tenant, db.id, task.id)).toEqual(beforeItem);
-              expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
-              expect((await readJobs()).rows).toEqual(beforeJobs);
-              expect(enqueue).not.toHaveBeenCalled();
-              expect(events).toEqual([]);
-            }
-          } finally {
-            enqueue.mockRestore();
-            setInvalidationHook(() => {});
-          }
-        });
-      },
-      30000,
-    );
-
-    it.each(["09:00", null] as const)(
-      "does not require a link for an unchanged omitted canonical time: %s",
-      async (timeFrom) => {
-        await seedSystem(pool);
-        const tenant = getTenantZeroId();
-        await withRuntimePool(async (runtime) => {
-          const cp = createChokePoint(runtime);
-          const db = (await runInTenant(tenant, () => cp.listDatabases())).find((entry) => entry.key === "tasks");
-          if (!db) throw new Error("Missing Tasks database");
-          const task = await runInTenant(tenant, () =>
-            cp.createItem({
-              databaseId: db.id,
-              properties: { name: "Task", date: "2026-10-13", timeFrom },
-            }),
-          );
-          await withTenantTransaction(runtime, tenant, (client) =>
-            insertValueLink(client, { itemId: task.id, propertyKey: "date", ruleKey: "test", sources: [] }),
-          );
-          const result = await runInTenant(tenant, () =>
-            withTransaction(runtime, (client) =>
-              updateItemWithClient(
-                client,
-                { databaseId: db.id, itemId: task.id, propertiesPatch: { date: "2026-10-14" } },
-                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-              ),
-            ),
-          );
-          expect(result.properties).toMatchObject({ date: "2026-10-14", timeFrom, time: timeFrom });
-          const links = await readStoredLinks(runtime, tenant, task.id);
-          expect(links.map((entry) => [entry.property_key, entry.state])).toEqual([["date", "on"]]);
-        });
-      },
-      30000,
-    );
-
-    it.each(["10:00", null] as const)(
-      "does not require an omitted unchanged end-time link: %s",
-      async (timeTo) => {
-        await seedSystem(pool);
-        const tenant = getTenantZeroId();
-        await withRuntimePool(async (runtime) => {
-          const cp = createChokePoint(runtime);
-          const db = (await runInTenant(tenant, () => cp.listDatabases())).find((entry) => entry.key === "tasks");
-          if (!db) throw new Error("Missing Tasks database");
-          const task = await runInTenant(tenant, () =>
-            cp.createItem({
-              databaseId: db.id,
-              properties: { name: "Task", date: "2026-10-13", timeFrom: "09:00", timeTo },
-            }),
-          );
-          await withTenantTransaction(runtime, tenant, (client) =>
-            insertValueLink(client, { itemId: task.id, propertyKey: "date", ruleKey: "test", sources: [] }),
-          );
-          const links = await readStoredLinks(runtime, tenant, task.id);
-          await runInTenant(tenant, () =>
-            withTransaction(runtime, (client) =>
-              updateItemWithClient(
-                client,
-                { databaseId: db.id, itemId: task.id, propertiesPatch: { date: "2026-10-14" } },
-                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-              ),
-            ),
-          );
-          const after = await readStoredItem(runtime, tenant, db.id, task.id);
-          if (!after) throw new Error("Missing task after update");
-          const properties: unknown = JSON.parse(after.properties);
-          expect(properties).toMatchObject({
+          await linkIn(runtime, tenant, task.id, "date");
+          if (state !== "missing") await linkIn(runtime, tenant, task.id, key, { broken: state === "broken" });
+          const canonical = {
+            name: "Old",
             date: "2026-10-14",
+            // A write that names `date` stores the effective day; with no host event it is the date.
+            effectiveDate: "2026-10-14",
             timeFrom: "09:00",
-            timeTo,
-            time: timeTo === null ? "09:00" : "09:00–10:00",
-          });
-          expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(links);
-          expect(links.map((entry) => entry.property_key)).toEqual(["date"]);
+            timeTo: key === "timeTo" ? null : "10:00",
+            time: key === "timeTo" ? "09:00" : "09:00–10:00",
+          };
+
+          const before = await expectHandoffTaskWrite(
+            runtime,
+            task,
+            { date: "2026-10-14" },
+            state === "on" ? canonical : "refused",
+          );
+
+          if (state !== "on") return;
+          const after = await readStoredItem(runtime, tenant, tasksId, task.id);
+          expect(after).toEqual({ ...before.item, properties: after.properties, updated_at: after.updated_at });
+          const stored: unknown = JSON.parse(after.properties);
+          expect(stored).toEqual(canonical);
+          expect(after.updated_at).not.toBe(before.item.updated_at);
         });
       },
       30000,
     );
 
-    it("allows a date-off Tasks transform when every added user key has an on link", async () => {
-      await seedSystem(pool);
-      const tenant = getTenantZeroId();
-      await withRuntimePool(async (runtime) => {
-        const cp = createChokePoint(runtime);
-        const task = await runInTenant(tenant, async () => {
-          const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
-          if (!db) throw new Error("Missing Tasks database");
-          return cp.createItem({
-            databaseId: db.id,
-            properties: { name: "Timed", date: "2026-10-13", timeFrom: "10:00", timeTo: "11:00" },
-          });
-        });
-        await withTenantTransaction(runtime, tenant, async (client) => {
-          for (const propertyKey of ["date", "timeFrom", "timeTo"]) {
-            await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
-          }
-        });
-        const result = await runInTenant(tenant, () =>
-          withTransaction(runtime, (client) =>
-            updateItemWithClient(
-              client,
-              { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
-              { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-            ),
-          ),
-        );
-        expect(result.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
-        const links = await withTenantTransaction(runtime, tenant, (client) =>
-          listValueLinksByItemIds(client, [task.id]),
-        );
-        expect(links.map((entry) => entry.state)).toEqual(["on", "on", "on"]);
-      });
-    });
+    it.each([
+      ["start time 09:00", { timeFrom: "09:00" }, { timeFrom: "09:00", time: "09:00" }],
+      ["start time null", { timeFrom: null }, { timeFrom: null, time: null }],
+      [
+        "end time 10:00",
+        { timeFrom: "09:00", timeTo: "10:00" },
+        { timeFrom: "09:00", timeTo: "10:00", time: "09:00–10:00" },
+      ],
+      ["end time null", { timeFrom: "09:00", timeTo: null }, { timeFrom: "09:00", timeTo: null, time: "09:00" }],
+    ] as const)(
+      "does not require a link for an unchanged omitted canonical %s",
+      async (_name, times, expected) => {
+        await withSeededTasks(async (runtime, cp, tasksId) => {
+          const tenant = getTenantZeroId();
+          const task = await runInTenant(tenant, () =>
+            cp.createItem({ databaseId: tasksId, properties: { name: "Task", date: "2026-10-13", ...times } }),
+          );
+          await linkIn(runtime, tenant, task.id, "date");
 
-    it.each(["timeFrom", "timeTo"] as const)(
-      "requires handoff for unchanged transform-added null %s",
-      async (missingKey) => {
-        await seedSystem(pool);
-        const tenant = getTenantZeroId();
-        await withRuntimePool(async (runtime) => {
-          const cp = createChokePoint(runtime);
-          const task = await runInTenant(tenant, async () => {
-            const db = (await cp.listDatabases()).find((entry) => entry.key === "tasks");
-            if (!db) throw new Error("Missing Tasks database");
-            return cp.createItem({ databaseId: db.id, properties: { name: "Undated" } });
-          });
-          await withTenantTransaction(runtime, tenant, async (client) => {
-            for (const propertyKey of ["date", "timeFrom", "timeTo"].filter((key) => key !== missingKey)) {
-              await insertValueLink(client, { itemId: task.id, propertyKey, ruleKey: "test", sources: [] });
-            }
-          });
-          const heartbeat = await withTenantTransaction(runtime, tenant, async (client) => {
-            const project = await client.query<{ id: string }>(
-              "SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.key = 'projects' LIMIT 1",
-            );
-            if (!project.rows[0]) throw new Error("Missing seeded project");
-            return schedulerStore.createHeartbeat(client, {
-              projectItemId: project.rows[0].id,
-              name: "Date-off probe",
-              rule: { kind: "onItemEvent", databaseId: task.databaseId, event: "update" },
-              actionId: "noop",
-            });
-          });
-          const jobKey = schedulerStore.heartbeatFireJobKey(heartbeat.id, task.id);
-          const readJobs = () =>
-            pool.query<{ key: string | null; locked_at: Date | null; attempts: number; max_attempts: number }>(
-              "SELECT key, locked_at, attempts, max_attempts FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
-            );
-          const beforeJobs = (await readJobs()).rows;
-          expect(beforeJobs.some((row) => row.key === jobKey)).toBe(false);
-          const beforeItem = await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id));
-          const beforeStoredItem = await readStoredItem(runtime, tenant, task.databaseId, task.id);
-          const beforeLinks = await readStoredLinks(runtime, tenant, task.id);
-          const events: InvalidationEvent[] = [];
-          const enqueue = vi.spyOn(queue, "enqueueJob");
-          setInvalidationHook((event) => events.push(event));
-          try {
-            await expect(
-              runInTenant(tenant, () =>
-                withTransaction(runtime, (client) =>
-                  updateItemWithClient(
-                    client,
-                    { databaseId: task.databaseId, itemId: task.id, propertiesPatch: { date: null } },
-                    { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                  ),
-                ),
-              ),
-            ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-            expect(await runInTenant(tenant, () => cp.getItem(task.databaseId, task.id))).toEqual(beforeItem);
-            expect(await readStoredItem(runtime, tenant, task.databaseId, task.id)).toEqual(beforeStoredItem);
-            expect(await readStoredLinks(runtime, tenant, task.id)).toEqual(beforeLinks);
-            expect((await readJobs()).rows).toEqual(beforeJobs);
-            expect(enqueue).not.toHaveBeenCalled();
-            expect(events).toEqual([]);
-          } finally {
-            enqueue.mockRestore();
-            setInvalidationHook(() => {});
-          }
+          await expectHandoffTaskWrite(runtime, task, { date: "2026-10-14" }, { date: "2026-10-14", ...expected });
+
+          expect((await readStoredLinks(runtime, tenant, task.id)).map((entry) => entry.property_key)).toEqual([
+            "date",
+          ]);
         });
+      },
+      30000,
+    );
+
+    it.each(["missing", "broken"] as const)(
+      "rejects every protected relation write with a %s link row and writes no edge",
+      async (state) => {
+        const fx = await setup();
+        if (state === "broken") await link(fx.file.id, "projects", "broken");
+        for (const operation of ["create", "update", "delete"] as const) {
+          await expect(
+            withTransaction(pool, (client) => protectedWrite(operation, client, fileEdge(fx))),
+          ).rejects.toMatchObject({ code: "owner_violation" });
+        }
+        const { rows } = await pool.query<{ "?column?": number }>("SELECT 1 FROM item_relations");
+        expect(rows).toHaveLength(0);
       },
     );
 
-    async function relationWrites(client: PoolClient, fx: Awaited<ReturnType<typeof setup>>) {
-      const edge = { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id };
-      return {
-        create: () => createRelationWithClient(client, edge, VALUE_LINKS),
-        update: () => updateRelationWithClient(client, { ...edge, metadata: {} }, VALUE_LINKS),
-        remove: () => deleteRelationWithClient(client, edge, VALUE_LINKS),
-      };
-    }
-
-    it("rejects a user-owned relation write without a link row", async () => {
-      const fx = await setup();
-      await withTransaction(pool, async (client) => {
-        const writes = await relationWrites(client, fx);
-        await expect(writes.create()).rejects.toMatchObject({ code: "owner_violation" });
-      });
-      const { rows } = await pool.query<{ "?column?": number }>("SELECT 1 FROM item_relations");
-      expect(rows).toHaveLength(0);
-    });
-
-    it("rejects every relation write with a broken row", async () => {
-      const fx = await setup();
-      await link(fx.file.id, "projects", "broken");
-      for (const name of ["create", "update", "remove"] as const) {
-        await withTransaction(pool, async (client) => {
-          const writes = await relationWrites(client, fx);
-          await expect(writes[name]()).rejects.toMatchObject({ code: "owner_violation" });
-        });
-      }
-    });
-
-    it("writes with an on row and leaves the state on", async () => {
+    it("writes protected relations with an on row and leaves the state on", async () => {
       const fx = await setup();
       await link(fx.file.id, "projects");
 
       await withTransaction(pool, async (client) => {
-        const writes = await relationWrites(client, fx);
-        await writes.create();
-        await writes.remove();
+        await protectedWrite("create", client, fileEdge(fx));
+        await protectedWrite("delete", client, fileEdge(fx));
       });
 
       expect(await linkOf(fx.file.id, "projects")).toMatchObject({ state: "on", brokenBy: null });
     });
 
-    it("rejects a plain property write without an on row and writes nothing", async () => {
-      const { files, file } = await setup();
-      await expect(
-        withTransaction(pool, (client) =>
-          updateItemWithClient(
-            client,
-            { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "z.pdf" } },
-            { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS },
-          ),
-        ),
-      ).rejects.toMatchObject({ code: "owner_violation" });
+    it.each([false, true])(
+      "a protected plain property write with an on row (%s) is stored and keeps it on",
+      async (linked) => {
+        const { files, file } = await setup();
+        if (linked) await link(file.id, "name");
 
-      const { rows } = await pool.query<{ name: string | null }>(
-        "SELECT properties->>'name' AS name FROM items WHERE id = $1",
-        [file.id],
-      );
-      expect(rows).toEqual([{ name: "a.pdf" }]);
-    });
+        const write = withTransaction(pool, (client) =>
+          protectedUpdate(client, { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "z.pdf" } }),
+        );
 
-    it("writes a plain property with an on row and leaves the state on", async () => {
-      const { files, file } = await setup();
-      await link(file.id, "name");
-
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          { databaseId: files.id, itemId: file.id, propertiesPatch: { name: "z.pdf" } },
-          { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS },
-        ),
-      );
-
-      expect(await linkOf(file.id, "name")).toMatchObject({ state: "on" });
-      const { rows } = await pool.query<{ name: string | null }>(
-        "SELECT properties->>'name' AS name FROM items WHERE id = $1",
-        [file.id],
-      );
-      expect(rows).toEqual([{ name: "z.pdf" }]);
-    });
+        if (linked) await write;
+        else await expect(write).rejects.toMatchObject({ code: "owner_violation" });
+        const { rows } = await pool.query<{ name: string | null }>(
+          "SELECT properties->>'name' AS name FROM items WHERE id = $1",
+          [file.id],
+        );
+        expect(rows).toEqual([{ name: linked ? "z.pdf" : "a.pdf" }]);
+        if (linked) expect(await linkOf(file.id, "name")).toMatchObject({ state: "on" });
+      },
+    );
   });
 
-  describe("tenants", () => {
+  describe("protected writes on runtime connections", () => {
     it("keeps the Inbox missing-source error after a real purge", async () => {
       await seedSystem(pool);
       const tenant = getTenantZeroId();
       await withRuntimePool(async (runtime) => {
         const cp = createChokePoint(runtime);
-        const dbs = await runInTenant(tenant, () => cp.listDatabases());
-        const inbox = dbs.find((db) => db.ownerModuleId === "inbox");
-        const types = dbs.find((db) => db.ownerModuleId === "inboxItemTypes");
-        if (!inbox || !types) throw new Error("Missing Inbox databases");
-        const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
-        if (!property) throw new Error("Missing Inbox type relation");
-        const fixture = await withTenantTransaction(runtime, tenant, async (client) => {
-          const type = await createInboxTypeWithClient(client, {
-            inboxItemTypesDatabaseId: types.id,
-            name: "Page",
-            emoji: "P",
-            processingMethod: "pageContent",
-          });
-          const item = await createInboxItemWithClient(client, {
-            inboxDatabaseId: inbox.id,
-            date: "2026-10-01",
-            time: "09:00",
-            text: "Source",
-            type: type.id,
-          });
-          await insertValueLink(client, { itemId: item.id, propertyKey: "type", ruleKey: "test", sources: [] });
-          return { item, type };
+        const inbox = await seededInbox(cp);
+        const { item, type } = await typedInboxItem(runtime, inbox);
+        const edge = { relationPropertyId: inbox.property.id, callerItemId: item.id, targetItemId: type.id };
+        await runInTenant(tenant, () => cp.softDeleteItem(inbox.inbox.id, item.id));
+        await runInTenant(tenant, () => cp.purgeExpiredTrashSubtree(item.id, new Date(Date.now() + 60000)));
+        // The purge removes the item's own link rows, so the value-link process no longer holds the `type` handoff and is
+        // refused before lookup; a user write still gets the missing-source error.
+        expect(await linksIn(runtime, tenant, item.id)).toEqual([]);
+        const events = recordEvents();
+
+        await expect(inTx(runtime, tenant, (client) => protectedWrite("delete", client, edge))).rejects.toMatchObject({
+          status: 403,
+          code: "owner_violation",
         });
-        await runInTenant(tenant, () => cp.softDeleteItem(inbox.id, fixture.item.id));
-        await runInTenant(tenant, () => cp.purgeExpiredTrashSubtree(fixture.item.id, new Date(Date.now() + 60000)));
-        const links = await withTenantTransaction(runtime, tenant, (client) =>
-          listValueLinksByItemIds(client, [fixture.item.id]),
-        );
-        // Issue #1656: the purge removes the purged item's own link rows, so the value-link process no
-        // longer holds the `type` handoff and is refused before the item is looked up. A user write still
-        // gets the missing-source error.
-        expect(links).toEqual([]);
-        const events: InvalidationEvent[] = [];
-        setInvalidationHook((event) => events.push(event));
-        try {
-          await expect(
-            runInTenant(tenant, () =>
-              withTransaction(runtime, (client) =>
-                deleteRelationWithClient(
-                  client,
-                  { relationPropertyId: property.id, callerItemId: fixture.item.id, targetItemId: fixture.type.id },
-                  VALUE_LINKS,
-                  SYSTEM_WRITER,
-                ),
-              ),
-            ),
-          ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-          await expect(
-            runInTenant(tenant, () =>
-              cp.deleteRelation({
-                relationPropertyId: property.id,
-                callerItemId: fixture.item.id,
-                targetItemId: fixture.type.id,
-              }),
-            ),
-          ).rejects.toMatchObject({ status: 404, code: "not_found" });
-          expect(events).toEqual([]);
-          expect(
-            await withTenantTransaction(runtime, tenant, (client) =>
-              listValueLinksByItemIds(client, [fixture.item.id]),
-            ),
-          ).toEqual(links);
-        } finally {
-          setInvalidationHook(() => {});
-        }
+        await expect(runInTenant(tenant, () => cp.deleteRelation(edge))).rejects.toMatchObject({
+          status: 404,
+          code: "not_found",
+        });
+
+        expect(events).toEqual([]);
+        expect(await linksIn(runtime, tenant, item.id)).toEqual([]);
       });
     });
 
@@ -1714,106 +1104,31 @@ describe("value link state on writes (issue #1516)", () => {
       await withRuntimePool(async (holderPool) =>
         withRuntimePool(async (contenderPool) => {
           const cp = createChokePoint(holderPool);
-          const dbs = await runInTenant(tenant, () => cp.listDatabases());
-          const inbox = dbs.find((db) => db.ownerModuleId === "inbox");
-          const types = dbs.find((db) => db.ownerModuleId === "inboxItemTypes");
-          if (!inbox || !types) throw new Error("Missing Inbox databases");
-          const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
-          if (!property) throw new Error("Missing Inbox type relation");
-          const fixture = await withTenantTransaction(holderPool, tenant, async (client) => {
-            const type = await createInboxTypeWithClient(client, {
-              inboxItemTypesDatabaseId: types.id,
-              name: "Page",
-              emoji: "P",
-              processingMethod: "pageContent",
-            });
-            const item = await createInboxItemWithClient(client, {
-              inboxDatabaseId: inbox.id,
-              date: "2026-10-01",
-              time: "09:00",
-              text: "Source",
-              type: type.id,
-            });
-            await insertValueLink(client, { itemId: item.id, propertyKey: "type", ruleKey: "test", sources: [] });
-            return { item, type };
-          });
-          await runInTenant(tenant, () => cp.softDeleteItem(inbox.id, fixture.item.id));
-          const edge = {
-            relationPropertyId: property.id,
-            callerItemId: fixture.item.id,
-            targetItemId: fixture.type.id,
-          };
-          const events: InvalidationEvent[] = [];
-          setInvalidationHook((event) => events.push(event));
-          const beforeJobs = await pool.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM graphile_worker.jobs",
+          const inbox = await seededInbox(cp);
+          const { item, type } = await typedInboxItem(holderPool, inbox);
+          await runInTenant(tenant, () => cp.softDeleteItem(inbox.inbox.id, item.id));
+          const edge = { relationPropertyId: inbox.property.id, callerItemId: item.id, targetItemId: type.id };
+          const definition = await definitionOf(holderPool, tenant, inbox.property.id);
+          const beforeEdges = await storedEdges(holderPool, tenant, definition.id, item.id);
+          const beforeJobs = await jobCount();
+          const events = recordEvents();
+
+          await whileHolding(
+            holderPool,
+            tenant,
+            (client) => deleteRelationWithClient(client, edge, undefined, USER),
+            async (holderPid) => {
+              expect(await rowLockedBy("items", item.id, holderPid)).toBe(true);
+              await expect(
+                inTx(contenderPool, tenant, (client) => protectedWrite("delete", client, edge)),
+              ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+              expect(events).toEqual([]);
+              expect(await jobCount()).toBe(beforeJobs);
+              expect(await storedEdges(contenderPool, tenant, definition.id, item.id)).toEqual(beforeEdges);
+            },
           );
-          const definition = await withTenantTransaction(holderPool, tenant, (client) =>
-            relationsStore.getRelationDefinitionByPropertyId(client, property.id),
-          );
-          if (!definition) throw new Error("Missing Inbox relation definition");
-          const beforeEdges = await withTenantTransaction(holderPool, tenant, (client) =>
-            relationsStore.listRelationsForItem(client, definition.id, fixture.item.id),
-          );
-          const held = barrier();
-          const release = barrier();
-          let holderPid: number | undefined;
-          let contenderPid: number | undefined;
-          const holder = runInTenant(tenant, () =>
-            withTransaction(holderPool, async (client) => {
-              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              await deleteRelationWithClient(client, edge, undefined, USER);
-              held.resolve();
-              await bounded(release.promise);
-            }),
-          ).then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
-          );
-          let failure: { error: unknown } | undefined;
-          try {
-            await bounded(held.promise);
-            const lock = await pool.query<{ held: boolean }>(
-              `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
-              [fixture.item.id, holderPid],
-            );
-            expect(lock.rows[0]?.held).toBe(true);
-            await expect(
-              runInTenant(tenant, () =>
-                withTransaction(contenderPool, async (client) => {
-                  contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                  return deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-                }),
-              ),
-            ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
-            expect(holderPid).toBeTypeOf("number");
-            expect(contenderPid).toBeTypeOf("number");
-            expect(events).toEqual([]);
-            expect(
-              await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs"),
-            ).toMatchObject({ rows: beforeJobs.rows });
-            expect(
-              await withTenantTransaction(contenderPool, tenant, (client) =>
-                relationsStore.listRelationsForItem(client, definition.id, fixture.item.id),
-              ),
-            ).toEqual(beforeEdges);
-          } catch (error) {
-            failure = { error };
-          } finally {
-            release.resolve();
-            try {
-              requireSuccessful(await settleOwned(holder, () => holderPid));
-            } catch (error) {
-              failure = combineFailure(failure, [error], "Test and holder cleanup failed");
-            } finally {
-              setInvalidationHook(() => {});
-            }
-          }
-          if (failure !== undefined) throwFailure(failure.error);
-          const links = await withTenantTransaction(holderPool, tenant, (client) =>
-            listValueLinksByItemIds(client, [fixture.item.id]),
-          );
-          expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+
+          expect((await linksIn(holderPool, tenant, item.id))[0]).toMatchObject({ state: "broken", brokenBy: "user" });
         }),
       );
     }, 30000);
@@ -1822,130 +1137,113 @@ describe("value link state on writes (issue #1516)", () => {
       await seedSystem(pool);
       const tenant = getTenantZeroId();
       await withRuntimePool(async (runtime) => {
-        const cp = createChokePoint(runtime);
-        const dbs = await runInTenant(tenant, () => cp.listDatabases());
-        const inbox = dbs.find((db) => db.ownerModuleId === "inbox");
-        const types = dbs.find((db) => db.ownerModuleId === "inboxItemTypes");
-        if (!inbox || !types) throw new Error("Missing Inbox databases");
-        const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
-        if (!property) throw new Error("Missing Inbox type relation");
-        const target = await withTenantTransaction(runtime, tenant, (client) =>
-          createInboxTypeWithClient(client, {
-            inboxItemTypesDatabaseId: types.id,
-            name: "Page",
-            emoji: "P",
-            processingMethod: "pageContent",
-          }),
-        );
+        const inbox = await seededInbox(createChokePoint(runtime));
+        const target = await withTenantTransaction(runtime, tenant, (client) => inbox.createType(client));
         const spy = vi.spyOn(valueLinksStore, "lockOnValueLink");
-        try {
-          await runInTenant(tenant, () =>
-            withTransaction(runtime, (client) =>
-              assertRelationTargetLinkableWithClient(
-                client,
-                { relationPropertyId: property.id, targetItemId: target.id },
-                VALUE_LINKS,
-                SYSTEM_WRITER,
-              ),
-            ),
-          );
-          expect(spy).not.toHaveBeenCalled();
-        } finally {
-          spy.mockRestore();
-        }
+
+        await inTx(runtime, tenant, (client) =>
+          assertRelationTargetLinkableWithClient(
+            client,
+            { relationPropertyId: inbox.property.id, targetItemId: target.id },
+            VALUE_LINKS,
+            SYSTEM_WRITER,
+          ),
+        );
+
+        expect(spy).not.toHaveBeenCalled();
       });
     });
 
     it("restores nested managed PostgreSQL lock timeouts in stack order", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (runtime) => {
-        const cp = createChokePoint(runtime);
-        const fx = await runInTenant(tenant, () => setup(cp));
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-        );
-        await runInTenant(tenant, () =>
-          withTransaction(runtime, async (client) => {
-            const definition = await relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id);
-            if (!definition) throw new Error("Missing relation definition");
-            await client.query<{ set_config: string }>("SELECT set_config('lock_timeout', $1, true)", ["5s"]);
+        const fx = await runInTenant(tenant, () => setup(createChokePoint(runtime)));
+        await linkIn(runtime, tenant, fx.file.id, "projects");
+        const definition = await definitionOf(runtime, tenant, fx.projectsProperty.id);
+        await inTx(runtime, tenant, async (client) => {
+          await client.query<{ set_config: string }>("SELECT set_config('lock_timeout', $1, true)", ["5s"]);
+          const read = async () =>
+            (await client.query<{ setting: string }>("SELECT current_setting('lock_timeout') AS setting")).rows[0]
+              ?.setting;
+          const before = await read();
+          await withValueLinkRelationAdmission(
+            client,
+            {
+              definitionId: definition.id,
+              itemA: fx.file.id,
+              itemB: fx.alpha.id,
+              callerItemId: fx.file.id,
+              propertyKey: "projects",
+              insert: true,
+            },
+            async () => {},
+            async () => {
+              expect(await read()).toBe("1ms");
+              await protectedWrite("create", client, fileEdge(fx));
+              expect(await read()).toBe("1ms");
+            },
+          );
+          expect(await read()).toBe(before);
+        });
+      });
+    });
+
+    it.each(["0", "5s"])(
+      "restores the effective lock timeout %s after protected success and no-op",
+      async (setting) => {
+        const tenant = await createTestTenant(pool);
+        await withRuntimePool(async (runtime) => {
+          const fx = await runInTenant(tenant, () => setup(createChokePoint(runtime)));
+          await linkIn(runtime, tenant, fx.file.id, "projects");
+          await inTx(runtime, tenant, async (client) => {
+            await client.query<{ set_config: string }>("SELECT set_config('lock_timeout', $1, true)", [setting]);
             const read = async () =>
               (await client.query<{ setting: string }>("SELECT current_setting('lock_timeout') AS setting")).rows[0]
                 ?.setting;
             const before = await read();
-            await withValueLinkRelationAdmission(
-              client,
-              {
-                definitionId: definition.id,
-                itemA: fx.file.id,
-                itemB: fx.alpha.id,
-                callerItemId: fx.file.id,
-                propertyKey: "projects",
-                insert: true,
-              },
-              async () => {},
-              async () => {
-                expect(await read()).toBe("1ms");
-                await createRelationWithClient(
-                  client,
-                  { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
-                  VALUE_LINKS,
-                  SYSTEM_WRITER,
-                );
-                expect(await read()).toBe("1ms");
-              },
-            );
-            expect(await read()).toBe(before);
-          }),
-        );
-      });
-    });
+            for (const [operation, target] of [
+              ["create", fx.alpha],
+              ["create", fx.alpha],
+              ["delete", fx.beta],
+            ] as const) {
+              await protectedWrite(operation, client, fileEdge(fx, target));
+              expect(await read()).toBe(before);
+            }
+          });
+        });
+      },
+    );
 
     it("preserves a non-driver SC001 value through the protected create store", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (runtime) => {
         const cp = createChokePoint(runtime);
         const fx = await runInTenant(tenant, () => setup(cp));
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-        );
+        await linkIn(runtime, tenant, fx.file.id, "projects");
         const spoof = { code: "SC001" };
         const original = relationsStore.createItemRelationReportingInsert;
-        const spy = vi
-          .spyOn(relationsStore, "createItemRelationReportingInsert")
-          .mockImplementation(async (client, input) => {
-            const originalQuery = client.query.bind(client);
-            const query = vi.spyOn(client, "query");
-            // pg's last overload is callback-based; the real invocation here is the promise overload.
-            // eslint-disable-next-line @typescript-eslint/no-misused-promises
-            query.mockImplementationOnce(originalQuery).mockRejectedValueOnce(spoof);
-            try {
-              return await original(client, input);
-            } finally {
-              query.mockRestore();
-            }
-          });
-        try {
-          await expect(
-            runInTenant(tenant, () =>
-              withTransaction(runtime, (client) =>
-                createRelationWithClient(
-                  client,
-                  { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
-                  VALUE_LINKS,
-                  SYSTEM_WRITER,
-                ),
-              ),
-            ),
-          ).rejects.toBe(spoof);
-          expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual([]);
-        } finally {
-          spy.mockRestore();
-        }
+        vi.spyOn(relationsStore, "createItemRelationReportingInsert").mockImplementation(async (client, input) => {
+          const originalQuery = client.query.bind(client);
+          const query = vi.spyOn(client, "query");
+          // pg's last overload is callback-based; the real invocation here is the promise overload.
+          // eslint-disable-next-line @typescript-eslint/no-misused-promises
+          query.mockImplementationOnce(originalQuery).mockRejectedValueOnce(spoof);
+          try {
+            return await original(client, input);
+          } finally {
+            query.mockRestore();
+          }
+        });
+
+        await expect(inTx(runtime, tenant, (client) => protectedWrite("create", client, fileEdge(fx)))).rejects.toBe(
+          spoof,
+        );
+
+        expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual([]);
       });
     });
 
-    it("keeps genuine cardinality violation mapping through protected create", async () => {
+    it("keeps genuine cardinality violation mapping through protected create, and value_link_busy while held", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (runtime) => {
         const cp = createChokePoint(runtime);
@@ -1959,87 +1257,48 @@ describe("value link state on writes (issue #1516)", () => {
             name: "Target",
             cardinality: "one_to_one",
           });
-          const item = await cp.createItem({ databaseId: source.id, properties: {} });
-          const one = await cp.createItem({ databaseId: target.id, properties: {} });
-          const two = await cp.createItem({ databaseId: target.id, properties: {} });
-          const other = await cp.createItem({ databaseId: source.id, properties: {} });
-          const three = await cp.createItem({ databaseId: target.id, properties: {} });
+          const create = (databaseId: string) => cp.createItem({ databaseId, properties: {} });
+          const [item, one, two, other, three] = [
+            await create(source.id),
+            await create(target.id),
+            await create(target.id),
+            await create(source.id),
+            await create(target.id),
+          ];
           await cp.createRelation({ relationPropertyId: property.id, callerItemId: item.id, targetItemId: one.id });
           return { property, item, one, two, other, three };
         });
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, { itemId: fixture.item.id, propertyKey: "target", ruleKey: "test", sources: [] }),
-        );
+        await linkIn(runtime, tenant, fixture.item.id, "target");
+        const contended = {
+          relationPropertyId: fixture.property.id,
+          callerItemId: fixture.item.id,
+          targetItemId: fixture.two.id,
+        };
+
         await expect(
-          runInTenant(tenant, () =>
-            withTransaction(runtime, (client) =>
-              createRelationWithClient(
-                client,
-                {
-                  relationPropertyId: fixture.property.id,
-                  callerItemId: fixture.item.id,
-                  targetItemId: fixture.two.id,
-                },
-                VALUE_LINKS,
-                SYSTEM_WRITER,
-              ),
-            ),
-          ),
-        ).rejects.toMatchObject({ status: 409, code: "cardinality_violation" });
+          inTx(runtime, tenant, (client) => protectedWrite("create", client, contended)),
+        ).rejects.toMatchObject({
+          status: 409,
+          code: "cardinality_violation",
+        });
         const edges = await runInTenant(tenant, () => cp.listItemRelations(fixture.item.id, fixture.property.id));
         expect(edges?.map((edge) => edge.targetItemId)).toEqual([fixture.one.id]);
-        const held = barrier();
-        const release = barrier();
-        let holderPid: number | undefined;
-        let contenderPid: number | undefined;
-        const holder = runInTenant(tenant, () =>
-          withTransaction(runtime, async (client) => {
-            holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            await createRelationWithClient(client, {
+
+        await whileHolding(
+          runtime,
+          tenant,
+          (client) =>
+            createRelationWithClient(client, {
               relationPropertyId: fixture.property.id,
               callerItemId: fixture.other.id,
               targetItemId: fixture.three.id,
-            });
-            held.resolve();
-            await bounded(release.promise);
-          }),
-        ).then(
-          () => ({ ok: true as const }),
-          (error: unknown) => ({ ok: false as const, error }),
+            }),
+          async () => {
+            await expect(
+              inTx(runtime, tenant, (client) => protectedWrite("create", client, contended)),
+            ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+          },
         );
-        let failure: { error: unknown } | undefined;
-        try {
-          await bounded(held.promise);
-          await expect(
-            runInTenant(tenant, () =>
-              withTransaction(runtime, async (client) => {
-                contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                return createRelationWithClient(
-                  client,
-                  {
-                    relationPropertyId: fixture.property.id,
-                    callerItemId: fixture.item.id,
-                    targetItemId: fixture.two.id,
-                  },
-                  VALUE_LINKS,
-                  SYSTEM_WRITER,
-                );
-              }),
-            ),
-          ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
-          expect(holderPid).toBeTypeOf("number");
-          expect(contenderPid).toBeTypeOf("number");
-        } catch (error) {
-          failure = { error };
-        } finally {
-          release.resolve();
-          try {
-            requireSuccessful(await settleOwned(holder, () => holderPid));
-          } catch (error) {
-            failure = combineFailure(failure, [error], "Test and holder cleanup failed");
-          }
-        }
-        if (failure !== undefined) throwFailure(failure.error);
       });
     });
 
@@ -2049,62 +1308,23 @@ describe("value link state on writes (issue #1516)", () => {
         withRuntimePool(async (contenderPool) => {
           const cp = createChokePoint(holderPool);
           const fx = await runInTenant(tenant, () => setup(cp));
-          const held = barrier();
-          const release = barrier();
-          let holderPid: number | undefined;
-          let contenderPid: number | undefined;
-          const holder = runInTenant(tenant, () =>
-            withTransaction(holderPool, async (client) => {
-              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              await insertValueLink(client, {
-                itemId: fx.file.id,
-                propertyKey: "projects",
-                ruleKey: "test",
-                sources: [],
-              });
-              held.resolve();
-              await bounded(release.promise);
-            }),
-          ).then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
+
+          await whileHolding(
+            holderPool,
+            tenant,
+            (client) =>
+              insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+            async () => {
+              await expect(
+                inTx(contenderPool, tenant, (client) => protectedWrite("create", client, fileEdge(fx))),
+              ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+              expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual(
+                [],
+              );
+            },
           );
-          let failure: { error: unknown } | undefined;
-          try {
-            await bounded(held.promise);
-            await expect(
-              runInTenant(tenant, () =>
-                withTransaction(contenderPool, async (client) => {
-                  contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                  return createRelationWithClient(
-                    client,
-                    { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
-                    VALUE_LINKS,
-                    SYSTEM_WRITER,
-                  );
-                }),
-              ),
-            ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-            expect(holderPid).toBeTypeOf("number");
-            expect(contenderPid).toBeTypeOf("number");
-            expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual(
-              [],
-            );
-          } catch (error) {
-            failure = { error };
-          } finally {
-            release.resolve();
-            try {
-              requireSuccessful(await settleOwned(holder, () => holderPid));
-            } catch (error) {
-              failure = combineFailure(failure, [error], "Test and holder cleanup failed");
-            }
-          }
-          if (failure !== undefined) throwFailure(failure.error);
-          const links = await withTenantTransaction(holderPool, tenant, (client) =>
-            listValueLinksByItemIds(client, [fx.file.id]),
-          );
-          expect(links[0]).toMatchObject({ state: "on" });
+
+          expect((await linksIn(holderPool, tenant, fx.file.id))[0]).toMatchObject({ state: "on" });
         }),
       );
     }, 30000);
@@ -2112,59 +1332,27 @@ describe("value link state on writes (issue #1516)", () => {
     it("uses a nonlocking prediction in relation validation and rechecks on mutation", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (validationPool) =>
-        withRuntimePool(async (userPool) => {
-          const cp = createChokePoint(userPool);
-          const fx = await runInTenant(tenant, () => setup(cp));
-          await withTenantTransaction(userPool, tenant, (client) =>
-            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-          );
-          const edge = {
-            relationPropertyId: fx.projectsProperty.id,
-            callerItemId: fx.file.id,
-            targetItemId: fx.alpha.id,
-          };
+        withRuntimePool(async (userPool, operations) => {
+          const fx = await runInTenant(tenant, () => setup(createChokePoint(userPool)));
+          await linkIn(userPool, tenant, fx.file.id, "projects");
           const spy = vi.spyOn(valueLinksStore, "lockOnValueLink");
-          let participant: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
-          let participantPid: number | undefined;
-          let failure: { error: unknown } | undefined;
-          try {
-            await runInTenant(tenant, () =>
-              withTransaction(validationPool, async (client) => {
-                await assertRelationCreatableWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-                expect(spy.mock.calls.map((call) => call[3])).toEqual(["none"]);
-                participant = runInTenant(tenant, () =>
-                  withTransaction(userPool, async (userClient) => {
-                    participantPid = (await userClient.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                      ?.pid;
-                    return createRelationWithClient(userClient, edge, undefined, USER);
-                  }),
-                ).then(
-                  () => ({ ok: true as const }),
-                  (error: unknown) => ({ ok: false as const, error }),
-                );
-                requireSuccessful(await bounded(participant));
-              }),
-            );
-            await expect(
-              runInTenant(tenant, () =>
-                withTransaction(validationPool, (client) =>
-                  createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER),
+
+          await inTx(validationPool, tenant, async (client) => {
+            await assertRelationCreatableWithClient(client, fileEdge(fx), VALUE_LINKS, SYSTEM_WRITER);
+            expect(spy.mock.calls.map((call) => call[3])).toEqual(["none"]);
+            // A user edge commits while the validating transaction is still open: the prediction held no lock.
+            await bounded(
+              operations.run(() =>
+                inTx(userPool, tenant, (userClient) =>
+                  createRelationWithClient(userClient, fileEdge(fx), undefined, USER),
                 ),
               ),
-            ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-          } catch (error) {
-            failure = { error };
-          } finally {
-            if (participant) {
-              try {
-                requireSuccessful(await settleOwned(participant, () => participantPid));
-              } catch (error) {
-                failure = combineFailure(failure, [error], "Validation and participant cleanup failed");
-              }
-            }
-            spy.mockRestore();
-          }
-          if (failure !== undefined) throwFailure(failure.error);
+            );
+          });
+
+          await expect(
+            inTx(validationPool, tenant, (client) => protectedWrite("create", client, fileEdge(fx))),
+          ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
         }),
       );
     });
@@ -2176,34 +1364,17 @@ describe("value link state on writes (issue #1516)", () => {
         const cp = createChokePoint(runtime);
         const own = await runInTenant(tenantA, () => setup(cp));
         const foreign = await runInTenant(tenantB, () => setup(cp));
-        await withTenantTransaction(runtime, tenantB, (client) =>
-          insertValueLink(client, { itemId: foreign.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-        );
-        const edge = {
-          relationPropertyId: own.projectsProperty.id,
-          callerItemId: own.file.id,
-          targetItemId: own.alpha.id,
-        };
-        await expect(
-          runInTenant(tenantA, () =>
-            withTransaction(runtime, (client) => createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER)),
-          ),
-        ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+        await linkIn(runtime, tenantB, foreign.file.id, "projects");
+        const write = () => inTx(runtime, tenantA, (client) => protectedWrite("create", client, fileEdge(own)));
+
+        await expect(write()).rejects.toMatchObject({ status: 403, code: "owner_violation" });
         expect(await runInTenant(tenantA, () => cp.listItemRelations(own.file.id, own.projectsProperty.id))).toEqual(
           [],
         );
-        const foreignLinks = await withTenantTransaction(runtime, tenantB, (client) =>
-          listValueLinksByItemIds(client, [foreign.file.id]),
-        );
-        expect(foreignLinks[0]).toMatchObject({ state: "on" });
-        await withTenantTransaction(runtime, tenantA, (client) =>
-          insertValueLink(client, { itemId: own.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-        );
-        await expect(
-          runInTenant(tenantA, () =>
-            withTransaction(runtime, (client) => createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER)),
-          ),
-        ).resolves.toMatchObject({ itemA: own.file.id, itemB: own.alpha.id });
+        expect((await linksIn(runtime, tenantB, foreign.file.id))[0]).toMatchObject({ state: "on" });
+
+        await linkIn(runtime, tenantA, own.file.id, "projects");
+        await expect(write()).resolves.toMatchObject({ itemA: own.file.id, itemB: own.alpha.id });
       });
     });
 
@@ -2222,354 +1393,123 @@ describe("value link state on writes (issue #1516)", () => {
           await cp.createItem({ databaseId: movies.id, properties: { name: "Film" } }),
           await cp.createItem({ databaseId: people.id, properties: { name: "Person" } }),
         ]);
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, { itemId: movie.id, propertyKey: "watchedWith", ruleKey: "test", sources: [] }),
-        );
+        await linkIn(runtime, tenant, movie.id, "watchedWith");
         const write = (rating: number) =>
-          runInTenant(tenant, () =>
-            withTransaction(runtime, (client) =>
-              createRelationWithClient(
-                client,
-                {
-                  relationPropertyId: property.id,
-                  callerItemId: movie.id,
-                  targetItemId: person.id,
-                  metadata: { rating },
-                },
-                VALUE_LINKS,
-                SYSTEM_WRITER,
-              ),
+          inTx(runtime, tenant, (client) =>
+            protectedWrite(
+              "create",
+              client,
+              { relationPropertyId: property.id, callerItemId: movie.id, targetItemId: person.id },
+              { rating },
             ),
           );
-        const events: InvalidationEvent[] = [];
-        setInvalidationHook((event) => events.push(event));
-        try {
-          await expect(write(6)).rejects.toMatchObject({ status: 400, code: "validation_failed" });
-          expect(events).toEqual([]);
-          expect(await runInTenant(tenant, () => cp.listItemRelations(movie.id, property.id))).toEqual([]);
-          await expect(write(5)).resolves.toMatchObject({ metadata: { rating: 5 } });
-          const links = await withTenantTransaction(runtime, tenant, (client) =>
-            listValueLinksByItemIds(client, [movie.id]),
-          );
-          expect(links[0]).toMatchObject({ state: "on" });
-        } finally {
-          setInvalidationHook(() => {});
-        }
+        const events = recordEvents();
+
+        await expect(write(6)).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+        expect(events).toEqual([]);
+        expect(await runInTenant(tenant, () => cp.listItemRelations(movie.id, property.id))).toEqual([]);
+        await expect(write(5)).resolves.toMatchObject({ metadata: { rating: 5 } });
+        expect((await linksIn(runtime, tenant, movie.id))[0]).toMatchObject({ state: "on" });
       });
     });
 
     it.each([
-      ["update", "commit", "normal"],
-      ["update", "rollback", "normal"],
-      ["delete", "commit", "normal"],
-      ["delete", "rollback", "normal"],
-      ["update", "commit", "undefined"],
-      ["update", "commit", "combined"],
+      ["update", "commit"],
+      ["update", "rollback"],
+      ["delete", "commit"],
+      ["delete", "rollback"],
     ] as const)(
-      "refuses protected %s on a proposal-held edge before holder %s (%s)",
-      async (operation, outcome, control) => {
-        const original = { marker: "observation" };
-        const cleanup = { marker: "cleanup" };
-        const runControl = async () => {
-          const tenant = await createTestTenant(pool);
-          await withRuntimePool(async (holderPool) =>
-            withRuntimePool(async (contenderPool, operations) => {
-              const cp = createChokePoint(holderPool);
-              const fx = await runInTenant(tenant, () => setup(cp));
-              const edge = {
-                relationPropertyId: fx.projectsProperty.id,
-                callerItemId: fx.file.id,
-                targetItemId: fx.alpha.id,
-              };
-              await runInTenant(tenant, () => cp.createRelation(edge));
-              await withTenantTransaction(holderPool, tenant, (client) =>
-                insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-              );
-              const definition = await withTenantTransaction(contenderPool, tenant, (client) =>
-                relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
-              );
-              if (!definition) throw new Error("Missing relation definition");
-              const beforeEdges = await withTenantTransaction(contenderPool, tenant, (client) =>
-                relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
-              );
-              const target = beforeEdges[0];
-              if (!target || beforeEdges.length !== 1) throw new Error("Expected one existing edge");
-              const beforeItem = await readStoredItem(contenderPool, tenant, fx.files.id, fx.file.id);
-              const beforeLinks = await readStoredLinks(contenderPool, tenant, fx.file.id);
-              const beforeJobs = await pool.query<{ key: string | null }>(
-                "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
-              );
-              const held = barrier();
-              const release = barrier();
-              const rollback = new Error("forced proposal rollback");
-              let holderPid: number | undefined;
-              let contenderPid: number | undefined;
-              let edgeAttempt = false;
-              const events: InvalidationEvent[] = [];
-              setInvalidationHook((event) => events.push(event));
-              const holder = runInTenant(tenant, () =>
-                withTransaction(holderPool, async (client) => {
-                  holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                  await executeProposalSteps(
-                    client,
-                    [
-                      {
-                        ref: "same",
-                        op: "update",
-                        role: "primary",
-                        itemId: fx.file.id,
-                        before: { relations: { projects: [fx.alpha.id] } },
-                        after: { relations: { projects: [fx.alpha.id] } },
+      "refuses protected %s on a proposal-held edge before the holder's %s, and admits it afterwards",
+      async (operation, outcome) => {
+        const tenant = await createTestTenant(pool);
+        await withRuntimePool(async (holderPool) =>
+          withRuntimePool(async (contenderPool) => {
+            const cp = createChokePoint(holderPool);
+            const fx = await runInTenant(tenant, () => setup(cp));
+            const edge = fileEdge(fx);
+            await runInTenant(tenant, () => cp.createRelation(edge));
+            await linkIn(holderPool, tenant, fx.file.id, "projects");
+            const definition = await definitionOf(contenderPool, tenant, fx.projectsProperty.id);
+            const beforeEdges = await storedEdges(contenderPool, tenant, definition.id, fx.file.id);
+            const target = beforeEdges[0];
+            if (!target || beforeEdges.length !== 1) throw new Error("Expected one existing edge");
+            const before = await storedState(contenderPool, tenant, fx.files.id, fx.file.id);
+            const events = recordEvents();
+
+            await whileHolding(
+              holderPool,
+              tenant,
+              (client) => holdProposal(client, fx),
+              async (holderPid) => {
+                expect(await rowLockedBy("item_relations", target.id, holderPid)).toBe(true);
+                let edgeAttempt = false;
+                await expect(
+                  inTx(contenderPool, tenant, (client) =>
+                    observingQueries(
+                      client,
+                      (sql, params) => {
+                        if (
+                          sql.includes("FROM item_relations") &&
+                          sql.includes("FOR UPDATE NOWAIT") &&
+                          Array.isArray(params) &&
+                          params[0] === definition.id &&
+                          params[1] === target.itemA &&
+                          params[2] === target.itemB
+                        )
+                          edgeAttempt = true;
                       },
-                    ],
-                    { writer: USER, sourceInboxItemId: null },
-                  );
-                  held.resolve();
-                  await bounded(release.promise);
-                  if (outcome === "rollback") throw rollback;
-                }),
-              ).then(
-                () => ({ ok: true as const }),
-                (error: unknown) => ({ ok: false as const, error }),
-              );
-              let failure: { error: unknown } | undefined;
-              try {
-                await bounded(held.promise);
-                const edgeLock = await pool.query<{ held: boolean }>(
-                  `SELECT EXISTS (SELECT 1 FROM item_relations e JOIN pg_locks l ON l.transactionid::text = e.xmax::text
-               WHERE e.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
-                  [target.id, holderPid],
-                );
-                expect(edgeLock.rows[0]?.held).toBe(true);
-                await expectRuntimeRejection(
-                  operations,
-                  operations.run(() =>
-                    runInTenant(tenant, () =>
-                      withTransaction(contenderPool, async (client) => {
-                        contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                          ?.pid;
-                        // eslint-disable-next-line @typescript-eslint/unbound-method
-                        const original = client.query;
-                        // eslint-disable-next-line @typescript-eslint/unbound-method
-                        client.query = new Proxy(client.query, {
-                          apply(query, receiver, args: unknown[]) {
-                            const params: unknown = args[1];
-                            if (
-                              typeof args[0] === "string" &&
-                              args[0].includes("FROM item_relations") &&
-                              args[0].includes("FOR UPDATE NOWAIT") &&
-                              Array.isArray(params) &&
-                              params[0] === definition.id &&
-                              params[1] === target.itemA &&
-                              params[2] === target.itemB
-                            )
-                              edgeAttempt = true;
-                            return Reflect.apply(query, receiver, args);
-                          },
-                        });
-                        try {
-                          return operation === "update"
-                            ? await updateRelationWithClient(
-                                client,
-                                { ...edge, metadata: { attempted: true } },
-                                VALUE_LINKS,
-                                SYSTEM_WRITER,
-                              )
-                            : await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-                        } finally {
-                          client.query = original;
-                        }
-                      }),
+                      () => protectedWrite(operation, client, edge, { attempted: true }),
                     ),
                   ),
-                  { status: 409, code: "value_link_busy" },
-                );
+                ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
                 expect(edgeAttempt).toBe(true);
-                if (control === "undefined") throwFailure(undefined);
-                if (control === "combined") throwFailure(original);
-                expect(holderPid).toBeTypeOf("number");
-                expect(contenderPid).toBeTypeOf("number");
                 expect(events).toEqual([]);
-                expect(await readStoredItem(contenderPool, tenant, fx.files.id, fx.file.id)).toEqual(beforeItem);
-                expect(await readStoredLinks(contenderPool, tenant, fx.file.id)).toEqual(beforeLinks);
-                expect(
-                  (
-                    await pool.query<{ key: string | null }>(
-                      "SELECT key FROM graphile_worker.jobs ORDER BY key NULLS FIRST",
-                    )
-                  ).rows,
-                ).toEqual(beforeJobs.rows);
-                expect(
-                  await withTenantTransaction(contenderPool, tenant, (client) =>
-                    relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
-                  ),
-                ).toEqual(beforeEdges);
-              } catch (error) {
-                failure = { error };
-              } finally {
-                release.resolve();
-                try {
-                  await operations.settle();
-                  const result = await settleOwned(holder, () => holderPid);
-                  if (outcome === "rollback") {
-                    expect(result.ok).toBe(false);
-                    if (!result.ok) expect(result.error).toBe(rollback);
-                  } else requireSuccessful(result);
-                  if (control === "combined") throwFailure(cleanup);
-                } catch (error) {
-                  failure = combineFailure(failure, [error], "Test and proposal cleanup failed");
-                } finally {
-                  setInvalidationHook(() => {});
-                }
-              }
-              if (failure !== undefined) throwFailure(failure.error);
-              await runInTenant(tenant, () =>
-                withTransaction(contenderPool, (client) =>
-                  operation === "update"
-                    ? updateRelationWithClient(
-                        client,
-                        { ...edge, metadata: { healthy: true } },
-                        VALUE_LINKS,
-                        SYSTEM_WRITER,
-                      )
-                    : deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER),
-                ),
-              );
-              const after = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
-              if (operation === "update") expect(after?.[0]?.metadata).toEqual({ healthy: true });
-              else expect(after).toEqual([]);
-              expect((await readStoredLinks(contenderPool, tenant, fx.file.id))[0]?.state).toBe("on");
-            }),
-          );
-        };
-        if (control === "normal") return runControl();
-        const result = await runControl().then(
-          () => ({ rejected: false as const }),
-          (error: unknown) => ({ rejected: true as const, error }),
+                expect(await storedState(contenderPool, tenant, fx.files.id, fx.file.id)).toEqual(before);
+                expect(await storedEdges(contenderPool, tenant, definition.id, fx.file.id)).toEqual(beforeEdges);
+              },
+              outcome === "rollback" ? new Error("forced proposal rollback") : undefined,
+            );
+
+            await inTx(contenderPool, tenant, (client) => protectedWrite(operation, client, edge, { healthy: true }));
+            const after = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
+            if (operation === "update") expect(after?.[0]?.metadata).toEqual({ healthy: true });
+            else expect(after).toEqual([]);
+            expect((await readStoredLinks(contenderPool, tenant, fx.file.id))[0]?.state).toBe("on");
+          }),
         );
-        expect(result.rejected).toBe(true);
-        if (!result.rejected) throw new Error("Expected rejection");
-        if (control === "undefined") expect(result.error).toBeUndefined();
-        else {
-          expect(result.error).toBeInstanceOf(AggregateError);
-          if (!(result.error instanceof AggregateError)) throw new Error("Expected combined failure");
-          expect(result.error.errors).toHaveLength(2);
-          expect(result.error.errors[0]).toBe(original);
-          expect(result.error.errors[1]).toBe(cleanup);
-          expect(result.error.cause).toBe(original);
-        }
       },
       30000,
     );
 
-    it("refuses a protected relation when a real proposal holds its definition and edge", async () => {
+    it("refuses a protected relation when a real proposal holds its definition", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (holderPool) =>
         withRuntimePool(async (contenderPool) => {
           const cp = createChokePoint(holderPool);
           const fx = await runInTenant(tenant, () => setup(cp));
-          await runInTenant(tenant, () =>
-            cp.createRelation({
-              relationPropertyId: fx.projectsProperty.id,
-              callerItemId: fx.file.id,
-              targetItemId: fx.alpha.id,
-            }),
+          await runInTenant(tenant, () => cp.createRelation(fileEdge(fx)));
+          await linkIn(holderPool, tenant, fx.file.id, "projects");
+          const definition = await definitionOf(contenderPool, tenant, fx.projectsProperty.id);
+          const beforeEdges = await storedEdges(contenderPool, tenant, definition.id, fx.file.id);
+          const beforeJobs = await jobCount();
+          const events = recordEvents();
+
+          await whileHolding(
+            holderPool,
+            tenant,
+            (client) => holdProposal(client, fx),
+            async (holderPid) => {
+              expect(await relationAdvisoryHeldBy(definition.id, holderPid)).toBe(true);
+              await expect(
+                inTx(contenderPool, tenant, (client) => protectedWrite("create", client, fileEdge(fx, fx.beta))),
+              ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
+              expect(events).toEqual([]);
+              expect(await jobCount()).toBe(beforeJobs);
+              expect(await storedEdges(contenderPool, tenant, definition.id, fx.file.id)).toEqual(beforeEdges);
+            },
           );
-          await withTenantTransaction(holderPool, tenant, (client) =>
-            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-          );
-          const events: InvalidationEvent[] = [];
-          setInvalidationHook((event) => events.push(event));
-          const beforeJobs = await pool.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM graphile_worker.jobs",
-          );
-          const held = barrier();
-          const release = barrier();
-          let holderPid: number | undefined;
-          let contenderPid: number | undefined;
-          const holder = runInTenant(tenant, () =>
-            withTransaction(holderPool, async (client) => {
-              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              await executeProposalSteps(
-                client,
-                [
-                  {
-                    ref: "same",
-                    op: "update",
-                    role: "primary",
-                    itemId: fx.file.id,
-                    before: { relations: { projects: [fx.alpha.id] } },
-                    after: { relations: { projects: [fx.alpha.id] } },
-                  },
-                ],
-                { writer: USER, sourceInboxItemId: null },
-              );
-              held.resolve();
-              await bounded(release.promise);
-            }),
-          ).then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
-          );
-          let failure: { error: unknown } | undefined;
-          try {
-            await bounded(held.promise);
-            const definition = await withTenantTransaction(contenderPool, tenant, (client) =>
-              relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
-            );
-            if (!definition) throw new Error("Missing relation definition");
-            const beforeEdges = await withTenantTransaction(contenderPool, tenant, (client) =>
-              relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
-            );
-            const lock = await pool.query<{ held: boolean }>(
-              `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND granted
-                 AND classid::bigint = ((hashtextextended($2::text, 0) >> 32) & 4294967295::bigint)
-                 AND objid::bigint = (hashtextextended($2::text, 0) & 4294967295::bigint) AND objsubid = 1) AS held`,
-              [holderPid, definition.id],
-            );
-            expect(lock.rows[0]?.held).toBe(true);
-            await expect(
-              runInTenant(tenant, () =>
-                withTransaction(contenderPool, async (client) => {
-                  contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                  return createRelationWithClient(
-                    client,
-                    { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.beta.id },
-                    VALUE_LINKS,
-                    SYSTEM_WRITER,
-                  );
-                }),
-              ),
-            ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
-            expect(holderPid).toBeTypeOf("number");
-            expect(contenderPid).toBeTypeOf("number");
-            expect(events).toEqual([]);
-            expect(
-              await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs"),
-            ).toMatchObject({ rows: beforeJobs.rows });
-            expect(
-              await withTenantTransaction(contenderPool, tenant, (client) =>
-                relationsStore.listRelationsForItem(client, definition.id, fx.file.id),
-              ),
-            ).toEqual(beforeEdges);
-          } catch (error) {
-            failure = { error };
-          } finally {
-            release.resolve();
-            try {
-              const result = await settleOwned(holder, () => holderPid);
-              requireSuccessful(result);
-            } catch (error) {
-              failure = combineFailure(failure, [error], "Test and proposal cleanup failed");
-            } finally {
-              setInvalidationHook(() => {});
-            }
-          }
-          if (failure !== undefined) throwFailure(failure.error);
-          const links = await withTenantTransaction(holderPool, tenant, (client) =>
-            listValueLinksByItemIds(client, [fx.file.id]),
-          );
-          expect(links[0]).toMatchObject({ state: "on" });
+
+          expect((await linksIn(holderPool, tenant, fx.file.id))[0]).toMatchObject({ state: "on" });
         }),
       );
     }, 30000);
@@ -2577,89 +1517,41 @@ describe("value link state on writes (issue #1516)", () => {
     it("rechecks an active prediction after a concurrent user breaks the link", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (userPool) =>
-        withRuntimePool(async (systemPool) => {
+        withRuntimePool(async (systemPool, operations) => {
           const cp = createChokePoint(userPool);
           const fx = await runInTenant(tenant, () => setup(cp));
-          const edge = {
-            relationPropertyId: fx.projectsProperty.id,
-            callerItemId: fx.file.id,
-            targetItemId: fx.beta.id,
-          };
-          await runInTenant(tenant, () => cp.createRelation(edge));
-          await withTenantTransaction(userPool, tenant, (client) =>
-            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-          );
+          const userEdge = fileEdge(fx, fx.beta);
+          await runInTenant(tenant, () => cp.createRelation(userEdge));
+          await linkIn(userPool, tenant, fx.file.id, "projects");
           const admitted = barrier();
           const release = barrier();
           let systemClient: PoolClient | undefined;
-          let systemPid: number | undefined;
-          let userPid: number | undefined;
           const original = relationsStore.lockExistingRelationNowait;
-          const spy = vi
-            .spyOn(relationsStore, "lockExistingRelationNowait")
-            .mockImplementation(async (client, definitionId, itemA, itemB) => {
+          vi.spyOn(relationsStore, "lockExistingRelationNowait").mockImplementation(
+            async (client, definitionId, itemA, itemB) => {
               await original(client, definitionId, itemA, itemB);
               if (client === systemClient) {
                 admitted.resolve();
                 await bounded(release.promise);
               }
-            });
-          const events: InvalidationEvent[] = [];
-          setInvalidationHook((event) => events.push(event));
-          const system = runInTenant(tenant, () =>
-            withTransaction(systemPool, async (client) => {
-              systemClient = client;
-              systemPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              return createRelationWithClient(
-                client,
-                { ...edge, targetItemId: fx.alpha.id },
-                VALUE_LINKS,
-                SYSTEM_WRITER,
-              );
-            }),
-          ).then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
+            },
           );
-          let failure: { error: unknown } | undefined;
-          let consumedSystem: Awaited<typeof system> | undefined;
-          try {
-            await bounded(admitted.promise);
-            await runInTenant(tenant, () =>
-              withTransaction(userPool, async (client) => {
-                userPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                await deleteRelationWithClient(client, edge, undefined, USER);
-              }),
-            );
-            release.resolve();
-            const systemOutcome = await bounded(system);
-            expect(systemOutcome).toMatchObject({ ok: false, error: { status: 403, code: "owner_violation" } });
-            consumedSystem = systemOutcome;
-            expect(systemPid).toBeTypeOf("number");
-            expect(userPid).toBeTypeOf("number");
-            const links = await withTenantTransaction(userPool, tenant, (client) =>
-              listValueLinksByItemIds(client, [fx.file.id]),
-            );
-            expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
-            expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual(
-              [],
-            );
-            expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
-          } catch (error) {
-            failure = { error };
-          } finally {
-            release.resolve();
-            try {
-              const outcome = await settleOwned(system, () => systemPid);
-              if (!outcome.ok && outcome !== consumedSystem)
-                failure = combineFailure(failure, [outcome.error], "Test and system cleanup failed");
-            } catch (error) {
-              failure = combineFailure(failure, [error], "Test and system cleanup failed");
-            }
-            spy.mockRestore();
-            setInvalidationHook(() => {});
-          }
-          if (failure !== undefined) throwFailure(failure.error);
+          const events = recordEvents();
+
+          const system = operations.run(() =>
+            inTx(systemPool, tenant, (client) => {
+              systemClient = client;
+              return protectedWrite("create", client, fileEdge(fx));
+            }),
+          );
+          await bounded(admitted.promise);
+          await inTx(userPool, tenant, (client) => deleteRelationWithClient(client, userEdge, undefined, USER));
+          release.resolve();
+
+          await expectRuntimeRejection(operations, system, { status: 403, code: "owner_violation" });
+          expect((await linksIn(userPool, tenant, fx.file.id))[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+          expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual([]);
+          expect(itemEvents(events, fx.file.id)).toHaveLength(1);
         }),
       );
     }, 30000);
@@ -2675,113 +1567,38 @@ describe("value link state on writes (issue #1516)", () => {
       async (operation, state) => {
         const tenant = await createTestTenant(pool);
         await withRuntimePool(async (holderPool) =>
-          withRuntimePool(async (contenderPool, operations) => {
+          withRuntimePool(async (contenderPool) => {
             const cp = createChokePoint(holderPool);
             const fx = await runInTenant(tenant, () => setup(cp));
-            const edge = {
-              relationPropertyId: fx.projectsProperty.id,
-              callerItemId: fx.file.id,
-              targetItemId: fx.alpha.id,
-            };
+            const edge = fileEdge(fx);
             await runInTenant(tenant, () => cp.createRelation(edge));
             if (state !== "missing")
-              await withTenantTransaction(holderPool, tenant, (client) =>
-                insertValueLink(client, {
-                  itemId: fx.file.id,
-                  propertyKey: "projects",
-                  ruleKey: "test",
-                  sources: [],
-                  ...(state === "broken"
-                    ? {
-                        state: "broken" as const,
-                        brokenBy: "user" as const,
-                        brokenAt: new Date("2026-01-01T00:00:00Z"),
-                      }
-                    : {}),
-                }),
-              );
-            const held = barrier();
-            const release = barrier();
-            let holderPid: number | undefined;
-            let contenderPid: number | undefined;
-            const events: InvalidationEvent[] = [];
-            setInvalidationHook((event) => events.push(event));
-            const jobsBefore = (
-              await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs")
-            ).rows[0]?.count;
-            const holder = runInTenant(tenant, () =>
-              withTransaction(holderPool, async (client) => {
-                holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                await updateRelationWithClient(client, { ...edge, metadata: { holder: true } });
-                held.resolve();
-                await bounded(release.promise);
-              }),
-            ).then(
-              () => ({ ok: true as const }),
-              (error: unknown) => ({ ok: false as const, error }),
+              await linkIn(holderPool, tenant, fx.file.id, "projects", { broken: state === "broken" });
+            const definition = await definitionOf(holderPool, tenant, fx.projectsProperty.id);
+            const [stored] = await storedEdges(holderPool, tenant, definition.id, fx.file.id);
+            if (!stored) throw new Error("Expected the existing edge");
+            const jobsBefore = await jobCount();
+            const events = recordEvents();
+
+            await whileHolding(
+              holderPool,
+              tenant,
+              (client) => updateRelationWithClient(client, { ...edge, metadata: { holder: true } }),
+              async (holderPid) => {
+                expect(await rowLockedBy("item_relations", stored.id, holderPid)).toBe(true);
+                await expect(
+                  inTx(contenderPool, tenant, (client) => protectedWrite(operation, client, edge, { contender: true })),
+                ).rejects.toMatchObject(
+                  state === "on" ? { status: 409, code: "value_link_busy" } : { status: 403, code: "owner_violation" },
+                );
+                expect(events).toEqual([]);
+                expect(await jobCount()).toBe(jobsBefore);
+              },
             );
-            let failure: { error: unknown } | undefined;
-            try {
-              await bounded(held.promise);
-              const edgeLock = await pool.query<{ held: boolean }>(
-                `SELECT EXISTS (SELECT 1 FROM item_relations e JOIN pg_locks l ON l.transactionid::text = e.xmax::text
-                 WHERE e.item_a = $1 AND e.item_b = $2 AND l.pid = $3 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
-                [fx.file.id, fx.alpha.id, holderPid],
-              );
-              expect(edgeLock.rows[0]?.held).toBe(true);
-              await expectRuntimeRejection(
-                operations,
-                operations.run(() =>
-                  runInTenant(tenant, () =>
-                    withTransaction(contenderPool, async (client) => {
-                      contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                        ?.pid;
-                      if (operation === "create")
-                        return createRelationWithClient(
-                          client,
-                          { ...edge, metadata: { contender: true } },
-                          VALUE_LINKS,
-                          SYSTEM_WRITER,
-                        );
-                      if (operation === "update")
-                        return updateRelationWithClient(
-                          client,
-                          { ...edge, metadata: { contender: true } },
-                          VALUE_LINKS,
-                          SYSTEM_WRITER,
-                        );
-                      return deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-                    }),
-                  ),
-                ),
-                state === "on" ? { status: 409, code: "value_link_busy" } : { status: 403, code: "owner_violation" },
-              );
-              expect(holderPid).toBeTypeOf("number");
-              expect(contenderPid).toBeTypeOf("number");
-              expect(events).toEqual([]);
-              expect(
-                (await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs"))
-                  .rows[0]?.count,
-              ).toBe(jobsBefore);
-            } catch (error) {
-              failure = { error };
-            } finally {
-              release.resolve();
-              try {
-                await operations.settle();
-                const outcome = await settleOwned(holder, () => holderPid);
-                requireSuccessful(outcome);
-              } catch (error) {
-                failure = combineFailure(failure, [error], "Test and holder cleanup failed");
-              }
-              setInvalidationHook(() => {});
-            }
-            if (failure !== undefined) throwFailure(failure.error);
+
             const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
             expect(edges?.[0]?.metadata).toEqual({ holder: true });
-            const links = await withTenantTransaction(holderPool, tenant, (client) =>
-              listValueLinksByItemIds(client, [fx.file.id]),
-            );
+            const links = await linksIn(holderPool, tenant, fx.file.id);
             if (state === "missing") expect(links).toEqual([]);
             else expect(links[0]).toMatchObject({ state });
           }),
@@ -2795,80 +1612,28 @@ describe("value link state on writes (issue #1516)", () => {
       async (side) => {
         const tenant = await createTestTenant(pool);
         await withRuntimePool(async (runtime) => {
-          const cp = createChokePoint(runtime);
-          const fx = await runInTenant(tenant, () => setup(cp));
+          const fx = await runInTenant(tenant, () => setup(createChokePoint(runtime)));
           const edge =
             side === "A"
-              ? { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id }
+              ? fileEdge(fx)
               : { relationPropertyId: fx.filesProperty.id, callerItemId: fx.alpha.id, targetItemId: fx.file.id };
-          const propertyKey = side === "A" ? "projects" : "files";
-          await withTenantTransaction(runtime, tenant, (client) =>
-            insertValueLink(client, { itemId: edge.callerItemId, propertyKey, ruleKey: "test", sources: [] }),
-          );
-          await runInTenant(tenant, () =>
-            withTransaction(runtime, async (client) => {
-              await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-              await createRelationWithClient(
-                client,
-                { ...edge, metadata: { replay: true } },
-                VALUE_LINKS,
-                SYSTEM_WRITER,
-              );
-              await updateRelationWithClient(
-                client,
-                { ...edge, metadata: { update: true } },
-                VALUE_LINKS,
-                SYSTEM_WRITER,
-              );
-              expect(await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER)).not.toBeNull();
-              expect(await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER)).toBeNull();
-            }),
-          );
-          await expect(
-            runInTenant(tenant, () =>
-              withTransaction(runtime, (client) =>
-                updateRelationWithClient(client, { ...edge, metadata: {} }, VALUE_LINKS, SYSTEM_WRITER),
-              ),
-            ),
-          ).rejects.toMatchObject({ status: 404, code: "not_found" });
-          const links = await withTenantTransaction(runtime, tenant, (client) =>
-            listValueLinksByItemIds(client, [edge.callerItemId]),
-          );
-          expect(links[0]).toMatchObject({ state: "on" });
-        });
-      },
-    );
+          await linkIn(runtime, tenant, edge.callerItemId, side === "A" ? "projects" : "files");
 
-    it.each(["0", "5s"])(
-      "restores the effective lock timeout %s after protected success and no-op",
-      async (setting) => {
-        const tenant = await createTestTenant(pool);
-        await withRuntimePool(async (runtime) => {
-          const cp = createChokePoint(runtime);
-          const fx = await runInTenant(tenant, () => setup(cp));
-          await withTenantTransaction(runtime, tenant, (client) =>
-            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
+          await inTx(runtime, tenant, async (client) => {
+            await protectedWrite("create", client, edge);
+            await protectedWrite("create", client, edge, { replay: true });
+            await protectedWrite("update", client, edge, { update: true });
+            expect(await protectedWrite("delete", client, edge)).not.toBeNull();
+            expect(await protectedWrite("delete", client, edge)).toBeNull();
+          });
+          await expect(inTx(runtime, tenant, (client) => protectedWrite("update", client, edge))).rejects.toMatchObject(
+            {
+              status: 404,
+              code: "not_found",
+            },
           );
-          await runInTenant(tenant, () =>
-            withTransaction(runtime, async (client) => {
-              await client.query<{ set_config: string }>("SELECT set_config('lock_timeout', $1, true)", [setting]);
-              const read = async () =>
-                (await client.query<{ setting: string }>("SELECT current_setting('lock_timeout') AS setting")).rows[0]
-                  ?.setting;
-              const before = await read();
-              const edge = {
-                relationPropertyId: fx.projectsProperty.id,
-                callerItemId: fx.file.id,
-                targetItemId: fx.alpha.id,
-              };
-              await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-              expect(await read()).toBe(before);
-              await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-              expect(await read()).toBe(before);
-              await deleteRelationWithClient(client, { ...edge, targetItemId: fx.beta.id }, VALUE_LINKS, SYSTEM_WRITER);
-              expect(await read()).toBe(before);
-            }),
-          );
+
+          expect((await linksIn(runtime, tenant, edge.callerItemId))[0]).toMatchObject({ state: "on" });
         });
       },
     );
@@ -2876,26 +1641,18 @@ describe("value link state on writes (issue #1516)", () => {
     it("rejects an unmanaged client before prediction and protected hooks", async () => {
       const tenant = await createTestTenant(pool);
       await withRuntimePool(async (runtime) => {
-        const cp = createChokePoint(runtime);
-        const fx = await runInTenant(tenant, () => setup(cp));
+        const fx = await runInTenant(tenant, () => setup(createChokePoint(runtime)));
         const client = await runtime.connect();
         const prediction = vi.spyOn(valueLinksStore, "lockOnValueLink");
         try {
           await client.query<{ set_config: string }>("SELECT set_config('app.tenant_id', $1, false)", [tenant]);
-          const edge = {
-            relationPropertyId: fx.projectsProperty.id,
-            callerItemId: fx.file.id,
-            targetItemId: fx.alpha.id,
-          };
-          for (const operation of [
-            () => createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER),
-            () => updateRelationWithClient(client, { ...edge, metadata: {} }, VALUE_LINKS, SYSTEM_WRITER),
-            () => deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER),
-          ])
-            await expect(runInTenant(tenant, operation)).rejects.toThrow("active managed transaction");
+          for (const operation of ["create", "update", "delete"] as const) {
+            await expect(runInTenant(tenant, () => protectedWrite(operation, client, fileEdge(fx)))).rejects.toThrow(
+              "active managed transaction",
+            );
+          }
           expect(prediction).not.toHaveBeenCalled();
         } finally {
-          prediction.mockRestore();
           try {
             await client.query<{ set_config: string }>("SELECT set_config('app.tenant_id', '', false)");
           } finally {
@@ -2910,18 +1667,8 @@ describe("value link state on writes (issue #1516)", () => {
       await withRuntimePool(async (runtime, operations) => {
         const cp = createChokePoint(runtime);
         const fx = await runInTenant(tenant, () => setup(cp));
-        const edge = {
-          relationPropertyId: fx.projectsProperty.id,
-          callerItemId: fx.file.id,
-          targetItemId: fx.alpha.id,
-        };
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-        );
-        const definition = await withTenantTransaction(runtime, tenant, (client) =>
-          relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
-        );
-        if (!definition) throw new Error("Missing definition");
+        await linkIn(runtime, tenant, fx.file.id, "projects");
+        const definition = await definitionOf(runtime, tenant, fx.projectsProperty.id);
         const admission = {
           definitionId: definition.id,
           itemA: fx.file.id,
@@ -2930,392 +1677,167 @@ describe("value link state on writes (issue #1516)", () => {
           propertyKey: "projects",
           insert: true,
         };
-        const foreign = await runtime.connect();
-        const release = barrier();
-        operations.onCancel(() => release.resolve());
-        let descendant: Promise<void> | undefined;
         const hook = vi.fn(async () => {});
         const body = vi.fn(async () => {});
         const lock = vi.spyOn(relationsStore, "tryLockRelationDefinition");
-        let failure: { error: unknown } | undefined;
+        const expectRefusedUntouched = async (client: PoolClient, lockCalls: number) => {
+          const query = vi.spyOn(client, "query");
+          try {
+            await expect(withValueLinkRelationAdmission(client, admission, hook, body)).rejects.toThrow(
+              "active managed transaction",
+            );
+            expect(query).not.toHaveBeenCalled();
+          } finally {
+            query.mockRestore();
+          }
+          expect(lock).toHaveBeenCalledTimes(lockCalls);
+          expect(hook).not.toHaveBeenCalled();
+          expect(body).not.toHaveBeenCalled();
+        };
+        const foreign = await runtime.connect();
+        const release = barrier();
+        let descendant: Promise<void> | undefined;
         try {
-          await runInTenant(tenant, () =>
-            withTransaction(runtime, async (client) => {
-              expect(client).not.toBe(foreign);
-              const foreignQuery = vi.spyOn(foreign, "query");
-              try {
-                await expect(withValueLinkRelationAdmission(foreign, admission, hook, body)).rejects.toThrow(
-                  "active managed transaction",
-                );
-                expect(foreignQuery).not.toHaveBeenCalled();
-                expect(lock).not.toHaveBeenCalled();
-                expect(hook).not.toHaveBeenCalled();
-                expect(body).not.toHaveBeenCalled();
-              } finally {
-                foreignQuery.mockRestore();
-              }
-              await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-              const ownerLockCalls = lock.mock.calls.length;
-              descendant = operations.run(async () => {
-                await bounded(release.promise);
-                const oldQuery = vi.spyOn(client, "query");
-                try {
-                  await expect(withValueLinkRelationAdmission(client, admission, hook, body)).rejects.toThrow(
-                    "active managed transaction",
-                  );
-                  expect(oldQuery).not.toHaveBeenCalled();
-                  expect(lock).toHaveBeenCalledTimes(ownerLockCalls);
-                  expect(hook).not.toHaveBeenCalled();
-                  expect(body).not.toHaveBeenCalled();
-                } finally {
-                  oldQuery.mockRestore();
-                }
-              });
-            }),
-          );
+          await inTx(runtime, tenant, async (client) => {
+            expect(client).not.toBe(foreign);
+            await expectRefusedUntouched(foreign, 0);
+            await protectedWrite("create", client, fileEdge(fx));
+            const ownerLockCalls = lock.mock.calls.length;
+            // Runs on the same client after its transaction has ended.
+            descendant = operations.run(async () => {
+              await bounded(release.promise);
+              await expectRefusedUntouched(client, ownerLockCalls);
+            });
+          });
           release.resolve();
           if (!descendant) throw new Error("Missing descendant");
           await bounded(descendant);
-          await runInTenant(tenant, () =>
-            withTransaction(runtime, async (client) => {
-              await deleteRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
-            }),
-          );
+          await inTx(runtime, tenant, (client) => protectedWrite("delete", client, fileEdge(fx)));
           expect(await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual([]);
-        } catch (error) {
-          failure = { error };
         } finally {
-          release.resolve();
-          try {
-            await operations.settle();
-          } catch (error) {
-            failure = combineFailure(failure, [error], "Body and cleanup failed");
-          }
-          lock.mockRestore();
-          try {
-            foreign.release();
-          } catch (error) {
-            failure = combineFailure(failure, [error], "Body and release failed");
-          }
+          foreign.release();
         }
-        if (failure !== undefined) throwFailure(failure.error);
       });
     }, 30000);
 
-    it("keeps a caught NOWAIT failure rollback-only after savepoint recovery", async () => {
-      const tenant = await createTestTenant(pool);
-      await withRuntimePool(async (holderPool) =>
-        withRuntimePool(async (contenderPool, operations) => {
-          contenderPool.options.max = 1;
-          const cp = createChokePoint(holderPool);
-          const fx = await runInTenant(tenant, () => setup(cp));
-          const unrelated = await runInTenant(tenant, () =>
-            cp.createItem({ databaseId: fx.files.id, properties: { name: "original" } }),
-          );
-          const rollup = await runInTenant(tenant, async () => {
-            const target = await cp.createDatabase({ name: "Other rollup targets" });
-            await cp.createRelationProperty({
-              sourceDatabaseId: fx.files.id,
-              targetDatabaseId: target.id,
-              key: "others",
-              name: "Others",
+    it.each([
+      ["a NOWAIT edge lock recovered by a savepoint", "update"],
+      ["an advisory busy without recovery", "create"],
+    ] as const)(
+      "keeps a transaction that caught %s rollback-only, discarding its writes, jobs and callbacks",
+      async (_name, operation) => {
+        const tenant = await createTestTenant(pool);
+        await withRuntimePool(async (holderPool) =>
+          withRuntimePool(async (contenderPool, operations) => {
+            contenderPool.options.max = 1;
+            const cp = createChokePoint(holderPool);
+            const fx = await runInTenant(tenant, () => setup(cp));
+            const unrelated = await runInTenant(tenant, () =>
+              cp.createItem({ databaseId: fx.files.id, properties: { name: "original" } }),
+            );
+            const rollup = await runInTenant(tenant, async () => {
+              if (operation === "update") {
+                const target = await cp.createDatabase({ name: "Other rollup targets" });
+                await cp.createRelationProperty({
+                  sourceDatabaseId: fx.files.id,
+                  targetDatabaseId: target.id,
+                  key: "others",
+                  name: "Others",
+                });
+              } else await cp.createRelation(fileEdge(fx));
+              return cp.createProperty({
+                databaseId: fx.files.id,
+                key: "rollupCount",
+                name: "Rollup count",
+                type: "rollup",
+                config: { relationPropertyKey: operation === "update" ? "others" : "projects", aggregation: "count" },
+              });
             });
-            return cp.createProperty({
-              databaseId: fx.files.id,
-              key: "otherCount",
-              name: "Other count",
-              type: "rollup",
-              config: { relationPropertyKey: "others", aggregation: "count" },
-            });
-          });
-          const jobKey = rollupRecomputeJobKey(rollup.id, unrelated.id);
-          const jobCount = async () =>
-            (
-              await pool.query<{ count: string }>(
-                "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
-                [jobKey],
-              )
-            ).rows[0]?.count;
-          expect(await jobCount()).toBe("0");
-          await withTenantTransaction(holderPool, tenant, (client) =>
-            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-          );
-          const held = barrier();
-          const release = barrier();
-          const callback = vi.fn();
-          const events: InvalidationEvent[] = [];
-          setInvalidationHook((event) => events.push(event));
-          let holderPid: number | undefined;
-          let competitorPid: number | undefined;
-          const holder = runInTenant(tenant, () =>
-            withTransaction(holderPool, async (client) => {
-              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              await createRelationWithClient(
+            const jobKey = rollupRecomputeJobKey(rollup.id, unrelated.id);
+            const searchJobKey = `item-search-reindex:item:${unrelated.id}`;
+            expect(await jobCount(jobKey)).toBe("0");
+            await linkIn(holderPool, tenant, fx.file.id, "projects");
+            const linkId = (await readStoredLinks(holderPool, tenant, fx.file.id))[0]?.id;
+            if (!linkId) throw new Error("Missing link row");
+            const callback = vi.fn();
+            const events = recordEvents();
+            let competitorPid: number | undefined;
+            const renameUnrelated = (client: PoolClient, name: string) =>
+              updateItemWithClient(
                 client,
-                { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
-                undefined,
-                USER,
+                { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name } },
+                { writer: USER },
               );
-              held.resolve();
-              await bounded(release.promise);
-            }),
-          ).then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
-          );
-          let failure: { error: unknown } | undefined;
-          try {
-            await bounded(held.promise);
-            const linkLock = await pool.query<{ held: boolean }>(
-              `SELECT EXISTS (SELECT 1 FROM value_links v JOIN pg_locks l ON l.transactionid::text = v.xmax::text
-                 WHERE v.item_id = $1 AND v.property_key = 'projects' AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
-              [fx.file.id, holderPid],
-            );
-            expect(linkLock.rows[0]?.held).toBe(true);
-            await expectRuntimeRejection(
-              operations,
-              operations.run(() =>
-                runInTenant(tenant, () =>
-                  withTransaction(contenderPool, async (client) => {
-                    competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                      ?.pid;
-                    await updateItemWithClient(
-                      client,
-                      { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
-                      { writer: USER },
-                    );
-                    await enqueueRollupRecompute(client, rollup.id, unrelated.id);
-                    const queued = await client.query<{ key: string }>(
-                      "SELECT key FROM graphile_worker.jobs WHERE key = $1",
-                      [jobKey],
-                    );
-                    expect(queued.rows).toEqual([{ key: jobKey }]);
-                    runAfterCommit(client, callback);
-                    await client.query("SAVEPOINT relation_busy");
-                    await expect(
-                      updateRelationWithClient(
-                        client,
-                        {
-                          relationPropertyId: fx.projectsProperty.id,
-                          callerItemId: fx.file.id,
-                          targetItemId: fx.beta.id,
-                          metadata: {},
-                        },
-                        VALUE_LINKS,
-                        SYSTEM_WRITER,
-                      ),
-                    ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
-                    await client.query("ROLLBACK TO SAVEPOINT relation_busy");
-                    await updateItemWithClient(
-                      client,
-                      { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "after" } },
-                      { writer: USER },
-                    );
-                  }),
-                ),
-              ),
-              { status: 409, code: "value_link_busy" },
-            );
-            expect(holderPid).toBeTypeOf("number");
-            expect(competitorPid).toBeTypeOf("number");
-            expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, unrelated.id)))?.properties.name).toBe(
-              "original",
-            );
-            expect(callback).not.toHaveBeenCalled();
-            expect(await jobCount()).toBe("0");
-            expect(events.filter((event) => event.scope === "item" && event.itemId === unrelated.id)).toEqual([]);
-            await runInTenant(tenant, () =>
-              withTransaction(contenderPool, async (client) => {
-                const result = await client.query<{ pid: number; timeout: string }>(
-                  "SELECT pg_backend_pid() AS pid, current_setting('lock_timeout') AS timeout",
+
+            await whileHolding(
+              holderPool,
+              tenant,
+              (client) =>
+                operation === "update"
+                  ? createRelationWithClient(client, fileEdge(fx), undefined, USER)
+                  : holdProposal(client, fx),
+              async (holderPid) => {
+                if (operation === "update") expect(await rowLockedBy("value_links", linkId, holderPid)).toBe(true);
+                await expectRuntimeRejection(
+                  operations,
+                  operations.run(() =>
+                    inTx(contenderPool, tenant, async (client) => {
+                      competitorPid = await pidOf(client);
+                      await renameUnrelated(client, "before");
+                      await enqueueRollupRecompute(client, rollup.id, unrelated.id);
+                      // Registered for the pre-commit flush, which the caught busy below must prevent.
+                      await enqueueItemSearchReindex(client, { kind: "item", itemId: unrelated.id });
+                      const queued = await client.query<{ key: string }>(
+                        "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[])",
+                        [[jobKey, searchJobKey]],
+                      );
+                      expect(queued.rows).toEqual([{ key: jobKey }]);
+                      runAfterCommit(client, callback);
+                      if (operation === "update") await client.query("SAVEPOINT relation_busy");
+                      await expect(protectedWrite(operation, client, fileEdge(fx, fx.beta))).rejects.toMatchObject({
+                        status: 409,
+                        code: "value_link_busy",
+                      });
+                      if (operation === "update") await client.query("ROLLBACK TO SAVEPOINT relation_busy");
+                      await renameUnrelated(client, "after");
+                    }),
+                  ),
+                  { status: 409, code: "value_link_busy" },
                 );
-                expect(result.rows[0]).toEqual({ pid: competitorPid, timeout: "0" });
-                await expect(
-                  updateRelationWithClient(
-                    client,
-                    {
+                expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, unrelated.id)))?.properties.name).toBe(
+                  "original",
+                );
+                expect(callback).not.toHaveBeenCalled();
+                expect(await jobCount(jobKey)).toBe("0");
+                expect(await jobCount(searchJobKey)).toBe("0");
+                expect(itemEvents(events, unrelated.id)).toEqual([]);
+                if (operation !== "update") return;
+                // The single pooled connection comes back with its lock timeout restored.
+                await inTx(contenderPool, tenant, async (client) => {
+                  const result = await client.query<{ pid: number; timeout: string }>(
+                    "SELECT pg_backend_pid() AS pid, current_setting('lock_timeout') AS timeout",
+                  );
+                  expect(result.rows[0]).toEqual({ pid: competitorPid, timeout: "0" });
+                  await expect(
+                    protectedWrite("update", client, {
                       relationPropertyId: fx.projectsProperty.id,
                       callerItemId: unrelated.id,
                       targetItemId: fx.beta.id,
-                      metadata: {},
-                    },
-                    VALUE_LINKS,
-                    SYSTEM_WRITER,
-                  ),
-                ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-              }),
+                    }),
+                  ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+                });
+              },
             );
-          } catch (error) {
-            failure = { error };
-          } finally {
-            release.resolve();
-            try {
-              await operations.settle();
-              const result = await settleOwned(holder, () => holderPid);
-              requireSuccessful(result);
-            } catch (error) {
-              failure = combineFailure(failure, [error], "Test and holder cleanup failed");
-            }
-            setInvalidationHook(() => {});
-          }
-          if (failure !== undefined) throwFailure(failure.error);
-        }),
-      );
-    }, 30000);
-
-    it("rolls back all earlier and later writes when caught advisory busy reaches the transaction owner", async () => {
-      const tenant = await createTestTenant(pool);
-      await withRuntimePool(async (holderPool) =>
-        withRuntimePool(async (contenderPool, operations) => {
-          const cp = createChokePoint(holderPool);
-          const fx = await runInTenant(tenant, () => setup(cp));
-          const unrelated = await runInTenant(tenant, () =>
-            cp.createItem({ databaseId: fx.files.id, properties: { name: "original" } }),
-          );
-          const rollup = await runInTenant(tenant, () =>
-            cp.createProperty({
-              databaseId: fx.files.id,
-              key: "projectCount",
-              name: "Project count",
-              type: "rollup",
-              config: { relationPropertyKey: "projects", aggregation: "count" },
-            }),
-          );
-          const jobKey = rollupRecomputeJobKey(rollup.id, unrelated.id);
-          const searchJobKey = `item-search-reindex:item:${unrelated.id}`;
-          const jobCount = async () =>
-            (
-              await pool.query<{ count: string }>(
-                "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
-                [jobKey],
-              )
-            ).rows[0]?.count;
-          expect(await jobCount()).toBe("0");
-          await runInTenant(tenant, () =>
-            cp.createRelation({
-              relationPropertyId: fx.projectsProperty.id,
-              callerItemId: fx.file.id,
-              targetItemId: fx.alpha.id,
-            }),
-          );
-          await withTenantTransaction(holderPool, tenant, (client) =>
-            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-          );
-          const held = barrier();
-          const release = barrier();
-          let holderPid: number | undefined;
-          let competitorPid: number | undefined;
-          const events: InvalidationEvent[] = [];
-          const callback = vi.fn();
-          setInvalidationHook((event) => events.push(event));
-          const holder = runInTenant(tenant, () =>
-            withTransaction(holderPool, async (client) => {
-              holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              await executeProposalSteps(
-                client,
-                [
-                  {
-                    ref: "same",
-                    op: "update",
-                    role: "primary",
-                    itemId: fx.file.id,
-                    before: { relations: { projects: [fx.alpha.id] } },
-                    after: { relations: { projects: [fx.alpha.id] } },
-                  },
-                ],
-                { writer: USER, sourceInboxItemId: null },
-              );
-              held.resolve();
-              await bounded(release.promise);
-            }),
-          );
-          const settledHolder = holder.then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
-          );
-          let failure: { error: unknown } | undefined;
-          try {
-            await bounded(held.promise);
-            await expectRuntimeRejection(
-              operations,
-              operations.run(() =>
-                runInTenant(tenant, () =>
-                  withTransaction(contenderPool, async (client) => {
-                    competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                      ?.pid;
-                    await updateItemWithClient(
-                      client,
-                      { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "before" } },
-                      { writer: USER },
-                    );
-                    await enqueueRollupRecompute(client, rollup.id, unrelated.id);
-                    // Registered for the pre-commit flush (R1 D1), which the caught busy below must prevent.
-                    await enqueueItemSearchReindex(client, { kind: "item", itemId: unrelated.id });
-                    const queued = await client.query<{ key: string }>(
-                      "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[])",
-                      [[jobKey, searchJobKey]],
-                    );
-                    expect(queued.rows).toEqual([{ key: jobKey }]);
-                    runAfterCommit(client, callback);
-                    await expect(
-                      createRelationWithClient(
-                        client,
-                        {
-                          relationPropertyId: fx.projectsProperty.id,
-                          callerItemId: fx.file.id,
-                          targetItemId: fx.beta.id,
-                        },
-                        VALUE_LINKS,
-                        SYSTEM_WRITER,
-                      ),
-                    ).rejects.toMatchObject({ status: 409, code: "value_link_busy" });
-                    await updateItemWithClient(
-                      client,
-                      { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "after" } },
-                      { writer: USER },
-                    );
-                  }),
-                ),
-              ),
-              { status: 409, code: "value_link_busy" },
-            );
-            expect(holderPid).toBeTypeOf("number");
-            expect(competitorPid).toBeTypeOf("number");
-            expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, unrelated.id)))?.properties.name).toBe(
-              "original",
-            );
-            expect(events.filter((event) => event.scope === "item" && event.itemId === unrelated.id)).toEqual([]);
-            expect(callback).not.toHaveBeenCalled();
-            expect(await jobCount()).toBe("0");
-            const searchJobs = await pool.query<{ count: string }>(
-              "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
-              [searchJobKey],
-            );
-            expect(searchJobs.rows[0]?.count).toBe("0");
-          } catch (error) {
-            failure = { error };
-          } finally {
-            release.resolve();
-            try {
-              await operations.settle();
-              const result = await settleOwned(settledHolder, () => holderPid);
-              requireSuccessful(result);
-            } catch (error) {
-              failure = combineFailure(failure, [error], "Test and holder cleanup failed");
-            } finally {
-              setInvalidationHook(() => {});
-            }
-          }
-          if (failure !== undefined) throwFailure(failure.error);
-        }),
-      );
-    }, 30000);
+          }),
+        );
+      },
+      30000,
+    );
 
     /*
-     * R1 D1: a protected valueLinks relation and an ordinary relation that share an endpoint both queue that
-     * endpoint's search job. The protected write registers it in its 1 ms body and adds it at its pre-commit
-     * flush, after the body restored the session's lock timeout and while its lease stays held. A scratch holder
-     * of the tenant's search-flush lock (released and awaited below) makes that flush wait observably.
+     * A protected valueLinks relation and an ordinary relation sharing an endpoint both queue its search job. The
+     * protected write adds it at its pre-commit flush, after restoring the lock timeout and while its lease is held;
+     * a scratch holder of the tenant's search-flush lock makes that flush wait observably.
      */
     it("adds a protected relation's search jobs at its flush, waiting there without value_link_busy beside an ordinary writer", async () => {
       const tenant = await createTestTenant(pool);
@@ -3325,15 +1847,13 @@ describe("value link state on writes (issue #1516)", () => {
         const other = await runInTenant(tenant, () =>
           cp.createItem({ databaseId: fx.files.id, properties: { name: "b.pdf" } }),
         );
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-        );
+        await linkIn(runtime, tenant, fx.file.id, "projects");
         const lockHeld = barrier();
         const releaseLock = barrier();
         let holderPid: number | undefined;
         const holder = runAsSystem("search flush lock holder", () =>
           withTransaction(pool, async (client) => {
-            holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+            holderPid = await pidOf(client);
             await client.query("SELECT pg_advisory_xact_lock($1::int4, hashtext($2::text))", [
               SEARCH_FLUSH_TENANT_LOCK_CLASS,
               tenant,
@@ -3342,38 +1862,31 @@ describe("value link state on writes (issue #1516)", () => {
             await bounded(releaseLock.promise);
           }),
         );
-        let protectedPid: number | undefined;
-        let ordinaryPid: number | undefined;
-        type Outcome = { ok: true } | { ok: false; error: unknown };
-        const write = (kind: "protected" | "ordinary", callerItemId: string): Promise<Outcome> =>
-          runInTenant(tenant, () =>
-            withTransaction(runtime, async (client) => {
-              const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-              if (kind === "protected") protectedPid = pid;
-              else ordinaryPid = pid;
+        const pids: { protected?: number; ordinary?: number } = {};
+        const write = (kind: "protected" | "ordinary", callerItemId: string) =>
+          outcomeOf(
+            inTx(runtime, tenant, async (client) => {
+              pids[kind] = await pidOf(client);
               const edge = { relationPropertyId: fx.projectsProperty.id, callerItemId, targetItemId: fx.alpha.id };
-              if (kind === "protected") await createRelationWithClient(client, edge, VALUE_LINKS, SYSTEM_WRITER);
+              if (kind === "protected") await protectedWrite("create", client, edge);
               else await createRelationWithClient(client, edge, undefined, USER);
             }),
-          ).then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
           );
-        let protectedWrite: Promise<Outcome> | undefined;
-        let ordinaryWrite: Promise<Outcome> | undefined;
+        let protectedCall: Promise<ParticipantOutcome> | undefined;
+        let ordinaryWrite: Promise<ParticipantOutcome> | undefined;
         let failure: { error: unknown } | undefined;
         try {
           await bounded(lockHeld.promise);
-          protectedWrite = write("protected", fx.file.id);
-          await waitUntil(() => protectedPid !== undefined);
-          if (!holderPid || !protectedPid) throw new Error("Missing participant PID");
+          protectedCall = write("protected", fx.file.id);
+          await waitUntil(() => pids.protected !== undefined);
+          if (!holderPid || !pids.protected) throw new Error("Missing participant PID");
           // The protected body finished; its flush waits on the tenant's flush lock, far beyond the body's 1 ms.
-          await waitBlocked(holderPid, protectedPid);
+          await waitBlocked(holderPid, pids.protected);
           ordinaryWrite = write("ordinary", other.id);
-          await waitUntil(() => ordinaryPid !== undefined);
-          if (!ordinaryPid) throw new Error("Missing participant PID");
+          await waitUntil(() => pids.ordinary !== undefined);
+          if (!pids.ordinary) throw new Error("Missing participant PID");
           // The ordinary write waits behind the protected write's held relation lock, not on the flush.
-          await waitBlocked(protectedPid, ordinaryPid);
+          await waitBlocked(pids.protected, pids.ordinary);
         } catch (error) {
           failure = { error };
         } finally {
@@ -3381,38 +1894,34 @@ describe("value link state on writes (issue #1516)", () => {
         }
         const settled = await Promise.allSettled([
           bounded(holder),
-          bounded(protectedWrite ?? Promise.resolve({ ok: true as const })),
+          bounded(protectedCall ?? Promise.resolve({ ok: true as const })),
           bounded(ordinaryWrite ?? Promise.resolve({ ok: true as const })),
         ]);
         if (failure) throwFailure(failure.error);
-        const [held, protectedOutcome, ordinaryOutcome] = settled;
-        expect(held.status).toBe("fulfilled");
-        expect(protectedOutcome).toEqual({ status: "fulfilled", value: { ok: true } });
-        expect(ordinaryOutcome).toEqual({ status: "fulfilled", value: { ok: true } });
-        const keys = await pool.query<{ key: string }>(
+        expect(settled[0].status).toBe("fulfilled");
+        expect(settled.slice(1)).toEqual([
+          { status: "fulfilled", value: { ok: true } },
+          { status: "fulfilled", value: { ok: true } },
+        ]);
+        const keys = [fx.file.id, fx.alpha.id, other.id].map((id) => `item-search-reindex:item:${id}`);
+        const queued = await pool.query<{ key: string }>(
           "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
-          [[fx.file.id, fx.alpha.id, other.id].map((id) => `item-search-reindex:item:${id}`)],
+          [keys],
         );
-        expect(keys.rows.map((row) => row.key)).toEqual(
-          [fx.file.id, fx.alpha.id, other.id].map((id) => `item-search-reindex:item:${id}`).sort(),
-        );
+        expect(queued.rows.map((row) => row.key)).toEqual([...keys].sort());
         expect(await readStoredLinks(runtime, tenant, fx.file.id)).toMatchObject([{ state: "on" }]);
       });
     }, 30000);
 
     it("refuses a protected relation waiting on a populated rollup job", async () => {
       const tenant = await createTestTenant(pool);
-      await withRuntimePool(async (userPool) =>
-        withRuntimePool(async (systemPool) => {
+      await withRuntimePool(async (userPool, userOperations) =>
+        withRuntimePool(async (systemPool, systemOperations) => {
           const cp = createChokePoint(userPool);
           const fx = await runInTenant(tenant, () => setup(cp));
           const gamma = await runInTenant(tenant, async () => {
             await cp.createProperty({ databaseId: fx.alpha.databaseId, key: "hours", name: "Hours", type: "number" });
-            await cp.updateItem({
-              databaseId: fx.alpha.databaseId,
-              itemId: fx.alpha.id,
-              propertiesPatch: { hours: 1 },
-            });
+            await updateAs(undefined, fx.alpha.databaseId, fx.alpha.id, { hours: 1 }, cp);
             const third = await cp.createItem({ databaseId: fx.alpha.databaseId, properties: { hours: 3 } });
             await cp.createProperty({
               databaseId: fx.files.id,
@@ -3421,165 +1930,78 @@ describe("value link state on writes (issue #1516)", () => {
               type: "rollup",
               config: { relationPropertyKey: "projects", aggregation: "sum", targetPropertyKey: "hours" },
             });
-            await cp.createRelation({
-              relationPropertyId: fx.projectsProperty.id,
-              callerItemId: fx.file.id,
-              targetItemId: fx.alpha.id,
-            });
-            await cp.createRelation({
-              relationPropertyId: fx.projectsProperty.id,
-              callerItemId: fx.file.id,
-              targetItemId: fx.beta.id,
-            });
+            await cp.createRelation(fileEdge(fx));
+            await cp.createRelation(fileEdge(fx, fx.beta));
             return third;
           });
           const rollup = await runInTenant(tenant, () => cp.getPropertyByKey(fx.files.id, "totalHours"));
           if (!rollup) throw new Error("Missing rollup property");
           const jobKey = rollupRecomputeJobKey(rollup.id, fx.file.id);
-          const beforeJob = await pool.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
-            [jobKey],
-          );
-          expect(beforeJob.rows[0]?.count).toBe("1");
-          await withTenantTransaction(userPool, tenant, (client) =>
-            insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-          );
+          expect(await jobCount(jobKey)).toBe("1");
+          await linkIn(userPool, tenant, fx.file.id, "projects");
           const jobHeld = barrier();
           const linkHeld = barrier();
           const releaseJob = barrier();
           const releaseLink = barrier();
-          let userClient: PoolClient | undefined;
           let systemClient: PoolClient | undefined;
           let userPid: number | undefined;
-          let systemPid: number | undefined;
           let systemEnqueueAttempted = false;
           const originalLink = valueLinksStore.lockOnValueLink;
-          const linkSpy = vi
-            .spyOn(valueLinksStore, "lockOnValueLink")
-            .mockImplementation(async (client, id, key, mode) => {
-              const result = await originalLink(client, id, key, mode);
-              if (client === systemClient && result && mode === "nowait") {
-                linkHeld.resolve();
-                await bounded(releaseLink.promise);
-              }
-              return result;
-            });
-          type Outcome = { ok: true } | { ok: false; error: unknown };
-          const run = (kind: "user" | "system"): Promise<Outcome> =>
-            runInTenant(tenant, () =>
-              withTransaction(kind === "user" ? userPool : systemPool, async (client) => {
-                await client.query("SET LOCAL statement_timeout = '7s'");
-                const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                if (!pid) throw new Error("Missing queue participant PID");
-                if (kind === "user") {
-                  userClient = client;
-                  userPid = pid;
-                  await updateItemWithClient(
-                    client,
-                    { databaseId: fx.alpha.databaseId, itemId: fx.alpha.id, propertiesPatch: { hours: 2 } },
-                    { writer: USER },
-                  );
-                  jobHeld.resolve();
-                  await bounded(releaseJob.promise);
-                  return deleteRelationWithClient(
-                    client,
-                    { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.beta.id },
-                    undefined,
-                    USER,
-                  );
-                }
-                systemClient = client;
-                systemPid = pid;
-                // eslint-disable-next-line @typescript-eslint/unbound-method
-                const originalQuery = client.query;
-                // eslint-disable-next-line @typescript-eslint/unbound-method
-                client.query = new Proxy(client.query, {
-                  apply(target, receiver, args: unknown[]) {
-                    const params: unknown = args[1];
-                    if (
-                      typeof args[0] === "string" &&
-                      args[0].includes("graphile_worker.add_job") &&
-                      Array.isArray(params) &&
-                      params[5] === jobKey
-                    )
-                      systemEnqueueAttempted = true;
-                    return Reflect.apply(target, receiver, args);
-                  },
-                });
-                try {
-                  return await createRelationWithClient(
-                    client,
-                    { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: gamma.id },
-                    VALUE_LINKS,
-                    SYSTEM_WRITER,
-                  );
-                } finally {
-                  client.query = originalQuery;
-                }
-              }),
-            ).then(
-              () => ({ ok: true }),
-              (error: unknown) => ({ ok: false, error }),
-            );
-          let user: Promise<Outcome> | undefined;
-          let system: Promise<Outcome> | undefined;
-          let failure: { error: unknown } | undefined;
-          const consumed = new Set<Outcome>();
-          const events: InvalidationEvent[] = [];
-          setInvalidationHook((event) => events.push(event));
-          try {
-            user = run("user");
-            await bounded(jobHeld.promise);
-            expect(await graphileJobHeldBy(jobKey, userPid)).toBe(true);
-            system = run("system");
-            await bounded(linkHeld.promise);
-            if (!userPid || !systemPid || !userClient) throw new Error("Missing queue participant PID");
-            releaseLink.resolve();
-            const systemOutcome = await bounded(system);
-            expect(systemEnqueueAttempted).toBe(true);
-            expect(systemOutcome).toMatchObject({ ok: false, error: { status: 409, code: "value_link_busy" } });
-            consumed.add(systemOutcome);
-            releaseJob.resolve();
-            const outcomes = await bounded(Promise.all([user, system]));
-            console.info("Populated rollup contention refusal", { userPid, systemPid, jobKey, outcomes });
-            expect(outcomes.filter((result) => result.ok)).toHaveLength(1);
-            expect(outcomes.filter((result) => !result.ok)).toMatchObject([{ error: { code: "value_link_busy" } }]);
-            const links = await withTenantTransaction(userPool, tenant, (client) =>
-              listValueLinksByItemIds(client, [fx.file.id]),
-            );
-            const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
-            const targetIds = edges?.map((edge) => edge.targetItemId) ?? [];
-            const alpha = await runInTenant(tenant, () => cp.getItem(fx.alpha.databaseId, fx.alpha.id));
-            expect(links[0]).toMatchObject(outcomes[0]?.ok ? { state: "broken", brokenBy: "user" } : { state: "on" });
-            expect(alpha?.properties.hours).toBe(outcomes[0]?.ok ? 2 : 1);
-            expect(targetIds.includes(fx.beta.id)).toBe(!outcomes[0]?.ok);
-            expect(targetIds.includes(gamma.id)).toBe(Boolean(outcomes[1]?.ok));
-            expect(events.filter((event) => event.scope === "item" && event.itemId === fx.alpha.id)).toHaveLength(
-              outcomes[0]?.ok ? 1 : 0,
-            );
-            expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
-            const afterJob = await pool.query<{ count: string }>(
-              "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1",
-              [jobKey],
-            );
-            expect(afterJob.rows[0]?.count).toBe("1");
-          } catch (error) {
-            failure = { error };
-          } finally {
-            releaseJob.resolve();
-            releaseLink.resolve();
-            const errors = await settleParticipants(
-              user,
-              system,
-              () => userPid,
-              () => systemPid,
-              consumed,
-            );
-            linkSpy.mockRestore();
-            setInvalidationHook(() => {});
-            if (errors.length) failure = combineFailure(failure, errors, "Rollup diagnostic cleanup failed");
-          }
-          if (failure !== undefined) throwFailure(failure.error);
+          vi.spyOn(valueLinksStore, "lockOnValueLink").mockImplementation(async (client, id, key, mode) => {
+            const result = await originalLink(client, id, key, mode);
+            if (client === systemClient && result && mode === "nowait") {
+              linkHeld.resolve();
+              await bounded(releaseLink.promise);
+            }
+            return result;
+          });
+          const events = recordEvents();
+
+          // The user's hours update queues the populated rollup job and holds it until released.
+          const user = userOperations.run(() =>
+            inTx(userPool, tenant, async (client) => {
+              userPid = await pidOf(client);
+              await updateItemWithClient(
+                client,
+                { databaseId: fx.alpha.databaseId, itemId: fx.alpha.id, propertiesPatch: { hours: 2 } },
+                { writer: USER },
+              );
+              jobHeld.resolve();
+              await bounded(releaseJob.promise);
+              return deleteRelationWithClient(client, fileEdge(fx, fx.beta), undefined, USER);
+            }),
+          );
+          await bounded(jobHeld.promise);
+          expect(await graphileJobHeldBy(jobKey, userPid)).toBe(true);
+          const system = systemOperations.run(() =>
+            inTx(systemPool, tenant, (client) => {
+              systemClient = client;
+              return observingQueries(
+                client,
+                (sql, params) => {
+                  if (sql.includes("graphile_worker.add_job") && Array.isArray(params) && params[5] === jobKey)
+                    systemEnqueueAttempted = true;
+                },
+                () => protectedWrite("create", client, fileEdge(fx, gamma)),
+              );
+            }),
+          );
+          await bounded(linkHeld.promise);
+          releaseLink.resolve();
+          await expectRuntimeRejection(systemOperations, system, { status: 409, code: "value_link_busy" });
+          expect(systemEnqueueAttempted).toBe(true);
+          releaseJob.resolve();
+          await bounded(user);
+
+          expect((await linksIn(userPool, tenant, fx.file.id))[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+          expect(
+            (await runInTenant(tenant, () => cp.getItem(fx.alpha.databaseId, fx.alpha.id)))?.properties.hours,
+          ).toBe(2);
+          const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
+          expect(edges?.map((edge) => edge.targetItemId)).toEqual([fx.alpha.id]);
+          expect(itemEvents(events, fx.alpha.id)).toHaveLength(1);
+          expect(itemEvents(events, fx.file.id)).toHaveLength(1);
+          expect(await jobCount(jobKey)).toBe("1");
         }),
       );
     }, 30000);
@@ -3592,139 +2014,79 @@ describe("value link state on writes (issue #1516)", () => {
       "serializes relation advisory with %s (same target: %s)",
       async (order, sameTarget) => {
         const tenant = await createTestTenant(pool);
-        await withRuntimePool(async (userPool) =>
-          withRuntimePool(async (systemPool) => {
+        await withRuntimePool(async (userPool, userOperations) =>
+          withRuntimePool(async (systemPool, systemOperations) => {
             const cp = createChokePoint(userPool);
             const fx = await runInTenant(tenant, () => setup(cp));
-            await withTenantTransaction(userPool, tenant, (client) =>
-              insertValueLink(client, { itemId: fx.file.id, propertyKey: "projects", ruleKey: "test", sources: [] }),
-            );
-            const definition = await withTenantTransaction(userPool, tenant, (client) =>
-              relationsStore.getRelationDefinitionByPropertyId(client, fx.projectsProperty.id),
-            );
-            if (!definition) throw new Error("Missing relation definition");
+            await linkIn(userPool, tenant, fx.file.id, "projects");
+            const definition = await definitionOf(userPool, tenant, fx.projectsProperty.id);
             const edgeHeld = barrier();
             const userStarted = barrier();
             const linkHeld = barrier();
             const releaseEdge = barrier();
             const releaseLink = barrier();
-            let userClient: PoolClient | undefined;
-            let systemClient: PoolClient | undefined;
-            let userPid: number | undefined;
-            let systemPid: number | undefined;
+            const clients: { user?: PoolClient; system?: PoolClient } = {};
+            const pids: { user?: number; system?: number } = {};
             const originalInsert = relationsStore.createItemRelationReportingInsert;
             const originalLink = valueLinksStore.lockOnValueLink;
-            const edgeSpy = vi
-              .spyOn(relationsStore, "createItemRelationReportingInsert")
-              .mockImplementation(async (client, input) => {
-                const result = await originalInsert(client, input);
-                if (client === userClient) {
-                  edgeHeld.resolve();
-                  await bounded(releaseEdge.promise);
-                }
-                return result;
-              });
-            const linkSpy = vi
-              .spyOn(valueLinksStore, "lockOnValueLink")
-              .mockImplementation(async (client, id, key, mode) => {
-                const result = await originalLink(client, id, key, mode);
-                if (client === systemClient && result && mode === "nowait") {
-                  linkHeld.resolve();
-                  await bounded(releaseLink.promise);
-                }
-                return result;
-              });
-            type Outcome = { ok: true } | { ok: false; error: unknown };
-            const run = (kind: "user" | "system"): Promise<Outcome> =>
-              runInTenant(tenant, () =>
-                withTransaction(kind === "user" ? userPool : systemPool, async (client) => {
-                  await client.query("SET LOCAL statement_timeout = '7s'");
-                  const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                  if (!pid) throw new Error("Missing relation participant PID");
-                  if (kind === "user") {
-                    userClient = client;
-                    userPid = pid;
-                    userStarted.resolve();
-                  } else {
-                    systemClient = client;
-                    systemPid = pid;
-                  }
-                  return createRelationWithClient(
-                    client,
-                    {
-                      relationPropertyId: fx.projectsProperty.id,
-                      callerItemId: fx.file.id,
-                      targetItemId: kind === "user" || sameTarget ? fx.alpha.id : fx.beta.id,
-                    },
-                    kind === "system" ? VALUE_LINKS : undefined,
-                    kind === "user" ? USER : SYSTEM_WRITER,
-                  );
-                }),
-              ).then(
-                () => ({ ok: true }),
-                (error: unknown) => ({ ok: false, error }),
-              );
-            let user: Promise<Outcome> | undefined;
-            let system: Promise<Outcome> | undefined;
-            let failure: { error: unknown } | undefined;
-            const consumed = new Set<Outcome>();
-            const events: InvalidationEvent[] = [];
-            setInvalidationHook((event) => events.push(event));
-            try {
-              if (order === "system-first") {
-                system = run("system");
-                await bounded(linkHeld.promise);
-                expect(await relationAdvisoryHeldBy(definition.id, systemPid)).toBe(true);
-                user = run("user");
-                await bounded(userStarted.promise);
-                if (!userPid || !systemPid) throw new Error("Missing relation participant PID");
-                await waitBlocked(systemPid, userPid);
-                releaseLink.resolve();
-                releaseEdge.resolve();
-              } else {
-                user = run("user");
-                await bounded(edgeHeld.promise);
-                expect(await relationAdvisoryHeldBy(definition.id, userPid)).toBe(true);
-                system = run("system");
-                const refused = await bounded(system);
-                expect(refused).toMatchObject({
-                  ok: false,
-                  error: { code: "value_link_busy", status: 409 },
-                });
-                consumed.add(refused);
-                releaseEdge.resolve();
+            vi.spyOn(relationsStore, "createItemRelationReportingInsert").mockImplementation(async (client, input) => {
+              const result = await originalInsert(client, input);
+              if (client === clients.user) {
+                edgeHeld.resolve();
+                await bounded(releaseEdge.promise);
               }
-              const outcomes = await bounded(Promise.all([user, system]));
-              console.info("Relation advisory admission", { order, userPid, systemPid });
-              expect(outcomes[0]).toEqual({ ok: true });
-              if (order === "system-first") expect(outcomes[1]).toEqual({ ok: true });
-              else expect(outcomes[1]).toMatchObject({ ok: false, error: { code: "value_link_busy" } });
-              if (outcomes[1]) consumed.add(outcomes[1]);
-              const links = await withTenantTransaction(userPool, tenant, (client) =>
-                listValueLinksByItemIds(client, [fx.file.id]),
+              return result;
+            });
+            vi.spyOn(valueLinksStore, "lockOnValueLink").mockImplementation(async (client, id, key, mode) => {
+              const result = await originalLink(client, id, key, mode);
+              if (client === clients.system && result && mode === "nowait") {
+                linkHeld.resolve();
+                await bounded(releaseLink.promise);
+              }
+              return result;
+            });
+            const run = (kind: "user" | "system") =>
+              (kind === "user" ? userOperations : systemOperations).run(() =>
+                inTx(kind === "user" ? userPool : systemPool, tenant, async (client) => {
+                  await client.query("SET LOCAL statement_timeout = '7s'");
+                  clients[kind] = client;
+                  pids[kind] = await pidOf(client);
+                  if (kind === "user") {
+                    userStarted.resolve();
+                    return createRelationWithClient(client, fileEdge(fx), undefined, USER);
+                  }
+                  return protectedWrite("create", client, fileEdge(fx, sameTarget ? fx.alpha : fx.beta));
+                }),
               );
-              expect(links[0]).toMatchObject(outcomes[0]?.ok ? { state: "broken", brokenBy: "user" } : { state: "on" });
-              expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
-              const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
-              expect(edges).toHaveLength(order === "system-first" ? 2 : 1);
-            } catch (error) {
-              failure = { error };
-            } finally {
-              releaseEdge.resolve();
+            const events = recordEvents();
+
+            if (order === "system-first") {
+              const system = run("system");
+              await bounded(linkHeld.promise);
+              expect(await relationAdvisoryHeldBy(definition.id, pids.system)).toBe(true);
+              const user = run("user");
+              await bounded(userStarted.promise);
+              if (!pids.user || !pids.system) throw new Error("Missing relation participant PID");
+              await waitBlocked(pids.system, pids.user);
               releaseLink.resolve();
-              const errors = await settleParticipants(
-                user,
-                system,
-                () => userPid,
-                () => systemPid,
-                consumed,
-              );
-              edgeSpy.mockRestore();
-              linkSpy.mockRestore();
-              setInvalidationHook(() => {});
-              if (errors.length) failure = combineFailure(failure, errors, "Relation diagnostic cleanup failed");
+              releaseEdge.resolve();
+              await bounded(Promise.all([user, system]));
+            } else {
+              const user = run("user");
+              await bounded(edgeHeld.promise);
+              expect(await relationAdvisoryHeldBy(definition.id, pids.user)).toBe(true);
+              await expectRuntimeRejection(systemOperations, run("system"), { code: "value_link_busy", status: 409 });
+              releaseEdge.resolve();
+              await bounded(user);
             }
-            if (failure !== undefined) throwFailure(failure.error);
+
+            expect((await linksIn(userPool, tenant, fx.file.id))[0]).toMatchObject({
+              state: "broken",
+              brokenBy: "user",
+            });
+            expect(itemEvents(events, fx.file.id)).toHaveLength(1);
+            const edges = await runInTenant(tenant, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id));
+            expect(edges).toHaveLength(order === "system-first" ? 2 : 1);
           }),
         );
       },
@@ -3736,31 +2098,22 @@ describe("value link state on writes (issue #1516)", () => {
       async (order) => {
         await seedSystem(pool);
         const tenant = getTenantZeroId();
-        await withRuntimePool(async (userPool) =>
-          withRuntimePool(async (systemPool) => {
+        await withRuntimePool(async (userPool, userOperations) =>
+          withRuntimePool(async (systemPool, systemOperations) => {
             const cp = createChokePoint(userPool);
-            const databases = await runInTenant(tenant, () => cp.listDatabases());
-            const inbox = databases.find((db) => db.ownerModuleId === "inbox");
-            const types = databases.find((db) => db.ownerModuleId === "inboxItemTypes");
-            if (!inbox || !types) throw new Error("Missing seeded Inbox databases");
-            const property = await runInTenant(tenant, () => cp.getPropertyByKey(inbox.id, "type"));
-            if (!property) throw new Error("Missing Inbox type relation");
+            const inbox = await seededInbox(cp);
+            const property = inbox.property;
             const fixture = await withTenantTransaction(userPool, tenant, async (client) => {
               const type = await createInboxTypeWithClient(client, {
-                inboxItemTypesDatabaseId: types.id,
+                inboxItemTypesDatabaseId: inbox.types.id,
                 name: "Task",
                 emoji: "T",
                 processingMethod: "database",
                 targetDatabase: "tasks",
               });
-              const other = await createInboxTypeWithClient(client, {
-                inboxItemTypesDatabaseId: types.id,
-                name: "Page",
-                emoji: "P",
-                processingMethod: "pageContent",
-              });
+              const other = await inbox.createType(client);
               const item = await createInboxItemWithClient(client, {
-                inboxDatabaseId: inbox.id,
+                inboxDatabaseId: inbox.inbox.id,
                 date: "2026-10-01",
                 time: "09:00",
                 text: "Source",
@@ -3771,209 +2124,122 @@ describe("value link state on writes (issue #1516)", () => {
             const jobKeys = [fixture.item.id, fixture.type.id, fixture.other.id].map(
               (id) => `item-search-reindex:item:${id}`,
             );
-            const priorJobs = await pool.query<{ key: string }>(
-              "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
-              [jobKeys],
-            );
+            const queuedKeys = async () =>
+              (
+                await pool.query<{ key: string }>(
+                  "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
+                  [jobKeys],
+                )
+              ).rows.map((row) => row.key);
+            const priorJobs = await queuedKeys();
             const sourceHeld = barrier();
             const userStarted = barrier();
             const linkHeld = barrier();
             const releaseSource = barrier();
             const releaseLink = barrier();
-            let userClient: PoolClient | undefined;
-            let systemClient: PoolClient | undefined;
-            let userPid: number | undefined;
-            let systemPid: number | undefined;
+            const clients: { user?: PoolClient; system?: PoolClient } = {};
+            const pids: { user?: number; system?: number } = {};
             let userSourceAttempt = false;
             let systemSourceNowaitAttempt = false;
             const originalSource = inboxSourceGuard.lockInboxSource;
             const originalLink = valueLinksStore.lockOnValueLink;
-            const sourceSpy = vi
-              .spyOn(inboxSourceGuard, "lockInboxSource")
-              .mockImplementation(async (client, id, allowDeleted, mode) => {
-                await originalSource(client, id, allowDeleted, mode);
-                if (client === userClient) {
-                  sourceHeld.resolve();
-                  await bounded(releaseSource.promise);
-                }
-              });
-            const linkSpy = vi
-              .spyOn(valueLinksStore, "lockOnValueLink")
-              .mockImplementation(async (client, id, key, mode) => {
-                const found = await originalLink(client, id, key, mode);
-                if (client === systemClient && found && mode === "nowait") {
-                  linkHeld.resolve();
-                  await bounded(releaseLink.promise);
-                }
-                return found;
-              });
-            type Outcome = { ok: true } | { ok: false; error: unknown };
-            const run = (kind: "user" | "system"): Promise<Outcome> =>
-              runInTenant(tenant, () =>
-                withTransaction(kind === "user" ? userPool : systemPool, async (client) => {
+            vi.spyOn(inboxSourceGuard, "lockInboxSource").mockImplementation(async (client, id, allowDeleted, mode) => {
+              await originalSource(client, id, allowDeleted, mode);
+              if (client === clients.user) {
+                sourceHeld.resolve();
+                await bounded(releaseSource.promise);
+              }
+            });
+            vi.spyOn(valueLinksStore, "lockOnValueLink").mockImplementation(async (client, id, key, mode) => {
+              const found = await originalLink(client, id, key, mode);
+              if (client === clients.system && found && mode === "nowait") {
+                linkHeld.resolve();
+                await bounded(releaseLink.promise);
+              }
+              return found;
+            });
+            const run = (kind: "user" | "system") =>
+              (kind === "user" ? userOperations : systemOperations).run(() =>
+                inTx(kind === "user" ? userPool : systemPool, tenant, async (client) => {
                   await client.query("SET LOCAL statement_timeout = '7s'");
-                  const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                  if (!pid) throw new Error("Missing relation participant PID");
-                  if (kind === "user") {
-                    userClient = client;
-                    userPid = pid;
-                    userStarted.resolve();
-                  } else {
-                    systemClient = client;
-                    systemPid = pid;
-                  }
-                  // eslint-disable-next-line @typescript-eslint/unbound-method
-                  const originalQuery = client.query;
-                  // eslint-disable-next-line @typescript-eslint/unbound-method
-                  client.query = new Proxy(client.query, {
-                    apply(target, receiver, args: unknown[]) {
-                      const sql = typeof args[0] === "string" ? args[0] : "";
-                      const params: unknown = args[1];
+                  clients[kind] = client;
+                  pids[kind] = await pidOf(client);
+                  if (kind === "user") userStarted.resolve();
+                  return observingQueries(
+                    client,
+                    (sql, params) => {
                       if (
-                        sql.includes("FROM items i JOIN databases") &&
-                        sql.includes("FOR UPDATE OF i") &&
-                        Array.isArray(params) &&
-                        params[0] === fixture.item.id
-                      ) {
-                        if (kind === "user") userSourceAttempt = true;
-                        if (kind === "system" && sql.includes("NOWAIT")) systemSourceNowaitAttempt = true;
-                      }
-                      return Reflect.apply(target, receiver, args);
+                        !sql.includes("FROM items i JOIN databases") ||
+                        !sql.includes("FOR UPDATE OF i") ||
+                        !Array.isArray(params) ||
+                        params[0] !== fixture.item.id
+                      )
+                        return;
+                      if (kind === "user") userSourceAttempt = true;
+                      else if (sql.includes("NOWAIT")) systemSourceNowaitAttempt = true;
                     },
-                  });
-                  try {
-                    return await createRelationWithClient(
-                      client,
-                      {
+                    () => {
+                      const edge = {
                         relationPropertyId: property.id,
                         callerItemId: fixture.item.id,
                         targetItemId: kind === "user" ? fixture.type.id : fixture.other.id,
-                      },
-                      kind === "system" ? VALUE_LINKS : undefined,
-                      kind === "user" ? USER : SYSTEM_WRITER,
-                    );
-                  } finally {
-                    client.query = originalQuery;
-                  }
+                      };
+                      return kind === "user"
+                        ? createRelationWithClient(client, edge, undefined, USER)
+                        : protectedWrite("create", client, edge);
+                    },
+                  );
                 }),
-              ).then(
-                () => ({ ok: true }),
-                (error: unknown) => ({ ok: false, error }),
               );
-            let user: Promise<Outcome> | undefined;
-            let system: Promise<Outcome> | undefined;
-            let failure: { error: unknown } | undefined;
-            const consumed = new Set<Outcome>();
-            const events: InvalidationEvent[] = [];
-            setInvalidationHook((event) => events.push(event));
-            try {
-              if (order === "system-first") {
-                system = run("system");
-                await bounded(linkHeld.promise);
-                const heldSource = await pool.query<{ held: boolean }>(
-                  `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
-                     WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
-                  [fixture.item.id, systemPid],
-                );
-                expect(heldSource.rows[0]?.held).toBe(true);
-                user = run("user");
-                await bounded(userStarted.promise);
-                if (!userPid || !systemPid) throw new Error("Missing relation participant PID");
-                await waitBlocked(systemPid, userPid);
-                const waiting = await pool.query<{ waiting: boolean }>(
-                  `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1
-                    AND query LIKE '%FROM items i JOIN databases%FOR UPDATE OF i%'
-                    AND $2::int = ANY(pg_blocking_pids(pid))) AS waiting`,
-                  [userPid, systemPid],
-                );
-                expect(waiting.rows[0]?.waiting).toBe(true);
-                expect(userSourceAttempt).toBe(true);
-                releaseLink.resolve();
-                releaseSource.resolve();
-              } else {
-                user = run("user");
-                await bounded(sourceHeld.promise);
-                const sourceLock = await pool.query<{ held: boolean }>(
-                  `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
-                     WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.mode = 'ExclusiveLock' AND l.granted) AS held`,
-                  [fixture.item.id, userPid],
-                );
-                expect(sourceLock.rows[0]?.held).toBe(true);
-                system = run("system");
-                const refused = await bounded(system);
-                expect(refused).toMatchObject({
-                  ok: false,
-                  error: { code: "value_link_busy", status: 409 },
-                });
-                consumed.add(refused);
-                expect(systemSourceNowaitAttempt).toBe(true);
-                releaseSource.resolve();
-              }
-              const outcomes = await bounded(Promise.all([user, system]));
-              console.info("Inbox relation admission", { order, userPid, systemPid });
-              if (order === "system-first") {
-                expect(outcomes[0]).toMatchObject({ ok: false, error: { code: "cardinality_violation", status: 409 } });
-                expect(outcomes[1]).toEqual({ ok: true });
-              } else {
-                expect(outcomes[0]).toEqual({ ok: true });
-                expect(outcomes[1]).toMatchObject({ ok: false, error: { code: "value_link_busy", status: 409 } });
-              }
-              for (const outcome of outcomes) if (outcome) consumed.add(outcome);
-              const links = await withTenantTransaction(userPool, tenant, (client) =>
-                listValueLinksByItemIds(client, [fixture.item.id]),
+            const events = recordEvents();
+
+            if (order === "system-first") {
+              const system = run("system");
+              await bounded(linkHeld.promise);
+              expect(await rowLockedBy("items", fixture.item.id, pids.system)).toBe(true);
+              const user = run("user");
+              await bounded(userStarted.promise);
+              if (!pids.user || !pids.system) throw new Error("Missing relation participant PID");
+              await waitBlocked(pids.system, pids.user);
+              const waiting = await pool.query<{ waiting: boolean }>(
+                `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1
+                  AND query LIKE '%FROM items i JOIN databases%FOR UPDATE OF i%'
+                  AND $2::int = ANY(pg_blocking_pids(pid))) AS waiting`,
+                [pids.user, pids.system],
               );
-              expect(links).toHaveLength(1);
-              expect(links[0]).toMatchObject(
-                order === "system-first" ? { state: "on" } : { state: "broken", brokenBy: "user" },
-              );
-              const targetId = order === "system-first" ? fixture.other.id : fixture.type.id;
-              expect(events.filter((event) => event.scope === "item" && event.itemId === fixture.item.id)).toHaveLength(
-                order === "system-first" ? 0 : 1,
-              );
-              expect(events.filter((event) => event.scope === "relation")).toEqual([
-                expect.objectContaining({ scope: "relation", itemId: fixture.item.id, propertyKey: "type", op: "put" }),
-                expect.objectContaining({ scope: "relation", itemId: targetId, propertyKey: null, op: "put" }),
-              ]);
-              const edges = await runInTenant(tenant, () => cp.listItemRelations(fixture.item.id, property.id));
-              if (!edges) throw new Error("Missing Inbox type relation");
-              expect(edges).toEqual([
-                expect.objectContaining({
-                  relationPropertyId: property.id,
-                  propertyKey: "type",
-                  targetItemId: targetId,
-                }),
-              ]);
-              const jobs = await pool.query<{ key: string }>(
-                "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key",
-                [jobKeys],
-              );
-              expect(jobs.rows.map((row) => row.key)).toEqual(
-                [
-                  ...new Set([
-                    ...priorJobs.rows.map((row) => row.key),
-                    jobKeys[0],
-                    jobKeys[order === "system-first" ? 2 : 1],
-                  ]),
-                ].sort(),
-              );
-            } catch (error) {
-              failure = { error };
-            } finally {
-              releaseSource.resolve();
+              expect(waiting.rows[0]?.waiting).toBe(true);
+              expect(userSourceAttempt).toBe(true);
               releaseLink.resolve();
-              const errors = await settleParticipants(
-                user,
-                system,
-                () => userPid,
-                () => systemPid,
-                consumed,
-              );
-              sourceSpy.mockRestore();
-              linkSpy.mockRestore();
-              setInvalidationHook(() => {});
-              if (errors.length) failure = combineFailure(failure, errors, "Relation diagnostic cleanup failed");
+              releaseSource.resolve();
+              await bounded(system);
+              await expectRuntimeRejection(userOperations, user, { code: "cardinality_violation", status: 409 });
+            } else {
+              const user = run("user");
+              await bounded(sourceHeld.promise);
+              expect(await rowLockedBy("items", fixture.item.id, pids.user)).toBe(true);
+              await expectRuntimeRejection(systemOperations, run("system"), { code: "value_link_busy", status: 409 });
+              expect(systemSourceNowaitAttempt).toBe(true);
+              releaseSource.resolve();
+              await bounded(user);
             }
-            if (failure !== undefined) throwFailure(failure.error);
+
+            const links = await linksIn(userPool, tenant, fixture.item.id);
+            expect(links).toHaveLength(1);
+            expect(links[0]).toMatchObject(
+              order === "system-first" ? { state: "on" } : { state: "broken", brokenBy: "user" },
+            );
+            const targetId = order === "system-first" ? fixture.other.id : fixture.type.id;
+            expect(itemEvents(events, fixture.item.id)).toHaveLength(order === "system-first" ? 0 : 1);
+            expect(events.filter((event) => event.scope === "relation")).toEqual([
+              expect.objectContaining({ scope: "relation", itemId: fixture.item.id, propertyKey: "type", op: "put" }),
+              expect.objectContaining({ scope: "relation", itemId: targetId, propertyKey: null, op: "put" }),
+            ]);
+            expect(await runInTenant(tenant, () => cp.listItemRelations(fixture.item.id, property.id))).toEqual([
+              expect.objectContaining({ relationPropertyId: property.id, propertyKey: "type", targetItemId: targetId }),
+            ]);
+            expect(await queuedKeys()).toEqual(
+              [...new Set([...priorJobs, jobKeys[0], jobKeys[order === "system-first" ? 2 : 1]])].sort(),
+            );
           }),
         );
       },
@@ -3988,46 +2254,27 @@ describe("value link state on writes (issue #1516)", () => {
         await runInTenant(tenant, () =>
           cp.createProperty({ databaseId: fx.files.id, key: "note", name: "Note", type: "text" }),
         );
-        await withTenantTransaction(runtime, tenant, async (client) => {
-          for (const propertyKey of ["name", "note"]) {
-            await insertValueLink(client, { itemId: fx.file.id, propertyKey, ruleKey: "test", sources: [] });
-          }
-        });
+        await linkIn(runtime, tenant, fx.file.id, ["name", "note"]);
         const handoff = vi.spyOn(valueLinksStore, "lockOnValueLink");
         const prelock = vi.spyOn(itemsStore, "lockItemById");
-        try {
-          await runInTenant(tenant, () =>
-            withTransaction(runtime, (client) =>
-              updateItemWithClient(
-                client,
-                { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { note: "one", name: "system" } },
-                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-              ),
-            ),
-          );
-          expect(handoff.mock.calls.map((call) => call[2])).toEqual(["name", "note"]);
-          expect(prelock).toHaveBeenCalledTimes(1);
-          prelock.mockClear();
-          await runInTenant(tenant, () =>
-            cp.updateItem(
-              { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "user" } },
-              undefined,
-              undefined,
-              USER,
-            ),
-          );
-          expect(prelock).not.toHaveBeenCalled();
-          const links = await withTenantTransaction(runtime, tenant, (client) =>
-            listValueLinksByItemIds(client, [fx.file.id]),
-          );
-          expect(links.map((entry) => [entry.propertyKey, entry.state])).toEqual([
-            ["name", "broken"],
-            ["note", "on"],
-          ]);
-        } finally {
-          handoff.mockRestore();
-          prelock.mockRestore();
-        }
+
+        await inTx(runtime, tenant, (client) =>
+          protectedUpdate(client, {
+            databaseId: fx.files.id,
+            itemId: fx.file.id,
+            propertiesPatch: { note: "one", name: "system" },
+          }),
+        );
+        expect(handoff.mock.calls.map((call) => call[2])).toEqual(["name", "note"]);
+        expect(prelock).toHaveBeenCalledTimes(1);
+        prelock.mockClear();
+        await runInTenant(tenant, () => updateAs(USER, fx.files.id, fx.file.id, { name: "user" }, cp));
+        expect(prelock).not.toHaveBeenCalled();
+
+        expect((await linksIn(runtime, tenant, fx.file.id)).map((entry) => [entry.propertyKey, entry.state])).toEqual([
+          ["name", "broken"],
+          ["note", "on"],
+        ]);
       });
     });
 
@@ -4040,31 +2287,21 @@ describe("value link state on writes (issue #1516)", () => {
         const foreign = await runInTenant(tenantB, () => setup(cp));
         await runInTenant(tenantA, () => cp.softDeleteItem(own.files.id, own.file.id));
         const spy = vi.spyOn(valueLinksStore, "lockOnValueLink");
-        const events: InvalidationEvent[] = [];
-        setInvalidationHook((event) => events.push(event));
-        try {
-          for (const itemId of [own.file.id, foreign.file.id, "00000000-0000-4000-8000-000000000001"]) {
-            await expect(
-              runInTenant(tenantA, () =>
-                withTransaction(runtime, (client) =>
-                  updateItemWithClient(
-                    client,
-                    { databaseId: own.files.id, itemId, propertiesPatch: { name: "blocked" } },
-                    { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                  ),
-                ),
-              ),
-            ).rejects.toMatchObject({ status: 404 });
-          }
-          expect(spy).not.toHaveBeenCalled();
-          expect(events).toEqual([]);
-          expect(
-            (await runInTenant(tenantB, () => cp.getItem(foreign.files.id, foreign.file.id)))?.properties.name,
-          ).toBe("a.pdf");
-        } finally {
-          spy.mockRestore();
-          setInvalidationHook(() => {});
+        const events = recordEvents();
+
+        for (const itemId of [own.file.id, foreign.file.id, "00000000-0000-4000-8000-000000000001"]) {
+          await expect(
+            inTx(runtime, tenantA, (client) =>
+              protectedUpdate(client, { databaseId: own.files.id, itemId, propertiesPatch: { name: "blocked" } }),
+            ),
+          ).rejects.toMatchObject({ status: 404 });
         }
+
+        expect(spy).not.toHaveBeenCalled();
+        expect(events).toEqual([]);
+        expect((await runInTenant(tenantB, () => cp.getItem(foreign.files.id, foreign.file.id)))?.properties.name).toBe(
+          "a.pdf",
+        );
       });
     });
 
@@ -4073,65 +2310,37 @@ describe("value link state on writes (issue #1516)", () => {
       await withRuntimePool(async (runtime) => {
         const cp = createChokePoint(runtime);
         const fx = await runInTenant(tenant, () => setup(cp));
-        await withTenantTransaction(runtime, tenant, (client) =>
-          insertValueLink(client, {
-            itemId: fx.file.id,
-            propertyKey: "name",
-            ruleKey: "test",
-            sources: [],
-          }),
-        );
-        const events: InvalidationEvent[] = [];
-        setInvalidationHook((event) => events.push(event));
-        try {
-          await expect(
-            runInTenant(tenant, () =>
-              withTransaction(runtime, (client) =>
-                updateItemWithClient(
-                  client,
-                  {
-                    databaseId: fx.files.id,
-                    itemId: fx.file.id,
-                    propertiesPatch: { name: "new" },
-                    ifVersion: "2000-01-01T00:00:00.000Z",
-                  },
-                  { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                ),
-              ),
-            ),
-          ).rejects.toMatchObject({ status: 409 });
-          expect(events).toEqual([]);
-          await runInTenant(tenant, () =>
-            cp.updateItem(
-              { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "a.pdf" } },
-              undefined,
-              undefined,
-              USER,
-            ),
-          );
-          expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(1);
-          const links = await withTenantTransaction(runtime, tenant, (client) =>
-            listValueLinksByItemIds(client, [fx.file.id]),
-          );
-          expect(links[0]).toMatchObject({ state: "on" });
-          expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id)))?.properties.name).toBe("a.pdf");
-        } finally {
-          setInvalidationHook(() => {});
-        }
+        await linkIn(runtime, tenant, fx.file.id, "name");
+        const events = recordEvents();
+
+        await expect(
+          inTx(runtime, tenant, (client) =>
+            protectedUpdate(client, {
+              databaseId: fx.files.id,
+              itemId: fx.file.id,
+              propertiesPatch: { name: "new" },
+              ifVersion: "2000-01-01T00:00:00.000Z",
+            }),
+          ),
+        ).rejects.toMatchObject({ status: 409 });
+        expect(events).toEqual([]);
+        await runInTenant(tenant, () => updateAs(USER, fx.files.id, fx.file.id, { name: "a.pdf" }, cp));
+
+        expect(itemEvents(events, fx.file.id)).toHaveLength(1);
+        expect((await linksIn(runtime, tenant, fx.file.id))[0]).toMatchObject({ state: "on" });
+        expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id)))?.properties.name).toBe("a.pdf");
       });
     });
 
     it.each([
-      ["plain", "user-first", "normal"],
-      ["plain", "system-first", "normal"],
-      ["transformed", "user-first", "normal"],
-      ["transformed", "system-first", "normal"],
-      ["plain", "system-rollback", "normal"],
-      ["plain", "system-first", "late-undefined"],
-      ["plain", "system-first", "late-object"],
+      ["plain", "user-first"],
+      ["plain", "system-first"],
+      ["transformed", "user-first"],
+      ["transformed", "system-first"],
+      ["plain", "system-rollback"],
     ] as const)(
-      "serializes %s item and handoff writes with %s (%s)",
-      async (kind, order, control) => {
+      "serializes %s item and handoff writes with %s",
+      async (kind, order) => {
         if (kind === "transformed") await seedSystem(pool);
         const tenant = kind === "transformed" ? getTenantZeroId() : await createTestTenant(pool);
         const otherTenant = await createTestTenant(pool);
@@ -4152,219 +2361,118 @@ describe("value link state on writes (issue #1516)", () => {
               cp.createItem({ databaseId: fx.files.id, properties: { name: "other" } }),
             );
             const foreign = await runInTenant(otherTenant, () => setup(cp));
-            await withTenantTransaction(userPool, tenant, async (client) => {
-              for (const propertyKey of kind === "transformed" ? ["date", "timeFrom", "timeTo"] : ["name"]) {
-                await insertValueLink(client, { itemId: fx.file.id, propertyKey, ruleKey: "test", sources: [] });
-              }
-            });
+            await linkIn(
+              userPool,
+              tenant,
+              fx.file.id,
+              kind === "transformed" ? ["date", "timeFrom", "timeTo"] : "name",
+            );
             const userHeld = barrier();
             const systemHeld = barrier();
             const releaseUser = barrier();
             const releaseSystem = barrier();
             const userStarted = barrier();
             const systemStarted = barrier();
-            const bodyError = new Error("forced observation failure");
             const rollbackError = new Error("forced rollback");
-            const secondary = { marker: "late participant" };
-            let userClient: PoolClient | undefined;
-            let systemClient: PoolClient | undefined;
-            let userPid: number | undefined;
-            let systemPid: number | undefined;
+            const clients: { user?: PoolClient; system?: PoolClient } = {};
+            const pids: { user?: number; system?: number } = {};
             const realUpdate = itemsStore.updateItemProperties;
             const realLock = itemsStore.lockItemById;
-            const updateSpy = vi.spyOn(itemsStore, "updateItemProperties").mockImplementation(async (client, input) => {
+            vi.spyOn(itemsStore, "updateItemProperties").mockImplementation(async (client, input) => {
               const result = await realUpdate(client, input);
-              if (client === userClient) {
+              if (client === clients.user) {
                 userHeld.resolve();
                 await bounded(releaseUser.promise);
               }
               return result;
             });
-            const lockSpy = vi
-              .spyOn(itemsStore, "lockItemById")
-              .mockImplementation(async (client, databaseId, itemId) => {
-                const found = await realLock(client, databaseId, itemId);
-                if (client === systemClient && found) {
-                  systemHeld.resolve();
-                  await bounded(releaseSystem.promise);
-                }
-                return found;
-              });
-            type Outcome = { ok: true } | { ok: false; error: unknown };
-            const settled = (promise: Promise<unknown>): Promise<Outcome> =>
-              promise.then(
-                () => ({ ok: true }),
-                (error: unknown) => ({ ok: false, error }),
-              );
+            vi.spyOn(itemsStore, "lockItemById").mockImplementation(async (client, databaseId, itemId) => {
+              const found = await realLock(client, databaseId, itemId);
+              if (client === clients.system && found) {
+                systemHeld.resolve();
+                await bounded(releaseSystem.promise);
+              }
+              return found;
+            });
             const run = (actor: "user" | "system") =>
-              settled(
-                runInTenant(tenant, () =>
-                  withTransaction(actor === "user" ? userPool : systemPool, async (client) => {
-                    await client.query("SET LOCAL statement_timeout = '7s'");
-                    const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                    if (!pid) throw new Error("Missing operation PID");
-                    if (actor === "user") {
-                      userClient = client;
-                      userPid = pid;
-                      userStarted.resolve();
-                    } else {
-                      systemClient = client;
-                      systemPid = pid;
-                      systemStarted.resolve();
-                    }
-                    const result = await updateItemWithClient(
-                      client,
-                      {
-                        databaseId: fx.files.id,
-                        itemId: fx.file.id,
-                        propertiesPatch:
-                          kind === "transformed" ? { date: actor === "user" ? "2026-10-14" : null } : { name: actor },
-                      },
-                      actor === "user"
-                        ? { writer: USER }
-                        : { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                    );
-                    if (actor === "system" && control === "late-undefined") throwFailure(undefined);
-                    if (actor === "system" && control === "late-object") throwFailure(secondary);
-                    if (actor === "system" && order === "system-rollback") throw rollbackError;
-                    return result;
-                  }),
-                ),
+              (actor === "user" ? userOperations : systemOperations).run(() =>
+                inTx(actor === "user" ? userPool : systemPool, tenant, async (client) => {
+                  await client.query("SET LOCAL statement_timeout = '7s'");
+                  clients[actor] = client;
+                  pids[actor] = await pidOf(client);
+                  (actor === "user" ? userStarted : systemStarted).resolve();
+                  const input = {
+                    databaseId: fx.files.id,
+                    itemId: fx.file.id,
+                    propertiesPatch:
+                      kind === "transformed" ? { date: actor === "user" ? "2026-10-14" : null } : { name: actor },
+                  };
+                  const result =
+                    actor === "user"
+                      ? await updateItemWithClient(client, input, { writer: USER })
+                      : await protectedUpdate(client, input);
+                  if (actor === "system" && order === "system-rollback") throw rollbackError;
+                  return result;
+                }),
               );
-            let user: Promise<Outcome> | undefined;
-            let system: Promise<Outcome> | undefined;
-            let failure: { error: unknown } | undefined;
-            const consumed = new Set<Outcome>();
-            const events: InvalidationEvent[] = [];
-            setInvalidationHook((event) => events.push(event));
-            try {
-              if (order === "user-first") {
-                user = userOperations.run(() => run("user"));
-                await bounded(userHeld.promise);
-                system = systemOperations.run(() => run("system"));
-                await bounded(systemStarted.promise);
-                if (!userPid || !systemPid) throw new Error("Missing participant PID");
-                await waitBlocked(userPid, systemPid);
-                console.info("Observed item handoff wait", {
-                  kind,
-                  order,
-                  holderPid: userPid,
-                  competitorPid: systemPid,
-                });
-                releaseUser.resolve();
-                releaseSystem.resolve();
-              } else {
-                system = systemOperations.run(() => run("system"));
-                await bounded(systemHeld.promise);
-                await bounded(
-                  userOperations.run(() =>
-                    runInTenant(tenant, () =>
-                      cp.updateItem(
-                        { databaseId: fx.files.id, itemId: unrelated.id, propertiesPatch: { name: "progress" } },
-                        undefined,
-                        undefined,
-                        USER,
-                      ),
-                    ),
-                  ),
-                );
-                await bounded(
-                  userOperations.run(() =>
-                    runInTenant(otherTenant, () =>
-                      cp.updateItem(
-                        {
-                          databaseId: foreign.files.id,
-                          itemId: foreign.file.id,
-                          propertiesPatch: { name: "progress" },
-                        },
-                        undefined,
-                        undefined,
-                        USER,
-                      ),
-                    ),
-                  ),
-                );
-                user = userOperations.run(() => run("user"));
-                await bounded(userStarted.promise);
-                if (!userPid || !systemPid) throw new Error("Missing participant PID");
-                await waitBlocked(systemPid, userPid);
-                if (control !== "normal") throw bodyError;
-                console.info("Observed item handoff wait", {
-                  kind,
-                  order,
-                  holderPid: systemPid,
-                  competitorPid: userPid,
-                });
-                releaseSystem.resolve();
-                releaseUser.resolve();
-              }
-              const results = await bounded(Promise.all([user, system]));
-              expect(results[0]).toEqual({ ok: true });
-              if (order === "user-first") {
-                expect(results[1]).toMatchObject({ ok: false, error: { status: 403, code: "owner_violation" } });
-              } else if (order === "system-rollback") {
-                expect(results[1]?.ok).toBe(false);
-                if (!results[1] || results[1].ok) throw new Error("Expected rollback");
-                expect(results[1].error).toBe(rollbackError);
-              } else {
-                expect(results[1]).toEqual({ ok: true });
-              }
-              if (results[1]) consumed.add(results[1]);
-              expect(events.filter((event) => event.scope === "item" && event.itemId === fx.file.id)).toHaveLength(
-                order === "system-first" ? 2 : 1,
-              );
-              const current = await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id));
-              const links = await withTenantTransaction(userPool, tenant, (client) =>
-                listValueLinksByItemIds(client, [fx.file.id]),
-              );
-              if (kind === "transformed") {
-                expect(current?.properties.date).toBe("2026-10-14");
-                expect(links.find((link) => link.propertyKey === "date")).toMatchObject({
-                  state: "broken",
-                  brokenBy: "user",
-                });
-                expect(links.filter((link) => link.propertyKey !== "date").map((link) => link.state)).toEqual([
-                  "on",
-                  "on",
-                ]);
-                expect(current?.properties.timeFrom).toBe(order === "system-first" ? null : "10:00");
-                expect(current?.properties.timeTo).toBe(order === "system-first" ? null : "11:00");
-              } else {
-                expect(current?.properties.name).toBe("user");
-                expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
-              }
-            } catch (error) {
-              failure = { error };
-            } finally {
+            const events = recordEvents();
+
+            let system: Promise<unknown>;
+            if (order === "user-first") {
+              const user = run("user");
+              await bounded(userHeld.promise);
+              system = run("system");
+              await bounded(systemStarted.promise);
+              if (!pids.user || !pids.system) throw new Error("Missing participant PID");
+              await waitBlocked(pids.user, pids.system);
               releaseUser.resolve();
               releaseSystem.resolve();
-              await userOperations.settle();
-              await systemOperations.settle();
-              const cleanupErrors = await settleParticipants(
-                user,
-                system,
-                () => userPid,
-                () => systemPid,
-                consumed,
-              );
-              updateSpy.mockRestore();
-              lockSpy.mockRestore();
-              setInvalidationHook(() => {});
-              if (cleanupErrors.length) {
-                failure = combineFailure(failure, cleanupErrors, "Diagnostic and cleanup failed");
+              await bounded(user);
+              await expectRuntimeRejection(systemOperations, system, { status: 403, code: "owner_violation" });
+            } else {
+              system = run("system");
+              await bounded(systemHeld.promise);
+              // While the handoff holds this item, writes of another item and another tenant proceed.
+              for (const [scope, databaseId, itemId] of [
+                [tenant, fx.files.id, unrelated.id],
+                [otherTenant, foreign.files.id, foreign.file.id],
+              ] as const) {
+                await bounded(
+                  userOperations.run(() =>
+                    runInTenant(scope, () => updateAs(USER, databaseId, itemId, { name: "progress" }, cp)),
+                  ),
+                );
               }
+              const user = run("user");
+              await bounded(userStarted.promise);
+              if (!pids.user || !pids.system) throw new Error("Missing participant PID");
+              await waitBlocked(pids.system, pids.user);
+              releaseSystem.resolve();
+              releaseUser.resolve();
+              if (order === "system-rollback") await expectRuntimeRejection(systemOperations, system, rollbackError);
+              else await bounded(system);
+              await bounded(user);
             }
-            if (control !== "normal") {
-              const error = failure?.error;
-              expect(error).toBeInstanceOf(AggregateError);
-              if (!(error instanceof AggregateError)) throw new Error("Expected combined failure");
-              expect(error.errors).toHaveLength(2);
-              expect(error.errors[0]).toBe(bodyError);
-              expect(error.errors[1]).toBe(control === "late-undefined" ? undefined : secondary);
-              expect(error.cause).toBe(bodyError);
-              return;
+
+            expect(itemEvents(events, fx.file.id)).toHaveLength(order === "system-first" ? 2 : 1);
+            const current = await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id));
+            const links = await linksIn(userPool, tenant, fx.file.id);
+            if (kind === "transformed") {
+              expect(current?.properties.date).toBe("2026-10-14");
+              expect(links.find((entry) => entry.propertyKey === "date")).toMatchObject({
+                state: "broken",
+                brokenBy: "user",
+              });
+              expect(links.filter((entry) => entry.propertyKey !== "date").map((entry) => entry.state)).toEqual([
+                "on",
+                "on",
+              ]);
+              expect(current?.properties.timeFrom).toBe(order === "system-first" ? null : "10:00");
+              expect(current?.properties.timeTo).toBe(order === "system-first" ? null : "11:00");
+            } else {
+              expect(current?.properties.name).toBe("user");
+              expect(links[0]).toMatchObject({ state: "broken", brokenBy: "user" });
             }
-            if (failure !== undefined) throwFailure(failure.error);
           }),
         );
       },
@@ -4376,66 +2484,30 @@ describe("value link state on writes (issue #1516)", () => {
       await withRuntimePool(async (runtime) => {
         const cp = createChokePoint(runtime);
         const fx = await runInTenant(tenant, () => setup(cp));
-        const write = (value: string) =>
-          runInTenant(tenant, () =>
-            withTransaction(runtime, (client) =>
-              updateItemWithClient(
-                client,
-                { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: value } },
-                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-              ),
-            ),
+        const write = (name: string) =>
+          inTx(runtime, tenant, (client) =>
+            protectedUpdate(client, { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name } }),
           );
-        const readItem = () => runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id));
-        const events: InvalidationEvent[] = [];
-        const expectRefusedWithoutEffects = async (value: string) => {
-          const beforeItem = await readItem();
-          const beforeStoredItem = await readStoredItem(runtime, tenant, fx.files.id, fx.file.id);
-          const beforeLinks = await readStoredLinks(runtime, tenant, fx.file.id);
+        const userWrite = (name: string) =>
+          runInTenant(tenant, () => updateAs(USER, fx.files.id, fx.file.id, { name }, cp));
+        const events = recordEvents();
+        const expectRefusedWithoutEffects = async (name: string) => {
+          const before = await storedState(runtime, tenant, fx.files.id, fx.file.id);
           events.length = 0;
-          await expect(write(value)).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-          expect(await readItem()).toEqual(beforeItem);
-          expect(await readStoredItem(runtime, tenant, fx.files.id, fx.file.id)).toEqual(beforeStoredItem);
-          expect(await readStoredLinks(runtime, tenant, fx.file.id)).toEqual(beforeLinks);
+          await expect(write(name)).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+          expect(await storedState(runtime, tenant, fx.files.id, fx.file.id)).toEqual(before);
           expect(events).toEqual([]);
         };
-        setInvalidationHook((event) => events.push(event));
-        try {
-          await expectRefusedWithoutEffects("blocked");
-          await withTenantTransaction(runtime, tenant, (client) =>
-            insertValueLink(client, {
-              itemId: fx.file.id,
-              propertyKey: "name",
-              ruleKey: "test",
-              sources: [],
-            }),
-          );
-          await expect(write("system")).resolves.toMatchObject({ properties: { name: "system" } });
-          await runInTenant(tenant, () =>
-            cp.updateItem(
-              { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "system" } },
-              undefined,
-              undefined,
-              USER,
-            ),
-          );
-          const read = () =>
-            withTenantTransaction(runtime, tenant, (client) => listValueLinksByItemIds(client, [fx.file.id]));
-          expect((await read())[0]).toMatchObject({ state: "on" });
-          await runInTenant(tenant, () =>
-            cp.updateItem(
-              { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "user" } },
-              undefined,
-              undefined,
-              USER,
-            ),
-          );
-          expect((await read())[0]).toMatchObject({ state: "broken", brokenBy: "user" });
-          await expectRefusedWithoutEffects("blocked again");
-          expect((await readItem())?.properties.name).toBe("user");
-        } finally {
-          setInvalidationHook(() => {});
-        }
+
+        await expectRefusedWithoutEffects("blocked");
+        await linkIn(runtime, tenant, fx.file.id, "name");
+        await expect(write("system")).resolves.toMatchObject({ properties: { name: "system" } });
+        await userWrite("system");
+        expect((await linksIn(runtime, tenant, fx.file.id))[0]).toMatchObject({ state: "on" });
+        await userWrite("user");
+        expect((await linksIn(runtime, tenant, fx.file.id))[0]).toMatchObject({ state: "broken", brokenBy: "user" });
+        await expectRefusedWithoutEffects("blocked again");
+        expect((await runInTenant(tenant, () => cp.getItem(fx.files.id, fx.file.id)))?.properties.name).toBe("user");
       });
     });
 
@@ -4448,134 +2520,44 @@ describe("value link state on writes (issue #1516)", () => {
         await runInTenant(tenantA, () =>
           cp.createProperty({ databaseId: fx.files.id, key: "note", name: "Note", type: "text" }),
         );
-        await withTenantTransaction(runtime, tenantA, (client) =>
-          insertValueLink(client, { itemId: fx.file.id, propertyKey: "name", ruleKey: "test", sources: [] }),
-        );
-        await withTenantTransaction(runtime, tenantB, async (client) => {
-          for (const propertyKey of ["name", "note", "projects"]) {
-            await insertValueLink(client, { itemId: fx.file.id, propertyKey, ruleKey: "foreign", sources: [] });
-          }
-        });
+        await linkIn(runtime, tenantA, fx.file.id, "name");
+        // Rows of another tenant under the same item id and keys must neither authorize nor break anything here.
+        await linkIn(runtime, tenantB, fx.file.id, ["name", "note", "projects"], { ruleKey: "foreign" });
         const foreignBefore = await readStoredLinks(runtime, tenantB, fx.file.id);
         expect(foreignBefore).toHaveLength(3);
-        await runInTenant(tenantA, () =>
-          cp.updateItem(
-            { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { name: "changed" } },
-            undefined,
-            undefined,
-            USER,
-          ),
-        );
+
+        await runInTenant(tenantA, () => updateAs(USER, fx.files.id, fx.file.id, { name: "changed" }, cp));
         expect((await readStoredLinks(runtime, tenantA, fx.file.id))[0]).toMatchObject({
           property_key: "name",
           state: "broken",
           broken_by: "user",
         });
         expect(await readStoredLinks(runtime, tenantB, fx.file.id)).toEqual(foreignBefore);
-        const itemBefore = await readStoredItem(runtime, tenantA, fx.files.id, fx.file.id);
-        const linksBefore = await readStoredLinks(runtime, tenantA, fx.file.id);
-        const events: InvalidationEvent[] = [];
-        setInvalidationHook((event) => events.push(event));
-        try {
-          await expect(
-            runInTenant(tenantA, () =>
-              withTransaction(runtime, (client) =>
-                updateItemWithClient(
-                  client,
-                  {
-                    databaseId: fx.files.id,
-                    itemId: fx.file.id,
-                    propertiesPatch: { note: "foreign cannot authorize" },
-                  },
-                  { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-                ),
-              ),
-            ),
-          ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-          await expect(
-            runInTenant(tenantA, () =>
-              withTransaction(runtime, (client) =>
-                createRelationWithClient(
-                  client,
-                  { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
-                  VALUE_LINKS,
-                  SYSTEM_WRITER,
-                ),
-              ),
-            ),
-          ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-          expect(await readStoredItem(runtime, tenantA, fx.files.id, fx.file.id)).toEqual(itemBefore);
-          expect(await readStoredLinks(runtime, tenantA, fx.file.id)).toEqual(linksBefore);
-          expect(await readStoredLinks(runtime, tenantB, fx.file.id)).toEqual(foreignBefore);
-          expect(await runInTenant(tenantA, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual(
-            [],
+
+        const before = await storedState(runtime, tenantA, fx.files.id, fx.file.id);
+        const events = recordEvents();
+        const writeNote = (note: string) =>
+          inTx(runtime, tenantA, (client) =>
+            protectedUpdate(client, { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { note } }),
           );
-          expect(events).toEqual([]);
-          await withTenantTransaction(runtime, tenantA, async (client) => {
-            for (const propertyKey of ["note", "projects"]) {
-              await insertValueLink(client, { itemId: fx.file.id, propertyKey, ruleKey: "own", sources: [] });
-            }
-          });
-          await runInTenant(tenantA, () =>
-            withTransaction(runtime, (client) =>
-              updateItemWithClient(
-                client,
-                { databaseId: fx.files.id, itemId: fx.file.id, propertiesPatch: { note: "authorized" } },
-                { systemOwnerProcess: VALUE_LINKS_OWNER_PROCESS, writer: SYSTEM_WRITER },
-              ),
-            ),
-          );
-          await runInTenant(tenantA, () =>
-            withTransaction(runtime, (client) =>
-              createRelationWithClient(
-                client,
-                { relationPropertyId: fx.projectsProperty.id, callerItemId: fx.file.id, targetItemId: fx.alpha.id },
-                VALUE_LINKS,
-                SYSTEM_WRITER,
-              ),
-            ),
-          );
-          const own = await readStoredLinks(runtime, tenantA, fx.file.id);
-          expect(own.filter((link) => link.property_key !== "name").map((link) => link.state)).toEqual(["on", "on"]);
-          expect(await readStoredLinks(runtime, tenantB, fx.file.id)).toEqual(foreignBefore);
-        } finally {
-          setInvalidationHook(() => {});
-        }
+        const createEdge = () => inTx(runtime, tenantA, (client) => protectedWrite("create", client, fileEdge(fx)));
+        await expect(writeNote("foreign cannot authorize")).rejects.toMatchObject({
+          status: 403,
+          code: "owner_violation",
+        });
+        await expect(createEdge()).rejects.toMatchObject({ status: 403, code: "owner_violation" });
+        expect(await storedState(runtime, tenantA, fx.files.id, fx.file.id)).toEqual(before);
+        expect(await readStoredLinks(runtime, tenantB, fx.file.id)).toEqual(foreignBefore);
+        expect(await runInTenant(tenantA, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual([]);
+        expect(events).toEqual([]);
+
+        await linkIn(runtime, tenantA, fx.file.id, ["note", "projects"], { ruleKey: "own" });
+        await writeNote("authorized");
+        await createEdge();
+        const own = await readStoredLinks(runtime, tenantA, fx.file.id);
+        expect(own.filter((entry) => entry.property_key !== "name").map((entry) => entry.state)).toEqual(["on", "on"]);
+        expect(await readStoredLinks(runtime, tenantB, fx.file.id)).toEqual(foreignBefore);
       });
     }, 30000);
-
-    it("never touches the links of another tenant", async () => {
-      await resetDatabase(pool);
-      const tenantA = await createTestTenant(pool);
-      const tenantB = await createTestTenant(pool);
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
-      try {
-        const cp = createChokePoint(runtimePool);
-        const a = await runInTenant(tenantA, () => setup(cp));
-        const b = await runInTenant(tenantB, () => setup(cp));
-        await withTenantTransaction(runtimePool, tenantA, (client) =>
-          insertValueLink(client, { itemId: a.file.id, propertyKey: "name", ruleKey: "test", sources: [] }),
-        );
-        await withTenantTransaction(runtimePool, tenantB, (client) =>
-          insertValueLink(client, { itemId: b.file.id, propertyKey: "name", ruleKey: "test", sources: [] }),
-        );
-
-        await runInTenant(tenantB, () =>
-          cp.updateItem(
-            { databaseId: b.files.id, itemId: b.file.id, propertiesPatch: { name: "changed" } },
-            undefined,
-            undefined,
-            USER,
-          ),
-        );
-
-        const states = async (tenantId: string, itemId: string) =>
-          withTenantTransaction(runtimePool, tenantId, (client) => listValueLinksByItemIds(client, [itemId]));
-        expect((await states(tenantA, a.file.id))[0]).toMatchObject({ state: "on" });
-        expect((await states(tenantB, b.file.id))[0]).toMatchObject({ state: "broken", brokenBy: "user" });
-      } finally {
-        await runtimePool.end();
-      }
-    });
   });
 });

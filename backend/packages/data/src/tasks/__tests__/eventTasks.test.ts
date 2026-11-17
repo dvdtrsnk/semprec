@@ -62,7 +62,7 @@ async function event(name: string, properties: Record<string, unknown> = {}, ten
   return item.id;
 }
 
-/** Puts the task into the event through the route of issue #1764, which stamps the edge's `addedAt` from the clock. */
+/** Through the host-event route, which stamps `addedAt` from the clock. */
 function put(taskId: string, eventId: string, tenant = home) {
   return runInTenant(tenant.id, () =>
     createTaskHostEventPutRouteHandler(pool)({ params: { id: taskId, eventId }, body: {}, identity }),
@@ -79,7 +79,6 @@ async function trash(databaseId: string, itemId: string, tenant = home): Promise
   if (!trashed) throw new Error(`Item ${itemId} was not trashed`);
 }
 
-/** `GET /api/events/:id/tasks` as the tenant's member sends it: the handler's answer in the tenant's scope. */
 async function getEventTasks(eventId: string, tenant = home): Promise<EventTasks> {
   const answer = await runInTenant(tenant.id, () => createEventTasksRouteHandler(pool)({ params: { id: eventId } }));
   expect(answer.status).toBe(200);
@@ -335,7 +334,7 @@ describe("GET /api/events/:id/tasks: what does not count (issue #1801)", () => {
   it("answers an event in a tenant without the hostEvents relation with an empty list", async () => {
     const bare = await seededTenant();
     const eventId = await event("Bare", { date: "2026-10-20" }, bare);
-    // Raw SQL on the superuser pool: no write path removes a system relation, and the case needs a tenant that lacks it.
+    // Raw SQL: no write path removes a system relation.
     await admin.query(
       "DELETE FROM relation_definitions WHERE tenant_id = $1 AND property_id_a IN (SELECT id FROM properties WHERE tenant_id = $1 AND key = 'hostEvents')",
       [bare.id],
@@ -417,7 +416,6 @@ describe("eventTaskCounts (issue #1801)", () => {
           const counting: PoolClient = new Proxy(client, {
             get(target, property) {
               if (property !== "query") return Reflect.get(target, property);
-              // The readers under test pass SQL text and a parameter array only.
               return (text: string, values?: unknown[]) => {
                 queries += 1;
                 return target.query(text, values);

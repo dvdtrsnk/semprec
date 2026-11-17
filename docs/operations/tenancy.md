@@ -10,7 +10,7 @@ their outcome.
 Issue #1058 asks for a context-complete release to run in production for seven days before
 the contract and strict steps (#1059–#1067) merge. The waiting protects the one-release
 rollback rule ([migrations.md](migrations.md),
-[ADR](../adr/2026-09-24-rollback-one-release-back-with-checked-migrations.md)):
+[rules](../architecture/delivery-and-operations.md#rollback)):
 `deploy/deploy.sh --rollback` starts the previous release against the new schema, so that
 previous release must already carry the tenant scope on every path.
 
@@ -65,7 +65,7 @@ The go-live security gate #1086, which follows this checkpoint, still gates the 
 **2026-11-03 — BLOCKED / NOT READY FOR PRODUCTION. No second-tenant go-live is authorized.**
 
 The delegated program supervisor is parent controller `thr_pz39tcih5r`, under
-[owner-delegated backend supervision](../adr/2026-10-31-owner-delegated-backend-program-supervision.md).
+[owner-delegated backend supervision](../architecture/delivery-and-operations.md#backend-delivery-program).
 This is the interim evidence and disposition record for [gh-1086](../../issues/items/gh-1086.md),
 not its completion or a production sign-off. Both gh-1086 and its batch 19 aggregate remain open.
 The earlier checkpoint waivers above are historical owner decisions; they do not waive this gate.
@@ -153,9 +153,9 @@ No tests, services, production checks or additional reviewers ran as part of tha
 
 ### Activation boundary and continuation
 
-The recovered local code already contains migration `0123_drop_single_tenant_guard.sql` and
-invitation acceptance. A fully migrated local database therefore must not be described as
-physically protected by that removed index. The migration's operational go-live precondition
+The recovered local code has no single-tenant guard index in its schema (the baseline migration
+does not create it) and has invitation acceptance. A fully migrated local database therefore must
+not be described as physically protected by that removed index. The migration's operational go-live precondition
 remains in force: this documentation is not a runtime switch or permission to expose a second
 account. No deployment, real invitation, production restore or production security approval has
 been performed by this gate.
@@ -169,7 +169,7 @@ failed or simulated checks must retain their actual results.
 ### Owner-directed local continuation (2026-11-03)
 
 The owner now directs autonomous continuation under
-[[2026-11-03-local-development-continues-with-open-production-gates]]. This later
+[delivery and operations](../architecture/delivery-and-operations.md#backend-delivery-program). This later
 decision changes the local sequencing hold described above, not the historical
 R1 report or production evidence. Batch 19's four local corrective issues have
 reviewed, tested fixes and candidate-specific local acceptance; its aggregate

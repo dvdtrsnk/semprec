@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { sendJson } from "./adapter/http.js";
 
-/** Issue #1355 explicitly exposes only the product name before a session exists. */
+/** Exposes only the product name before a session exists. */
 export function createServerInfoRequestListener() {
   return function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? "/", "http://localhost");

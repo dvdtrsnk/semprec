@@ -39,41 +39,32 @@ import {
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
 } from "./transcriptionComputedKeys.js";
 
-/** Only these Events `type` values are matched against a recording; a plain `event` never is. */
+/** A plain `event` is never matched against a recording. */
 const MATCHABLE_EVENT_TYPES = ["standup", "meeting"];
 
-/** The Transcripts relation to the Event a recording belongs to. */
 export const TRANSCRIPT_EVENT_PROPERTY_KEY = "event";
 
 /** A transcript's `date`: the recording's start as a UTC instant with a time of day. */
 const DATE_WITH_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
-/** The context a `transcript` card producer writes its card's `sourceTranscript` edge under. */
 export const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
   ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
 };
 
 export interface MatchTranscriptToEventInput {
   transcriptId: string;
-  /** The recording's length, from step 1's checkpoint; the recording ends this long after the transcript's `date`. */
+  /** The recording ends this long after the transcript's `date`. */
   durationSeconds: number;
 }
 
 /**
- * - `linked`: exactly one candidate, a stored Event, now linked through the Transcripts <-> Events relation. The
- *   Event may already hold other transcripts: the parts of one meeting (issue #1464).
- * - `suggested`: no candidate (no Event or occurrence whose time interval overlaps the recording), so a
- *   `kind = 'transcript'` Processing proposal card was created instead.
- * - `alreadyLinked`: the transcript already has an edge to an Event that is not in the Trash; nothing
- *   was written. An edge to an Event in the Trash does not count (issue #1743).
- * - `alreadySuggested`: the transcript already has its suggestion card; nothing was written.
- * - `noEventChosen`: the recording request of the audio file the transcript was created from holds the user's explicit
- *   `noEvent` decision (issue gh-1986); nothing was written, whatever edge or card the transcript already has.
+ * `alreadyLinked` ignores an edge to a trashed Event. `noEventChosen`: the explicit `noEvent` decision
+ * stops the match whatever edge or card exists. Only `linked` and `suggested` write.
  */
 export type TranscriptEventMatchOutcome =
   "linked" | "suggested" | "alreadyLinked" | "alreadySuggested" | "noEventChosen";
 
-/** The idempotency key of a transcript's one suggestion card: every re-run for the same transcript converges on it. */
+/** Every re-run for the same transcript converges on this one card. */
 function transcriptSuggestionIdempotencyKey(transcriptId: string): string {
   return `transcript-suggestion:${transcriptId}`;
 }
@@ -96,7 +87,6 @@ function parseRecordingStart(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/** A live Event that overlaps the recording, with the stored values the card shows and the interval it was matched on. */
 interface OverlappingEvent {
   id: string;
   name: string;
@@ -108,7 +98,6 @@ interface OverlappingEvent {
   endMs: number;
 }
 
-/** The stored values of an Event that `readEventInterval` reads. */
 interface EventTimes {
   id: string;
   name: string | null;
@@ -123,14 +112,11 @@ interface EventTimeRow extends EventTimes {
 }
 
 /**
- * The stored Event with its instants `[start, end]`, or `null` when the Event has no timed interval
- * to compare. The start is `date` at `timeFrom` and the end is `endDate ?? date` at `timeTo`, both
- * wall-clock values in the tenant zone (`clock`); an Event without `timeTo` is a point at its start.
- * All of them are user-owned free input, so they are parsed here rather than cast in SQL, where one
- * malformed value would fail the whole query. `null` covers: an all-day Event (no `timeFrom`); a
- * value `wallClockToInstant` refuses as a `ValidationError` (a malformed date or time); a `timeFrom`
- * of `24:00`, which ends a day rather than starting one; and an end before the start, which is no
- * interval. Any other failure propagates.
+ * `[start, end]` instants from `date`/`timeFrom` to `endDate ?? date`/`timeTo` in the tenant zone; an
+ * Event without `timeTo` is a point at its start. These are user-owned free input, so they are parsed
+ * here rather than cast in SQL, where one malformed value would fail the whole query. `null` for an
+ * all-day Event, a value `wallClockToInstant` refuses, a `timeFrom` of `24:00`, or an end before the
+ * start. Any other failure propagates.
  */
 function readEventInterval(clock: CalendarClock, row: EventTimes): OverlappingEvent | null {
   if (row.date === null || row.time_from === null || row.time_from === "24:00") return null;
@@ -157,16 +143,10 @@ function readEventInterval(clock: CalendarClock, row: EventTimes): OverlappingEv
 }
 
 /**
- * The live Events of a matchable `type` whose interval overlaps the recording `[startMs, endMs]`,
- * ordered by interval start and then id. The overlap is strict: an Event is a candidate when its
- * start is before `endMs` and its end is after `startMs`, so touching boundaries do not overlap.
- * An Event without `timeTo` is a point at its start, so it is a candidate only when that moment lies
- * strictly inside the recording. See `readEventInterval` for the Events that are left out. A recurring
- * series (`readEventSeries`) whose own day is a day its rule gives (`standsForItsFirstOccurrence`) is left out
- * as well: its occurrence on that day is found by `listVirtualOccurrences` while it is virtual and, once
- * materialized, as the stored Event it is, so the series Event would offer the same day a second time. A series
- * whose own day its rule does not give has no occurrence there, so it stays a stored candidate, as it was
- * before occurrences were matched (issue #1813).
+ * Ordered by interval start, then id. Overlap is strict (touching boundaries do not overlap). A
+ * recurring series whose rule gives its own day is left out: that day's occurrence is found as virtual
+ * or as its materialized Event, so the series would offer the day twice. A series whose rule skips its
+ * own day stays a stored candidate.
  */
 async function listOverlappingEvents(
   client: PoolClient,
@@ -189,18 +169,12 @@ async function listOverlappingEvents(
     .sort((a, b) => a.startMs - b.startMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-/**
- * Whether `properties` are those of a recurring series whose rule gives the series' own day, so that the occurrence
- * of that day (virtual, materialized or cancelled) stands in for the series Event and the series Event is not a
- * candidate itself. A series whose own day the rule skips has no occurrence on it: the Event that carries the rule is
- * then the only thing on that day and matches as any stored Event does.
- */
 function standsForItsFirstOccurrence(properties: Record<string, unknown>): boolean {
   const definition = readEventSeries(properties);
   return definition !== null && eventRecurrenceOccursOn(definition.rule, definition.startDate, definition.startDate);
 }
 
-/** Whether `interval` starts before the recording ends and ends after it starts; touching boundaries do not overlap. */
+/** Touching boundaries do not overlap. */
 function overlapsRecording(
   interval: { startMs: number; endMs: number },
   recording: { startMs: number; endMs: number },
@@ -209,13 +183,9 @@ function overlapsRecording(
 }
 
 /**
- * The virtual occurrences, at most one per series and day, of the live recurring Events of a matchable `type`
- * that overlap the recording `[startMs, endMs]`, ordered by interval start, then series id. The series are
- * expanded over the recording's local days with `expandEventOccurrences` and each occurrence's interval is
- * read and compared exactly as a stored Event's is (`readEventInterval`, strict overlap), so the two kinds of
- * candidate follow one rule. Only an occurrence that has no item is virtual: one with an item is a stored
- * Event, found by `listOverlappingEvents`, and a cancelled date (its occurrence item is in the Trash) gives no
- * entry at all. Writes nothing.
+ * At most one per series and day, ordered by interval start, then series id. Occurrences are compared
+ * exactly as stored Events (`readEventInterval`, strict overlap), so both candidate kinds follow one
+ * rule. Only an occurrence with no item is virtual; a cancelled date (item trashed) gives no entry.
  */
 async function listVirtualOccurrences(
   client: PoolClient,
@@ -251,7 +221,6 @@ async function listVirtualOccurrences(
     .sort((a, b) => a.startMs - b.startMs || (a.seriesId < b.seriesId ? -1 : a.seriesId > b.seriesId ? 1 : 0));
 }
 
-/** The ids of `listOverlappingEvents`, in its order. */
 export async function listOverlappingEventIds(
   client: PoolClient,
   eventsDatabaseId: string,
@@ -261,7 +230,6 @@ export async function listOverlappingEventIds(
   return (await listOverlappingEvents(client, eventsDatabaseId, recording, clock)).map((event) => event.id);
 }
 
-/** What a client and the recommendation call know about one Event that overlaps a recording. */
 export interface TranscriptEventCandidate {
   id: string;
   name: string;
@@ -273,41 +241,33 @@ export interface TranscriptEventCandidate {
   projectName: string | null;
 }
 
-/**
- * What the card's `candidates` hold for an occurrence of a recurring Event that has no item yet (issue gh-1850):
- * the series Event and the day. It becomes an Events item only when the user confirms the card.
- */
+/** A recurring Event's occurrence with no item yet; it becomes an Events item only when the card is confirmed. */
 export interface TranscriptOccurrenceCandidate {
   seriesId: string;
   occurrenceDate: string;
 }
 
-/** A candidate of a match: a stored Event (`TranscriptEventCandidate`) or a virtual occurrence. */
 export type TranscriptMatchCandidate = TranscriptEventCandidate | TranscriptOccurrenceCandidate;
 
-/** A virtual occurrence with the instant its interval starts, which orders the candidates. */
 interface OccurrenceCandidate extends TranscriptOccurrenceCandidate {
   startMs: number;
 }
 
 /**
- * `ambiguous`: no edge and no card was written; see `createTranscriptEventCard`. Two or more stored Events
- * overlapped the recording, or at least one virtual occurrence did: a virtual occurrence is never linked
- * directly, even when it is the only candidate. The stored Events come first, then the occurrences.
+ * Nothing written. Two or more stored Events, or any virtual occurrence (never linked directly, even
+ * when it is the only candidate). Stored Events come first.
  */
 export interface AmbiguousTranscriptEventMatch {
   outcome: "ambiguous";
   candidates: TranscriptMatchCandidate[];
 }
 
-/** Whether `candidate` is a stored Event rather than a virtual occurrence. */
 function isStoredCandidate(candidate: TranscriptMatchCandidate): candidate is TranscriptEventCandidate {
   return "id" in candidate;
 }
 
 const itemNameSchema = z.object({ name: z.string().nullish() });
 
-/** The live items `relationKey` (a relation property of the Events database) points to, per Event id. */
 async function readEventRelationTargets(
   client: PoolClient,
   eventsDatabaseId: string,
@@ -368,7 +328,6 @@ async function toCandidates(
   });
 }
 
-/** Where a match stands once the transcript is known not to be converged: everything the candidate rule read. */
 interface OpenMatch {
   eventPropertyId: string;
   eventsDatabaseId: string;
@@ -381,12 +340,9 @@ interface OpenMatch {
 }
 
 /**
- * The read half of a match, shared by `matchTranscriptToEvent` and `readEventRecommendationContext`:
- * `noEventChosen` when the recording request of the transcript's audio file holds the explicit `noEvent` decision
- * (checked first, before the transcript's edges and card), `alreadyLinked` or `alreadySuggested` when the transcript
- * has converged, otherwise the Events that overlap the recording, stored or as a virtual occurrence. Writes nothing
- * (`readTranscriptEventEdges` may hold an Event in the Trash `FOR SHARE`); the caller decides whether `transcript` is
- * locked.
+ * Shared by `matchTranscriptToEvent` and `readEventRecommendationContext`. The `noEvent` decision is
+ * checked first. Writes nothing (`readTranscriptEventEdges` may hold a trashed Event `FOR SHARE`); the
+ * caller decides whether `transcript` is locked.
  */
 async function readOpenMatch(
   client: PoolClient,
@@ -431,7 +387,6 @@ async function readOpenMatch(
   };
 }
 
-/** The wall-clock span of a proposed meeting: the recording's start and end in the tenant zone. */
 interface MeetingSpan {
   date: string;
   timeFrom: string;
@@ -440,11 +395,9 @@ interface MeetingSpan {
 }
 
 /**
- * The recording `[startMs, startMs + durationSeconds]` as the Events fields `date`, `timeFrom`, `timeTo`
- * and `endDate` in the tenant zone (`clock`), minutes precision. `endDate` is set only when the end falls
- * on another local day than the start. An end that is not later than the start on the wall clock (a
- * recording shorter than a minute, or one that ends in the repeated hour of a DST change) is moved to one
- * minute after the start, because the Events rules refuse a `timeTo` that is not later than `timeFrom`.
+ * Minutes precision; `endDate` only when the end is on another local day. An end not later than the
+ * start on the wall clock (sub-minute recording, or DST repeated hour) is moved to one minute after it,
+ * because the Events rules refuse a `timeTo` not later than `timeFrom`.
  */
 function meetingSpan(clock: CalendarClock, startMs: number, durationSeconds: number): MeetingSpan {
   const start = clock.instantToWallClock(new Date(startMs));
@@ -461,18 +414,15 @@ function meetingSpan(clock: CalendarClock, startMs: number, durationSeconds: num
   };
 }
 
-/** The recording's local day and month, e.g. "14. 10." or "14/10", for the proposed meeting's name. */
 async function newMeetingName(locale: string, date: string): Promise<string> {
   const [, month, day] = date.split("-").map(Number);
   return renderTranscriptionLabel(locale, "transcript.newMeeting.name", { day: day ?? 0, month: month ?? 0 });
 }
 
 /**
- * The project of the Event a card recommends, or `null` when there is no recommendation, the Event is
- * missing, in the Trash or in another database, or has no live project. An Event has at most one project.
- * No card creation calls it today: a card with a recommendation links the existing Event through a
- * relation envelope (issue #1848), and a card without one has no Event to take a project from. It is the
- * resolver for a new-meeting proposal that is built from a recommendation.
+ * `null` without a recommendation, or for a missing, trashed or other-database Event, or one without a
+ * live project. No card creation calls it today; it resolves the project for a new-meeting proposal
+ * built from a recommendation.
  */
 export async function readRecommendedEventProjectId(
   client: PoolClient,
@@ -487,13 +437,10 @@ export async function readRecommendedEventProjectId(
 }
 
 /**
- * The create-Event proposal of a card that links no Event (issues #1818 and #1830): a meeting named `name`
- * when that is given, otherwise after the recording's local day and month ("Schůzka 14. 10." / "Meeting 14/10",
- * rendered in `locale`), with the recording's wall-clock `date`, `timeFrom` and `timeTo` in the tenant zone
- * (`YYYY-MM-DD`, `HH:mm`), `endDate` only when the recording crosses local midnight, and the `project`
- * relation when `projectId` is set. A blank `name` counts as none; the name is never empty, and an empty one
- * throws. Checked with `assertValidProposalEnvelope`, so a project that is not a live Projects item of the
- * tenant throws `ValidationError` here.
+ * A meeting named `name`, or after the recording's local day and month, with the recording's
+ * wall-clock span in the tenant zone and the `project` relation when `projectId` is set. A blank `name`
+ * counts as none; an empty name throws. A project that is not a live Projects item throws
+ * `ValidationError` (via `assertValidProposalEnvelope`).
  */
 export async function buildNewMeetingEnvelope(
   client: PoolClient,
@@ -528,10 +475,8 @@ export async function buildNewMeetingEnvelope(
 }
 
 /**
- * The name and language of the meeting a card proposes for `transcript` (issue #1830): the transcript's own
- * `name` when the user entered one, otherwise the meeting-notes title with its speaker tokens replaced, otherwise
- * `null` (then `buildNewMeetingEnvelope` names the meeting after the recording's day and month). The locale is
- * `users.locale` of the tenant's user, Czech without one.
+ * The user's `name`, else the meeting-notes title, else `null` (then the meeting is named after the
+ * day). Locale falls back to Czech without a tenant user.
  */
 async function readProposedMeetingName(
   client: PoolClient,
@@ -550,11 +495,7 @@ async function readProposedMeetingName(
   return { name: presentText(rendered.title), locale };
 }
 
-/**
- * Creates a `transcript` card with `sourceTranscript` pointing at the transcript and announces it
- * (after commit). `properties` are the producer's own; `allowedSystemKeys` names every system key
- * among them.
- */
+/** Announces the card after commit. `allowedSystemKeys` names every system key among `properties`. */
 async function createTranscriptCard(
   client: PoolClient,
   input: {
@@ -610,36 +551,15 @@ async function lockTranscript(client: PoolClient, transcriptId: string): Promise
 }
 
 /**
- * Step 6 of the transcription pipeline (`match`): mechanical, no model call. Runs inside the
- * caller's transaction and row-locks the transcript first, so concurrent runs for the same
- * transcript serialize and every check below still holds when the write lands.
+ * Pipeline step `match`: mechanical, no model call. Runs in the caller's transaction and row-locks the
+ * transcript first, so concurrent runs serialize and every check still holds when the write lands.
  *
- * A recording whose recording request holds the user's explicit `noEvent` decision (issue gh-1986) is finished first:
- * the outcome is `noEventChosen`, nothing is written, and a transcript's existing edge or card is left as it is.
- * Any other stored decision, the default `'none'` included, and a transcript without a recording request go on as
- * below.
- *
- * A transcript that already has an edge to an Event that is not in the Trash, or already has its
- * suggestion card (found by `transcriptSuggestionIdempotencyKey`, whatever that card's status or
- * deletion), is left as it is — a re-run never writes a second edge or a second card. An edge to an
- * Event in the Trash is no link (issue #1743): the match goes on as for a transcript without an
- * Event. `readTranscriptEventEdges` holds that Event's row `FOR SHARE`, so a restore of it waits for
- * this transaction. Otherwise the candidates are the stored Events whose time interval overlaps the
- * recording (`listOverlappingEvents`: the tenant zone, `date`/`timeFrom` to `endDate ?? date`/`timeTo`,
- * touching boundaries do not overlap), the recording being `Transcripts.date` to that plus the duration,
- * and the virtual occurrences of recurring Events that overlap it (`listVirtualOccurrences`, issue gh-1850).
- * Exactly one stored candidate and no virtual one is linked directly, even when that Event already holds
- * other transcripts: an Event has many transcripts, and the database still allows a transcript only one
- * Event, so an edge to a trashed Event is deleted first, in this transaction (`releaseTrashedEventEdges`).
- * With no candidate it creates one `proposed` card with `sourceTranscript` pointing at the transcript and the
- * new-meeting proposal of `buildNewMeetingEnvelope` (no project: the card recommends no Event; named after
- * the transcript's own name, else its notes title, else the recording's day and month), and
- * leaves an edge to a trashed Event as it is. With two or more stored candidates, or any virtual occurrence,
- * it writes nothing and returns them as `ambiguous` (the stored Events first, then the occurrences), so the
- * caller can ask which one the recording belongs to and then call `createTranscriptEventCard` in this
- * transaction (issue #1848). The worker never materializes an occurrence: that happens when the user
- * confirms the card. The tenant zone is read and validated once, in this transaction; an invalid zone
- * propagates as a `ValidationError`.
+ * A re-run never writes a second edge or card. An edge to a trashed Event is no link; that Event is held
+ * `FOR SHARE`, so its restore waits for this transaction. One stored candidate and no virtual one is
+ * linked directly (a trashed Event's edge is deleted first: a transcript has one Event); none creates
+ * the new-meeting card; otherwise nothing is written and the result is `ambiguous`, for the caller to
+ * ask the model and call `createTranscriptEventCard` in this transaction. Only the card confirm
+ * materializes an occurrence.
  */
 export async function matchTranscriptToEvent(
   client: PoolClient,
@@ -694,22 +614,17 @@ export async function matchTranscriptToEvent(
   return "suggested";
 }
 
-/** What the recommendation call needs: the overlapping Events with their participants, the meeting notes and the UI language. */
 export interface EventRecommendationContext {
   candidates: Array<TranscriptEventCandidate & { participantNames: string[] }>;
-  /** The meeting notes with their speaker tokens replaced (`renderMeetingNotes`). */
+  /** Speaker tokens replaced (`renderMeetingNotes`). */
   notes: { title: string; summary: string; shortSummary: string };
-  /** `users.locale` of the tenant's user, the language of the reason. */
   locale: string;
 }
 
 /**
- * The read half of step 6 for a transcript that may need the recommendation call (issue #1848):
- * `null` when the transcript has converged (an edge to a live Event, or its card), its recording request holds the
- * explicit `noEvent` decision (issue gh-1986, so no paid call is made for it), or fewer than two
- * stored Events overlap the recording, so no call is due (a virtual occurrence is not a candidate of the call);
- * otherwise the candidates, the rendered meeting notes and the locale. Writes nothing. A transcript without stored `meetingNotes` throws
- * `NotFoundError`, since step 5 stores them before step 6.
+ * `null` when no paid call is due: the transcript converged, holds the `noEvent` decision, or fewer
+ * than two stored Events overlap (a virtual occurrence is not a candidate of the call). Writes nothing.
+ * Throws `NotFoundError` without stored `meetingNotes`, since the notes step runs before the match.
  */
 export async function readEventRecommendationContext(
   client: PoolClient,
@@ -757,20 +672,16 @@ export async function readEventRecommendationContext(
   };
 }
 
-/** The model's answer to which overlapping Event a recording belongs to. */
 export interface EventRecommendation {
   eventId: string | null;
   reason: string;
 }
 
-/** A recording quote needs at least this many words to be worth showing. */
 const QUOTE_MIN_WORDS = 5;
-/** A recording quote is shortened to this many characters. */
 const QUOTE_MAX_CHARACTERS = 120;
 
 const recordedSegmentsSchema = z.array(z.object({ speaker: z.string(), text: z.string() }));
 
-/** The deterministic facts about a recording the card shows: how long it is, how many speakers and one quote. */
 function readRecordingFacts(transcript: ItemRow): TranscriptEventCardContext["recording"] {
   const segments = recordedSegmentsSchema.safeParse(transcript.computed[TRANSCRIPT_SEGMENTS_COMPUTED_KEY]);
   const durationSeconds = z.number().safeParse(transcript.computed[TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY]);
@@ -794,24 +705,17 @@ function readRecordingFacts(transcript: ItemRow): TranscriptEventCardContext["re
 }
 
 /**
- * Creates the one `proposed` card of a recording that `matchTranscriptToEvent` returned `ambiguous` for
- * (issues #1848 and gh-1850), in the caller's transaction, right after that call. The model never writes the
- * Event edge: the card is for the user to confirm.
+ * Creates the `proposed` card for an `ambiguous` match, in the caller's transaction right after it.
+ * The model never writes the Event edge: the user confirms the card.
  *
- * The proposal is, in this order: the `event` relation to the recommended Event, when the recommendation's
- * `eventId` is one of the stored `candidates` (it links the existing Event, so it proposes no project; a
- * virtual occurrence is never recommended); else, when the one candidate is a virtual occurrence, the `event`
- * relation to its synthetic id `<seriesId>@<date>` (`formatOccurrenceId`), which the confirm turns into an
- * Events item; else the new-meeting proposal of `buildNewMeetingEnvelope` without a project, because there is
- * no recommended Event to take one from. A `null` `eventId` keeps the model's reason with
- * `recommendedEventId` `null`; an id that is not a stored candidate drops the whole answer, so both are
- * `null`; a blank reason is `null`.
+ * The proposal is the `event` relation to the recommended Event when it is a stored candidate (no
+ * project); else, with one virtual-occurrence candidate, the `event` relation to its synthetic id
+ * `<seriesId>@<date>`, which the confirm materializes; else the new-meeting proposal without a
+ * project. A `null` `eventId` keeps the reason; an id that is not a stored candidate drops the whole
+ * answer.
  *
- * The card is created under the idempotency key of `matchTranscriptToEvent`'s own card, with the display data
- * only in `context` (`transcriptEventCardContextSchema`), whose `candidates` are the given ones. A transcript
- * that already has that card throws `ConflictError` without writing: `matchTranscriptToEvent` reports
- * `alreadySuggested` for it first. The transcript is locked first. Returns the card id with the
- * recommendation as stored.
+ * Uses the match's own idempotency key, so a transcript that already has the card throws
+ * `ConflictError` without writing. The transcript is locked first.
  */
 export async function createTranscriptEventCard(
   client: PoolClient,

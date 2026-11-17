@@ -1,6 +1,6 @@
 /**
  * The finding record and the harvest issue's data block of the review follow-ups
- * pipeline (docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md).
+ * pipeline (docs/architecture/delivery-and-operations.md).
  *
  * A finding record is one open finding of a merged pull request, as the pipeline passes
  * it between its steps. The daily harvest writes the records it selected into a data

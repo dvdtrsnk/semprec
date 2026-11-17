@@ -4,10 +4,8 @@ import { NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
 /**
- * Resolves `itemId` to a live item of the caller's tenant and holds its row locked for the rest of the
- * transaction, so a concurrent trash cannot slip in between this check and the write that follows. A missing,
- * trashed or foreign item is one `NotFoundError`: the read is confined to the caller's tenant by row-level security,
- * so a foreign id is answered exactly like an unknown one.
+ * Holds the row lock so a concurrent trash cannot slip between this check and the following write. RLS makes a
+ * foreign id answer exactly like an unknown one.
  */
 export async function lockLiveItem(client: PoolClient, itemId: string): Promise<ItemRow> {
   const [visible] = await getItemsByIds(client, [itemId]);

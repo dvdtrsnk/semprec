@@ -66,7 +66,7 @@ describe("Semp status report", () => {
     ownUser = users[0].id;
     foreignUser = users[1].id;
     for (const tenant of [own, foreign]) await runInTenant(tenant, () => seedSystem(data));
-    // A tenant without a budget row lists `aiBudgetMissing` (issue gh-1871), so both get a row without caps.
+    // A tenant without a budget row lists `aiBudgetMissing`, so both get a row without caps.
     await adminSetsBudget(own, ownUser, { dailyCapUsd: null, monthlyCapUsd: null });
     await adminSetsBudget(foreign, foreignUser, { dailyCapUsd: null, monthlyCapUsd: null });
   });
@@ -74,7 +74,6 @@ describe("Semp status report", () => {
     await data.end();
     await admin.end();
   });
-  /** Writes the tenant's caps with the writer the admin route uses. */
   async function adminSetsBudget(
     tenantId: string,
     updatedBy: string,
@@ -259,7 +258,7 @@ describe("Semp status report", () => {
       );
       await withTransaction(data, async (client) => {
         await finishAgentRun(client, first.id, "error", "internal");
-        // Raw SQL: a run closed before issue #1824 holds free text in `result`, which the close no longer writes.
+        // Raw SQL: legacy runs hold free text in `result`, which the close no longer writes.
         await client.query("UPDATE agent_runs SET result = 'raw-secret' WHERE id = $1", [first.id]);
       });
       const last = await withTransaction(data, (client) =>
@@ -276,7 +275,7 @@ describe("Semp status report", () => {
       if (!last) throw new Error("Missing chained run");
       await withTransaction(data, async (client) => {
         await finishAgentRun(client, last.id, "error", "internal");
-        // Raw SQL: a run closed before issue #1824 holds free text in `result`, which the close no longer writes.
+        // Raw SQL: legacy runs hold free text in `result`, which the close no longer writes.
         await client.query("UPDATE agent_runs SET result = 'raw-secret' WHERE id = $1", [last.id]);
       });
       await withTransaction(data, (client) =>
@@ -365,7 +364,7 @@ describe("Semp status report", () => {
 
   it("returns retry and chat targets for a failed reply without copying its raw text", async () => {
     await runInTenant(own, async () => {
-      // The reply-problem producer is delivered later; these rows are a synthetic source fixture.
+      // Synthetic reply-problem source rows.
       const messageId = await withTransaction(data, async (client) => {
         const thread = await client.query<{ id: string }>(
           "INSERT INTO semp_threads (kind, title) VALUES ('chat', 'Planning') RETURNING id",
@@ -436,7 +435,6 @@ describe("Semp status report", () => {
       });
     }
 
-    /** One settled call at `costUsd`, written by the gateway's accounting writer in the tenant's scope. */
     async function spend(tenantId: string, costUsd: number): Promise<string> {
       const call = await runInTenant(tenantId, () =>
         recordTokenGatewayCall(data, {
@@ -459,20 +457,14 @@ describe("Semp status report", () => {
       return summary.resetsAt;
     }
 
-    /**
-     * The catalog entry itself, never the key the resolver falls back to, with the reset time put in
-     * and whitespace collapsed as the report collapses it.
-     */
+    /** The catalog entry itself, not the resolver's fallback, with the reset time inserted and whitespace collapsed. */
     function catalogText(locale: "cs" | "en", key: string, resetTime = ""): string {
       const entry = catalogs[locale][key];
       if (entry === undefined) throw new Error(`Missing ${locale} catalog entry ${key}`);
       return entry.replace("{resetTime}", resetTime).replace(/\s+/g, " ").trim();
     }
 
-    /**
-     * The reset instant as its tenant reads it, written by `Intl` with the options the report gives
-     * Luxon, which formats through `Intl` too. So no expectation depends on this runtime's ICU data.
-     */
+    /** Written by `Intl` with the options the report gives Luxon (which uses `Intl`), so nothing depends on local ICU data. */
     function resetTimeText(locale: "cs" | "en", timeZone: string, resetsAt: string): string {
       return new Intl.DateTimeFormat(locale, { timeZone, dateStyle: "long", timeStyle: "short" }).format(
         new Date(resetsAt),
@@ -491,10 +483,8 @@ describe("Semp status report", () => {
     }
 
     /**
-     * One fingerprint per table outside the system schemas: the position (`ctid`) and the inserting
-     * transaction (`xmin`) of every row version. An insert, an update and a delete each change it, so
-     * two equal snapshots mean no row was written in between. It reads through the superuser pool
-     * because it must see every tenant's rows; it asserts nothing about isolation.
+     * Per-table fingerprint of every row version (`ctid`, `xmin`) outside system schemas: equal snapshots mean no
+     * write in between. Superuser pool, to see every tenant's rows.
      */
     async function tableFingerprints(): Promise<Record<string, string>> {
       // Postgres assembles the statement and quotes every schema and table name itself (%L, %I).
@@ -573,9 +563,8 @@ describe("Semp status report", () => {
       },
     );
 
-    // The settings writer accepts a fixed offset, and `Intl.DateTimeFormat` refuses one written this way
-    // as its `timeZone`. Each is paired with an IANA zone that has had the same offset all year since
-    // before 1970, so `Intl` can still write the expected text.
+    // The settings writer accepts fixed offsets that `Intl.DateTimeFormat` refuses as `timeZone`; each is paired with
+    // an IANA zone of constant offset since before 1970 so `Intl` can write the expected text.
     it.each([
       ["UTC+2", "Etc/GMT-2"],
       ["UTC+5:30", "Asia/Kolkata"],
@@ -642,8 +631,7 @@ describe("Semp status report", () => {
         expect.stringMatching(/^aiBudgetExhausted:/),
       ]);
 
-      // The accounting writer stamps now and the test cannot move the database clock. A call one minute
-      // before the start of the current window is the state after that call's reset instant has passed.
+      // The accounting writer stamps now; a call a minute before the current window stands for one whose reset passed.
       await runInTenant(own, async () =>
         requireAffectedRows(
           await data.query<{ id: string }>(
@@ -698,9 +686,8 @@ describe("Semp status report", () => {
     });
 
     it("lists no budget problem below the tenant's own caps, whatever other tenants spend or lack", async () => {
-      // The operator-wide caps live in the gateway, outside this package. Another tenant's spend far
-      // above this tenant's caps stands in for the all-tenant total that reaches them; the refusal
-      // itself is driven in packages/ai-gateway/src/__tests__/gateway.test.ts.
+      // Another tenant's spend far above this tenant's caps stands in for an operator-wide total reaching them; the
+      // refusal itself is tested in packages/ai-gateway/src/__tests__/gateway.test.ts.
       const bare = await tenantWithoutBudget("en");
       await adminSetsBudget(own, ownUser, { dailyCapUsd: 10, monthlyCapUsd: 100 });
       await spend(own, 1);

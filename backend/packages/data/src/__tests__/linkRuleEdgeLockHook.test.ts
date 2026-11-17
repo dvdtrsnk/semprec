@@ -11,10 +11,10 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { linkRuleEdgeLockHook } from "../valueLinks/linkRuleEdgeHook.js";
 
-// `linkRuleEdgeLockHook` locks the target item of a rule from the written edge. Every rule of the system databases
-// has its via relation on the target's own database, so the target is the item of the edge on the via property's
-// side. This file adds a rule whose via relation is on the source's database (`Events.people`, the target a person),
-// where the target is the item at the other end. `valueLinkEdgeBreakLockOrder.test.ts` covers the rest of the hook.
+// `linkRuleEdgeLockHook` locks a rule's target item from the written edge. Every system rule has its via
+// relation on the target's own database; this file adds one whose via relation is on the source's
+// database (`Events.people`), where the target is the other end. `valueLinkEdgeBreakLockOrder.test.ts`
+// covers the rest of the hook.
 
 export const manifest: ModuleManifest = {
   id: "fixtureLockHook",
@@ -48,7 +48,6 @@ interface Fixture {
   edge: { relationDefinitionId: string; propertyId: string; itemA: string; itemB: string };
 }
 
-/** An Event and a person joined by an `Events.people` edge, written through the choke point. */
 async function buildFixture(): Promise<Fixture> {
   return runInTenant(tenant, async () => {
     const databases = await cp.listDatabases();
@@ -86,8 +85,8 @@ async function buildFixture(): Promise<Fixture> {
 }
 
 /**
- * Locks one item row in a transaction that stays open while `inspect` runs, then ends it. `inspect` runs the hook
- * on another connection with a lock timeout, so a hook that waits for the held row ends with `55P03` at once.
+ * Locks one item row in a transaction kept open while `inspect` runs the hook on another connection with
+ * a lock timeout, so a hook that waits for the held row ends with `55P03` at once.
  */
 async function holdingRow<T>(databaseId: string, itemId: string, inspect: () => Promise<T>): Promise<T> {
   let locked!: () => void;
@@ -114,7 +113,6 @@ async function holdingRow<T>(databaseId: string, itemId: string, inspect: () => 
   }
 }
 
-/** Runs the hook for the fixture's edge as a user writer and reports whether it had to wait for a row. */
 async function hookWaits(fixture: Fixture): Promise<boolean> {
   try {
     await runInTenant(tenant, () =>
@@ -131,7 +129,7 @@ async function hookWaits(fixture: Fixture): Promise<boolean> {
     );
     return false;
   } catch (error) {
-    // 55P03 is `lock_not_available`, what PostgreSQL raises when `lock_timeout` ends a wait.
+    // 55P03 is `lock_not_available`, raised when `lock_timeout` ends a wait.
     if (error instanceof DatabaseError && error.code === "55P03") return true;
     throw error;
   }

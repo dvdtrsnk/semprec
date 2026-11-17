@@ -20,12 +20,7 @@ import { CORE_TASK_NAMES, registerTask, runOnce } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createTranscriptionCreateTask } from "../transcriptionTask.js";
 
-/**
- * Issue #1698, from the Files trigger to the Transcriptions row: the seeded `Files transcription trigger`
- * heartbeat's action is fired for an audio file, then the `transcriptionCreate` jobs it queued are run by
- * the real create task. The fixtures, the trigger, the task and the assertions use a `semprec_data` pool
- * inside the tenant.
- */
+/** From the seeded `Files transcription trigger` heartbeat to the Transcriptions row, via the real create task. */
 describe("Transcriptions row for an audio file attached to an Event (issue #1698)", () => {
   let admin: Pool;
   let runtime: Pool;
@@ -74,10 +69,7 @@ describe("Transcriptions row for an audio file attached to an Event (issue #1698
     await admin?.end();
   });
 
-  /**
-   * An audio Files item. With `attachedToEvent`, a new Event and the file's `Files.events` edge are
-   * written in the transaction that creates the file, as the upload attach of issue #1645 does.
-   */
+  /** With `attachedToEvent`, the Event edge is written in the file's create transaction, as the upload attach does. */
   function createAudioFile(options: { attachedToEvent: boolean }): Promise<string> {
     return inTenant(async (client) => {
       const blob = await createBlob(client, {

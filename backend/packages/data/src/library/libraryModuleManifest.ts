@@ -10,22 +10,8 @@ export {
 } from "./libraryCoverCandidateRouteHandlers.js";
 
 /**
- * Retrofit manifest (module-contract issue #227) for the library module (issue #25): Books
- * and Movies/TV, two instantiations of the generic library contract (see
- * `libraryModuleContract.ts` — an older, unrelated "contract" concept: per-instance
- * property-key slots, not this `ModuleManifest`), sharing `item_automation`
- * (`0005_library_module.sql`) and the `library-grid` view type
- * (`views/libraryGridViewType.ts`). Its cover/metadata heartbeat actions
- * (`core.libraryMetadataTrigger`, `core.libraryMetadataRetrySweep`,
- * `libraryMetadataActions.ts`) and job (`processLibraryMetadata`,
- * `CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS`) are registered as core actions/tasks, not
- * module-declared ones — the same reason the docs manifest (#226) excludes its cron tasks —
- * so this manifest declares no `heartbeatActions`/`taskNames`. Authoring this manifest
- * changes no behavior.
- */
-/**
- * Status chips after an "All" chip, labelled `quickFilter.<database>.<status>` (issue #1647). Neither
- * library database has a default chip.
+ * Books and Movies/TV share `item_automation` and the `library-grid` view type. Their metadata heartbeat actions
+ * and job are registered as core actions/tasks, so this manifest declares no `heartbeatActions`/`taskNames`.
  */
 function statusChips(database: string, statuses: string[]): NonNullable<ModuleDatabaseDescriptor["quickFilters"]> {
   return [
@@ -69,15 +55,13 @@ export const manifest: ModuleManifest = {
   capabilities: [],
   agentTools: [],
   viewTypes: [LIBRARY_GRID_VIEW_TYPE],
-  migrations: ["0005_library_module.sql"],
   customRoutes: [
     {
       name: "libraryAutomationRetry",
       method: "POST",
       path: "/api/items/:id/automation/retry",
       handlerExport: "createLibraryAutomationRetryRouteHandler",
-      // Issue #1793: in one transaction clears the item's manual cover choice, sets its automation row to pending
-      // (a locked one too) and enqueues the metadata job, which no single generic item write can do.
+      // Clears the manual cover choice, resets automation to pending and enqueues the job in one transaction.
       justification: "transactional-semantics",
     },
     {
@@ -85,8 +69,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/items/:id/cover-candidates",
       handlerExport: "createLibraryCoverCandidatesListRouteHandler",
-      // Issue #1812: reads the candidates the metadata job stored for one Books or Movies item; no generic read
-      // returns that table, and the route makes no request to an external service.
+      // No generic read returns the candidates table; no external request is made.
       justification: "single-consumer-read",
     },
     {
@@ -94,7 +77,6 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/items/:id/cover-candidates/refresh",
       handlerExport: "createLibraryCoverCandidatesRefreshRouteHandler",
-      // Issue #1812: in one transaction sets the item's automation row to pending and enqueues the metadata job.
       justification: "transactional-semantics",
     },
     {
@@ -102,7 +84,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/items/:id/cover-candidates/:index/select",
       handlerExport: "createLibraryCoverCandidateSelectRouteHandler",
-      // Issue #1812: stores the downloaded image as a blob and writes the cover properties in one transaction.
+      // Stores the downloaded image as a blob and writes the cover properties in one transaction.
       justification: "transactional-semantics",
     },
   ],

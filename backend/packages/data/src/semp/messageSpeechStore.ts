@@ -114,7 +114,7 @@ export async function withMessageSpeechGuard<T>(
   return result.value;
 }
 
-/** The readable text of a message and the agent run that produced it, which is null for a message of no run (issue #2020). */
+/** The readable text of a message and the agent run that produced it, which is null for a message of no run. */
 export interface MessageSpeechSource {
   text: string;
   agentRunId: string | null;

@@ -45,7 +45,7 @@ import { proposeRecipe, type RecipeProposalPorts } from "../recipeExtraction.js"
 import { proposalEnvelopeSchema } from "../proposalEnvelope.js";
 import { LOCKED_PROPOSAL_STATUSES } from "../inboxTypesStore.js";
 
-// Issue gh-1974: a recipe proposal from the Inbox tick to the confirm, on the runtime role in a tenant of its own.
+// A recipe proposal from the Inbox tick to the confirm, on the runtime role in a tenant of its own.
 const SEEDING_HOOK_TIMEOUT_MS = 90_000;
 
 const PAGE_URL = "https://recipes.example.com/goulash";
@@ -113,7 +113,6 @@ function inTenant<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
 const cardsOf = () =>
   inTenant((client) => itemsStore.getAllItemsInDatabase(client, tickConfig.processingProposalsDatabaseId));
 
-/** Runs the Inbox tick for the item with the recipe writer as its computation, and returns the card it wrote. */
 async function computeCard(itemId: string, ports: RecipeProposalPorts): Promise<ItemRow> {
   const before = new Set((await cardsOf()).map((card) => card.id));
   const tick = createSemprecTickAction(dataPool, (input) =>
@@ -149,7 +148,6 @@ const recipes = () =>
     return itemsStore.getAllItemsInDatabase(client, database.id);
   });
 
-/** The blocks of the page of `itemId` as `[type, text]` pairs, and who wrote them. */
 async function pageOf(itemId: string) {
   return inTenant(async (client) => {
     const page = await readPageMarkdown(client, itemId);
@@ -197,7 +195,6 @@ describe("a recipe proposal from the Inbox to its confirm (issue gh-1974)", () =
       ],
     });
     expect(card.properties.aiProposal).toEqual(envelope);
-    // Nothing is written to the Recipes database before the confirm.
     expect(await recipes()).toEqual([]);
 
     const confirmed = await confirm(card.id);
@@ -220,12 +217,10 @@ describe("a recipe proposal from the Inbox to its confirm (issue gh-1974)", () =
       ["number", "Add the beef and paprika."],
       ["number", "Simmer for two hours."],
     ]);
-    // The ids are those of the proposal, heading and items counted together, and a person wrote the updates.
     expect(sections.map((block) => block.id)).toEqual(
       Array.from({ length: 8 }, (_, index) => proposalBlockId(card.id, index)),
     );
     expect(new Set(page.authors)).toEqual(new Set(["user"]));
-    // The result of the primary step lists the ids of the blocks the confirm inserted for the sections.
     expect(readConfirmationResults(confirmed.properties).map((result) => [result.ref, result.blockIds])).toEqual([
       ["primary", sections.map((block) => block.id)],
     ]);
@@ -257,7 +252,6 @@ describe("a recipe proposal from the Inbox to its confirm (issue gh-1974)", () =
     expect(created?.properties.photo).toEqual({ blobId: fixture.attachmentBlobIds[0] });
     const blob = await inTenant((client) => getBlob(client, fixture.attachmentBlobIds[0] ?? ""));
     expect(blob?.mimeType).toBe("image/jpeg");
-    // The origin note and the eight blocks of the two sections.
     expect((await pageOf(created?.id ?? "")).blocks).toHaveLength(9);
   });
 
@@ -283,7 +277,6 @@ describe("a recipe proposal from the Inbox to its confirm (issue gh-1974)", () =
 
     expect(edited.item.properties.userEditedKeys).toEqual(["primary.name", "primary.servings"]);
     expect(proposalEnvelopeSchema.parse(edited.item.properties.proposal).pageSections).toHaveLength(2);
-    // The assistant's own envelope is the one it computed.
     expect(proposalEnvelopeSchema.parse(edited.item.properties.aiProposal).properties.name).toBe("Beef goulash");
     await confirm(card.id);
     const created = (await recipes()).find((recipe) => recipe.properties.name === "Grandma's goulash");
@@ -306,7 +299,6 @@ describe("a recipe proposal from the Inbox to its confirm (issue gh-1974)", () =
       return { fixture, card: await computeCard(fixture.itemId, ports) };
     }
 
-    /** The two sections of the page the card proposed, as the confirm writes them. */
     async function expectRecipePageOfSixKept(card: ItemRow) {
       const revised = await readCard(card.id);
       expect(proposalEnvelopeSchema.parse(revised.properties.proposal).pageSections).toHaveLength(2);

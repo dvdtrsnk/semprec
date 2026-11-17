@@ -78,7 +78,6 @@ interface Counts {
   parentUpdates: number;
 }
 
-/** What a refused conversion must leave as it found it. */
 async function counts(parent: string): Promise<Counts> {
   return inTenant(async (client) => {
     const { rows } = await client.query<Counts>(
@@ -115,7 +114,6 @@ describe("page.createSubpage with fromBlockIds (issue #2013)", () => {
     if (!alpha?.id || !beta?.id || !gamma?.id || !delta?.id) throw new Error("Missing seed blocks");
     const before = await counts(project);
 
-    // The ids are listed out of document order; the pages come back in document order.
     const result = await convert(project, [gamma.id, alpha.id, beta.id], "ai_agent", {
       afterBlockId: "ignored-because-fromBlockIds-is-present",
       title: "Ignored title",
@@ -153,10 +151,9 @@ describe("page.createSubpage with fromBlockIds (issue #2013)", () => {
       { title: "Beta", parentItemId: project },
       { title: "Gamma", parentItemId: project },
     ]);
-    // Every new page is empty: a page document with no update.
     expect(stored.pageDocs).toHaveLength(3);
     expect(stored.pageDocs.every((doc) => doc.kind === "page" && doc.updates === 0)).toBe(true);
-    // Exactly one document update for all three conversions, authored by the caller's origin.
+    // One document update for all three conversions, authored by the caller's origin.
     expect(stored.parentUpdates.length).toBe(before.parentUpdates + 1);
     expect(stored.parentUpdates.at(-1)?.created_by).toBe("ai_agent");
   });
@@ -249,8 +246,7 @@ describe("page.createSubpage with fromBlockIds (issue #2013)", () => {
     const before = await counts(project);
     const beforeBlocks = await readBlocks(project);
 
-    // A test trigger refuses the next insert into doc_updates, so the conversion fails after its Pages items and
-    // documents were created and before it commits. The DDL carries no value, so nothing is interpolated.
+    // A test trigger refuses the next doc_updates insert, so the conversion fails before commit.
     await admin.query(
       `CREATE FUNCTION public.zz_test_refuse_doc_update() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'refused by the test trigger' USING ERRCODE = 'P0001'; END $$`,

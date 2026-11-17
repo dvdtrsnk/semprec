@@ -10,20 +10,16 @@ export type { FilterCompileContext } from "./relativeDates.js";
 
 const DATE_ONLY_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
 
-/**
- * What the compiler needs to know about one filterable property. A relation property also
- * carries which relation definition it belongs to and which side of it this database's items
- * sit on, since a relation value is an `item_relations` edge rather than a `properties` field.
- */
+/** A relation property also carries its definition and side, since its value is an `item_relations` edge. */
 export interface FilterProperty {
   type: PropertyType;
   relationDefinitionId?: string;
   relationSide?: "a" | "b";
   targetDatabaseId?: string;
   targetRelationProperties?: FilterProperties;
-  /** Set for a rollup whose value is a number (any aggregation but `earliest`/`latest`). */
+  /** A rollup whose value is a number (any aggregation but `earliest`/`latest`). */
   numericRollup?: boolean;
-  /** Set for a rollup: the database whose items it aggregates (`rollup_dependencies.source_database_id`). */
+  /** A rollup's source database (`rollup_dependencies.source_database_id`). */
   sourceDatabaseId?: string;
 }
 
@@ -42,10 +38,8 @@ function isRelationCondition(node: FilterCondition): node is RelationCondition |
 }
 
 /**
- * Refuses a condition on a property that reaches a database in `closedDatabaseIds` (issue #2000): a relation property
- * into it, or a rollup that aggregates it. The filter would otherwise tell which items link to a record of that
- * database, or how many records they link to, without returning one. Every relation and rollup condition goes through
- * this check, whatever its operator.
+ * Refuses any condition on a relation into, or rollup over, a closed database: it would reveal which items link to
+ * that database's records, or how many, without returning one.
  */
 function assertPropertyNotClosed(
   key: string,
@@ -61,10 +55,8 @@ function isRelationEmptinessCondition(node: FilterCondition): node is RelationEm
 }
 
 /**
- * Emptiness of a relation property: an edge only counts when its other end is a live item of
- * the target database. The definition id and database id are bound parameters; only the
- * `a`/`b` side names, taken from the registered definition, are interpolated. The lateral
- * lookup with `OFFSET 0` pins the join to the target database partition, as in the path filter.
+ * An edge counts only when its other end is a live item of the target database. Only the `a`/`b` side names from
+ * the registered definition are interpolated; `OFFSET 0` pins the lateral join to the target partition.
  */
 function compileRelationEmptinessCondition(
   node: RelationEmptinessCondition,
@@ -98,10 +90,8 @@ function compileRelationEmptinessCondition(
 }
 
 /**
- * A relation condition compiles to an existence check over `item_relations`, never to a
- * `properties` lookup: the relation-definition id and the target item id are both bound
- * parameters, and the only thing interpolated into the SQL text is the `a`/`b` side, which
- * comes from the property's own registered relation definition — never from the filter node.
+ * An existence check over `item_relations` with bound ids; only the `a`/`b` side from the property's registered
+ * definition (never from the filter node) is interpolated.
  */
 function compileRelationCondition(node: RelationCondition, property: FilterProperty, params: unknown[]): string {
   if (!property.relationDefinitionId || !property.relationSide) {
@@ -174,25 +164,19 @@ function compileRelationPathCondition(
   )`;
 }
 
-/**
- * The cast a date condition compares under: `::date` when every operand is a date-only string, so
- * the comparison never goes through an instant and never depends on a time zone; `::timestamptz`
- * as soon as one operand carries a time.
- */
+/** `::date` when every operand is date-only, so the comparison never depends on a time zone; else `::timestamptz`. */
 function dateComparisonCast(operands: string[]): "::date" | "::timestamptz" {
   return operands.every((operand) => new RegExp(DATE_ONLY_PATTERN).test(operand)) ? "::date" : "::timestamptz";
 }
 
-/** The calendar day of a stored date value in the tenant zone: a date-only string as written, a timestamp via AT TIME ZONE; empty or missing is NULL. */
+/** A date-only string as written, a timestamp via AT TIME ZONE; empty or missing is NULL. */
 function dayExpression(field: string, zoneParam: number): string {
   return `(CASE WHEN NULLIF(${field}, '') IS NULL THEN NULL WHEN ${field} ~ '${DATE_ONLY_PATTERN}' THEN (${field})::date ELSE ((${field})::timestamptz AT TIME ZONE $${zoneParam}::text)::date END)`;
 }
 
 /**
- * Compiles `date_relative` to day-range comparisons. The bounds come from the compile context
- * (zone and clock) and are bound as parameters, so no clock call appears in the SQL. A null or
- * missing value yields NULL and never matches. With `endProperty` the interval
- * [property, endProperty or property] must intersect the range.
+ * Bounds come from the compile context and are bound, so no clock call appears in the SQL. Null never matches.
+ * With `endProperty` the interval [property, endProperty or property] must intersect the range.
  */
 function compileDateRelative(
   node: Extract<FilterCondition, { type: "date_relative" }>,
@@ -246,16 +230,14 @@ function compileDateRelative(
   return `(${clauses.join(" AND ")})`;
 }
 
-/** Escapes LIKE metacharacters so a `contains`/`starts_with`/`ends_with` value can never inject its own wildcard. Paired with `ESCAPE '\'` in the compiled SQL. */
+/** Paired with `ESCAPE '\'` in the compiled SQL. */
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
 /**
- * Compiles one condition node into a SQL/JSONB predicate. Every value — including the
- * property *key* itself — is pushed onto `params` and referenced as `$N`; nothing from
- * the node is ever concatenated into the SQL text. That, plus the closed condition set
- * validated by filterTree.ts, is what makes a filter incapable of SQL injection.
+ * Every value, the property key included, is a bound `$N`; nothing from the node is concatenated into SQL. That
+ * plus the closed condition set of filterTree.ts makes a filter incapable of SQL injection.
  */
 function compileCondition(
   node: FilterCondition,
@@ -312,8 +294,7 @@ function compileCondition(
       params.push(`%${escapeLikePattern(node.value)}`);
       return `${textField} ILIKE $${params.length} ESCAPE '\\'`;
     case "is_empty":
-      // A multi_select stores a jsonb array; `properties ->> key` on it never yields NULL
-      // or '' (it renders as the text "[]"), so emptiness must be checked on the jsonb form.
+      // `properties ->> key` on a multi_select array renders "[]", never NULL or '', so check the jsonb form.
       return isMultiSelect
         ? `(${jsonField} IS NULL OR ${jsonField} = 'null'::jsonb OR ${jsonField} = '[]'::jsonb)`
         : `(${textField} IS NULL OR ${textField} = '')`;
@@ -361,13 +342,12 @@ function compileCondition(
       }
       params.push(node.value);
       const operator = { lt: "<", lte: "<=", gt: ">", gte: ">=" }[node.type];
-      // CASE (unlike AND) guarantees a stored non-number never reaches the cast; a missing key is not a number either.
+      // CASE (unlike AND) guarantees a stored non-number never reaches the cast.
       return `(CASE WHEN jsonb_typeof(${jsonField}) = 'number' THEN (${textField})::numeric ${operator} $${params.length}::numeric ELSE false END)`;
     }
     case "in": {
       params.push(node.value);
-      // multi_select stores a jsonb array; `in` means "overlaps any of the given values".
-      // Every other type stores a scalar; `in` means plain membership.
+      // multi_select stores a jsonb array, so `in` means overlap; other types use plain membership.
       return isMultiSelect
         ? `${jsonField} ?| $${params.length}::text[]`
         : `${textField} = ANY($${params.length}::text[])`;
@@ -376,9 +356,8 @@ function compileCondition(
 }
 
 /**
- * `context` carries the tenant zone and clock; only `date_relative` conditions need it. `closedDatabaseIds` are the
- * sensitive databases an agent's project may not read (issue #2000): a condition on a relation property into one of
- * them, or on a rollup that aggregates one, is refused with a `ForbiddenError` instead of compiled. Absent for a person.
+ * `context` (tenant zone and clock) is needed only for `date_relative`. A condition reaching a `closedDatabaseIds`
+ * database is refused with `ForbiddenError`; absent for a person.
  */
 export function compileFilterNode(
   node: FilterNode,
@@ -399,7 +378,6 @@ export function compileFilterNode(
   }
 }
 
-/** True when the tree contains a condition whose result depends on the clock. */
 function filterUsesClock(node: FilterNode): boolean {
   switch (node.type) {
     case "and":
@@ -412,7 +390,7 @@ function filterUsesClock(node: FilterNode): boolean {
   }
 }
 
-/** Reads the tenant zone (only when the tree needs it) and pairs it with the clock. */
+/** Reads the tenant zone only when the tree needs it. */
 export async function resolveFilterCompileContext(
   client: Queryable,
   node: FilterNode,

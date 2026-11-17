@@ -43,7 +43,6 @@ function input(overrides: Partial<RaiseProblemInput> = {}): RaiseProblemInput {
   };
 }
 
-/** Runs `fn` in a transaction scoped to tenant zero and commits it. */
 function inZero<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return withTenantTransaction(pool, tenantZero, fn);
 }

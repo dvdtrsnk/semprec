@@ -20,30 +20,20 @@ import { createSempMessageTask } from "./sempMessageTask.js";
 import { startSempTurnCancelWiring } from "./sempTurnCancelListener.js";
 import { logger } from "./logger.js";
 
-// Installed before anything else runs: an uncaught exception or unhandled rejection during
-// startup (pool creation, module-registry load, queue-runtime startup validation) must still log
-// fatally and exit non-zero rather than crash silently or hang.
+// Installed first, so a startup failure still logs fatally and exits non-zero.
 installFatalHandlers(logger);
 
-// This process hosts the choke point in-process: every agent run's generic-operation tools
-// (`createGenericOperationAgentTools`) dispatch through `createGenericOperationGateway(pool)` to
-// `createChokePoint(pool)`, and non-destructive operations commit directly. It therefore
-// authenticates as `semprec_data` via SEMPREC_API_DATABASE_URL (the shared key of
-// `/opt/semprec/shared/.env`; see docs/adr/2026-10-03-agents-worker-choke-point-access.md).
-// `DATABASE_URL` remains the fallback for local development.
+// Agent tools dispatch to the choke point in-process, so this process authenticates as
+// `semprec_data` via SEMPREC_API_DATABASE_URL; `DATABASE_URL` is the local-development fallback.
 const connectionString = process.env.SEMPREC_API_DATABASE_URL ?? process.env.DATABASE_URL;
 if (!connectionString) throw new Error("SEMPREC_API_DATABASE_URL (or DATABASE_URL) is not set");
 
 const pool = createPool(connectionString);
 await assertRuntimeRole(pool);
 
-// Every item write, notification and agent run event this process commits publishes through the
-// data layer's in-process realtime hooks, whose defaults are no-ops. They are wired before the
-// queue runtime below can claim a job, so no agent-run write goes unpublished.
+// Wired before the queue can claim a job, so no write goes unpublished (the defaults are no-ops).
 wireRealtimeHooks(pool);
 
-// Issue #168: this process's own `process_heartbeats` row, re-UPSERTed every 15 seconds for as
-// long as this process is up.
 startProcessHeartbeat(
   pool,
   { process: "agents", pid: process.pid, version: process.env.APP_VERSION ?? "0.0.0" },
@@ -52,22 +42,17 @@ startProcessHeartbeat(
 
 const moduleRegistry = await loadFullModuleRegistry();
 
-// Startup orphan repair (issue #642): every run still `running` was abandoned by the previous
-// process, so it is closed before the queue runner below can claim any job that would touch it.
-// A failure here is fatal — it propagates to `installFatalHandlers`, which exits non-zero before
-// the queue runner is ever installed.
+// Every run still `running` was abandoned by the previous process; close them before the queue
+// runner can claim a job that touches them. A failure here is fatal.
 const { repairedRunIds } = await repairInterruptedRuns(pool);
 logger.info({ repairedRunCount: repairedRunIds.length }, "Repaired interrupted agent runs");
 
-// Issue #91: this process is the queue's second composition root — it hosts every
-// `queueAffinity: 'agents'` task handler over this same pool, and installs no crontab of its own.
-// Issue #647: every agent session runs against the gateway-addressed model; `createGatewayModel`
-// throws naming a missing AI_GATEWAY_BASE_URL/AI_GATEWAY_INTERNAL_TOKEN/AGENT_MODEL, so the process
-// refuses to start without them.
+// Hosts every `queueAffinity: 'agents'` task and no crontab. `createGatewayModel` throws on missing
+// gateway configuration, so the process refuses to start without it.
 const gateway = createGatewayModel(process.env);
 const inFlightAgentRuns = createInFlightAgentRuns();
 const queueRuntime = await createAgentsQueueRuntime(pool, moduleRegistry, {
-  // Issue gh-1941: the client of the answer-expected gate of the `newEmail` heartbeat.
+  // For the answer-expected gate of the `newEmail` heartbeat.
   aiGateway: createAiGatewayClientForAgents(process.env),
   runAgent: createRunAgentForHeartbeats(pool, moduleRegistry, gateway, inFlightAgentRuns),
   agentRunTask: createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),

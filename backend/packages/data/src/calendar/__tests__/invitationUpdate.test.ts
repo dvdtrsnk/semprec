@@ -15,8 +15,6 @@ import {
   type MailTenant,
 } from "./invitationMailFixtures.js";
 
-/** An organizer's higher-SEQUENCE REQUEST for an answered invitation and its Event (issue gh-2007). */
-
 let admin: Pool;
 let runtime: Pool;
 let mail: InvitationMail;
@@ -32,7 +30,6 @@ const itemRow = z.object({
 });
 type ItemRow = z.infer<typeof itemRow>;
 
-/** Every row of one database of the tenant, trashed ones included, in id order. */
 async function rowsOf(world: World, moduleKey: string): Promise<ItemRow[]> {
   const { rows } = await admin.query(
     "SELECT id, properties, deleted_at, updated_at FROM items WHERE database_id = $1 ORDER BY id",
@@ -57,7 +54,6 @@ const notificationRow = z.object({
   resolved_at: z.date().nullable(),
 });
 
-/** The notifications of the tenant, read as the runtime role inside that tenant, oldest first. */
 async function notificationsOf(tenantId: string): Promise<Array<z.infer<typeof notificationRow>>> {
   return withTenantTransaction(runtime, tenantId, async (client) => {
     const { rows } = await client.query(
@@ -67,7 +63,6 @@ async function notificationsOf(tenantId: string): Promise<Array<z.infer<typeof n
   });
 }
 
-/** The ids on the other end of the invitation's relation `key`. */
 async function edgesOf(world: World, invitationId: string, key: string): Promise<string[]> {
   return runInTenant(world.tenantId, async () => {
     const property = (await world.cp.listProperties(world.databases.invitations!)).find((entry) => entry.key === key);
@@ -76,7 +71,6 @@ async function edgesOf(world: World, invitationId: string, key: string): Promise
   });
 }
 
-/** Every argument that the spied logger methods were called with, as text. */
 function loggedText(...spies: Array<{ mock: { calls: unknown[][] } }>): string {
   return JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
 }
@@ -92,7 +86,6 @@ describe("an organizer's update of an answered invitation (issue gh-2007)", () =
   let world: World;
   let other: MailTenant;
 
-  /** The invitation "Sprint review" arrives; the user answers it with `response`. Returns the invitation row. */
   async function answeredInvitation(response: string, request: Parameters<typeof ics>[0] = {}): Promise<ItemRow> {
     await mail.deliver(world, "<request@example.test>", ics({ summary: SECRET, ...request }));
     const invitation = await onlyRow(invitationsOf(world));
@@ -100,12 +93,10 @@ describe("an organizer's update of an answered invitation (issue gh-2007)", () =
     return onlyRow(invitationsOf(world));
   }
 
-  /** An organizer's update arrives and is ingested; returns the Emails item id. */
   function update(request: Parameters<typeof ics>[0], id = "<update@example.test>"): Promise<string> {
     return mail.deliver(world, id, ics({ summary: SECRET, sequence: 1, ...request }));
   }
 
-  /** The user changes the Event as they would in the app. */
   async function userEdit(eventId: string, propertiesPatch: Record<string, unknown>): Promise<void> {
     await runInTenant(world.tenantId, () =>
       world.cp.updateItem({ databaseId: world.databases.events!, itemId: eventId, propertiesPatch }),
@@ -401,7 +392,6 @@ describe("an organizer's update of an answered invitation (issue gh-2007)", () =
          JOIN graphile_worker._private_tasks t ON t.id = j.task_id
         WHERE t.identifier IN ('notificationFanout', 'pushDismiss')`,
     );
-    // The invitation's own notification queued one fan-out and its answer one dismiss.
     expect(Number(rows[0]!.count)).toBe(2);
   });
 
@@ -441,7 +431,6 @@ describe("an organizer's update of an answered invitation (issue gh-2007)", () =
     });
 
     describe("comes from a sender that is not the organizer", () => {
-      /** The invitation, its Event and the notifications of the tenant. */
       async function snapshot() {
         return {
           invitations: await invitationsOf(world),

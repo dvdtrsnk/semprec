@@ -3,7 +3,12 @@ import { writeBlock } from "@semprec/block-model";
 import { mutateDoc } from "../docs/docPersistence.js";
 import { createDocStore } from "../docs/docStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
-import { buildProposalEnvelope, resolveModelPagePlacement, type TickSnapshot } from "../inbox/inboxTickSnapshot.js";
+import {
+  buildProposalEnvelope,
+  resolveModelPagePlacement,
+  type ProposalComputationResult,
+  type TickSnapshot,
+} from "../inbox/inboxTickSnapshot.js";
 import { buildProposalSteps } from "../inbox/proposalOperations.js";
 import "../domainWriteHooks.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -70,6 +75,10 @@ import { splitInboxSourceWithClient } from "../inbox/proposalSplit.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
+let inboxId: string;
+let typesId: string;
+let proposalsId: string;
+let databaseIds: TickDatabaseIds;
 
 // pg 8.23.0 reports these two finite owned-release paths with plain, uncoded errors.
 function isOwnedPgClosure(
@@ -79,7 +88,6 @@ function isOwnedPgClosure(
   return error instanceof Error && error.constructor === Error && !("code" in error) && error.message === message;
 }
 
-/** Owns only this overlap's runtime clients, gates and operations. */
 function ownOverlap(
   runtime: Pool,
   cancel: () => void,
@@ -139,7 +147,7 @@ function ownOverlap(
     return operation;
   };
   const wait = <T>(signal: Promise<T>, ...actors: Promise<unknown>[]): Promise<T> =>
-    overlapBounded(
+    bounded(
       Promise.race([
         signal,
         ...actors.map((actor) =>
@@ -154,6 +162,7 @@ function ownOverlap(
         ),
       ]),
       5000,
+      "Overlap cleanup timed out",
     );
   const finish = (bodyFailed = false): Promise<void> => {
     if (closingPromise) return closingPromise;
@@ -196,7 +205,7 @@ function ownOverlap(
         }
       })();
       try {
-        await overlapBounded(joined, 8000);
+        await bounded(joined, 8000, "Overlap cleanup timed out");
         detach();
       } catch (error) {
         errors.push(error);
@@ -220,13 +229,13 @@ function ownOverlap(
   return { run, wait, finish, consume };
 }
 
-async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+async function bounded<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Overlap cleanup timed out")), milliseconds);
+        timer = setTimeout(() => reject(new Error(message)), milliseconds);
       }),
     ]);
   } finally {
@@ -244,23 +253,49 @@ function combineOverlapFailure(body: { error: unknown } | undefined, cleanup: un
 }
 
 function rethrowOverlap(error: unknown): never {
-  // Preserve even non-Error thrown identities from the tested operation.
   throw error;
 }
 
-async function boundedBarrier<T>(promise: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Concurrency barrier timed out")), 5000);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+const boundedBarrier = <T>(promise: Promise<T>) => bounded(promise, 5000, "Concurrency barrier timed out");
+
+/** A one-shot gate: `reached` signals that a participant arrived, `release` lets it continue. */
+function barrier() {
+  let release = () => {};
+  let reached = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const ready = new Promise<void>((resolve) => (reached = resolve));
+  return { gate, ready, release: () => release(), reached: () => reached() };
 }
+
+/** Wraps `query` of a client (or pool) while passing every other member through. */
+function interceptQuery<T extends object>(
+  target: T,
+  query: (args: unknown[], original: (...args: unknown[]) => Promise<unknown>) => unknown,
+): T {
+  return new Proxy(target, {
+    get(inner, key, receiver) {
+      const value: unknown = Reflect.get(inner, key, receiver);
+      if (typeof value !== "function") return value;
+      if (key !== "query") return value.bind(inner);
+      return (...args: unknown[]) =>
+        query(args, (...forwarded) => Reflect.apply(value, inner, forwarded) as Promise<unknown>);
+    },
+  });
+}
+
+/** A pool whose checked-out clients are wrapped by `wrap`. */
+function interceptConnect(target: Pool, wrap: (client: PoolClient) => PoolClient): Pool {
+  return new Proxy(target, {
+    get(inner, key, receiver) {
+      if (key === "connect") return async () => wrap(await inner.connect());
+      const value: unknown = Reflect.get(inner, key, receiver);
+      return typeof value === "function" ? value.bind(inner) : value;
+    },
+  });
+}
+
+const pidOf = async (client: { query: PoolClient["query"] }) =>
+  (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
 
 function insertInboxAttachments(owner: Pool, itemId: string, attachments: Parameters<typeof insertWithClient>[2]) {
   return withTransaction(owner, (client) => insertWithClient(client, itemId, attachments));
@@ -275,15 +310,9 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** The version 1 fingerprint (issue #223), pinned by formula: the tick no longer writes it (issue #1606). */
-function legacyFingerprintOf(emoji: string, text: string): string {
-  return createHash("sha256").update(JSON.stringify({ emoji, text })).digest("hex");
-}
-
 /**
- * The version 2 fingerprint (issue #1606) written out by hand: canonical JSON with the keys in code-point
- * order and the attachment hashes sorted, and `transcribedText` empty. The test does not reuse the
- * production function it checks.
+ * The version 2 fingerprint written out by hand: canonical JSON with keys in code-point order, attachment
+ * hashes sorted and `transcribedText` empty. The test does not reuse the production function it checks.
  */
 function fingerprintV2Of(input: {
   typeId: string;
@@ -310,15 +339,19 @@ type TickDatabaseIds = {
   processingProposalsDatabaseId: string;
 };
 
-async function findProposalForItem(tickPool: Pool, proposalsId: string, itemId: string) {
+async function findProposalForItem(tickPool: Pool, proposalsDatabaseId: string, itemId: string) {
   return withTransaction(tickPool, async (client) => {
-    const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
+    const sourceInboxProperty = await propertiesStore.getPropertyByKey(client, proposalsDatabaseId, "sourceInbox");
     const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty!.id);
-    // Every edge, not `edges[0]`: the same scan production's `findExistingProposal` does, so a
-    // soft-deleted proposal still linked to the item is skipped here as it is there.
+    // Every edge, not `edges[0]`: as production's `findExistingProposal` does, a soft-deleted proposal still
+    // linked to the item is skipped.
     const edges = await relationsStore.listRelationsForItem(client, relationDefinition!.id, itemId);
     for (const edge of edges) {
-      const proposal = await itemsStore.getItemById(client, proposalsId, relationsStore.otherSide(edge, itemId));
+      const proposal = await itemsStore.getItemById(
+        client,
+        proposalsDatabaseId,
+        relationsStore.otherSide(edge, itemId),
+      );
       if (proposal && !proposal.deletedAt) return proposal;
     }
     return null;
@@ -327,7 +360,7 @@ async function findProposalForItem(tickPool: Pool, proposalsId: string, itemId: 
 
 async function runTick(
   tickPool: Pool,
-  databaseIds: TickDatabaseIds,
+  ids: TickDatabaseIds,
   itemId: string,
   computeProposal: ComputeSemprecProposalFn,
 ): Promise<void> {
@@ -356,52 +389,147 @@ async function runTick(
       },
     };
   });
-  await handler(databaseIds, { heartbeatId: "hb", projectItemId: "proj", itemId });
+  await handler(ids, { heartbeatId: "hb", projectItemId: "proj", itemId });
 }
 
-describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #223)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
-  let databaseIds: TickDatabaseIds;
+/** Resets the database, seeds the system and points the shared ids at the seeded Inbox databases. */
+async function resetTickDatabases(): Promise<void> {
+  pool ??= getTestPool();
+  viewTypeRegistry = createViewTypeRegistry();
+  await resetDatabase(pool);
+  await seedSystem(pool, viewTypeRegistry);
+  inboxId = await databaseIdFor("inbox");
+  typesId = await databaseIdFor("inboxItemTypes");
+  proposalsId = await databaseIdFor("processingProposals");
+  databaseIds = {
+    inboxDatabaseId: inboxId,
+    inboxItemTypesDatabaseId: typesId,
+    processingProposalsDatabaseId: proposalsId,
+  };
+}
 
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    inboxId = await databaseIdFor("inbox");
-    typesId = await databaseIdFor("inboxItemTypes");
-    proposalsId = await databaseIdFor("processingProposals");
-    databaseIds = {
-      inboxDatabaseId: inboxId,
+type TypeInput = Omit<Parameters<typeof createInboxTypeWithClient>[1], "inboxItemTypesDatabaseId">;
+const PAGE_TYPE = { name: "Thought", emoji: "💭", processingMethod: "pageContent" } as const;
+
+/** An Inbox type; a `database` type targets Tasks unless the input names another target. */
+function createType(input: Partial<TypeInput> = {}) {
+  const processingMethod = input.processingMethod ?? "database";
+  return withTransaction(pool, (client) =>
+    createInboxTypeWithClient(client, {
       inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
+      name: "Task",
+      emoji: "☑️",
+      ...(processingMethod === "database" ? { targetDatabase: "tasks" } : {}),
+      ...input,
+      processingMethod,
+    }),
+  );
+}
+
+function createSource(input: { text?: string; type?: string } = {}) {
+  return withTransaction(pool, (client) =>
+    createInboxItemWithClient(client, {
+      inboxDatabaseId: inboxId,
+      date: "2026-08-28",
+      time: "09:00",
+      text: "Buy milk",
+      ...input,
+    }),
+  );
+}
+
+async function typedSource(text = "Buy milk", type: Partial<TypeInput> = {}) {
+  const created = await createType(type);
+  return { type: created, item: await createSource({ text, type: created.id }) };
+}
+
+const cardOf = (itemId: string) => findProposalForItem(pool, proposalsId, itemId);
+async function requireCard(itemId: string) {
+  const card = await cardOf(itemId);
+  if (!card) throw new Error(`No proposal card for ${itemId}`);
+  return card;
+}
+const historyOf = (card: { properties: Record<string, unknown> }) =>
+  z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
+const tick = (itemId: string, compute: ComputeSemprecProposalFn, tickPool: Pool = pool) =>
+  runTick(tickPool, databaseIds, itemId, compute);
+const propose =
+  (properties: Record<string, unknown>, extra: Partial<ProposalComputationResult> = {}): ComputeSemprecProposalFn =>
+  async () => ({ properties, ...extra });
+const noCompute =
+  (why = "computeProposal must not be called"): ComputeSemprecProposalFn =>
+  async () => {
+    throw new Error(why);
+  };
+const unrecognized: ComputeSemprecProposalFn = async () => ({ properties: {}, candidates: [] });
+/** A computation that counts its calls and answers `result` each time. */
+function counted(result: ProposalComputationResult | ((input: ProposalComputationInput) => ProposalComputationResult)) {
+  const counter = {
+    calls: 0,
+    compute: (async (input) => {
+      counter.calls++;
+      return typeof result === "function" ? result(input) : result;
+    }) as ComputeSemprecProposalFn,
+  };
+  return counter;
+}
+
+/** A write through the choke point's item writer. */
+const editItem = (
+  databaseId: string,
+  itemId: string,
+  propertiesPatch: Record<string, unknown>,
+  options?: Parameters<typeof updateItemWithClient>[2],
+) => withTransaction(pool, (client) => updateItemWithClient(client, { databaseId, itemId, propertiesPatch }, options));
+/** A write straight through the items store, for system-owned keys no writer accepts. */
+const storeEdit = (databaseId: string, itemId: string, propertiesPatch: Record<string, unknown>) =>
+  withTransaction(pool, (client) => itemsStore.updateItemProperties(client, { databaseId, itemId, propertiesPatch }));
+const trashSource = (itemId: string) =>
+  withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
+const restoreSource = (itemId: string) =>
+  withTransaction(pool, (client) => itemsStore.restoreItem(client, inboxId, itemId));
+const countItems = async (databaseId: string) =>
+  (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [databaseId]))
+    .rows[0]!.n;
+
+async function inboxTypePropertyId(client: PoolClient): Promise<string> {
+  const property = await propertiesStore.getPropertyByKey(client, inboxId, "type");
+  if (!property) throw new Error("Missing Inbox type property");
+  return property.id;
+}
+/** Adds and removes type edges of a source through the relation writer. */
+function setSourceType(itemId: string, change: { add?: string; remove?: string }) {
+  return withTransaction(pool, async (client) => {
+    const relationPropertyId = await inboxTypePropertyId(client);
+    if (change.remove)
+      await deleteRelationWithClient(client, { relationPropertyId, callerItemId: itemId, targetItemId: change.remove });
+    if (change.add)
+      await createRelationWithClient(client, { relationPropertyId, callerItemId: itemId, targetItemId: change.add });
   });
+}
+function sourceTypeEdges(itemId: string) {
+  return withTransaction(pool, async (client) => {
+    const definition = await relationsStore.getRelationDefinitionByPropertyId(
+      client,
+      await inboxTypePropertyId(client),
+    );
+    if (!definition) throw new Error("Missing Inbox type definition");
+    return relationsStore.listRelationsForItem(client, definition.id, itemId);
+  });
+}
+/** Archives every Inbox type except `keep`. */
+async function archiveTypesExcept(keep: Array<string | undefined>) {
+  const types = await withTransaction(pool, (client) => itemsStore.listItems(client, typesId, { limit: 200 }));
+  for (const row of types.items) if (!keep.includes(row.id)) await editItem(typesId, row.id, { status: "archived" });
+}
+
+describe("semprec.tick fingerprinting and proposal create/revise/skip", () => {
+  beforeEach(resetTickDatabases);
 
   it("creates exactly one proposed row with the generic envelope and correct fingerprint for a 'database' type", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-
+    const { type, item } = await typedSource();
     let calls = 0;
-    await runTick(pool, databaseIds, item.id, async (input) => {
+    await tick(item.id, async (input) => {
       calls++;
       expect(input.projectItemId).toBe("proj");
       expect(input.entityKind).toBe("database");
@@ -410,217 +538,142 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     });
     expect(calls).toBe(1);
 
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal).toBeTruthy();
-    expect(proposal!.properties.status).toBe("proposed");
-    expect(proposal!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
-    expect(proposal!.properties.history).toHaveLength(1);
-    const entry = (proposal!.properties.history as Array<Record<string, unknown>>)[0]!;
-    expect(entry).toMatchObject({ author: "ai" });
-    expect(typeof entry.message).toBe("string");
-    expect(typeof entry.at).toBe("string");
-
-    const tasksDbId = await databaseIdFor("tasks");
-    expect(proposal!.properties.proposal).toEqual({
+    const proposal = await requireCard(item.id);
+    expect(proposal.properties.status).toBe("proposed");
+    expect(proposal.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
+    const history = historyOf(proposal);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ author: "ai", message: expect.any(String), at: expect.any(String) });
+    // toEqual on the whole envelope also proves it carries no other key.
+    expect(proposal.properties.proposal).toEqual({
       entityKind: "database",
-      target: tasksDbId,
+      target: await databaseIdFor("tasks"),
       properties: { name: "Buy milk" },
     });
-    expect(Object.keys(proposal!.properties.proposal as object).sort()).toEqual(["entityKind", "properties", "target"]);
   });
 
   describe("untyped recognition", () => {
     async function fixture() {
-      const type = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: "Recognized task",
-          status: "active",
-          emoji: "T",
-          processingMethod: "database",
-          targetDatabase: "tasks",
-        }),
-      );
-      const item = await withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, {
-          inboxDatabaseId: inboxId,
-          date: "2026-08-28",
-          time: "09:00",
-          text: "Buy milk",
-        }),
-      );
-      return { type, item };
+      const type = await createType({ name: "Recognized task", status: "active", emoji: "T" });
+      return { type, item: await createSource() };
     }
+    const activeType = (name: string, extra: Partial<TypeInput> = {}) =>
+      createType({ name, status: "active", emoji: name[0]!, ...extra });
+    const candidate = (kind: string, typeId: string, confidence: number) =>
+      kind === "type" ? { typeId, confidence } : { targetDatabaseKey: "tasks" as const, confidence };
+    const clarified = { status: "needsClarification", recognizedTypeId: null, proposal: null };
+
     it.each(["type", "direct"])(
       "recognizes a %s candidate without writing the source type and reuses the fingerprint",
       async (kind) => {
         const { type, item } = await fixture();
-        let calls = 0;
+        const counter = counted({ properties: { name: "Buy milk" }, candidates: [candidate(kind, type.id, 0.9)] });
         const compute: ComputeSemprecProposalFn = async (input) => {
-          calls++;
           expect(input.recognition).toBe(true);
-          return {
-            properties: { name: "Buy milk" },
-            candidates: [
-              kind === "type" ? { typeId: type.id, confidence: 0.9 } : { targetDatabaseKey: "tasks", confidence: 0.9 },
-            ],
-          };
+          return counter.compute(input);
         };
-        await runTick(pool, databaseIds, item.id, compute);
-        const card = await findProposalForItem(pool, proposalsId, item.id);
+        await tick(item.id, compute);
+        const card = await cardOf(item.id);
         expect(card?.properties).toMatchObject({
           status: "proposed",
           recognizedTypeId: kind === "type" ? type.id : null,
           typeCandidates: [],
           fingerprint: fingerprintV2Of({ typeId: "", text: "Buy milk" }),
         });
-        await runTick(pool, databaseIds, item.id, compute);
-        expect(calls).toBe(1);
-        expect(await findProposalForItem(pool, proposalsId, item.id)).toEqual(card);
-        const property = await withTransaction(pool, (client) =>
-          propertiesStore.getPropertyByKey(client, inboxId, "type"),
-        );
-        if (!property) throw new Error("Missing type property");
-        const definition = await withTransaction(pool, (client) =>
-          relationsStore.getRelationDefinitionByPropertyId(client, property.id),
-        );
-        if (!definition) throw new Error("Missing type definition");
-        expect(
-          await withTransaction(pool, (client) => relationsStore.listRelationsForItem(client, definition.id, item.id)),
-        ).toEqual([]);
+        await tick(item.id, compute);
+        expect(counter.calls).toBe(1);
+        expect(await cardOf(item.id)).toEqual(card);
+        expect(await sourceTypeEdges(item.id)).toEqual([]);
       },
     );
+
     it("reuses recognition after a real unrelated historical property edit under the runtime role", async () => {
       const { type, item } = await fixture();
       const owner = getTenantZeroId();
-      const propertyId = randomUUID();
       // Synthetic historical schema: the normal schema API refuses additions to the locked Inbox.
       const inserted = await pool.query(
         `INSERT INTO properties (id, tenant_id, database_id, key, name, type, config, locked, owner)
          SELECT $1, $2, id, $3, $4, 'text', '{}'::jsonb, false, 'user'
          FROM databases WHERE tenant_id = $2 AND id = $5`,
-        [propertyId, owner, "testNote", "Test note", inboxId],
+        [randomUUID(), owner, "testNote", "Test note", inboxId],
       );
       expect(inserted.rowCount).toBe(1);
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const editNote = (testNote: string) =>
+        runInTenant(owner, () =>
+          withTransaction(runtime, (client) =>
+            updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { testNote } }),
+          ),
+        );
+      const read = () => runInTenant(owner, () => createChokePoint(runtime).getItem(inboxId, item.id));
       try {
         const role = await runtime.query<{ bypass: boolean; superuser: boolean }>(
           "SELECT rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
         );
         expect(role.rows).toEqual([{ bypass: false, superuser: false }]);
-        await runInTenant(owner, () =>
-          withTransaction(runtime, (client) =>
-            updateItemWithClient(client, {
-              databaseId: inboxId,
-              itemId: item.id,
-              propertiesPatch: { testNote: "before" },
-            }),
-          ),
-        );
-        let calls = 0;
-        const compute: ComputeSemprecProposalFn = async () => {
-          calls++;
-          return { properties: { name: "Buy milk" }, candidates: [{ typeId: type.id, confidence: 0.9 }] };
-        };
-        await runTick(pool, databaseIds, item.id, compute);
-        const card = await findProposalForItem(pool, proposalsId, item.id);
-        const before = await runInTenant(owner, () => createChokePoint(runtime).getItem(inboxId, item.id));
-        await runInTenant(owner, () =>
-          withTransaction(runtime, (client) =>
-            updateItemWithClient(client, {
-              databaseId: inboxId,
-              itemId: item.id,
-              propertiesPatch: { testNote: "after" },
-            }),
-          ),
-        );
-        const after = await runInTenant(owner, () => createChokePoint(runtime).getItem(inboxId, item.id));
+        await editNote("before");
+        const counter = counted({
+          properties: { name: "Buy milk" },
+          candidates: [{ typeId: type.id, confidence: 0.9 }],
+        });
+        await tick(item.id, counter.compute);
+        const card = await cardOf(item.id);
+        const before = await read();
+        await editNote("after");
+        const after = await read();
         expect(after?.properties.testNote).toBe("after");
         expect(after?.updatedAt).not.toBe(before?.updatedAt);
-        await runTick(pool, databaseIds, item.id, compute);
-        expect(calls).toBe(1);
-        expect(await findProposalForItem(pool, proposalsId, item.id)).toEqual(card);
+        await tick(item.id, counter.compute);
+        expect(counter.calls).toBe(1);
+        expect(await cardOf(item.id)).toEqual(card);
         expect(card?.properties.fingerprint).toBe(fingerprintV2Of({ typeId: "", text: "Buy milk" }));
-        const property = await withTransaction(pool, (client) =>
-          propertiesStore.getPropertyByKey(client, inboxId, "type"),
-        );
-        const definition =
-          property &&
-          (await withTransaction(pool, (client) =>
-            relationsStore.getRelationDefinitionByPropertyId(client, property.id),
-          ));
-        if (!definition) throw new Error("Missing Inbox type definition");
-        expect(
-          await withTransaction(pool, (client) => relationsStore.listRelationsForItem(client, definition.id, item.id)),
-        ).toEqual([]);
+        expect(await sourceTypeEdges(item.id)).toEqual([]);
       } finally {
         await runtime.end();
       }
     });
+
     it.each(["type", "direct"])("reruns %s recognition after text changes", async (kind) => {
       const { type, item } = await fixture();
-      let calls = 0;
-      const compute: ComputeSemprecProposalFn = async () => {
-        calls++;
-        return {
-          properties: { name: "Task" },
-          candidates: [
-            kind === "type" ? { typeId: type.id, confidence: 0.7 } : { targetDatabaseKey: "tasks", confidence: 0.7 },
-          ],
-        };
-      };
-      await runTick(pool, databaseIds, item.id, compute);
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Buy eggs" } }),
-      );
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(2);
-      expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
+      const counter = counted({ properties: { name: "Task" }, candidates: [candidate(kind, type.id, 0.7)] });
+      await tick(item.id, counter.compute);
+      await editItem(inboxId, item.id, { text: "Buy eggs" });
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(2);
+      expect((await cardOf(item.id))?.properties).toMatchObject({
         status: "proposed",
         recognizedTypeId: kind === "type" ? type.id : null,
         typeCandidates: [],
       });
     });
+
     it("offers padded distinct candidates and the model reason below threshold", async () => {
       const { type, item } = await fixture();
-      const second = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: "Alternative task",
-          status: "active",
-          emoji: "A",
-          processingMethod: "database",
-          targetDatabase: "tasks",
-        }),
+      const second = await activeType("Alternative task");
+      await tick(
+        item.id,
+        propose(
+          {},
+          {
+            reason: "Choose a type",
+            candidates: [
+              { typeId: type.id, confidence: 0.5 },
+              { typeId: "unknown", confidence: 1 },
+            ],
+          },
+        ),
       );
-      await runTick(pool, databaseIds, item.id, async () => ({
-        properties: {},
-        reason: "Choose a type",
-        candidates: [
-          { typeId: type.id, confidence: 0.5 },
-          { typeId: "unknown", confidence: 1 },
-        ],
-      }));
-      const card = await findProposalForItem(pool, proposalsId, item.id);
-      expect(card?.properties).toMatchObject({ status: "needsClarification", recognizedTypeId: null, proposal: null });
+      const card = await cardOf(item.id);
+      expect(card?.properties).toMatchObject({ ...clarified, reason: "Choose a type" });
       const choices = z.array(z.object({ typeId: z.string() })).parse(card?.properties.typeCandidates);
+      // Exact list: distinct, padded with the second type and without the unknown id.
       expect(choices.map((choice) => choice.typeId)).toEqual([type.id, second.id]);
-      expect(card?.properties.reason).toBe("Choose a type");
-      expect(new Set(choices.map((choice) => choice.typeId)).size).toBe(choices.length);
-      expect(choices.map((choice) => choice.typeId)).not.toContain("unknown");
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(client, {
-          databaseId: inboxId,
-          itemId: item.id,
-          propertiesPatch: { text: "A different uncertain item" },
-        }),
+      await editItem(inboxId, item.id, { text: "A different uncertain item" });
+      await tick(
+        item.id,
+        propose({}, { candidates: [{ typeId: second.id, confidence: 0.5 }], reason: "Another choice" }),
       );
-      await runTick(pool, databaseIds, item.id, async () => ({
-        properties: {},
-        candidates: [{ typeId: second.id, confidence: 0.5 }],
-        reason: "Another choice",
-      }));
-      const revised = await findProposalForItem(pool, proposalsId, item.id);
+      const revised = await cardOf(item.id);
       expect(revised?.id).toBe(card?.id);
       expect(revised?.properties).toMatchObject({
         status: "needsClarification",
@@ -629,35 +682,27 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         typeCandidates: [{ typeId: second.id }, { typeId: type.id }],
       });
     });
+
     it("discards recognition when text changes during the call", async () => {
       const { type, item } = await fixture();
-      await runTick(pool, databaseIds, item.id, async () => {
-        await withTransaction(pool, (client) =>
-          updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Changed" } }),
-        );
+      await tick(item.id, async () => {
+        await editItem(inboxId, item.id, { text: "Changed" });
         return { properties: { name: "Stale" }, candidates: [{ typeId: type.id, confidence: 0.9 }] };
       });
-      expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
+      expect(await cardOf(item.id)).toBeNull();
     });
+
     it.each(["archived", "targetChanged", "deleted"] as const)(
       "does not promote another candidate when the selected type is %s during computation",
       async (change) => {
         const { type, item } = await fixture();
-        const alternate = await withTransaction(pool, (client) =>
-          createInboxTypeWithClient(client, {
-            inboxItemTypesDatabaseId: typesId,
-            name: "Alternative",
-            status: "active",
-            emoji: "A",
-            processingMethod: "database",
-            targetDatabase: "projects",
-          }),
-        );
+        const alternate = await activeType("Alternative", { targetDatabase: "projects" });
+        const api = createChokePoint(pool);
         const tasks = await databaseIdFor("tasks");
         const projects = await databaseIdFor("projects");
-        const beforeTasks = (await createChokePoint(pool).listItems(tasks)).items;
-        const beforeProjects = (await createChokePoint(pool).listItems(projects)).items;
-        await runTick(pool, databaseIds, item.id, async () => {
+        const beforeTasks = (await api.listItems(tasks)).items;
+        const beforeProjects = (await api.listItems(projects)).items;
+        await tick(item.id, async () => {
           if (change === "deleted") {
             await withTransaction(pool, (client) =>
               deleteInboxTypeWithClient(client, {
@@ -668,12 +713,10 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
               }),
             );
           } else {
-            await withTransaction(pool, (client) =>
-              updateItemWithClient(client, {
-                databaseId: typesId,
-                itemId: type.id,
-                propertiesPatch: change === "archived" ? { status: "archived" } : { targetDatabase: "projects" },
-              }),
+            await editItem(
+              typesId,
+              type.id,
+              change === "archived" ? { status: "archived" } : { targetDatabase: "projects" },
             );
           }
           return {
@@ -684,65 +727,32 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
             ],
           };
         });
-        const card = await findProposalForItem(pool, proposalsId, item.id);
-        expect(card?.properties).toMatchObject({
-          status: "needsClarification",
-          recognizedTypeId: null,
-          proposal: null,
-        });
+        const card = await cardOf(item.id);
+        expect(card?.properties).toMatchObject(clarified);
         expect(card?.properties.reason).toBeTruthy();
-        expect((await createChokePoint(pool).listItems(tasks)).items).toEqual(beforeTasks);
-        expect((await createChokePoint(pool).listItems(projects)).items).toEqual(beforeProjects);
-        const property = await withTransaction(pool, (client) =>
-          propertiesStore.getPropertyByKey(client, inboxId, "type"),
-        );
-        const definition =
-          property &&
-          (await withTransaction(pool, (client) =>
-            relationsStore.getRelationDefinitionByPropertyId(client, property.id),
-          ));
-        if (!definition) throw new Error("Missing Inbox type definition");
-        expect(
-          await withTransaction(pool, (client) => relationsStore.listRelationsForItem(client, definition.id, item.id)),
-        ).toEqual([]);
+        expect((await api.listItems(tasks)).items).toEqual(beforeTasks);
+        expect((await api.listItems(projects)).items).toEqual(beforeProjects);
+        expect(await sourceTypeEdges(item.id)).toEqual([]);
       },
     );
+
     it("clarifies a selected page-content type when the computation has no target", async () => {
-      const item = (await fixture()).item;
-      const pageType = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: "Page",
-          status: "active",
-          emoji: "P",
-          processingMethod: "pageContent",
-        }),
+      const { item } = await fixture();
+      const pageType = await activeType("Page", { processingMethod: "pageContent" });
+      await tick(
+        item.id,
+        propose({ flavour: "paragraph" }, { candidates: [{ typeId: pageType.id, confidence: 0.9 }] }),
       );
-      await runTick(pool, databaseIds, item.id, async () => ({
-        properties: { flavour: "paragraph" },
-        candidates: [{ typeId: pageType.id, confidence: 0.9 }],
-      }));
-      expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
-        status: "needsClarification",
-        recognizedTypeId: null,
-        proposal: null,
-      });
+      expect((await cardOf(item.id))?.properties).toMatchObject(clarified);
     });
+
     it.each([false, true])("handles page target database archive during computation: %s", async (archive) => {
       const { item } = await fixture();
-      const pageType = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: "Page",
-          status: "active",
-          emoji: "P",
-          processingMethod: "pageContent",
-        }),
-      );
+      const pageType = await activeType("Page", { processingMethod: "pageContent" });
       const api = createChokePoint(pool);
       const database = await api.createDatabase({ name: "Page target" });
       const page = await api.createItem({ databaseId: database.id, properties: {} });
-      await runTick(pool, databaseIds, item.id, async () => {
+      await tick(item.id, async () => {
         if (archive) await api.archiveDatabase(database.id);
         return {
           target: page.id,
@@ -750,36 +760,22 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
           candidates: [{ typeId: pageType.id, confidence: 0.9 }],
         };
       });
-      const card = await findProposalForItem(pool, proposalsId, item.id);
-      if (archive) {
-        expect(card?.properties).toMatchObject({
-          status: "needsClarification",
-          recognizedTypeId: null,
-          proposal: null,
-        });
-      } else {
-        expect(card?.properties).toMatchObject({ status: "proposed", recognizedTypeId: pageType.id });
-      }
+      expect((await cardOf(item.id))?.properties).toMatchObject(
+        archive ? clarified : { status: "proposed", recognizedTypeId: pageType.id },
+      );
       expect(await withTransaction(pool, (client) => itemsStore.getItemById(client, database.id, page.id))).toEqual(
         page,
       );
-      const property = await withTransaction(pool, (client) =>
-        propertiesStore.getPropertyByKey(client, inboxId, "type"),
-      );
-      const definition =
-        property &&
-        (await withTransaction(pool, (client) =>
-          relationsStore.getRelationDefinitionByPropertyId(client, property.id),
-        ));
-      if (!definition) throw new Error("Missing Inbox type definition");
-      expect(
-        await withTransaction(pool, (client) => relationsStore.listRelationsForItem(client, definition.id, item.id)),
-      ).toEqual([]);
+      expect(await sourceTypeEdges(item.id)).toEqual([]);
     });
+
+    const SHORTAGE_CS = "Jsou dostupné méně než dva platné aktivní typy.";
+    const CHANGED_CS = "Vybraný typ nebo cíl není dostupný nebo se změnil.";
+
     it.each([0, 1])("explains a changed selection and a shortage of %s choices in both locales", async (count) => {
       const choices = count ? [{ typeId: randomUUID(), label: "Available", targetDatabaseKey: "tasks" }] : [];
       for (const [locale, shortage, changed] of [
-        ["cs", "Jsou dostupné méně než dva platné aktivní typy.", "Vybraný typ nebo cíl není dostupný nebo se změnil."],
+        ["cs", SHORTAGE_CS, CHANGED_CS],
         [
           "en",
           "Fewer than two valid active types are available.",
@@ -792,58 +788,93 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         expect(patch.reason.length).toBeLessThanOrEqual(500);
       }
       const { type, item } = await fixture();
-      const alternative = count
-        ? await withTransaction(pool, (client) =>
-            createInboxTypeWithClient(client, {
-              inboxItemTypesDatabaseId: typesId,
-              name: "Remaining",
-              status: "active",
-              emoji: "R",
-              processingMethod: "database",
-              targetDatabase: "projects",
-            }),
-          )
-        : null;
-      const types = await withTransaction(pool, (client) => itemsStore.listItems(client, typesId, { limit: 200 }));
-      for (const row of types.items) {
-        if (row.id === type.id || row.id === alternative?.id) continue;
-        await withTransaction(pool, (client) =>
-          updateItemWithClient(client, {
-            databaseId: typesId,
-            itemId: row.id,
-            propertiesPatch: { status: "archived" },
-          }),
-        );
-      }
-      await runTick(pool, databaseIds, item.id, async () => {
-        await withTransaction(pool, (client) =>
-          updateItemWithClient(client, {
-            databaseId: typesId,
-            itemId: type.id,
-            propertiesPatch: { status: "archived" },
-          }),
-        );
+      const alternative = count ? await activeType("Remaining", { targetDatabase: "projects" }) : null;
+      await archiveTypesExcept([type.id, alternative?.id]);
+      await tick(item.id, async () => {
+        await editItem(typesId, type.id, { status: "archived" });
         return { properties: { name: "Stale" }, candidates: [{ typeId: type.id, confidence: 0.9 }] };
       });
-      const card = await findProposalForItem(pool, proposalsId, item.id);
-      expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null, recognizedTypeId: null });
+      const card = await cardOf(item.id);
+      expect(card?.properties).toMatchObject(clarified);
       expect(z.array(z.unknown()).parse(card?.properties.typeCandidates)).toHaveLength(count);
-      expect(card?.properties.reason).toEqual(
-        expect.stringContaining("Jsou dostupné méně než dva platné aktivní typy."),
-      );
-      expect(card?.properties.reason).toEqual(
-        expect.stringContaining("Vybraný typ nebo cíl není dostupný nebo se změnil."),
-      );
+      expect(card?.properties.reason).toEqual(expect.stringContaining(SHORTAGE_CS));
+      expect(card?.properties.reason).toEqual(expect.stringContaining(CHANGED_CS));
     });
+
     it("keeps the changed-selection reason without a shortage when two choices remain", async () => {
-      const choices = ["One", "Two"].map((label) => ({
-        typeId: randomUUID(),
-        label,
-        targetDatabaseKey: "tasks",
-      }));
+      const choices = ["One", "Two"].map((label) => ({ typeId: randomUUID(), label, targetDatabaseKey: "tasks" }));
       const patch = await recognitionClarificationPatch("en", choices, true);
       expect(patch.reason).toBe("The selected type or destination is unavailable or changed. Please clarify.");
     });
+
+    /**
+     * Holds the tick inside its computation, applies `change` (a synthetic database state), lets the tick finish,
+     * runs `verify`, and always runs `undo` once `change` committed. Failures of every phase are kept.
+     */
+    async function changeDuringComputation(
+      itemId: string,
+      result: ProposalComputationResult,
+      change: () => Promise<void>,
+      verify: () => Promise<void>,
+      undo: () => Promise<void>,
+    ) {
+      const held = barrier();
+      const running = runInTenant(getTenantZeroId(), () =>
+        tick(itemId, async () => {
+          held.reached();
+          await held.gate;
+          return result;
+        }),
+      );
+      let failure: { error: unknown } | undefined;
+      let changed = false;
+      try {
+        await Promise.race([
+          held.ready,
+          running.then(() => {
+            throw new Error("Tick ended before computation barrier");
+          }),
+        ]);
+        await change();
+        changed = true;
+      } catch (error) {
+        failure = { error };
+      } finally {
+        held.release();
+      }
+      const [settled] = await Promise.allSettled([running]);
+      if (settled.status === "rejected" && failure?.error !== settled.reason)
+        failure = combineOverlapFailure(failure, settled.reason);
+      if (!failure) {
+        try {
+          await verify();
+        } catch (error) {
+          failure = { error };
+        }
+      }
+      if (changed) {
+        try {
+          await undo();
+        } catch (error) {
+          failure = combineOverlapFailure(failure, error);
+        }
+      }
+      if (failure) throw failure.error;
+    }
+    const updateOneDatabase = (sql: string, params: unknown[]) =>
+      runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, async (client) => {
+          expect((await client.query(sql, params)).rowCount).toBe(1);
+        }),
+      );
+    const directThenType = (typeId: string, name: string) => ({
+      properties: { name },
+      candidates: [
+        { targetDatabaseKey: "tasks" as const, confidence: 0.9 },
+        { typeId, confidence: 0.8 },
+      ],
+    });
+
     it("clarifies when a direct target resolves to a different historical fixture database", async () => {
       const { type, item } = await fixture();
       const api = createChokePoint(pool);
@@ -851,241 +882,90 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       const replacement = await api.createDatabase({ name: "Replacement target" });
       const originalItems = (await api.listItems(original)).items;
       const replacementItems = (await api.listItems(replacement.id)).items;
-      let release = () => {};
-      let reached = () => {};
-      const gate = new Promise<void>((resolve) => (release = resolve));
-      const ready = new Promise<void>((resolve) => (reached = resolve));
-      const tick = runInTenant(getTenantZeroId(), () =>
-        runTick(pool, databaseIds, item.id, async () => {
-          reached();
-          await gate;
-          return {
-            properties: { name: "Must not move" },
-            candidates: [
-              { targetDatabaseKey: "tasks", confidence: 0.9 },
-              { typeId: type.id, confidence: 0.8 },
-            ],
-          };
-        }),
-      );
-      let failure: { error: unknown } | undefined;
-      let fixtureChanged = false;
-      try {
-        await Promise.race([
-          ready,
-          tick.then(() => {
-            throw new Error("Tick ended before computation barrier");
-          }),
-        ]);
-        // Synthetic historical configuration: no public writer replaces a system module mapping.
-        await runInTenant(getTenantZeroId(), () =>
-          withTransaction(pool, async (client) => {
-            const cleared = await client.query(
-              "UPDATE databases SET owner_module_id = NULL WHERE tenant_id = $1 AND id = $2 AND system = true AND owner_module_id = $3",
-              [getTenantZeroId(), original, "tasks"],
-            );
-            expect(cleared.rowCount).toBe(1);
-            const assigned = await client.query(
-              "UPDATE databases SET system = true, owner_module_id = $3 WHERE tenant_id = $1 AND id = $2 AND system = false AND owner_module_id IS NULL",
-              [getTenantZeroId(), replacement.id, "tasks"],
-            );
-            expect(assigned.rowCount).toBe(1);
-          }),
-        );
-        fixtureChanged = true;
-        const resolved = await runInTenant(getTenantZeroId(), () =>
-          withTransaction(pool, (client) => databasesStore.getDatabaseByModuleId(client, "tasks")),
-        );
-        expect(resolved?.id).toBe(replacement.id);
-        expect(resolved?.id).not.toBe(original);
-        process.stdout.write(`recognition target fixture: original=${original} replacement=${replacement.id}\n`);
-      } catch (error) {
-        failure = { error };
-      } finally {
-        release();
-      }
-      const [settled] = await Promise.allSettled([tick]);
-      if (settled.status === "rejected") failure = combineOverlapFailure(failure, settled.reason);
-      if (!failure) {
-        try {
-          expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
-            status: "needsClarification",
-            recognizedTypeId: null,
-            proposal: null,
-          });
+      const tenant = getTenantZeroId();
+      await changeDuringComputation(
+        item.id,
+        directThenType(type.id, "Must not move"),
+        async () => {
+          // Synthetic historical configuration: no public writer replaces a system module mapping.
+          await updateOneDatabase(
+            "UPDATE databases SET owner_module_id = NULL WHERE tenant_id = $1 AND id = $2 AND system = true AND owner_module_id = $3",
+            [tenant, original, "tasks"],
+          );
+          await updateOneDatabase(
+            "UPDATE databases SET system = true, owner_module_id = $3 WHERE tenant_id = $1 AND id = $2 AND system = false AND owner_module_id IS NULL",
+            [tenant, replacement.id, "tasks"],
+          );
+          const resolved = await runInTenant(tenant, () =>
+            withTransaction(pool, (client) => databasesStore.getDatabaseByModuleId(client, "tasks")),
+          );
+          expect(resolved?.id).toBe(replacement.id);
+        },
+        async () => {
+          expect((await cardOf(item.id))?.properties).toMatchObject(clarified);
           expect((await api.listItems(original)).items).toEqual(originalItems);
           expect((await api.listItems(replacement.id)).items).toEqual(replacementItems);
-          const property = await withTransaction(pool, (client) =>
-            propertiesStore.getPropertyByKey(client, inboxId, "type"),
+          expect(await sourceTypeEdges(item.id)).toEqual([]);
+        },
+        async () => {
+          await updateOneDatabase(
+            "UPDATE databases SET system = false, owner_module_id = NULL WHERE tenant_id = $1 AND id = $2 AND system = true AND owner_module_id = $3",
+            [tenant, replacement.id, "tasks"],
           );
-          const definition =
-            property &&
-            (await withTransaction(pool, (client) =>
-              relationsStore.getRelationDefinitionByPropertyId(client, property.id),
-            ));
-          if (!definition) throw new Error("Missing Inbox type definition");
-          expect(
-            await withTransaction(pool, (client) =>
-              relationsStore.listRelationsForItem(client, definition.id, item.id),
-            ),
-          ).toEqual([]);
-        } catch (error) {
-          failure = { error };
-        }
-      }
-      if (fixtureChanged) {
-        try {
-          await runInTenant(getTenantZeroId(), () =>
-            withTransaction(pool, async (client) => {
-              const cleared = await client.query(
-                "UPDATE databases SET system = false, owner_module_id = NULL WHERE tenant_id = $1 AND id = $2 AND system = true AND owner_module_id = $3",
-                [getTenantZeroId(), replacement.id, "tasks"],
-              );
-              expect(cleared.rowCount).toBe(1);
-              const restored = await client.query(
-                "UPDATE databases SET owner_module_id = $3 WHERE tenant_id = $1 AND id = $2 AND system = true AND owner_module_id IS NULL",
-                [getTenantZeroId(), original, "tasks"],
-              );
-              expect(restored.rowCount).toBe(1);
-            }),
+          await updateOneDatabase(
+            "UPDATE databases SET owner_module_id = $3 WHERE tenant_id = $1 AND id = $2 AND system = true AND owner_module_id IS NULL",
+            [tenant, original, "tasks"],
           );
-        } catch (error) {
-          failure = combineOverlapFailure(failure, error);
-        }
-      }
-      if (failure) throw failure.error;
+        },
+      );
     });
+
     it("clarifies a direct target archived during computation without writing the target", async () => {
       const { type, item } = await fixture();
       const tasks = await databaseIdFor("tasks");
       const api = createChokePoint(pool);
       const before = (await api.listItems(tasks)).items;
-      const beforeDatabase = await pool.query<{ row: unknown }>(
-        "SELECT to_jsonb(d) AS row FROM databases d WHERE id = $1",
-        [tasks],
-      );
+      const databaseRow = async () =>
+        (await pool.query<{ row: unknown }>("SELECT to_jsonb(d) AS row FROM databases d WHERE id = $1", [tasks])).rows;
+      const beforeDatabase = await databaseRow();
       await expect(api.archiveDatabase(tasks)).rejects.toMatchObject({ code: "forbidden" });
-      expect(
-        (await pool.query<{ row: unknown }>("SELECT to_jsonb(d) AS row FROM databases d WHERE id = $1", [tasks])).rows,
-      ).toEqual(beforeDatabase.rows);
-      let release = () => {};
-      let reached = () => {};
-      const gate = new Promise<void>((resolve) => (release = resolve));
-      const ready = new Promise<void>((resolve) => (reached = resolve));
-      const tick = runInTenant(getTenantZeroId(), () =>
-        runTick(pool, databaseIds, item.id, async () => {
-          reached();
-          await gate;
-          return {
-            properties: { name: "Not written" },
-            candidates: [
-              { targetDatabaseKey: "tasks", confidence: 0.9 },
-              { typeId: type.id, confidence: 0.8 },
-            ],
-          };
-        }),
-      );
-      let failure: { error: unknown } | undefined;
-      let fixtureChanged = false;
-      try {
-        await Promise.race([
-          ready,
-          tick.then(() => {
-            throw new Error("Tick ended before computation barrier");
-          }),
-        ]);
+      expect(await databaseRow()).toEqual(beforeDatabase);
+      const tenant = getTenantZeroId();
+      await changeDuringComputation(
+        item.id,
+        directThenType(type.id, "Not written"),
         // Synthetic historical/corrupt state: the public writer cannot archive a system database.
-        await runInTenant(getTenantZeroId(), () =>
-          withTransaction(pool, async (client) => {
-            const changed = await client.query(
-              "UPDATE databases SET archived_at = now() WHERE tenant_id = $1 AND id = $2 AND system = true AND archived_at IS NULL",
-              [getTenantZeroId(), tasks],
-            );
-            expect(changed.rowCount).toBe(1);
-            fixtureChanged = true;
-          }),
-        );
-      } catch (error) {
-        failure = { error };
-      } finally {
-        release();
-      }
-      const [settled] = await Promise.allSettled([tick]);
-      if (settled.status === "rejected") {
-        if (!failure) failure = { error: settled.reason };
-        else if (failure.error !== settled.reason) failure = combineOverlapFailure(failure, settled.reason);
-      }
-      if (!failure) {
-        try {
-          expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
-            status: "needsClarification",
-            recognizedTypeId: null,
-            proposal: null,
-          });
+        () =>
+          updateOneDatabase(
+            "UPDATE databases SET archived_at = now() WHERE tenant_id = $1 AND id = $2 AND system = true AND archived_at IS NULL",
+            [tenant, tasks],
+          ),
+        async () => {
+          expect((await cardOf(item.id))?.properties).toMatchObject(clarified);
           expect((await api.listItems(tasks)).items).toEqual(before);
-          const property = await withTransaction(pool, (client) =>
-            propertiesStore.getPropertyByKey(client, inboxId, "type"),
-          );
-          const definition =
-            property &&
-            (await withTransaction(pool, (client) =>
-              relationsStore.getRelationDefinitionByPropertyId(client, property.id),
-            ));
-          if (!definition) throw new Error("Missing Inbox type definition");
-          expect(
-            await withTransaction(pool, (client) =>
-              relationsStore.listRelationsForItem(client, definition.id, item.id),
-            ),
-          ).toEqual([]);
-        } catch (error) {
-          failure = { error };
-        }
-      }
-      if (fixtureChanged) {
-        try {
-          await runInTenant(getTenantZeroId(), () =>
-            withTransaction(pool, async (client) => {
-              const restored = await client.query(
-                "UPDATE databases SET archived_at = NULL WHERE tenant_id = $1 AND id = $2 AND system = true AND archived_at IS NOT NULL",
-                [getTenantZeroId(), tasks],
-              );
-              expect(restored.rowCount).toBe(1);
-            }),
-          );
-        } catch (error) {
-          failure = combineOverlapFailure(failure, error);
-        }
-      }
-      if (failure) throw failure.error;
+          expect(await sourceTypeEdges(item.id)).toEqual([]);
+        },
+        () =>
+          updateOneDatabase(
+            "UPDATE databases SET archived_at = NULL WHERE tenant_id = $1 AND id = $2 AND system = true AND archived_at IS NOT NULL",
+            [tenant, tasks],
+          ),
+      );
     });
+
     it("clarifies a typed page-content result with no target", async () => {
-      const pageType = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: "Page",
-          status: "active",
-          emoji: "P",
-          processingMethod: "pageContent",
-        }),
-      );
-      const item = await withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, {
-          inboxDatabaseId: inboxId,
-          date: "2026-08-28",
-          time: "09:00",
-          text: "Page",
-          type: pageType.id,
-        }),
-      );
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { flavour: "paragraph" } }));
-      expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
-        status: "needsClarification",
-        proposal: null,
+      const { item } = await typedSource("Page", {
+        name: "Page",
+        status: "active",
+        emoji: "P",
+        processingMethod: "pageContent",
       });
+      await tick(item.id, propose({ flavour: "paragraph" }));
+      expect((await cardOf(item.id))?.properties).toMatchObject({ status: "needsClarification", proposal: null });
     });
+
     it("ignores foreign and random type candidates under the tenant runtime role", async () => {
       const { type, item } = await fixture();
-      const owner = getTenantZeroId();
       const foreign = await createTestTenant(pool);
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
       try {
@@ -1107,17 +987,23 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
           );
         });
         const unknown = randomUUID();
-        await runInTenant(owner, () =>
-          runTick(runtime, databaseIds, item.id, async () => ({
-            properties: { name: "Owner" },
-            candidates: [
-              { typeId: foreignType.id, confidence: 1 },
-              { typeId: unknown, confidence: 0.95 },
-              { typeId: type.id, confidence: 0.9 },
-            ],
-          })),
+        await runInTenant(getTenantZeroId(), () =>
+          tick(
+            item.id,
+            propose(
+              { name: "Owner" },
+              {
+                candidates: [
+                  { typeId: foreignType.id, confidence: 1 },
+                  { typeId: unknown, confidence: 0.95 },
+                  { typeId: type.id, confidence: 0.9 },
+                ],
+              },
+            ),
+            runtime,
+          ),
         );
-        const card = await findProposalForItem(pool, proposalsId, item.id);
+        const card = await cardOf(item.id);
         expect(card?.properties).toMatchObject({ status: "proposed", recognizedTypeId: type.id });
         expect(JSON.stringify(card?.properties)).not.toContain(foreignType.id);
         expect(JSON.stringify(card?.properties)).not.toContain(unknown);
@@ -1128,107 +1014,79 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
         await runtime.end();
       }
     });
+
     it.each(["type-first", "recognition-first"] as const)(
       "reserves the selected type without waiting in %s order",
       async (order) => {
         const { type, item } = await fixture();
         const runtime = await createRuntimeRolePool(pool, "semprec_data");
-        let release = () => {};
-        let reached = () => {};
-        const gate = new Promise<void>((resolve) => (release = resolve));
-        const ready = new Promise<void>((resolve) => (reached = resolve));
+        const held = barrier();
         let holderPid = 0;
         let contenderPid = 0;
-        const observed = new Proxy(runtime, {
-          get(target, key, receiver) {
-            if (key !== "connect") {
-              const value: unknown = Reflect.get(target, key, receiver);
-              return typeof value === "function" ? value.bind(target) : value;
+        const observed = interceptConnect(runtime, (client) =>
+          interceptQuery(client, async (args, original) => {
+            const reservation =
+              typeof args[0] === "string" && args[0].includes("id = ANY($2::uuid[]) ORDER BY id FOR SHARE NOWAIT");
+            if (reservation && order === "type-first") contenderPid = await pidOf(client);
+            const result = await original(...args);
+            if (order === "recognition-first" && reservation) {
+              holderPid = await pidOf(client);
+              held.reached();
+              await held.gate;
             }
-            return async () => {
-              const client = await target.connect();
-              return new Proxy(client, {
-                get(inner, field, receiver2) {
-                  if (field !== "query") {
-                    const value: unknown = Reflect.get(inner, field, receiver2);
-                    return typeof value === "function" ? value.bind(inner) : value;
-                  }
-                  return async (...args: unknown[]) => {
-                    const reservation =
-                      typeof args[0] === "string" &&
-                      args[0].includes("id = ANY($2::uuid[]) ORDER BY id FOR SHARE NOWAIT");
-                    if (reservation && order === "type-first")
-                      contenderPid = (await inner.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!
-                        .pid;
-                    const result: unknown = await Reflect.apply(inner.query.bind(inner), inner, args);
-                    if (order === "recognition-first" && reservation) {
-                      holderPid = (await inner.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
-                      reached();
-                      await gate;
-                    }
-                    return result;
-                  };
-                },
-              });
-            };
-          },
-        });
-        const owned = ownOverlap(runtime, release);
+            return result;
+          }),
+        );
+        const owned = ownOverlap(runtime, held.release);
+        const archiveType = (onClient: (client: PoolClient) => Promise<void>, afterWrite?: () => Promise<void>) =>
+          owned.run(() =>
+            runInTenant(getTenantZeroId(), () =>
+              withTransaction(runtime, async (client) => {
+                await onClient(client);
+                await updateItemWithClient(client, {
+                  databaseId: typesId,
+                  itemId: type.id,
+                  propertiesPatch: { status: "archived" },
+                });
+                await afterWrite?.();
+              }),
+            ),
+          );
+        const runRecognition = () =>
+          owned.run(() =>
+            runInTenant(getTenantZeroId(), () =>
+              tick(
+                item.id,
+                propose({ name: "Task" }, { candidates: [{ typeId: type.id, confidence: 0.9 }] }),
+                observed,
+              ),
+            ),
+          );
         let failure: { error: unknown } | undefined;
         try {
           if (order === "type-first") {
-            const writer = owned.run(() =>
-              runInTenant(getTenantZeroId(), () =>
-                withTransaction(runtime, async (client) => {
-                  holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
-                  await updateItemWithClient(client, {
-                    databaseId: typesId,
-                    itemId: type.id,
-                    propertiesPatch: { status: "archived" },
-                  });
-                  reached();
-                  await gate;
-                }),
-              ),
+            const writer = archiveType(
+              async (client) => {
+                holderPid = await pidOf(client);
+              },
+              async () => {
+                held.reached();
+                await held.gate;
+              },
             );
-            await owned.wait(ready, writer);
-            const tick = owned.run(() =>
-              runInTenant(getTenantZeroId(), () =>
-                runTick(observed, databaseIds, item.id, async () => ({
-                  properties: { name: "Task" },
-                  candidates: [{ typeId: type.id, confidence: 0.9 }],
-                })),
-              ),
-            );
-            await owned.wait(tick, writer);
+            await owned.wait(held.ready, writer);
+            await owned.wait(runRecognition(), writer);
             expect(contenderPid).toBeGreaterThan(0);
             expect(contenderPid).not.toBe(holderPid);
-            process.stdout.write(`type-first: holder=${holderPid} contender=${contenderPid}\n`);
-            expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
-            release();
+            expect(await cardOf(item.id)).toBeNull();
+            held.release();
             await writer;
           } else {
-            const tick = owned.run(() =>
-              runInTenant(getTenantZeroId(), () =>
-                runTick(observed, databaseIds, item.id, async () => ({
-                  properties: { name: "Task" },
-                  candidates: [{ typeId: type.id, confidence: 0.9 }],
-                })),
-              ),
-            );
-            await owned.wait(ready, tick);
-            const writer = owned.run(() =>
-              runInTenant(getTenantZeroId(), () =>
-                withTransaction(runtime, async (client) => {
-                  contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
-                  await updateItemWithClient(client, {
-                    databaseId: typesId,
-                    itemId: type.id,
-                    propertiesPatch: { status: "archived" },
-                  });
-                }),
-              ),
-            );
+            const running = runRecognition();
+            await owned.wait(held.ready, running);
+            const writer = archiveType(async (client) => {
+              contenderPid = await pidOf(client);
+            });
             await vi.waitFor(async () => {
               expect(contenderPid).toBeGreaterThan(0);
               const blocked = await pool.query<{ pids: number[] }>("SELECT pg_blocking_pids($1) AS pids", [
@@ -1236,34 +1094,30 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
               ]);
               expect(blocked.rows[0]?.pids).toContain(holderPid);
             });
-            process.stdout.write(`recognition-first: holder=${holderPid} contender=${contenderPid}\n`);
-            release();
-            await tick;
+            held.release();
+            await running;
             await writer;
-            expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.status).toBe("proposed");
+            expect((await cardOf(item.id))?.properties.status).toBe("proposed");
           }
         } catch (error) {
           failure = { error };
         } finally {
-          release();
+          held.release();
           try {
             await owned.finish(failure !== undefined);
           } catch (error) {
             failure = combineOverlapFailure(failure, error);
           }
         }
-        if (failure) rethrowOverlap(failure.error);
+        if (failure) throw failure.error;
       },
       20000,
     );
+
     it.each(["date", "time", "attachment"])("reruns recognition after a %s change", async (field) => {
       const { type, item } = await fixture();
-      let calls = 0;
-      const compute: ComputeSemprecProposalFn = async () => {
-        calls++;
-        return { properties: { name: "Task" }, candidates: [{ typeId: type.id, confidence: 0.9 }] };
-      };
-      await runTick(pool, databaseIds, item.id, compute);
+      const counter = counted({ properties: { name: "Task" }, candidates: [{ typeId: type.id, confidence: 0.9 }] });
+      await tick(item.id, counter.compute);
       if (field === "attachment") {
         const blob = await createBlob(pool, {
           mimeType: "application/pdf",
@@ -1272,162 +1126,74 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
           contentHash: "a".repeat(64),
         });
         await insertInboxAttachments(pool, item.id, [{ blobId: blob.id, source: "camera" }]);
-      } else
-        await withTransaction(pool, (client) =>
-          updateItemWithClient(client, {
-            databaseId: inboxId,
-            itemId: item.id,
-            propertiesPatch: field === "date" ? { date: "2026-08-29" } : { time: "10:00" },
-          }),
-        );
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(2);
+      } else await editItem(inboxId, item.id, field === "date" ? { date: "2026-08-29" } : { time: "10:00" });
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(2);
     });
-    it("keeps legacy v1 compatibility for an untyped source", async () => {
-      const { type, item } = await fixture();
-      await runTick(pool, databaseIds, item.id, async () => ({
-        properties: { name: "Task" },
-        candidates: [{ typeId: type.id, confidence: 0.9 }],
-      }));
-      const card = await findProposalForItem(pool, proposalsId, item.id);
-      if (!card) throw new Error("Missing card");
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: card.id,
-            propertiesPatch: { fingerprint: legacyFingerprintOf("", "Buy milk") },
-          },
-          { allowedSystemKeys: ["fingerprint"] },
-        ),
-      );
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("Unchanged legacy source must not compute");
-      });
-    });
+
     it("discards recognition after a source type-edge change", async () => {
       const { type, item } = await fixture();
-      await runTick(pool, databaseIds, item.id, async () => {
-        await withTransaction(pool, async (client) => {
-          const property = await propertiesStore.getPropertyByKey(client, inboxId, "type");
-          if (!property) throw new Error("Missing type property");
-          await createRelationWithClient(client, {
-            relationPropertyId: property.id,
-            callerItemId: item.id,
-            targetItemId: type.id,
-          });
-        });
+      await tick(item.id, async () => {
+        await setSourceType(item.id, { add: type.id });
         return { properties: { name: "Stale" }, candidates: [{ typeId: type.id, confidence: 0.9 }] };
       });
-      expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
+      expect(await cardOf(item.id)).toBeNull();
     });
+
     it("never recomputes a locked recognized card", async () => {
       const { type, item } = await fixture();
-      await runTick(pool, databaseIds, item.id, async () => ({
-        properties: { name: "Task" },
-        candidates: [{ typeId: type.id, confidence: 0.9 }],
-      }));
-      const card = await findProposalForItem(pool, proposalsId, item.id);
-      if (!card) throw new Error("Missing card");
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          { databaseId: proposalsId, itemId: card.id, propertiesPatch: { status: "rejected" } },
-          { allowedSystemKeys: ["status"] },
-        ),
-      );
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "Changed" } }),
-      );
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("Locked card must not compute");
-      });
+      await tick(item.id, propose({ name: "Task" }, { candidates: [{ typeId: type.id, confidence: 0.9 }] }));
+      const card = await requireCard(item.id);
+      await editItem(proposalsId, card.id, { status: "rejected" }, { allowedSystemKeys: ["status"] });
+      await editItem(inboxId, item.id, { text: "Changed" });
+      await tick(item.id, noCompute("Locked card must not compute"));
     });
+
     it.each([0, 1])("offers only %s existing valid types and explains the shortage", async (count) => {
       const { type, item } = await fixture();
-      const types = await withTransaction(pool, (client) => itemsStore.listItems(client, typesId, { limit: 200 }));
-      for (const row of types.items) {
-        if (count === 1 && row.id === type.id) continue;
-        await withTransaction(pool, (client) =>
-          updateItemWithClient(client, {
-            databaseId: typesId,
-            itemId: row.id,
-            propertiesPatch: { status: "archived" },
-          }),
-        );
-      }
-      await runTick(pool, databaseIds, item.id, async () => ({
-        properties: {},
-        candidates: [{ typeId: type.id, confidence: count === 0 ? 0.9 : 0.5 }],
-      }));
-      const card = await findProposalForItem(pool, proposalsId, item.id);
-      expect(card?.properties.status).toBe("needsClarification");
-      expect(card?.properties.proposal).toBeNull();
+      await archiveTypesExcept(count === 1 ? [type.id] : []);
+      await tick(item.id, propose({}, { candidates: [{ typeId: type.id, confidence: count === 0 ? 0.9 : 0.5 }] }));
+      const card = await cardOf(item.id);
+      expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null });
       expect(z.array(z.unknown()).parse(card?.properties.typeCandidates)).toHaveLength(count);
-      expect(card?.properties.reason).toEqual(
-        expect.stringContaining("Jsou dostupné méně než dva platné aktivní typy."),
-      );
+      expect(card?.properties.reason).toEqual(expect.stringContaining(SHORTAGE_CS));
     });
+
     it("makes no call without text", async () => {
       const { item } = await fixture();
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text: "" } }),
-      );
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("Unexpected computation");
-      });
-      expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.status).toBe("needsClarification");
+      await editItem(inboxId, item.id, { text: "" });
+      await tick(item.id, noCompute("Unexpected computation"));
+      expect((await cardOf(item.id))?.properties.status).toBe("needsClarification");
     });
   });
 
   describe("locale passed to computeProposal", () => {
-    async function createTaskInboxItem(): Promise<string> {
-      const type = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: "Task",
-          emoji: "☑️",
-          processingMethod: "database",
-          targetDatabase: "tasks",
-        }),
+    const createTaskInboxItem = async () => (await typedSource()).item.id;
+    const createTenantUser = (locale: "cs" | "en" | "fr") =>
+      runInTenant(getTenantZeroId(), () =>
+        createUser(pool, { email: `${locale}@example.com`, passwordHash: "x", locale, tenantId: getTenantZeroId() }),
       );
-      const item = await withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, {
-          inboxDatabaseId: inboxId,
-          date: "2026-08-28",
-          time: "09:00",
-          text: "Buy milk",
-          type: type.id,
-        }),
-      );
-      return item.id;
-    }
 
     it.each(["cs", "en", "fr"] as const)(
       "passes the %s user's locale and replaces the reason on recompute",
       async (locale) => {
-        await runInTenant(getTenantZeroId(), () =>
-          createUser(pool, { email: `${locale}@example.com`, passwordHash: "x", locale, tenantId: getTenantZeroId() }),
-        );
+        await createTenantUser(locale);
         const itemId = await createTaskInboxItem();
         await runInTenant(getTenantZeroId(), () =>
-          runTick(pool, databaseIds, itemId, async (input) => {
+          tick(itemId, async (input) => {
             expect(input.locale).toBe(locale);
             return { properties: { name: "Buy milk" }, reason: "  Úkol s termínem.  " };
           }),
         );
-        const card = await findProposalForItem(pool, proposalsId, itemId);
-        expect(card?.properties.reason).toBe("Úkol s termínem.");
-        await withTransaction(pool, (client) =>
-          updateItemWithClient(client, { databaseId: inboxId, itemId, propertiesPatch: { text: "Buy eggs" } }),
-        );
+        expect((await cardOf(itemId))?.properties.reason).toBe("Úkol s termínem.");
+        await editItem(inboxId, itemId, { text: "Buy eggs" });
         await runInTenant(getTenantZeroId(), () =>
-          runTick(pool, databaseIds, itemId, async () => ({ properties: { name: "Buy eggs" }, reason: "Nový úkol." })),
+          tick(itemId, propose({ name: "Buy eggs" }, { reason: "Nový úkol." })),
         );
-        expect((await findProposalForItem(pool, proposalsId, itemId))?.properties.reason).toBe("Nový úkol.");
+        expect((await cardOf(itemId))?.properties.reason).toBe("Nový úkol.");
       },
     );
+
     it.each([
       [undefined, null],
       ["", null],
@@ -1435,107 +1201,59 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       ["x".repeat(501), "x".repeat(500)],
     ] as const)("normalizes reason %s", async (reason, expected) => {
       const itemId = await createTaskInboxItem();
-      await runTick(pool, databaseIds, itemId, async () => ({ properties: { name: "Task" }, reason }));
-      const card = await findProposalForItem(pool, proposalsId, itemId);
-      expect(card?.properties.reason).toBe(expected);
+      await tick(itemId, propose({ name: "Task" }, { reason }));
+      expect((await cardOf(itemId))?.properties.reason).toBe(expected);
     });
 
     it("clears the model reason when the source is deleted", async () => {
       const itemId = await createTaskInboxItem();
-      await runTick(pool, databaseIds, itemId, async () => ({ properties: { name: "Task" }, reason: "A task." }));
-      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
-      await runTick(pool, databaseIds, itemId, async () => {
-        throw new Error("Deleted source must not compute");
-      });
-      expect((await findProposalForItem(pool, proposalsId, itemId))?.properties).toMatchObject({
-        status: "invalid",
-        reason: null,
-      });
+      await tick(itemId, propose({ name: "Task" }, { reason: "A task." }));
+      await trashSource(itemId);
+      await tick(itemId, noCompute("Deleted source must not compute"));
+      expect((await cardOf(itemId))?.properties).toMatchObject({ status: "invalid", reason: null });
     });
+
     it("does not store the reason of an invalid computed proposal", async () => {
       const itemId = await createTaskInboxItem();
-      await runTick(pool, databaseIds, itemId, async () => ({
-        properties: { notAProperty: true },
-        reason: "Discard me",
-      }));
-      expect((await findProposalForItem(pool, proposalsId, itemId))?.properties).toMatchObject({
-        status: "needsClarification",
-        reason: null,
-      });
+      await tick(itemId, propose({ notAProperty: true }, { reason: "Discard me" }));
+      expect((await cardOf(itemId))?.properties).toMatchObject({ status: "needsClarification", reason: null });
     });
+
     it("refuses a client write of reason", async () => {
       const itemId = await createTaskInboxItem();
-      await runTick(pool, databaseIds, itemId, async () => ({ properties: { name: "Task" }, reason: "Original" }));
-      const card = await findProposalForItem(pool, proposalsId, itemId);
-      if (!card) throw new Error("Missing proposal");
-      await expect(
-        withTransaction(pool, (client) =>
-          updateItemWithClient(client, {
-            databaseId: proposalsId,
-            itemId: card.id,
-            propertiesPatch: { reason: "Changed" },
-          }),
-        ),
-      ).rejects.toMatchObject({ code: "owner_violation" });
-      expect((await findProposalForItem(pool, proposalsId, itemId))?.properties.reason).toBe("Original");
+      await tick(itemId, propose({ name: "Task" }, { reason: "Original" }));
+      const card = await requireCard(itemId);
+      await expect(editItem(proposalsId, card.id, { reason: "Changed" })).rejects.toMatchObject({
+        code: "owner_violation",
+      });
+      expect((await cardOf(itemId))?.properties.reason).toBe("Original");
     });
-    it("passes the bound user's locale", async () => {
-      await runInTenant(getTenantZeroId(), () =>
-        createUser(pool, { email: "en@example.com", passwordHash: "x", locale: "en", tenantId: getTenantZeroId() }),
-      );
-      const itemId = await createTaskInboxItem();
 
+    it.each([
+      ["the bound user's locale", "en"],
+      ["cs when the tenant has no bound user", undefined],
+    ] as const)("passes %s", async (_, userLocale) => {
+      if (userLocale) await createTenantUser(userLocale);
+      const itemId = await createTaskInboxItem();
       const locales: string[] = [];
       await runInTenant(getTenantZeroId(), () =>
-        runTick(pool, databaseIds, itemId, async (input) => {
+        tick(itemId, async (input) => {
           locales.push(input.locale);
           return { properties: { name: "Buy milk" } };
         }),
       );
-      expect(locales).toEqual(["en"]);
-    });
-
-    it("falls back to cs when the tenant has no bound user", async () => {
-      const itemId = await createTaskInboxItem();
-
-      const locales: string[] = [];
-      await runInTenant(getTenantZeroId(), () =>
-        runTick(pool, databaseIds, itemId, async (input) => {
-          locales.push(input.locale);
-          return { properties: { name: "Buy milk" } };
-        }),
-      );
-      expect(locales).toEqual(["cs"]);
+      expect(locales).toEqual([userLocale ?? "cs"]);
     });
   });
 
   it("uses the injected function's target for a 'pageContent' type", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Thought",
-        emoji: "💭",
-        processingMethod: "pageContent",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "A thought",
-        type: type.id,
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async (input) => {
+    const { type, item } = await typedSource("A thought", PAGE_TYPE);
+    await tick(item.id, async (input) => {
       expect(input.entityKind).toBe("pageContent");
       expect(input.targetDatabaseId).toBeUndefined();
       return { target: type.id, properties: { flavour: "paragraph", fields: { content: "A thought" } } };
     });
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.proposal).toEqual({
+    expect((await requireCard(item.id)).properties.proposal).toEqual({
       entityKind: "pageContent",
       target: type.id,
       properties: { flavour: "paragraph", fields: { content: "A thought" } },
@@ -1543,115 +1261,35 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
   });
 
   it("an unchanged fingerprint makes no AI call and no proposal write", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const first = await findProposalForItem(pool, proposalsId, item.id);
-
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for an unchanged fingerprint");
-    });
-    const second = await findProposalForItem(pool, proposalsId, item.id);
-    expect(second!.updatedAt).toBe(first!.updatedAt);
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const first = await requireCard(item.id);
+    await tick(item.id, noCompute("computeProposal must not be called for an unchanged fingerprint"));
+    expect((await requireCard(item.id)).updatedAt).toBe(first.updatedAt);
   });
 
   it("an edit that changes the fingerprint revises the same row rather than creating a second one", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const first = await findProposalForItem(pool, proposalsId, item.id);
-
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: inboxId,
-        itemId: item.id,
-        propertiesPatch: { text: "Buy milk and eggs" },
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
-    const revised = await findProposalForItem(pool, proposalsId, item.id);
-
-    expect(revised!.id).toBe(first!.id);
-    expect(revised!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
-    expect(revised!.properties.proposal).toEqual({
+    const { type, item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const first = await requireCard(item.id);
+    await storeEdit(inboxId, item.id, { text: "Buy milk and eggs" });
+    await tick(item.id, propose({ name: "Buy milk and eggs" }));
+    const revised = await requireCard(item.id);
+    expect(revised.id).toBe(first.id);
+    expect(revised.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
+    expect(revised.properties.proposal).toEqual({
       entityKind: "database",
       target: await databaseIdFor("tasks"),
       properties: { name: "Buy milk and eggs" },
     });
-    expect(revised!.properties.history).toHaveLength(2);
-
-    const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
-    expect(rows[0].n).toBe(1);
+    expect(revised.properties.history).toHaveLength(2);
+    expect(await countItems(proposalsId)).toBe(1);
   });
 
-  describe("version 2 fingerprint inputs and the version 1 compatibility rule (issue #1606)", () => {
-    async function createInboxType(name: string, emoji: string) {
-      return withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name,
-          emoji,
-          processingMethod: "database",
-          targetDatabase: "tasks",
-        }),
-      );
-    }
-
-    async function createInboxItemOfType(text: string, typeId: string) {
-      return withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, {
-          inboxDatabaseId: inboxId,
-          date: "2026-08-28",
-          time: "09:00",
-          text,
-          type: typeId,
-        }),
-      );
-    }
-
-    async function editInboxItem(itemId: string, propertiesPatch: Record<string, unknown>) {
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId, propertiesPatch }),
-      );
-    }
-
+  describe("version 2 fingerprint inputs", () => {
     /**
-     * Creates a blob whose content hash is derived from `label` and attaches it to the Inbox item. It is a PDF: a tick
-     * waits for an image whose metadata job has not run (issue gh-1970), and these tests are about the fingerprint.
+     * Creates a blob whose content hash derives from `label` and attaches it to the Inbox item. It is a PDF:
+     * a tick waits for an image whose metadata job has not run.
      */
     async function attachNewBlob(itemId: string, label: string) {
       const contentHash = createHash("sha256").update(label).digest("hex");
@@ -1664,374 +1302,165 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       await insertInboxAttachments(pool, itemId, [{ blobId: blob.id, source: "camera" }]);
       return { blobId: blob.id, contentHash };
     }
-
     async function detachBlob(itemId: string, blobId: string) {
-      const attachments = await listInboxAttachments(pool, [itemId]);
-      const attachment = attachments.find((row) => row.blobId === blobId);
+      const attachment = (await listInboxAttachments(pool, [itemId])).find((row) => row.blobId === blobId);
       if (!attachment) throw new Error(`Inbox item ${itemId} has no attachment of blob ${blobId}`);
       await deleteInboxAttachment(pool, attachment.attachmentId);
     }
-
-    /**
-     * Sets the stored fingerprint of a proposal. The tick no longer writes version 1 values, so a
-     * card that holds one (as a card written before issue #1606 does) is built by setting it here.
-     */
-    async function setProposalFingerprint(proposalId: string, fingerprint: string) {
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: proposalsId,
-          itemId: proposalId,
-          propertiesPatch: { fingerprint },
-        }),
-      );
+    /** Moves the attachment of `blobId` to the end of the item's attachments. */
+    async function moveToEnd(itemId: string, blobId: string) {
+      await detachBlob(itemId, blobId);
+      await insertInboxAttachments(pool, itemId, [{ blobId, source: "camera" }]);
     }
+    const fingerprint = async (itemId: string) => (await requireCard(itemId)).properties.fingerprint;
 
     it.each([
       { field: "time", patch: { time: "10:30" } },
       { field: "date", patch: { date: "2026-08-29" } },
     ])("a changed capture $field recomputes the proposal", async ({ patch }) => {
-      const type = await createInboxType("Task", "☑️");
-      const item = await createInboxItemOfType("Buy milk", type.id);
-      let calls = 0;
-      const compute: ComputeSemprecProposalFn = async () => {
-        calls++;
-        return { properties: { name: "Buy milk" } };
-      };
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(1);
-
-      await editInboxItem(item.id, patch);
-      await runTick(pool, databaseIds, item.id, compute);
-
-      expect(calls).toBe(2);
-      const proposal = await findProposalForItem(pool, proposalsId, item.id);
-      expect(proposal!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk", ...patch }));
+      const { type, item } = await typedSource();
+      const counter = counted({ properties: { name: "Buy milk" } });
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(1);
+      await storeEdit(inboxId, item.id, patch);
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(2);
+      expect(await fingerprint(item.id)).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk", ...patch }));
     });
 
     it("adding an attachment to the item and then removing it each recomputes the proposal", async () => {
-      const type = await createInboxType("Task", "☑️");
-      const item = await createInboxItemOfType("Buy milk", type.id);
-      let calls = 0;
-      const compute: ComputeSemprecProposalFn = async () => {
-        calls++;
-        return { properties: { name: "Buy milk" } };
-      };
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(1);
-
+      const { type, item } = await typedSource();
+      const counter = counted({ properties: { name: "Buy milk" } });
+      await tick(item.id, counter.compute);
       const photo = await attachNewBlob(item.id, "photo");
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(2);
-      const withPhoto = await findProposalForItem(pool, proposalsId, item.id);
-      expect(withPhoto!.properties.fingerprint).toBe(
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(2);
+      expect(await fingerprint(item.id)).toBe(
         fingerprintV2Of({ typeId: type.id, text: "Buy milk", attachmentHashes: [photo.contentHash] }),
       );
-
       await detachBlob(item.id, photo.blobId);
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(3);
-      const withoutPhoto = await findProposalForItem(pool, proposalsId, item.id);
-      expect(withoutPhoto!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(3);
+      expect(await fingerprint(item.id)).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
     });
 
     it("reordering the attachments of an item does not recompute the proposal", async () => {
-      const type = await createInboxType("Task", "☑️");
-      const item = await createInboxItemOfType("Buy milk", type.id);
+      const { item } = await typedSource();
       const first = await attachNewBlob(item.id, "first");
       const second = await attachNewBlob(item.id, "second");
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const before = await findProposalForItem(pool, proposalsId, item.id);
-
-      // Attachments are ordered by position, so moving `first` behind `second` reverses the pair.
-      await detachBlob(item.id, first.blobId);
-      await insertInboxAttachments(pool, item.id, [{ blobId: first.blobId, source: "camera" }]);
-      const attachments = await listInboxAttachments(pool, [item.id]);
-      expect(attachments.map((row) => row.blobId)).toEqual([second.blobId, first.blobId]);
-
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called when only the attachment order changed");
-      });
-
-      const after = await findProposalForItem(pool, proposalsId, item.id);
-      expect(after!.properties.fingerprint).toBe(before!.properties.fingerprint);
-      expect(after!.updatedAt).toBe(before!.updatedAt);
+      await tick(item.id, propose({ name: "Buy milk" }));
+      const before = await requireCard(item.id);
+      await moveToEnd(item.id, first.blobId);
+      expect((await listInboxAttachments(pool, [item.id])).map((row) => row.blobId)).toEqual([
+        second.blobId,
+        first.blobId,
+      ]);
+      await tick(item.id, noCompute("computeProposal must not be called when only the attachment order changed"));
+      const after = await requireCard(item.id);
+      expect(after.properties.fingerprint).toBe(before.properties.fingerprint);
+      expect(after.updatedAt).toBe(before.updatedAt);
     });
 
     it("uses legacy blob IDs for missing hashes on add, reorder and removal at an invoked tick", async () => {
-      const type = await createInboxType("Task", "☑️");
-      const item = await createInboxItemOfType("Buy milk", type.id);
-      let calls = 0;
-      const compute: ComputeSemprecProposalFn = async () => {
-        calls++;
-        return { properties: { name: "Buy milk" } };
-      };
-      await runTick(pool, databaseIds, item.id, compute);
-      const first = await createBlob(pool, {
-        mimeType: "application/pdf",
-        byteSize: 1,
-        storageKey: `legacy/${randomUUID()}`,
-      });
-      const second = await createBlob(pool, {
-        mimeType: "application/pdf",
-        byteSize: 1,
-        storageKey: `legacy/${randomUUID()}`,
-      });
+      const { type, item } = await typedSource();
+      const counter = counted({ properties: { name: "Buy milk" } });
+      await tick(item.id, counter.compute);
+      const legacyBlob = () =>
+        createBlob(pool, { mimeType: "application/pdf", byteSize: 1, storageKey: `legacy/${randomUUID()}` });
+      const first = await legacyBlob();
+      const second = await legacyBlob();
       await insertInboxAttachments(pool, item.id, [
         { blobId: first.id, source: "camera" },
         { blobId: second.id, source: "camera" },
       ]);
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(2);
-      const before = await findProposalForItem(pool, proposalsId, item.id);
-      expect(before?.properties.fingerprint).toBe(
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(2);
+      const before = await requireCard(item.id);
+      expect(before.properties.fingerprint).toBe(
         fingerprintV2Of({ typeId: type.id, text: "Buy milk", attachmentHashes: [first.id, second.id] }),
       );
-      await detachBlob(item.id, first.id);
-      await insertInboxAttachments(pool, item.id, [{ blobId: first.id, source: "camera" }]);
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(2);
-      expect((await findProposalForItem(pool, proposalsId, item.id))?.updatedAt).toBe(before?.updatedAt);
+      await moveToEnd(item.id, first.id);
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(2);
+      expect((await requireCard(item.id)).updatedAt).toBe(before.updatedAt);
       await detachBlob(item.id, second.id);
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(3);
-      expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.fingerprint).toBe(
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(3);
+      expect(await fingerprint(item.id)).toBe(
         fingerprintV2Of({ typeId: type.id, text: "Buy milk", attachmentHashes: [first.id] }),
       );
     });
 
     it("choosing another type that shares the emoji recomputes the proposal", async () => {
-      const task = await createInboxType("Task", "☑️");
-      const errand = await createInboxType("Errand", "☑️");
-      const item = await createInboxItemOfType("Buy milk", task.id);
-      let calls = 0;
-      const compute: ComputeSemprecProposalFn = async () => {
-        calls++;
-        return { properties: { name: "Buy milk" } };
-      };
-      await runTick(pool, databaseIds, item.id, compute);
-      const before = await findProposalForItem(pool, proposalsId, item.id);
-
-      await withTransaction(pool, async (client) => {
-        const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
-        await deleteRelationWithClient(client, {
-          relationPropertyId: typeProperty!.id,
-          callerItemId: item.id,
-          targetItemId: task.id,
-        });
-        await createRelationWithClient(client, {
-          relationPropertyId: typeProperty!.id,
-          callerItemId: item.id,
-          targetItemId: errand.id,
-        });
-      });
-      await runTick(pool, databaseIds, item.id, compute);
-
-      expect(calls).toBe(2);
-      const after = await findProposalForItem(pool, proposalsId, item.id);
-      expect(after!.id).toBe(before!.id);
-      expect(after!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: errand.id, text: "Buy milk" }));
-      expect(after!.properties.fingerprint).not.toBe(before!.properties.fingerprint);
+      const { type: task, item } = await typedSource();
+      const errand = await createType({ name: "Errand" });
+      const counter = counted({ properties: { name: "Buy milk" } });
+      await tick(item.id, counter.compute);
+      const before = await requireCard(item.id);
+      await setSourceType(item.id, { remove: task.id, add: errand.id });
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(2);
+      const after = await requireCard(item.id);
+      expect(after.id).toBe(before.id);
+      expect(after.properties.fingerprint).toBe(fingerprintV2Of({ typeId: errand.id, text: "Buy milk" }));
     });
 
-    it("a version 1 card whose emoji and text are unchanged is not recomputed, even when its time changes", async () => {
-      const type = await createInboxType("Task", "☑️");
-      const item = await createInboxItemOfType("Buy milk", type.id);
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const created = await findProposalForItem(pool, proposalsId, item.id);
-      await setProposalFingerprint(created!.id, legacyFingerprintOf("☑️", "Buy milk"));
-      const legacyCard = await findProposalForItem(pool, proposalsId, item.id);
-
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called for an unchanged version 1 fingerprint");
+    it("a card whose stored fingerprint is not a version 2 value is recomputed and stored as version 2", async () => {
+      const { type, item } = await typedSource();
+      await tick(item.id, propose({ name: "Buy milk" }));
+      const created = await requireCard(item.id);
+      await storeEdit(proposalsId, created.id, {
+        fingerprint: String(created.properties.fingerprint).slice("v2:".length),
       });
-
-      await editInboxItem(item.id, { time: "10:30" });
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called when only the time of a version 1 card changed");
-      });
-
-      const after = await findProposalForItem(pool, proposalsId, item.id);
-      expect(after!.properties.fingerprint).toBe(legacyFingerprintOf("☑️", "Buy milk"));
-      expect(after!.updatedAt).toBe(legacyCard!.updatedAt);
-    });
-
-    it("a version 1 card whose text changed is recomputed and stored as a version 2 fingerprint", async () => {
-      const type = await createInboxType("Task", "☑️");
-      const item = await createInboxItemOfType("Buy milk", type.id);
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const created = await findProposalForItem(pool, proposalsId, item.id);
-      await setProposalFingerprint(created!.id, legacyFingerprintOf("☑️", "Buy milk"));
-
-      await editInboxItem(item.id, { text: "Buy bread" });
-      let calls = 0;
-      await runTick(pool, databaseIds, item.id, async () => {
-        calls++;
-        return { properties: { name: "Buy bread" } };
-      });
-
-      expect(calls).toBe(1);
-      const revised = await findProposalForItem(pool, proposalsId, item.id);
-      expect(revised!.id).toBe(created!.id);
-      expect(revised!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy bread" }));
-    });
-
-    it("a version 1 card whose type emoji changed is recomputed and stored as a version 2 fingerprint", async () => {
-      const type = await createInboxType("Task", "☑️");
-      const item = await createInboxItemOfType("Buy milk", type.id);
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const created = await findProposalForItem(pool, proposalsId, item.id);
-      await setProposalFingerprint(created!.id, legacyFingerprintOf("☑️", "Buy milk"));
-
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: typesId,
-          itemId: type.id,
-          propertiesPatch: { emoji: "📌" },
-        }),
-      );
-      let calls = 0;
-      await runTick(pool, databaseIds, item.id, async () => {
-        calls++;
-        return { properties: { name: "Buy milk" } };
-      });
-
-      expect(calls).toBe(1);
-      const revised = await findProposalForItem(pool, proposalsId, item.id);
-      expect(revised!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
+      const counter = counted({ properties: { name: "Buy milk" } });
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(1);
+      const revised = await requireCard(item.id);
+      expect(revised.id).toBe(created.id);
+      expect(revised.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
     });
   });
 
   it.each(["confirmed", "rejected"] as const)(
     "a %s proposal is never modified by a later tick, even when the source changes",
     async (lockedStatus) => {
-      const type = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: "Task",
-          emoji: "☑️",
-          processingMethod: "database",
-          targetDatabase: "tasks",
-        }),
-      );
-      const item = await withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, {
-          inboxDatabaseId: inboxId,
-          date: "2026-08-28",
-          time: "09:00",
-          text: "Buy milk",
-          type: type.id,
-        }),
-      );
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const proposal = await findProposalForItem(pool, proposalsId, item.id);
-
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: proposalsId,
-          itemId: proposal!.id,
-          propertiesPatch: { status: lockedStatus },
-        }),
-      );
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: inboxId,
-          itemId: item.id,
-          propertiesPatch: { text: "Something totally different" },
-        }),
-      );
-
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called for a locked proposal");
-      });
-
-      const stillLocked = await findProposalForItem(pool, proposalsId, item.id);
-      expect(stillLocked!.properties.status).toBe(lockedStatus);
-      expect(stillLocked!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
+      const { type, item } = await typedSource();
+      await tick(item.id, propose({ name: "Buy milk" }));
+      await storeEdit(proposalsId, (await requireCard(item.id)).id, { status: lockedStatus });
+      await storeEdit(inboxId, item.id, { text: "Something totally different" });
+      await tick(item.id, noCompute("computeProposal must not be called for a locked proposal"));
+      const stillLocked = await requireCard(item.id);
+      expect(stillLocked.properties.status).toBe(lockedStatus);
+      expect(stillLocked.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
     },
   );
 
   it("a soft-deleted existing proposal is treated as absent — a later tick creates a fresh one instead of throwing", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const original = await findProposalForItem(pool, proposalsId, item.id);
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, original!.id));
+    const { type, item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const original = await requireCard(item.id);
+    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, original.id));
 
-    // The relation edge to the now-deleted proposal is still there, so this must not throw
-    // NotFoundError from trying to update a deleted item — it must fall through and create.
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk (retry)" } }));
+    // The edge to the deleted proposal remains, so the tick must not try to update the deleted item; it
+    // creates a new one.
+    await tick(item.id, propose({ name: "Buy milk (retry)" }));
+    expect(await countItems(proposalsId)).toBe(2);
+    expect((await itemsStore.getItemById(pool, proposalsId, original.id))!.deletedAt).not.toBeNull();
 
-    const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
-    expect(rows[0].n).toBe(2);
-
-    const stillDeleted = await itemsStore.getItemById(pool, proposalsId, original!.id);
-    expect(stillDeleted!.deletedAt).not.toBeNull();
-
-    // Now two `sourceInbox` edges exist for this item: one to the soft-deleted original, one
-    // to the live replacement. A further tick must find the live one regardless of which edge
-    // comes back first from the relation lookup — reviving it rather than creating a third row.
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: inboxId,
-        itemId: item.id,
-        propertiesPatch: { text: "Buy milk and eggs" },
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
-
-    const { rows: afterThirdTick } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
-      proposalsId,
-    ]);
-    expect(afterThirdTick[0].n).toBe(2);
-
-    const { rows: liveRows } = await pool.query(
-      "SELECT id, properties FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+    // Two `sourceInbox` edges now exist: one to the soft-deleted original, one to the live replacement. A
+    // further tick must find the live one whichever edge comes back first, not create a third row.
+    await storeEdit(inboxId, item.id, { text: "Buy milk and eggs" });
+    await tick(item.id, propose({ name: "Buy milk and eggs" }));
+    expect(await countItems(proposalsId)).toBe(2);
+    const { rows: liveRows } = await pool.query<{ properties: Record<string, unknown> }>(
+      "SELECT properties FROM items WHERE database_id = $1 AND deleted_at IS NULL",
       [proposalsId],
     );
     expect(liveRows).toHaveLength(1);
-    expect(liveRows[0].properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
+    expect(liveRows[0]!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
   });
 
-  describe("a source split into several cards (issue #1939)", () => {
-    async function createSplitSource(text: string) {
-      const type = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: "Task",
-          emoji: "☑️",
-          processingMethod: "database",
-          targetDatabase: "tasks",
-        }),
-      );
-      const item = await withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, {
-          inboxDatabaseId: inboxId,
-          date: "2026-08-28",
-          time: "09:00",
-          text,
-          type: type.id,
-        }),
-      );
-      return { type, item };
-    }
-
-    /** Every Processing proposals row as stored, so a test can prove a card was not written. */
+  describe("a source split into several cards", () => {
     async function storedCards() {
       const { rows } = await pool.query<{ id: string; properties: Record<string, unknown>; updated_at: Date }>(
         "SELECT id, properties, updated_at FROM items WHERE database_id = $1 ORDER BY id",
@@ -2043,60 +1472,37 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     }
 
     /** A sibling card of a split, written as the split action writes it, linked to `sourceId`. */
-    async function createSiblingCard(sourceId: string, primaryId: string, name: string): Promise<string> {
+    async function createSiblingCard(sourceId: string, name: string): Promise<string> {
       const envelope: ProposalEnvelope = {
         entityKind: "database",
         target: await databaseIdFor("tasks"),
         properties: { name },
       };
+      const properties = {
+        kind: "inbox",
+        proposal: envelope,
+        ...aiProposalPatch({}, envelope),
+        history: [],
+        status: "proposed",
+        splitFromProposalId: randomUUID(),
+      };
       return withTransaction(pool, async (client) => {
         const sibling = await createItemWithClient(
           client,
-          {
-            databaseId: proposalsId,
-            properties: {
-              kind: "inbox",
-              proposal: envelope,
-              ...aiProposalPatch({}, envelope),
-              history: [],
-              status: "proposed",
-              splitFromProposalId: primaryId,
-            },
-          },
-          {
-            allowedSystemKeys: [
-              "kind",
-              "proposal",
-              "aiProposal",
-              "aiVersion",
-              "history",
-              "status",
-              "splitFromProposalId",
-            ],
-          },
+          { databaseId: proposalsId, properties },
+          { allowedSystemKeys: Object.keys(properties) },
         );
         await linkSourceInboxRelation(client, { processingProposalsDatabaseId: proposalsId }, sibling.id, sourceId);
         return sibling.id;
       });
     }
 
-    async function editSource(itemId: string, text: string) {
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: inboxId,
-          itemId,
-          propertiesPatch: { text },
-        }),
-      );
-    }
-
     it("recomputes only the primary card when the source text is edited, and makes no call while the source is unchanged", async () => {
-      const { type, item } = await createSplitSource("Buy milk and renew the passport");
-      await runTick(pool, databaseIds, item.id, async () => ({
-        properties: { name: "Buy milk and renew the passport" },
-      }));
-      const primaryId = (await findProposalForItem(pool, proposalsId, item.id))!.id;
+      const { type, item } = await typedSource("Buy milk and renew the passport");
+      await tick(item.id, propose({ name: "Buy milk and renew the passport" }));
+      const primaryId = (await requireCard(item.id)).id;
       const tasksId = await databaseIdFor("tasks");
+      const card = (name: string) => ({ entityKind: "database" as const, target: tasksId, properties: { name } });
       const { siblings } = await withTransaction(pool, (client) =>
         splitInboxSourceWithClient(
           client,
@@ -2106,11 +1512,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
             subjectItemId: item.id,
             threadId: randomUUID(),
             messageId: randomUUID(),
-            cards: [
-              { entityKind: "database", target: tasksId, properties: { name: "Buy milk" } },
-              { entityKind: "database", target: tasksId, properties: { name: "Renew the passport" } },
-              { entityKind: "database", target: tasksId, properties: { name: "Call mom" } },
-            ],
+            cards: [card("Buy milk"), card("Renew the passport"), card("Call mom")],
           },
         ),
       );
@@ -2118,27 +1520,18 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       const afterSplit = await storedCards();
       expect(afterSplit.size).toBe(3);
 
-      let calls = 0;
-      const compute: ComputeSemprecProposalFn = async () => {
-        calls++;
-        return { properties: { name: "Buy milk and eggs" } };
-      };
-      await runTick(pool, databaseIds, item.id, compute);
-      expect(calls).toBe(0);
+      const counter = counted({ properties: { name: "Buy milk and eggs" } });
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(0);
       expect(await storedCards()).toEqual(afterSplit);
 
-      await editSource(item.id, "Buy milk and eggs, renew the passport");
-      await runTick(pool, databaseIds, item.id, compute);
-
-      expect(calls).toBe(1);
+      await storeEdit(inboxId, item.id, { text: "Buy milk and eggs, renew the passport" });
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(1);
       const afterEdit = await storedCards();
       expect(afterEdit.size).toBe(3);
       const primary = afterEdit.get(primaryId)!;
-      expect(primary.properties.proposal).toEqual({
-        entityKind: "database",
-        target: tasksId,
-        properties: { name: "Buy milk and eggs" },
-      });
+      expect(primary.properties.proposal).toEqual(card("Buy milk and eggs"));
       expect(primary.properties.fingerprint).toBe(
         fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs, renew the passport" }),
       );
@@ -2146,23 +1539,17 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     });
 
     it("sees no sibling whichever edge comes first: it creates its own card beside the siblings of a source and later revises that one", async () => {
-      const { type, item } = await createSplitSource("Buy milk");
+      const { type, item } = await typedSource();
       // The edges of both siblings exist before the tick's card has one, so a scan that took the first live card
       // of the source would take a sibling.
       const siblingIds = [
-        await createSiblingCard(item.id, randomUUID(), "Sibling one"),
-        await createSiblingCard(item.id, randomUUID(), "Sibling two"),
+        await createSiblingCard(item.id, "Sibling one"),
+        await createSiblingCard(item.id, "Sibling two"),
       ];
       const siblingsBefore = await storedCards();
-      let calls = 0;
-      const compute: ComputeSemprecProposalFn = async () => {
-        calls++;
-        return { properties: { name: "Buy milk" } };
-      };
-
-      await runTick(pool, databaseIds, item.id, compute);
-
-      expect(calls).toBe(1);
+      const counter = counted({ properties: { name: "Buy milk" } });
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(1);
       const created = await storedCards();
       expect(created.size).toBe(3);
       const primaryId = [...created.keys()].find((id) => !siblingIds.includes(id));
@@ -2175,10 +1562,9 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       expect(created.get(primaryId)!.properties.splitFromProposalId).toBeUndefined();
       for (const id of siblingIds) expect(created.get(id)).toEqual(siblingsBefore.get(id));
 
-      await editSource(item.id, "Buy milk and eggs");
-      await runTick(pool, databaseIds, item.id, compute);
-
-      expect(calls).toBe(2);
+      await storeEdit(inboxId, item.id, { text: "Buy milk and eggs" });
+      await tick(item.id, counter.compute);
+      expect(counter.calls).toBe(2);
       const revised = await storedCards();
       expect(revised.size).toBe(3);
       expect(revised.get(primaryId)!.properties.fingerprint).toBe(
@@ -2188,160 +1574,60 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     });
   });
 
-  it("an item with no type is marked needsClarification, not silently skipped (issue #104)", async () => {
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "no type",
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => {
-      return { properties: {}, candidates: [] };
-    });
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal).toBeTruthy();
-    expect(proposal!.properties.status).toBe("needsClarification");
-    expect(proposal!.properties.proposal).toBeNull();
-    expect(proposal!.properties.history).toHaveLength(1);
-    expect((proposal!.properties.history as Array<Record<string, unknown>>)[0]).toMatchObject({ author: "ai" });
-  });
-
-  it("a repeated tick on the same untyped item stays needsClarification without a second history entry", async () => {
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "no type",
-      }),
-    );
-
-    const throwing: ComputeSemprecProposalFn = async () => {
-      return { properties: {}, candidates: [] };
-    };
-    await runTick(pool, databaseIds, item.id, throwing);
-    await runTick(pool, databaseIds, item.id, throwing);
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.status).toBe("needsClarification");
-    expect(proposal!.properties.history).toHaveLength(1);
+  it("an item with no type is marked needsClarification once, and a repeated tick adds no second history entry", async () => {
+    const item = await createSource({ text: "no type" });
+    await tick(item.id, unrecognized);
+    const proposal = await requireCard(item.id);
+    expect(proposal.properties).toMatchObject({ status: "needsClarification", proposal: null });
+    expect(historyOf(proposal)).toEqual([expect.objectContaining({ author: "ai" })]);
+    await tick(item.id, unrecognized);
+    const repeated = await requireCard(item.id);
+    expect(repeated.properties.status).toBe("needsClarification");
+    expect(repeated.properties.history).toHaveLength(1);
   });
 
   it("never writes a row into any database other than processingProposals", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-
+    const { item } = await typedSource();
     const tasksDbId = await databaseIdFor("tasks");
-    const { rows: before } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
-      tasksDbId,
-    ]);
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-
-    const { rows: after } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
-      tasksDbId,
-    ]);
-    expect(after[0].n).toBe(before[0].n);
+    const before = await countItems(tasksDbId);
+    await tick(item.id, propose({ name: "Buy milk" }));
+    expect(await countItems(tasksDbId)).toBe(before);
   });
 });
 
-describe("semprec.tick needsClarification, invalid, history, and envelope validation (issue #104)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
-  let databaseIds: TickDatabaseIds;
-
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    inboxId = await databaseIdFor("inbox");
-    typesId = await databaseIdFor("inboxItemTypes");
-    proposalsId = await databaseIdFor("processingProposals");
-    databaseIds = {
-      inboxDatabaseId: inboxId,
-      inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
+describe("semprec.tick needsClarification, invalid, history, and envelope validation", () => {
+  beforeEach(resetTickDatabases);
+  const sourceDeletedReason = (itemId: string, label = "Buy milk") => ({
+    code: "sourceDeleted",
+    field: "",
+    itemId,
+    label,
   });
-
-  async function createTypedItem(text: string) {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text,
-        type: type.id,
-      }),
-    );
-    return { type, item };
-  }
+  const deletedSource = "computeProposal must not be called for a deleted source";
+  const unchangedSource = "computeProposal must not be called when the source fingerprint is unchanged";
 
   it("validates an uncreated Inbox type edge without locking a placeholder source", async () => {
-    const { type } = await createTypedItem("Type validation fixture");
-    const property = await withTransaction(pool, (client) => propertiesStore.getPropertyByKey(client, inboxId, "type"));
-    if (!property) throw new Error("Missing Inbox type property");
+    const { type } = await typedSource("Type validation fixture");
+    const relationPropertyId = await withTransaction(pool, inboxTypePropertyId);
     const statements: string[] = [];
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     try {
       await withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-        const observed = new Proxy(client, {
-          get(target, key, receiver) {
-            if (key !== "query") {
-              const value: unknown = Reflect.get(target, key, receiver);
-              return typeof value === "function" ? value.bind(target) : value;
-            }
-            return (...args: unknown[]) => {
-              if (typeof args[0] === "string") statements.push(args[0]);
-              return Reflect.apply(target.query.bind(target), undefined, args);
-            };
-          },
+        const observed = interceptQuery(client, (args, original) => {
+          if (typeof args[0] === "string") statements.push(args[0]);
+          return original(...args);
         });
-        await assertRelationTargetLinkableWithClient(observed, {
-          relationPropertyId: property.id,
-          targetItemId: type.id,
-        });
+        await assertRelationTargetLinkableWithClient(observed, { relationPropertyId, targetItemId: type.id });
       });
     } finally {
       await runtime.end();
     }
+    expect(statements.length).toBeGreaterThan(0);
     expect(statements.some((sql) => sql.includes("FOR UPDATE OF i"))).toBe(false);
   });
 
   it("a source whose type was deleted out from under it is marked needsClarification, the same path as no type at all", async () => {
-    const { type, item } = await createTypedItem("Buy milk");
-
+    const { type, item } = await typedSource();
     await withTransaction(pool, (client) =>
       deleteInboxTypeWithClient(client, {
         inboxDatabaseId: inboxId,
@@ -2350,946 +1636,457 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
         typeItemId: type.id,
       }),
     );
-
-    await runTick(pool, databaseIds, item.id, async () => {
-      return { properties: {}, candidates: [] };
+    await tick(item.id, unrecognized);
+    const proposal = await requireCard(item.id);
+    expect(proposal.properties).toMatchObject({
+      fingerprint: fingerprintV2Of({ typeId: "", text: "Buy milk" }),
+      status: "needsClarification",
+      proposal: null,
     });
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: "", text: "Buy milk" }));
-    expect(proposal!.properties.status).toBe("needsClarification");
-    expect(proposal!.properties.proposal).toBeNull();
-    expect(proposal!.properties.history).toHaveLength(1);
+    expect(proposal.properties.history).toHaveLength(1);
   });
 
   it("an item that gains a recognized type after needsClarification transitions to proposed on the next tick", async () => {
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => {
-      return { properties: {}, candidates: [] };
+    const item = await createSource();
+    await tick(item.id, unrecognized);
+    const needsClarification = await requireCard(item.id);
+    expect(needsClarification.properties).toMatchObject({
+      status: "needsClarification",
+      fingerprint: fingerprintV2Of({ typeId: "", text: "Buy milk" }),
     });
-    const needsClarification = await findProposalForItem(pool, proposalsId, item.id);
-    expect(needsClarification!.properties.status).toBe("needsClarification");
-    expect(needsClarification!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: "", text: "Buy milk" }));
-
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    await withTransaction(pool, async (client) => {
-      const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
-      await createRelationWithClient(client, {
-        relationPropertyId: typeProperty!.id,
-        callerItemId: item.id,
-        targetItemId: type.id,
-      });
+    const type = await createType();
+    await setSourceType(item.id, { add: type.id });
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const proposed = await requireCard(item.id);
+    expect(proposed.id).toBe(needsClarification.id);
+    expect(proposed.properties).toMatchObject({
+      status: "proposed",
+      fingerprint: fingerprintV2Of({ typeId: type.id, text: "Buy milk" }),
+      proposal: { entityKind: "database", target: await databaseIdFor("tasks"), properties: { name: "Buy milk" } },
     });
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-
-    const proposed = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposed!.id).toBe(needsClarification!.id);
-    expect(proposed!.properties.status).toBe("proposed");
-    expect(proposed!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
-    expect(proposed!.properties.proposal).toEqual({
-      entityKind: "database",
-      target: await databaseIdFor("tasks"),
-      properties: { name: "Buy milk" },
-    });
-    expect(proposed!.properties.history).toHaveLength(2);
+    expect(proposed.properties.history).toHaveLength(2);
   });
 
   it("deleting a source item invalidates its unlocked proposal", async () => {
-    const { item } = await createTypedItem("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const proposed = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposed!.properties.status).toBe("proposed");
-
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
-
-    const invalidated = await findProposalForItem(pool, proposalsId, item.id);
-    expect(invalidated!.id).toBe(proposed!.id);
-    expect(invalidated!.properties.status).toBe("invalid");
-    expect(invalidated!.properties.history).toHaveLength(2);
-    expect((invalidated!.properties.history as Array<Record<string, unknown>>)[1]).toMatchObject({
-      author: "ai",
-      kind: "invalidated",
-    });
-    expect(invalidated!.properties.invalidReason).toEqual({
-      code: "sourceDeleted",
-      field: "",
-      itemId: item.id,
-      label: "Buy milk",
-    });
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const proposed = await requireCard(item.id);
+    expect(proposed.properties.status).toBe("proposed");
+    await trashSource(item.id);
+    await tick(item.id, noCompute(deletedSource));
+    const invalidated = await requireCard(item.id);
+    expect(invalidated.id).toBe(proposed.id);
+    expect(invalidated.properties.status).toBe("invalid");
+    expect(historyOf(invalidated)).toHaveLength(2);
+    expect(historyOf(invalidated)[1]).toMatchObject({ author: "ai", kind: "invalidated" });
+    expect(invalidated.properties.invalidReason).toEqual(sourceDeletedReason(item.id));
   });
 
   it("a deleted source's reason label is its trimmed first line, cut by code point to 80 characters", async () => {
     // Emoji are two UTF-16 units each: a cut by unit would split one at the 79th position.
-    const longFirstLine = `  ${"🙂".repeat(120)}  `;
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: `${longFirstLine}\nsecond line`,
-        type: type.id,
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Long" } }));
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
-
-    const invalidated = await findProposalForItem(pool, proposalsId, item.id);
-    const reason = invalidated!.properties.invalidReason as { label: string };
-    expect(reason.label).toBe(`${"🙂".repeat(79)}…`);
+    const { item } = await typedSource(`  ${"🙂".repeat(120)}  \nsecond line`);
+    await tick(item.id, propose({ name: "Long" }));
+    await trashSource(item.id);
+    await tick(item.id, noCompute(deletedSource));
+    expect((await requireCard(item.id)).properties.invalidReason).toMatchObject({ label: `${"🙂".repeat(79)}…` });
   });
-
-  it("a confirmed proposal keeps its status when its source item is deleted", async () => {
-    const { item } = await createTypedItem("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: proposalsId,
-        itemId: proposal!.id,
-        propertiesPatch: { status: "confirmed" },
-      }),
-    );
-
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
-
-    const stillConfirmed = await findProposalForItem(pool, proposalsId, item.id);
-    expect(stillConfirmed!.properties.status).toBe("confirmed");
-  });
-
-  it("a rejected proposal keeps its status when its source item is deleted", async () => {
-    const { item } = await createTypedItem("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: proposalsId,
-        itemId: proposal!.id,
-        propertiesPatch: { status: "rejected" },
-      }),
-    );
-    const historyLengthBeforeDelete = (proposal!.properties.history as unknown[]).length;
-
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
-
-    const stillRejected = await findProposalForItem(pool, proposalsId, item.id);
-    expect(stillRejected!.properties.status).toBe("rejected");
-    expect((stillRejected!.properties.history as unknown[]).length).toBe(historyLengthBeforeDelete);
-  });
-
-  it("deleting a source with no proposal at all is a harmless no-op", async () => {
-    const { item } = await createTypedItem("Buy milk");
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
-
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
-
-    expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
-  });
-
-  // Restoring a source returns its `sourceDeleted` card (issue #1604). Each test trashes and restores with the
-  // store calls, so the tick runs explicitly here; the heartbeat that runs it is covered in inboxTick.test.ts.
-  async function trashSource(itemId: string): Promise<void> {
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
-  }
-
-  async function restoreSource(itemId: string): Promise<void> {
-    await withTransaction(pool, (client) => itemsStore.restoreItem(client, inboxId, itemId));
-  }
 
   it.each(["confirmed", "rejected"] as const)(
-    "leaves a %s card unchanged when its source is restored",
+    "a %s proposal keeps its status and history when its source item is deleted",
     async (status) => {
-      const { item } = await createTypedItem("Buy milk");
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const proposal = await findProposalForItem(pool, proposalsId, item.id);
-      if (!proposal) throw new Error("Expected proposal");
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: proposalsId,
-          itemId: proposal.id,
-          propertiesPatch: { status },
-        }),
-      );
+      const { item } = await typedSource();
+      await tick(item.id, propose({ name: "Buy milk" }));
+      const proposal = await requireCard(item.id);
+      await storeEdit(proposalsId, proposal.id, { status });
+      await trashSource(item.id);
+      await tick(item.id, noCompute(deletedSource));
+      const after = await requireCard(item.id);
+      expect(after.properties.status).toBe(status);
+      expect(after.properties.history).toEqual(proposal.properties.history);
+    },
+  );
+
+  it("deleting a source with no proposal at all is a harmless no-op", async () => {
+    const { item } = await typedSource();
+    await trashSource(item.id);
+    await tick(item.id, noCompute(deletedSource));
+    expect(await cardOf(item.id)).toBeNull();
+  });
+
+  // Restoring a source returns its `sourceDeleted` card. The tick runs explicitly here; the heartbeat that
+  // runs it is covered in inboxTick.test.ts.
+  it.each([
+    ["confirmed", true],
+    ["rejected", true],
+    ["confirmed", false],
+    ["rejected", false],
+  ] as const)(
+    "a %s card is left unchanged when its source is deleted and restored (choke point: %s)",
+    async (status, viaChokePoint) => {
+      const { item } = await typedSource();
+      await tick(item.id, propose({ name: "Buy milk" }));
+      await storeEdit(proposalsId, (await requireCard(item.id)).id, { status });
+      const before = await requireCard(item.id);
       const chokePoint = createChokePoint(pool);
-      await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(inboxId, item.id));
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not run for a deleted source");
-      });
-      const beforeRestore = await findProposalForItem(pool, proposalsId, item.id);
-      expect(beforeRestore?.properties.status).toBe(status);
-      await runInTenant(getTenantZeroId(), () => chokePoint.restoreItem(inboxId, item.id));
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not run for a locked card");
-      });
-      expect(await findProposalForItem(pool, proposalsId, item.id)).toEqual(beforeRestore);
+      if (viaChokePoint) await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(inboxId, item.id));
+      else await trashSource(item.id);
+      await tick(item.id, noCompute(deletedSource));
+      const beforeRestore = await requireCard(item.id);
+      expect(beforeRestore.properties.status).toBe(status);
+      if (viaChokePoint) await runInTenant(getTenantZeroId(), () => chokePoint.restoreItem(inboxId, item.id));
+      else await restoreSource(item.id);
+      await tick(item.id, noCompute("computeProposal must not run for a locked card"));
+      expect(await cardOf(item.id)).toEqual(beforeRestore);
+      if (!viaChokePoint) expect(beforeRestore.properties).toEqual(before.properties);
     },
   );
 
   it("restoring an unchanged source returns its invalid card to proposed with no reason and no recompute", async () => {
-    const { item } = await createTypedItem("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const proposed = await findProposalForItem(pool, proposalsId, item.id);
-
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const proposed = await requireCard(item.id);
     await trashSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
+    await tick(item.id, noCompute(deletedSource));
     await restoreSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
+    await tick(item.id, noCompute(unchangedSource));
+    const reopened = await requireCard(item.id);
+    expect(reopened.id).toBe(proposed.id);
+    expect(reopened.properties).toMatchObject({
+      status: "proposed",
+      invalidReason: null,
+      proposal: proposed.properties.proposal,
     });
-
-    const reopened = await findProposalForItem(pool, proposalsId, item.id);
-    expect(reopened!.id).toBe(proposed!.id);
-    expect(reopened!.properties.status).toBe("proposed");
-    expect(reopened!.properties.invalidReason).toBeNull();
-    expect(reopened!.properties.proposal).toEqual(proposed!.properties.proposal);
-    expect(reopened!.properties.history).toHaveLength(3);
-    expect((reopened!.properties.history as Array<Record<string, unknown>>)[2]).toMatchObject({
-      author: "ai",
-      kind: "reopened",
-    });
+    expect(historyOf(reopened)).toHaveLength(3);
+    expect(historyOf(reopened)[2]).toMatchObject({ author: "ai", kind: "reopened" });
   });
 
-  it("a source whose text changed before it was trashed is recomputed when it is restored", async () => {
-    const { type, item } = await createTypedItem("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: inboxId,
-        itemId: item.id,
-        propertiesPatch: { text: "Buy milk and eggs" },
-      }),
-    );
-    await trashSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
-    await restoreSource(item.id);
-
-    const computedFor: unknown[] = [];
-    await runTick(pool, databaseIds, item.id, async (input) => {
-      computedFor.push(input.sourceItem.properties.text);
-      return { properties: { name: "Buy milk and eggs" } };
-    });
-
-    expect(computedFor).toEqual(["Buy milk and eggs"]);
-    const recomputed = await findProposalForItem(pool, proposalsId, item.id);
-    expect(recomputed!.properties.status).toBe("proposed");
-    expect(recomputed!.properties.invalidReason).toBeNull();
-    expect(recomputed!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
-    expect(recomputed!.properties.proposal).toEqual({
-      entityKind: "database",
-      target: await databaseIdFor("tasks"),
-      properties: { name: "Buy milk and eggs" },
-    });
-  });
-
-  it("a historical text change while trashed is recomputed when the source is restored", async () => {
-    const { type, item } = await createTypedItem("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const chokePoint = createChokePoint(pool);
-    await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(inboxId, item.id));
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
-    // Historical persisted state only: the supported writer refuses edits to trashed items.
-    const changed = await pool.query(
-      `UPDATE items SET properties = jsonb_set(properties, '{text}', to_jsonb($1::text))
-       WHERE tenant_id = $2 AND database_id = $3 AND id = $4 AND deleted_at IS NOT NULL`,
-      ["Buy milk and eggs", getTenantZeroId(), inboxId, item.id],
-    );
-    expect(changed.rowCount).toBe(1);
-    await runInTenant(getTenantZeroId(), () => chokePoint.restoreItem(inboxId, item.id));
-
-    const computedFor: unknown[] = [];
-    await runTick(pool, databaseIds, item.id, async (input) => {
-      computedFor.push(input.sourceItem.properties.text);
-      return { properties: { name: "Buy milk and eggs" } };
-    });
-
-    expect(computedFor).toEqual(["Buy milk and eggs"]);
-    const recomputed = await findProposalForItem(pool, proposalsId, item.id);
-    expect(recomputed!.properties.status).toBe("proposed");
-    expect(recomputed!.properties.invalidReason).toBeNull();
-    expect(recomputed!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
-    expect(recomputed!.properties.proposal).toEqual({
-      entityKind: "database",
-      target: await databaseIdFor("tasks"),
-      properties: { name: "Buy milk and eggs" },
-    });
-  });
+  it.each(["before it was trashed", "while trashed, as historical state"] as const)(
+    "a source whose text changed %s is recomputed when it is restored",
+    async (when) => {
+      const { type, item } = await typedSource();
+      await tick(item.id, propose({ name: "Buy milk" }));
+      const chokePoint = createChokePoint(pool);
+      if (when === "before it was trashed") {
+        await storeEdit(inboxId, item.id, { text: "Buy milk and eggs" });
+        await trashSource(item.id);
+        await tick(item.id, noCompute(deletedSource));
+        await restoreSource(item.id);
+      } else {
+        await runInTenant(getTenantZeroId(), () => chokePoint.softDeleteItem(inboxId, item.id));
+        await tick(item.id, noCompute(deletedSource));
+        // Historical persisted state only: the supported writer refuses edits to trashed items.
+        const changed = await pool.query(
+          `UPDATE items SET properties = jsonb_set(properties, '{text}', to_jsonb($1::text))
+           WHERE tenant_id = $2 AND database_id = $3 AND id = $4 AND deleted_at IS NOT NULL`,
+          ["Buy milk and eggs", getTenantZeroId(), inboxId, item.id],
+        );
+        expect(changed.rowCount).toBe(1);
+        await runInTenant(getTenantZeroId(), () => chokePoint.restoreItem(inboxId, item.id));
+      }
+      const computedFor: unknown[] = [];
+      await tick(item.id, async (input) => {
+        computedFor.push(input.sourceItem.properties.text);
+        return { properties: { name: "Buy milk and eggs" } };
+      });
+      expect(computedFor).toEqual(["Buy milk and eggs"]);
+      expect((await requireCard(item.id)).properties).toMatchObject({
+        status: "proposed",
+        invalidReason: null,
+        fingerprint: fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }),
+        proposal: {
+          entityKind: "database",
+          target: await databaseIdFor("tasks"),
+          properties: { name: "Buy milk and eggs" },
+        },
+      });
+    },
+  );
 
   it("a restored card whose stored envelope no longer validates goes to needsClarification, keeping its fingerprint", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Thought",
-        emoji: "💭",
-        processingMethod: "pageContent",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "A thought",
-        type: type.id,
-      }),
-    );
+    const { item } = await typedSource("A thought", PAGE_TYPE);
     // Any existing item is a valid page target until it is trashed, so the envelope's page can go missing.
-    const page = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "The page",
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => ({
-      target: page.id,
-      properties: { flavour: "paragraph", fields: { content: "A thought" } },
-    }));
-    const proposed = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposed!.properties.status).toBe("proposed");
-
+    const page = await createSource({ text: "The page" });
+    await tick(item.id, propose({ flavour: "paragraph", fields: { content: "A thought" } }, { target: page.id }));
+    const proposed = await requireCard(item.id);
+    expect(proposed.properties.status).toBe("proposed");
     await trashSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, page.id));
+    await tick(item.id, noCompute(deletedSource));
+    await trashSource(page.id);
     await restoreSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
-    });
-
-    const card = await findProposalForItem(pool, proposalsId, item.id);
-    expect(card!.properties).toMatchObject({
+    await tick(item.id, noCompute(unchangedSource));
+    expect((await requireCard(item.id)).properties).toMatchObject({
       status: "needsClarification",
       proposal: null,
       aiProposal: null,
       aiVersion: 2,
       invalidReason: null,
-      fingerprint: proposed!.properties.fingerprint,
+      fingerprint: proposed.properties.fingerprint,
     });
   });
 
   it("reopens a restored card as needsClarification when a relation target became occupied", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Project",
-        emoji: "📁",
-        processingMethod: "database",
-        targetDatabase: "projects",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Create project",
-        type: type.id,
-      }),
-    );
+    const { item } = await typedSource("Create project", { name: "Project", emoji: "📁", targetDatabase: "projects" });
     const api = createChokePoint(pool);
     const projectsId = await databaseIdFor("projects");
-    const tasksId = await databaseIdFor("tasks");
-    const task = await api.createItem({ databaseId: tasksId, properties: { name: "Task" } });
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Project" },
-      relations: { tasks: [task.id] },
-    }));
-    const proposed = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposed?.properties.status).toBe("proposed");
+    const task = await api.createItem({ databaseId: await databaseIdFor("tasks"), properties: { name: "Task" } });
+    await tick(item.id, propose({ name: "Project" }, { relations: { tasks: [task.id] } }));
+    const proposed = await requireCard(item.id);
+    expect(proposed.properties.status).toBe("proposed");
     await trashSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("Deleted source must not be computed");
-    });
+    await tick(item.id, noCompute("Deleted source must not be computed"));
     const other = await api.createItem({ databaseId: projectsId, properties: { name: "Other" } });
     const property = await withTransaction(pool, (client) =>
       propertiesStore.getPropertyByKey(client, projectsId, "tasks"),
     );
     if (!property) throw new Error("Missing Projects.tasks relation");
-    // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation (issue #1702).
+    // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation.
     await runInTenant(getTenantZeroId(), () =>
       api.createRelation({ relationPropertyId: property.id, callerItemId: other.id, targetItemId: task.id }),
     );
     await restoreSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("Unchanged source must not be recomputed");
-    });
-    const restored = await findProposalForItem(pool, proposalsId, item.id);
-    expect(restored?.properties).toMatchObject({
+    await tick(item.id, noCompute("Unchanged source must not be recomputed"));
+    expect((await requireCard(item.id)).properties).toMatchObject({
       status: "needsClarification",
       proposal: null,
       invalidReason: null,
-      fingerprint: proposed?.properties.fingerprint,
+      fingerprint: proposed.properties.fingerprint,
     });
     expect(await api.listItemRelations(other.id, property.id)).toMatchObject([{ targetItemId: task.id }]);
   });
 
   it("a restored source with no recognized type makes its invalid card needsClarification with no reason", async () => {
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => {
-      return { properties: {}, candidates: [] };
-    });
-
+    const item = await createSource();
+    await tick(item.id, unrecognized);
     await trashSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
-    });
-    expect((await findProposalForItem(pool, proposalsId, item.id))!.properties.invalidReason).toMatchObject({
-      code: "sourceDeleted",
-    });
-
+    await tick(item.id, noCompute(deletedSource));
+    expect((await requireCard(item.id)).properties.invalidReason).toMatchObject({ code: "sourceDeleted" });
     await restoreSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      return { properties: {}, candidates: [] };
-    });
-
-    const card = await findProposalForItem(pool, proposalsId, item.id);
-    expect(card!.properties).toMatchObject({ status: "needsClarification", invalidReason: null });
-    expect(card!.properties.history).toHaveLength(3);
+    await tick(item.id, unrecognized);
+    const card = await requireCard(item.id);
+    expect(card.properties).toMatchObject({ status: "needsClarification", invalidReason: null });
+    expect(card.properties.history).toHaveLength(3);
   });
+
+  async function invalidateCard(itemId: string, code?: string) {
+    const card = await requireCard(itemId);
+    const reason = { code, field: "target", itemId: await databaseIdFor("tasks"), label: "Tasks" };
+    await storeEdit(proposalsId, card.id, { status: "invalid", ...(code ? { invalidReason: reason } : {}) });
+    return card;
+  }
 
   it.each(["targetArchived", "targetDeleted", "legacy", "otherSource"] as const)(
     "source deletion supersedes %s invalidity and repeated deletion is a no-op",
     async (kind) => {
-      const { item } = await createTypedItem("Buy milk");
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const proposed = await findProposalForItem(pool, proposalsId, item.id);
-      const reason = {
-        code: kind === "legacy" ? "targetArchived" : kind === "otherSource" ? "sourceDeleted" : kind,
-        field: "target",
-        itemId: await databaseIdFor("tasks"),
-        label: "Tasks",
-      };
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: proposalsId,
-          itemId: proposed!.id,
-          propertiesPatch: { status: "invalid", ...(kind === "legacy" ? {} : { invalidReason: reason }) },
-        }),
+      const { item } = await typedSource();
+      await tick(item.id, propose({ name: "Buy milk" }));
+      const proposed = await invalidateCard(
+        item.id,
+        kind === "legacy" ? undefined : kind === "otherSource" ? "sourceDeleted" : kind,
       );
-      const before = await findProposalForItem(pool, proposalsId, item.id);
-
+      const before = await requireCard(item.id);
       await trashSource(item.id);
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called for a deleted source");
-      });
-      const deleted = await findProposalForItem(pool, proposalsId, item.id);
-      expect(deleted?.properties.status).toBe("invalid");
-      expect(deleted!.properties.invalidReason).toEqual({
-        code: "sourceDeleted",
-        field: "",
-        itemId: item.id,
-        label: "Buy milk",
-      });
-      const previousHistory = before?.properties.history;
-      const history = deleted?.properties.history;
-      if (!Array.isArray(previousHistory) || !Array.isArray(history)) throw new Error("expected proposal history");
-      expect(history).toHaveLength(previousHistory.length + 1);
-      expect(history.at(-1)).toMatchObject({ author: "ai", kind: "invalidated" });
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called for a deleted source");
-      });
-      expect(await findProposalForItem(pool, proposalsId, item.id)).toEqual(deleted);
+      await tick(item.id, noCompute(deletedSource));
+      const deleted = await requireCard(item.id);
+      expect(deleted.properties.status).toBe("invalid");
+      expect(deleted.properties.invalidReason).toEqual(sourceDeletedReason(item.id));
+      expect(historyOf(deleted)).toHaveLength(historyOf(before).length + 1);
+      expect(historyOf(deleted).at(-1)).toMatchObject({ author: "ai", kind: "invalidated" });
+      await tick(item.id, noCompute(deletedSource));
+      expect(await cardOf(item.id)).toEqual(deleted);
       await restoreSource(item.id);
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
+      await tick(item.id, noCompute(unchangedSource));
+      expect((await requireCard(item.id)).properties).toMatchObject({
+        status: "proposed",
+        invalidReason: null,
+        proposal: proposed.properties.proposal,
       });
-
-      const after = await findProposalForItem(pool, proposalsId, item.id);
-      expect(after!.properties.status).toBe("proposed");
-      expect(after!.properties.invalidReason).toBeNull();
-      expect(after!.properties.proposal).toEqual(proposed!.properties.proposal);
     },
   );
 
   it("a restore tick leaves targetArchived unchanged when no deletion transition occurred", async () => {
-    const { item } = await createTypedItem("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const proposed = await findProposalForItem(pool, proposalsId, item.id);
-    const reason = { code: "targetArchived", field: "target", itemId: await databaseIdFor("tasks"), label: "Tasks" };
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: proposalsId,
-        itemId: proposed!.id,
-        propertiesPatch: { status: "invalid", invalidReason: reason },
-      }),
-    );
-    const before = await findProposalForItem(pool, proposalsId, item.id);
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    await invalidateCard(item.id, "targetArchived");
+    const before = await cardOf(item.id);
     await trashSource(item.id);
     await restoreSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("unchanged source must not recompute");
-    });
-    expect(await findProposalForItem(pool, proposalsId, item.id)).toEqual(before);
+    await tick(item.id, noCompute("unchanged source must not recompute"));
+    expect(await cardOf(item.id)).toEqual(before);
   });
 
-  it.each(["confirmed", "rejected"] as const)(
-    "a %s card keeps its status and history when its source is deleted and restored",
-    async (status) => {
-      const { item } = await createTypedItem("Buy milk");
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const proposal = await findProposalForItem(pool, proposalsId, item.id);
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: proposalsId,
-          itemId: proposal!.id,
-          propertiesPatch: { status },
-        }),
-      );
-      const before = await findProposalForItem(pool, proposalsId, item.id);
-
-      await trashSource(item.id);
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called for a deleted source");
-      });
-      await restoreSource(item.id);
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called for a locked card");
-      });
-
-      const after = await findProposalForItem(pool, proposalsId, item.id);
-      expect(after!.properties).toEqual(before!.properties);
-    },
-  );
-
   it("a proposed envelope naming an unknown property on the target database fails validation and is stored as needsClarification, never as proposed", async () => {
-    const { item } = await createTypedItem("Buy milk");
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk", notAKey: "x" } }));
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.status).toBe("needsClarification");
-    expect(proposal!.properties.proposal).toBeNull();
-    expect(proposal!.properties.history).toHaveLength(1);
-
-    const { rows: taskRows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
-      await databaseIdFor("tasks"),
-    ]);
-    expect(taskRows[0].n).toBe(0);
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk", notAKey: "x" }));
+    const proposal = await requireCard(item.id);
+    expect(proposal.properties).toMatchObject({ status: "needsClarification", proposal: null });
+    expect(proposal.properties.history).toHaveLength(1);
+    expect(await countItems(await databaseIdFor("tasks"))).toBe(0);
   });
 
   it("a proposed envelope trying to set a relation property directly fails validation", async () => {
-    const { item } = await createTypedItem("Buy milk");
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk", project: "some-project-id" },
-    }));
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.status).toBe("needsClarification");
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk", project: "some-project-id" }));
+    expect((await requireCard(item.id)).properties.status).toBe("needsClarification");
   });
 
-  it("a pageContent envelope whose target is not an existing item fails validation", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Thought",
-        emoji: "💭",
-        processingMethod: "pageContent",
-      }),
+  it.each([
+    ["whose target is not an existing item", "missing", { flavour: "paragraph" }],
+    ["missing block content (flavour)", "type", { note: "no flavour here" }],
+    ["whose 'fields' is not a plain object", "type", { flavour: "paragraph", fields: "not an object" }],
+    ["whose 'children' is not an array of strings", "type", { flavour: "paragraph", children: [1, 2, 3] }],
+  ] as const)("a pageContent envelope %s fails validation", async (_, target, properties) => {
+    const { type, item } = await typedSource("A thought", PAGE_TYPE);
+    await tick(
+      item.id,
+      propose(properties, { target: target === "type" ? type.id : "00000000-0000-0000-0000-000000000000" }),
     );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "A thought",
-        type: type.id,
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      target: "00000000-0000-0000-0000-000000000000",
-      properties: { flavour: "paragraph" },
-    }));
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.status).toBe("needsClarification");
-  });
-
-  it("a pageContent envelope missing block content (flavour) fails validation", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Thought",
-        emoji: "💭",
-        processingMethod: "pageContent",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "A thought",
-        type: type.id,
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      target: type.id,
-      properties: { note: "no flavour here" },
-    }));
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.status).toBe("needsClarification");
-  });
-
-  it("a pageContent envelope whose 'fields' is not a plain object fails validation (issue #105 review fix)", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Thought",
-        emoji: "💭",
-        processingMethod: "pageContent",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "A thought",
-        type: type.id,
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      target: type.id,
-      properties: { flavour: "paragraph", fields: "not an object" },
-    }));
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.status).toBe("needsClarification");
-  });
-
-  it("a pageContent envelope whose 'children' is not an array of strings fails validation (issue #105 review fix)", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Thought",
-        emoji: "💭",
-        processingMethod: "pageContent",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "A thought",
-        type: type.id,
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      target: type.id,
-      properties: { flavour: "paragraph", children: [1, 2, 3] },
-    }));
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.status).toBe("needsClarification");
+    expect((await requireCard(item.id)).properties.status).toBe("needsClarification");
   });
 
   it("a repeated tick with the same invalid envelope does not call computeProposal again", async () => {
-    const { item } = await createTypedItem("Buy milk");
-
-    let calls = 0;
-    const compute: ComputeSemprecProposalFn = async () => {
-      calls++;
-      return { properties: { notAKey: "x" } };
-    };
-    await runTick(pool, databaseIds, item.id, compute);
-    await runTick(pool, databaseIds, item.id, compute);
-    expect(calls).toBe(1);
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.status).toBe("needsClarification");
-    expect(proposal!.properties.history).toHaveLength(1);
+    const { item } = await typedSource();
+    const counter = counted({ properties: { notAKey: "x" } });
+    await tick(item.id, counter.compute);
+    await tick(item.id, counter.compute);
+    expect(counter.calls).toBe(1);
+    const proposal = await requireCard(item.id);
+    expect(proposal.properties.status).toBe("needsClarification");
+    expect(proposal.properties.history).toHaveLength(1);
   });
 });
 
-describe("semprec.tick re-checks the proposal under lock before writing it (issue #662)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
-  let databaseIds: TickDatabaseIds;
-
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    inboxId = await databaseIdFor("inbox");
-    typesId = await databaseIdFor("inboxItemTypes");
-    proposalsId = await databaseIdFor("processingProposals");
-    databaseIds = {
-      inboxDatabaseId: inboxId,
-      inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
-  });
+describe("semprec.tick re-checks the proposal under lock before writing it", () => {
+  beforeEach(resetTickDatabases);
 
   /** A typed Inbox item with one `proposed` card, then a text edit so the next tick recomputes it. */
   async function seedProposedCardWithChangedSource() {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const { rows } = await pool.query<{ id: string }>(
-      "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
-      [proposalsId],
-    );
-    const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, rows[0]!.id));
-    expect(card!.properties.status).toBe("proposed");
-
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: inboxId,
-        itemId: item.id,
-        propertiesPatch: { text: "Buy milk and eggs" },
-      }),
-    );
-    return { item, card: card! };
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const card = await requireCard(item.id);
+    expect(card.properties.status).toBe("proposed");
+    await storeEdit(inboxId, item.id, { text: "Buy milk and eggs" });
+    return { item, card };
   }
 
-  async function readCard(cardId: string) {
-    return withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, cardId));
-  }
+  const readCard = async (cardId: string) =>
+    (await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, cardId)))!;
 
   /**
-   * Wraps `pool` so that `beforeLock` runs, and commits on its own connection, right before the
-   * tick's first `SELECT ... FOR UPDATE` on `cardId` — the gap between the tick's unlocked
-   * snapshot of the card and its locked re-check, on paths that call no `computeProposal`.
+   * Wraps `pool` so that `beforeLock` runs and commits on its own connection right before the tick's first
+   * `SELECT ... FOR UPDATE` on `cardId`: the gap between the tick's unlocked snapshot and its locked
+   * re-check, on paths that call no `computeProposal`.
    */
   function poolRunningBeforeCardLock(cardId: string, beforeLock: () => Promise<void>): Pool {
     let fired = false;
-    return new Proxy(pool, {
-      get(t, prop, receiver) {
-        if (prop === "connect") {
-          return async (...args: unknown[]) => {
-            const client = await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args);
-            return new Proxy(client, {
-              get(clientTarget, clientProp, clientReceiver) {
-                if (clientProp === "query") {
-                  return async (...queryArgs: unknown[]) => {
-                    const [text, params] = queryArgs as [unknown, unknown];
-                    if (
-                      !fired &&
-                      typeof text === "string" &&
-                      text.includes("FOR UPDATE") &&
-                      Array.isArray(params) &&
-                      params.includes(cardId)
-                    ) {
-                      fired = true;
-                      await beforeLock();
-                    }
-                    return (clientTarget.query as (...a: unknown[]) => unknown)(...queryArgs);
-                  };
-                }
-                return Reflect.get(clientTarget, clientProp, clientReceiver);
-              },
-            });
-          };
+    return interceptConnect(pool, (client) =>
+      interceptQuery(client, async (args, original) => {
+        const [text, params] = args;
+        if (
+          !fired &&
+          typeof text === "string" &&
+          text.includes("FOR UPDATE") &&
+          Array.isArray(params) &&
+          params.includes(cardId)
+        ) {
+          fired = true;
+          await beforeLock();
         }
-        return Reflect.get(t, prop, receiver);
-      },
-    });
-  }
-
-  async function rejectCard(cardId: string): Promise<string> {
-    const rejected = await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: proposalsId,
-        itemId: cardId,
-        propertiesPatch: { status: "rejected" },
+        return original(...args);
       }),
     );
-    return rejected.updatedAt;
   }
 
-  async function softDeleteCard(cardId: string): Promise<string> {
-    const deleted = await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, cardId));
-    return deleted!.updatedAt;
-  }
-
-  async function softDeleteSource(itemId: string): Promise<void> {
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
-  }
+  const rejectCard = async (cardId: string) => (await storeEdit(proposalsId, cardId, { status: "rejected" })).updatedAt;
+  const softDeleteCard = async (cardId: string) =>
+    (await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, cardId)))!.updatedAt;
 
   /** A computed envelope naming a property the `tasks` database lacks, so the tick lands in `needsClarification`. */
   const invalidEnvelope = { properties: { noSuchProperty: "x" } };
+  const recomputed = { properties: { name: "Buy milk and eggs" } };
+
+  it.each([
+    ["needsClarification", invalidEnvelope],
+    ["proposed", recomputed],
+  ] as const)(
+    "%s path: a card soft-deleted while the tick computes its proposal is skipped without writing or throwing",
+    async (_, result) => {
+      const { item, card } = await seedProposedCardWithChangedSource();
+      let deletedVersion: string | undefined;
+      await tick(item.id, async () => {
+        deletedVersion = await softDeleteCard(card.id);
+        return result;
+      });
+      const after = await readCard(card.id);
+      expect(after.deletedAt).not.toBeNull();
+      expect(after.updatedAt).toBe(deletedVersion);
+      expect(after.properties).toEqual(card.properties);
+      expect(await countItems(proposalsId)).toBe(1);
+    },
+  );
 
   it("needsClarification path: a reject committed while the tick computes its proposal wins — the card stays rejected and untouched", async () => {
     const { item, card } = await seedProposedCardWithChangedSource();
-
     let rejectedVersion: string | undefined;
-    await runTick(pool, databaseIds, item.id, async () => {
+    await tick(item.id, async () => {
       rejectedVersion = await rejectCard(card.id);
       return invalidEnvelope;
     });
-
     const after = await readCard(card.id);
-    expect(after!.updatedAt).toBe(rejectedVersion);
-    expect(after!.properties).toEqual({ ...card.properties, status: "rejected" });
+    expect(after.updatedAt).toBe(rejectedVersion);
+    expect(after.properties).toEqual({ ...card.properties, status: "rejected" });
   });
 
-  it("needsClarification path: a card soft-deleted while the tick computes its proposal is skipped without writing or throwing", async () => {
+  it.each(["reject", "soft-delete"] as const)(
+    "deleted-source path: a %s committed before the tick locks the card wins — the card is not invalidated",
+    async (change) => {
+      const { item, card } = await seedProposedCardWithChangedSource();
+      await trashSource(item.id);
+      let version: string | undefined;
+      const tickPool = poolRunningBeforeCardLock(card.id, async () => {
+        version = change === "reject" ? await rejectCard(card.id) : await softDeleteCard(card.id);
+      });
+      await tick(item.id, async () => expect.unreachable("a deleted source is never recomputed"), tickPool);
+      expect(version).toBeDefined();
+      const after = await readCard(card.id);
+      expect(after.updatedAt).toBe(version);
+      if (change === "reject") expect(after.properties).toEqual({ ...card.properties, status: "rejected" });
+      else {
+        expect(after.deletedAt).not.toBeNull();
+        expect(after.properties).toEqual(card.properties);
+      }
+    },
+  );
+
+  it("restored-source path: a reject committed before the tick locks the card wins — the card is not reopened", async () => {
     const { item, card } = await seedProposedCardWithChangedSource();
-
-    let deletedVersion: string | undefined;
-    await runTick(pool, databaseIds, item.id, async () => {
-      deletedVersion = await softDeleteCard(card.id);
-      return invalidEnvelope;
-    });
-
-    const after = await readCard(card.id);
-    expect(after!.deletedAt).not.toBeNull();
-    expect(after!.updatedAt).toBe(deletedVersion);
-    expect(after!.properties).toEqual(card.properties);
-  });
-
-  it("deleted-source path: a reject committed before the tick locks the card wins — the card is not invalidated", async () => {
-    const { item, card } = await seedProposedCardWithChangedSource();
-    await softDeleteSource(item.id);
-
-    let rejectedVersion: string | undefined;
-    const tickPool = poolRunningBeforeCardLock(card.id, async () => {
-      rejectedVersion = await rejectCard(card.id);
-    });
-    await runTick(tickPool, databaseIds, item.id, async () =>
-      expect.unreachable("a deleted source is never recomputed"),
-    );
-
-    expect(rejectedVersion).toBeDefined();
-    const after = await readCard(card.id);
-    expect(after!.updatedAt).toBe(rejectedVersion);
-    expect(after!.properties).toEqual({ ...card.properties, status: "rejected" });
-  });
-
-  it("restored-source path: a reject committed before the tick locks the card wins — the card is not reopened (issue #1604)", async () => {
-    const { item, card } = await seedProposedCardWithChangedSource();
-    await softDeleteSource(item.id);
-    await runTick(pool, databaseIds, item.id, async () => expect.unreachable("a deleted source is never recomputed"));
-    await withTransaction(pool, (client) => itemsStore.restoreItem(client, inboxId, item.id));
+    await trashSource(item.id);
+    await tick(item.id, async () => expect.unreachable("a deleted source is never recomputed"));
+    await restoreSource(item.id);
     const invalid = await readCard(card.id);
-    expect(invalid!.properties.status).toBe("invalid");
-
+    expect(invalid.properties.status).toBe("invalid");
     let rejectedVersion: string | undefined;
     const tickPool = poolRunningBeforeCardLock(card.id, async () => {
       rejectedVersion = await rejectCard(card.id);
     });
-    await runTick(tickPool, databaseIds, item.id, async () =>
-      expect.unreachable("a card that lost the lock is not recomputed"),
-    );
-
+    await tick(item.id, async () => expect.unreachable("a card that lost the lock is not recomputed"), tickPool);
     expect(rejectedVersion).toBeDefined();
     const after = await readCard(card.id);
-    expect(after!.updatedAt).toBe(rejectedVersion);
-    expect(after!.properties).toEqual({ ...invalid!.properties, status: "rejected" });
-  });
-
-  it("deleted-source path: a card soft-deleted before the tick locks it is skipped without writing or throwing", async () => {
-    const { item, card } = await seedProposedCardWithChangedSource();
-    await softDeleteSource(item.id);
-
-    let deletedVersion: string | undefined;
-    const tickPool = poolRunningBeforeCardLock(card.id, async () => {
-      deletedVersion = await softDeleteCard(card.id);
-    });
-    await runTick(tickPool, databaseIds, item.id, async () =>
-      expect.unreachable("a deleted source is never recomputed"),
-    );
-
-    expect(deletedVersion).toBeDefined();
-    const after = await readCard(card.id);
-    expect(after!.deletedAt).not.toBeNull();
-    expect(after!.updatedAt).toBe(deletedVersion);
-    expect(after!.properties).toEqual(card.properties);
+    expect(after.updatedAt).toBe(rejectedVersion);
+    expect(after.properties).toEqual({ ...invalid.properties, status: "rejected" });
   });
 
   it("deleted-source path: a lock failure other than a serialization conflict propagates and writes nothing", async () => {
     const { item, card } = await seedProposedCardWithChangedSource();
-    await softDeleteSource(item.id);
-
+    await trashSource(item.id);
     const tickPool = poolRunningBeforeCardLock(card.id, async () => {
       throw new Error("connection lost while locking the card");
     });
     await expect(
-      runTick(tickPool, databaseIds, item.id, async () => expect.unreachable("a deleted source is never recomputed")),
+      tick(item.id, async () => expect.unreachable("a deleted source is never recomputed"), tickPool),
     ).rejects.toThrow("connection lost while locking the card");
-
     const after = await readCard(card.id);
-    expect(after!.updatedAt).toBe(card.updatedAt);
-    expect(after!.properties).toEqual(card.properties);
+    expect(after.updatedAt).toBe(card.updatedAt);
+    expect(after.properties).toEqual(card.properties);
   });
 
   it("a confirm committed while the tick computes its proposal wins — the card stays confirmed and untouched", async () => {
@@ -3305,180 +2102,173 @@ describe("semprec.tick re-checks the proposal under lock before writing it (issu
         await relationsStore.deleteItemRelation(client, edge.relationDefinitionId, edge.itemA, edge.itemB);
       }
     });
-
-    let calls = 0;
-    await runTick(pool, databaseIds, item.id, async () => {
-      calls++;
+    const counter = counted(recomputed);
+    await tick(item.id, async (input) => {
       await withTransaction(pool, (client) =>
         confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id),
       );
-      return { properties: { name: "Buy milk and eggs" } };
+      return counter.compute(input);
     });
-    expect(calls).toBe(1);
-
+    expect(counter.calls).toBe(1);
     const after = await readCard(card.id);
-    expect(after!.properties.status).toBe("confirmed");
-    expect(after!.properties.proposal).toEqual(card.properties.proposal);
-    expect(after!.properties.fingerprint).toBe(card.properties.fingerprint);
-    const messages = (after!.properties.history as Array<{ message: string }>).map((entry) => entry.message);
-    expect(messages).not.toContain("Revised the proposal after the source item changed.");
-  });
-
-  it("a card soft-deleted while the tick computes its proposal is skipped without writing or throwing", async () => {
-    const { item, card } = await seedProposedCardWithChangedSource();
-
-    let deletedVersion: string | undefined;
-    await runTick(pool, databaseIds, item.id, async () => {
-      const deleted = await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, card.id));
-      deletedVersion = deleted!.updatedAt;
-      return { properties: { name: "Buy milk and eggs" } };
+    expect(after.properties).toMatchObject({
+      status: "confirmed",
+      proposal: card.properties.proposal,
+      fingerprint: card.properties.fingerprint,
     });
-
-    const after = await readCard(card.id);
-    expect(after!.deletedAt).not.toBeNull();
-    expect(after!.updatedAt).toBe(deletedVersion);
-    expect(after!.properties).toEqual(card.properties);
-    const { rows } = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
-      proposalsId,
-    ]);
-    expect(rows[0]!.n).toBe(1);
+    expect(historyOf(after).map((entry) => entry.message)).not.toContain(
+      "Revised the proposal after the source item changed.",
+    );
   });
 });
 
-describe("semprec.tick brackets computeProposal outside any transaction (issue #676)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
+type Overlap = ReturnType<typeof ownOverlap>;
 
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    inboxId = await databaseIdFor("inbox");
-    typesId = await databaseIdFor("inboxItemTypes");
-    proposalsId = await databaseIdFor("processingProposals");
-  });
-
-  async function createTypedItem(text: string) {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text,
-        type: type.id,
-      }),
-    );
-    return { type, item };
-  }
-
-  it("holds no transaction and no pooled connection during the computeProposal call", async () => {
-    const { item } = await createTypedItem("Buy milk");
-
-    // A dedicated single-connection pool: if the tick still held its transaction's one
-    // connection open across `computeProposal`, this query — issued from inside the fake
-    // while it runs — would have no connection to acquire and would never resolve.
-    const tickPool = getTestPool({ max: 1 });
+/** Runs `body` with an owned overlap on `runtime`, then settles it; body and cleanup failures are both kept. */
+async function withOverlap(runtime: Pool, cancel: () => void, body: (owned: Overlap) => Promise<void>) {
+  const owned = ownOverlap(runtime, cancel);
+  let failure: { error: unknown } | undefined;
+  try {
+    await body(owned);
+  } catch (error) {
+    failure = { error };
+  } finally {
+    cancel();
     try {
-      const handler = createSemprecTickAction(tickPool, async (input) => {
-        await Promise.race([
-          tickPool.query("SELECT 1"),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("computeProposal: no free pooled connection")), 2000),
-          ),
-        ]);
-        expect(input.entityKind).toBe("database");
-        return { properties: { name: "Buy milk" } };
-      });
-      await handler(
-        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-        { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-      );
-    } finally {
-      await tickPool.end();
+      await owned.finish(failure !== undefined);
+    } catch (error) {
+      failure = combineOverlapFailure(failure, error);
     }
+  }
+  if (failure) throw failure.error;
+}
 
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal).toBeTruthy();
-    expect(proposal!.properties.status).toBe("proposed");
-  }, 10000);
-
-  it("writes nothing for a stale envelope when the source changes during computeProposal, and the next tick produces the card for the new fingerprint", async () => {
-    const { type, item } = await createTypedItem("Buy milk");
-
-    const handler = createSemprecTickAction(pool, async () => {
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: inboxId,
-          itemId: item.id,
-          propertiesPatch: { text: "Buy milk and eggs" },
-        }),
-      );
-      return { properties: { name: "Buy milk" } };
-    });
-    await handler(
-      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-      { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+/** Polls until `holder` blocks `competitor`, failing early if a participant settles first. */
+async function expectBlocked(
+  owned: Overlap,
+  runtime: Pool,
+  holder: number | undefined,
+  competitor: number | undefined,
+  ...actors: Promise<unknown>[]
+) {
+  let blocked = false;
+  for (let n = 0; n < 100 && !blocked; n++) {
+    const result = await owned.wait(
+      owned.run(() =>
+        runInTenant(getTenantZeroId(), () =>
+          runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
+            holder,
+            competitor,
+          ]),
+        ),
+      ),
+      ...actors,
     );
+    blocked = result.rows[0]?.blocked === true;
+    if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  expect(blocked).toBe(true);
+}
 
-    expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
+const ownedCard = (owned: Overlap, runtime: Pool, itemId: string) =>
+  boundedBarrier(
+    owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, itemId))),
+  );
 
-    let calls = 0;
-    const handlerAgain = createSemprecTickAction(pool, async () => {
-      calls++;
-      return { properties: { name: "Buy milk and eggs" } };
-    });
-    await handlerAgain(
-      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-      { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-    );
-    expect(calls).toBe(1);
+/** The tick handler called directly, as the heartbeat calls it. */
+const directTick = (tickPool: Pool, itemId: string, compute: ComputeSemprecProposalFn, heartbeatId = "hb") =>
+  createSemprecTickAction(tickPool, compute)(databaseIds, { heartbeatId, projectItemId: "proj", itemId });
 
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal).toBeTruthy();
-    expect(proposal!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
-    expect(proposal!.properties.proposal).toEqual({
-      entityKind: "database",
-      target: await databaseIdFor("tasks"),
-      properties: { name: "Buy milk and eggs" },
-    });
-  });
+function expectRuntimeSettled(runtime: Pool) {
+  expect(runtime.ended).toBe(true);
+  expect(runtime.totalCount).toBe(0);
+  expect(runtime.waitingCount).toBe(0);
+  expect(runtime.listenerCount("acquire")).toBe(0);
+  expect(runtime.listenerCount("release")).toBe(0);
+}
+
+function expectCombined(failure: { error: unknown } | undefined, first: unknown): AggregateError {
+  const combined = failure?.error;
+  if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure", { cause: combined });
+  expect(combined.cause).toBe(first);
+  expect(combined.errors).toHaveLength(2);
+  expect(combined.errors[0]).toBe(first);
+  const cleanup: unknown = combined.errors[1];
+  if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure", { cause: cleanup });
+  return cleanup;
+}
+
+/** Records the `error` events of each checked-out client of `runtime`, tagged with its overlap generation. */
+function observeCheckoutErrors(runtime: Pool) {
+  const generations = new Map<PoolClient, object>();
+  const cancellationRequests = new Set<object>();
+  const diagnostics: Array<{ error: Error; cancelled: boolean }> = [];
+  const observing = new Map<PoolClient, (error: Error) => void>();
+  const onAcquire = (client: PoolClient) => {
+    const generation = generations.get(client);
+    if (!generation) throw new Error("Missing client generation");
+    const onError = (error: Error) => diagnostics.push({ error, cancelled: cancellationRequests.has(generation) });
+    observing.set(client, onError);
+    client.on("error", onError);
+  };
+  const onRelease = (_reason: unknown, client: PoolClient) => {
+    const onError = observing.get(client);
+    if (onError) client.removeListener("error", onError);
+    observing.delete(client);
+    generations.delete(client);
+  };
+  return {
+    generations,
+    cancellationRequests,
+    onCancellation: (_client: PoolClient, generation: object) => cancellationRequests.add(generation),
+    onGeneration: (client: PoolClient, generation: object) => generations.set(client, generation),
+    attach: () => {
+      runtime.on("acquire", onAcquire);
+      runtime.on("release", onRelease);
+    },
+    /** Detaches and checks the cleanup aggregate: the cancel error, every diagnostic, then the operation error. */
+    detachAndExpect: (cleanup: AggregateError, cleanupError: unknown, operationError: unknown) => {
+      runtime.removeListener("acquire", onAcquire);
+      runtime.removeListener("release", onRelease);
+      expect(observing.size).toBe(0);
+      for (const diagnostic of diagnostics) {
+        expect(diagnostic.cancelled).toBe(true);
+        expect(diagnostic.error).toBe(operationError);
+      }
+      const expected = [cleanupError, ...diagnostics.map((entry) => entry.error), operationError];
+      expect(cleanup.errors).toHaveLength(expected.length);
+      for (const [index, error] of expected.entries()) expect(cleanup.errors[index]).toBe(error);
+      expect(cleanup.cause).toBe(cleanupError);
+    },
+  };
+}
+
+describe("the owned-overlap test harness", () => {
+  beforeEach(resetTickDatabases);
 
   it.each([undefined, { marker: "late" }])(
     "retains a late participant failure and consumes only the asserted participant %#",
     async (late) => {
-      const { item } = await createTypedItem("Tracked overlap");
+      const { item } = await typedSource("Tracked overlap");
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      let release = () => {};
-      let started = () => {};
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const ready = new Promise<void>((resolve) => {
-        started = resolve;
-      });
-      const owned = ownOverlap(runtime, release);
+      const held = barrier();
+      const competing = barrier();
+      const owned = ownOverlap(runtime, held.release);
       const expected = { marker: "asserted" };
       const body = new Error("forced observation failure");
       let lateSettled = false;
       let holderPid: number | undefined;
       let competitorPid: number | undefined;
       let competitorError: { value: unknown } | undefined;
-      let competitorStarted = () => {};
-      const competing = new Promise<void>((resolve) => {
-        competitorStarted = resolve;
-      });
       let failure: { error: unknown } | undefined;
+      const editSource = (text: string, before: (client: PoolClient) => Promise<void>, after?: () => Promise<void>) =>
+        owned.run(() =>
+          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+            await before(client);
+            await updateItemWithClient(client, { databaseId: inboxId, itemId: item.id, propertiesPatch: { text } });
+            await after?.();
+          }),
+        );
       try {
         const negative = owned.run(() =>
           withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
@@ -3488,70 +2278,33 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         );
         await expect(negative).rejects.toBe(expected);
         owned.consume(negative, expected);
-        const participant = owned.run(() =>
-          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            if (!pid) throw new Error("Missing owned PID");
-            holderPid = pid;
-            await updateItemWithClient(client, {
-              databaseId: inboxId,
-              itemId: item.id,
-              propertiesPatch: { text: "Held" },
-            });
-            started();
-            await gate;
+        const participant = editSource(
+          "Held",
+          async (client) => {
+            holderPid = await pidOf(client);
+          },
+          async () => {
+            held.reached();
+            await held.gate;
             rethrowOverlap(late);
-          }),
+          },
         );
         void participant.then(
-          () => {
-            lateSettled = true;
-          },
-          () => {
-            lateSettled = true;
-          },
+          () => (lateSettled = true),
+          () => (lateSettled = true),
         );
-        await owned.wait(ready, participant);
-        const competitor = owned.run(() =>
-          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-            competitorPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            competitorStarted();
-            await updateItemWithClient(client, {
-              databaseId: inboxId,
-              itemId: item.id,
-              propertiesPatch: { text: "Competing" },
-            });
-          }),
-        );
+        await owned.wait(held.ready, participant);
+        const competitor = editSource("Competing", async (client) => {
+          competitorPid = await pidOf(client);
+          competing.reached();
+        });
         void competitor.catch((error: unknown) => {
           competitorError = { value: error };
         });
-        await owned.wait(competing, participant, competitor);
-        if (!holderPid || !competitorPid) throw new Error("Missing participant PID");
-        await owned.wait(
-          owned.run(() =>
-            expect
-              .poll(
-                async () => {
-                  const rows = await pool.query<{ blocked: boolean }>(
-                    "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
-                    [holderPid, competitorPid],
-                  );
-                  return rows.rows[0]?.blocked;
-                },
-                { timeout: 5000 },
-              )
-              .toBe(true),
-          ),
-          participant,
-          competitor,
-        );
-        try {
-          throw body;
-        } catch (error) {
-          failure = { error };
-        }
-        release();
+        await owned.wait(competing.ready, participant, competitor);
+        await expectBlocked(owned, runtime, holderPid, competitorPid, participant, competitor);
+        failure = { error: body };
+        held.release();
         await Promise.allSettled([participant, competitor]);
       } catch (error) {
         failure = { error };
@@ -3562,27 +2315,14 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           failure = combineOverlapFailure(failure, error);
         }
       }
-      if (failure && (!(failure.error instanceof AggregateError) || failure.error.cause !== body)) {
-        rethrowOverlap(failure.error);
-      }
-      const combined = failure?.error;
-      expect(combined).toBeInstanceOf(AggregateError);
-      if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
-      expect(combined.cause).toBe(body);
-      expect(combined.errors[0]).toBe(body);
-      const cleanup: unknown = combined.errors[1];
-      expect(cleanup).toBeInstanceOf(AggregateError);
-      if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
-      expect(combined.errors).toHaveLength(2);
+      if (failure && (!(failure.error instanceof AggregateError) || failure.error.cause !== body)) throw failure.error;
+      const cleanup = expectCombined(failure, body);
       expect(cleanup.errors).toHaveLength(1);
       expect(cleanup.errors[0]).toBe(late);
       expect(cleanup.cause).toBe(late);
       expect(competitorError).toBeUndefined();
       expect(lateSettled).toBe(true);
-      expect(runtime.ended).toBe(true);
-      expect(runtime.totalCount).toBe(0);
-      expect(runtime.listenerCount("acquire")).toBe(0);
-      expect(runtime.listenerCount("release")).toBe(0);
+      expectRuntimeSettled(runtime);
     },
     20000,
   );
@@ -3590,7 +2330,6 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
   it("settles ownership when the first participant has the wrong rejection", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     const wrong = { marker: "wrong" };
-    const expected = { marker: "expected" };
     const cleanupError = new Error("controlled cleanup failure");
     const owned = ownOverlap(runtime, () => {
       throw cleanupError;
@@ -3605,12 +2344,11 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         }),
       );
       try {
-        await expect(negative).rejects.toBe(expected);
+        await expect(negative).rejects.toBe({ marker: "expected" });
       } catch (error) {
         assertion = { error };
         throw error;
       }
-      owned.consume(negative, expected);
     } catch (error) {
       failure = { error };
     } finally {
@@ -3621,82 +2359,39 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       }
     }
     if (!assertion) throw new Error("Expected assertion failure");
-    const combined = failure?.error;
-    expect(combined).toBeInstanceOf(AggregateError);
-    if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
-    expect(combined.errors).toHaveLength(2);
-    expect(combined.errors[0]).toBe(assertion.error);
-    expect(combined.cause).toBe(assertion.error);
-    const cleanup: unknown = combined.errors[1];
-    expect(cleanup).toBeInstanceOf(AggregateError);
-    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
+    const cleanup = expectCombined(failure, assertion.error);
     expect(cleanup.errors).toHaveLength(2);
     expect(cleanup.errors[0]).toBe(cleanupError);
     expect(cleanup.errors[1]).toBe(wrong);
     expect(cleanup.cause).toBe(cleanupError);
-    expect(runtime.ended).toBe(true);
-    expect(runtime.totalCount).toBe(0);
-    expect(runtime.waitingCount).toBe(0);
-    expect(runtime.listenerCount("acquire")).toBe(0);
-    expect(runtime.listenerCount("release")).toBe(0);
+    expectRuntimeSettled(runtime);
   }, 20000);
 
   it("preserves an early checkout failure together with cleanup failure", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     const actorError = new Error("pre-verify checkout failure");
     const cleanupError = new Error("cleanup failure");
-    let release = () => {};
-    const signal = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const signal = barrier();
     runtime.options.verify = (_client, done) => done(actorError);
-    const generations = new Map<PoolClient, object>();
-    const cancellationRequests = new Set<object>();
+    const observer = observeCheckoutErrors(runtime);
     const owned = ownOverlap(
       runtime,
       () => {
-        release();
+        signal.release();
         throw cleanupError;
       },
-      (_client, generation) => {
-        cancellationRequests.add(generation);
-      },
-      (client, generation) => {
-        generations.set(client, generation);
-      },
+      observer.onCancellation,
+      observer.onGeneration,
     );
     let operationFailure: { value: unknown } | undefined;
-    const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
-      [];
-    const observing = new Map<PoolClient, (error: Error) => void>();
-    const observeAcquire = (client: PoolClient) => {
-      const generation = generations.get(client);
-      if (!generation) throw new Error("Missing client generation");
-      const onError = (error: Error) =>
-        observedDiagnostics.push({
-          error,
-          generation,
-          cancelled: cancellationRequests.has(generation),
-          operation: "checkout",
-        });
-      observing.set(client, onError);
-      client.on("error", onError);
-    };
-    const observeRelease = (_reason: unknown, client: PoolClient) => {
-      const onError = observing.get(client);
-      if (onError) client.removeListener("error", onError);
-      observing.delete(client);
-      generations.delete(client);
-    };
-    runtime.on("acquire", observeAcquire);
-    runtime.on("release", observeRelease);
+    observer.attach();
     let failure: { error: unknown } | undefined;
     try {
       const actor = owned.run(() => withTenantTransaction(runtime, getTenantZeroId(), async () => {}));
       void actor.catch((error: unknown) => {
         operationFailure = { value: error };
       });
-      await owned.wait(signal, actor);
+      await owned.wait(signal.gate, actor);
     } catch (error) {
       failure = { error };
     } finally {
@@ -3706,35 +2401,11 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         failure = combineOverlapFailure(failure, error);
       }
     }
-    runtime.removeListener("acquire", observeAcquire);
-    runtime.removeListener("release", observeRelease);
-    expect(observing.size).toBe(0);
-    const observed = failure?.error;
-    expect(observed).toBeInstanceOf(AggregateError);
-    if (!(observed instanceof AggregateError)) throw new Error("Expected combined error");
-    expect(observed.cause).toBe(actorError);
-    expect(observed.errors[0]).toBe(actorError);
-    expect(observed.errors).toHaveLength(2);
-    const cleanup: unknown = observed.errors[1];
-    expect(cleanup).toBeInstanceOf(AggregateError);
-    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
-    expect(operationFailure).toBeDefined();
+    const cleanup = expectCombined(failure, actorError);
     if (!operationFailure) throw new Error("Missing operation failure");
     expect(operationFailure.value).toBe(actorError);
-    for (const diagnostic of observedDiagnostics) {
-      expect(diagnostic.cancelled).toBe(true);
-      expect(diagnostic.operation).toBe("checkout");
-      expect(diagnostic.error).toBe(operationFailure.value);
-    }
-    const expectedErrors = [cleanupError, ...observedDiagnostics.map((entry) => entry.error), operationFailure.value];
-    expect(cleanup.errors).toHaveLength(expectedErrors.length);
-    for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
-    expect(cleanup.cause).toBe(cleanupError);
-    expect(runtime.ended).toBe(true);
-    expect(runtime.totalCount).toBe(0);
-    expect(runtime.waitingCount).toBe(0);
-    expect(runtime.listenerCount("acquire")).toBe(0);
-    expect(runtime.listenerCount("release")).toBe(0);
+    observer.detachAndExpect(cleanup, cleanupError, operationFailure.value);
+    expectRuntimeSettled(runtime);
   }, 20000);
 
   it("refuses overlap success while a runtime client remains checked out", async () => {
@@ -3754,94 +2425,56 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
       }
     }
     if (bodyFailure)
-      rethrowOverlap(
-        cleanupFailure === undefined ? bodyFailure.error : combineOverlapFailure(bodyFailure, cleanupFailure).error,
-      );
+      throw cleanupFailure === undefined ? bodyFailure.error : combineOverlapFailure(bodyFailure, cleanupFailure).error;
     expect(cleanupFailure).toMatchObject({ message: "Overlap cleanup failed" });
-    expect(runtime.ended).toBe(true);
-    expect(runtime.totalCount).toBe(0);
-    expect(runtime.listenerCount("acquire")).toBe(0);
-    expect(runtime.listenerCount("release")).toBe(0);
+    expectRuntimeSettled(runtime);
   }, 20000);
 
   it("settles late overlap checkout and preserves a simultaneous cleanup failure", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const verifying = barrier();
     let deliver = () => {};
-    let ready = () => {};
-    const verifying = new Promise<void>((resolve) => {
-      ready = resolve;
-    });
     const bodyError = new Error("body failure");
     const cleanupError = new Error("cleanup failure");
     let ran = false;
     let settled = false;
     let checkoutGeneration: object | undefined;
+    const observer = observeCheckoutErrors(runtime);
     runtime.options.verify = (client, done) => {
-      checkoutGeneration = generations.get(client);
+      checkoutGeneration = observer.generations.get(client);
       deliver = () => queueMicrotask(() => done());
-      ready();
+      verifying.reached();
     };
-    const generations = new Map<PoolClient, object>();
-    const cancellationRequests = new Set<object>();
     const owned = ownOverlap(
       runtime,
       () => {
         deliver();
         throw cleanupError;
       },
-      (_client, generation) => {
-        cancellationRequests.add(generation);
-      },
-      (client, generation) => {
-        generations.set(client, generation);
-      },
+      observer.onCancellation,
+      observer.onGeneration,
     );
+    let operationFailure: { value: unknown; generation: object | undefined; cancelled: boolean } | undefined;
     const operation = owned.run(() =>
       withTenantTransaction(runtime, getTenantZeroId(), async () => {
         ran = true;
       }),
     );
     void operation.then(
-      () => {
-        settled = true;
-      },
+      () => (settled = true),
       (error: unknown) => {
         operationFailure = {
           value: error,
           generation: checkoutGeneration,
-          cancelled: checkoutGeneration !== undefined && cancellationRequests.has(checkoutGeneration),
+          cancelled: checkoutGeneration !== undefined && observer.cancellationRequests.has(checkoutGeneration),
         };
         settled = true;
       },
     );
-    let operationFailure: { value: unknown; generation: object | undefined; cancelled: boolean } | undefined;
-    const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
-      [];
-    const observing = new Map<PoolClient, (error: Error) => void>();
-    const observeAcquire = (client: PoolClient) => {
-      const generation = generations.get(client);
-      if (!generation) throw new Error("Missing client generation");
-      const onError = (error: Error) =>
-        observedDiagnostics.push({
-          error,
-          generation,
-          cancelled: cancellationRequests.has(generation),
-          operation: "checkout",
-        });
-      observing.set(client, onError);
-      client.on("error", onError);
-    };
-    const observeRelease = (_reason: unknown, client: PoolClient) => {
-      const onError = observing.get(client);
-      if (onError) client.removeListener("error", onError);
-      observing.delete(client);
-      generations.delete(client);
-    };
-    runtime.on("acquire", observeAcquire);
-    runtime.on("release", observeRelease);
+    observer.attach();
     let failure: { error: unknown } | undefined;
     try {
-      await owned.wait(verifying, operation);
+      await owned.wait(verifying.ready, operation);
       failure = { error: bodyError };
     } catch (error) {
       failure = { error };
@@ -3852,19 +2485,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         failure = combineOverlapFailure(failure, error);
       }
     }
-    runtime.removeListener("acquire", observeAcquire);
-    runtime.removeListener("release", observeRelease);
-    expect(observing.size).toBe(0);
-    const observed = failure?.error;
-    expect(observed).toBeInstanceOf(AggregateError);
-    if (!(observed instanceof AggregateError)) throw new Error("Expected combined failure");
-    expect(observed.cause).toBe(bodyError);
-    expect(observed.errors[0]).toBe(bodyError);
-    expect(observed.errors).toHaveLength(2);
-    const cleanup: unknown = observed.errors[1];
-    expect(cleanup).toBeInstanceOf(AggregateError);
-    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
-    expect(operationFailure).toBeDefined();
+    const cleanup = expectCombined(failure, bodyError);
     if (!operationFailure) throw new Error("Missing operation failure");
     expect(operationFailure.generation).toBeDefined();
     expect(operationFailure.cancelled).toBe(true);
@@ -3872,162 +2493,140 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     expect(isOwnedPgClosure(new Error("unrelated post-cancel failure"), "Client was closed and is not queryable")).toBe(
       false,
     );
-    for (const diagnostic of observedDiagnostics) {
-      expect(diagnostic.cancelled).toBe(true);
-      expect(diagnostic.operation).toBe("checkout");
-      expect(diagnostic.error).toBe(operationFailure.value);
-    }
-    const expectedErrors = [cleanupError, ...observedDiagnostics.map((entry) => entry.error), operationFailure.value];
-    expect(cleanup.errors).toHaveLength(expectedErrors.length);
-    for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
-    expect(cleanup.cause).toBe(cleanupError);
+    observer.detachAndExpect(cleanup, cleanupError, operationFailure.value);
     expect(ran).toBe(false);
     expect(settled).toBe(true);
-    expect(runtime.ended).toBe(true);
-    expect(runtime.totalCount).toBe(0);
-    expect(runtime.waitingCount).toBe(0);
-    expect(runtime.listenerCount("acquire")).toBe(0);
-    expect(runtime.listenerCount("release")).toBe(0);
+    expectRuntimeSettled(runtime);
   }, 20000);
+});
 
-  it("holds the source through the proposal commit before a competing edit", async () => {
-    const { item } = await createTypedItem("Before the race");
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    let postModel = false;
-    let resume = () => {};
-    let reached = () => {};
-    const gate = new Promise<void>((resolve) => {
-      resume = resolve;
+describe("semprec.tick brackets computeProposal outside any transaction", () => {
+  beforeEach(resetTickDatabases);
+
+  it("holds no transaction and no pooled connection during the computeProposal call", async () => {
+    const { item } = await typedSource();
+    // A dedicated single-connection pool: if the tick held its connection across `computeProposal`, this
+    // query, issued from inside the fake, could never acquire one.
+    const tickPool = getTestPool({ max: 1 });
+    try {
+      await directTick(tickPool, item.id, async (input) => {
+        await bounded(tickPool.query("SELECT 1"), 2000, "computeProposal: no free pooled connection");
+        expect(input.entityKind).toBe("database");
+        return { properties: { name: "Buy milk" } };
+      });
+    } finally {
+      await tickPool.end();
+    }
+    expect((await cardOf(item.id))?.properties.status).toBe("proposed");
+  }, 10000);
+
+  it("writes nothing for a stale envelope when the source changes during computeProposal, and the next tick produces the card for the new fingerprint", async () => {
+    const { type, item } = await typedSource();
+    await directTick(pool, item.id, async () => {
+      await storeEdit(inboxId, item.id, { text: "Buy milk and eggs" });
+      return { properties: { name: "Buy milk" } };
     });
-    const atFingerprint = new Promise<void>((resolve) => {
-      reached = resolve;
-    });
-    let tickPid: number | undefined;
-    const observedPool = new Proxy(runtime, {
-      get(target, property, receiver) {
-        if (property !== "connect") {
-          const value: unknown = Reflect.get(target, property, receiver);
-          return typeof value === "function" ? value.bind(target) : value;
-        }
-        return async () => {
-          const client = await target.connect();
-          return new Proxy(client, {
-            get(connection, key, innerReceiver) {
-              if (key !== "query") {
-                const value: unknown = Reflect.get(connection, key, innerReceiver);
-                return typeof value === "function" ? value.bind(connection) : value;
-              }
-              return async (...args: unknown[]) => {
-                const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
-                const sql = typeof args[0] === "string" ? args[0] : "";
-                if (postModel && sql.includes("COALESCE(b.content_hash")) {
-                  postModel = false;
-                  const pid = await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-                  tickPid = pid.rows[0]?.pid;
-                  reached();
-                  await gate;
-                }
-                return result;
-              };
-            },
-          });
-        };
+    expect(await cardOf(item.id)).toBeNull();
+    const counter = counted({ properties: { name: "Buy milk and eggs" } });
+    await directTick(pool, item.id, counter.compute);
+    expect(counter.calls).toBe(1);
+    expect((await requireCard(item.id)).properties).toMatchObject({
+      fingerprint: fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }),
+      proposal: {
+        entityKind: "database",
+        target: await databaseIdFor("tasks"),
+        properties: { name: "Buy milk and eggs" },
       },
     });
-    const handler = createSemprecTickAction(observedPool, async () => {
-      postModel = true;
-      return { properties: { name: "Old proposal" } };
-    });
-    let writer: Promise<void> | undefined;
-    let writerPid: number | undefined;
-    let writerStarted = () => {};
-    let writerUpdated = () => {};
-    let releaseWriter = () => {};
-    const started = new Promise<void>((resolve) => {
-      writerStarted = resolve;
-    });
-    const updated = new Promise<void>((resolve) => {
-      writerUpdated = resolve;
-    });
-    const writerGate = new Promise<void>((resolve) => {
-      releaseWriter = resolve;
-    });
-    const owned = ownOverlap(runtime, () => {
-      resume();
-      releaseWriter();
-      writerStarted();
-      writerUpdated();
-      reached();
-    });
-    const tick = owned.run(() =>
-      runInTenant(getTenantZeroId(), () =>
-        handler(
-          { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-          { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-        ),
-      ),
+  });
+
+  /** An edit of the source's text in its own runtime transaction, with hooks around the write. */
+  const ownedSourceEdit = (
+    owned: Overlap,
+    runtime: Pool,
+    itemId: string,
+    text: string,
+    before: (client: PoolClient) => Promise<void>,
+    after: () => Promise<void>,
+  ) =>
+    owned.run(() =>
+      withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+        await before(client);
+        await updateItemWithClient(client, { databaseId: inboxId, itemId, propertiesPatch: { text } });
+        await after();
+      }),
     );
-    tick.catch(() => {});
-    let failure: { error: unknown } | undefined;
-    try {
-      await owned.wait(atFingerprint, tick);
+  const LOCKED_READ = "FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE";
+  const FINGERPRINT_READ = "COALESCE(b.content_hash";
+
+  it("holds the source through the proposal commit before a competing edit", async () => {
+    const { item } = await typedSource("Before the race");
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    let postModel = false;
+    const atFingerprint = barrier();
+    const writerStarted = barrier();
+    const writerUpdated = barrier();
+    const writerGate = barrier();
+    let tickPid: number | undefined;
+    let writerPid: number | undefined;
+    const observedPool = interceptConnect(runtime, (client) =>
+      interceptQuery(client, async (args, original) => {
+        const result = await original(...args);
+        if (postModel && typeof args[0] === "string" && args[0].includes(FINGERPRINT_READ)) {
+          postModel = false;
+          tickPid = await pidOf(client);
+          atFingerprint.reached();
+          await atFingerprint.gate;
+        }
+        return result;
+      }),
+    );
+    const cancel = () => {
+      for (const gate of [atFingerprint, writerStarted, writerUpdated, writerGate]) {
+        gate.release();
+        gate.reached();
+      }
+    };
+    await withOverlap(runtime, cancel, async (owned) => {
+      const running = owned.run(() =>
+        runInTenant(getTenantZeroId(), () =>
+          directTick(observedPool, item.id, async () => {
+            postModel = true;
+            return { properties: { name: "Old proposal" } };
+          }),
+        ),
+      );
+      running.catch(() => {});
+      await owned.wait(atFingerprint.ready, running);
       expect(tickPid).toBeGreaterThan(0);
-      writer = owned.run(() =>
-        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-          writerStarted();
-          await updateItemWithClient(client, {
-            databaseId: inboxId,
-            itemId: item.id,
-            propertiesPatch: { text: "After the race" },
-          });
-          writerUpdated();
-          await writerGate;
-        }),
+      const writer = ownedSourceEdit(
+        owned,
+        runtime,
+        item.id,
+        "After the race",
+        async (client) => {
+          writerPid = await pidOf(client);
+          writerStarted.reached();
+        },
+        async () => {
+          writerUpdated.reached();
+          await writerGate.gate;
+        },
       );
       writer.catch(() => {});
-      await owned.wait(started, writer, tick);
+      await owned.wait(writerStarted.ready, writer, running);
       expect(writerPid).toBeGreaterThan(0);
       expect(writerPid).not.toBe(tickPid);
-      let blocked = false;
-      for (let n = 0; n < 100 && !blocked; n++) {
-        const result = await owned.wait(
-          owned.run(() =>
-            runInTenant(getTenantZeroId(), () =>
-              runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
-                tickPid,
-                writerPid,
-              ]),
-            ),
-          ),
-          writer,
-          tick,
-        );
-        blocked = result.rows[0]?.blocked === true;
-        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      expect(blocked).toBe(true);
-      resume();
-      await tick;
-      await owned.wait(updated, writer);
-      const card = await boundedBarrier(
-        owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id))),
-      );
-      expect(card?.properties.proposal).toMatchObject({ properties: { name: "Old proposal" } });
-      releaseWriter();
+      await expectBlocked(owned, runtime, tickPid, writerPid, writer, running);
+      atFingerprint.release();
+      await running;
+      await owned.wait(writerUpdated.ready, writer);
+      expect((await ownedCard(owned, runtime, item.id))?.properties.proposal).toMatchObject({
+        properties: { name: "Old proposal" },
+      });
+      writerGate.release();
       await writer;
-    } catch (error) {
-      failure = { error };
-    } finally {
-      resume();
-      releaseWriter();
-      try {
-        await owned.finish(failure !== undefined);
-      } catch (error) {
-        failure = combineOverlapFailure(failure, error);
-      }
-    }
-    if (failure !== undefined) rethrowOverlap(failure.error);
+    });
     const source = await withTransaction(pool, (client) => itemsStore.getItemById(client, inboxId, item.id));
     expect(source?.properties.text).toBe("After the race");
   }, 20000);
@@ -4035,135 +2634,69 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
   it.each([false, true])(
     "rechecks fresh source data after a competing edit, rollback: %s",
     async (rollback) => {
-      const { item } = await createTypedItem("Before the edit");
+      const { item } = await typedSource("Before the edit");
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      let releaseWriter = () => {};
-      let writerReady = () => {};
-      let tickWaiting = () => {};
-      const writerGate = new Promise<void>((resolve) => {
-        releaseWriter = resolve;
-      });
-      const ready = new Promise<void>((resolve) => {
-        writerReady = resolve;
-      });
-      const waiting = new Promise<void>((resolve) => {
-        tickWaiting = resolve;
-      });
+      const writerGate = barrier();
+      const tickWaiting = barrier();
       let writerPid: number | undefined;
       let tickPid: number | undefined;
       let postModel = false;
       const rollbackMarker = new Error("intentional edit rollback");
-      const owned = ownOverlap(runtime, () => {
-        releaseWriter();
-        writerReady();
-        tickWaiting();
-      });
-      const observedPool = new Proxy(runtime, {
-        get(target, property, receiver) {
-          if (property !== "connect") {
-            const value: unknown = Reflect.get(target, property, receiver);
-            return typeof value === "function" ? value.bind(target) : value;
+      const observedPool = interceptConnect(runtime, (client) =>
+        interceptQuery(client, async (args, original) => {
+          if (postModel && typeof args[0] === "string" && args[0].includes(LOCKED_READ)) {
+            postModel = false;
+            tickPid = await pidOf(client);
+            tickWaiting.reached();
           }
-          return async () => {
-            const client = await target.connect();
-            return new Proxy(client, {
-              get(connection, key, innerReceiver) {
-                if (key !== "query") {
-                  const value: unknown = Reflect.get(connection, key, innerReceiver);
-                  return typeof value === "function" ? value.bind(connection) : value;
-                }
-                return async (...args: unknown[]) => {
-                  const sql = typeof args[0] === "string" ? args[0] : "";
-                  if (postModel && sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE")) {
-                    postModel = false;
-                    tickPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                    tickWaiting();
-                  }
-                  return Reflect.apply(connection.query.bind(connection), undefined, args);
-                };
-              },
-            });
-          };
-        },
-      });
-      const writer = owned.run(() =>
-        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-          await updateItemWithClient(client, {
-            databaseId: inboxId,
-            itemId: item.id,
-            propertiesPatch: { text: "After the edit" },
-          });
-          writerReady();
-          await writerGate;
-          if (rollback) throw rollbackMarker;
+          return original(...args);
         }),
       );
-      const writerOutcome = writer.then(
-        () => null,
-        (error: unknown) => error,
-      );
-      let tick: Promise<void> | undefined;
-      let failure: { error: unknown } | undefined;
-      try {
-        await owned.wait(ready, writer);
-        const handler = createSemprecTickAction(observedPool, async () => {
-          postModel = true;
-          return { properties: { name: "Old proposal" } };
-        });
-        tick = owned.run(() =>
+      const cancel = () => {
+        writerGate.release();
+        writerGate.reached();
+        tickWaiting.reached();
+      };
+      await withOverlap(runtime, cancel, async (owned) => {
+        const writer = ownedSourceEdit(
+          owned,
+          runtime,
+          item.id,
+          "After the edit",
+          async (client) => {
+            writerPid = await pidOf(client);
+          },
+          async () => {
+            writerGate.reached();
+            await writerGate.gate;
+            if (rollback) throw rollbackMarker;
+          },
+        );
+        const writerOutcome = writer.then(
+          () => null,
+          (error: unknown) => error,
+        );
+        await owned.wait(writerGate.ready, writer);
+        const running = owned.run(() =>
           runInTenant(getTenantZeroId(), () =>
-            handler(
-              {
-                inboxDatabaseId: inboxId,
-                inboxItemTypesDatabaseId: typesId,
-                processingProposalsDatabaseId: proposalsId,
-              },
-              { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-            ),
+            directTick(observedPool, item.id, async () => {
+              postModel = true;
+              return { properties: { name: "Old proposal" } };
+            }),
           ),
         );
-        tick.catch(() => {});
-        await owned.wait(waiting, writer, tick);
-        let blocked = false;
-        for (let n = 0; n < 100 && !blocked; n++) {
-          const result = await owned.wait(
-            owned.run(() =>
-              runInTenant(getTenantZeroId(), () =>
-                runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
-                  writerPid,
-                  tickPid,
-                ]),
-              ),
-            ),
-            writer,
-            tick,
-          );
-          blocked = result.rows[0]?.blocked === true;
-          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
-        }
+        running.catch(() => {});
+        await owned.wait(tickWaiting.ready, writer, running);
         expect(writerPid).not.toBe(tickPid);
-        expect(blocked).toBe(true);
-        releaseWriter();
+        await expectBlocked(owned, runtime, writerPid, tickPid, writer, running);
+        writerGate.release();
         expect(await writerOutcome).toBe(rollback ? rollbackMarker : null);
         if (rollback) owned.consume(writer, rollbackMarker);
-        await tick;
-        const card = await boundedBarrier(
-          owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id))),
-        );
+        await running;
+        const card = await ownedCard(owned, runtime, item.id);
         if (rollback) expect(card?.properties.proposal).toMatchObject({ properties: { name: "Old proposal" } });
         else expect(card).toBeNull();
-      } catch (error) {
-        failure = { error };
-      } finally {
-        releaseWriter();
-        try {
-          await owned.finish(failure !== undefined);
-        } catch (error) {
-          failure = combineOverlapFailure(failure, error);
-        }
-      }
-      if (failure !== undefined) rethrowOverlap(failure.error);
+      });
     },
     20000,
   );
@@ -4172,7 +2705,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     "serializes %s with tick in both acquisition orders",
     async (mutation) => {
       for (const writerFirst of [true, false]) {
-        const { item, type } = await createTypedItem(`Source ${mutation} ${writerFirst}`);
+        const { item, type } = await typedSource(`Source ${mutation} ${writerFirst}`);
         const blob = await createBlob(pool, {
           mimeType: "application/pdf",
           byteSize: 3,
@@ -4185,218 +2718,126 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           attachmentId = (await listInboxAttachments(pool, [item.id]))[0]?.attachmentId;
           if (!attachmentId) throw new Error("Missing attachment");
         }
-        const alternate = await withTransaction(pool, (client) =>
-          createInboxTypeWithClient(client, {
-            inboxItemTypesDatabaseId: typesId,
-            name: `Alternate ${randomUUID()}`,
-            emoji: "🔵",
-            processingMethod: "database",
-            targetDatabase: "tasks",
-          }),
-        );
-        const property = await withTransaction(pool, (client) =>
-          propertiesStore.getPropertyByKey(client, inboxId, "type"),
-        );
-        if (!property) throw new Error("Missing Inbox type property");
+        const alternate = await createType({ name: `Alternate ${randomUUID()}`, emoji: "🔵" });
+        const relationPropertyId = await withTransaction(pool, inboxTypePropertyId);
         const runtime = await createRuntimeRolePool(pool, "semprec_data");
-        // Since issue #1718 a type edge write queues the day's recompute under the key the tick's read phase
-        // enqueues too, and since issue gh-1969 so do adding and removing an attachment, so a tick that starts
-        // after any of these writers waits for it there, before it calls the model.
+        // A type edge write and adding or removing an attachment queue the day's recompute under the key the
+        // tick's read phase enqueues too, so a tick that starts after any of these writers waits for it there,
+        // before it calls the model.
         const modelTypeIds: Array<string | null> = [];
         let postModel = false;
         let tickPid: number | undefined;
         let writerPid: number | undefined;
-        let releaseTick = () => {};
-        let releaseWriter = () => {};
-        let tickReady = () => {};
-        let writerReady = () => {};
-        let writerDone = () => {};
-        let startMutation = () => {};
-        const tickGate = new Promise<void>((resolve) => {
-          releaseTick = resolve;
-        });
-        const writerGate = new Promise<void>((resolve) => {
-          releaseWriter = resolve;
-        });
-        const tickAtBoundary = new Promise<void>((resolve) => {
-          tickReady = resolve;
-        });
-        const writerAtBoundary = new Promise<void>((resolve) => {
-          writerReady = resolve;
-        });
-        const writerMutated = new Promise<void>((resolve) => {
-          writerDone = resolve;
-        });
-        const mutationGate = new Promise<void>((resolve) => {
-          startMutation = resolve;
-        });
-        const owned = ownOverlap(runtime, () => {
-          releaseTick();
-          releaseWriter();
-          startMutation();
-          tickReady();
-          writerReady();
-          writerDone();
-        });
-        const observed = new Proxy(runtime, {
-          get(target, propertyKey, receiver) {
-            if (propertyKey !== "connect") {
-              const value: unknown = Reflect.get(target, propertyKey, receiver);
-              return typeof value === "function" ? value.bind(target) : value;
+        const tickGate = barrier();
+        const writerGate = barrier();
+        const writerMutated = barrier();
+        const mutationGate = barrier();
+        const observed = interceptConnect(runtime, (client) =>
+          interceptQuery(client, async (args, original) => {
+            const sql = typeof args[0] === "string" ? args[0] : "";
+            const enqueue = tickPid === undefined && sql.includes("graphile_worker.add_job");
+            if (writerFirst && (enqueue || (postModel && sql.includes(LOCKED_READ)))) {
+              if (!enqueue) postModel = false;
+              tickPid = await pidOf(client);
+              tickGate.reached();
             }
-            return async () => {
-              const client = await target.connect();
-              return new Proxy(client, {
-                get(connection, key, innerReceiver) {
-                  if (key !== "query") {
-                    const value: unknown = Reflect.get(connection, key, innerReceiver);
-                    return typeof value === "function" ? value.bind(connection) : value;
-                  }
-                  return async (...args: unknown[]) => {
-                    const sql = typeof args[0] === "string" ? args[0] : "";
-                    if (writerFirst && tickPid === undefined && sql.includes("graphile_worker.add_job")) {
-                      tickPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                        ?.pid;
-                      tickReady();
-                    }
-                    if (
-                      postModel &&
-                      writerFirst &&
-                      sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE")
-                    ) {
-                      postModel = false;
-                      tickPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                        ?.pid;
-                      tickReady();
-                    }
-                    const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
-                    if (postModel && !writerFirst && sql.includes("COALESCE(b.content_hash")) {
-                      postModel = false;
-                      tickPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
-                        ?.pid;
-                      tickReady();
-                      await tickGate;
-                    }
-                    return result;
-                  };
-                },
-              });
-            };
-          },
-        });
-        const mutate = (client: PoolClient) => {
+            const result = await original(...args);
+            if (postModel && !writerFirst && sql.includes(FINGERPRINT_READ)) {
+              postModel = false;
+              tickPid = await pidOf(client);
+              tickGate.reached();
+              await tickGate.gate;
+            }
+            return result;
+          }),
+        );
+        const mutate = async (client: PoolClient) => {
           if (mutation === "insert attachment")
-            return insertWithClient(client, item.id, [{ blobId: blob.id, source: "camera" }]);
-          if (mutation === "remove attachment") return deleteWithClient(client, z.uuid().parse(attachmentId));
-          return (async () => {
+            await insertWithClient(client, item.id, [{ blobId: blob.id, source: "camera" }]);
+          else if (mutation === "remove attachment") await deleteWithClient(client, z.uuid().parse(attachmentId));
+          else {
             await deleteRelationWithClient(client, {
-              relationPropertyId: property.id,
+              relationPropertyId,
               callerItemId: item.id,
               targetItemId: type.id,
             });
             await createRelationWithClient(client, {
-              relationPropertyId: property.id,
+              relationPropertyId,
               callerItemId: item.id,
               targetItemId: alternate.id,
             });
-          })();
+          }
         };
-        const writer = owned.run(() =>
-          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-            await client.query("SET LOCAL statement_timeout = '5s'");
-            writerPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            if (!writerFirst) {
-              writerReady();
-              await mutationGate;
-            }
-            await mutate(client);
-            if (mutation === "insert attachment") {
-              const inserted = await listInboxAttachments(client, [item.id]);
-              if (inserted.length !== 1 || !inserted[0]) throw new Error("Missing inserted attachment");
-              insertedAttachmentId = inserted[0].attachmentId;
-            }
-            writerDone();
-            if (writerFirst) writerReady();
-            await writerGate;
-          }),
-        );
-        writer.catch(() => {});
-        let tick: Promise<void> | undefined;
-        let failure: { error: unknown } | undefined;
-        try {
-          if (writerFirst) await owned.wait(writerAtBoundary, writer);
-          const handler = createSemprecTickAction(observed, async (input) => {
-            postModel = true;
-            modelTypeIds.push(input.type?.id ?? null);
-            return { properties: { name: "Old proposal" } };
-          });
-          tick = owned.run(() =>
+        const cancel = () => {
+          for (const gate of [tickGate, writerGate, writerMutated, mutationGate]) {
+            gate.release();
+            gate.reached();
+          }
+        };
+        await withOverlap(runtime, cancel, async (owned) => {
+          const writer = owned.run(() =>
+            withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+              await client.query("SET LOCAL statement_timeout = '5s'");
+              writerPid = await pidOf(client);
+              if (!writerFirst) {
+                writerGate.reached();
+                await mutationGate.gate;
+              }
+              await mutate(client);
+              if (mutation === "insert attachment") {
+                const inserted = await listInboxAttachments(client, [item.id]);
+                if (inserted.length !== 1 || !inserted[0]) throw new Error("Missing inserted attachment");
+                insertedAttachmentId = inserted[0].attachmentId;
+              }
+              writerMutated.reached();
+              if (writerFirst) writerGate.reached();
+              await writerGate.gate;
+            }),
+          );
+          writer.catch(() => {});
+          if (writerFirst) await owned.wait(writerGate.ready, writer);
+          const running = owned.run(() =>
             runInTenant(getTenantZeroId(), () =>
-              handler(
-                {
-                  inboxDatabaseId: inboxId,
-                  inboxItemTypesDatabaseId: typesId,
-                  processingProposalsDatabaseId: proposalsId,
-                },
-                { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-              ),
+              directTick(observed, item.id, async (input) => {
+                postModel = true;
+                modelTypeIds.push(input.type?.id ?? null);
+                return { properties: { name: "Old proposal" } };
+              }),
             ),
           );
-          tick.catch(() => {});
-          await owned.wait(tickAtBoundary, writer, tick);
+          running.catch(() => {});
+          await owned.wait(tickGate.ready, writer, running);
           if (!writerFirst) {
-            await owned.wait(writerAtBoundary, writer, tick);
-            startMutation();
-          }
-          let blocked = false;
-          for (let n = 0; n < 100 && !blocked; n++) {
-            const holder = writerFirst ? writerPid : tickPid;
-            const competitor = writerFirst ? tickPid : writerPid;
-            const result = await owned.wait(
-              owned.run(() =>
-                runInTenant(getTenantZeroId(), () =>
-                  runtime.query<{ blocked: boolean }>("SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked", [
-                    holder,
-                    competitor,
-                  ]),
-                ),
-              ),
-              writer,
-              tick,
-            );
-            blocked = result.rows[0]?.blocked === true;
-            if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+            await owned.wait(writerGate.ready, writer, running);
+            mutationGate.release();
           }
           expect(tickPid).toBeGreaterThan(0);
           expect(writerPid).toBeGreaterThan(0);
           expect(tickPid).not.toBe(writerPid);
-          expect(blocked).toBe(true);
+          await expectBlocked(
+            owned,
+            runtime,
+            writerFirst ? writerPid : tickPid,
+            writerFirst ? tickPid : writerPid,
+            writer,
+            running,
+          );
           if (writerFirst) {
-            releaseWriter();
+            writerGate.release();
             await writer;
-            await tick;
-            const card = await boundedBarrier(
-              owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id))),
-            );
+            await running;
+            const card = await ownedCard(owned, runtime, item.id);
             // The tick waited in its read phase, so it asked the model about the committed type and stored the answer.
             expect(modelTypeIds).toEqual([mutation === "change type" ? alternate.id : type.id]);
             expect(card?.properties.status).toBe("proposed");
           } else {
-            releaseTick();
-            await tick;
-            await owned.wait(writerMutated, writer);
-            expect(
-              (
-                await boundedBarrier(
-                  owned.run(() =>
-                    runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id)),
-                  ),
-                )
-              )?.properties.proposal,
-            ).toMatchObject({
+            tickGate.release();
+            await running;
+            await owned.wait(writerMutated.ready, writer);
+            expect((await ownedCard(owned, runtime, item.id))?.properties.proposal).toMatchObject({
               properties: { name: "Old proposal" },
             });
-            releaseWriter();
+            writerGate.release();
             await writer;
           }
           const attachments = await boundedBarrier(
@@ -4413,7 +2854,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           const edges = await boundedBarrier(
             owned.run(() =>
               withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-                const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
+                const definition = await relationsStore.getRelationDefinitionByPropertyId(client, relationPropertyId);
                 if (!definition) throw new Error("Missing type definition");
                 return relationsStore.listRelationsForItem(client, definition.id, item.id);
               }),
@@ -4422,415 +2863,195 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
           expect(edges.map((edge) => relationsStore.otherSide(edge, item.id))).toEqual([
             mutation === "change type" ? alternate.id : type.id,
           ]);
-        } catch (error) {
-          failure = { error };
-        } finally {
-          releaseTick();
-          releaseWriter();
-          startMutation();
-          try {
-            await owned.finish(failure !== undefined);
-          } catch (error) {
-            failure = combineOverlapFailure(failure, error);
-          }
-        }
-        if (failure !== undefined) rethrowOverlap(failure.error);
+        });
       }
     },
     30000,
   );
 
   it("skips a busy proposal card without creating another card", async () => {
-    const { item } = await createTypedItem("Original");
-    const config = {
-      inboxDatabaseId: inboxId,
-      inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
-    const context = { heartbeatId: "hb", projectItemId: "proj", itemId: item.id };
-    await createSemprecTickAction(pool, async () => ({ properties: { name: "Original" } }))(config, context);
-    const original = await findProposalForItem(pool, proposalsId, item.id);
-    if (!original) throw new Error("Missing proposal");
-    await withTransaction(pool, (client) =>
-      updateItemWithClient(client, {
-        databaseId: inboxId,
-        itemId: item.id,
-        propertiesPatch: { text: "Changed" },
-      }),
-    );
+    const { item } = await typedSource("Original");
+    await directTick(pool, item.id, propose({ name: "Original" }));
+    const original = await requireCard(item.id);
+    await editItem(inboxId, item.id, { text: "Changed" });
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    let release = () => {};
-    let locked = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const ready = new Promise<void>((resolve) => {
-      locked = resolve;
-    });
-    const owned = ownOverlap(runtime, release);
-    const holder = owned.run(() =>
-      withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-        await itemsStore.lockItemById(client, proposalsId, original.id);
-        locked();
-        await gate;
-      }),
-    );
-    let failure: { error: unknown } | undefined;
-    try {
-      await owned.wait(ready, holder);
-      const tick = owned.run(() =>
-        runInTenant(getTenantZeroId(), () =>
-          createSemprecTickAction(runtime, async () => ({ properties: { name: "Changed" } }))(config, context),
-        ),
+    const held = barrier();
+    await withOverlap(runtime, held.release, async (owned) => {
+      const holder = owned.run(() =>
+        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
+          await itemsStore.lockItemById(client, proposalsId, original.id);
+          held.reached();
+          await held.gate;
+        }),
       );
-      await owned.wait(tick, holder);
-      const current = await findProposalForItem(pool, proposalsId, item.id);
+      await owned.wait(held.ready, holder);
+      const running = owned.run(() =>
+        runInTenant(getTenantZeroId(), () => directTick(runtime, item.id, propose({ name: "Changed" }))),
+      );
+      await owned.wait(running, holder);
+      const current = await cardOf(item.id);
       expect(current?.id).toBe(original.id);
       expect(current?.properties).toEqual(original.properties);
-      const count = await pool.query<{ count: number }>(
-        "SELECT count(*)::int AS count FROM items WHERE database_id = $1 AND deleted_at IS NULL",
-        [proposalsId],
-      );
-      expect(count.rows[0]?.count).toBe(1);
-    } catch (error) {
-      failure = { error };
-    } finally {
-      release();
-      try {
-        await owned.finish(failure !== undefined);
-      } catch (error) {
-        failure = combineOverlapFailure(failure, error);
-      }
-    }
-    if (failure) rethrowOverlap(failure.error);
+      expect(await countItems(proposalsId)).toBe(1);
+    });
   }, 20000);
 
   it.each(["delete", "restore"] as const)(
     "skips a busy raw type during its %s transaction",
     async (operation) => {
-      const { item, type } = await createTypedItem(`Type ${operation}`);
-      const setup = createChokePoint(pool);
-      if (operation === "restore") await setup.softDeleteItem(typesId, type.id);
+      const { item, type } = await typedSource(`Type ${operation}`);
+      if (operation === "restore") await createChokePoint(pool).softDeleteItem(typesId, type.id);
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      let release = () => {};
-      let atCommit = () => {};
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const ready = new Promise<void>((resolve) => {
-        atCommit = resolve;
-      });
-      const observed = new Proxy(runtime, {
-        get(target, key, receiver) {
-          if (key !== "connect") {
-            const value: unknown = Reflect.get(target, key, receiver);
-            return typeof value === "function" ? value.bind(target) : value;
+      const atCommit = barrier();
+      const observed = interceptConnect(runtime, (client) =>
+        interceptQuery(client, async (args, original) => {
+          if (typeof args[0] === "string" && args[0].trim().toUpperCase() === "COMMIT") {
+            atCommit.reached();
+            await atCommit.gate;
           }
-          return async () => {
-            const client = await target.connect();
-            return new Proxy(client, {
-              get(connection, prop, innerReceiver) {
-                if (prop !== "query") {
-                  const value: unknown = Reflect.get(connection, prop, innerReceiver);
-                  return typeof value === "function" ? value.bind(connection) : value;
-                }
-                return async (...args: unknown[]) => {
-                  if (typeof args[0] === "string" && args[0].trim().toUpperCase() === "COMMIT") {
-                    atCommit();
-                    await gate;
-                  }
-                  return Reflect.apply(connection.query.bind(connection), undefined, args);
-                };
-              },
-            });
-          };
-        },
-      });
-      const owned = ownOverlap(runtime, release);
-      const writer = owned.run(() =>
-        runInTenant(getTenantZeroId(), () => {
-          const cp = createChokePoint(observed);
-          return operation === "delete" ? cp.softDeleteItem(typesId, type.id) : cp.restoreItem(typesId, type.id);
+          return original(...args);
         }),
       );
-      let failure: { error: unknown } | undefined;
-      try {
-        await owned.wait(ready, writer);
-        const tick = owned.run(() =>
-          runInTenant(getTenantZeroId(), () =>
-            createSemprecTickAction(runtime, async () => ({ properties: { name: "Old" } }))(
-              {
-                inboxDatabaseId: inboxId,
-                inboxItemTypesDatabaseId: typesId,
-                processingProposalsDatabaseId: proposalsId,
-              },
-              { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-            ),
-          ),
+      await withOverlap(runtime, atCommit.release, async (owned) => {
+        const writer = owned.run(() =>
+          runInTenant(getTenantZeroId(), () => {
+            const api = createChokePoint(observed);
+            return operation === "delete" ? api.softDeleteItem(typesId, type.id) : api.restoreItem(typesId, type.id);
+          }),
         );
-        await owned.wait(tick, writer);
-        expect(await findProposalForItem(pool, proposalsId, item.id)).toBeNull();
-      } catch (error) {
-        failure = { error };
-      } finally {
-        release();
-        try {
-          await owned.finish(failure !== undefined);
-        } catch (error) {
-          failure = combineOverlapFailure(failure, error);
-        }
-      }
-      if (failure) rethrowOverlap(failure.error);
+        await owned.wait(atCommit.ready, writer);
+        const running = owned.run(() =>
+          runInTenant(getTenantZeroId(), () => directTick(runtime, item.id, propose({ name: "Old" }))),
+        );
+        await owned.wait(running, writer);
+        expect(await cardOf(item.id)).toBeNull();
+      });
     },
     20000,
   );
 
   it("allows distinct sources sharing a type to form proposals concurrently", async () => {
-    const { item, type } = await createTypedItem("First source");
-    const other = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Second source",
-        type: type.id,
+    const { item, type } = await typedSource("First source");
+    const other = await createSource({ text: "Second source", type: type.id });
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const held = barrier();
+    let postModel = false;
+    const observed = interceptConnect(runtime, (client) =>
+      interceptQuery(client, async (args, original) => {
+        const result = await original(...args);
+        if (postModel && typeof args[0] === "string" && args[0].includes(FINGERPRINT_READ)) {
+          postModel = false;
+          held.reached();
+          await held.gate;
+        }
+        return result;
       }),
     );
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    let release = () => {};
-    let reached = () => {};
-    let postModel = false;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const ready = new Promise<void>((resolve) => {
-      reached = resolve;
-    });
-    const observed = new Proxy(runtime, {
-      get(target, key, receiver) {
-        if (key !== "connect") {
-          const value: unknown = Reflect.get(target, key, receiver);
-          return typeof value === "function" ? value.bind(target) : value;
-        }
-        return async () => {
-          const client = await target.connect();
-          return new Proxy(client, {
-            get(connection, prop, innerReceiver) {
-              if (prop !== "query") {
-                const value: unknown = Reflect.get(connection, prop, innerReceiver);
-                return typeof value === "function" ? value.bind(connection) : value;
-              }
-              return async (...args: unknown[]) => {
-                const result: unknown = await Reflect.apply(connection.query.bind(connection), undefined, args);
-                if (postModel && typeof args[0] === "string" && args[0].includes("COALESCE(b.content_hash")) {
-                  postModel = false;
-                  reached();
-                  await gate;
-                }
-                return result;
-              };
-            },
-          });
-        };
-      },
-    });
-    const config = {
-      inboxDatabaseId: inboxId,
-      inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
-    const owned = ownOverlap(runtime, release);
-    const first = owned.run(() =>
-      runInTenant(getTenantZeroId(), () =>
-        createSemprecTickAction(observed, async () => {
-          postModel = true;
-          return { properties: { name: "First" } };
-        })(config, { heartbeatId: "hb-a", projectItemId: "proj", itemId: item.id }),
-      ),
-    );
-    let failure: { error: unknown } | undefined;
-    try {
-      await owned.wait(ready, first);
-      const second = owned.run(() =>
+    await withOverlap(runtime, held.release, async (owned) => {
+      const first = owned.run(() =>
         runInTenant(getTenantZeroId(), () =>
-          createSemprecTickAction(runtime, async () => ({ properties: { name: "Second" } }))(config, {
-            heartbeatId: "hb-b",
-            projectItemId: "proj",
-            itemId: other.id,
-          }),
+          directTick(
+            observed,
+            item.id,
+            async () => {
+              postModel = true;
+              return { properties: { name: "First" } };
+            },
+            "hb-a",
+          ),
         ),
       );
+      await owned.wait(held.ready, first);
+      const second = owned.run(() =>
+        runInTenant(getTenantZeroId(), () => directTick(runtime, other.id, propose({ name: "Second" }), "hb-b")),
+      );
       await owned.wait(second, first);
-      expect((await findProposalForItem(pool, proposalsId, other.id))?.properties.status).toBe("proposed");
-    } catch (error) {
-      failure = { error };
-    } finally {
-      release();
-      try {
-        await owned.finish(failure !== undefined);
-      } catch (error) {
-        failure = combineOverlapFailure(failure, error);
-      }
-    }
-    if (failure) rethrowOverlap(failure.error);
-    expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.status).toBe("proposed");
+      expect((await cardOf(other.id))?.properties.status).toBe("proposed");
+    });
+    expect((await cardOf(item.id))?.properties.status).toBe("proposed");
   }, 20000);
 
-  it("a proposal created by a second tick while the first is still in computeProposal is revised, not duplicated (issue #792 review fix)", async () => {
-    const { item } = await createTypedItem("Buy milk");
-
-    // Neither tick sees the other's proposal in its read snapshot: A's snapshot read happens
-    // before B runs to completion inside A's computeProposal, and B's own snapshot read happens
-    // while A hasn't written anything yet. So both reach `writeTickResult` believing
-    // `snapshot.existingProposal` is null — the exact race `raceProposal` exists to catch.
-    const handlerA = createSemprecTickAction(pool, async () => {
-      const handlerB = createSemprecTickAction(pool, async () => ({ properties: { name: "Buy milk (from B)" } }));
-      await handlerB(
-        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-        { heartbeatId: "hb-b", projectItemId: "proj", itemId: item.id },
-      );
-      return { properties: { name: "Buy milk (from A)" } };
-    });
-    await handlerA(
-      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-      { heartbeatId: "hb-a", projectItemId: "proj", itemId: item.id },
+  it("a proposal created by a second tick while the first is still in computeProposal is revised, not duplicated", async () => {
+    const { item } = await typedSource();
+    // Neither tick sees the other's proposal in its snapshot: A's read precedes B's full run inside A's
+    // computeProposal, and B reads before A writes. Both reach `writeTickResult` with a null
+    // `snapshot.existingProposal`, the race `raceProposal` catches.
+    await directTick(
+      pool,
+      item.id,
+      async () => {
+        await directTick(pool, item.id, propose({ name: "Buy milk (from B)" }), "hb-b");
+        return { properties: { name: "Buy milk (from A)" } };
+      },
+      "hb-a",
     );
-
-    const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [proposalsId]);
-    expect(rows[0].n).toBe(1);
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.status).toBe("proposed");
-    expect(proposal!.properties.proposal).toEqual({
-      entityKind: "database",
-      target: await databaseIdFor("tasks"),
-      properties: { name: "Buy milk (from A)" },
+    expect(await countItems(proposalsId)).toBe(1);
+    const proposal = await requireCard(item.id);
+    expect(proposal.properties).toMatchObject({
+      status: "proposed",
+      proposal: {
+        entityKind: "database",
+        target: await databaseIdFor("tasks"),
+        properties: { name: "Buy milk (from A)" },
+      },
     });
-    expect(proposal!.properties.history).toHaveLength(2);
+    expect(proposal.properties.history).toHaveLength(2);
   });
 });
 
-describe("semprec.tick records a failed proposal computation on the card (issue #1485)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
-  let databaseIds: TickDatabaseIds;
-
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    inboxId = await databaseIdFor("inbox");
-    typesId = await databaseIdFor("inboxItemTypes");
-    proposalsId = await databaseIdFor("processingProposals");
-    databaseIds = {
-      inboxDatabaseId: inboxId,
-      inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
-  });
-
-  /** A typed Inbox item (a 'database' type targeting `tasks`) with the text `Buy milk`. */
-  async function createTypedItem(): Promise<{ itemId: string; typeId: string }> {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-    return { itemId: item.id, typeId: type.id };
-  }
+describe("semprec.tick records a failed proposal computation on the card", () => {
+  beforeEach(resetTickDatabases);
 
   /** One attempt of the tick with a stubbed computation; `isFinalAttempt` is what the heartbeat fire task passes. */
-  function attempt(itemId: string, computeProposal: ComputeSemprecProposalFn, isFinalAttempt: boolean): Promise<void> {
-    return createSemprecTickAction(pool, computeProposal)(databaseIds, {
+  const attempt = (itemId: string, computeProposal: ComputeSemprecProposalFn, isFinalAttempt: boolean) =>
+    createSemprecTickAction(pool, computeProposal)(databaseIds, {
       heartbeatId: "hb",
       projectItemId: "proj",
       itemId,
       isFinalAttempt,
     });
-  }
-
-  /** A computation that fails with the gateway's own error for `reason`. */
-  function failingWith(reason: AiGatewayFailureReason): ComputeSemprecProposalFn {
-    return async () => {
+  const failingWith =
+    (reason: AiGatewayFailureReason, before?: () => Promise<unknown>): ComputeSemprecProposalFn =>
+    async () => {
+      await before?.();
       throw new AiGatewayFailedError(reason);
     };
-  }
-
-  /** A concurrent source edit: the text changes, so the source's fingerprint no longer matches the snapshot. */
-  async function editSourceText(itemId: string, text: string): Promise<void> {
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId, propertiesPatch: { text } }),
-    );
-  }
+  const failureEntry = (reason: string) =>
+    expect.objectContaining({ author: "ai", message: `Computing the proposal failed: ${reason}.` });
 
   it("a budget rejection creates a computeFailed card naming the reason, and the tick does not throw", async () => {
-    const { itemId } = await createTypedItem();
-
+    const { item } = await typedSource();
     let calls = 0;
     await expect(
       attempt(
-        itemId,
-        async () => {
-          calls++;
-          throw new AiGatewayFailedError("budget_exceeded");
-        },
+        item.id,
+        failingWith("budget_exceeded", async () => calls++),
         false,
       ),
     ).resolves.toBeUndefined();
     expect(calls).toBe(1);
-
-    const card = await findProposalForItem(pool, proposalsId, itemId);
-    expect(card).toBeTruthy();
-    expect(card!.properties.status).toBe("computeFailed");
-    expect(card!.properties.fingerprint ?? null).toBeNull();
-    expect(card!.properties.proposal ?? null).toBeNull();
-    expect(card!.properties.history).toEqual([
-      expect.objectContaining({ author: "ai", message: "Computing the proposal failed: budget_exceeded." }),
-    ]);
+    const card = await requireCard(item.id);
+    expect(card.properties.status).toBe("computeFailed");
+    expect(card.properties.fingerprint ?? null).toBeNull();
+    expect(card.properties.proposal ?? null).toBeNull();
+    expect(card.properties.history).toEqual([failureEntry("budget_exceeded")]);
   });
 
   it.each(["timeout", "http", "invalid_response"] as const)(
-    "a %s failure on a non-final attempt rethrows so the queue retries, and writes no card",
+    "a %s failure rethrows on a non-final attempt without a card, and records the card on the final one",
     async (reason) => {
-      const { itemId } = await createTypedItem();
-
-      await expect(attempt(itemId, failingWith(reason), false)).rejects.toThrow(`AI gateway call failed: ${reason}`);
-      expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
-    },
-  );
-
-  it.each(["timeout", "http", "invalid_response"] as const)(
-    "a %s failure on the final attempt records the card and does not throw",
-    async (reason) => {
-      const { itemId } = await createTypedItem();
-
-      await expect(attempt(itemId, failingWith(reason), true)).resolves.toBeUndefined();
-
-      const card = await findProposalForItem(pool, proposalsId, itemId);
-      expect(card!.properties.status).toBe("computeFailed");
-      expect(card!.properties.history).toEqual([
-        expect.objectContaining({ author: "ai", message: `Computing the proposal failed: ${reason}.` }),
-      ]);
+      const { item } = await typedSource();
+      await expect(attempt(item.id, failingWith(reason), false)).rejects.toThrow(`AI gateway call failed: ${reason}`);
+      expect(await cardOf(item.id)).toBeNull();
+      await expect(attempt(item.id, failingWith(reason), true)).resolves.toBeUndefined();
+      const card = await requireCard(item.id);
+      expect(card.properties.status).toBe("computeFailed");
+      expect(card.properties.history).toEqual([failureEntry(reason)]);
     },
   );
 
   it("retains the gateway failure and recording failure when the card write fails", async () => {
-    const { itemId } = await createTypedItem();
+    const { item } = await typedSource();
     const gatewayError = new AiGatewayFailedError("budget_exceeded");
     // A fixed test trigger forces the card INSERT to fail after the model error; no user input enters DDL.
     await pool.query(`CREATE FUNCTION test_fail_compute_card() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -4840,20 +3061,14 @@ describe("semprec.tick records a failed proposal computation on the card (issue 
       await pool.query(
         "CREATE TRIGGER test_fail_compute_card BEFORE INSERT ON items FOR EACH ROW EXECUTE FUNCTION test_fail_compute_card()",
       );
-      let received: unknown;
-      try {
-        await attempt(
-          itemId,
-          async () => {
-            throw gatewayError;
-          },
-          false,
-        );
-      } catch (error) {
-        received = error;
-      }
-      expect(received).toBeInstanceOf(AggregateError);
-      if (!(received instanceof AggregateError)) throw new Error("Expected both failures");
+      const received = await attempt(
+        item.id,
+        async () => {
+          throw gatewayError;
+        },
+        false,
+      ).catch((error: unknown) => error);
+      if (!(received instanceof AggregateError)) throw new Error("Expected both failures", { cause: received });
       expect(received.errors).toHaveLength(2);
       expect(received.errors[0]).toBe(gatewayError);
       expect(received.errors[1]).toMatchObject({ code: "P0001", message: "test card write failure" });
@@ -4872,422 +3087,236 @@ describe("semprec.tick records a failed proposal computation on the card (issue 
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Failure-path test or cleanup failed");
-    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
+    expect(await cardOf(item.id)).toBeNull();
   });
 
   it("an error that is not a gateway failure propagates even on the final attempt, and writes nothing", async () => {
-    const { itemId } = await createTypedItem();
-
-    await expect(
-      attempt(
-        itemId,
-        async () => {
-          throw new Error("the answer did not match the schema");
-        },
-        true,
-      ),
-    ).rejects.toThrow("the answer did not match the schema");
-    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
+    const { item } = await typedSource();
+    await expect(attempt(item.id, noCompute("the answer did not match the schema"), true)).rejects.toThrow(
+      "the answer did not match the schema",
+    );
+    expect(await cardOf(item.id)).toBeNull();
   });
 
-  it("an item edited while the failing call is in flight writes no card, even on the final attempt", async () => {
-    const { itemId } = await createTypedItem();
-
-    await expect(
-      attempt(
-        itemId,
-        async () => {
-          await editSourceText(itemId, "Buy milk and eggs");
-          throw new AiGatewayFailedError("timeout");
-        },
-        true,
-      ),
-    ).resolves.toBeUndefined();
-    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
-  });
-
-  it("an item deleted while the failing call is in flight writes no card", async () => {
-    const { itemId } = await createTypedItem();
-
-    await expect(
-      attempt(
-        itemId,
-        async () => {
-          await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
-          throw new AiGatewayFailedError("timeout");
-        },
-        true,
-      ),
-    ).resolves.toBeUndefined();
-    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
-  });
+  it.each(["edited", "deleted"] as const)(
+    "an item %s while the failing call is in flight writes no card, even on the final attempt",
+    async (change) => {
+      const { item } = await typedSource();
+      const before = () =>
+        change === "edited" ? storeEdit(inboxId, item.id, { text: "Buy milk and eggs" }) : trashSource(item.id);
+      await expect(attempt(item.id, failingWith("timeout", before), true)).resolves.toBeUndefined();
+      expect(await cardOf(item.id)).toBeNull();
+    },
+  );
 
   it.each(["confirmed", "rejected"] as const)(
     "a card that became %s while the failing call was in flight stays untouched",
     async (lockedStatus) => {
-      const { itemId } = await createTypedItem();
-      await attempt(itemId, async () => ({ properties: { name: "Buy milk" } }), false);
-      const proposed = (await findProposalForItem(pool, proposalsId, itemId))!;
+      const { item } = await typedSource();
+      await attempt(item.id, propose({ name: "Buy milk" }), false);
+      const proposed = await requireCard(item.id);
       expect(proposed.properties.status).toBe("proposed");
-      await editSourceText(itemId, "Buy milk and eggs");
-
-      await expect(
-        attempt(
-          itemId,
-          async () => {
-            await withTransaction(pool, (client) =>
-              itemsStore.updateItemProperties(client, {
-                databaseId: proposalsId,
-                itemId: proposed.id,
-                propertiesPatch: { status: lockedStatus },
-              }),
-            );
-            throw new AiGatewayFailedError("timeout");
-          },
-          true,
-        ),
-      ).resolves.toBeUndefined();
-
-      const after = await findProposalForItem(pool, proposalsId, itemId);
-      expect(after!.properties.status).toBe(lockedStatus);
-      expect(after!.properties.history).toEqual(proposed.properties.history);
+      await storeEdit(inboxId, item.id, { text: "Buy milk and eggs" });
+      const lock = () => storeEdit(proposalsId, proposed.id, { status: lockedStatus });
+      await expect(attempt(item.id, failingWith("timeout", lock), true)).resolves.toBeUndefined();
+      const after = await requireCard(item.id);
+      expect(after.properties.status).toBe(lockedStatus);
+      expect(after.properties.history).toEqual(proposed.properties.history);
     },
   );
 
   it("a card that already exists keeps its proposal and gains the failure entry", async () => {
-    const { itemId } = await createTypedItem();
-    await attempt(itemId, async () => ({ properties: { name: "Buy milk" } }), false);
-    const proposed = (await findProposalForItem(pool, proposalsId, itemId))!;
-    await editSourceText(itemId, "Buy milk and eggs");
-
-    await attempt(itemId, failingWith("timeout"), true);
-
-    const card = (await findProposalForItem(pool, proposalsId, itemId))!;
+    const { item } = await typedSource();
+    await attempt(item.id, propose({ name: "Buy milk" }), false);
+    const proposed = await requireCard(item.id);
+    await storeEdit(inboxId, item.id, { text: "Buy milk and eggs" });
+    await attempt(item.id, failingWith("timeout"), true);
+    const card = await requireCard(item.id);
     expect(card.id).toBe(proposed.id);
     expect(card.properties.status).toBe("computeFailed");
     expect(card.properties.fingerprint ?? null).toBeNull();
     expect(card.properties.proposal).toEqual(proposed.properties.proposal);
-    expect(card.properties.history).toEqual([
-      ...(proposed.properties.history as unknown[]),
-      expect.objectContaining({ author: "ai", message: "Computing the proposal failed: timeout." }),
-    ]);
+    expect(card.properties.history).toEqual([...historyOf(proposed), failureEntry("timeout")]);
   });
 
   it("the next successful tick after a failure makes the card proposed with a fresh fingerprint", async () => {
-    const { itemId, typeId } = await createTypedItem();
-    await attempt(itemId, failingWith("budget_exceeded"), false);
-
+    const { type, item } = await typedSource();
+    await attempt(item.id, failingWith("budget_exceeded"), false);
     // The source did not change, but a null fingerprint is never current, so the tick computes again.
-    let calls = 0;
-    await attempt(
-      itemId,
-      async () => {
-        calls++;
-        return { properties: { name: "Buy milk" } };
-      },
-      false,
-    );
-    expect(calls).toBe(1);
-
-    const card = await findProposalForItem(pool, proposalsId, itemId);
-    expect(card!.properties.status).toBe("proposed");
-    expect(card!.properties.fingerprint).toBe(fingerprintV2Of({ typeId, text: "Buy milk" }));
-    expect(card!.properties.proposal).toEqual({
-      entityKind: "database",
-      target: await databaseIdFor("tasks"),
-      properties: { name: "Buy milk" },
+    const counter = counted({ properties: { name: "Buy milk" } });
+    await attempt(item.id, counter.compute, false);
+    expect(counter.calls).toBe(1);
+    expect((await requireCard(item.id)).properties).toMatchObject({
+      status: "proposed",
+      fingerprint: fingerprintV2Of({ typeId: type.id, text: "Buy milk" }),
+      proposal: { entityKind: "database", target: await databaseIdFor("tasks"), properties: { name: "Buy milk" } },
     });
   });
 });
 
-describe("assertValidProposalEnvelope resolves the target database row (issue #735)", () => {
-  let typesId: string;
+describe("assertValidProposalEnvelope resolves the target database and validates relations", () => {
+  beforeEach(resetTickDatabases);
+  const validateEnvelope = (envelope: Parameters<typeof assertValidProposalEnvelope>[1]) =>
+    withTransaction(pool, (client) => assertValidProposalEnvelope(client, envelope));
+  const refusalOf = (promise: Promise<unknown>) => promise.catch((error: unknown) => error);
 
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    typesId = await databaseIdFor("inboxItemTypes");
-  });
-
-  it("resolves to the target database row for a valid 'database' envelope", async () => {
+  it("resolves to the target database row for a 'database' envelope and to null for a 'pageContent' one", async () => {
     const tasksDbId = await databaseIdFor("tasks");
-
-    const targetDatabase = await withTransaction(pool, (client) =>
-      assertValidProposalEnvelope(client, {
-        entityKind: "database",
-        target: tasksDbId,
-        properties: { name: "Buy milk" },
-      }),
-    );
-
-    expect(targetDatabase).not.toBeNull();
-    expect(targetDatabase!.id).toBe(tasksDbId);
+    expect(
+      (await validateEnvelope({ entityKind: "database", target: tasksDbId, properties: { name: "Buy milk" } }))?.id,
+    ).toBe(tasksDbId);
+    const type = await createType(PAGE_TYPE);
+    expect(
+      await validateEnvelope({ entityKind: "pageContent", target: type.id, properties: { flavour: "paragraph" } }),
+    ).toBeNull();
   });
 
-  it("resolves to null for a valid 'pageContent' envelope", async () => {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Thought",
-        emoji: "💭",
-        processingMethod: "pageContent",
-      }),
-    );
-
-    const targetDatabase = await withTransaction(pool, (client) =>
-      assertValidProposalEnvelope(client, {
-        entityKind: "pageContent",
-        target: type.id,
-        properties: { flavour: "paragraph" },
-      }),
-    );
-
-    expect(targetDatabase).toBeNull();
-  });
-});
-
-describe("assertValidProposalEnvelope validates envelope relations (issue #1426)", () => {
-  let tasksDbId: string;
-
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    tasksDbId = await databaseIdFor("tasks");
-  });
-
-  async function createProject(properties: Record<string, unknown>): Promise<string> {
-    const projectsId = await databaseIdFor("projects");
-    return withTransaction(
-      pool,
-      async (client) => (await createItemWithClient(client, { databaseId: projectsId, properties })).id,
-    );
-  }
-
-  function validate(relations: Record<string, string[]>, entityKind: "database" | "pageContent" = "database") {
-    return withTransaction(pool, (client) =>
-      assertValidProposalEnvelope(client, {
+  describe("envelope relations", () => {
+    const createProject = async (properties: Record<string, unknown>) =>
+      (
+        await withTransaction(pool, async (client) =>
+          createItemWithClient(client, { databaseId: await databaseIdFor("projects"), properties }),
+        )
+      ).id;
+    const validate = async (relations: Record<string, string[]>, entityKind: "database" | "pageContent" = "database") =>
+      validateEnvelope({
         entityKind,
-        target: tasksDbId,
+        target: await databaseIdFor("tasks"),
         properties: entityKind === "database" ? { name: "Buy milk" } : { flavour: "paragraph" },
         relations,
-      }),
-    );
-  }
+      });
 
-  it("keeps stored relations when the envelope is parsed", async () => {
-    const project = await createProject({ name: "Home" });
-    const stored = {
-      entityKind: "database",
-      target: tasksDbId,
-      properties: { name: "x" },
-      relations: { project: [project] },
-    };
-
-    expect(parseStoredProposalEnvelope(stored, "proposal-id")).toEqual(stored);
-  });
-
-  it("accepts an existing project and an empty array meaning no edge", async () => {
-    const project = await createProject({ name: "Home" });
-    const done = await createProject({ name: "Late invoice", status: "done" });
-
-    await expect(validate({ project: [project] })).resolves.not.toBeNull();
-    await expect(validate({ project: [done] })).resolves.not.toBeNull();
-    await expect(validate({ project: [] })).resolves.not.toBeNull();
-  });
-
-  it("rejects a nonexistent target with the relation key as field", async () => {
-    const error = await validate({ project: ["00000000-0000-4000-8000-000000000001"] }).catch((e: unknown) => e);
-
-    expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).status).toBe(400);
-    expect((error as ValidationError).details).toMatchObject({ field: "project" });
-  });
-
-  it("rejects an archived project with targetArchived", async () => {
-    const project = await createProject({ name: "Old", status: "archived" });
-
-    const error = await validate({ project: [project] }).catch((e: unknown) => e);
-
-    expect((error as ValidationError).details).toEqual({ field: "project", code: "targetArchived" });
-  });
-
-  it("rejects a key that is not a relation property and a duplicated target", async () => {
-    const project = await createProject({ name: "Home" });
-
-    const notRelation = await validate({ name: [project] }).catch((e: unknown) => e);
-    const unknown = await validate({ nope: [project] }).catch((e: unknown) => e);
-    const duplicate = await validate({ project: [project, project] }).catch((e: unknown) => e);
-
-    for (const [error, field] of [
-      [notRelation, "name"],
-      [unknown, "nope"],
-      [duplicate, "project"],
-    ] as const) {
-      expect(error).toBeInstanceOf(ValidationError);
-      expect((error as ValidationError).details).toEqual({ field });
-    }
-  });
-
-  it("rejects relations on a pageContent envelope", async () => {
-    const error = await validate({ project: [] }, "pageContent").catch((e: unknown) => e);
-
-    expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).details).toEqual({ field: "relations" });
-  });
-});
-
-describe("assertValidProposalEnvelope refuses relations the project derives (issue gh-1991)", () => {
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-  });
-
-  async function itemIn(moduleId: string, properties: Record<string, unknown> = {}): Promise<string> {
-    const databaseId = await databaseIdFor(moduleId);
-    return withTransaction(
-      pool,
-      async (client) =>
-        (await createItemWithClient(client, { databaseId, properties: { name: moduleId, ...properties } })).id,
-    );
-  }
-
-  async function validate(moduleId: string, relations?: Record<string, string[]>) {
-    const target = await databaseIdFor(moduleId);
-    return withTransaction(pool, (client) =>
-      assertValidProposalEnvelope(client, {
+    it("keeps stored relations when the envelope is parsed", async () => {
+      const stored = {
         entityKind: "database",
-        target,
-        properties: { name: "Proposal" },
-        ...(relations ? { relations } : {}),
-      }),
-    );
-  }
-
-  async function refusal(moduleId: string, relations: Record<string, string[]>): Promise<unknown> {
-    return validate(moduleId, relations).catch((error: unknown) => error);
-  }
-
-  const derived = (field: string) => ({ status: 400, details: { field, code: "derivedRelation" } });
-
-  it("refuses an Event that sets a company and a project, on company", async () => {
-    const project = await itemIn("projects");
-    const company = await itemIn("companies");
-
-    const error = await refusal("events", { project: [project], company: [company] });
-
-    expect(error).toBeInstanceOf(ValidationError);
-    expect(error).toMatchObject(derived("company"));
-  });
-
-  it("refuses an Event that sets an area and a project, on area", async () => {
-    const error = await refusal("events", { project: [await itemIn("projects")], area: [await itemIn("areas")] });
-
-    expect(error).toBeInstanceOf(ValidationError);
-    expect(error).toMatchObject(derived("area"));
-  });
-
-  it("accepts an Event that sets only a company or only an area, the project being absent or empty", async () => {
-    const company = await itemIn("companies");
-    const area = await itemIn("areas");
-
-    await expect(validate("events", { company: [company] })).resolves.not.toBeNull();
-    await expect(validate("events", { area: [area] })).resolves.not.toBeNull();
-    await expect(validate("events", { project: [], company: [company] })).resolves.not.toBeNull();
-    await expect(validate("events", { project: [await itemIn("projects")], company: [] })).resolves.not.toBeNull();
-  });
-
-  it("refuses a File that sets an area and a project, on area, and accepts the area alone", async () => {
-    const project = await itemIn("projects");
-    const area = await itemIn("areas");
-
-    const error = await refusal("files", { projects: [project], area: [area] });
-
-    expect(error).toBeInstanceOf(ValidationError);
-    expect(error).toMatchObject(derived("area"));
-    await expect(validate("files", { area: [area] })).resolves.not.toBeNull();
-    await expect(validate("files", { projects: [project] })).resolves.not.toBeNull();
-  });
-
-  it("refuses a health record that sets an area and a project, on area", async () => {
-    const error = await refusal("healthRecords", {
-      projects: [await itemIn("projects")],
-      area: [await itemIn("areas")],
+        target: await databaseIdFor("tasks"),
+        properties: { name: "x" },
+        relations: { project: [await createProject({ name: "Home" })] },
+      };
+      expect(parseStoredProposalEnvelope(stored, "proposal-id")).toEqual(stored);
     });
 
-    expect(error).toBeInstanceOf(ValidationError);
-    expect(error).toMatchObject(derived("area"));
+    it("accepts an existing project, a done project and an empty array meaning no edge", async () => {
+      for (const project of [
+        [await createProject({ name: "Home" })],
+        [await createProject({ name: "Late invoice", status: "done" })],
+        [],
+      ])
+        await expect(validate({ project })).resolves.not.toBeNull();
+    });
+
+    it("rejects a nonexistent target, an archived project, a non-relation key, a duplicate and pageContent relations", async () => {
+      const project = await createProject({ name: "Home" });
+      const archived = await createProject({ name: "Old", status: "archived" });
+      for (const [refusal, details, exact] of [
+        [() => validate({ project: ["00000000-0000-4000-8000-000000000001"] }), { field: "project" }, false],
+        [() => validate({ project: [archived] }), { field: "project", code: "targetArchived" }, true],
+        [() => validate({ name: [project] }), { field: "name" }, true],
+        [() => validate({ nope: [project] }), { field: "nope" }, true],
+        [() => validate({ project: [project, project] }), { field: "project" }, true],
+        [() => validate({ project: [] }, "pageContent"), { field: "relations" }, true],
+      ] as const) {
+        const error = await refusalOf(refusal());
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ status: 400, details });
+        if (exact) expect((error as ValidationError).details).toEqual(details);
+      }
+    });
   });
 
-  it("is not affected for a database that has no derived relation, nor for a relation an Event does not derive", async () => {
-    const project = await itemIn("projects");
-    const person = await itemIn("people");
-    const company = await itemIn("companies");
+  describe("relations the project derives", () => {
+    const itemIn = async (moduleId: string) =>
+      (
+        await withTransaction(pool, async (client) =>
+          createItemWithClient(client, { databaseId: await databaseIdFor(moduleId), properties: { name: moduleId } }),
+        )
+      ).id;
+    const validate = async (moduleId: string, relations?: Record<string, string[]>) =>
+      validateEnvelope({
+        entityKind: "database",
+        target: await databaseIdFor(moduleId),
+        properties: { name: "Proposal" },
+        ...(relations ? { relations } : {}),
+      });
 
-    await expect(validate("tasks", { project: [project] })).resolves.not.toBeNull();
-    await expect(validate("events", { project: [project], people: [person] })).resolves.not.toBeNull();
-    await expect(validate("people", { companies: [company] })).resolves.not.toBeNull();
-    // Transcripts has a `company` and a `project` relation too, under the same keys as Events, but derives neither.
-    await expect(validate("transcripts", { project: [project], company: [company] })).resolves.not.toBeNull();
-    await expect(validate("tasks")).resolves.not.toBeNull();
-  });
+    it.each([
+      [
+        "an Event that sets a company and a project",
+        "events",
+        { project: "projects", company: "companies" },
+        "company",
+      ],
+      ["an Event that sets an area and a project", "events", { project: "projects", area: "areas" }, "area"],
+      ["a File that sets an area and a project", "files", { projects: "projects", area: "areas" }, "area"],
+      [
+        "a health record that sets an area and a project",
+        "healthRecords",
+        { projects: "projects", area: "areas" },
+        "area",
+      ],
+    ] as const)("refuses %s, on %s", async (_, moduleId, relationModules, field) => {
+      const relations = Object.fromEntries(
+        await Promise.all(Object.entries(relationModules).map(async ([key, module]) => [key, [await itemIn(module)]])),
+      ) as Record<string, string[]>;
+      const error = await refusalOf(validate(moduleId, relations));
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ status: 400, details: { field, code: "derivedRelation" } });
+    });
 
-  it("refuses the same envelope the tick would write, as needsClarification with no stored envelope", async () => {
-    const project = await itemIn("projects");
-    const company = await itemIn("companies");
-    const databaseIds: TickDatabaseIds = {
-      inboxDatabaseId: await databaseIdFor("inbox"),
-      inboxItemTypesDatabaseId: await databaseIdFor("inboxItemTypes"),
-      processingProposalsDatabaseId: await databaseIdFor("processingProposals"),
-    };
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: databaseIds.inboxItemTypesDatabaseId,
-        name: "Meeting",
-        emoji: "M",
-        processingMethod: "database",
-        targetDatabase: "events",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: databaseIds.inboxDatabaseId,
-        date: "2026-10-16",
-        time: "09:00",
-        text: "Meeting at Acme about the project",
-        type: type.id,
-      }),
-    );
+    it("accepts one side alone, an empty project, and databases or relations that derive nothing", async () => {
+      const project = await itemIn("projects");
+      const company = await itemIn("companies");
+      const area = await itemIn("areas");
+      const person = await itemIn("people");
+      for (const [moduleId, relations] of [
+        ["events", { company: [company] }],
+        ["events", { area: [area] }],
+        ["events", { project: [], company: [company] }],
+        ["events", { project: [project], company: [] }],
+        ["files", { area: [area] }],
+        ["files", { projects: [project] }],
+        ["tasks", { project: [project] }],
+        ["events", { project: [project], people: [person] }],
+        ["people", { companies: [company] }],
+        // Transcripts has a `company` and a `project` relation too, under the same keys as Events, but derives neither.
+        ["transcripts", { project: [project], company: [company] }],
+        ["tasks", undefined],
+      ] satisfies Array<[string, Record<string, string[]> | undefined]>)
+        await expect(validate(moduleId, relations)).resolves.not.toBeNull();
+    });
 
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Meeting" },
-      relations: { project: [project], company: [company] },
-    }));
-
-    const card = await findProposalForItem(pool, databaseIds.processingProposalsDatabaseId, item.id);
-    expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null });
-    expect(JSON.stringify(card?.properties.history)).toContain("derived from the item's project");
+    it("refuses the same envelope the tick would write, as needsClarification with no stored envelope", async () => {
+      const project = await itemIn("projects");
+      const company = await itemIn("companies");
+      const type = await createType({ name: "Meeting", emoji: "M", targetDatabase: "events" });
+      const item = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          date: "2026-10-16",
+          time: "09:00",
+          text: "Meeting at Acme about the project",
+          type: type.id,
+        }),
+      );
+      await tick(item.id, propose({ name: "Meeting" }, { relations: { project: [project], company: [company] } }));
+      const card = await cardOf(item.id);
+      expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null });
+      expect(JSON.stringify(card?.properties.history)).toContain("derived from the item's project");
+    });
   });
 });
 
-describe("assertValidProposalEnvelope validates multi-step envelopes (issue #1479)", () => {
+describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
   let peopleDbId: string;
   let companiesDbId: string;
 
   beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
+    await resetTickDatabases();
     peopleDbId = await databaseIdFor("people");
     companiesDbId = await databaseIdFor("companies");
   });
 
+  const MISSING = "00000000-0000-4000-8000-000000000001";
   const companyStep = {
     ref: "company",
     op: "create" as const,
@@ -5303,6 +3332,7 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
     relations: { companies: [{ ref: "company" }] },
     role: "primary" as const,
   };
+  const lonePerson = { ...personStep, relations: undefined };
 
   function envelopeOf(operations: ProposalStep[], primary = operations.find((s) => s.role === "primary")!) {
     return {
@@ -5312,47 +3342,40 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
       operations,
     };
   }
-
-  function validate(envelope: ProposalEnvelope) {
-    return withTransaction(pool, (client) => assertValidProposalEnvelope(client, envelope));
-  }
-
+  const validate = (envelope: ProposalEnvelope) =>
+    withTransaction(pool, (client) => assertValidProposalEnvelope(client, envelope));
   async function failure(envelope: ProposalEnvelope): Promise<ValidationError> {
     const error = await validate(envelope).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ValidationError);
     if (!(error instanceof ValidationError)) throw error;
     return error;
   }
-
-  async function createItem(moduleId: string, properties: Record<string, unknown>): Promise<string> {
-    const databaseId = await databaseIdFor(moduleId);
-    return withTransaction(pool, async (client) => (await createItemWithClient(client, { databaseId, properties })).id);
-  }
+  const createItem = async (moduleId: string, properties: Record<string, unknown>) =>
+    (
+      await withTransaction(pool, async (client) =>
+        createItemWithClient(client, { databaseId: await databaseIdFor(moduleId), properties }),
+      )
+    ).id;
 
   it("parses and validates a company plus a new person", async () => {
     const stored = envelopeOf([companyStep, personStep]);
-
     const parsed = parseStoredProposalEnvelope(JSON.parse(JSON.stringify(stored)), "p1") as ProposalEnvelope;
-
     expect(parsed.operations).toEqual(stored.operations);
     expect((await validate(parsed))!.id).toBe(peopleDbId);
   });
 
   it("leaves a single-step envelope byte for byte unchanged by parse and stringify", () => {
-    const stored = {
+    const json = JSON.stringify({
       entityKind: "database",
       target: peopleDbId,
       properties: { name: "Jane" },
       relations: { companies: ["a"] },
-    };
-    const json = JSON.stringify(stored);
-
+    });
     expect(JSON.stringify(parseStoredProposalEnvelope(JSON.parse(json), "p1"))).toBe(json);
   });
 
-  it("reports the ref and field of a failing person step", async () => {
+  it("reports the ref and field of a failing person step with status 400", async () => {
     const error = await failure(envelopeOf([companyStep, { ...personStep, properties: { name: "Jane", bogus: 1 } }]));
-
     expect(error.status).toBe(400);
     expect(error.details).toEqual({ ref: "person", field: "bogus" });
   });
@@ -5361,20 +3384,44 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
     const error = await failure(
       envelopeOf([{ ...companyStep, relations: { people: [{ ref: "person" }] } }, personStep]),
     );
-
     expect(error.details).toMatchObject({ field: expect.any(String) });
     expect(error.message).toContain("cycle");
   });
 
-  it("rejects a ref to a missing step", async () => {
-    const error = await failure(envelopeOf([{ ...personStep, relations: { companies: [{ ref: "nope" }] } }]));
-
-    expect(error.details).toEqual({ ref: "person", field: "companies" });
+  it.each<[string, () => ProposalStep[], Record<string, string>, Partial<ProposalEnvelope>?]>([
+    [
+      "a ref to a missing step",
+      () => [{ ...personStep, relations: { companies: [{ ref: "nope" }] } }],
+      { ref: "person", field: "companies" },
+    ],
+    ["duplicate refs", () => [{ ...companyStep, ref: "person" }, personStep], { ref: "person", field: "ref" }],
+    [
+      "a primary step that differs from the top level",
+      () => [companyStep, personStep],
+      { ref: "person", field: "properties" },
+      { properties: { name: "Other" } },
+    ],
+    [
+      "a required step referring to an optional step skipped for a missing reference",
+      () => [{ ...companyStep, optional: true, relations: { people: [{ ref: "missing" }] } }, personStep],
+      { ref: "person", field: "companies" },
+    ],
+    [
+      "an optional step once something refers to it",
+      () => [{ ...companyStep, optional: true, properties: { bogus: 1 } }, personStep],
+      { ref: "company", field: "bogus" },
+    ],
+    [
+      "a required step referring to a disabled step",
+      () => [{ ...companyStep, enabled: false }, personStep],
+      { ref: "person", field: "companies" },
+    ],
+  ])("rejects %s", async (_, operations, details, override = {}) => {
+    expect((await failure({ ...envelopeOf(operations()), ...override })).details).toEqual(details);
   });
 
   it("rejects a forged link before list that names a missing target", async () => {
     const person = await createItem("people", { name: "Jane" });
-    const missing = "00000000-0000-4000-8000-000000000001";
     const error = await failure(
       envelopeOf([
         { ...companyStep, role: "primary" },
@@ -5383,69 +3430,47 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
           op: "link",
           role: "secondary",
           itemId: person,
-          relations: { companies: [missing] },
-          before: { relations: { companies: [missing] } },
+          relations: { companies: [MISSING] },
+          before: { relations: { companies: [MISSING] } },
         },
       ]),
     );
     expect(error.details).toMatchObject({ ref: "person", field: "companies" });
   });
 
-  it("rejects two primary steps and duplicate refs", async () => {
+  it("rejects two primary steps", async () => {
     const twoPrimaries = await failure(envelopeOf([{ ...companyStep, role: "primary" }, personStep], personStep));
-    const duplicate = await failure(envelopeOf([{ ...companyStep, ref: "person" }, personStep]));
-
     expect(twoPrimaries.details).toMatchObject({ field: "role" });
-    expect(duplicate.details).toEqual({ ref: "person", field: "ref" });
   });
 
   it("enforces proposal identity and primary invariants on skipped steps", async () => {
-    const active = { ...personStep, relations: undefined };
     for (const skipped of [
       { ...companyStep, enabled: false, ref: "person" },
       { ...companyStep, optional: true, ref: "person" },
       { ...companyStep, enabled: false, ref: "" },
     ]) {
-      expect((await failure(envelopeOf([active, skipped]))).details).toMatchObject({ field: "ref" });
+      expect((await failure(envelopeOf([lonePerson, skipped]))).details).toMatchObject({ field: "ref" });
     }
     const primary = { ...companyStep, enabled: false, role: "primary" as const };
-    expect((await failure(envelopeOf([active, primary], active))).details).toMatchObject({ field: "role" });
+    expect((await failure(envelopeOf([lonePerson, primary], lonePerson))).details).toMatchObject({ field: "role" });
   });
 
-  it("rejects a primary step that differs from the top level", async () => {
-    const envelope = { ...envelopeOf([companyStep, personStep]), properties: { name: "Other" } };
-
-    expect((await failure(envelope)).details).toEqual({ ref: "person", field: "properties" });
+  it.each<[string, ProposalStep]>([
+    ["a disabled step with an invalid payload", { ...companyStep, enabled: false, properties: { bogus: 1 } }],
+    ["an optional step nobody refers to", { ...companyStep, optional: true, properties: { bogus: 1 } }],
+    [
+      "a bad missing reference on an unreferenced optional step",
+      { ...companyStep, optional: true, relations: { people: [{ ref: "missing" }] } },
+    ],
+    [
+      "a bad company reference on an unreferenced optional step",
+      { ...companyStep, optional: true, relations: { people: [{ ref: "company" }] } },
+    ],
+  ])("ignores %s", async (_, step) => {
+    await expect(validate(envelopeOf([step, lonePerson]))).resolves.not.toBeNull();
   });
 
-  it("ignores a disabled step with an invalid payload", async () => {
-    const disabled = { ...companyStep, enabled: false, properties: { bogus: 1 } };
-
-    await validate(envelopeOf([disabled, { ...personStep, relations: undefined }]));
-  });
-
-  it("ignores an optional step nobody refers to, but validates it once referred to", async () => {
-    const optional = { ...companyStep, optional: true, properties: { bogus: 1 } };
-
-    await validate(envelopeOf([optional, { ...personStep, relations: undefined }]));
-    const error = await failure(envelopeOf([optional, personStep]));
-
-    expect(error.details).toEqual({ ref: "company", field: "bogus" });
-  });
-
-  it.each(["missing", "company"])("ignores a bad %s reference on an unreferenced optional step", async (ref) => {
-    const optional = { ...companyStep, optional: true, relations: { people: [{ ref }] } };
-    await validate(envelopeOf([optional, { ...personStep, relations: undefined }]));
-  });
-
-  it("rejects a required step referring to an optional step skipped for a missing reference", async () => {
-    const optional = { ...companyStep, optional: true, relations: { people: [{ ref: "missing" }] } };
-    const error = await failure(envelopeOf([optional, personStep]));
-    expect(error.details).toEqual({ ref: "person", field: "companies" });
-  });
-
-  it("skips an optional step that refers to a disabled step, but rejects a required one", async () => {
-    const disabled = { ...companyStep, enabled: false };
+  it("skips an optional step that refers to a disabled step", async () => {
     const optionalReferrer = {
       ref: "second",
       op: "create" as const,
@@ -5455,24 +3480,39 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
       role: "secondary" as const,
       optional: true,
     };
-
-    await validate(envelopeOf([disabled, optionalReferrer, { ...personStep, relations: undefined }]));
-    const error = await failure(envelopeOf([disabled, personStep]));
-
-    expect(error.details).toEqual({ ref: "person", field: "companies" });
+    await expect(
+      validate(envelopeOf([{ ...companyStep, enabled: false }, optionalReferrer, lonePerson])),
+    ).resolves.not.toBeNull();
   });
 
   describe("update steps", () => {
+    async function updateEnvelope(step: Partial<ProposalStep>, itemId: string, moduleId = "projects") {
+      const primary: ProposalStep = {
+        ref: "move",
+        op: "update",
+        itemId,
+        properties: step.properties ?? {},
+        role: "primary",
+        ...step,
+      };
+      return {
+        entityKind: "database" as const,
+        target: await databaseIdFor(moduleId),
+        properties: primary.properties ?? {},
+        operations: [primary],
+      };
+    }
+    /** An update step that writes `patch` over `before`, predicting `after` (the patch by default). */
+    const change = (
+      patch: Record<string, unknown>,
+      before: Record<string, unknown>,
+      after: Record<string, unknown> = patch,
+    ): Partial<ProposalStep> => ({ properties: patch, before: { properties: before }, after: { properties: after } });
+    const unpinned = { pinned: false, pinnedOrder: null };
+
     it("prepares a project pin without taking its allocation lock", async () => {
       const project = await createItem("projects", { name: "Project", pinned: false });
-      const envelope = await updateEnvelope(
-        {
-          properties: { pinned: true },
-          before: { properties: { pinned: false, pinnedOrder: null } },
-          after: { properties: { pinned: true } },
-        },
-        project,
-      );
+      const envelope = await updateEnvelope(change({ pinned: true }, unpinned), project);
       await withTransaction(pool, async (client) => {
         const spy = vi.spyOn(client, "query");
         try {
@@ -5486,49 +3526,11 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
       });
     });
 
-    it("validates an explicit pin order and rejects a conflicting after value", async () => {
+    it("validates an explicit pin order", async () => {
       const project = await createItem("projects", { name: "Project", pinned: false });
-      const step: Partial<ProposalStep> = {
-        properties: { pinned: true, pinnedOrder: 7 },
-        before: { properties: { pinned: false, pinnedOrder: null } },
-        after: { properties: { pinned: true, pinnedOrder: 7 } },
-      };
-      await validate(await updateEnvelope(step, project));
-      const error = await failure(
-        await updateEnvelope({ ...step, after: { properties: { pinned: true, pinnedOrder: 8 } } }, project),
-      );
-      expect(error.details).toEqual({ ref: "move", field: "pinnedOrder" });
-    });
-
-    it("rejects a predicted after value for an implicitly allocated pin order", async () => {
-      const project = await createItem("projects", { name: "Project", pinned: false });
-      const error = await failure(
-        await updateEnvelope(
-          {
-            properties: { pinned: true },
-            before: { properties: { pinned: false, pinnedOrder: null } },
-            after: { properties: { pinned: true, pinnedOrder: 1 } },
-          },
-          project,
-        ),
-      );
-      expect(error.details).toEqual({ ref: "move", field: "pinnedOrder" });
-    });
-
-    it("validates a Books year through its registered preparation", async () => {
-      const book = await createItem("books", { name: "Book" });
-      const error = await failure(
-        await updateEnvelope(
-          {
-            properties: { year: "invalid" },
-            before: { properties: { year: null } },
-            after: { properties: { year: "invalid" } },
-          },
-          book,
-          "books",
-        ),
-      );
-      expect(error.details).toMatchObject({ ref: "move", field: "year" });
+      await expect(
+        validate(await updateEnvelope(change({ pinned: true, pinnedOrder: 7 }, unpinned), project)),
+      ).resolves.not.toBeNull();
     });
 
     it("fails closed without invoking an unprepared registered transform", async () => {
@@ -5564,29 +3566,134 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
       expect(calls).toBe(0);
     });
 
-    async function updateEnvelope(step: Partial<ProposalStep>, itemId: string, moduleId = "projects") {
-      const primary: ProposalStep = {
-        ref: "move",
-        op: "update",
-        itemId,
-        properties: step.properties ?? {},
-        role: "primary",
-        ...step,
-      };
-      return {
-        entityKind: "database" as const,
-        target: await databaseIdFor(moduleId),
-        properties: primary.properties ?? {},
-        operations: [primary],
-      };
-    }
-
-    it("rejects a missing step referenced only by an update's after relations", async () => {
-      const project = await createItem("projects", { name: "Home" });
-      const error = await failure(
-        await updateEnvelope({ after: { relations: { area: [{ ref: "missing" }] } } }, project),
-      );
-      expect(error.details).toEqual({ ref: "move", field: "area" });
+    type Refusal = [
+      description: string,
+      moduleId: string,
+      item: Record<string, unknown> | null,
+      step: Partial<ProposalStep>,
+      details: Record<string, string>,
+      exact: boolean,
+    ];
+    it.each<Refusal>([
+      [
+        "a conflicting explicit pin order",
+        "projects",
+        { name: "P", pinned: false },
+        change({ pinned: true, pinnedOrder: 7 }, unpinned, { pinned: true, pinnedOrder: 8 }),
+        { field: "pinnedOrder" },
+        true,
+      ],
+      [
+        "a predicted after value for an implicitly allocated pin order",
+        "projects",
+        { name: "P", pinned: false },
+        change({ pinned: true }, unpinned, { pinned: true, pinnedOrder: 1 }),
+        { field: "pinnedOrder" },
+        true,
+      ],
+      [
+        "an invalid Books year through its registered preparation",
+        "books",
+        { name: "Book" },
+        change({ year: "invalid" }, { year: null }),
+        { field: "year" },
+        false,
+      ],
+      [
+        "a missing step referenced only by an update's after relations",
+        "projects",
+        { name: "Home" },
+        { after: { relations: { area: [{ ref: "missing" }] } } },
+        { field: "area" },
+        true,
+      ],
+      ["a blank title", "projects", { name: "Home" }, change({ name: "" }, { name: "Home" }), { field: "name" }, true],
+      [
+        "an invalid Tasks date through its registered preparation",
+        "tasks",
+        { name: "Task" },
+        change({ date: "2026-02-30" }, { date: null }),
+        { field: "date" },
+        false,
+      ],
+      [
+        "an invalid Tasks timeFrom through its registered preparation",
+        "tasks",
+        { name: "Task" },
+        change({ timeFrom: "10:00" }, { timeFrom: null }),
+        { field: "timeFrom" },
+        false,
+      ],
+      [
+        "an after-only relation with no before coverage",
+        "projects",
+        { name: "Home" },
+        { after: { relations: { area: [] } } },
+        { field: "area" },
+        true,
+      ],
+      [
+        "a conflicting after property",
+        "projects",
+        { name: "Home" },
+        change({ name: "Next" }, { name: "Home" }, { name: "Other" }),
+        { field: "name" },
+        true,
+      ],
+      [
+        "an unsupported redundant after property",
+        "projects",
+        { name: "Home", pinned: false },
+        change({ name: "Next" }, { name: "Home", pinned: false }, { name: "Next", pinned: false }),
+        { field: "pinned" },
+        true,
+      ],
+      [
+        "an invalid after-only relation target",
+        "projects",
+        { name: "Home" },
+        { before: { relations: { area: [] } }, after: { relations: { area: [MISSING] } } },
+        { field: "area" },
+        false,
+      ],
+      [
+        "a forged update before target as an existing edge",
+        "projects",
+        { name: "Home" },
+        { before: { relations: { area: [MISSING] } }, after: { relations: { area: [MISSING] } } },
+        { field: "area" },
+        false,
+      ],
+      [
+        "a system-owned property",
+        "tasks",
+        { name: "Buy milk" },
+        change({ time: "x" }, { time: null }),
+        { field: "time" },
+        true,
+      ],
+      [
+        "recurrence commands, unavailable to Inbox proposal envelopes",
+        "tasks",
+        { name: "Task", date: "2026-10-22" },
+        change({ recurrence: { preset: "weekly" } }, { recurrence: null }),
+        { field: "recurrence" },
+        true,
+      ],
+      [
+        "a changed key that is missing from before",
+        "projects",
+        { name: "Home", status: "inProgress" },
+        { properties: { status: "done" }, before: {}, after: { properties: { status: "done" } } },
+        { field: "status" },
+        true,
+      ],
+      ["an item that does not exist", "projects", null, { properties: { status: "done" } }, { field: "itemId" }, true],
+    ])("rejects %s with the step's ref and field", async (_, moduleId, item, step, details, exact) => {
+      const itemId = item ? await createItem(moduleId, item) : MISSING;
+      const error = await failure(await updateEnvelope(step, itemId, moduleId));
+      if (exact) expect(error.details).toEqual({ ref: "move", ...details });
+      else expect(error.details).toMatchObject({ ref: "move", ...details });
     });
 
     it("rejects a cycle through an update's after relations", async () => {
@@ -5600,209 +3707,81 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         properties: { name: "Work" },
         relations: { projects: [{ ref: "move" }] },
       });
-      const error = await failure(envelope);
-      expect(error.details).toMatchObject({ ref: "area", field: "projects" });
+      expect((await failure(envelope)).details).toMatchObject({ ref: "area", field: "projects" });
     });
 
-    it("accepts an update step changing a project's status", async () => {
+    it("accepts an update step changing a project's status or moving it to another area", async () => {
       const project = await createItem("projects", { name: "Home", status: "inProgress" });
-
-      await validate(
-        await updateEnvelope(
-          {
-            properties: { status: "done" },
-            before: { properties: { status: "inProgress" } },
-            after: { properties: { status: "done" } },
-          },
-          project,
-        ),
-      );
-    });
-
-    it("rejects a blank title with the update field and ref", async () => {
-      const project = await createItem("projects", { name: "Home" });
-      const error = await failure(
-        await updateEnvelope(
-          {
-            properties: { name: "" },
-            before: { properties: { name: "Home" } },
-            after: { properties: { name: "" } },
-          },
-          project,
-        ),
-      );
-      expect(error.details).toEqual({ ref: "move", field: "name" });
-    });
-
-    it.each([
-      [{ date: "2026-02-30" }, { date: null }, "date"],
-      [{ timeFrom: "10:00" }, { timeFrom: null }, "timeFrom"],
-    ])("rejects an invalid Tasks schedule through its registered preparation", async (patch, before, field) => {
-      const task = await createItem("tasks", { name: "Task" });
-      const error = await failure(
-        await updateEnvelope(
-          {
-            properties: patch,
-            before: { properties: before },
-            after: { properties: patch },
-          },
-          task,
-          "tasks",
-        ),
-      );
-      expect(error.details).toMatchObject({ ref: "move", field });
-    });
-
-    it("rejects an after-only relation with no before coverage", async () => {
-      const project = await createItem("projects", { name: "Home" });
-      const error = await failure(await updateEnvelope({ after: { relations: { area: [] } } }, project));
-      expect(error.details).toEqual({ ref: "move", field: "area" });
-    });
-
-    it("rejects a conflicting after property", async () => {
-      const project = await createItem("projects", { name: "Home" });
-      const error = await failure(
-        await updateEnvelope(
-          {
-            properties: { name: "Next" },
-            before: { properties: { name: "Home" } },
-            after: { properties: { name: "Other" } },
-          },
-          project,
-        ),
-      );
-      expect(error.details).toEqual({ ref: "move", field: "name" });
-    });
-
-    it("rejects an unsupported redundant after property", async () => {
-      const project = await createItem("projects", { name: "Home", pinned: false });
-      const error = await failure(
-        await updateEnvelope(
-          {
-            properties: { name: "Next" },
-            before: { properties: { name: "Home", pinned: false } },
-            after: { properties: { name: "Next", pinned: false } },
-          },
-          project,
-        ),
-      );
-      expect(error.details).toEqual({ ref: "move", field: "pinned" });
+      await expect(
+        validate(await updateEnvelope(change({ status: "done" }, { status: "inProgress" }), project)),
+      ).resolves.not.toBeNull();
+      const oldArea = await createItem("areas", { name: "Old" });
+      const newArea = await createItem("areas", { name: "New" });
+      const step = {
+        relations: { area: [newArea] },
+        before: { relations: { area: [oldArea] } },
+        after: { relations: { area: [newArea] } },
+      };
+      await expect(validate(await updateEnvelope(step, project))).resolves.not.toBeNull();
     });
 
     it("rejects conflicting relation representations", async () => {
       const project = await createItem("projects", { name: "Home" });
       const first = await createItem("areas", { name: "First" });
       const second = await createItem("areas", { name: "Second" });
-      const error = await failure(
-        await updateEnvelope(
-          {
-            relations: { area: [first] },
-            before: { relations: { area: [] } },
-            after: { relations: { area: [second] } },
-          },
-          project,
-        ),
-      );
-      expect(error.details).toEqual({ ref: "move", field: "area" });
+      const step = {
+        relations: { area: [first] },
+        before: { relations: { area: [] } },
+        after: { relations: { area: [second] } },
+      };
+      expect((await failure(await updateEnvelope(step, project))).details).toEqual({ ref: "move", field: "area" });
     });
 
-    it("rejects an invalid after-only relation target", async () => {
-      const project = await createItem("projects", { name: "Home" });
-      const error = await failure(
-        await updateEnvelope(
-          {
-            before: { relations: { area: [] } },
-            after: { relations: { area: ["00000000-0000-4000-8000-000000000001"] } },
-          },
-          project,
+    /** Links `callerItemId` to `targetItemId` through `moduleId.key` in a tenant scope, as a request does. */
+    async function link(moduleId: string, key: string, callerItemId: string, targetItemId: string) {
+      const property = await withTransaction(pool, async (client) =>
+        propertiesStore.getPropertyByKey(client, await databaseIdFor(moduleId), key),
+      );
+      if (!property) throw new Error(`Missing ${moduleId}.${key}`);
+      // A write of a Tasks.project edge queues value-link propagation, which needs the tenant scope.
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          createRelationWithClient(client, { relationPropertyId: property.id, callerItemId, targetItemId }),
         ),
       );
-      expect(error.details).toMatchObject({ ref: "move", field: "area" });
-    });
-
-    it("does not treat a forged update before target as an existing edge", async () => {
-      const project = await createItem("projects", { name: "Home" });
-      const missing = "00000000-0000-4000-8000-000000000001";
-      const error = await failure(
-        await updateEnvelope(
-          {
-            before: { relations: { area: [missing] } },
-            after: { relations: { area: [missing] } },
-          },
-          project,
-        ),
-      );
-      expect(error.details).toMatchObject({ ref: "move", field: "area" });
-    });
+    }
 
     it("validates an actually retained edge and rejects its archived or deleted target", async () => {
       const project = await createItem("projects", { name: "Project", status: "inProgress" });
       const task = await createItem("tasks", { name: "Task" });
-      const tasksDb = await databaseIdFor("tasks");
-      const databaseIdForProject = await databaseIdFor("projects");
-      const property = await withTransaction(pool, (client) =>
-        propertiesStore.getPropertyByKey(client, tasksDb, "project"),
-      );
-      if (!property) throw new Error("Missing Tasks.project");
-      // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation (issue #1702).
-      await runInTenant(getTenantZeroId(), () =>
-        withTransaction(pool, (client) =>
-          createRelationWithClient(client, {
-            relationPropertyId: property.id,
-            callerItemId: task,
-            targetItemId: project,
-          }),
-        ),
-      );
-      const envelope = await updateEnvelope(
-        {
-          before: { relations: { project: [project] } },
-          after: { relations: { project: [project] } },
-        },
-        task,
-        "tasks",
-      );
-      await validate(envelope);
-      // In a tenant scope, as a request is: a Projects status update queues value-link propagation (issue gh-1869).
+      const projectsDb = await databaseIdFor("projects");
+      await link("tasks", "project", task, project);
+      const retained = { before: { relations: { project: [project] } }, after: { relations: { project: [project] } } };
+      const envelope = await updateEnvelope(retained, task, "tasks");
+      await expect(validate(envelope)).resolves.not.toBeNull();
+      // In a tenant scope, as a request is: a Projects status update queues value-link propagation.
       await runInTenant(getTenantZeroId(), () =>
         withTransaction(pool, (client) =>
           updateItemWithClient(client, {
-            databaseId: databaseIdForProject,
+            databaseId: projectsDb,
             itemId: project,
             propertiesPatch: { status: "archived" },
           }),
         ),
       );
-      expect((await failure(envelope)).details).toMatchObject({
-        ref: "move",
-        field: "project",
-        code: "targetArchived",
-      });
-      await createChokePoint(pool).softDeleteItem(databaseIdForProject, project);
-      expect((await failure(envelope)).details).toMatchObject({ ref: "move", field: "project", code: "targetDeleted" });
+      const refused = { ref: "move", field: "project" };
+      expect((await failure(envelope)).details).toMatchObject({ ...refused, code: "targetArchived" });
+      await createChokePoint(pool).softDeleteItem(projectsDb, project);
+      expect((await failure(envelope)).details).toMatchObject({ ...refused, code: "targetDeleted" });
     });
 
     it("exempts only the retained edge from target-side cardinality", async () => {
       const first = await createItem("projects", { name: "First" });
       const second = await createItem("projects", { name: "Second" });
       const task = await createItem("tasks", { name: "Task" });
-      const projectsDb = await databaseIdFor("projects");
-      const property = await withTransaction(pool, (client) =>
-        propertiesStore.getPropertyByKey(client, projectsDb, "tasks"),
-      );
-      if (!property) throw new Error("Missing Projects.tasks");
-      // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation (issue #1702).
-      await runInTenant(getTenantZeroId(), () =>
-        withTransaction(pool, (client) =>
-          createRelationWithClient(client, {
-            relationPropertyId: property.id,
-            callerItemId: first,
-            targetItemId: task,
-          }),
-        ),
-      );
+      await link("projects", "tasks", first, task);
       const step = { before: { relations: { tasks: [task] } }, after: { relations: { tasks: [task] } } };
-      await validate(await updateEnvelope(step, first));
+      await expect(validate(await updateEnvelope(step, first))).resolves.not.toBeNull();
       await expect(validate(await updateEnvelope(step, second))).rejects.toMatchObject({
         status: 409,
         details: { ref: "move", field: "tasks" },
@@ -5838,354 +3817,120 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         await runtime.end();
       }
     });
-
-    it("accepts an update step moving a project to another area", async () => {
-      const oldArea = await createItem("areas", { name: "Old" });
-      const newArea = await createItem("areas", { name: "New" });
-      const project = await createItem("projects", { name: "Home" });
-
-      await validate(
-        await updateEnvelope(
-          {
-            relations: { area: [newArea] },
-            before: { relations: { area: [oldArea] } },
-            after: { relations: { area: [newArea] } },
-          },
-          project,
-        ),
-      );
-    });
-
-    it("rejects a system-owned property with the step's ref and field", async () => {
-      const task = await createItem("tasks", { name: "Buy milk" });
-
-      const error = await failure(
-        await updateEnvelope(
-          { properties: { time: "x" }, before: { properties: { time: null } }, after: { properties: { time: "x" } } },
-          task,
-          "tasks",
-        ),
-      );
-
-      expect(error.details).toEqual({ ref: "move", field: "time" });
-    });
-
-    it("keeps recurrence commands unavailable to Inbox proposal envelopes", async () => {
-      const task = await createItem("tasks", { name: "Task", date: "2026-10-22" });
-      const error = await failure(
-        await updateEnvelope(
-          {
-            properties: { recurrence: { preset: "weekly" } },
-            before: { properties: { recurrence: null } },
-            after: { properties: { recurrence: { preset: "weekly" } } },
-          },
-          task,
-          "tasks",
-        ),
-      );
-      expect(error.details).toEqual({ ref: "move", field: "recurrence" });
-    });
-
-    it("rejects a changed key that is missing from before", async () => {
-      const project = await createItem("projects", { name: "Home", status: "inProgress" });
-
-      const error = await failure(
-        await updateEnvelope(
-          { properties: { status: "done" }, before: {}, after: { properties: { status: "done" } } },
-          project,
-        ),
-      );
-
-      expect(error.details).toEqual({ ref: "move", field: "status" });
-    });
-
-    it("rejects an item that does not exist", async () => {
-      const error = await failure(
-        await updateEnvelope({ properties: { status: "done" } }, "00000000-0000-4000-8000-000000000001"),
-      );
-
-      expect(error.details).toEqual({ ref: "move", field: "itemId" });
-    });
   });
 });
 
-describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
-  let databaseIds: TickDatabaseIds;
-
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    inboxId = await databaseIdFor("inbox");
-    typesId = await databaseIdFor("inboxItemTypes");
-    proposalsId = await databaseIdFor("processingProposals");
-    databaseIds = {
-      inboxDatabaseId: inboxId,
-      inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
-  });
-
-  async function createTaskType() {
-    return withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
+describe("aiProposal, aiVersion and referencedItemIds on the tick's writes", () => {
+  beforeEach(resetTickDatabases);
+  const createProject = async (name: string) =>
+    (
+      await withTransaction(pool, async (client) =>
+        createItemWithClient(client, { databaseId: await databaseIdFor("projects"), properties: { name } }),
+      )
+    ).id;
+  const referencedOf = (card: { id: string; properties: Record<string, unknown> }) =>
+    referencedItemIdsOf(parseStoredProposalEnvelope(card.properties.proposal, card.id) as ProposalEnvelope);
+  /** Ticks after a text edit, proposing `name` with optional relations. */
+  async function recompute(itemId: string, name: string, relations?: Record<string, string[]>) {
+    await storeEdit(inboxId, itemId, { text: name });
+    await tick(itemId, propose({ name }, relations ? { relations } : {}));
+    return requireCard(itemId);
   }
 
-  async function createTaskItem(text: string, typeId: string) {
-    return withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text,
-        type: typeId,
-      }),
-    );
-  }
-
-  async function editText(itemId: string, text: string) {
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId, propertiesPatch: { text } }),
-    );
-  }
-
-  it("the tick's create stores aiProposal equal to proposal at aiVersion 1", async () => {
-    const type = await createTaskType();
-    const item = await createTaskItem("Buy milk", type.id);
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties.proposal).toBeTruthy();
-    expect(proposal!.properties.aiProposal).toEqual(proposal!.properties.proposal);
-    expect(proposal!.properties.aiVersion).toBe(1);
-  });
-
-  it("a recompute after a source change stores the new envelope at aiVersion 2, and the next one at 3", async () => {
-    const type = await createTaskType();
-    const item = await createTaskItem("Buy milk", type.id);
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-
-    await editText(item.id, "Buy milk and eggs");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
-    const second = await findProposalForItem(pool, proposalsId, item.id);
-    expect(second!.properties.aiProposal).toEqual({
+  it("the create stores aiProposal equal to proposal at aiVersion 1, and each recompute counts one more version", async () => {
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const created = await requireCard(item.id);
+    expect(created.properties.proposal).toBeTruthy();
+    expect(created.properties.aiProposal).toEqual(created.properties.proposal);
+    expect(created.properties.aiVersion).toBe(1);
+    const second = await recompute(item.id, "Buy milk and eggs");
+    expect(second.properties.aiProposal).toEqual({
       entityKind: "database",
       target: await databaseIdFor("tasks"),
       properties: { name: "Buy milk and eggs" },
     });
-    expect(second!.properties.aiProposal).toEqual(second!.properties.proposal);
-    expect(second!.properties.aiVersion).toBe(2);
-
-    await editText(item.id, "Buy oat milk");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy oat milk" } }));
-    const third = await findProposalForItem(pool, proposalsId, item.id);
-    expect(third!.properties.aiProposal).toEqual(third!.properties.proposal);
-    expect(third!.properties.aiVersion).toBe(3);
+    expect(second.properties.aiProposal).toEqual(second.properties.proposal);
+    expect(second.properties.aiVersion).toBe(2);
+    const third = await recompute(item.id, "Buy oat milk");
+    expect(third.properties.aiProposal).toEqual(third.properties.proposal);
+    expect(third.properties.aiVersion).toBe(3);
   });
 
-  it("an untyped item's needsClarification stores null aiProposal and aiVersion 1", async () => {
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "no type",
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => {
-      return { properties: {}, candidates: [] };
-    });
-
-    const proposal = await findProposalForItem(pool, proposalsId, item.id);
-    expect(proposal!.properties).toMatchObject({
+  it("an untyped item's needsClarification stores null aiProposal, aiVersion 1 and no references", async () => {
+    const item = await createSource({ text: "no type" });
+    await tick(item.id, unrecognized);
+    expect((await requireCard(item.id)).properties).toMatchObject({
       status: "needsClarification",
       proposal: null,
       aiProposal: null,
       aiVersion: 1,
+      referencedItemIds: [],
     });
   });
 
-  it("a needsClarification written over an existing card nulls aiProposal and counts one more version", async () => {
-    const type = await createTaskType();
-    const item = await createTaskItem("Buy milk", type.id);
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const before = await findProposalForItem(pool, proposalsId, item.id);
-    expect(before!.properties.aiVersion).toBe(1);
-
+  it("a needsClarification written over a card that referenced a project nulls aiProposal, clears the ids and counts one more version", async () => {
+    const project = await createProject("Alpha");
+    const { type, item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }, { relations: { project: [project] } }));
+    const before = await requireCard(item.id);
+    expect(before.properties).toMatchObject({ aiVersion: 1, referencedItemIds: [project] });
+    expect(before.properties.referencedItemIds).toEqual(referencedOf(before));
     // Taking the type off the item makes it untyped, so the tick writes needsClarification over the card.
-    await withTransaction(pool, async (client) => {
-      const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
-      await deleteRelationWithClient(client, {
-        relationPropertyId: typeProperty!.id,
-        callerItemId: item.id,
-        targetItemId: type.id,
-      });
-    });
-    await runTick(pool, databaseIds, item.id, async () => {
-      return { properties: {}, candidates: [] };
-    });
-
-    const after = await findProposalForItem(pool, proposalsId, item.id);
-    expect(after!.id).toBe(before!.id);
-    expect(after!.properties).toMatchObject({
+    await setSourceType(item.id, { remove: type.id });
+    await tick(item.id, unrecognized);
+    const after = await requireCard(item.id);
+    expect(after.id).toBe(before.id);
+    expect(after.properties).toMatchObject({
       status: "needsClarification",
       proposal: null,
       aiProposal: null,
       aiVersion: 2,
+      referencedItemIds: [],
     });
   });
 
   it("invalidating a card for a deleted source leaves its aiProposal and aiVersion as they were", async () => {
-    const type = await createTaskType();
-    const item = await createTaskItem("Buy milk", type.id);
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const before = await findProposalForItem(pool, proposalsId, item.id);
-
-    await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, item.id));
-    await runTick(pool, databaseIds, item.id, async () => {
-      throw new Error("computeProposal must not be called for a deleted source");
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const before = await requireCard(item.id);
+    await trashSource(item.id);
+    await tick(item.id, noCompute("computeProposal must not be called for a deleted source"));
+    expect((await requireCard(item.id)).properties).toMatchObject({
+      status: "invalid",
+      aiProposal: before.properties.aiProposal,
+      aiVersion: 1,
     });
-
-    const invalidated = await findProposalForItem(pool, proposalsId, item.id);
-    expect(invalidated!.properties.status).toBe("invalid");
-    expect(invalidated!.properties.aiProposal).toEqual(before!.properties.aiProposal);
-    expect(invalidated!.properties.aiVersion).toBe(1);
   });
 
   it("a legacy card without aiProposal reads its proposal, and its next automated write sets aiProposal at aiVersion 1", async () => {
-    const type = await createTaskType();
-    const item = await createTaskItem("Buy milk", type.id);
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const created = await findProposalForItem(pool, proposalsId, item.id);
-
-    // A card written before aiProposal and aiVersion existed: no current writer can produce that state.
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const created = await requireCard(item.id);
+    // A card without aiProposal and aiVersion: no current writer can produce that state.
     await pool.query("UPDATE items SET properties = properties - 'aiProposal' - 'aiVersion' WHERE id = $1", [
-      created!.id,
+      created.id,
     ]);
-    const legacy = await findProposalForItem(pool, proposalsId, item.id);
-    expect(legacy!.properties).not.toHaveProperty("aiProposal");
-    expect(legacy!.properties).not.toHaveProperty("aiVersion");
-    expect(readAiProposal(legacy!.properties, legacy!.id)).toEqual(created!.properties.proposal);
-
-    await editText(item.id, "Buy milk and eggs");
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
-
-    const revised = await findProposalForItem(pool, proposalsId, item.id);
-    expect(revised!.properties.aiProposal).toEqual(revised!.properties.proposal);
-    expect(revised!.properties.aiVersion).toBe(1);
-  });
-});
-
-describe("referencedItemIds on the tick's writes (issue #1916)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
-  let projectsId: string;
-  let databaseIds: TickDatabaseIds;
-
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    inboxId = await databaseIdFor("inbox");
-    typesId = await databaseIdFor("inboxItemTypes");
-    proposalsId = await databaseIdFor("processingProposals");
-    projectsId = await databaseIdFor("projects");
-    databaseIds = {
-      inboxDatabaseId: inboxId,
-      inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
+    const legacy = await requireCard(item.id);
+    expect(legacy.properties).not.toHaveProperty("aiProposal");
+    expect(legacy.properties).not.toHaveProperty("aiVersion");
+    expect(readAiProposal(legacy.properties, legacy.id)).toEqual(created.properties.proposal);
+    const revised = await recompute(item.id, "Buy milk and eggs");
+    expect(revised.properties.aiProposal).toEqual(revised.properties.proposal);
+    expect(revised.properties.aiVersion).toBe(1);
   });
 
-  const createProject = (name: string) =>
-    withTransaction(
-      pool,
-      async (client) => (await createItemWithClient(client, { databaseId: projectsId, properties: { name } })).id,
-    );
-
-  async function createTaskSource(text: string) {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text,
-        type: type.id,
-      }),
-    );
-    return { type, item };
-  }
-
-  const cardOf = async (itemId: string) => (await findProposalForItem(pool, proposalsId, itemId))!;
-
-  it("the create stores the ids of the envelope's relation targets", async () => {
-    const project = await createProject("Alpha");
-    const { item } = await createTaskSource("Buy milk");
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk" },
-      relations: { project: [project] },
-    }));
-
-    const card = await cardOf(item.id);
-    expect(card.properties.referencedItemIds).toEqual([project]);
-    expect(card.properties.referencedItemIds).toEqual(
-      referencedItemIdsOf(parseStoredProposalEnvelope(card.properties.proposal, card.id) as ProposalEnvelope),
-    );
-  });
-
-  it("the create of an envelope without relations stores an empty list", async () => {
-    const { item } = await createTaskSource("Buy milk");
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-
-    expect((await cardOf(item.id)).properties.referencedItemIds).toEqual([]);
-  });
-
-  it("a recompute replaces the ids with those of the new envelope", async () => {
+  it("an envelope without relations stores no ids, and a recompute replaces them with those of the new envelope", async () => {
     const [first, second] = [await createProject("Alpha"), await createProject("Beta")];
-    const { item } = await createTaskSource("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk" },
-      relations: { project: [first] },
-    }));
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: inboxId,
-        itemId: item.id,
-        propertiesPatch: { text: "Buy milk and eggs" },
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk and eggs" },
-      relations: { project: [second] },
-    }));
-
-    expect((await cardOf(item.id)).properties.referencedItemIds).toEqual([second]);
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    expect((await requireCard(item.id)).properties.referencedItemIds).toEqual([]);
+    expect((await recompute(item.id, "Buy milk and eggs", { project: [first] })).properties.referencedItemIds).toEqual([
+      first,
+    ]);
+    expect((await recompute(item.id, "Buy oat milk", { project: [second] })).properties.referencedItemIds).toEqual([
+      second,
+    ]);
   });
 
   it("a recompute of a card the user edited stores the ids of the proposal it stores, not of the assistant's envelope", async () => {
@@ -6194,267 +3939,137 @@ describe("referencedItemIds on the tick's writes (issue #1916)", () => {
       await createProject("Beta"),
       await createProject("Gamma"),
     ];
-    const { item } = await createTaskSource("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk" },
-      relations: { project: [assistant] },
-    }));
-    const card = await cardOf(item.id);
+    const { item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }, { relations: { project: [assistant] } }));
+    const card = await requireCard(item.id);
     await withTransaction(pool, (client) =>
       updateProposalValuesWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id, {
         set: { primary: { name: "Typed title" } },
         relations: { primary: { project: [chosen] } },
       }),
     );
-    expect((await cardOf(item.id)).properties.referencedItemIds).toEqual([chosen]);
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, {
-        databaseId: inboxId,
-        itemId: item.id,
-        propertiesPatch: { text: "Buy milk and eggs" },
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk and eggs" },
-      relations: { project: [recomputed] },
-    }));
-
-    const revised = await cardOf(item.id);
+    expect((await requireCard(item.id)).properties.referencedItemIds).toEqual([chosen]);
+    const revised = await recompute(item.id, "Buy milk and eggs", { project: [recomputed] });
     expect(revised.properties.aiProposal).toMatchObject({ relations: { project: [recomputed] } });
-    expect(revised.properties.referencedItemIds).toEqual(
-      referencedItemIdsOf(parseStoredProposalEnvelope(revised.properties.proposal, revised.id) as ProposalEnvelope),
-    );
+    expect(revised.properties.referencedItemIds).toEqual(referencedOf(revised));
     expect(revised.properties.referencedItemIds).toHaveLength(1);
-  });
-
-  it("an untyped item's needsClarification stores an empty list", async () => {
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "no type",
-      }),
-    );
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: {}, candidates: [] }));
-
-    expect((await cardOf(item.id)).properties).toMatchObject({ status: "needsClarification", referencedItemIds: [] });
-  });
-
-  it("a needsClarification written over a card that referenced a project clears the ids", async () => {
-    const project = await createProject("Alpha");
-    const { type, item } = await createTaskSource("Buy milk");
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk" },
-      relations: { project: [project] },
-    }));
-    expect((await cardOf(item.id)).properties.referencedItemIds).toEqual([project]);
-
-    await withTransaction(pool, async (client) => {
-      const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
-      await deleteRelationWithClient(client, {
-        relationPropertyId: typeProperty!.id,
-        callerItemId: item.id,
-        targetItemId: type.id,
-      });
-    });
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: {}, candidates: [] }));
-
-    expect((await cardOf(item.id)).properties).toMatchObject({ status: "needsClarification", referencedItemIds: [] });
   });
 });
 
-describe("semprec.tick keeps user-edited keys when it recomputes a proposal (issue #1921)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
+describe("semprec.tick keeps user-edited keys when it recomputes a proposal", () => {
   let tasksId: string;
-  let databaseIds: TickDatabaseIds;
-
   beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    inboxId = await databaseIdFor("inbox");
-    typesId = await databaseIdFor("inboxItemTypes");
-    proposalsId = await databaseIdFor("processingProposals");
+    await resetTickDatabases();
     tasksId = await databaseIdFor("tasks");
-    databaseIds = {
-      inboxDatabaseId: inboxId,
-      inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
   });
 
   const config = () => ({ processingProposalsDatabaseId: proposalsId });
   const RECOMPUTE_MESSAGE = "Revised the proposal after the source item changed.";
+  const recomputeEntry = { message: RECOMPUTE_MESSAGE, kind: "recompute" };
 
-  /** A typed Task item whose first tick stored a `proposed` card; the card is returned as the tick wrote it. */
   async function seedCard() {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk", description: "From the shop" },
-    }));
-    const card = await findProposalForItem(pool, proposalsId, item.id);
-    if (!card) throw new Error("the first tick wrote no card");
-    return { type, item, card };
+    const { type, item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk", description: "From the shop" }));
+    return { type, item, card: await requireCard(item.id) };
   }
-
   async function readCard(cardId: string) {
     const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, cardId));
     if (!card) throw new Error(`card ${cardId} not found`);
     return card;
   }
-
-  /** A manual `PATCH values` of the card, through the production function; answers the updated card. */
-  async function editValues(cardId: string, values: Record<string, unknown>) {
-    const { item } = await withTransaction(pool, (client) =>
-      updateProposalValuesWithClient(client, config(), cardId, { set: { primary: values } }),
-    );
-    return item;
-  }
-
-  async function editText(itemId: string, text: string) {
-    await withTransaction(pool, (client) =>
-      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId, propertiesPatch: { text } }),
-    );
-  }
-
-  function historyOf(card: { properties: Record<string, unknown> }) {
-    return z
-      .array(z.object({ author: z.string(), message: z.string(), kind: z.string().optional() }))
-      .parse(card.properties.history);
-  }
-
+  const editValues = async (cardId: string, values: Record<string, unknown>) =>
+    (
+      await withTransaction(pool, (client) =>
+        updateProposalValuesWithClient(client, config(), cardId, { set: { primary: values } }),
+      )
+    ).item;
+  const editText = (itemId: string, text: string) => storeEdit(inboxId, itemId, { text });
   const envelopeOf = (properties: Record<string, unknown>, target = tasksId) => ({
     entityKind: "database",
     target,
     properties,
   });
+  /** A seeded card with a manual title and a changed source, ready for a recompute. */
+  async function seedEditedCard(values: Record<string, unknown> = { name: "My own title" }) {
+    const seeded = await seedCard();
+    await editValues(seeded.card.id, values);
+    await editText(seeded.item.id, "Buy milk and eggs");
+    return seeded;
+  }
 
-  it("a recompute after the source text changed keeps the edited title and takes the other fields from the assistant", async () => {
-    const { item, card } = await seedCard();
-    await editValues(card.id, { name: "My own title" });
-    await editText(item.id, "Buy milk and eggs");
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk and eggs", description: "Two things" },
-    }));
-
+  it.each([
+    ["keeps the edited title and takes the other fields from the assistant", { name: "My own title" }],
+    // A value that became equal is not "dropped": the history entry names nothing.
+    [
+      "drops a key whose manual value now equals the new assistant value",
+      { name: "My own title", description: "Two things" },
+    ],
+  ])("a recompute after the source text changed %s", async (_, values) => {
+    const { item, card } = await seedEditedCard(values);
+    await tick(item.id, propose({ name: "Buy milk and eggs", description: "Two things" }));
     const after = await readCard(card.id);
-    expect(after.properties.aiProposal).toEqual(envelopeOf({ name: "Buy milk and eggs", description: "Two things" }));
-    expect(after.properties.aiVersion).toBe(2);
-    expect(after.properties.proposal).toEqual(envelopeOf({ name: "My own title", description: "Two things" }));
+    expect(after.properties).toMatchObject({
+      aiProposal: envelopeOf({ name: "Buy milk and eggs", description: "Two things" }),
+      aiVersion: 2,
+      proposal: envelopeOf({ name: "My own title", description: "Two things" }),
+      userOverrides: { primary: { name: "My own title" } },
+      userEditedKeys: ["primary.name"],
+      status: "proposed",
+    });
     expect(after.properties.userOverrides).toEqual({ primary: { name: "My own title" } });
-    expect(after.properties.userEditedKeys).toEqual(["primary.name"]);
-    expect(after.properties.status).toBe("proposed");
-    const last = historyOf(after).at(-1);
-    expect(last).toEqual({ author: "ai", message: RECOMPUTE_MESSAGE, kind: "recompute" });
+    expect(historyOf(after).at(-1)).toMatchObject({ author: "ai", ...recomputeEntry });
   });
 
   it("a card without manual values gets empty overrides and a plain recompute entry", async () => {
     const { item, card } = await seedCard();
     await editText(item.id, "Buy oat milk");
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy oat milk" } }));
-
+    await tick(item.id, propose({ name: "Buy oat milk" }));
     const after = await readCard(card.id);
     expect(after.properties.proposal).toEqual(envelopeOf({ name: "Buy oat milk" }));
     expect(after.properties.proposal).toEqual(after.properties.aiProposal);
     expect(after.properties.userOverrides).toEqual({});
     expect(after.properties.userEditedKeys).toEqual([]);
-    expect(historyOf(after).at(-1)).toMatchObject({ message: RECOMPUTE_MESSAGE, kind: "recompute" });
-  });
-
-  it("a key whose manual value now equals the new assistant value drops out of the edited keys", async () => {
-    const { item, card } = await seedCard();
-    await editValues(card.id, { name: "My own title", description: "Two things" });
-    await editText(item.id, "Buy milk and eggs");
-
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk and eggs", description: "Two things" },
-    }));
-
-    const after = await readCard(card.id);
-    expect(after.properties.userOverrides).toEqual({ primary: { name: "My own title" } });
-    expect(after.properties.userEditedKeys).toEqual(["primary.name"]);
-    expect(after.properties.proposal).toEqual(envelopeOf({ name: "My own title", description: "Two things" }));
-    // A value that became equal is not "dropped": the history entry names nothing.
-    expect(historyOf(after).at(-1)).toMatchObject({ message: RECOMPUTE_MESSAGE, kind: "recompute" });
+    expect(historyOf(after).at(-1)).toMatchObject(recomputeEntry);
   });
 
   it("a manual PATCH values committed while computeProposal runs does not discard the assistant result", async () => {
     const { item, card } = await seedCard();
     await editText(item.id, "Buy milk and eggs");
     const before = await readCard(card.id);
-
     let editedVersion: string | undefined;
-    await runTick(pool, databaseIds, item.id, async () => {
+    await tick(item.id, async () => {
       editedVersion = (await editValues(card.id, { name: "Typed during the call" })).updatedAt;
       return { properties: { name: "Computed meanwhile", description: "Two things" } };
     });
-
     expect(editedVersion).toBeDefined();
     expect(editedVersion).not.toBe(before.updatedAt);
     const after = await readCard(card.id);
-    expect(after.properties.aiProposal).toEqual(envelopeOf({ name: "Computed meanwhile", description: "Two things" }));
-    expect(after.properties.aiVersion).toBe(2);
-    expect(after.properties.proposal).toEqual(envelopeOf({ name: "Typed during the call", description: "Two things" }));
+    expect(after.properties).toMatchObject({
+      aiProposal: envelopeOf({ name: "Computed meanwhile", description: "Two things" }),
+      aiVersion: 2,
+      proposal: envelopeOf({ name: "Typed during the call", description: "Two things" }),
+      userEditedKeys: ["primary.name"],
+    });
     expect(after.properties.userOverrides).toEqual({ primary: { name: "Typed during the call" } });
-    expect(after.properties.userEditedKeys).toEqual(["primary.name"]);
-    expect(historyOf(after).at(-1)).toMatchObject({ message: RECOMPUTE_MESSAGE, kind: "recompute" });
+    expect(historyOf(after).at(-1)).toMatchObject(recomputeEntry);
   });
 
   it("a card rejected while computeProposal runs is left as the reject wrote it, with its manual values", async () => {
-    const { item, card } = await seedCard();
-    await editValues(card.id, { name: "My own title" });
-    await editText(item.id, "Buy milk and eggs");
+    const { item, card } = await seedEditedCard();
     const before = await readCard(card.id);
-
     let rejectedVersion: string | undefined;
-    await runTick(pool, databaseIds, item.id, async () => {
-      const rejected = await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: proposalsId,
-          itemId: card.id,
-          propertiesPatch: { status: "rejected" },
-        }),
-      );
-      rejectedVersion = rejected.updatedAt;
+    await tick(item.id, async () => {
+      rejectedVersion = (await storeEdit(proposalsId, card.id, { status: "rejected" })).updatedAt;
       return { properties: { name: "Must not be stored" } };
     });
-
     const after = await readCard(card.id);
     expect(after.updatedAt).toBe(rejectedVersion);
     expect(after.properties).toEqual({ ...before.properties, status: "rejected" });
   });
 
   it("a card confirmed while computeProposal runs is left as the confirm wrote it, with its manual values", async () => {
-    const { item, card } = await seedCard();
-    await editValues(card.id, { name: "My own title" });
-    await editText(item.id, "Buy milk and eggs");
-    // The tick and the confirm enqueue the source's Journal-day recompute under one job key, so a confirm issued
-    // from inside the tick would wait on the tick's own transaction; the source leaves its Journal day first.
+    const { item, card } = await seedEditedCard();
+    // The tick and the confirm share a Journal-day recompute job key, so the source leaves its Journal day first.
     await withTransaction(pool, async (client) => {
       const journalDayProperty = await propertiesStore.getPropertyByKey(client, inboxId, "journalDay");
       const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, journalDayProperty!.id);
@@ -6463,27 +4078,29 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
       }
     });
     const before = await readCard(card.id);
-
-    await runTick(pool, databaseIds, item.id, async () => {
+    await tick(item.id, async () => {
       await withTransaction(pool, (client) => confirmProposalWithClient(client, config(), card.id));
       return { properties: { name: "Must not be stored" } };
     });
-
     const after = await readCard(card.id);
-    expect(after.properties.status).toBe("confirmed");
-    expect(after.properties.aiProposal).toEqual(before.properties.aiProposal);
-    expect(after.properties.aiVersion).toBe(before.properties.aiVersion);
-    expect(after.properties.proposal).toEqual(before.properties.proposal);
+    expect(after.properties).toMatchObject({
+      status: "confirmed",
+      aiProposal: before.properties.aiProposal,
+      aiVersion: before.properties.aiVersion,
+      proposal: before.properties.proposal,
+    });
     expect(after.properties.userOverrides).toEqual({ primary: { name: "My own title" } });
     expect(historyOf(after).map((entry) => entry.message)).not.toContain(RECOMPUTE_MESSAGE);
   });
 
-  it("a second assistant write while computeProposal runs discards the older result", async () => {
-    const { item, card } = await seedCard();
-    await editValues(card.id, { name: "My own title" });
-    await editText(item.id, "Buy milk and eggs");
-
-    await runTick(pool, databaseIds, item.id, async () => {
+  it.each([
+    ["a second assistant write while computeProposal runs discards the older result", false],
+    ["an older result is also discarded when the card had no aiVersion, which counts as 0", true],
+  ])("%s", async (_, legacy) => {
+    const { item, card } = await seedEditedCard();
+    // A card without aiVersion: no current writer can produce that state.
+    if (legacy) await pool.query("UPDATE items SET properties = properties - 'aiVersion' WHERE id = $1", [card.id]);
+    await tick(item.id, async () => {
       await withTransaction(pool, (client) =>
         reviseProposalWithClient(client, config(), card.id, {
           message: "Use another description",
@@ -6494,9 +4111,8 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
       );
       return { properties: { name: "Older result", description: "Must not be stored" } };
     });
-
     const after = await readCard(card.id);
-    expect(after.properties.aiVersion).toBe(2);
+    expect(after.properties.aiVersion).toBe(legacy ? 1 : 2);
     expect(after.properties.aiProposal).toEqual(
       envelopeOf({ name: "Assistant revision", description: "From the thread" }),
     );
@@ -6504,46 +4120,15 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
     expect(historyOf(after).map((entry) => entry.message)).not.toContain(RECOMPUTE_MESSAGE);
   });
 
-  it("an older result is also discarded when the card had no aiVersion, which counts as 0", async () => {
-    const { item, card } = await seedCard();
-    // A card written before aiVersion existed: no current writer can produce that state.
-    await pool.query("UPDATE items SET properties = properties - 'aiVersion' WHERE id = $1", [card.id]);
-    await editText(item.id, "Buy milk and eggs");
-
-    await runTick(pool, databaseIds, item.id, async () => {
-      await withTransaction(pool, (client) =>
-        reviseProposalWithClient(client, config(), card.id, {
-          entityKind: "database",
-          target: tasksId,
-          properties: { name: "Assistant revision" },
-        }),
-      );
-      return { properties: { name: "Older result" } };
-    });
-
-    const after = await readCard(card.id);
-    expect(after.properties.aiVersion).toBe(1);
-    expect(after.properties.aiProposal).toEqual(envelopeOf({ name: "Assistant revision" }));
-  });
-
   it("a card whose fingerprint another write moved while computeProposal runs discards the result", async () => {
     const { item, card } = await seedCard();
     await editText(item.id, "Buy milk and eggs");
-
     let movedVersion: string | undefined;
-    await runTick(pool, databaseIds, item.id, async () => {
-      // The fingerprint alone moves, as a failed computation clears it (issue #1485); aiVersion stays.
-      const moved = await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: proposalsId,
-          itemId: card.id,
-          propertiesPatch: { fingerprint: null },
-        }),
-      );
-      movedVersion = moved.updatedAt;
+    await tick(item.id, async () => {
+      // The fingerprint alone moves, as a failed computation clears it; aiVersion stays.
+      movedVersion = (await storeEdit(proposalsId, card.id, { fingerprint: null })).updatedAt;
       return { properties: { name: "Must not be stored" } };
     });
-
     const after = await readCard(card.id);
     expect(after.updatedAt).toBe(movedVersion);
     expect(after.properties).toEqual({ ...card.properties, fingerprint: null });
@@ -6553,27 +4138,18 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
     const { type, item, card } = await seedCard();
     await editValues(card.id, { name: "My own title", description: "Typed note" });
     const projectsId = await databaseIdFor("projects");
-    await withTransaction(pool, (client) =>
-      updateItemWithClient(client, {
-        databaseId: typesId,
-        itemId: type.id,
-        propertiesPatch: { targetDatabase: "projects" },
-      }),
-    );
+    await editItem(typesId, type.id, { targetDatabase: "projects" });
     await editText(item.id, "Plan the move");
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Plan the move" } }));
-
+    await tick(item.id, propose({ name: "Plan the move" }));
     const after = await readCard(card.id);
     expect(after.properties.aiProposal).toEqual(envelopeOf({ name: "Plan the move" }, projectsId));
     expect(after.properties.proposal).toEqual(envelopeOf({ name: "Plan the move" }, projectsId));
     expect(after.properties.userOverrides).toEqual({});
     expect(after.properties.userEditedKeys).toEqual([]);
-    const last = historyOf(after).at(-1);
-    expect(last).toMatchObject({ kind: "recompute" });
-    expect(last?.message).toBe(
-      `${RECOMPUTE_MESSAGE} Manual values that no longer apply were dropped: primary.description, primary.name.`,
-    );
+    expect(historyOf(after).at(-1)).toMatchObject({
+      kind: "recompute",
+      message: `${RECOMPUTE_MESSAGE} Manual values that no longer apply were dropped: primary.description, primary.name.`,
+    });
   });
 
   it("an override key the target no longer has is dropped while the keys that still apply are kept", async () => {
@@ -6587,9 +4163,7 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
       [card.id],
     );
     await editText(item.id, "Buy milk and eggs");
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
-
+    await tick(item.id, propose({ name: "Buy milk and eggs" }));
     const after = await readCard(card.id);
     expect(after.properties.userOverrides).toEqual({ primary: { name: "My own title" } });
     expect(after.properties.userEditedKeys).toEqual(["primary.name"]);
@@ -6600,14 +4174,9 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
   });
 
   it("an assistant output that fails validation makes the card needsClarification and keeps the manual values stored", async () => {
-    const { item, card } = await seedCard();
-    await editValues(card.id, { name: "My own title" });
-    await editText(item.id, "Buy milk and eggs");
-
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { noSuchProperty: "x" } }));
-
-    const clarifying = await readCard(card.id);
-    expect(clarifying.properties).toMatchObject({
+    const { item, card } = await seedEditedCard();
+    await tick(item.id, propose({ noSuchProperty: "x" }));
+    expect((await readCard(card.id)).properties).toMatchObject({
       status: "needsClarification",
       proposal: null,
       aiProposal: null,
@@ -6615,116 +4184,54 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
       userOverrides: { primary: { name: "My own title" } },
       userEditedKeys: ["primary.name"],
     });
-
     // They apply again when a later valid assistant output arrives.
     await editText(item.id, "Buy milk and eggs again");
-    await runTick(pool, databaseIds, item.id, async () => ({
-      properties: { name: "Buy milk and eggs again", description: "Two things" },
-    }));
-    const recovered = await readCard(card.id);
-    expect(recovered.properties.status).toBe("proposed");
-    expect(recovered.properties.aiVersion).toBe(3);
-    expect(recovered.properties.proposal).toEqual(envelopeOf({ name: "My own title", description: "Two things" }));
-    expect(recovered.properties.userEditedKeys).toEqual(["primary.name"]);
+    await tick(item.id, propose({ name: "Buy milk and eggs again", description: "Two things" }));
+    expect((await readCard(card.id)).properties).toMatchObject({
+      status: "proposed",
+      aiVersion: 3,
+      proposal: envelopeOf({ name: "My own title", description: "Two things" }),
+      userEditedKeys: ["primary.name"],
+    });
   });
 });
 
-describe("semprec.tick computes a card that was sent back as computing, whatever its fingerprint says (issue gh-1947)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
-  let databaseIds: TickDatabaseIds;
+describe("semprec.tick computes a card that was sent back as computing, whatever its fingerprint says", () => {
+  beforeEach(resetTickDatabases);
 
-  beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    inboxId = await databaseIdFor("inbox");
-    typesId = await databaseIdFor("inboxItemTypes");
-    proposalsId = await databaseIdFor("processingProposals");
-    databaseIds = {
-      inboxDatabaseId: inboxId,
-      inboxItemTypesDatabaseId: typesId,
-      processingProposalsDatabaseId: proposalsId,
-    };
-  });
-
-  /** A typed Task item whose first tick stored a `proposed` card, which its fingerprint covers. */
-  async function seedCard() {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text: "Buy milk",
-        type: type.id,
-      }),
-    );
-    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-    const card = await findProposalForItem(pool, proposalsId, item.id);
-    if (!card) throw new Error("the first tick wrote no card");
-    return { type, item, card };
-  }
-
-  it("skips a proposed card whose fingerprint is current, the gate that a computing card does not meet", async () => {
-    const { item, card } = await seedCard();
-    let calls = 0;
-
-    await runTick(pool, databaseIds, item.id, async () => {
-      calls += 1;
-      return { properties: { name: "Buy oat milk" } };
-    });
-
-    expect(calls).toBe(0);
-    expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
+  it("skips a proposed card whose fingerprint is current, but computes the same card once it is computing", async () => {
+    const { type, item } = await typedSource();
+    await tick(item.id, propose({ name: "Buy milk" }));
+    const card = await requireCard(item.id);
+    const counter = counted({ properties: { name: "Buy oat milk" } });
+    await tick(item.id, counter.compute);
+    expect(counter.calls).toBe(0);
+    expect((await cardOf(item.id))?.properties).toMatchObject({
       status: "proposed",
       aiVersion: card.properties.aiVersion,
     });
-  });
 
-  it("computes a computing card whose fingerprint is current, and stores the result as a proposed card", async () => {
-    const { type, item, card } = await seedCard();
-    await withTransaction(pool, (client) =>
-      updateItemWithClient(
-        client,
-        { databaseId: proposalsId, itemId: card.id, propertiesPatch: { status: "computing" } },
-        { allowedSystemKeys: ["status"] },
-      ),
-    );
-    expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.fingerprint).toBe(
-      fingerprintV2Of({ typeId: type.id, text: "Buy milk" }),
-    );
-    let calls = 0;
-
-    await runTick(pool, databaseIds, item.id, async () => {
-      calls += 1;
-      return { properties: { name: "Buy oat milk" } };
-    });
-
-    expect(calls).toBe(1);
-    const tasksId = await databaseIdFor("tasks");
-    const envelope = { entityKind: "database", target: tasksId, properties: { name: "Buy oat milk" } };
-    expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
+    await editItem(proposalsId, card.id, { status: "computing" }, { allowedSystemKeys: ["status"] });
+    const fingerprint = fingerprintV2Of({ typeId: type.id, text: "Buy milk" });
+    expect((await cardOf(item.id))?.properties.fingerprint).toBe(fingerprint);
+    await tick(item.id, counter.compute);
+    expect(counter.calls).toBe(1);
+    const envelope = {
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy oat milk" },
+    };
+    expect((await cardOf(item.id))?.properties).toMatchObject({
       status: "proposed",
       proposal: envelope,
       aiProposal: envelope,
       aiVersion: 2,
-      fingerprint: fingerprintV2Of({ typeId: type.id, text: "Buy milk" }),
+      fingerprint,
     });
   });
 });
 
-describe("aiProposalPatch and readAiProposal (issue #1471)", () => {
+describe("aiProposalPatch and readAiProposal", () => {
   const envelope: ProposalEnvelope = {
     entityKind: "database",
     target: "00000000-0000-4000-8000-000000000001",
@@ -6732,23 +4239,23 @@ describe("aiProposalPatch and readAiProposal (issue #1471)", () => {
   };
   const otherEnvelope: ProposalEnvelope = { ...envelope, properties: { name: "Buy eggs" } };
 
-  it("a new row starts at aiVersion 1, a row with a counter adds one, and a row without one counts as 0", () => {
+  it("a new row starts at aiVersion 1 and a row with a counter adds one", () => {
     expect(aiProposalPatch({}, envelope)).toEqual({ aiProposal: envelope, aiVersion: 1 });
     expect(aiProposalPatch({ aiVersion: 4 }, null)).toEqual({ aiProposal: null, aiVersion: 5 });
   });
 
-  it("readAiProposal returns aiProposal when it is set, even where proposal differs", () => {
-    expect(readAiProposal({ aiProposal: envelope, proposal: otherEnvelope }, "card")).toEqual(envelope);
-  });
-
-  it("readAiProposal falls back to the stored proposal when aiProposal is absent or JSON null", () => {
-    expect(readAiProposal({ proposal: envelope }, "card")).toEqual(envelope);
-    expect(readAiProposal({ aiProposal: null, proposal: envelope }, "card")).toEqual(envelope);
-  });
-
-  it("readAiProposal returns null when neither property holds an envelope", () => {
-    expect(readAiProposal({}, "card")).toBeNull();
-    expect(readAiProposal({ aiProposal: null, proposal: null }, "card")).toBeNull();
+  it.each([
+    [
+      "aiProposal when it is set, even where proposal differs",
+      { aiProposal: envelope, proposal: otherEnvelope },
+      envelope,
+    ],
+    ["the stored proposal when aiProposal is absent", { proposal: envelope }, envelope],
+    ["the stored proposal when aiProposal is JSON null", { aiProposal: null, proposal: envelope }, envelope],
+    ["null when no property holds an envelope", {}, null],
+    ["null when both properties are null", { aiProposal: null, proposal: null }, null],
+  ])("readAiProposal returns %s", (_, properties, expected) => {
+    expect(readAiProposal(properties, "card")).toEqual(expected);
   });
 });
 
@@ -6757,86 +4264,127 @@ afterAll(async () => {
 });
 
 describe("Markdown page proposal validation", () => {
-  it("stores resolved model heading and placement variants in the real tick", async () => {
+  /** Resets the database and runs `body` with a runtime-role pool, keeping a body failure and a close failure. */
+  async function withRuntime(body: (runtime: Pool) => Promise<void>) {
     pool ??= getTestPool();
     await resetDatabase(pool);
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    const combineFailures = (primary: unknown, cleanup: unknown) =>
-      new AggregateError([primary, cleanup], "Tick test and cleanup failed", { cause: primary });
-    let primary: { error: unknown } | undefined;
+    let failure: { error: unknown } | undefined;
     try {
       const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       );
       expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-      const tenant = await createTestTenant(pool);
-      await createUser(pool, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
-      await runInTenant(tenant, () => seedSystem(runtime));
+      await body(runtime);
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await runtime.end();
+    } catch (error) {
+      failure = combineOverlapFailure(failure, error);
+    }
+    if (failure) throw failure.error;
+  }
+  /** A seeded tenant with a user, as a real tenant has. */
+  async function seededTenant(runtime: Pool) {
+    const tenant = await createTestTenant(pool);
+    await createUser(pool, { tenantId: tenant, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+    await runInTenant(tenant, () => seedSystem(runtime));
+    return tenant;
+  }
+  async function systemDatabases<K extends string>(runtime: Pool, keys: readonly K[]) {
+    const rows = await withTransaction(runtime, (client) =>
+      Promise.all(keys.map((key) => databasesStore.getDatabaseByModuleId(client, key))),
+    );
+    return Object.fromEntries(
+      keys.map((key, index) => {
+        const row = rows[index];
+        if (!row) throw new Error(`Missing ${key} database`);
+        return [key, row];
+      }),
+    ) as Record<K, NonNullable<(typeof rows)[number]>>;
+  }
+  /** The Inbox side of a tenant: a page-content type, one typed source per call, and the tick over it. */
+  async function pageNoteInbox(runtime: Pool) {
+    const dbs = await systemDatabases(runtime, ["inbox", "inboxItemTypes", "processingProposals"] as const);
+    const projectItemId = dbs.inbox.ownerProjectItemId;
+    if (!projectItemId) throw new Error("Missing Inbox project");
+    const type = await withTransaction(runtime, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: dbs.inboxItemTypes.id,
+        name: "Page note",
+        emoji: "N",
+        processingMethod: "pageContent",
+      }),
+    );
+    const createPageSource = () =>
+      withTransaction(runtime, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: dbs.inbox.id,
+          date: "2026-11-06",
+          time: "12:00",
+          text: "Input",
+          type: type.id,
+        }),
+      );
+    const tickPage = (itemId: string, compute: ComputeSemprecProposalFn) =>
+      createSemprecTickAction(runtime, compute)(
+        {
+          inboxDatabaseId: dbs.inbox.id,
+          inboxItemTypesDatabaseId: dbs.inboxItemTypes.id,
+          processingProposalsDatabaseId: dbs.processingProposals.id,
+        },
+        { heartbeatId: randomUUID(), projectItemId, itemId },
+      );
+    const cardsOf = async (sourceId: string) =>
+      (
+        await runtime.query<{ id: string; properties: unknown }>(
+          `SELECT card.id, card.properties FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
+           WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
+          [dbs.processingProposals.id, sourceId],
+        )
+      ).rows;
+    return { proposalsId: dbs.processingProposals.id, createPageSource, tickPage, cardsOf };
+  }
+  const writeHeading = async (runtime: Pool, pageId: string, blocks: Parameters<typeof writeBlock>[1][]) => {
+    const doc = await createDocStore(runtime).getOrCreateDoc(pageId, "page");
+    await mutateDoc(runtime, doc.id, "user", (ydoc) => {
+      for (const block of blocks) writeBlock(ydoc, block);
+    });
+    return doc;
+  };
+
+  it("stores resolved model heading and placement variants in the real tick", async () => {
+    await withRuntime(async (runtime) => {
+      const tenant = await seededTenant(runtime);
       await runInTenant(tenant, async () => {
-        const dbs = await withTransaction(runtime, async (client) => ({
-          inbox: await databasesStore.getDatabaseByModuleId(client, "inbox"),
-          types: await databasesStore.getDatabaseByModuleId(client, "inboxItemTypes"),
-          proposals: await databasesStore.getDatabaseByModuleId(client, "processingProposals"),
-          projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
-        }));
-        if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals || !dbs.projects)
-          throw new Error("Missing page proposal fixture databases");
+        const { projects } = await systemDatabases(runtime, ["projects"] as const);
+        const inbox = await pageNoteInbox(runtime);
         const cp = createChokePoint(runtime);
-        const page = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Page" } });
-        const empty = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "No document" } });
+        const page = await cp.createItem({ databaseId: projects.id, properties: { name: "Page" } });
+        const empty = await cp.createItem({ databaseId: projects.id, properties: { name: "No document" } });
         const headingId = randomUUID();
-        const doc = await createDocStore(runtime).getOrCreateDoc(page.id, "page");
-        await mutateDoc(runtime, doc.id, "user", (ydoc) =>
-          writeBlock(ydoc, { id: headingId, type: "h2", text: "Dlažba" }),
-        );
-        const type = await withTransaction(runtime, (client) =>
-          createInboxTypeWithClient(client, {
-            inboxItemTypesDatabaseId: dbs.types!.id,
-            name: "Page note",
-            emoji: "N",
-            processingMethod: "pageContent",
-          }),
-        );
-        const variants = [
+        await writeHeading(runtime, page.id, [{ id: headingId, type: "h2", text: "Dlažba" }]);
+        for (const variant of [
           { target: page.id, input: { afterHeadingText: "dlažba" }, expected: { afterHeading: headingId } },
           { target: page.id, input: { afterHeadingText: "missing" }, expected: "end" },
           { target: empty.id, input: { afterHeadingText: "dlažba" }, expected: "end" },
           { target: page.id, input: "start", expected: "start" },
           { target: page.id, input: "end", expected: "end" },
-        ];
-        for (const variant of variants) {
-          const source = await withTransaction(runtime, (client) =>
-            createInboxItemWithClient(client, {
-              inboxDatabaseId: dbs.inbox!.id,
-              date: "2026-11-06",
-              time: "12:00",
-              text: "Input",
-              type: type.id,
-            }),
-          );
+        ]) {
+          const source = await inbox.createPageSource();
           // The model result is synthetic; the tick, storage and placement reader are actual owners.
-          const tick = createSemprecTickAction(runtime, async () => ({
+          await inbox.tickPage(source.id, async () => ({
             target: variant.target,
             properties: { markdown: "Fixture text", placement: variant.input },
           }));
-          await tick(
-            {
-              inboxDatabaseId: dbs.inbox.id,
-              inboxItemTypesDatabaseId: dbs.types.id,
-              processingProposalsDatabaseId: dbs.proposals.id,
-            },
-            { heartbeatId: randomUUID(), projectItemId: dbs.inbox.ownerProjectItemId, itemId: source.id },
-          );
-          const cards = await runtime.query<{ properties: unknown }>(
-            `SELECT card.properties FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
-             WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
-            [dbs.proposals.id, source.id],
-          );
-          expect(cards.rows).toHaveLength(1);
+          const cards = await inbox.cardsOf(source.id);
+          expect(cards).toHaveLength(1);
           const card = z
             .object({ proposal: z.unknown(), aiProposal: z.unknown() })
             .passthrough()
-            .parse(cards.rows[0]?.properties);
+            .parse(cards[0]?.properties);
           for (const stored of [card.proposal, card.aiProposal]) {
             expect(stored).toMatchObject({
               entityKind: "pageContent",
@@ -6847,355 +4395,212 @@ describe("Markdown page proposal validation", () => {
           }
         }
       });
-    } catch (error) {
-      primary = { error };
-    }
-    try {
-      await runtime.end();
-    } catch (error) {
-      if (primary) throw combineFailures(primary.error, error);
-      throw error;
-    }
-    if (primary) throw primary.error;
+    });
   });
 
   it("accepts current real hosts and validates headings without creating documents or exposing other tenants", async () => {
-    pool ??= getTestPool();
-    await resetDatabase(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    try {
-      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-      );
-      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+    await withRuntime(async (runtime) => {
       const owner = await createTestTenant(pool);
       const foreign = await createTestTenant(pool);
       await runInTenant(owner, () => seedSystem(runtime));
       await runInTenant(foreign, () => seedSystem(runtime));
       const setup = (tenant: string) =>
         runInTenant(tenant, async () => {
-          const dbs = await withTransaction(runtime, async (client) => ({
-            projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
-            areas: await databasesStore.getDatabaseByModuleId(client, "areas"),
-            tasks: await databasesStore.getDatabaseByModuleId(client, "tasks"),
-            journal: await databasesStore.getDatabaseByModuleId(client, "journal"),
-          }));
-          if (!dbs.projects || !dbs.areas || !dbs.tasks || !dbs.journal) throw new Error("Missing system database");
+          const dbs = await systemDatabases(runtime, ["projects", "areas", "tasks", "journal"] as const);
           const cp = createChokePoint(runtime);
-          const project = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } });
-          const area = await cp.createItem({ databaseId: dbs.areas.id, properties: { name: "Area" } });
-          const task = await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } });
-          const day = await withTransaction(runtime, (client) =>
-            getOrCreateJournalItem(client, dbs.journal!.id, "day", new Date("2026-11-06T12:00:00Z"), "UTC"),
-          );
-          const week = await withTransaction(runtime, (client) =>
-            getOrCreateJournalItem(client, dbs.journal!.id, "week", new Date("2026-11-06T12:00:00Z"), "UTC"),
-          );
-          return { project, area, task, day, week };
+          const journalItem = (period: "day" | "week") =>
+            withTransaction(runtime, (client) =>
+              getOrCreateJournalItem(client, dbs.journal.id, period, new Date("2026-11-06T12:00:00Z"), "UTC"),
+            );
+          return {
+            project: await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } }),
+            area: await cp.createItem({ databaseId: dbs.areas.id, properties: { name: "Area" } }),
+            task: await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } }),
+            day: await journalItem("day"),
+            week: await journalItem("week"),
+          };
         });
       const own = await setup(owner);
       const other = await setup(foreign);
+      const asOwner = <T>(query: (client: PoolClient) => Promise<T>) =>
+        runInTenant(owner, () => withTransaction(runtime, query));
       const validate = (target: string, properties: Record<string, unknown>) =>
-        runInTenant(owner, () =>
-          withTransaction(runtime, (client) =>
-            assertValidProposalEnvelope(client, { entityKind: "pageContent", target, properties }),
-          ),
-        );
-      const before = await runInTenant(owner, () =>
-        runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs"),
-      );
+        asOwner((client) => assertValidProposalEnvelope(client, { entityKind: "pageContent", target, properties }));
+      const resolvePlacement = (target: string, properties: Record<string, unknown>) =>
+        asOwner((client) => resolveModelPagePlacement(client, { entityKind: "pageContent", target, properties }));
+      const docCount = () =>
+        asOwner((client) => client.query<{ count: number }>("SELECT count(*)::int AS count FROM docs"));
+      const hello = (placement: unknown, extra: Record<string, unknown> = {}) => ({
+        markdown: "Hello",
+        placement,
+        ...extra,
+      });
+
+      const before = await docCount();
       for (const target of [own.project.id, own.area.id, own.day.id])
-        await expect(validate(target, { markdown: "Hello", placement: "end" })).resolves.toBeNull();
-      const after = await runInTenant(owner, () =>
-        runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM docs"),
-      );
-      expect(after.rows).toEqual(before.rows);
+        await expect(validate(target, hello("end"))).resolves.toBeNull();
+      expect((await docCount()).rows).toEqual(before.rows);
       for (const target of [own.task.id, own.week.id, other.project.id, randomUUID()])
-        await expect(validate(target, { markdown: "Hello", placement: "end" })).rejects.toMatchObject({
+        await expect(validate(target, hello("end"))).rejects.toMatchObject({
           status: 400,
           details: { field: "target" },
         });
       for (const properties of [
         { markdown: " ", placement: "end" },
         { markdown: "[Page](semprec://page/abc)", placement: "end" },
-        { markdown: "Hello", placement: "sideways" },
-        { markdown: "Hello", placement: "end", heading: "a\nb" },
-        { markdown: "Hello", placement: { afterHeading: "missing" } },
+        hello("sideways"),
+        hello("end", { heading: "a\nb" }),
+        hello({ afterHeading: "missing" }),
       ])
         await expect(validate(own.project.id, properties)).rejects.toMatchObject({
           status: 400,
           details: { field: "properties" },
         });
-      const store = createDocStore(runtime);
-      const doc = await runInTenant(owner, () => store.getOrCreateDoc(own.project.id, "page"));
       await runInTenant(owner, () =>
-        mutateDoc(runtime, doc.id, "user", (ydoc) => {
-          writeBlock(ydoc, { id: "heading", type: "h2", text: "Heading" });
-          writeBlock(ydoc, { id: "text", type: "text", text: "Paragraph" });
-        }),
+        writeHeading(runtime, own.project.id, [
+          { id: "heading", type: "h2", text: "Heading" },
+          { id: "text", type: "text", text: "Paragraph" },
+        ]),
       );
-      const resolvePlacement = (target: string, properties: Record<string, unknown>) =>
-        runInTenant(owner, () =>
-          withTransaction(runtime, (client) =>
-            resolveModelPagePlacement(client, { entityKind: "pageContent", target, properties }),
-          ),
-        );
-      const modelEnvelope = { markdown: "Hello", placement: { afterHeadingText: "  HEADING " } };
-      const resolvedEnvelope = await resolvePlacement(own.project.id, modelEnvelope);
-      expect(JSON.stringify(resolvedEnvelope)).not.toContain("afterHeadingText");
-      expect(resolvedEnvelope.properties.placement).toEqual({
-        afterHeading: "heading",
-      });
+      const resolved = await resolvePlacement(own.project.id, hello({ afterHeadingText: "  HEADING " }));
+      expect(JSON.stringify(resolved)).not.toContain("afterHeadingText");
+      expect(resolved.properties.placement).toEqual({ afterHeading: "heading" });
       expect(
-        (await resolvePlacement(own.project.id, { markdown: "Hello", placement: { afterHeadingText: "missing" } }))
-          .properties.placement,
+        (await resolvePlacement(own.project.id, hello({ afterHeadingText: "missing" }))).properties.placement,
       ).toBe("end");
-      expect(
-        (await resolvePlacement(own.area.id, { markdown: "Hello", placement: { afterHeadingText: "heading" } }))
-          .properties.placement,
-      ).toBe("end");
+      expect((await resolvePlacement(own.area.id, hello({ afterHeadingText: "heading" }))).properties.placement).toBe(
+        "end",
+      );
       expect((await resolvePlacement(own.project.id, { flavour: "paragraph" })).properties).toEqual({
         flavour: "paragraph",
       });
-      await expect(
-        validate(own.project.id, { markdown: "Hello", placement: { afterHeading: "heading" } }),
-      ).resolves.toBeNull();
-      await expect(
-        validate(own.project.id, { markdown: "Hello", placement: { afterHeading: "text" } }),
-      ).rejects.toMatchObject({ status: 400 });
+      await expect(validate(own.project.id, hello({ afterHeading: "heading" }))).resolves.toBeNull();
+      await expect(validate(own.project.id, hello({ afterHeading: "text" }))).rejects.toMatchObject({ status: 400 });
       await runInTenant(owner, () => createChokePoint(runtime).softDeleteItem(own.project.databaseId, own.project.id));
-      await expect(validate(own.project.id, { markdown: "Hello", placement: "start" })).rejects.toMatchObject({
+      await expect(validate(own.project.id, hello("start"))).rejects.toMatchObject({
         status: 400,
         details: { field: "target" },
       });
-    } finally {
-      await runtime.end();
-    }
+    });
   });
 
   it.each(["blank", "page block", "non-heading", "foreign heading", "non-host"] as const)(
     "keeps an invalid %s computation out of the real background tick and revise",
     async (mode) => {
-      pool ??= getTestPool();
-      await resetDatabase(pool);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      let failed = false;
-      let failure: unknown;
-      try {
-        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-        );
-        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-        const tenant = await createTestTenant(pool);
-        const foreign = await createTestTenant(pool);
-        for (const tenantId of [tenant, foreign]) {
-          await createUser(pool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
-          await runInTenant(tenantId, () => seedSystem(runtime));
-        }
+      await withRuntime(async (runtime) => {
+        const tenant = await seededTenant(runtime);
+        const foreign = await seededTenant(runtime);
+        const docUpdates = (docId: string) =>
+          runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1", [docId]);
         const foreignFixture = await runInTenant(foreign, async () => {
-          const db = await withTransaction(runtime, (client) =>
-            databasesStore.getDatabaseByModuleId(client, "projects"),
-          );
-          if (!db) throw new Error("Missing foreign Projects database");
+          const { projects } = await systemDatabases(runtime, ["projects"] as const);
           const page = await createChokePoint(runtime).createItem({
-            databaseId: db.id,
+            databaseId: projects.id,
             properties: { name: "Foreign" },
           });
-          const doc = await createDocStore(runtime).getOrCreateDoc(page.id, "page");
           const id = randomUUID();
-          await mutateDoc(runtime, doc.id, "user", (ydoc) => writeBlock(ydoc, { id, type: "h2", text: "Foreign" }));
-          const rows = await runtime.query<{ count: number }>(
-            "SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1",
-            [doc.id],
-          );
-          return { id, docId: doc.id, rows: rows.rows };
+          const doc = await writeHeading(runtime, page.id, [{ id, type: "h2", text: "Foreign" }]);
+          return { id, docId: doc.id, rows: (await docUpdates(doc.id)).rows };
         });
         await runInTenant(tenant, async () => {
-          const dbs = await withTransaction(runtime, async (client) => ({
-            inbox: await databasesStore.getDatabaseByModuleId(client, "inbox"),
-            types: await databasesStore.getDatabaseByModuleId(client, "inboxItemTypes"),
-            proposals: await databasesStore.getDatabaseByModuleId(client, "processingProposals"),
-            projects: await databasesStore.getDatabaseByModuleId(client, "projects"),
-            tasks: await databasesStore.getDatabaseByModuleId(client, "tasks"),
-          }));
-          if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals || !dbs.projects || !dbs.tasks)
-            throw new Error("Missing page proposal fixture databases");
+          const dbs = await systemDatabases(runtime, ["projects", "tasks"] as const);
+          const inbox = await pageNoteInbox(runtime);
           const cp = createChokePoint(runtime);
           const project = await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } });
           const task = await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } });
           const blockId = randomUUID();
-          const doc = await createDocStore(runtime).getOrCreateDoc(project.id, "page");
-          await mutateDoc(runtime, doc.id, "user", (ydoc) =>
-            writeBlock(ydoc, { id: blockId, type: "text", text: "Text" }),
-          );
-          const type = await withTransaction(runtime, (client) =>
-            createInboxTypeWithClient(client, {
-              inboxItemTypesDatabaseId: dbs.types!.id,
-              name: "Page note",
-              emoji: "N",
-              processingMethod: "pageContent",
-            }),
-          );
-          const source = await withTransaction(runtime, (client) =>
-            createInboxItemWithClient(client, {
-              inboxDatabaseId: dbs.inbox!.id,
-              date: "2026-11-06",
-              time: "12:00",
-              text: "Input",
-              type: type.id,
-            }),
-          );
+          await writeHeading(runtime, project.id, [{ id: blockId, type: "text", text: "Text" }]);
+          const source = await inbox.createPageSource();
           const target = mode === "non-host" ? task.id : project.id;
-          const properties =
-            mode === "blank"
-              ? { markdown: " ", placement: "end" }
-              : mode === "page block"
-                ? { markdown: "[Page](semprec://page/abc)", placement: "end" }
-                : mode === "non-heading"
-                  ? { markdown: "Hello", placement: { afterHeading: blockId } }
-                  : mode === "foreign heading"
-                    ? { markdown: "Hello", placement: { afterHeading: foreignFixture.id } }
-                    : { markdown: "Hello", placement: "end" };
+          const properties = {
+            blank: { markdown: " ", placement: "end" },
+            "page block": { markdown: "[Page](semprec://page/abc)", placement: "end" },
+            "non-heading": { markdown: "Hello", placement: { afterHeading: blockId } },
+            "foreign heading": { markdown: "Hello", placement: { afterHeading: foreignFixture.id } },
+            "non-host": { markdown: "Hello", placement: "end" },
+          }[mode];
           let calls = 0;
-          // This is a synthetic computed result passed to the real tick owner, not a model-success claim.
-          const tick = createSemprecTickAction(runtime, async () => {
+          await inbox.tickPage(source.id, async () => {
             calls++;
             return { target, properties };
           });
-          await tick(
-            {
-              inboxDatabaseId: dbs.inbox.id,
-              inboxItemTypesDatabaseId: dbs.types.id,
-              processingProposalsDatabaseId: dbs.proposals.id,
-            },
-            { heartbeatId: randomUUID(), projectItemId: dbs.inbox.ownerProjectItemId, itemId: source.id },
-          );
           expect(calls).toBe(1);
-          const cards = await runtime.query<{ id: string; properties: unknown }>(
-            `SELECT card.id, card.properties FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
-              WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
-            [dbs.proposals.id, source.id],
-          );
-          expect(cards.rows).toHaveLength(1);
-          const card = cards.rows[0];
+          const cards = await inbox.cardsOf(source.id);
+          expect(cards).toHaveLength(1);
+          const card = cards[0];
           if (!card) throw new Error("Missing clarification card");
           expect(card.properties).toMatchObject({ status: "needsClarification", proposal: null, aiProposal: null });
-          const expectedField = mode === "non-host" ? "target" : "properties";
           await expect(
             withTransaction(runtime, (client) =>
-              reviseProposalWithClient(client, { processingProposalsDatabaseId: dbs.proposals!.id }, card.id, {
+              reviseProposalWithClient(client, { processingProposalsDatabaseId: inbox.proposalsId }, card.id, {
                 message: "Revise",
                 entityKind: "pageContent",
                 target,
                 properties,
               }),
             ),
-          ).rejects.toMatchObject({ status: 400, details: { field: expectedField } });
+          ).rejects.toMatchObject({ status: 400, details: { field: mode === "non-host" ? "target" : "properties" } });
           const after = await runtime.query<{ properties: unknown }>("SELECT properties FROM items WHERE id = $1", [
             card.id,
           ]);
           expect(after.rows).toEqual([{ properties: card.properties }]);
         });
-        const foreignAfter = await runInTenant(foreign, () =>
-          runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1", [
-            foreignFixture.docId,
-          ]),
-        );
-        expect(foreignAfter.rows).toEqual(foreignFixture.rows);
-      } catch (error) {
-        failed = true;
-        failure = error;
-      }
-      let cleanupFailure: unknown;
-      let cleanupFailed = false;
-      try {
-        await runtime.end();
-      } catch (error) {
-        cleanupFailed = true;
-        cleanupFailure = error;
-      }
-      if (failed && cleanupFailed)
-        throw new AggregateError([failure, cleanupFailure], "Tick test and cleanup failed", { cause: failure });
-      if (failed) throw failure;
-      if (cleanupFailed) throw cleanupFailure;
+        expect((await runInTenant(foreign, () => docUpdates(foreignFixture.docId))).rows).toEqual(foreignFixture.rows);
+      });
     },
   );
 });
 
-describe("semprec.tick proposes a journal entry for the journal method (issue gh-1982)", () => {
+describe("semprec.tick proposes a journal entry for the journal method", () => {
   const PAGE_LINK = "[Sub page](semprec://page/00000000-0000-4000-8000-000000000001)";
-  let databaseIds: TickDatabaseIds;
-  let proposalsId: string;
   let journalId: string;
   let areasId: string;
   let projectsId: string;
 
   beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    proposalsId = await databaseIdFor("processingProposals");
-    databaseIds = {
-      inboxDatabaseId: await databaseIdFor("inbox"),
-      inboxItemTypesDatabaseId: await databaseIdFor("inboxItemTypes"),
-      processingProposalsDatabaseId: proposalsId,
-    };
+    await resetTickDatabases();
     journalId = await databaseIdFor("journal");
     areasId = await databaseIdFor("areas");
     projectsId = await databaseIdFor("projects");
   });
 
-  /** An Inbox item of a type with the given method, dated `date`. */
-  async function typedItem(
-    method: "journal" | "pageContent" | "database",
-    date = "2026-10-16",
-  ): Promise<{ typeId: string; itemId: string }> {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: databaseIds.inboxItemTypesDatabaseId,
-        name: method === "journal" ? "Note" : "Task",
-        emoji: "N",
-        processingMethod: method,
-        ...(method === "database" ? { targetDatabase: "tasks" } : {}),
-      }),
-    );
+  async function typedItem(method: "journal" | "pageContent" | "database", date = "2026-10-16") {
+    const type = await createType({
+      name: method === "journal" ? "Note" : "Task",
+      emoji: "N",
+      processingMethod: method,
+    });
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
-        inboxDatabaseId: databaseIds.inboxDatabaseId,
+        inboxDatabaseId: inboxId,
         date,
         time: "09:00",
         text: "Went for a run",
         type: type.id,
       }),
     );
-    return { typeId: type.id, itemId: item.id };
+    return item.id;
   }
-
-  async function liveItem(databaseId: string, name: string): Promise<string> {
-    return (await withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties: { name } })))
-      .id;
-  }
-
-  /** Ticks `itemId` with a computation that answers `properties` (and `extra`), and returns the card and the input. */
-  async function tickJournal(
-    itemId: string,
-    properties: Record<string, unknown>,
-    extra: { target?: string } = {},
-  ): Promise<{ card: Awaited<ReturnType<typeof findProposalForItem>>; inputs: ProposalComputationInput[] }> {
+  const liveItem = async (databaseId: string, name: string) =>
+    (await withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties: { name } }))).id;
+  async function tickJournal(itemId: string, properties: Record<string, unknown>, extra: { target?: string } = {}) {
     const inputs: ProposalComputationInput[] = [];
-    await runTick(pool, databaseIds, itemId, async (input) => {
+    await tick(itemId, async (input) => {
       inputs.push(input);
       return { properties, ...extra };
     });
-    return { card: await findProposalForItem(pool, proposalsId, itemId), inputs };
+    return { card: await cardOf(itemId), inputs };
   }
+  const journalEnvelope = (properties: Record<string, unknown>) => ({
+    entityKind: "journalEntry",
+    target: journalId,
+    properties: { date: "2026-10-16", markdown: "Went for a run.", ...properties },
+  });
+  const clarifiedWithoutEnvelope = { status: "needsClarification", proposal: null, aiProposal: null };
 
   it("creates a journalEntry card with the Journal database as target and hands the computation the database and the date", async () => {
-    const { itemId } = await typedItem("journal");
-
+    const itemId = await typedItem("journal");
     const { card, inputs } = await tickJournal(itemId, { date: "2026-10-15", markdown: "Went for a run." });
-
     expect(inputs).toHaveLength(1);
     expect(inputs[0]).toMatchObject({
       entityKind: "journalEntry",
@@ -7204,40 +4609,22 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
     });
     expect(inputs[0]?.targetDatabaseId).toBeUndefined();
     expect(card?.properties.status).toBe("proposed");
-    const expected = {
-      entityKind: "journalEntry",
-      target: journalId,
-      properties: { date: "2026-10-15", markdown: "Went for a run." },
-    };
-    expect(card?.properties.proposal).toEqual(expected);
-    expect(card?.properties.aiProposal).toEqual(expected);
+    expect(card?.properties.proposal).toEqual(journalEnvelope({ date: "2026-10-15" }));
+    expect(card?.properties.aiProposal).toEqual(journalEnvelope({ date: "2026-10-15" }));
   });
 
   it("stores the source item's date when the computation returns none", async () => {
-    const { itemId } = await typedItem("journal", "2026-10-12");
-
+    const itemId = await typedItem("journal", "2026-10-12");
     const { card } = await tickJournal(itemId, { markdown: "Went for a run." });
-
-    expect(card?.properties.proposal).toEqual({
-      entityKind: "journalEntry",
-      target: journalId,
-      properties: { date: "2026-10-12", markdown: "Went for a run." },
-    });
+    expect(card?.properties.proposal).toEqual(journalEnvelope({ date: "2026-10-12" }));
   });
 
   it("keeps only the project when the computation returns an area and a project", async () => {
     const areaId = await liveItem(areasId, "Health");
     const projectId = await liveItem(projectsId, "Website");
-    const { itemId } = await typedItem("journal");
-
-    const { card } = await tickJournal(itemId, { markdown: "Went for a run.", areaId, projectId });
-
+    const { card } = await tickJournal(await typedItem("journal"), { markdown: "Went for a run.", areaId, projectId });
     expect(card?.properties.status).toBe("proposed");
-    expect(card?.properties.proposal).toEqual({
-      entityKind: "journalEntry",
-      target: journalId,
-      properties: { date: "2026-10-16", markdown: "Went for a run.", projectId },
-    });
+    expect(card?.properties.proposal).toEqual(journalEnvelope({ projectId }));
   });
 
   it.each([
@@ -7245,15 +4632,8 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
     ["a project alone", "projectId"],
   ] as const)("keeps %s as the computation returned it", async (_label, key) => {
     const id = await liveItem(key === "areaId" ? areasId : projectsId, "Related");
-    const { itemId } = await typedItem("journal");
-
-    const { card } = await tickJournal(itemId, { markdown: "Went for a run.", [key]: id });
-
-    expect(card?.properties.proposal).toEqual({
-      entityKind: "journalEntry",
-      target: journalId,
-      properties: { date: "2026-10-16", markdown: "Went for a run.", [key]: id },
-    });
+    const { card } = await tickJournal(await typedItem("journal"), { markdown: "Went for a run.", [key]: id });
+    expect(card?.properties.proposal).toEqual(journalEnvelope({ [key]: id }));
   });
 
   // One Inbox item per target: a second tick of the same item stops at the stored card's current fingerprint and never
@@ -7264,12 +4644,10 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
   ] as const)(
     "refuses a computation result that carries %s as a target of its own and creates no journalEntry card",
     async (_label, targetOf) => {
-      const { itemId } = await typedItem("journal");
-
+      const itemId = await typedItem("journal");
       const { card, inputs } = await tickJournal(itemId, { markdown: "Went for a run." }, { target: targetOf() });
-
       expect(inputs).toHaveLength(1);
-      expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null, aiProposal: null });
+      expect(card?.properties).toMatchObject(clarifiedWithoutEnvelope);
       expect(JSON.stringify(card?.properties.history)).toContain("set by the server");
       const { rows } = await pool.query<{ n: number }>(
         "SELECT count(*)::int AS n FROM items WHERE database_id = $1 AND properties->'proposal'->>'entityKind' = 'journalEntry'",
@@ -7287,65 +4665,53 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
     ["a project that names no item", () => ({ markdown: "Run.", projectId: randomUUID() }), "projectId"],
     ["a date that is no calendar day", () => ({ markdown: "Run.", date: "2026-02-30" }), "date"],
   ] as const)("records %s as needsClarification and stores no envelope", async (_label, build, field) => {
-    const { itemId } = await typedItem("journal");
-
-    const { card } = await tickJournal(itemId, build());
-
-    expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null, aiProposal: null });
+    const { card } = await tickJournal(await typedItem("journal"), build());
+    expect(card?.properties).toMatchObject(clarifiedWithoutEnvelope);
     expect(JSON.stringify(card?.properties.history)).toContain("Computed proposal failed validation");
     expect(JSON.stringify(card?.properties.history)).toContain(field);
   });
 
-  it("leaves a pageContent type as it was: no Journal database or date in the input, the page target from the result", async () => {
-    const { itemId } = await typedItem("pageContent");
+  it("leaves pageContent and database types as they were: no Journal database or date in the input", async () => {
     const pageId = await liveItem(projectsId, "Reference page");
-
-    const { card, inputs } = await tickJournal(itemId, { markdown: "A note.", placement: "end" }, { target: pageId });
-
-    expect(inputs[0]?.entityKind).toBe("pageContent");
-    expect(inputs[0]?.journalDatabaseId).toBeUndefined();
-    expect(inputs[0]?.sourceDate).toBeUndefined();
-    expect(card?.properties.proposal).toEqual({
+    const page = await tickJournal(
+      await typedItem("pageContent"),
+      { markdown: "A note.", placement: "end" },
+      { target: pageId },
+    );
+    const tasksId = await databaseIdFor("tasks");
+    const database = await tickJournal(await typedItem("database"), { name: "Buy milk" });
+    for (const { inputs } of [page, database]) {
+      expect(inputs[0]?.journalDatabaseId).toBeUndefined();
+      expect(inputs[0]?.sourceDate).toBeUndefined();
+    }
+    expect(page.inputs[0]?.entityKind).toBe("pageContent");
+    expect(page.card?.properties.proposal).toEqual({
       entityKind: "pageContent",
       target: pageId,
       properties: { markdown: "A note.", placement: "end" },
     });
-  });
-
-  it("leaves a database type as it was: the type's target database, no Journal database or date in the input", async () => {
-    const { itemId } = await typedItem("database");
-
-    const { card, inputs } = await tickJournal(itemId, { name: "Buy milk" });
-
-    expect(inputs[0]?.entityKind).toBe("database");
-    expect(inputs[0]?.targetDatabaseId).toBe(await databaseIdFor("tasks"));
-    expect(inputs[0]?.journalDatabaseId).toBeUndefined();
-    expect(inputs[0]?.sourceDate).toBeUndefined();
-    expect(card?.properties.proposal).toEqual({
+    expect(database.inputs[0]).toMatchObject({ entityKind: "database", targetDatabaseId: tasksId });
+    expect(database.card?.properties.proposal).toEqual({
       entityKind: "database",
-      target: await databaseIdFor("tasks"),
+      target: tasksId,
       properties: { name: "Buy milk" },
     });
   });
 
   it("fails the tick, writing no card, when the tenant has no Journal database", async () => {
-    const { itemId } = await typedItem("journal");
+    const itemId = await typedItem("journal");
     // Raw SQL: no API removes a system database; this is the state a tenant seeded without the Journal module has.
     await pool.query("UPDATE databases SET owner_module_id = 'journalRemoved' WHERE owner_module_id = 'journal'");
-
     await expect(tickJournal(itemId, { markdown: "Went for a run." })).rejects.toThrow(
       "No database seeded for owner_module_id 'journal'",
     );
-
-    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
+    expect(await cardOf(itemId)).toBeNull();
   });
 
   describe("buildProposalEnvelope for a journalEntry snapshot", () => {
     async function snapshotOf(journalDatabaseId: string | undefined, dropDate = false): Promise<TickSnapshot> {
-      const { itemId } = await typedItem("journal");
-      const item = await withTransaction(pool, (client) =>
-        itemsStore.getItemById(client, databaseIds.inboxDatabaseId, itemId),
-      );
+      const itemId = await typedItem("journal");
+      const item = await withTransaction(pool, (client) => itemsStore.getItemById(client, inboxId, itemId));
       if (!item) throw new Error("Missing item");
       const { date: _date, ...withoutDate } = item.properties;
       return {
@@ -7360,35 +4726,29 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
         locale: "en",
       };
     }
+    const run = { properties: { markdown: "Run." } };
 
     it("throws a ValidationError on target for a result that carries a target", async () => {
       const snapshot = await snapshotOf(journalId);
-
       const error: unknown = (() => {
         try {
-          return buildProposalEnvelope(snapshot, { target: journalId, properties: { markdown: "Run." } });
+          return buildProposalEnvelope(snapshot, { ...run, target: journalId });
         } catch (caught) {
           return caught;
         }
       })();
-
       expect(error).toBeInstanceOf(ValidationError);
       expect(error).toMatchObject({ details: { field: "target" } });
     });
 
     it("throws a plain Error, not a clarification, for a snapshot that has no Journal database", async () => {
       const snapshot = await snapshotOf(undefined);
-
-      expect(() => buildProposalEnvelope(snapshot, { properties: { markdown: "Run." } })).toThrow(
-        /has no journalDatabaseId/,
-      );
-      expect(() => buildProposalEnvelope(snapshot, { properties: { markdown: "Run." } })).not.toThrow(ValidationError);
+      expect(() => buildProposalEnvelope(snapshot, run)).toThrow(/has no journalDatabaseId/);
+      expect(() => buildProposalEnvelope(snapshot, run)).not.toThrow(ValidationError);
     });
 
     it("leaves the date out, for the envelope validation to refuse, when neither the result nor the item has one", async () => {
-      const snapshot = await snapshotOf(journalId, true);
-
-      expect(buildProposalEnvelope(snapshot, { properties: { markdown: "Run." } })).toEqual({
+      expect(buildProposalEnvelope(await snapshotOf(journalId, true), run)).toEqual({
         entityKind: "journalEntry",
         target: journalId,
         properties: { markdown: "Run." },
@@ -7399,29 +4759,20 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
   it("does not accept an area of another tenant: the card is needsClarification, as for an id that names no item", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     try {
-      const own = getTenantZeroId();
       // The own item is created while the tenant is the only one: the superuser pool resolves its tenant by that.
-      const { itemId } = await typedItem("journal");
+      const itemId = await typedItem("journal");
       const foreign = await createTestTenant(pool);
       await createUser(pool, { tenantId: foreign, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
       await runInTenant(foreign, () => seedSystem(runtime));
-      const foreignAreasId = await runInTenant(foreign, () =>
-        withTransaction(runtime, async (client) => (await databasesStore.getDatabaseByModuleId(client, "areas"))?.id),
-      );
-      if (!foreignAreasId) throw new Error("Foreign tenant has no Areas database");
       const foreignAreaId = await runInTenant(foreign, () =>
-        withTransaction(
-          runtime,
-          async (client) =>
-            (await createItemWithClient(client, { databaseId: foreignAreasId, properties: { name: "Foreign" } })).id,
-        ),
+        withTransaction(runtime, async (client) => {
+          const areas = await databasesStore.getDatabaseByModuleId(client, "areas");
+          if (!areas) throw new Error("Foreign tenant has no Areas database");
+          return (await createItemWithClient(client, { databaseId: areas.id, properties: { name: "Foreign" } })).id;
+        }),
       );
-
-      const card = await runInTenant(own, async () => {
-        const handler = createSemprecTickAction(runtime, async () => ({
-          properties: { markdown: "Went for a run.", areaId: foreignAreaId },
-        }));
-        await handler(databaseIds, { heartbeatId: "hb", projectItemId: "proj", itemId });
+      const cards = await runInTenant(getTenantZeroId(), async () => {
+        await directTick(runtime, itemId, propose({ markdown: "Went for a run.", areaId: foreignAreaId }));
         return withTransaction(runtime, async (client) => {
           const { rows } = await client.query<{ properties: Record<string, unknown> }>(
             "SELECT properties FROM items WHERE database_id = $1",
@@ -7430,208 +4781,140 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
           return rows;
         });
       });
-
-      expect(card).toHaveLength(1);
-      expect(card[0]?.properties).toMatchObject({ status: "needsClarification", proposal: null });
+      expect(cards).toHaveLength(1);
+      expect(cards[0]?.properties).toMatchObject({ status: "needsClarification", proposal: null });
       // The answer is the one an id that names no item gets, and nothing of the foreign item is on the card.
-      expect(JSON.stringify(card[0]?.properties.history)).toContain("is not a live item of areas");
-      expect(JSON.stringify(card[0]?.properties)).not.toContain("Foreign");
+      expect(JSON.stringify(cards[0]?.properties.history)).toContain("is not a live item of areas");
+      expect(JSON.stringify(cards[0]?.properties)).not.toContain("Foreign");
     } finally {
       await runtime.end();
     }
   });
 });
 
-describe("an operation marked primary stands for an existing record (issue gh-1992)", () => {
-  let databaseIds: TickDatabaseIds;
-  let proposalsId: string;
+describe("an operation marked primary stands for an existing record", () => {
   let companiesId: string;
   let peopleId: string;
 
   beforeEach(async () => {
-    pool ??= getTestPool();
-    viewTypeRegistry = createViewTypeRegistry();
-    await resetDatabase(pool);
-    await seedSystem(pool, viewTypeRegistry);
-    proposalsId = await databaseIdFor("processingProposals");
+    await resetTickDatabases();
     companiesId = await databaseIdFor("companies");
     peopleId = await databaseIdFor("people");
-    databaseIds = {
-      inboxDatabaseId: await databaseIdFor("inbox"),
-      inboxItemTypesDatabaseId: await databaseIdFor("inboxItemTypes"),
-      processingProposalsDatabaseId: proposalsId,
-    };
   });
 
   const existingCompany = { op: "update" as const, alias: "co", primary: true as const };
+  const typedItem = async (targetDatabase: "companies" | "people") =>
+    (await typedSource("Capture", { name: "Capture", emoji: "N", targetDatabase })).item.id;
+  const liveItem = async (databaseId: string, properties: Record<string, unknown>) =>
+    (await withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties }))).id;
 
-  /** An Inbox item of a database type that targets `targetDatabase`. */
-  async function typedItem(targetDatabase: "companies" | "people"): Promise<string> {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: databaseIds.inboxItemTypesDatabaseId,
-        name: "Capture",
-        emoji: "N",
-        processingMethod: "database",
-        targetDatabase,
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: databaseIds.inboxDatabaseId,
-        date: "2026-10-16",
-        time: "09:00",
-        text: "Capture",
-        type: type.id,
-      }),
-    );
-    return item.id;
-  }
+  it("buildProposalSteps makes the marked operation the primary step without storing the marker, and otherwise the first create into the target", () => {
+    const personCreate = { op: "create" as const, database: "people", properties: { name: "Eva" } };
+    const companyCreate = { op: "create" as const, database: "companies", properties: { name: "Brainz" } };
+    const steps = buildProposalSteps([personCreate, { ...existingCompany, itemId: "item-1" }], "people");
+    expect(steps.map((step) => [step.ref, step.op, step.role])).toEqual([
+      ["op1", "create", "secondary"],
+      ["co", "update", "primary"],
+    ]);
+    expect(steps.flatMap((step) => Object.keys(step))).not.toContain("primary");
+    expect(buildProposalSteps([companyCreate, personCreate], "people").map((step) => step.role)).toEqual([
+      "secondary",
+      "primary",
+    ]);
+  });
 
-  async function snapshotOf(targetModuleId: "companies" | "people", targetDatabaseId: string): Promise<TickSnapshot> {
-    const itemId = await typedItem(targetModuleId);
-    const item = await withTransaction(pool, (client) =>
-      itemsStore.getItemById(client, databaseIds.inboxDatabaseId, itemId),
-    );
+  it("buildProposalEnvelope stores one marked operation as a multi-step envelope, and a single unmarked one as the ordinary single write", async () => {
+    const itemId = await typedItem("companies");
+    const item = await withTransaction(pool, (client) => itemsStore.getItemById(client, inboxId, itemId));
     if (!item) throw new Error("Missing item");
-    return {
+    const snapshot: TickSnapshot = {
       sourceTypeId: null,
       item,
       type: null,
       processingMethod: "database",
       entityKind: "database",
-      targetDatabaseId,
-      targetModuleId,
+      targetDatabaseId: companiesId,
+      targetModuleId: "companies",
       existingProposal: null,
       fingerprint: "fingerprint",
       locale: "en",
     };
-  }
-
-  async function liveItem(databaseId: string, properties: Record<string, unknown>): Promise<string> {
-    return (await withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties }))).id;
-  }
-
-  describe("buildProposalSteps", () => {
-    const personCreate = { op: "create" as const, database: "people", properties: { name: "Eva" } };
-    const companyCreate = { op: "create" as const, database: "companies", properties: { name: "Brainz" } };
-
-    it("makes the marked operation the primary step and does not store the marker", () => {
-      const steps = buildProposalSteps([personCreate, { ...existingCompany, itemId: "item-1" }], "people");
-
-      expect(steps.map((step) => [step.ref, step.op, step.role])).toEqual([
-        ["op1", "create", "secondary"],
-        ["co", "update", "primary"],
-      ]);
-      expect(steps.flatMap((step) => Object.keys(step))).not.toContain("primary");
-    });
-
-    it("keeps the first create into the target database as the primary step when no operation is marked", () => {
-      const steps = buildProposalSteps([companyCreate, personCreate], "people");
-
-      expect(steps.map((step) => step.role)).toEqual(["secondary", "primary"]);
-    });
-  });
-
-  describe("buildProposalEnvelope", () => {
-    it("stores one marked operation as a multi-step envelope whose top-level properties are the primary step's", async () => {
-      const snapshot = await snapshotOf("companies", companiesId);
-
-      const envelope = buildProposalEnvelope(snapshot, {
+    expect(
+      buildProposalEnvelope(snapshot, {
         properties: { name: "Ignored", ico: "07654321" },
         operations: [{ ...existingCompany, itemId: "item-1" }],
-      });
-
-      expect(envelope).toEqual({
-        entityKind: "database",
-        target: companiesId,
-        properties: {},
-        operations: [{ ref: "co", op: "update", itemId: "item-1", role: "primary", after: {} }],
-      });
+      }),
+    ).toEqual({
+      entityKind: "database",
+      target: companiesId,
+      properties: {},
+      operations: [{ ref: "co", op: "update", itemId: "item-1", role: "primary", after: {} }],
     });
-
-    it("stores a single unmarked operation as the ordinary single write, as before", async () => {
-      const snapshot = await snapshotOf("companies", companiesId);
-
-      const envelope = buildProposalEnvelope(snapshot, {
+    expect(
+      buildProposalEnvelope(snapshot, {
         properties: { name: "Acme" },
         operations: [{ op: "create", database: "companies", properties: { name: "Acme" } }],
-      });
+      }),
+    ).toEqual({ entityKind: "database", target: companiesId, properties: { name: "Acme" } });
+  });
 
-      expect(envelope).toEqual({ entityKind: "database", target: companiesId, properties: { name: "Acme" } });
+  it("the tick stores a proposed card whose primary step is an update that changes nothing, for the existing company", async () => {
+    const companyId = await liveItem(companiesId, { name: "Bakery", ico: "07654321" });
+    const itemId = await typedItem("companies");
+    await tick(
+      itemId,
+      propose({ name: "Bakery", ico: "07654321" }, { operations: [{ ...existingCompany, itemId: companyId }] }),
+    );
+    const card = await requireCard(itemId);
+    expect(card.properties.status).toBe("proposed");
+    const unchanged = { properties: {}, relations: {} };
+    expect(card.properties.proposal).toEqual({
+      entityKind: "database",
+      target: companiesId,
+      properties: {},
+      operations: [
+        { ref: "co", op: "update", itemId: companyId, role: "primary", before: unchanged, after: unchanged },
+      ],
     });
   });
 
-  describe("the tick", () => {
-    async function onlyCard(itemId: string) {
-      const card = await findProposalForItem(pool, proposalsId, itemId);
-      if (!card) throw new Error("No card was stored");
-      return card;
-    }
-
-    it("stores a proposed card whose primary step is an update that changes nothing, for the existing company", async () => {
-      const companyId = await liveItem(companiesId, { name: "Bakery", ico: "07654321" });
-      const itemId = await typedItem("companies");
-
-      await runTick(pool, databaseIds, itemId, async () => ({
-        properties: { name: "Bakery", ico: "07654321" },
-        operations: [{ ...existingCompany, itemId: companyId }],
-      }));
-
-      const card = await onlyCard(itemId);
-      expect(card.properties.status).toBe("proposed");
-      expect(card.properties.proposal).toEqual({
-        entityKind: "database",
-        target: companiesId,
-        properties: {},
-        operations: [
-          {
-            ref: "co",
-            op: "update",
-            itemId: companyId,
-            role: "primary",
-            before: { properties: {}, relations: {} },
-            after: { properties: {}, relations: {} },
-          },
-        ],
-      });
-    });
-
-    it("stores a proposed card with the person create and a link step for the existing company", async () => {
-      const companyId = await liveItem(companiesId, { name: "Bakery", ico: "07654321" });
-      const itemId = await typedItem("people");
-
-      await runTick(pool, databaseIds, itemId, async () => ({
-        properties: { name: "Eva" },
-        operations: [
-          {
-            op: "create",
-            database: "people",
-            properties: { name: "Eva" },
-            relations: { companies: [{ alias: "co" }] },
-          },
-          { op: "link", itemId: companyId, alias: "co" },
-        ],
-      }));
-
-      const card = await onlyCard(itemId);
-      expect(card.properties.status).toBe("proposed");
-      expect(card.properties.proposal).toEqual({
-        entityKind: "database",
-        target: peopleId,
-        properties: { name: "Eva" },
-        operations: [
-          {
-            ref: "op1",
-            op: "create",
-            role: "primary",
-            databaseKey: "people",
-            properties: { name: "Eva" },
-            relations: { companies: [{ ref: "co" }] },
-          },
-          { ref: "co", op: "link", role: "secondary", itemId: companyId },
-        ],
-      });
+  it("the tick stores a proposed card with the person create and a link step for the existing company", async () => {
+    const companyId = await liveItem(companiesId, { name: "Bakery", ico: "07654321" });
+    const itemId = await typedItem("people");
+    await tick(
+      itemId,
+      propose(
+        { name: "Eva" },
+        {
+          operations: [
+            {
+              op: "create",
+              database: "people",
+              properties: { name: "Eva" },
+              relations: { companies: [{ alias: "co" }] },
+            },
+            { op: "link", itemId: companyId, alias: "co" },
+          ],
+        },
+      ),
+    );
+    const card = await requireCard(itemId);
+    expect(card.properties.status).toBe("proposed");
+    expect(card.properties.proposal).toEqual({
+      entityKind: "database",
+      target: peopleId,
+      properties: { name: "Eva" },
+      operations: [
+        {
+          ref: "op1",
+          op: "create",
+          role: "primary",
+          databaseKey: "people",
+          properties: { name: "Eva" },
+          relations: { companies: [{ ref: "co" }] },
+        },
+        { ref: "co", op: "link", role: "secondary", itemId: companyId },
+      ],
     });
   });
 });

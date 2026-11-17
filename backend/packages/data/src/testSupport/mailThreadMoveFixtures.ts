@@ -10,7 +10,6 @@ import { ensureMailFolderSyncState, resetForUidvalidityChange } from "../mail/ma
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 
-/** The `UIDVALIDITY` every folder of an IMAP fixture mailbox is given. */
 export const MOVE_FIXTURE_UID_VALIDITY = "7";
 
 export const MOVE_FIXTURE_OWN_ADDRESS = "me@example.test";
@@ -19,7 +18,7 @@ export const MOVE_FIXTURE_CLIENT_ADDRESS = "klient@example.test";
 export const MOVE_FOLDER_KEYS = ["inbox", "sent", "drafts", "junk", "trash", "archive"] as const;
 export type MoveFolderKey = (typeof MOVE_FOLDER_KEYS)[number];
 
-/** The provider id and name each folder gets, by provider kind. A Gmail API mailbox keeps its Archive as a synthetic label. */
+/** A Gmail API mailbox keeps its Archive as a synthetic label. */
 const FOLDER_PROVIDER_IDS: Record<"gmail" | "imap", Record<MoveFolderKey, string>> = {
   gmail: {
     inbox: "INBOX",
@@ -35,24 +34,23 @@ const FOLDER_PROVIDER_IDS: Record<"gmail" | "imap", Record<MoveFolderKey, string
 export interface MoveFixtureMailbox {
   id: string;
   kind: "gmail" | "imap";
-  /** The folders the mailbox has; one named in `omit` is absent. */
   folders: Partial<Record<MoveFolderKey, string>>;
 }
 
 export interface CreateMoveFixtureMailboxInput {
   name: string;
   kind: "gmail" | "imap";
-  /** Folders the mailbox does not have, as an IMAP account without an `\Archive` folder. */
+  /** Folders to leave out, e.g. an IMAP account without an `\Archive` folder. */
   omit?: readonly MoveFolderKey[];
-  /** Registers this address as the mailbox's own, which makes mail from it the user's own. */
+  /** Mail from this address becomes the user's own. */
   ownAddress?: string;
   /** Leaves the mailbox without a `mail_account_sync_state` row (default: the sync mode its kind implies). */
   withoutSyncState?: boolean;
 }
 
 /**
- * A mailbox with its folders created the way folder discovery creates them, and the sync state its provider kind
- * implies (`gmail_api` or `imap`; an IMAP folder also gets a `UIDVALIDITY`). Run it inside the tenant scope.
+ * A mailbox with folders created as folder discovery creates them and the sync state its kind implies. Run inside
+ * the tenant scope.
  */
 export async function createMoveFixtureMailbox(
   runtime: Pool,
@@ -103,22 +101,22 @@ export async function createMoveFixtureMailbox(
 }
 
 export interface MoveFixtureMessage {
-  /** The RFC 5322 Message-ID; the same id in two mailboxes is two copies of one message. */
+  /** The same Message-ID in two mailboxes is two copies of one message. */
   id: string;
   day: number;
   mailbox: MoveFixtureMailbox;
-  /** The folders the copy is in, as the provider reports them: one for IMAP, any number for a Gmail API mailbox. */
+  /** One for IMAP, any number for a Gmail API mailbox. */
   folders: readonly MoveFolderKey[];
   refs?: readonly string[];
   from?: string;
   subject?: string;
-  /** The IMAP UID of the copy in its folder (IMAP mailboxes only; default: next counter value). */
+  /** IMAP only; default: next counter value. */
   uid?: number;
 }
 
 /**
- * Ingests messages through the sync writer, with the provider identity their mailbox kind carries: a provider message
- * id for a Gmail API mailbox, a UID on the folder edge for an IMAP one. Run it inside the tenant scope.
+ * Ingests through the sync writer with the provider identity the mailbox kind carries (Gmail message id, or IMAP
+ * UID on the folder edge). Run inside the tenant scope.
  */
 export function createMoveFixtureIngest(runtime: Pool, storage: BlobStorageWriter) {
   let nextUid = 10;
@@ -167,7 +165,6 @@ export function createMoveFixtureIngest(runtime: Pool, storage: BlobStorageWrite
   };
 }
 
-/** The thread of a message copy. */
 export async function moveFixtureThreadOf(runtime: Pool, emailItemId: string): Promise<string> {
   const thread = await runtime.query<{ thread_id: string | null }>(
     "SELECT thread_id FROM mail_message_meta WHERE tenant_id = app_tenant_default() AND item_id = $1",
@@ -181,12 +178,11 @@ export async function moveFixtureThreadOf(runtime: Pool, emailItemId: string): P
 export interface MoveFixtureFolderEdge {
   edgeId: string;
   folderId: string;
-  /** The `specialPurpose` of the folder. */
   purpose: string;
   metadata: Record<string, unknown>;
 }
 
-/** The folder edges of a message copy, ordered by edge id. Run it inside the tenant scope. */
+/** Ordered by edge id. Run inside the tenant scope. */
 export async function moveFixtureEdgesOf(runtime: Pool, itemId: string): Promise<MoveFixtureFolderEdge[]> {
   const { rows } = await runtime.query<{
     edge_id: string;
@@ -222,7 +218,7 @@ export interface MoveFixtureMoveRow {
   source: unknown;
 }
 
-/** The recorded desired moves of the tenant, ordered by message item id. Run it inside the tenant scope. */
+/** Ordered by message item id. Run inside the tenant scope. */
 export async function moveFixtureMoveRows(runtime: Pool): Promise<MoveFixtureMoveRow[]> {
   const { rows } = await runtime.query<{
     message_item_id: string;
@@ -245,7 +241,7 @@ export async function moveFixtureMoveRows(runtime: Pool): Promise<MoveFixtureMov
   }));
 }
 
-/** The sorted keys of the queued account syncs. The queue belongs to no tenant, so they are read as the superuser. */
+/** Sorted. The queue belongs to no tenant, so this reads as the superuser. */
 export async function moveFixtureAccountSyncJobs(admin: Pool): Promise<string[]> {
   const { rows } = await admin.query<{ key: string }>(
     "SELECT key FROM graphile_worker.jobs WHERE task_identifier = 'mailAccountSync' ORDER BY key",
@@ -253,7 +249,6 @@ export async function moveFixtureAccountSyncJobs(admin: Pool): Promise<string[]>
   return rows.map((row) => row.key).sort();
 }
 
-/** The keys of the account syncs of `mailboxes`, sorted. */
 export function moveFixtureJobKeys(...mailboxes: MoveFixtureMailbox[]): string[] {
   return mailboxes.map((mailbox) => `mail-account-sync:${mailbox.id}`).sort();
 }

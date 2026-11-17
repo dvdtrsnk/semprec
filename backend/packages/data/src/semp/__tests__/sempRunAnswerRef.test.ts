@@ -67,9 +67,8 @@ afterAll(async () => {
 const ref = (agentRunId: string, messageId: string): SempMessageRef => ({ kind: "agentRun", agentRunId, messageId });
 
 /**
- * Makes `messageIds` name `runId` as the run that produced them. Raw SQL on the admin pool, for states no writer
- * produces (a user message or a message of another thread that names the run), so the test reaches the role and thread
- * checks of the lookup on their own: every message a writer stores for another thread or role has no such run.
+ * Raw SQL for states no writer produces (a user message or another thread's message naming the run), so the
+ * lookup's role and thread checks are reached on their own.
  */
 async function nameRun(runId: string, messageIds: string[]): Promise<void> {
   const result = await admin.query("UPDATE semp_messages SET agent_run_id = $1 WHERE id = ANY($2::uuid[])", [
@@ -85,7 +84,6 @@ const validate = (tenant: TenantSetup, refs: SempMessageRef[]) =>
 const read = (tenant: TenantSetup, ref: SempMessageRef) =>
   runInTenant(tenant.tenant, () => withTransaction(runtime, (client) => readSempRefContext(client, ref)));
 
-/** The error a validation raised, reduced to what a caller can observe of it. */
 async function observedError(promise: Promise<unknown>): Promise<unknown> {
   try {
     await promise;
@@ -100,7 +98,6 @@ async function observedError(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe("an agentRun ref that names one answer (issue gh-1936)", () => {
-  /** A chat run with three played answers; the second one calls a tool. */
   async function chatWithAnswers(tenant: TenantSetup) {
     const setup = setupOf(tenant);
     const session = await createChatSession(setup, tenant.projectItemId, { task: "Run task sentinel" });

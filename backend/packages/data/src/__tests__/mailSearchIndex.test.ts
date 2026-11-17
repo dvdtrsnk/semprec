@@ -132,7 +132,6 @@ describe("mail search at ingest", () => {
       ]) {
         if (!text || !itemId) throw new Error("Missing search fixture");
         const query = buildItemSearchQuery(text, 2);
-        // The SQL fragment is constructed solely from validated bind positions; user text is bound separately.
         const { rows } = await withTransaction(pool, (client) =>
           client.query<{ matched: boolean }>(
             `SELECT search_vector @@ ${query.sql} AS matched FROM item_search_index WHERE item_id = $1`,
@@ -154,7 +153,6 @@ describe("mail search at ingest", () => {
       );
       expect(wrongDomainHits.map((hit) => hit.itemId)).not.toContain(message.itemId);
       const wrongDomain = buildItemSearchQuery("other.example", 2);
-      // The fragment contains only validated bind positions; the input is bound separately.
       const { rows: negative } = await withTransaction(pool, (client) =>
         client.query<{ matched: boolean }>(
           `SELECT search_vector @@ ${wrongDomain.sql} AS matched FROM item_search_index WHERE item_id = $1`,

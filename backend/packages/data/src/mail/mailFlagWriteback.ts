@@ -7,12 +7,11 @@ import {
   type PendingProviderFlagWrite,
 } from "./mailMessageFlagSyncStore.js";
 
-/** Provider-specific write surface shared by the durable flag-state consumer. */
 export interface MailFlagWritebackAdapter {
   write(input: PendingImapFlagWrite | PendingProviderFlagWrite): Promise<"applied" | "pending">;
 }
 
-/** IMAP's STORE FLAGS.SILENT operation is exposed by the transport as setMessageFlag. */
+/** STORE FLAGS.SILENT, exposed by the transport as setMessageFlag. */
 export function createImapMailFlagWritebackAdapter(imap: ImapMailClient): MailFlagWritebackAdapter {
   return {
     async write(input) {
@@ -41,7 +40,6 @@ export function createGmailMailFlagWritebackAdapter(gmail: GmailMailClient): Mai
   };
 }
 
-/** Graph represents read and flag state as independent fields on the message resource. */
 export function createGraphMailFlagWritebackAdapter(graph: GraphMailClient): MailFlagWritebackAdapter {
   return {
     async write(input) {

@@ -6,22 +6,16 @@ import type { SortSpec } from "../views/sortSpec.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { listClosedSensitiveDatabaseIds, readerOfWriter, type DatabaseReader } from "./agentDatabaseAccess.js";
 
-// What an agent may learn about a sensitive database it cannot read, through a database it can (issue #2000): a
-// relation property into it or a rollup that aggregates it answers "which records link to X" or "how many records"
-// without returning one. The filter compiler refuses the conditions (`views/filterCompiler.ts`), this module refuses
-// the sorts and hides the rollup values. All of it is decided for the agent's project only; a person and an external
-// client are passed as no closed set and are not touched.
+// A relation or rollup into a sensitive database the agent cannot read would answer "which/how many records link
+// to X" without returning one. The filter compiler refuses such conditions (`views/filterCompiler.ts`); this module
+// refuses the sorts and hides the rollup values. Applies to an agent's project only.
 
-/** The value an agent reads in place of a rollup that aggregates a database it may not read. */
 export interface HiddenRollupValue {
   value: null;
   hidden: true;
 }
 
-/**
- * The sensitive databases the reader may not read when it is an agent's project, `undefined` for a person and for an
- * external client, which these checks leave alone. Read in the caller's transaction.
- */
+/** Closed sensitive databases for an agent's project; `undefined` for a person or external client. */
 export async function closedSensitiveDatabasesOf(
   client: PoolClient,
   reader: DatabaseReader | undefined,
@@ -29,11 +23,7 @@ export async function closedSensitiveDatabasesOf(
   return typeof reader === "string" ? listClosedSensitiveDatabaseIds(client, reader) : undefined;
 }
 
-/**
- * Refuses a sort by a rollup property of `databaseId` whose source database is in `closed`, with the `ForbiddenError`
- * a filter on it gets. A sort by any other property or by a system timestamp is not looked at, and a missing or empty
- * `closed` set returns without a query.
- */
+/** Refuses a sort by a rollup whose source database is closed, with the same error a filter on it gets. */
 export async function assertNoSortOverClosedRollup(
   client: PoolClient,
   databaseId: string,
@@ -52,10 +42,8 @@ export async function assertNoSortOverClosedRollup(
 }
 
 /**
- * The items with every rollup whose source database is in `closed` read as `{ value: null, hidden: true }` in
- * `computed`, whether or not the item has a computed value for it, so a missing value says nothing either. The other
- * rollups, the other fields and the item order are unchanged. One query for the page's databases; a missing or empty
- * `closed` set returns the items as they are without one.
+ * Every rollup whose source database is closed reads as `{ value: null, hidden: true }`, whether or not a value
+ * exists, so absence says nothing either. Everything else is unchanged.
  */
 export async function hideClosedRollupValues<T extends ItemRow>(
   client: PoolClient,
@@ -77,11 +65,7 @@ export async function hideClosedRollupValues<T extends ItemRow>(
   });
 }
 
-/**
- * `hideClosedRollupValues` for the item a write returns to its writer: an agent's write response carries the item's
- * computed values like a read does, so a rollup over a database its project may not read is hidden there too. A
- * person, the system and an external client are returned the item as it is, without a query.
- */
+/** The same for an agent's write response, which carries computed values like a read. */
 export async function hideClosedRollupValuesForWriter<T extends ItemRow>(
   client: PoolClient,
   writer: Pick<WriterIdentity, "agentProjectItemId" | "externalClient"> | undefined,

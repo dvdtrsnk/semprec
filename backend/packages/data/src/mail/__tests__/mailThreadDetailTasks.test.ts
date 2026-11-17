@@ -16,7 +16,6 @@ import { createMailThreadDetailRouteHandler } from "../mailThreadRoutes.js";
 /** The writer of a person's own request: a relation write as this writer ends a value link, a system write does not. */
 const USER = { writerKind: "user" } as const;
 
-/** A mail thread as the route names it, and the Threads item its relations hang on. */
 interface TestThread {
   threadId: string;
   itemId: string;
@@ -65,10 +64,6 @@ function databaseId(key: string): string {
   return id;
 }
 
-/**
- * The thread of one live message, through the sync writer; the detail answers 404 for a thread without one.
- * A message with `references` joins the thread of the messages it names, and merges their threads when they differ.
- */
 async function newThread(messageId: string, references: string[] = []): Promise<TestThread> {
   return inTenant(() =>
     withTransaction(runtime, async (client) => {
@@ -104,16 +99,14 @@ async function newItem(databaseKey: string, itemProperties: Record<string, unkno
   return (await inTenant(() => cp.createItem({ databaseId: databaseId(databaseKey), properties: itemProperties }))).id;
 }
 
-/** Links through the choke point as a user, as a person's own request does. */
 async function link(relationPropertyId: string, callerItemId: string, targetItemId: string): Promise<void> {
   await inTenant(() => cp.createRelation({ relationPropertyId, callerItemId, targetItemId }, USER));
 }
 
 /**
- * A task linked to `thread` through `Threads.tasks`. The link rule `taskProjectFromThread` of the mail manifest (issue
- * gh-1900) gives the task an `on` link of its project when the edge is written. These tests fix the value links of a
- * task themselves, in the states they report, so that link row is removed: no production write removes a link row
- * without its item, hence the SQL.
+ * A task linked to `thread` through `Threads.tasks`, without the `on` project link the mail rule `taskProjectFromThread`
+ * gives it: these tests set a task's value links themselves, and no production write removes a link row without its
+ * item, hence the SQL.
  */
 async function newThreadTask(thread: TestThread, taskProperties: Record<string, unknown>): Promise<string> {
   const taskId = await newItem("tasks", taskProperties);
@@ -124,10 +117,7 @@ async function newThreadTask(thread: TestThread, taskProperties: Record<string, 
   return taskId;
 }
 
-/**
- * An `on` value link of one task property whose source is the thread item, in the rows `newThreadTask` left without one.
- * The row is written with the store function the link rules write theirs with.
- */
+/** An `on` value link of one task property sourced from the thread item, written with the link rules' store function. */
 async function inherit(taskId: string, propertyKey: string, thread: TestThread): Promise<void> {
   await inTenant(() =>
     withTransaction(runtime, (client) =>
@@ -203,7 +193,6 @@ describe("tasks of GET /api/mail/threads/:threadId (issue gh-1692)", () => {
     const bob = await newItem("people", { name: "Bob" });
     const full = await newThreadTask(thread, { name: "Send the invoice", date: "2026-11-20", status: "notDone" });
     await link(properties.taskProject, full, project);
-    // Linked in the opposite order of their names: the response orders people by name.
     await link(properties.taskPeople, full, bob);
     await link(properties.taskPeople, full, alice);
     const bare = await newThreadTask(thread, { name: "Call back", status: "done" });
@@ -215,7 +204,6 @@ describe("tasks of GET /api/mail/threads/:threadId (issue gh-1692)", () => {
     // The links are written after the user edits above, which would otherwise end them.
     await inherit(full, "project", thread);
     await inherit(full, "people", thread);
-    // A link of a property the detail does not report.
     await inherit(full, "date", thread);
 
     const tasks = await tasksOf(thread);
@@ -304,7 +292,6 @@ describe("tasks of GET /api/mail/threads/:threadId (issue gh-1692)", () => {
     const carol = await newItem("people", { name: "Carol" });
     const task = await newThreadTask(thread, { name: "Send the invoice" });
     await link(properties.taskProject, task, project);
-    // Linked in the opposite order of their names: the response orders people by name.
     await link(properties.taskPeople, task, carol);
     await link(properties.taskPeople, task, bob);
     await link(properties.taskPeople, task, alice);
@@ -379,7 +366,6 @@ describe("tasks of GET /api/mail/threads/:threadId (issue gh-1692)", () => {
     const right = await newThread("<right@example.test>");
     const ofLeft = await newThreadTask(left, { name: "Left's task", date: "2026-11-01" });
     const ofRight = await newThreadTask(right, { name: "Right's task", date: "2026-11-02" });
-    // A reply naming both messages joins their threads through the sync writer's threading.
     const target = await newThread("<join@example.test>", ["<left@example.test>", "<right@example.test>"]);
     const merged = [left, right].find((thread) => thread.threadId !== target.threadId);
     if (!merged) throw new Error("the reply did not merge the two threads");

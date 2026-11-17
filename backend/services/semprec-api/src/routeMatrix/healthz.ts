@@ -1,6 +1,5 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 
-/** `ROUTE_MATRIX` slice for the `/healthz` path family. */
 export const HEALTHZ_ROUTES: RouteMatrixEntry[] = [
   {
     name: "shallow health check",

@@ -1,18 +1,14 @@
 /**
- * Issue #215: the neutral gateway-completion contract. `packages/application` (and, in #85,
- * `core.agentGuidanceDrift`) depends only on this port — never on `packages/ai-gateway-client`'s
- * HTTP implementation, `packages/ai-gateway`, or any model-provider SDK — so a structured
- * completion can be requested without importing anything that knows how the request actually
- * reaches a provider.
+ * The neutral gateway-completion contract. Callers depend only on this port, never on the HTTP client, the gateway or
+ * any provider SDK.
  */
 
-/** A text block of a multi-block message. */
 export interface AiGatewayTextBlock {
   type: "text";
   text: string;
 }
 
-/** An image block: `data` is the base64 of a JPEG or PNG the caller already reduced; the gateway never reads a blob store. */
+/** `data` is the base64 of a JPEG or PNG the caller already reduced; the gateway never reads a blob store. */
 export interface AiGatewayImageBlock {
   type: "image";
   mimeType: "image/jpeg" | "image/png";
@@ -29,20 +25,12 @@ export interface AiGatewayMessage {
 
 export interface AiGatewayCompletionInput {
   /**
-   * The project item the call is billed/attributed to; written verbatim into `ai_gateway_calls`.
-   * `null` only for an operation the gateway attributes to no project
-   * (`'transcript_summary'`, `'transcript_speaker_suggestion'`, `'transcript_event_pick'`, `'transcript_event_match'`,
-   * `'transcript_card_recompute'`, `'semp_thread_title'`, `'mail_thread_task_name'`, `'mailThreadProject'`,
-   * `'mailAnswerExpected'`, `'mcp_tool_label'`).
-   * Required for `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'` and `'inbox_attachment_extraction'`.
+   * Billed/attributed project, written verbatim into `ai_gateway_calls`. `null` only for an operation the gateway
+   * attributes to no project; required for `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'` and
+   * `'inbox_attachment_extraction'`.
    */
   projectItemId: string | null;
-  /**
-   * Caller identifier for audit/attribution: `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'`,
-   * `'inbox_attachment_extraction'`, `'transcript_summary'`, `'transcript_speaker_suggestion'`,
-   * `'transcript_event_pick'`, `'transcript_event_match'`, `'transcript_card_recompute'`, `'semp_thread_title'`,
-   * `'mail_thread_task_name'`, `'mailThreadProject'`, `'mailAnswerExpected'` or `'mcp_tool_label'`.
-   */
+  /** Caller identifier for audit and attribution, e.g. `'inbox_proposal'` or `'transcript_summary'`. */
   operation: string;
   temperature: number;
   system: string;
@@ -62,11 +50,8 @@ export interface AiGatewayCompletionResult {
 }
 
 /**
- * The one failure mode `AiGatewayClientPort.complete` is allowed to signal: a network timeout,
- * a non-2xx response, the gateway's own budget rejection (`budget_exceeded`, which a caller can
- * treat as not worth retrying), an unparseable body, or a response that fails schema validation. `reason`
- * is the only detail exposed — never the provider's own error body or any secret — so a caller
- * that surfaces this to a user or a log can't leak gateway internals.
+ * The only failure `AiGatewayClientPort.complete` may signal (`budget_exceeded` is not worth retrying). `reason` is the
+ * only detail exposed, never a provider error body or secret.
  */
 export type AiGatewayFailureReason = "timeout" | "http" | "budget_exceeded" | "invalid_response";
 
@@ -81,11 +66,7 @@ export class AiGatewayFailedError extends Error {
   }
 }
 
-/**
- * Implemented over HTTP by `packages/ai-gateway-client` (`POST /internal/complete` against
- * `semprec-ai-gateway`). `packages/application` imports only this interface, never the HTTP
- * implementation, so it stays free of any transport or provider dependency.
- */
+/** Implemented over HTTP by `packages/ai-gateway-client` (`POST /internal/complete`). */
 export interface AiGatewayClientPort {
   complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult>;
 }

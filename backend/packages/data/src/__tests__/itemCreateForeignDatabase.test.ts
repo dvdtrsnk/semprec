@@ -9,10 +9,9 @@ import { withTransaction } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 
 /**
- * Issue #1235: a raw `items` insert naming another tenant's database fails with 23503 (the
- * composite foreign key), one naming a random UUID with 23514 (no partition), so the SQLSTATE
- * alone tells the two apart. `createItem` resolves the database under row-level security before
- * it inserts, so a tenant reaching it must get the same NotFoundError for both and write nothing.
+ * A raw `items` insert naming another tenant's database fails with 23503 (composite foreign key), one
+ * naming a random UUID with 23514 (no partition). `createItem` resolves the database under row-level
+ * security first, so both must get the same NotFoundError and write nothing.
  */
 
 let adminPool: Pool;
@@ -29,7 +28,6 @@ interface ErrorShape {
   details: unknown;
 }
 
-/** Runs `fn`, expects a NotFoundError, and returns every field a caller can observe. */
 async function notFound(fn: () => Promise<unknown>): Promise<ErrorShape> {
   const error: unknown = await fn().then(
     () => undefined,
@@ -40,7 +38,6 @@ async function notFound(fn: () => Promise<unknown>): Promise<ErrorShape> {
   return { name: e.name, status: e.status, code: e.code, message: e.message, details: e.details };
 }
 
-/** Every `items` and `idempotency_keys` row of every tenant, read past row-level security. */
 async function writtenRows(): Promise<{ items: number; keys: number }> {
   const { rows } = await adminPool.query<{ items: number; keys: number }>(
     "SELECT (SELECT count(*)::int FROM items) AS items, (SELECT count(*)::int FROM idempotency_keys) AS keys",

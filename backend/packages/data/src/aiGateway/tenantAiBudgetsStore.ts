@@ -3,9 +3,8 @@ import type { Queryable } from "../db/pool.js";
 
 export interface TenantAiBudget {
   tenantId: string;
-  /** `null` means the daily window has no per-tenant cap. */
+  /** `null` means no per-tenant cap for the window. */
   dailyCapUsd: number | null;
-  /** `null` means the monthly window has no per-tenant cap. */
   monthlyCapUsd: number | null;
 }
 
@@ -16,7 +15,7 @@ interface TenantAiBudgetRow {
   monthly_cap_usd: string | null;
 }
 
-/** One account in the admin overview: its tenant's caps (null when no row exists) and its tenant's spend in UTC windows. */
+/** Spend is in UTC windows. */
 export interface AdminAiBudgetAccount {
   userId: string;
   email: string;
@@ -38,12 +37,8 @@ interface AdminAiBudgetAccountRow {
 }
 
 /**
- * Every account with its tenant's caps and spend (issue #1039), oldest account first. Spend comes
- * from `ai_tenant_spend()`, a router function, because the admin plane runs in system scope where
- * row-level security hides every tenant's `ai_gateway_calls` rows (migration 0076). An account whose
- * tenant has no budget row reports `hasBudget: false` and null caps; its spend is still shown. An
- * account is joined to its own `users.tenant_id` only, with no sole-tenant fallback, so an account
- * without a tenant is not listed: it has no tenant to hold caps or spend.
+ * Spend comes from the router function `ai_tenant_spend()` because the admin plane runs in system
+ * scope, where RLS hides every tenant's calls. Accounts without a tenant are not listed.
  */
 export async function listTenantAiBudgetOverview(client: Queryable): Promise<AdminAiBudgetAccount[]> {
   const { rows } = await client.query<AdminAiBudgetAccountRow>(
@@ -84,9 +79,8 @@ interface SetTenantAiBudgetRow extends TenantAiBudgetRow {
 }
 
 /**
- * The only writer of `tenant_ai_budgets` (issue #1039): an upsert of one tenant's caps. Runs on the
- * caller's client so the caller can record the audit row in the same transaction. The caller has
- * already validated both caps as `null` or a finite number >= 0, the column's domain.
+ * The only writer of `tenant_ai_budgets`. Runs on the caller's client so the audit row shares the
+ * transaction; the caller has already validated both caps.
  */
 export async function setTenantAiBudget(
   client: PoolClient,
@@ -113,11 +107,7 @@ export async function setTenantAiBudget(
   };
 }
 
-/**
- * The AI budget row of the current scope's tenant (`app_tenant_default()`, the tenant the
- * row-level-security policies resolve). `null` when the tenant has no row — which a caller must
- * treat as "may not spend" — and when no tenant resolves.
- */
+/** `null` (no row or no tenant) must be treated as "may not spend". */
 export async function getCurrentTenantAiBudget(client: Queryable): Promise<TenantAiBudget | null> {
   const { rows } = await client.query<TenantAiBudgetRow>(
     `SELECT tenant_id, daily_cap_usd, monthly_cap_usd FROM tenant_ai_budgets WHERE tenant_id = app_tenant_default()`,

@@ -3,11 +3,9 @@ import { requireSingleRow } from "../db/pool.js";
 import type { SupportedLocale } from "./locales.js";
 import type { UserRole, UserRow } from "./types.js";
 
-// The publisher the profile route calls after its own write reaches `@semprec/data` through this module, which
-// `index.ts` re-exports whole: `index.ts` is at the ESLint line cap and takes no further export line.
+// Re-exported here because `index.ts` is at the ESLint line cap.
 export { publishAccountInvalidation } from "./accountInvalidation.js";
 
-/** The raw `users` row shape this module reads back from Postgres. */
 type UserDbRow = {
   id: string;
   email: string;
@@ -31,20 +29,17 @@ function mapRow(row: UserDbRow): UserRow {
 export interface CreateUserInput {
   email: string;
   passwordHash: string;
-  /** Defaults to the `users.locale` column default (`cs`) when omitted. */
+  /** Column default (`cs`) when omitted. */
   locale?: string;
-  /** Required by `users.tenant_id NOT NULL` (#1067): an insert without it fails with `23502`. */
+  /** Optional in the type, but `users.tenant_id` is NOT NULL: omitting it fails with `23502`. */
   tenantId?: string;
-  /** Defaults to the `users.role` column default (`member`) when omitted. */
+  /** Column default (`member`) when omitted. */
   role?: UserRole;
-  /**
-   * Stored as `users.display_name`; NULL when omitted. A caller that takes the name from a request validates it
-   * with `normalizeDisplayName` first.
-   */
+  /** Request-supplied names must go through `normalizeDisplayName` first. */
   displayName?: string;
 }
 
-/** Throws (unique violation, Postgres error code `23505`) if `email` is already taken. */
+/** Throws `23505` if `email` is already taken. */
 export async function createUser(client: Pool | PoolClient, input: CreateUserInput): Promise<UserRow> {
   const columns = ["email", "password_hash"];
   const values: unknown[] = [input.email, input.passwordHash];
@@ -84,17 +79,12 @@ export async function getUserById(client: Pool | PoolClient, id: string): Promis
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** Backs the setup API's (#233) "no account exists yet" gate — cheaper than a `count(*)` since it can stop at the first row. */
 export async function anyUserExists(client: Pool | PoolClient): Promise<boolean> {
   const { rows } = await client.query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM users) AS "exists"`);
   return rows[0]?.exists ?? false;
 }
 
-/**
- * The recipient of a tenant event is the user of the scope's tenant: the account whose
- * `users.tenant_id` is `app_tenant_default()` (the scope's tenant). Returns `null` when the tenant
- * has no bound user, and outside a tenant scope — the same visibility tenant rows have.
- */
+/** The recipient of a tenant event. `null` when the tenant has no user or outside a tenant scope. */
 export async function getTenantUserId(client: Pool | PoolClient): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM users WHERE tenant_id = (SELECT app_tenant_default())`,
@@ -102,11 +92,7 @@ export async function getTenantUserId(client: Pool | PoolClient): Promise<string
   return rows[0] ? rows[0].id : null;
 }
 
-/**
- * Every admin of an active tenant, oldest account first — the recipients of an operator alert.
- * Reads across tenants, so the caller must be in a system scope. Admins of suspended, provisioning
- * or deleting tenants are skipped.
- */
+/** Operator-alert recipients. Reads across tenants, so the caller must be in a system scope. */
 export async function listAdminRecipients(
   client: Pool | PoolClient,
 ): Promise<Array<{ userId: string; tenantId: string }>> {
@@ -119,11 +105,7 @@ export async function listAdminRecipients(
   return rows.map((row) => ({ userId: row.user_id, tenantId: row.tenant_id }));
 }
 
-/**
- * Locale of the tenant's user — the recipient rule of `getTenantUserId`: the user of the scope's
- * tenant. Returns `null` when the tenant has no bound user, and outside a tenant scope — the same
- * visibility tenant rows have.
- */
+/** Same recipient rule and `null` cases as `getTenantUserId`. */
 export async function getTenantUserLocale(client: Pool | PoolClient): Promise<string | null> {
   const { rows } = await client.query<{ locale: string }>(
     `SELECT locale FROM users WHERE tenant_id = (SELECT app_tenant_default())`,
@@ -131,7 +113,6 @@ export async function getTenantUserLocale(client: Pool | PoolClient): Promise<st
   return rows[0] ? rows[0].locale : null;
 }
 
-/** Used by `resetPassword` (auth/passwordResetActions.ts) to replace a user's password hash after a reset token is consumed. */
 export async function updateUserPasswordHash(
   client: Pool | PoolClient,
   id: string,
@@ -140,12 +121,7 @@ export async function updateUserPasswordHash(
   await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, id]);
 }
 
-/**
- * Sets `users.locale` of the user `userId` to `locale` when the stored value differs, and returns the
- * updated row (issue #1704). Returns `null` when the statement wrote nothing: the stored locale already
- * is `locale`, or no user has that id. The comparison is part of the `UPDATE`, so a returned row means
- * this call changed the stored value.
- */
+/** `null` when nothing changed (same locale or no such user); a returned row means this call changed it. */
 export async function updateUserLocale(
   client: Pool | PoolClient,
   userId: string,

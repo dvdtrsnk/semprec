@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/push-subscriptions` path family. */
 export const PUSH_SUBSCRIPTIONS_ROUTES: RouteMatrixEntry[] = [
   {
     name: "register push subscription",

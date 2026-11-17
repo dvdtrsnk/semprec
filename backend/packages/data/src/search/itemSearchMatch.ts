@@ -1,32 +1,23 @@
 import { buildItemSearchQuery } from "./itemSearchQuery.js";
 
-// The one match predicate over `item_search_index` (issues #1842 and #1857): an index row joined to its item, kept
-// when the row's database is one of the wanted ones and its `search_vector` matches the combined lemma-or-prefix
-// tsquery of `buildItemSearchQuery`. Global search (`searchItemsQuery.ts`) and the `q` of a database or view query and
-// of an item count (`andItemSearchMatch`) build their SQL from the parts below, so "matches" cannot drift between them.
-// Every value reaches the statement as a bound parameter; only fixed fragments are concatenated.
+// The one match predicate over `item_search_index`, shared by global search and the `q` of database/view queries
+// and item counts, so "matches" cannot drift between them. Every value is bound; only fixed fragments are concatenated.
 
-/** The index joined to its item, as `s` and `i`; callers append their own joins and conditions. */
+/** Aliased `s` and `i`; callers append their own joins and conditions. */
 export const ITEM_SEARCH_MATCH_FROM =
   "item_search_index s JOIN items i ON i.database_id = s.database_id AND i.id = s.item_id";
 
-/**
- * The condition that keeps the `s`/`i` rows of `ITEM_SEARCH_MATCH_FROM` whose database is in `databaseIdsSql` (a
- * SQL expression of type `uuid[]`) and whose index vector matches `tsquerySql`. It does not look at `deleted_at`:
- * whether a trashed item may match is the caller's decision.
- */
+/** `databaseIdsSql` is a `uuid[]` expression. Ignores `deleted_at`: whether trashed items match is the caller's call. */
 export function itemSearchMatchWhere(databaseIdsSql: string, tsquerySql: string): string {
   return `s.database_id = ANY(${databaseIdsSql}) AND i.database_id = ANY(${databaseIdsSql}) AND s.search_vector @@ ${tsquerySql}`;
 }
 
-/** A condition builder as `listItems`, `countItems` and `countItemsGrouped` take it: it appends its bind values to `params`. */
+/** Appends its bind values to `params`. */
 export type BuildFilterSql = (params: unknown[]) => string | undefined;
 
 /**
- * `buildFilterSql` ANDed with "the item's index row in `databaseId` matches the text `q`". Items without an index
- * row do not match, and text without a searchable word matches nothing (the condition is `FALSE`). The result
- * keeps the item's own `items.id` reference that the filter compiler uses, so it composes with a compiled filter and
- * runs inside `listItems`, `countItems` and `countItemsGrouped` unchanged.
+ * Items without an index row do not match; text without a searchable word is `FALSE`. Keeps the bare `items.id`
+ * reference, so it composes with a compiled filter inside `listItems` and the count functions.
  */
 export function andItemSearchMatch(
   buildFilterSql: BuildFilterSql | undefined,

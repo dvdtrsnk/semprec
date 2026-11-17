@@ -14,7 +14,6 @@ import {
 } from "../index.js";
 import { resolveSempHistoryContexts } from "../semp/sempRefHistory.js";
 
-/** A tenant with a recurring task, its project, person and attachment, and one plain (non-Tasks) item. */
 interface Fixture {
   tenant: string;
   tasksId: string;

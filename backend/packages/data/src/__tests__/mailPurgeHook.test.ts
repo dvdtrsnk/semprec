@@ -37,9 +37,8 @@ import {
 import { handleItemTrashPurgeSweepTask } from "../trash/purgeExpiredTrash.js";
 
 // The mail module's item purge hook as `domainWriteHooks.ts` registers it, driven through the permanent
-// purge: docs/adr/2026-11-11-mail-purge-hook-takes-the-thread-guard-after-the-purge-locks.md.
+// purge.
 
-/** The seeded ids every fixture shares, read per tenant. */
 interface MailIds {
   mailboxes: string;
   folders: string;
@@ -58,15 +57,12 @@ interface TestMailbox {
   archive: string;
 }
 
-/** The mail rows that name one Emails item, as stored. */
 interface EmailRows {
-  /** The thread of each `mail_message_meta` row of the item; at most one row exists. */
   meta: Array<string | null>;
   attachments: string[];
   flags: string[];
 }
 
-/** The rows a mailbox removal deletes, for one mailbox, as stored. */
 interface MailboxRows {
   credential: number;
   accountState: number;
@@ -77,7 +73,10 @@ interface MailboxRows {
 const NO_EMAIL_ROWS: EmailRows = { meta: [], attachments: [], flags: [] };
 const NO_MAILBOX_ROWS: MailboxRows = { credential: 0, accountState: 0, folderStates: [], serverSettings: 0 };
 
-/** Every table the hook deletes from, and the aliases that go with a deleted thread; a closed list, see `mailRowVersions`. */
+/**
+ * Every table the hook deletes from, and the aliases of a deleted thread; a closed list, see
+ * `mailRowVersions`.
+ */
 const MAIL_TABLES = [
   "mail_message_meta",
   "mail_attachments",
@@ -110,7 +109,6 @@ const storage: BlobStorageWriter = {
   },
 };
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -189,9 +187,8 @@ function attachment(filename: string): ClassifiedAttachment {
 }
 
 /**
- * One message through the production ingest writer, with the read and flagged state the provider
- * reported for it, as a sync pass records it. A message whose `references` name an earlier one joins
- * that message's thread.
+ * One message through the production ingest writer, with the reported read and flagged state. A message
+ * whose `references` name an earlier one joins that message's thread.
  */
 async function ingest(
   client: PoolClient,
@@ -219,7 +216,6 @@ async function ingest(
   return itemId;
 }
 
-/** The mail rows that name `itemId`, in any tenant. */
 async function emailRows(itemId: string): Promise<EmailRows> {
   const meta = await admin.query<{ thread_id: string | null }>(
     "SELECT thread_id::text AS thread_id FROM mail_message_meta WHERE item_id = $1",
@@ -240,7 +236,6 @@ async function emailRows(itemId: string): Promise<EmailRows> {
   };
 }
 
-/** The thread of the message `itemId` and the Threads item its `mail_threads` row is bound to. */
 async function threadOf(itemId: string): Promise<{ id: string; itemId: string }> {
   const { rows } = await admin.query<{ id: string; item_id: string | null }>(
     `SELECT t.id::text AS id, t.item_id::text AS item_id
@@ -252,7 +247,6 @@ async function threadOf(itemId: string): Promise<{ id: string; itemId: string }>
   return { id: row.id, itemId: row.item_id };
 }
 
-/** The ids of the `mail_threads` rows among `threadIds` that still exist, in any tenant. */
 async function existingThreads(threadIds: string[]): Promise<string[]> {
   const { rows } = await admin.query<{ id: string }>(
     "SELECT id::text AS id FROM mail_threads WHERE id = ANY($1::uuid[]) ORDER BY id",
@@ -261,7 +255,10 @@ async function existingThreads(threadIds: string[]): Promise<string[]> {
   return rows.map((row) => row.id);
 }
 
-/** Whether item `itemId` exists and is in the trash, with its `updated_at` and `deleted_at` at full precision; empty when it is gone. */
+/**
+ * Whether `itemId` exists and is trashed, with `updated_at` and `deleted_at` at full precision; empty when
+ * it is gone.
+ */
 async function itemState(
   itemId: string,
 ): Promise<Array<{ trashed: boolean; updatedAt: string; deletedAt: string | null }>> {
@@ -273,7 +270,6 @@ async function itemState(
   return rows;
 }
 
-/** The rows a removal deletes for `mailbox`, read in `tenantId`'s scope, so a row of another tenant is absent. */
 function mailboxRows(mailbox: TestMailbox, tenantId = tenant): Promise<MailboxRows> {
   return inTenant(async (client) => {
     const count = async (sql: string): Promise<number> => {
@@ -297,7 +293,6 @@ function mailboxRows(mailbox: TestMailbox, tenantId = tenant): Promise<MailboxRo
   }, tenantId);
 }
 
-/** The rows of a connected mailbox none of which was deleted. */
 const connectedRows = (mailbox: TestMailbox): MailboxRows => ({
   credential: 1,
   accountState: 1,
@@ -306,14 +301,13 @@ const connectedRows = (mailbox: TestMailbox): MailboxRows => ({
 });
 
 /**
- * The row versions of every mail table, of one tenant or of all: a row that was inserted, updated or
- * deleted changes its table's list, so equal lists mean that no row of the table was written.
+ * The row versions of every mail table, of one tenant or of all: equal lists mean no row of the table was
+ * written.
  */
 async function mailRowVersions(tenantId?: string): Promise<Record<string, string[]>> {
   const versions: Record<string, string[]> = {};
   for (const table of MAIL_TABLES) {
-    // `table` is one of the literals of MAIL_TABLES, so it cannot break out of the statement; a table
-    // name accepts no bind parameter.
+    // `table` is one of the literals of MAIL_TABLES; a table name accepts no bind parameter.
     const { rows } = await admin.query<{ version: string }>(
       `SELECT tenant_id::text || ' ' || ctid::text || ' ' || xmin::text AS version
          FROM ${table} WHERE $1::uuid IS NULL OR tenant_id = $1::uuid ORDER BY 1`,
@@ -324,14 +318,12 @@ async function mailRowVersions(tenantId?: string): Promise<Record<string, string
   return versions;
 }
 
-/** The generic soft delete of a live item, in `tenantId`'s scope. */
 function trash(databaseId: string, itemId: string, tenantId = tenant): Promise<void> {
   return runInTenant(tenantId, async () => {
     expect(await chokePoint.softDeleteItem(databaseId, itemId)).not.toBeNull();
   });
 }
 
-/** The permanent purge of the trashed item `itemId` in `tenantId`'s scope; resolves the ids it removed. */
 function purge(itemId: string, tenantId = tenant): Promise<string[]> {
   return runInTenant(tenantId, async () => {
     const purged = await chokePoint.purgeExpiredTrashSubtree(itemId, EVERYTHING_EXPIRED);
@@ -340,14 +332,13 @@ function purge(itemId: string, tenantId = tenant): Promise<string[]> {
 }
 
 /**
- * Makes every row delete from `table` fail until the returned function runs. A trigger is the only way
- * to fail one statement of the hook inside the purge's transaction; no production code exposes that seam.
+ * Makes every row delete from `table` fail until the returned function runs. A trigger is the only way to
+ * fail one statement of the hook inside the purge's transaction.
  */
 async function failDeletesFrom(table: (typeof MAIL_TABLES)[number]): Promise<() => Promise<void>> {
   await admin.query(`CREATE FUNCTION test_mail_purge_hook_fail() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN RAISE EXCEPTION 'test mail purge hook failure'; END $$`);
-  // `table` is one of the literals of MAIL_TABLES, so it cannot break out of the statement;
-  // CREATE TRIGGER and DROP TRIGGER accept no bind parameters.
+  // `table` is one of the literals of MAIL_TABLES; CREATE/DROP TRIGGER accept no bind parameters.
   await admin.query(
     `CREATE TRIGGER test_mail_purge_hook_fail BEFORE DELETE ON ${table} FOR EACH ROW EXECUTE FUNCTION test_mail_purge_hook_fail()`,
   );
@@ -357,7 +348,6 @@ async function failDeletesFrom(table: (typeof MAIL_TABLES)[number]): Promise<() 
   };
 }
 
-/** A promise with its resolver, for the explicit signals of the concurrent tests. */
 function signal<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve: (value: T) => void = () => {};
   const promise = new Promise<T>((settle) => {
@@ -377,8 +367,8 @@ function reachedBeforeEnd<T>(reached: Promise<T>, work: Promise<unknown>, what: 
 }
 
 /**
- * Whether `work` came to wait for a lock backend `holder` holds: `true` as soon as a backend is seen
- * waiting for it, `false` when `work` settled without one. `work` stays the caller's to await.
+ * Whether `work` came to wait for a lock backend `holder` holds: `true` once a backend is seen waiting,
+ * `false` when `work` settled without one. `work` stays the caller's to await.
  */
 async function waitsFor(holder: number, work: Promise<unknown>): Promise<boolean> {
   let settled = false;
@@ -398,9 +388,8 @@ async function waitsFor(holder: number, work: Promise<unknown>): Promise<boolean
 }
 
 /**
- * Takes the tenant's mail-thread mutation guard in a transaction of its own and keeps it until
- * `release` runs; `beforeCommit` then runs in that transaction, still under the guard. Resolves the
- * holder's backend once the guard is held.
+ * Takes the tenant's mail-thread mutation guard in its own transaction until `release` runs;
+ * `beforeCommit` then runs under the guard. Resolves the holder's backend once the guard is held.
  */
 async function holdThreadGuard(
   beforeCommit: (client: PoolClient) => Promise<void> = async () => {},
@@ -427,9 +416,8 @@ async function holdThreadGuard(
 }
 
 /**
- * The Threads item an `ingestAttachments` call for a draft hangs its files on. A draft has no thread, and no production
- * caller ingests attachments for one, so this stands for the thread item of the message the fixture models: a bare
- * Threads item with no `mail_threads` row, which no thread count or thread cleanup sees.
+ * The Threads item an `ingestAttachments` call for a draft hangs its files on. A draft has no thread, so
+ * this is a bare Threads item with no `mail_threads` row, which no thread count or cleanup sees.
  */
 async function newThreadsItemFor(client: PoolClient): Promise<string> {
   const threads = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
@@ -616,7 +604,7 @@ describe("mail purge hook (gh-1691)", () => {
         ingest(client, ids, { mailbox: await createMailbox(client, ids, "Work"), messageId: "<only@x>" }),
       );
       const thread = await threadOf(email);
-      // Raw SQL: a thread row from before the Threads cutover has no item, and no current writer creates one.
+      // Raw SQL: a thread row without an item; no current writer creates one.
       const unbound = await admin.query("UPDATE mail_threads SET item_id = NULL WHERE id = $1", [thread.id]);
       expect(unbound.rowCount).toBe(1);
       const formerThreadItem = await itemState(thread.itemId);
@@ -673,7 +661,7 @@ describe("mail purge hook (gh-1691)", () => {
           { databaseId: ids.emails, properties: { name: "Unthreaded" } },
           { allowedSystemKeys: ["name"] },
         );
-        // The store's own writer, without a thread: the row the thread backfill has not reached yet.
+        // The store's own writer, without a thread.
         await upsertMailMessageMeta(client, {
           itemId: item.id,
           mailboxItemId: mailbox.id,
@@ -853,7 +841,10 @@ describe("mail purge hook (gh-1691)", () => {
   });
 
   describe("two tenants", () => {
-    /** A trashed Email with an attachment, a generically trashed connected mailbox and a folder without a mailbox that has a sync state. */
+    /**
+     * A trashed Email with an attachment, a generically trashed connected mailbox and a folder without a
+     * mailbox that has a sync state.
+     */
     async function seedTenantMail(tenantId: string): Promise<{
       ids: MailIds;
       email: string;
@@ -928,7 +919,7 @@ describe("mail purge hook (gh-1691)", () => {
       );
       await trash(own.ids.emails, fresh);
       const freshRows = await emailRows(fresh);
-      // Raw SQL: real trash ages over time and no production write sets `deleted_at` to a past instant.
+      // Raw SQL: no production write sets `deleted_at` to a past instant.
       const expired = [own.email, own.mailbox.id, theirs.email, theirs.mailbox.id];
       const backdated = await admin.query(
         "UPDATE items SET deleted_at = now() - interval '31 days' WHERE id = ANY($1::uuid[]) AND deleted_at IS NOT NULL",

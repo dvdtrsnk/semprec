@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/mcp-tool-registrations` path family. */
 export const MCP_TOOL_REGISTRATIONS_ROUTES: RouteMatrixEntry[] = [
   {
     name: "mcp tool registration reclassify",

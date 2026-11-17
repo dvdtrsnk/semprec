@@ -9,10 +9,8 @@ import type { PasswordResetMailer, SendPasswordResetEmailInput } from "../auth/p
 import { UnauthorizedError } from "../errors.js";
 
 /**
- * Issue #976: the identity tables are written only by `semprec_data`. Since migration 0177 (finding
- * R2-DB-3 of gh-1086) `semprec_side` reads only `users` and `tenants` of them and holds no privilege
- * on the tokens and attempts. Logs in as each role with its own random password, like
- * `leastPrivilegeRoles.test.ts`.
+ * The identity tables are written only by `semprec_data`; `semprec_side` reads only `users` and `tenants`
+ * and holds no privilege on the tokens and attempts. Logs in as each role with its own random password.
  */
 const TEST_ROLE_PASSWORD = randomUUID();
 const IDENTITY_TABLES = ["users", "sessions", "password_reset_tokens", "login_attempts", "tenants"];

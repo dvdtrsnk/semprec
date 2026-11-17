@@ -15,9 +15,9 @@ tiers and three malformed Touches sections). Validation exempts only an unchange
 imported record with the same recorded diagnostic. It does not approve, rewrite or
 queue that work. The imported backlog contains no `agent:ready` queue intent.
 
-ADRs retain permanent central paths. `node .github/scripts/adr.mjs --platform
-<platform>` selects platform candidates including shared and historical mobile
-scope; decisions remain append-only.
+Backend and cross-cutting rules live in `docs/architecture/`; mobile and web ADRs
+keep permanent paths under `docs/adr/` (`node .github/scripts/adr.mjs --platform
+<platform>`).
 
 ## Consumer rollout
 

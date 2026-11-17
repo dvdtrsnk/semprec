@@ -6,16 +6,12 @@ import type {
 } from "@semprec/module-registry";
 
 /**
- * The Inbox card editor schemas of the system databases (issue #1825), keyed by the base kind of the card
- * (`docs/adr/2026-10-25-server-driven-inbox-editor-schema.md`). The `systemDatabases` manifest carries them
- * as its `editorSchemas`, and their label and placeholder keys are in `seed/i18n/cs.json` and `en.json`.
+ * Inbox card editor schemas of the system databases, keyed by the card's base kind; labels and
+ * placeholders are in `seed/i18n/{cs,en}.json`.
  *
- * A field `key` is a property key of the owning database where one exists. Where none does, it is a pseudo
- * field: `allDay`, `followupTask`, `followDate`, `day`, `page`, `placement` and `heading` come from the ADR's
- * list of pseudo keys, and `area` (the area choice of the task card, which Tasks has no property for) and
- * `markdown` (the page content of a `pageContent` envelope, on the two page cards) are appended to that list by
- * `docs/adr/2026-11-12-inbox-editor-schema-pseudo-keys-area-and-markdown.md`. Nothing evaluates `required`,
- * `when` or `timeHiddenWhen` before issues #1928 and #1934.
+ * A field `key` is the owning database's property key where one exists; otherwise a pseudo key
+ * (`allDay`, `followupTask`, `followDate`, `day`, `page`, `placement`, `heading`, `area`, `markdown`).
+ * `required`, `when` and `timeHiddenWhen` are not evaluated yet.
  */
 
 const labelKeyOf = (baseKind: string, key: string): string => `editor.${baseKind}.${key}.label`;
@@ -49,7 +45,7 @@ function schema(...groups: EditorGroupDescriptor[]): EditorSchemaDescriptor {
 const ALL_DAY_HIDES_TIME = { field: "allDay", equals: true } as const;
 const FOLLOWUP_IS_ON = { field: "followupTask", equals: true } as const;
 
-/** The follow-up step switch and its date, shown on the cards whose proposal may carry a follow-up task. */
+/** The follow-up task switch and its date, on cards whose proposal may carry a follow-up task. */
 function followupGroup(baseKind: string): EditorGroupDescriptor {
   return {
     key: "followup",

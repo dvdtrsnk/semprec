@@ -108,9 +108,7 @@ describe("processHeartbeats", () => {
     expect(expected).toContain(mailSyncProcessName(active.id));
     expect(expected).toContain(mailSyncProcessName(deleted.id));
 
-    // Soft-deleting the Mailbox item drops it from the expected set even though its
-    // `mail_account_sync_state` row is untouched — nothing deletes that row on a Mailbox's
-    // soft-delete, so the join against `items.deleted_at` is what actually derives deactivation.
+    // Nothing deletes the sync-state row on a Mailbox's soft-delete; the join on `items.deleted_at` derives deactivation.
     await chokePoint.softDeleteItem(mailboxesId, deleted.id);
     expected = await getExpectedProcessNames(pool);
     expect(expected).toContain(mailSyncProcessName(active.id));
@@ -118,9 +116,7 @@ describe("processHeartbeats", () => {
   });
 
   it("startProcessHeartbeat ticks immediately and again every intervalMs, reporting the same started_at", async () => {
-    // A tick fires its UPSERT without awaiting it, so advancing the fake timers only proves the
-    // query was sent, not that it committed. Keeping each tick's query promise and awaiting it
-    // before reading the row is what makes the reads below see that tick's write.
+    // A tick fires its UPSERT without awaiting it, so each tick's promise is kept and awaited before reading.
     const tickUpserts: Promise<unknown>[] = [];
     const tickTrackingPool = {
       query: (text: string, values?: unknown[]) => {

@@ -26,7 +26,7 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 
 let pool: Pool;
 
-/** Tenant zero's user: a tenant-zero notification may only name its own tenant's user (issue #1066). */
+/** Tenant zero's user: a notification may only name its own tenant's user. */
 async function createTestUser(): Promise<string> {
   const passwordHash = await hashPassword("s3cret-password");
   const user = await createUser(pool, {
@@ -37,11 +37,7 @@ async function createTestUser(): Promise<string> {
   return user.id;
 }
 
-/**
- * Writes one notification and returns its id. The default is a critical Semp problem
- * (`semp_problem`, severity in its payload), which the default preferences push; pass a warning
- * problem or an approval to test the other rules.
- */
+/** Defaults to a critical `semp_problem`, which the default preferences push. */
 async function writeTestNotification(
   userId: string,
   sourceId: string,
@@ -71,8 +67,7 @@ async function countRows(text: string, values: unknown[]): Promise<number> {
 
 interface FanoutJobRow {
   key: string;
-  // Issue #167: `enqueueJob` wraps every job payload in a `{ traceId, payload }` envelope before
-  // it reaches `graphile_worker`'s own `jobs` table.
+  // `enqueueJob` wraps every payload in a `{ traceId, payload }` envelope.
   payload: unknown;
 }
 
@@ -571,7 +566,7 @@ describe("notificationFanout job (issue #151)", () => {
     const senders: PushSenders = { sendWebPush, sendApns };
 
     await handleNotificationFanoutTask(pool, { notificationId }, senders);
-    await handleNotificationFanoutTask(pool, { notificationId }, senders); // simulated job retry
+    await handleNotificationFanoutTask(pool, { notificationId }, senders);
 
     expect(sendWebPush).toHaveBeenCalledTimes(1);
   });
@@ -651,7 +646,7 @@ describe("notificationFanout job (issue #151)", () => {
 
     sendWebPush.mockClear();
     await handleNotificationFanoutTask(pool, { notificationId }, { sendWebPush, sendApns });
-    expect(sendWebPush).not.toHaveBeenCalled(); // both pairs already resolved (one delivered, one permanently failed)
+    expect(sendWebPush).not.toHaveBeenCalled();
   });
 
   it("marks a not-configured registration permanently failed without revoking it, and still delivers the other one (issue #703)", async () => {
@@ -986,11 +981,7 @@ describe("notificationFanout job (issue #151)", () => {
   });
 });
 
-/**
- * Pure rule table for `pushInterruptionLevelFor`. No kind uses the invites or reminders category yet,
- * so their switches can only be tested on synthetic policies here; the invitation and reminder kinds
- * that add a real policy will test them end to end through the job.
- */
+/** No kind uses the invites or reminders category yet, so those switches are tested on synthetic policies. */
 describe("pushInterruptionLevelFor (issue #1443)", () => {
   const defaults: NotificationPreferences = {
     approvals: true,

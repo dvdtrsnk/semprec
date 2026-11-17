@@ -14,17 +14,12 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { catalogOptionLabels, type CatalogResolver } from "../manifest/catalogResolution.js";
 import { getDatabase } from "./databasesStore.js";
 
-/** True when a Postgres error is the named unique-index violation, so callers can turn it into a clean ConflictError. */
 export function isUniqueViolation(err: unknown, constraint: string): boolean {
   if (typeof err !== "object" || err === null) return false;
   return "code" in err && err.code === "23505" && "constraint" in err && err.constraint === constraint;
 }
 
-/**
- * Issue #145: a select/multi_select property's `config.options` must already be in the
- * `{ key, label? }[]` catalog shape — the bare-string shape only ever exists in already-
- * written rows, repaired once by migration 0029, never accepted from a new write.
- */
+/** `config.options` must be in the `{ key, label? }[]` catalog shape; a bare-string option is refused. */
 function assertValidSelectOptions(type: PropertyType, config: Record<string, unknown> | undefined): void {
   if (type !== "select" && type !== "multi_select") return;
   const options = config?.options;
@@ -64,7 +59,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Validates the optional create-time default against the property's storage type. */
 function assertValidDefault(type: PropertyType, config: Record<string, unknown> | undefined): void {
   if (!config || !Object.hasOwn(config, "default")) return;
   const value = config.default;
@@ -96,9 +90,8 @@ function assertValidDefault(type: PropertyType, config: Record<string, unknown> 
 }
 
 /**
- * Issue #1622: a `number` property's `config.filterPresets` / `config.emptyPreset` must match the shared
- * `NumberFilterConfigSchema`; `emptyPreset` without `filterPresets` fails it. Either key on any other type is
- * refused. Other config keys are not looked at here.
+ * A `number` property's `config.filterPresets`/`config.emptyPreset` must match
+ * `NumberFilterConfigSchema` (`emptyPreset` needs `filterPresets`); either key on any other type is refused.
  */
 function assertValidNumberFilterConfig(type: PropertyType, config: Record<string, unknown> | undefined): void {
   if (!config || (!Object.hasOwn(config, "filterPresets") && !Object.hasOwn(config, "emptyPreset"))) return;
@@ -140,7 +133,6 @@ const MIGRATION_STATUSES: readonly PropertyRow["migrationStatus"][] = [
   "partial",
 ];
 
-/** The raw `properties` row shape this module reads back from Postgres. */
 type PropertyDbRow = {
   id: string;
   database_id: string;
@@ -199,11 +191,7 @@ export async function getPropertyByKey(
   return rows[0] ? mapPropertyRow(rows[0]) : null;
 }
 
-/**
- * Issue #432: the `(database_id, key)` lookup `UNIQUE(database_id, key)` indexes, with an optional
- * type filter applied in the same query. Returns every matching row rather than the first, so the
- * caller — not this query — decides what more than one match means.
- */
+/** With an optional type filter in the same query. Returns every match; the caller decides what several mean. */
 export async function findPropertiesByKey(
   client: PoolClient,
   databaseId: string,
@@ -217,7 +205,7 @@ export async function findPropertiesByKey(
   return rows.map(mapPropertyRow);
 }
 
-/** The batch form of `getProperty`: the properties among `propertyIds` that the caller's tenant scope can read. */
+/** Those of `propertyIds` readable in the caller's tenant scope. */
 export async function listPropertiesByIds(client: PoolClient, propertyIds: readonly string[]): Promise<PropertyRow[]> {
   if (propertyIds.length === 0) return [];
   const { rows } = await client.query<PropertyDbRow>(
@@ -235,11 +223,7 @@ export async function listPropertiesByDatabase(client: PoolClient, databaseId: s
   return rows.map(mapPropertyRow);
 }
 
-/**
- * Batch form of `listPropertiesByDatabase` for callers iterating many databases at once (issue
- * #147's system-wide schema projection) — one query instead of one-per-database, grouped by
- * `databaseId` in memory. A database with no properties is simply absent from the result map.
- */
+/** One query for many databases; a database with no properties is absent from the map. */
 export async function listPropertiesByDatabases(
   client: PoolClient,
   databaseIds: readonly string[],
@@ -287,7 +271,7 @@ async function assertDatabaseSchemaUnlocked(client: PoolClient, databaseId: stri
 export interface CreatePropertyInput {
   databaseId: string;
   key: string;
-  /** Required unless the owning database is a system database — enforced below, not by the (now nullable) column. */
+  /** Required unless the owning database is a system database (enforced below, not by the column). */
   name: string | null;
   type: PropertyType;
   config?: Record<string, unknown>;
@@ -349,7 +333,7 @@ export async function setInitialPosition(
   requireAffectedRows(result, "initial property position update");
 }
 
-/** The label is always renamable — `locked` governs deletion / type change, never the display name. */
+/** `locked` governs deletion and type change, never the display name. */
 export async function renameProperty(client: PoolClient, propertyId: string, name: string): Promise<PropertyRow> {
   await requireProperty(client, propertyId);
   const { rows } = await client.query<PropertyDbRow>(
@@ -366,8 +350,9 @@ async function assertPropertySchemaMutable(client: PoolClient, property: Propert
   await assertDatabaseSchemaUnlocked(client, property.databaseId);
 }
 
-/** Changes the type and optional replacement config together, validating the final pair under the row lock.
- * Caller (the choke-point) is responsible for the mirror-dependency and conversion-path checks.
+/**
+ * Changes the type and optional config together, validating the pair under the row lock. The caller
+ * checks mirror dependencies and conversion paths.
  */
 export async function changePropertyType(
   client: PoolClient,
@@ -384,9 +369,8 @@ export async function changePropertyType(
   const finalConfig = config ?? property.config;
   assertValidPropertyConfig(newType, finalConfig);
 
-  // `migration_dropped_values` is cleared here and only here: a fresh retype starts a new
-  // migration, so whatever a previous retype of this property discarded is no longer its
-  // result. Every other writer only ever sets the flag.
+  // `migration_dropped_values` is cleared only here: a fresh retype starts a new migration. Every
+  // other writer only sets the flag.
   const result = await client.query<PropertyDbRow>(
     `UPDATE properties SET type = $2, migration_status = $3, migration_dropped_values = false, config = $4::jsonb
      WHERE id = $1 RETURNING ${PROPERTY_COLUMNS}`,
@@ -405,17 +389,16 @@ export async function setPropertyMigrationStatus(
 }
 
 /**
- * Records that a property-type migration discarded an unconvertible value. Idempotent, and
- * deliberately not reset here — see migration 0026 for why this outlives a single job run.
+ * Idempotent and never reset here: the fact belongs to the retype, and a retried or overlapping run
+ * skips values an earlier run dropped, so it could not record them again.
  */
 export async function markPropertyMigrationDroppedValues(client: PoolClient, propertyId: string): Promise<void> {
   await client.query(`UPDATE properties SET migration_dropped_values = true WHERE id = $1`, [propertyId]);
 }
 
 /**
- * Settles a finished property-type migration on 'partial' or 'done' from the durable
- * `migration_dropped_values` flag rather than from the calling run's own bookkeeping, so
- * a retry or an overlapping run cannot downgrade an earlier run's 'partial' to 'done'.
+ * Settles on 'partial' or 'done' from the durable `migration_dropped_values` flag, so a retry or an
+ * overlapping run cannot downgrade an earlier 'partial' to 'done'.
  */
 export async function settlePropertyMigrationStatus(client: PoolClient, propertyId: string): Promise<void> {
   await client.query(
@@ -446,7 +429,7 @@ export async function updatePropertyConfig(
   return mapPropertyRow(requireSingleRow(rows, "properties row"));
 }
 
-/** Caller (the choke-point) is responsible for the mirror-dependency check before calling this. */
+/** The caller checks mirror dependencies first. */
 export async function deleteProperty(client: PoolClient, propertyId: string): Promise<void> {
   const property = await requireProperty(client, propertyId);
   await assertPropertySchemaMutable(client, property);
@@ -454,12 +437,10 @@ export async function deleteProperty(client: PoolClient, propertyId: string): Pr
 }
 
 /**
- * Deletes properties of databases that are kept because the database on the other side of their relation, or the
- * rollup source they aggregate, is being purged (issue gh-1875). `deleteProperty`'s `assertPropertySchemaMutable`
- * is not applied: a schema-locked system database refuses a schema write by a user, but the paired relation
- * property of a purged database belongs to a relation whose other side no longer exists. A relation definition and
- * a rollup dependency go with their property by foreign key. Ids a concurrent write already removed are skipped;
- * returns the ids it deleted.
+ * Deletes properties of kept databases whose relation partner or rollup source is being purged. The
+ * schema-lock check is skipped: the relation's other side no longer exists. Relation definitions and
+ * rollup dependencies go by foreign key. Ids already removed concurrently are skipped; returns the
+ * deleted ids.
  */
 export async function deletePropertiesOfPurgedDatabase(
   client: PoolClient,
@@ -472,10 +453,9 @@ export async function deletePropertiesOfPurgedDatabase(
   return rows.map((row) => row.id);
 }
 
-/** The most options `addPropertyOption` lets one property hold. */
 const PROPERTY_OPTION_LIMIT = 100;
 
-/** One element of a stored `config.options` array that `assertValidSelectOptions` accepts. */
+/** An element of `config.options` that `assertValidSelectOptions` accepts. */
 type StoredOption = Record<string, unknown> & { key: string; label?: string };
 
 function isStoredOption(value: unknown): value is StoredOption {
@@ -484,7 +464,6 @@ function isStoredOption(value: unknown): value is StoredOption {
   );
 }
 
-/** What an option write of issue #1699 leaves behind: the updated property row, its database and the written option's key. */
 export interface PropertyOptionWrite {
   property: PropertyRow;
   database: DatabaseRow;
@@ -492,11 +471,10 @@ export interface PropertyOptionWrite {
 }
 
 /**
- * The start of both option writes of issue #1699: locks the property row until the caller's transaction ends and
- * returns it with its database and its stored options. Refuses an unknown property (`NotFoundError`), a property
- * that is not a `select` or `multi_select`, one that is itself `locked`, and stored options that
- * `assertValidSelectOptions` does not accept. The database's `schema_locked` flag is not checked, which is the
- * exception docs/adr/2026-11-10-select-options-change-on-a-schema-locked-database.md records.
+ * Locks the property row until the caller's transaction ends and returns it with its database and
+ * stored options. Refuses an unknown, non-select, or `locked` property and invalid stored options.
+ * The database's `schema_locked` is deliberately not checked
+ * (docs/architecture/data-model-and-writes.md#properties).
  */
 async function lockPropertyForOptionWrite(
   client: PoolClient,
@@ -515,14 +493,13 @@ async function lockPropertyForOptionWrite(
   if (!database) throw new NotFoundError(`Database ${property.databaseId} not found`);
   assertValidSelectOptions(property.type, property.config);
   const stored: unknown[] = Array.isArray(property.config.options) ? property.config.options : [];
-  // `assertValidSelectOptions` accepted every element just above, so the guard only narrows the type.
+  // The elements were validated just above; the guard only narrows the type.
   return { property, database, options: stored.filter(isStoredOption) };
 }
 
 /**
- * The label as it is stored: without surrounding whitespace and 1 to 60 UTF-16 code units long. A label that holds
- * U+0000 or a surrogate without its pair is refused as well: the `jsonb` column cannot hold either, so the `UPDATE`
- * would fail with a database error instead of this `ValidationError`.
+ * Trimmed, 1 to 60 UTF-16 code units. U+0000 and lone surrogates are refused here because `jsonb`
+ * cannot hold them and the `UPDATE` would fail with a database error instead.
  */
 function parseOptionLabel(label: string): string {
   const parsed = PropertyOptionLabelSchema.safeParse(label);
@@ -535,15 +512,14 @@ function parseOptionLabel(label: string): string {
   return parsed.data;
 }
 
-/** A label as two labels are compared: without diacritics, surrounding whitespace and letter case. */
+/** Without diacritics, surrounding whitespace and letter case. */
 export function foldLabel(label: string): string {
   return label.normalize("NFD").replace(/\p{M}/gu, "").trim().toLowerCase();
 }
 
 /**
- * Refuses `label` when one of `others` already has it, as its stored label or as the Czech or English catalog label
- * of its key; labels are compared as `foldLabel` returns them. The raw key an option without any label is displayed
- * by is not compared.
+ * Refuses `label` when another option has it as stored label or as the Czech or English catalog
+ * label of its key, compared via `foldLabel`. A bare key shown for an unlabelled option is not compared.
  */
 async function assertOptionLabelFree(
   label: string,
@@ -567,10 +543,8 @@ async function assertOptionLabelFree(
 }
 
 /**
- * `assertOptionLabelFree` for a caller that holds the property row and writes nothing (issue gh-1994): `label`, as
- * `PropertyOptionLabelSchema` returns it, is refused with `OptionLabelExistsError` when an option in the row's
- * `config.options` has it. The row is read without a lock, so an option a concurrent transaction adds is not seen;
- * `addPropertyOption` checks again on the locked row when the option is written.
+ * For a caller that holds the row and writes nothing. Read without a lock, so a concurrent add is not
+ * seen; `addPropertyOption` checks again on the locked row.
  */
 export async function assertPropertyOptionLabelFree(
   label: string,
@@ -583,9 +557,8 @@ export async function assertPropertyOptionLabelFree(
 }
 
 /**
- * The key of a new option: the words of the label in ASCII camelCase. Diacritics are removed, and every other
- * character outside `A-Z`, `a-z` and `0-9` separates words. `option` when no word results. A key that `options`
- * already holds gets the lowest free numeric suffix from 2 up.
+ * The label's words in ASCII camelCase (diacritics removed, other non-alphanumerics separate words),
+ * `option` when none. A taken key gets the lowest free numeric suffix from 2.
  */
 function newOptionKey(label: string, options: readonly StoredOption[]): string {
   const words = label
@@ -606,7 +579,7 @@ function newOptionKey(label: string, options: readonly StoredOption[]): string {
   return `${base}${suffix}`;
 }
 
-/** Writes `options` as the property's `config.options`, after the same config validation every config write runs. */
+/** After the same config validation every config write runs. */
 async function writePropertyOptions(
   client: PoolClient,
   property: PropertyRow,
@@ -623,11 +596,9 @@ async function writePropertyOptions(
 }
 
 /**
- * Appends one option to a `select` or `multi_select` property (issue #1699), also on a schema-locked database. The
- * key comes from the label (`newOptionKey`). Refused, besides what `lockPropertyForOptionWrite` and the config
- * validation refuse: a label another option already has (`OptionLabelExistsError` with that option's key), a label
- * that `parseOptionLabel` refuses and a property that already holds 100 options. The property row stays locked from
- * the read of its options until the caller's transaction ends, so two concurrent adds both end up stored.
+ * Appends one option, also on a schema-locked database; the key comes from `newOptionKey`. Refuses a
+ * duplicate label (`OptionLabelExistsError` with that option's key), an invalid label and a property
+ * already at the limit. The row lock until commit makes concurrent adds both end up stored.
  */
 export async function addPropertyOption(
   client: PoolClient,
@@ -650,10 +621,8 @@ export async function addPropertyOption(
 }
 
 /**
- * Writes the label, the color or both of the option `optionKey` of a `select` or `multi_select` property (issue
- * #1699), also on a schema-locked database. The key and the option's position stay as they are. Refused, besides
- * what `lockPropertyForOptionWrite` and the config validation refuse: an unknown option key, a patch with neither
- * field, a label that `parseOptionLabel` refuses and a label another option of the property already has.
+ * Writes the label, color or both of one option, also on a schema-locked database; key and position
+ * stay. Refuses an unknown key, an empty patch, an invalid label and a duplicate label.
  */
 export async function updatePropertyOption(
   client: PoolClient,

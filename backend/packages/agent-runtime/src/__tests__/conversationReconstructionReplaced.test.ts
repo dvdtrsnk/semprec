@@ -24,9 +24,9 @@ import type { CompactionAdapter } from "../compaction.js";
 import type { AgentMessage, ConversationEntry } from "../types.js";
 
 /**
- * What a wake rebuilds from the stored history of a thread once a reply was regenerated (issue gh-1930): the turn of
- * the replaced reply is not in it, whole, and nothing else is missing. Turns are played with the production writers of
- * the turn handler of `semprec-agents`, on the runtime role pool.
+ * What a wake rebuilds from a thread's history once a reply was regenerated: the replaced reply's whole turn is gone
+ * and nothing else is missing. Turns are played with the production writers of `semprec-agents`' turn handler, on the
+ * runtime role pool.
  */
 
 let admin: Pool;
@@ -79,8 +79,8 @@ const toolResult = (toolCallId: string): TurnEvent => ({
 });
 
 /**
- * Sends a message into `reuse.threadId` (a new thread without it), plays its turn with `events` on `reuse.runId` (a new
- * run without it) and finishes it as `outcome`, the way the turn handler stores a turn.
+ * Sends a message into `reuse.threadId` (else a new thread), plays its turn with `events` on `reuse.runId` (else a new
+ * run) and finishes it as `outcome`, as the turn handler stores a turn.
  */
 async function playTurn(
   events: TurnEvent[],
@@ -131,7 +131,7 @@ function regenerate(played: Played): Promise<{ messageId: string }> {
   );
 }
 
-/** The `message` events of the turns a wake would replay, in order: what the model is shown of the answers. */
+/** What the model is shown of the answers. */
 const answersOf = (entries: readonly ConversationEntry[] | undefined): string[] =>
   (entries ?? []).flatMap((entry) =>
     entry.message.kind === "message" && typeof entry.message.text === "string" ? [entry.message.text] : [],
@@ -215,8 +215,8 @@ describe("the history a wake rebuilds after a regeneration", () => {
       { threadId: kept.threadId, runId: kept.runId },
     );
     await regenerate(cut);
-    // Raw statement: the turn handler stores a range that holds a whole turn, so no production writer cuts a call from
-    // its result; this stores the corrupt range the reconstruction has to refuse (the range ends at the `tool_use`).
+    // Raw statement: no production writer cuts a call from its result; this stores the corrupt range (ending at the
+    // `tool_use`) the reconstruction must refuse.
     await admin.query("UPDATE semp_messages SET event_to_id = $2::bigint WHERE id = $1", [
       cut.assistantMessageId,
       cut.eventIds[1],

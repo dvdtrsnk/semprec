@@ -22,7 +22,7 @@ async function createProjectItem(): Promise<string> {
 }
 
 async function createTestUser(): Promise<string> {
-  // Tenant zero's user: guidance may only be owned by its own tenant's user (issue #1066).
+  // Tenant zero's user: guidance may only be owned by its own tenant's user.
   const user = await createUser(pool, {
     email: `${randomUUID()}@example.com`,
     passwordHash: "hash",
@@ -52,29 +52,21 @@ describe("driftAction's repeatable-read snapshot (issue #85)", () => {
     const runner = createPoolClientTransactionRunner(pool);
 
     await runner.withTransaction({ isolation: "repeatable_read" }, async (tx) => {
-      // First read inside the repeatable-read transaction — this is the snapshot the rest of
-      // this transaction's reads must keep seeing, no matter what commits elsewhere afterward.
+      // First read inside the repeatable-read transaction: the snapshot later reads must keep seeing.
       const firstRead = await projectAgentGuidanceStore.load(tx, projectItemId);
       expect(firstRead?.markdown).toBe("# Guidance v1");
 
-      // A fully separate connection/transaction mutates and commits the same row while the
-      // repeatable-read transaction above is still open.
       await withTransaction(pool, (client) =>
         projectAgentGuidanceStore.upsert(client, { projectItemId, ownerUserId, markdown: "# Guidance v2" }),
       );
 
-      // A second read from *within the same still-open repeatable-read transaction* must still
-      // return the pre-mutation snapshot — proving the isolation level actually gives
-      // `driftAction.ts` one coherent view across its multiple reads, not `READ COMMITTED`'s
-      // per-statement freshness (which would return "v2" here and let a manifest/guidance read
-      // mix pre- and post-mutation state within a single gateway comparison).
+      // A second read in the same repeatable-read transaction still returns the pre-mutation snapshot, so
+      // `driftAction.ts` gets one coherent view across its reads (READ COMMITTED would return "v2" here).
       const secondRead = await projectAgentGuidanceStore.load(tx, projectItemId);
       expect(secondRead?.markdown).toBe("# Guidance v1");
       expect(secondRead?.updatedAt).toBe(firstRead?.updatedAt);
     });
 
-    // Once the repeatable-read transaction above has committed (read-only, so nothing to
-    // conflict with), a fresh transaction sees the committed mutation as expected.
     const afterCommit = await withTransaction(pool, (client) => projectAgentGuidanceStore.load(client, projectItemId));
     expect(afterCommit?.markdown).toBe("# Guidance v2");
   });

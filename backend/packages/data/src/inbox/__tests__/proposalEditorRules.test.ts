@@ -11,8 +11,8 @@ import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { assertRequiredFieldsHaveValues, loadCardEditorRules, type CardEditorRules } from "../proposalEditorRules.js";
 import type { ProposalEnvelope, ProposalStep } from "../proposalEnvelope.js";
 
-// Issue #1928: which editor schema a card gets, and which of its fields are pseudo fields, read from the seeded
-// databases the way confirm and the values edit read them.
+// Which editor schema a card gets, and which of its fields are pseudo fields, read from the seeded databases the way
+// confirm and the values edit read them.
 
 let pool: Pool;
 let databaseIds: Record<string, string>;

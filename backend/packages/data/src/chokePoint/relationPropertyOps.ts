@@ -1,8 +1,4 @@
-// Owns the public `createRelationProperty` facade; the transaction-scoped creation of a paired relation
-// property it wraps lives in relationPropertyWrites.ts and is re-exported from here.
-// Relation edges (relationOps.ts), relation-edge context loading and guards (relationEdgeContext.ts)
-// and deleting a relation property (propertyOps.ts) do not belong here.
-// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+// The public `createRelationProperty` facade over relationPropertyWrites.ts, re-exported from here.
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import type { PropertyRow } from "../types.js";
@@ -19,9 +15,9 @@ export function createRelationPropertyOps(deps: Pick<ChokePointDeps, "pool" | "c
   const { pool, computedKeyRegistry } = deps;
   return {
     /**
-     * Public facade: never passes a `SystemRelationWriteContext`, so an `owner: 'system'` side is always rejected (`owner_violation`).
-     * An external client (a `reader`, issue #1998) needs `write` access to the source and the target database, because
-     * the paired property is created in the target: checked first in this transaction.
+     * Never passes a `SystemRelationWriteContext`, so an `owner: 'system'` side is always
+     * `owner_violation`. A `reader` needs `write` on the source and the target database (the paired
+     * property is created in the target), checked first.
      */
     async createRelationProperty(
       input: CreateRelationPropertyInput,

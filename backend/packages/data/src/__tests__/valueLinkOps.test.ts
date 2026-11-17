@@ -136,7 +136,6 @@ describe("explicit value link operations", () => {
       expect((await cp.getItem(db.id, broken.id))?.properties.name).toBe("old");
       expect(await stateOf(broken.id)).toBe("inheritedBroken");
       expect(await stateOf(active.id)).toBe("inherited");
-      // The person who owns the data is not checked.
       expect(await cp.relinkValue({ itemId: broken.id, propertyKey: "name" })).toMatchObject({
         valueKind: "inherited",
       });

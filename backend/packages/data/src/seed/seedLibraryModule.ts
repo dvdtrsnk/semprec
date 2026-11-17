@@ -1,6 +1,5 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import {
@@ -24,21 +23,12 @@ import {
   MOVIES_LIBRARY_CONTRACT,
   type LibraryModuleContract,
 } from "../library/libraryModuleContract.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
+import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
-// Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
-// copy of this helper for the full rationale.
-function selectConfig(options: string[], colors: Record<string, string> = {}): Record<string, unknown> {
-  return { options: options.map((key) => ({ key, ...(colors[key] ? { color: colors[key] } : {}) })) };
-}
-
-/**
- * The rating filter presets of Books and Movies (issue #1622): "5 stars", "4 and up", "3 and up" and "No rating"
- * (empty or 0), labelled from `library/i18n`. Seeded here for a fresh install and written to existing tenants by
- * `ratingFilterPresetsCutoverMigration.ts`.
- */
+/** Rating presets of Books and Movies: "5 stars", "4 and up", "3 and up", "No rating" (empty or 0). */
 export function ratingFilterPresetsConfig(databaseKey: typeof BOOKS_MODULE_ID | typeof MOVIES_MODULE_ID): {
   filterPresets: Array<{ value: number; op: "gte"; labelKey: string }>;
   emptyPreset: { labelKey: string; matchZero: boolean };
@@ -54,10 +44,8 @@ export function ratingFilterPresetsConfig(databaseKey: typeof BOOKS_MODULE_ID | 
 }
 
 /**
- * The user-owned cover properties of Books and Movies (issue #1793). The system-owned `cover` has one writer, the
- * library metadata job, so the cover a user chooses or removes lives in these three: the cover shown is nothing
- * when `coverRemoved`, else `coverOverride` when set, else `cover`. `libraryCoverOverrideCutoverMigration.ts`
- * adds the same properties to a tenant seeded before them.
+ * The system `cover` has one writer, the metadata job, so the user's choice lives in these: nothing is
+ * shown when `coverRemoved`, else `coverOverride` when set, else `cover`.
  */
 function coverOverrideSpecs(): PropSpec[] {
   return [
@@ -73,14 +61,6 @@ function coverOverrideSpecs(): PropSpec[] {
   ];
 }
 
-interface PropSpec {
-  key: string;
-  name: string | null;
-  type: PropertyType;
-  owner?: PropertyOwner;
-  config?: Record<string, unknown>;
-}
-
 async function createDb(client: PoolClient, ownerModuleId: string, ownerProjectItemId: string): Promise<DatabaseRow> {
   return databasesStore.createDatabase(client, {
     name: null,
@@ -91,20 +71,7 @@ async function createDb(client: PoolClient, ownerModuleId: string, ownerProjectI
   });
 }
 
-async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
-  for (const spec of specs) {
-    await propertiesStore.createProperty(client, {
-      databaseId,
-      key: spec.key,
-      name: spec.name,
-      type: spec.type,
-      owner: spec.owner,
-      config: spec.config,
-    });
-  }
-}
-
-/** actionConfig shared by both of a database's library-metadata heartbeats — see libraryMetadataActions.ts's schema. */
+/** Shared by both library-metadata heartbeats of a database; see libraryMetadataActions.ts's schema. */
 function metadataActionConfig(databaseId: string, contract: LibraryModuleContract): Record<string, unknown> {
   return {
     databaseId,
@@ -124,17 +91,11 @@ export interface LibraryModuleResult {
 }
 
 /**
- * Seeds Books and Movies/TV (issue #25) as two concrete instantiations of the generic
- * "library module" contract — same shape, different property keys and ownership — each
- * as its own full system project (its own Project item + AGENT.md + heartbeats), the same
- * class as Email or Personal finance, not a catalog entry from the ten hardcoded databases.
+ * Seeds Books and Movies/TV, two instances of the generic library module contract, each a full system
+ * project with its own heartbeats.
  *
- * Must run after `seedTenDatabasesInTransaction` (needs the already-created Projects and
- * People databases) and after "System settings" exists (heartbeat creation reads the
- * system timezone) — see the call site in seedSystem.ts. The Movies -> People relation is
- * deliberately one-directional (no inverse property on People) precisely because People's
- * schema is already locked by the time this runs, the same reason several ten-database
- * relations (e.g. Files -> Areas) are one-directional rather than bidirectional.
+ * Must run after `seedTenDatabasesInTransaction` (Projects, People) and after "System settings" exists
+ * (heartbeats read the timezone). Movies -> People is one-directional because People is already locked.
  */
 export async function seedLibraryModuleInTransaction(
   client: PoolClient,
@@ -162,7 +123,7 @@ export async function seedLibraryModuleInTransaction(
     { key: "author", name: null, type: "text", owner: "user" },
     { key: "year", name: null, type: "number", owner: "user" },
     { key: "isbn", name: null, type: "text", owner: "user" },
-    // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
+    // { blobId } over the shared `blobs` table.
     { key: "cover", name: null, type: "image", owner: "system" },
     ...coverOverrideSpecs(),
     { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(BOOKS_MODULE_ID) },
@@ -189,11 +150,10 @@ export async function seedLibraryModuleInTransaction(
   const movies = await createDb(client, MOVIES_MODULE_ID, moviesProject.id);
   await createProps(client, movies.id, [
     { key: "name", name: null, type: "title", owner: "user" },
-    // Deviation from the previous (mock) model: sortable/filterable as a range, not text.
     { key: "year", name: null, type: "number", owner: "user" },
-    // "Movie" vs. "Series" stays just a label next to statusKey — no season/episode structure.
+    // Just a label next to statusKey; no season/episode structure.
     { key: "type", name: null, type: "select", owner: "user", config: selectConfig(["movie", "series"]) },
-    // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
+    // { blobId } over the shared `blobs` table.
     { key: "cover", name: null, type: "image", owner: "system" },
     ...coverOverrideSpecs(),
     { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(MOVIES_MODULE_ID) },
@@ -213,13 +173,10 @@ export async function seedLibraryModuleInTransaction(
         default: "planned",
       },
     },
-    // In-progress series stay free text here — no dedicated season/episode structure (out of scope).
     { key: "notes", name: null, type: "longText", owner: "user" },
   ]);
 
-  // Movies -> People ("Watched with"): the 1-5 rating belongs to the relationship itself,
-  // not either side — written into item_relations.metadata as `{ rating }` on each edge
-  // (issue #25), not as a property here.
+  // The 1-5 rating belongs to the "Watched with" relationship, stored as `{ rating }` in item_relations.metadata.
   await relate({
     sourceDatabaseId: movies.id,
     key: "watchedWith",

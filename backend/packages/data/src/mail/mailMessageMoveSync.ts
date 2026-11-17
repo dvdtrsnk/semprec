@@ -171,7 +171,6 @@ async function drainGmailMove(pool: Pool, gmail: GmailMailClient, row: MailMessa
   );
 }
 
-/** Drains Graph moves using a verified local destination and durable request ownership. */
 export async function drainGraphMoves(
   pool: Pool,
   mailboxItemId: string,

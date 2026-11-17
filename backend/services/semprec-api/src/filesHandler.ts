@@ -22,16 +22,15 @@ import { sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
 
 /**
- * `fileUploadStore.ts` builds the storage key's last path component as `<uuid>-<safeFilename>`
- * (37 bytes for the uuid and separator) — `safeStorageFilename` sanitizes characters but not
- * length, so this leaves headroom under Linux's 255-byte `NAME_MAX` per path component and
- * rejects here rather than surfacing as an `ENAMETOOLONG` 500 once it reaches the filesystem.
+ * The storage key's last path component is `<uuid>-<safeFilename>` (37 bytes of uuid and separator)
+ * and sanitizing does not bound length, so this leaves headroom under Linux's 255-byte `NAME_MAX`
+ * and refuses here instead of an `ENAMETOOLONG` 500.
  */
 const MAX_FILENAME_BYTES = 200;
 
 /**
- * Issue #1645's optional attach headers: both or neither. One without the other names the missing
- * header; a target id that is not a UUID names `X-Attach-To-Item`. Read before the body.
+ * Both or neither. One without the other names the missing header; a non-UUID target names
+ * `X-Attach-To-Item`. Read before the body.
  */
 function readAttachHeaders(req: IncomingMessage): { targetItemId: string; relationKey: string } | null {
   const targetItemId = optionalHeader(req, "X-Attach-To-Item");
@@ -53,34 +52,24 @@ function readAttachHeaders(req: IncomingMessage): { targetItemId: string; relati
 
 export interface FilesRequestListenerOptions {
   storage: BlobStorageWriter;
-  /** Issue #158's `maxFileSizeMb`, already resolved to bytes by `serve.ts`. */
   maxFileSizeBytes: number;
 }
 
 /**
- * `POST /api/files` (issue #158): a raw streamed body (`Content-Type` + `X-Filename` headers, not
- * a JSON payload), so unlike every other route family this service mounts, it can't go through
- * `createAdapterRequestListener` — that shared wrapper buffers the whole body as JSON before a
- * handler ever runs, which is exactly what streaming is meant to avoid. Same shape as
- * `notificationsHandler.ts`'s bespoke listener: authenticates the same way
- * (`authenticateRequest`), maps a `ChokePointError` through the same `errorContract.ts` this
- * adapter's other routes use, just without the JSON-body step.
+ * A bespoke listener because the body is streamed (`Content-Type` + `X-Filename` headers), while
+ * `createAdapterRequestListener` buffers it as JSON.
  *
- * A form that delays filing until Save can instead upload bytes with `POST /api/blobs`, then
- * create a Files item through the generic item-create operation with `file: { blobId }` and
- * initial relations. Cancelling after upload creates no Files item; unreferenced blobs are
- * collected after their grace period. Reusing a deduplicated blob creates a separate item.
+ * A form that delays filing until Save can instead upload with `POST /api/blobs` and create the
+ * Files item through the generic item-create operation with `file: { blobId }`; cancelling creates
+ * no item and unreferenced blobs are collected after their grace period.
  *
- * `maxFileSizeMb` is enforced twice, per the issue's Task: first cheaply from `Content-Length`
- * when the client sent one (rejecting before a single byte of the body is read), and always
- * through the ingest's streaming byte counter (`ingestUploadedFileWithTransaction`) — a missing,
- * chunked, or dishonest `Content-Length` can only ever under-enforce the header check, never bypass
- * the counter.
+ * The size cap is enforced from `Content-Length` when present (before a byte is read) and always by
+ * the ingest's streaming counter, so a missing or dishonest header can only under-enforce the first
+ * check.
  *
- * The optional `X-Attach-To-Item` and `X-Attach-Relation` headers (issue #1645) link the uploaded
- * file to an item in the same request: the target is resolved before the body is read
- * (`resolveUploadAttachTarget`) and linked in the ingest transaction (`attachUploadedFileWithClient`),
- * so the file and its edge commit together. Without them the route behaves as it did before.
+ * The optional `X-Attach-To-Item` and `X-Attach-Relation` headers link the file to an item: the
+ * target is resolved before the body is read and linked in the ingest transaction, so file and edge
+ * commit together.
  */
 export function createFilesRequestListener(pool: Pool, options: FilesRequestListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -108,8 +97,8 @@ export function createFilesRequestListener(pool: Pool, options: FilesRequestList
 
         const attach = readAttachHeaders(req);
 
-        // Read-only, before a byte of the body is read: an unknown, trashed or foreign target answers the
-        // same 404, and an invalid relation key 400, with nothing streamed or stored (issue #1645).
+        // Read-only, before any byte is read: an unknown, trashed or foreign target answers the
+        // same 404 and an invalid relation key 400, with nothing stored.
         const { filesDatabaseId, target } = await withTransaction(pool, async (client) => {
           const filesDatabase = await getDatabaseByModuleId(client, FILES_MODULE_ID);
           if (!filesDatabase) throw new Error("The 'files' system database is missing");
@@ -120,8 +109,8 @@ export function createFilesRequestListener(pool: Pool, options: FilesRequestList
           };
         });
 
-        // The edge is written in the ingest transaction, so a failure rolls the new file back and its
-        // streamed bytes are deleted; an identical upload reuses its Files item and only gains the edge.
+        // In the ingest transaction, so a failure rolls the new file back and its streamed bytes
+        // are deleted; an identical upload reuses its Files item and only gains the edge.
         const { result } = await ingestUploadedFileWithTransaction(
           pool,
           {
@@ -161,9 +150,8 @@ export function createFilesRequestListener(pool: Pool, options: FilesRequestList
     }
   }
 
-  // Same shape as every other bespoke listener in this service (`notificationsHandler.ts`,
-  // `authHandler.ts`): `http.createServer` discards an async listener's return value, so an
-  // unhandled rejection escaping the try/catch above would otherwise crash the process.
+  // `http.createServer` discards an async listener's return value, so an escaping rejection would
+  // crash the process.
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the request listener");

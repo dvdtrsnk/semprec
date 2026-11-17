@@ -19,7 +19,6 @@ interface RecordedStatement {
   values: unknown[];
 }
 
-/** Runs `fn` in a transaction on the owner role that is always rolled back. */
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
   try {
@@ -49,7 +48,6 @@ function partitionName(databaseId: string): string {
   return `items_p_${databaseId.replaceAll("-", "")}`;
 }
 
-/** Wraps `client` so the last statement reading `items` is recorded, then forwards every call. */
 function recordItemsStatements(client: PoolClient, sink: RecordedStatement[]): PoolClient {
   return new Proxy(client, {
     get(target, prop) {
@@ -73,7 +71,6 @@ function walkPlan(node: PlanNode, visit: (node: PlanNode) => void): void {
   for (const child of node.Plans ?? []) walkPlan(child, visit);
 }
 
-/** Runs `lookup`, then EXPLAINs the `items` statement it sent. */
 async function explainLookup(
   client: PoolClient,
   lookup: Lookup,
@@ -228,7 +225,7 @@ describe("id-only item lookups are pruned to the tenant's partitions", () => {
     });
   });
 
-  // `getTestPool` connections start in tenant zero (session-level `app.tenant_id`, #1067).
+  // `getTestPool` connections start in tenant zero (session-level `app.tenant_id`).
   it("behaves as before for a single tenant without a process scope", async () => {
     await resetDatabase(pool);
     const client = await pool.connect();

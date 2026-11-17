@@ -1,7 +1,4 @@
-/**
- * Issue #85's `core.agentGuidanceDrift` action errors. Same neutral `status`/`code`/`details`
- * convention as `errors.ts` (this package stays free of `packages/data`'s `ChokePointError`).
- */
+/** `core.agentGuidanceDrift` errors, with the neutral `status`/`code`/`details` convention of `errors.ts`. */
 
 export class GuidanceMissingError extends Error {
   readonly status = 404 as const;
@@ -16,9 +13,8 @@ export class GuidanceMissingError extends Error {
 }
 
 /**
- * The guidance row's `ownerUserId`/`updatedAt` no longer match what the read transaction
- * captured before the gateway call: the guidance was rewritten or transferred mid-comparison.
- * Retryable — a fresh run will capture the new state and compare against that instead.
+ * The guidance row's `ownerUserId`/`updatedAt` changed between the read transaction and the write
+ * transaction. Retryable: a fresh run compares the new state.
  */
 export class GuidanceChangedError extends Error {
   readonly status = 409 as const;
@@ -34,10 +30,8 @@ export class GuidanceChangedError extends Error {
 }
 
 /**
- * The guidance row itself is unchanged, but the permission manifest re-rendered in the write
- * transaction no longer matches the one captured before the gateway call byte-for-byte:
- * something the manifest depends on (a database, a heartbeat, a capability, an agent tool)
- * mutated mid-comparison. Retryable, same reasoning as `GuidanceChangedError`.
+ * The guidance row is unchanged but the re-rendered permission manifest differs from the captured
+ * one: a database, heartbeat, capability or agent tool changed mid-comparison. Retryable.
  */
 export class GuidanceContextChangedError extends Error {
   readonly status = 409 as const;

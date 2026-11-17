@@ -28,7 +28,6 @@ export interface MailEnvelope {
   to?: MailEnvelopeAddress[];
   cc?: MailEnvelopeAddress[];
   bcc?: MailEnvelopeAddress[];
-  /** Reply-To addresses; absent when the message has none (and for messages synced before this field existed). */
   replyTo?: MailEnvelopeAddress[];
 }
 
@@ -37,7 +36,7 @@ export type MailMessageMigrationStatus = "stable" | "partial" | "done";
 
 export interface MailMessageMetaRow {
   itemId: string;
-  /** The Mailbox item this message was ingested for — message identity is per mailbox, `(mailbox_item_id, message_id)`. `null` only for a legacy-migrated row (migrationJob/mailLegacyEmailMigration.ts) or a pre-0052 row with no resolvable folder edge. */
+  /** Message identity is per mailbox, `(mailbox_item_id, message_id)`. Nullable, but every ingest and send writes it. */
   mailboxItemId: string | null;
   messageId: string;
   inReplyTo: string | null;
@@ -46,23 +45,21 @@ export interface MailMessageMetaRow {
   providerThreadId: string | null;
   providerMessageId: string | null;
   envelope: MailEnvelope;
-  /** Resolved once, at ingest, by mail/deliveredTo.ts's precedence rule — never recomputed. */
+  /** Resolved once at ingest (mail/deliveredTo.ts), never recomputed. */
   deliveredToAddress: string | null;
-  /** 'dsn' = a multipart/report;report-type=delivery-status bounce/failure notification, distinguished from an ordinary human reply (issue #93). */
+  /** 'dsn' = a multipart/report;report-type=delivery-status notification, as opposed to an ordinary reply. */
   messageKind: MailMessageKind;
   /** For a DSN only: the Message-ID (from References/In-Reply-To) of the outgoing message it reports on. */
   dsnOriginalMessageId: string | null;
-  /** 'stable' = a normal ingest; 'partial'/'done' = produced by the legacy-Emails backfill job (migrationJob/mailLegacyEmailMigration.ts). */
+  /** 'stable' for every row a current writer produces; the column also admits 'partial' and 'done'. */
   migrationStatus: MailMessageMigrationStatus;
-  /** Plain-text preview (at most 200 characters); `null` until ingest, send or the backfill sets it. */
+  /** At most 200 characters; `null` until ingest or send sets it. */
   previewText: string | null;
-  /** When the message entered Semprec; `null` until ingest, send or the backfill sets it. */
   ingestedAt: Date | null;
-  /** Bulk or automatic mail, decided once at ingest (mail/bulkMail.ts); `false` for rows ingested before issue #1502. */
+  /** Decided once at ingest (mail/bulkMail.ts). */
   isBulk: boolean;
 }
 
-/** The raw `mail_message_meta` row shape this module reads back from Postgres. */
 type MailMessageMetaDbRow = {
   item_id: string;
   mailbox_item_id: string | null;
@@ -109,7 +106,7 @@ const COLUMNS =
 
 export interface UpsertMailMessageMetaInput {
   itemId: string;
-  /** `null` only from the legacy-Emails migration, whose rows have no mailbox; a `NULL` never conflicts, so such a row is always a fresh insert. */
+  /** A `NULL` never conflicts, so a row without a mailbox is always a fresh insert. */
   mailboxItemId: string | null;
   messageId: string;
   inReplyTo?: string | null;
@@ -129,13 +126,9 @@ export interface UpsertMailMessageMetaInput {
 }
 
 /**
- * Keyed by `(mailbox_item_id, message_id)` — a `Message-ID` is global, but the same message
- * delivered to two of the user's mailboxes is two Emails items, one per mailbox, each with its
- * own read/flag state. Within one mailbox an optimistic outgoing insert (issue #27) and the
- * sync worker later confirming the same message in Sent converge onto one row via
- * `ON CONFLICT (mailbox_item_id, message_id) DO UPDATE`, filling in provider-specific ids
- * instead of creating a duplicate. `item_id` is the caller's freshly-created (or existing)
- * Email item id either way.
+ * Keyed by `(mailbox_item_id, message_id)`: the same message in two mailboxes is two Emails items with their own
+ * read/flag state. Within one mailbox, an optimistic outgoing insert and the later sync confirmation in Sent converge
+ * onto one row via `ON CONFLICT`, filling in provider ids instead of duplicating.
  */
 export function upsertMailMessageMeta(
   client: Pool,
@@ -199,7 +192,6 @@ export async function getMailMessageMetaByItemId(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** The ingest dedup lookup: this mailbox's row for `messageId`, if it already ingested it. */
 export async function getMailMessageMetaByMailboxAndMessageId(
   client: Queryable,
   mailboxItemId: string,
@@ -208,22 +200,6 @@ export async function getMailMessageMetaByMailboxAndMessageId(
   const { rows } = await client.query<MailMessageMetaDbRow>(
     `SELECT ${COLUMNS} FROM mail_message_meta WHERE mailbox_item_id = $1 AND message_id = $2`,
     [mailboxItemId, messageId],
-  );
-  return rows[0] ? mapRow(rows[0]) : null;
-}
-
-/**
- * Any row for `messageId`, across mailboxes — kept for the legacy-Emails migration's collision
- * check only. Since message identity is per mailbox, several rows can share one `message_id`;
- * this returns the first of them (lowest `item_id`), so it is never a dedup key for ingest.
- */
-export async function getMailMessageMetaByMessageId(
-  client: Queryable,
-  messageId: string,
-): Promise<MailMessageMetaRow | null> {
-  const { rows } = await client.query<MailMessageMetaDbRow>(
-    `SELECT ${COLUMNS} FROM mail_message_meta WHERE message_id = $1 ORDER BY item_id LIMIT 1`,
-    [messageId],
   );
   return rows[0] ? mapRow(rows[0]) : null;
 }
@@ -239,28 +215,18 @@ export async function getMailMessageMetaByProviderMessageId(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * The partial-unique index that arbitrates distinct `message_id`s racing to the same non-null
- * `provider_message_id` within a tenant. Migration 0082 (#1065) dropped the legacy global one.
- */
+/** Arbitrates distinct `message_id`s racing to the same non-null `provider_message_id` within a tenant. */
 const PROVIDER_MESSAGE_ID_CONFLICT_CONSTRAINT = "mail_message_meta_tenant_provider_msg_uq";
 
-/**
- * True when a Postgres error is a `23505` raised by the provider-message-id arbiter (see
- * `PROVIDER_MESSAGE_ID_CONFLICT_CONSTRAINT`) — the concurrency-safe signal that ingest.ts's
- * SAVEPOINT-guarded catch converges on. Mirrors chokePoint/viewsStore.ts's own
- * `isUniqueViolation` helper.
- */
+/** The concurrency-safe signal ingest's SAVEPOINT-guarded catch converges on. */
 export function isProviderMessageIdConflict(err: unknown): boolean {
   const pgErr = err as { code?: string; constraint?: string };
   return pgErr?.code === "23505" && pgErr.constraint === PROVIDER_MESSAGE_ID_CONFLICT_CONSTRAINT;
 }
 
 /**
- * Compensating delete for mail/send.ts's pre-SMTP claim: if the claim row was written but the
- * SMTP call itself then failed, the claim must not persist — otherwise the item would look
- * "already sent" forever with no message actually delivered, and a genuine retry could never
- * re-claim it.
+ * Compensating delete for the send's pre-SMTP claim: a claim left after a failed SMTP call would make the item look
+ * sent forever and block a genuine retry.
  */
 export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: string): Promise<void> {
   requireManagedTransaction(client);
@@ -272,8 +238,7 @@ export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: 
     );
     const threadId = rows[0]?.thread_id;
     if (!threadId) return;
-    // The claim may have created its thread (mail/send.ts threads at claim time); drop it when the
-    // deleted row was its only message, so a failed send leaves no empty `mail_threads` row.
+    // The claim may have created its thread; drop it when this was its only message, so no empty thread remains.
     const thread = await client.query<{ item_id: string | null }>(
       `SELECT item_id FROM mail_threads t WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.thread_id = t.id) FOR UPDATE`,
       [threadId],
@@ -299,20 +264,12 @@ export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: 
 }
 
 /**
- * Deletes the `mail_message_meta` row of the permanently deleted Emails item `itemId` (issue gh-1691),
- * in the purge's transaction. An item without a row, as an unsent draft is, and a row that names no
- * thread end it there.
+ * Deletes the meta row of a permanently deleted Emails item, in the purge's transaction. When no other row names its
+ * thread (trashed messages count), the thread goes too: its Threads item is trashed through the choke point as the
+ * system writer (unless already trashed), then the `mail_threads` row is deleted with its aliases by foreign key.
+ * Unlike `deleteMailMessageMetaByItemId`, an already purged or unbound Threads item does not fail it.
  *
- * When no other `mail_message_meta` row names the row's thread (the row of a message in the trash
- * counts as naming it), the thread goes too, the way `deleteMailMessageMetaByItemId` removes an
- * emptied thread: the Threads item the `mail_threads` row is bound to is trashed through the choke
- * point as the system writer, then the row is deleted, and the aliases that point at it go with it by
- * their foreign key. A Threads item that is already in the trash is left as it is. Unlike that cleanup
- * it does not fail on a thread whose Threads item is already purged, nor on a row bound to no item:
- * it deletes the row.
- *
- * It takes the tenant's mail-thread mutation guard before its first statement on a mail table.
- * Constrained by: docs/adr/2026-11-11-mail-purge-hook-takes-the-thread-guard-after-the-purge-locks.md
+ * Takes the tenant's mail-thread mutation guard before its first statement on a mail table.
  */
 export async function deleteMailMessageMetaOfPurgedItem(client: PoolClient, itemId: string): Promise<void> {
   await lockMailThreadMutation(client);
@@ -369,11 +326,7 @@ export async function createMailThread(client: PoolClient, subjectHint?: string)
   return { id: thread.id, subjectHint: thread.subject_hint };
 }
 
-/**
- * The Threads item that mail thread `threadId` is bound to (`mail_threads.item_id`), in the caller's tenant. A thread
- * that does not exist, or that no Threads item is bound to yet, throws: a thread has its item from its creation on and
- * from the cutover of issue #1573 on for every older one.
- */
+/** Throws for a missing or unbound thread: a thread has its item from its creation on. */
 export async function getMailThreadItemId(client: Queryable, threadId: string): Promise<string> {
   const { rows } = await client.query<{ item_id: string | null }>(
     "SELECT item_id FROM mail_threads WHERE tenant_id = app_tenant_default() AND id = $1",
@@ -385,14 +338,10 @@ export async function getMailThreadItemId(client: Queryable, threadId: string): 
 }
 
 /**
- * Moves every message out of `fromThreadId` into `toThreadId`, merges their Threads items (the winner's company and
- * project stay unless the loser's value takes precedence, `planThreadValueMerge`), records the alias `fromThreadId -> toThreadId`,
- * repoints every alias that already targeted `fromThreadId`, then deletes the now-empty `mail_threads` row. Run it
- * in one transaction. Nothing else references `mail_threads` except `mail_message_meta.thread_id` and the aliases,
- * so after these statements `fromThreadId` has no remaining referencer; leaving it would accumulate an orphaned row on
- * every dummy-container merge (threading.ts's self-heal path). Merging a thread with itself does nothing. The loser's
- * Threads item hands its relation edges to the winner's; the value links of the loser's attachments move to the winner
- * before that (`repointThreadAttachmentLinks`), so the attachments follow the winner's project (issue gh-1898).
+ * Moves every message of `fromThreadId` into `toThreadId`, merges their Threads items (`planThreadValueMerge`),
+ * records the alias and repoints existing aliases to it, then deletes the empty `mail_threads` row, which would
+ * otherwise accumulate on every dummy-container merge. Run it in one transaction. Merging a thread with itself does
+ * nothing. The loser's attachment value links move to the winner first, so attachments follow the winner's project.
  */
 export async function reassignThread(client: PoolClient, fromThreadId: string, toThreadId: string): Promise<void> {
   requireManagedTransaction(client);
@@ -419,8 +368,7 @@ export async function reassignThread(client: PoolClient, fromThreadId: string, t
       loserThreadId: fromThreadId,
     };
     const plan = await planThreadValueMerge(client, valueMerge);
-    // The loser's attachments keep following a thread: their links move to the winner before the generic move
-    // removes the loser's edges, which would end them (see `repointThreadAttachmentLinks`).
+    // Before the generic move removes the loser's edges, which would end these links.
     const repointed = await repointThreadAttachmentLinks(client, loserId, winnerId);
     await transferMailThreadRelationsWithClient(client, database.id, loserId, winnerId, plan.loserValueWins);
     await finishThreadValueMerge(client, plan, valueMerge);
@@ -447,8 +395,7 @@ export async function reassignThread(client: PoolClient, fromThreadId: string, t
 }
 
 /**
- * Translates a possibly merged-away thread id to the live one in a single query: the alias target, the input id
- * when it is a live `mail_threads` row, or `null` when it is neither (aliases are always one step, see `reassignThread`).
+ * The alias target, the input id when it is a live thread, or `null`. Aliases are always one step (`reassignThread`).
  */
 export async function resolveMergedThreadId(client: Queryable, threadId: string): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>(
@@ -461,7 +408,6 @@ export async function resolveMergedThreadId(client: Queryable, threadId: string)
   return rows[0]?.id ?? null;
 }
 
-/** One `mail_message_meta` row that has no thread yet, with its item's subject for `resolveThreadId`'s hint. */
 export interface UnthreadedMailMessage {
   itemId: string;
   messageId: string;
@@ -471,10 +417,8 @@ export interface UnthreadedMailMessage {
 }
 
 /**
- * The next keyset page (`item_id` order, after `afterItemId`) of rows whose `thread_id` is still NULL, locked
- * with `FOR UPDATE OF m` for the caller's transaction, so no concurrent writer can thread a row between this read
- * and the `thread_id` write that follows it. A `LEFT JOIN` keeps a row whose item is missing: it is still threaded,
- * just without a subject hint.
+ * A keyset page of rows without a thread, locked `FOR UPDATE OF m` so no concurrent writer threads a row before the
+ * caller's write. `LEFT JOIN` keeps a row whose item is missing; it is threaded without a subject hint.
  */
 export async function listUnthreadedMailMessagePage(
   client: PoolClient,
@@ -508,9 +452,8 @@ export async function listUnthreadedMailMessagePage(
 }
 
 /**
- * The next keyset page (`message_id` order, after `afterMessageId`) of `Message-ID`s that occur in more than one
- * mailbox and whose rows name more than one thread. A candidate list only: the caller re-reads each one with
- * `lockMailMessageThreads` and decides on that locked read, not on this one.
+ * A keyset page of `Message-ID`s present in several mailboxes whose rows name several threads. Candidates only: the
+ * caller decides on the locked re-read of `lockMailMessageThreads`.
  */
 export async function listSplitMailMessageIdPage(
   client: PoolClient,
@@ -532,9 +475,8 @@ export async function listSplitMailMessageIdPage(
 }
 
 /**
- * Locks every row of one `Message-ID` (`FOR UPDATE`) for the caller's transaction and returns its distinct thread
- * ids, lowest first, the order `resolveThreadId` uses to pick a merge target. An empty or one-element result means
- * there is nothing left to merge.
+ * Locks every row of one `Message-ID` and returns its distinct thread ids lowest first, the order `resolveThreadId`
+ * picks a merge target by. Fewer than two means nothing to merge.
  */
 export async function lockMailMessageThreads(client: PoolClient, messageId: string): Promise<string[]> {
   await lockMailThreadMutation(client);

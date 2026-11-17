@@ -94,9 +94,7 @@ import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
 export { selectActiveSteps } from "./proposalStepGraph.js";
-// The reads of the proposal computation of issues gh-1992 (the exact-match lookups) and gh-1993 (the past event
-// durations) are re-exported here, because the barrel `index.ts` already holds 900 counted lines, the cap of
-// `max-lines`, and this module is exported whole.
+// Re-exported here because the barrel `index.ts` is at its `max-lines` cap and exports this module whole.
 export { lookupLiveCompanyIdByIco } from "./companyIcoLookup.js";
 export { readPastEventDurations, type PastEventDuration } from "./pastEventDurations.js";
 export { lookupPersonIdByEmail, normalizeEmailAddress } from "../mail/personEmailIndexStore.js";
@@ -108,20 +106,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "./inboxTickKeys.js";
 
 /**
- * The existing Processing proposal row for a source Inbox item, if any (issue #223's
- * create/revise/skip gate). A soft-deleted proposal is treated the same as no proposal at
- * all — falling through to the create path — rather than being handed to the revise branch,
- * where `updateItemWithClient` would throw `NotFoundError` on a deleted item.
- *
- * Scans every edge rather than trusting `edges[0]`: once a soft-deleted proposal's edge has
- * been left behind by a prior tick (see the scenario above) alongside the edge to its live
- * replacement, `listRelationsForItem`'s heap order is not guaranteed to put the live one
- * first — picking `edges[0]` blindly could keep finding the deleted row, "creating" a fresh
- * proposal on every subsequent tick without bound.
- *
- * A sibling card of a split source (issue #1939), which carries `splitFromProposalId`, is skipped: the tick only
- * ever sees the source's primary card, so a source edit never recomputes a sibling
- * (`docs/adr/2026-10-25-thread-may-split-an-inbox-source.md`).
+ * A soft-deleted proposal counts as none, so the tick creates instead of revising a deleted row (which would throw
+ * `NotFoundError`). Every edge is scanned rather than trusting `edges[0]`: a deleted proposal's edge can sit next to
+ * its live replacement's in unspecified heap order, and picking the deleted one would create a fresh proposal on every
+ * tick. Split siblings (`splitFromProposalId`) are skipped, so a source edit never recomputes a sibling.
  */
 async function findExistingProposal(
   client: PoolClient,
@@ -145,17 +133,14 @@ async function findExistingProposal(
 }
 
 /**
- * Re-reads `snapshot` (a proposal this tick read earlier, unlocked) under `FOR UPDATE`, in the
- * transaction that is about to write it, and returns the locked row only if it is still the
- * row the tick decided on: present, not soft-deleted, not `confirmed`/`rejected`, and with the
- * same `fingerprint` and `aiVersion` (`assistantSideChanged`). Anything else — a confirm/reject
- * or an assistant write that committed since the snapshot — is logged with its reason and returns
- * `null`, and the caller skips its write. A manual edit that moved only `updatedAt` does not make
- * the row `changed`; the caller passes the locked row's `updatedAt` as `ifVersion`.
+ * Re-reads the unlocked `snapshot` under `FOR UPDATE` and returns it only if it is still the row the tick decided on:
+ * live, not `confirmed`/`rejected`, same `fingerprint` and `aiVersion`. Otherwise logs why and returns `null`, and the
+ * caller skips its write. A manual edit that moved only `updatedAt` and `version` does not count; the caller passes
+ * the locked `version` as `ifVersion`.
  *
- * The initial repeatable-read phase skips a serialization conflict as changed. The post-model
- * phase uses a nonblocking lock so a confirmation holding the card cannot wait on the source
- * while this transaction waits on that card. The savepoint keeps either skip transaction usable.
+ * The repeatable-read phase treats a serialization conflict as changed. The post-model phase uses a nonblocking lock so
+ * a confirmation holding the card cannot wait on the source while this transaction waits on the card. The savepoint
+ * keeps the transaction usable after either skip.
  */
 async function lockUnlockedProposal(
   client: PoolClient,
@@ -191,11 +176,8 @@ async function lockUnlockedProposal(
   return locked;
 }
 
-// The proposal history block (kinds, entry schema, `appendHistoryEntry`) lives in `proposalHistory.ts`;
-// re-exported here so existing importers keep their path (issue #1485 size cap, no behaviour change).
 export { appendHistoryEntry, type ProposalHistoryEntry, type ProposalHistoryKind } from "./proposalHistory.js";
 
-/** Validates one active step as a single-step envelope would be; resolves to the database the step writes to. */
 async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<DatabaseRow> {
   const properties = step.properties ?? {};
   if (step.op === "fileFromAttachment") return assertValidFileFromAttachmentStep(client, step);
@@ -241,8 +223,7 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
     const byKey = new Map(databaseProperties.map((property) => [property.key, property]));
     assertValidStepProperties(properties, byKey, database.id, item.properties);
     if (step.op === "update") {
-      // The tenant zone the preparation needs, read and validated in this transaction; an invalid stored zone
-      // propagates instead of refusing the proposal (readProposalTimezone).
+      // An invalid stored zone propagates instead of refusing the proposal.
       const zone = Object.keys(properties).length > 0 ? await readProposalTimezone(client) : null;
       const prepared = zone
         ? await prepareUserItemPatch(databaseProperties, properties, database, item, zone)
@@ -255,8 +236,7 @@ async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<
 }
 
 /**
- * Validates the `operations` of a multi-step envelope: refs unique, one primary that mirrors the
- * top level, same-proposal acyclic refs, and every active step valid on its own (disabled and
+ * Refs unique, one primary that mirrors the top level, acyclic refs, every active step valid on its own (disabled and
  * unreferenced optional steps are skipped). Failures carry `details: { ref, field }`.
  */
 async function assertValidEnvelopeOperations(
@@ -278,8 +258,7 @@ async function assertValidEnvelopeOperations(
     const database = await assertValidStep(client, step);
     if (step.role !== "primary") continue;
     if (step.op === "link") throw stepError(step, "the primary step cannot be a link step", "op");
-    // The envelope's top-level `properties` mirror the primary step and are checked against the target
-    // database's own properties; a file step's `attachmentId` is not one of them.
+    // A file step's `attachmentId` is not a property of the target database.
     if (step.op === "fileFromAttachment")
       throw stepError(step, "the primary step cannot be a fileFromAttachment step", "op");
     if (database.id !== envelope.target) {
@@ -296,17 +275,11 @@ async function assertValidEnvelopeOperations(
 }
 
 /**
- * Validates a computed envelope against its destination's own requirements (issue #104) —
- * never against the generic choke-point schema engine's write path, since a proposal is
- * never itself written to the destination (`computeProposal`'s "no target write" guarantee,
- * carried over from issue #223). Throws `ValidationError` for a wrong `entityKind`, an
- * unknown/malformed target, properties the destination could not accept, or a relation the project derives set next to
- * that project (`assertNoDerivedRelations`, issue gh-1991). A single-step `'database'` envelope's `newOptions` are checked as
- * `assertValidEnvelopeNewOptions` says (issue gh-1994): a label that an option of the property already has throws
- * `OptionLabelExistsError`, which the tick and `storedEnvelopeStillValid` treat as a refusal of the envelope, as they
- * do a `ValidationError`. Resolves to the
- * target database row for a valid `'database'` envelope (issue #735: so a caller checking
- * `ownerModuleId` afterward reuses this fetch instead of re-querying it), `null` otherwise.
+ * Checks against the destination's own requirements, not the choke-point write path, because a proposal is never
+ * itself written to the destination. Throws `ValidationError` for a wrong `entityKind`, a malformed target,
+ * unacceptable properties or a derived project relation set next to its project. A `newOptions` label an option already
+ * has throws `OptionLabelExistsError`, which callers treat as a refusal like a `ValidationError`. Resolves to the target
+ * database row for a `'database'` envelope so callers can reuse it, `null` otherwise.
  */
 export async function assertValidProposalEnvelope(
   client: PoolClient,
@@ -345,28 +318,22 @@ export async function assertValidProposalEnvelope(
         field: "target",
       });
     }
-    // Issue #105's grant separation, enforced here rather than only declared in the
-    // manifest: a user-supplied `revise` builds its envelope from raw request input, so
-    // without this check it could name Inbox/Inbox item types as `target` and have a
-    // later `confirm` write to them via the generic create-item choke point — bypassing
-    // `permissionManifest.ts`'s `writable: false` for those two databases, since nothing
-    // upstream of that choke-point call reads the manifest at all.
+    // Grant separation enforced here, not only declared in the manifest: a user `revise` builds its envelope from raw
+    // input and could otherwise name Inbox/Inbox item types as `target`, and confirm's generic create would bypass
+    // their `writable: false` because nothing upstream reads the manifest.
     if (targetDatabase.ownerModuleId && SEMPREC_READ_ONLY_MODULE_IDS.includes(targetDatabase.ownerModuleId)) {
       throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a writable target database`, {
         field: "target",
       });
     }
-    // Issue #123: an MCP server's credential never travels through a proposal envelope at
-    // all (it is supplied separately by a human at confirm time, see proposalActions.ts) —
-    // enforced here, at the one point every mcpServers-targeted envelope (freshly computed
-    // or user-revised) passes through, on top of the generic per-property checks below.
+    // An MCP server's credential never travels through a proposal envelope; a human supplies it at confirm time.
     if (targetDatabase.ownerModuleId === MCP_SERVERS_MODULE_ID) {
       assertValidMcpServerProposalProperties(envelope.properties);
     }
 
     const targetProperties = await propertiesStore.listPropertiesByDatabase(client, targetDatabase.id);
     const byKey = new Map(targetProperties.map((property) => [property.key, property]));
-    // A `{ newOption }` value is no option key yet: the key check reads the properties without it (issue gh-1994).
+    // A `{ newOption }` value is no option key yet, so the key check reads the properties without it.
     const properties = await assertValidEnvelopeNewOptions(envelope, targetDatabase, byKey);
     assertValidEnvelopeProperties({ ...envelope, properties }, byKey, targetDatabase.id);
     await lockEnvelopeBlobReferences(client, envelope.properties, byKey);
@@ -384,9 +351,8 @@ export async function assertValidProposalEnvelope(
   }
 
   if (envelope.entityKind === "relation") {
-    // Only the envelope's own shape is checked here: whether the edge may be written depends on
-    // the card's source item, which proposalActions.ts resolves and checks against the relation.
-    // A synthetic occurrence id `<seriesId>@<date>` names an occurrence that has no item yet (issue gh-1850).
+    // Only the envelope's shape is checked here; whether the edge may be written depends on the card's source, which
+    // proposalActions.ts checks. A synthetic `<seriesId>@<date>` names an occurrence with no item yet.
     if (!UUID_RE.test(envelope.target) && (await assertValidOccurrenceTarget(client, envelope.target)) === null) {
       throw new ValidationError(`Proposal envelope target '${envelope.target}' is not an item id`, { field: "target" });
     }
@@ -412,10 +378,8 @@ export async function assertValidProposalEnvelope(
       field: "properties",
     });
   }
-  // `fields`/`children` are read back out of storage and cast at confirm time (issue #105's
-  // proposalActions.ts) to build the block-append call — validated here, at the one point
-  // every pageContent envelope (freshly computed or user-revised) passes through, so that
-  // cast is never the first thing to notice a malformed stored value.
+  // Confirm casts `fields`/`children` back out of storage, so they are validated at the one point every pageContent
+  // envelope passes through.
   const { fields, children } = envelope.properties;
   if (fields !== undefined && (typeof fields !== "object" || fields === null || Array.isArray(fields))) {
     throw new ValidationError("Proposal properties 'fields', if present, must be a plain object", {
@@ -431,16 +395,10 @@ export async function assertValidProposalEnvelope(
 }
 
 /**
- * Puts a source Inbox item's proposal into `needsClarification` (issue #104): the shared path
- * for "no usable type" (missing or deleted-type reference, per the epic's "no special case for
- * deleted references") and for a computed `proposed` envelope that failed destination
- * validation — both are "the AI/tick could not produce a usable proposal", so both land here
- * with no pre-filled `proposal` rather than ever going silent. Creates the row if none exists,
- * revises it if unlocked, and is a no-op if the row is already locked or already
- * `needsClarification` with the same `fingerprint` (so a repeatedly-untyped or
- * repeatedly-invalid item doesn't spam its history on every tick). A card's `userOverrides` and
- * `userEditedKeys` are not written here: they stay stored and apply again to the next valid envelope
- * (`reviseProposal`).
+ * The shared path for "no usable type" and for a computed envelope that failed destination validation: either way the
+ * card lands in `needsClarification` with no pre-filled `proposal` instead of going silent. A no-op for a locked card
+ * or one already `needsClarification` with the same `fingerprint`, so history is not spammed. `userOverrides` and
+ * `userEditedKeys` stay stored and apply again to the next valid envelope.
  */
 async function writeNeedsClarification(
   client: PoolClient,
@@ -458,14 +416,14 @@ async function writeNeedsClarification(
 
     const locked = await lockUnlockedProposal(client, config, existingProposal);
     if (!locked) return;
-    // A card that leaves `invalid` here drops its reason in the same write, as a revise does (issue #1604).
+    // Leaving `invalid` drops the reason in the same write, as a revise does.
     const clearedReason = locked.properties.status === "invalid" ? { invalidReason: null } : {};
     await updateItemWithClient(
       client,
       {
         databaseId: config.processingProposalsDatabaseId,
         itemId: locked.id,
-        ifVersion: locked.updatedAt,
+        ifVersion: locked.version,
         propertiesPatch: {
           fingerprint,
           proposal: null,
@@ -533,13 +491,9 @@ async function writeNeedsClarification(
 }
 
 /**
- * Why a Processing proposal is `invalid` (issue #1482), stored in its `invalidReason` system
- * property. `sourceDeleted` is final for revise: the card can only be discarded, or reopened when
- * its source is restored from the trash (issue #1604). `targetArchived` and `targetDeleted` are
- * fixable: revising the card to a valid target returns it to `proposed`.
- * `field` is the editor field concerned (empty for the source), `itemId` the item that caused
- * it, and `label` that item's name when the reason was written. The warning sentence is not
- * stored; `renderInvalidReason` renders it from the code and the label.
+ * `sourceDeleted` is final for revise: the card can only be discarded, or reopened when the source is restored.
+ * `targetArchived`/`targetDeleted` are fixable by revising to a valid target. `label` is the item's name when the
+ * reason was written; the sentence is rendered by `renderInvalidReason`, not stored.
  */
 export const invalidReasonSchema = z.object({
   code: z.enum(["sourceDeleted", "targetArchived", "targetDeleted"]),
@@ -550,11 +504,6 @@ export const invalidReasonSchema = z.object({
 
 export type InvalidReason = z.infer<typeof invalidReasonSchema>;
 
-/**
- * True when a Processing proposal is `invalid` for a reason no revise can repair: its source Inbox
- * item was deleted (issue #1482). A legacy `invalid` card with no `invalidReason` is not final, so
- * it stays revisable.
- */
 export function isFinalInvalid(properties: Record<string, unknown>): boolean {
   if (properties.status !== "invalid") return false;
   const parsed = invalidReasonSchema.safeParse(properties.invalidReason);
@@ -562,12 +511,9 @@ export function isFinalInvalid(properties: Record<string, unknown>): boolean {
 }
 
 /**
- * Puts an unlocked proposal into `invalid` (issue #104) when its source Inbox item no longer
- * exists, and stores why as the `sourceDeleted` `invalidReason` (issue #1482). A locked
- * (`confirmed`/`rejected`) proposal, or one with no proposal row at all, is left untouched — per
- * the epic's "a locked card is never recomputed again" rule and because there is nothing to
- * invalidate. A card already invalid for this deleted source is left untouched, so repeated delete
- * events do not add history; other invalid reasons are superseded by the deleted source.
+ * Locked cards and missing proposals are left untouched: a locked card is never recomputed. A card already invalid
+ * for this deleted source is untouched too, so repeated delete events add no history; other invalid reasons are
+ * superseded.
  */
 async function invalidateProposalForDeletedSource(
   client: PoolClient,
@@ -593,7 +539,7 @@ async function invalidateProposalForDeletedSource(
     {
       databaseId: config.processingProposalsDatabaseId,
       itemId: locked.id,
-      ifVersion: locked.updatedAt,
+      ifVersion: locked.version,
       propertiesPatch: {
         status: "invalid",
         reason: null,
@@ -608,19 +554,14 @@ async function invalidateProposalForDeletedSource(
   publishInboxCardChange(client, locked.id, "updated");
 }
 
-/** Whether `err` is `assertValidProposalEnvelope` refusing the envelope, as opposed to a fault that must propagate. */
+/** Distinguishes an envelope refusal from a fault that must propagate. */
 function refusesEnvelope(err: unknown): err is ValidationError | CardinalityViolationError | OptionLabelExistsError {
   return (
     err instanceof ValidationError || err instanceof CardinalityViolationError || err instanceof OptionLabelExistsError
   );
 }
 
-/**
- * True when a card's stored `proposal` envelope passes the check the tick applies to a computed
- * envelope before storing it (`assertValidProposalEnvelope`). A card with no envelope, or one
- * that no longer parses, violates relation cardinality or lists a new option whose label an option has since taken,
- * does not pass. Other errors propagate.
- */
+/** A missing or unparseable envelope, a cardinality violation or a taken new-option label fails; other errors propagate. */
 export async function storedEnvelopeStillValid(client: PoolClient, proposal: ItemRow): Promise<boolean> {
   const parsed = proposalEnvelopeSchema.safeParse(proposal.properties.proposal);
   if (!parsed.success) return false;
@@ -634,12 +575,9 @@ export async function storedEnvelopeStillValid(client: PoolClient, proposal: Ite
 }
 
 /**
- * Brings a `sourceDeleted` card back once its source Inbox item has been restored from the trash
- * (issue #1604), inside the read transaction and before the fingerprint gate. A card whose stored
- * envelope still validates goes to `proposed`. One whose envelope no longer validates goes to
- * `needsClarification` as `writeNeedsClarification` writes it, keeping the stored fingerprint. In
- * both cases `invalidReason` is cleared. Returns the card as it now stands, or `null` when the
- * lock refuses it because it changed since the tick read it, which ends the tick.
+ * Runs in the read transaction before the fingerprint gate. A still-valid envelope goes to `proposed`, otherwise to
+ * `needsClarification` keeping the stored fingerprint; `invalidReason` is cleared either way. `null` when the lock
+ * refuses a card that changed since the read, which ends the tick.
  */
 async function reopenRestoredSourceProposal(
   client: PoolClient,
@@ -668,7 +606,7 @@ async function reopenRestoredSourceProposal(
     {
       databaseId: config.processingProposalsDatabaseId,
       itemId: locked.id,
-      ifVersion: locked.updatedAt,
+      ifVersion: locked.version,
       propertiesPatch: {
         status: "proposed",
         invalidReason: null,
@@ -687,15 +625,10 @@ async function reopenRestoredSourceProposal(
 }
 
 /**
- * The tick's read phase: everything up to and including the fingerprint gate, run in one
- * transaction. The outcomes that need no LLM call (deleted or empty source, a locked
- * or unchanged-fingerprint existing proposal, an item with a long recording, whose recording card needs no model call)
- * are written here and end the tick (`null` return). A `sourceDeleted` card whose source is live again is first returned to `proposed` or
- * `needsClarification` (issue #1604), and the gate then applies to the card as it now stands.
- * Otherwise enters recognition for an untyped source, or resolves here too the database the type's `processingMethod` writes to
- * (`resolveTickTarget`: the target database of `database`, the Journal database of `journal`) — so it never
- * needs to be re-derived — and returns a snapshot for the external call and the write
- * transaction that follows it.
+ * The read phase, through the fingerprint gate, in one transaction. Outcomes needing no model call (deleted or empty
+ * source, locked or unchanged card, a long recording) are written here and return `null`. A `sourceDeleted` card with
+ * a live source is reopened first, and the gate applies to it as it now stands. Otherwise returns a snapshot with the
+ * resolved target for the external call and the write transaction.
  */
 async function readTickSnapshot(
   client: PoolClient,
@@ -705,13 +638,8 @@ async function readTickSnapshot(
   const item = await itemsStore.getItemById(client, config.inboxDatabaseId, sourceItemId);
   let existingProposal = await findExistingProposal(client, config, sourceItemId);
 
-  // Issue #106: this fires on every create/update/delete tick (issue #103's onItemEvent
-  // heartbeats), so it is the one trigger point that covers a property edit (text/date/
-  // time) on an existing Inbox item — the create hook (inboxCreateHook.ts) already enqueues
-  // its own recompute, so this is redundant-but-harmless there. It also covers deletion:
-  // the item's `journalDay` edge (set once at capture) still resolves after a soft
-  // delete, since deleting an item never removes its relation edges, and the deleted
-  // item is then excluded from the recomputed list by `getItemsByIds`'s deleted_at filter.
+  // Fires on every create/update/delete, so it covers property edits and deletions (the `journalDay` edge survives a
+  // soft delete and the recompute filters deleted items). Redundant but harmless after the create hook's own enqueue.
   if (item) await enqueueJournalInboxRecomputeForInboxItem(client, item.id);
 
   if (!item || item.deletedAt) {
@@ -725,12 +653,10 @@ async function readTickSnapshot(
   const definition = await getRelationDefinitionByKey(client, config.inboxDatabaseId, "type");
   const edges = definition ? await relationsStore.listRelationsForItem(client, definition.id, item.id) : [];
   const sourceTypeId = edges[0] ? relationsStore.otherSide(edges[0], item.id) : null;
-  const emoji = typeof type?.properties.emoji === "string" ? type.properties.emoji : "";
   const v2Input = await inboxFingerprintInput(client, item, type);
   const fingerprint = computeInboxFingerprintV2(v2Input);
 
-  // The source was restored: the card leaves `invalid` before the fingerprint gate, so an unchanged
-  // fingerprint does not hide the change of state (issue #1604).
+  // Leave `invalid` before the fingerprint gate, so an unchanged fingerprint does not hide the change of state.
   if (existingProposal && isFinalInvalid(existingProposal.properties)) {
     existingProposal = await reopenRestoredSourceProposal(client, config, existingProposal, item.id);
     if (!existingProposal) return null;
@@ -739,21 +665,13 @@ async function readTickSnapshot(
   if (existingProposal) {
     const status = existingProposal.properties.status;
     if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return null;
-    // A `computing` card was sent back for a new computation (issue gh-1947): the fingerprint of the card says what the
-    // last computation saw, not whether another one is wanted, so the gate does not apply to it.
-    if (
-      status !== "computing" &&
-      isFingerprintCurrent(existingProposal.properties.fingerprint, {
-        v2Input,
-        legacyEmoji: emoji,
-        legacyText: v2Input.text,
-      })
-    )
-      return null;
+    // A `computing` card was sent back for recomputation; its fingerprint says what the last run saw, not whether
+    // another is wanted, so the gate does not apply.
+    if (status !== "computing" && isFingerprintCurrent(existingProposal.properties.fingerprint, v2Input)) return null;
   }
 
-  // An item that holds a long recording gets the recording card and no model call (issues gh-1978 and gh-1985), and one
-  // whose audio has no metadata yet gets nothing: the metadata job runs the tick again.
+  // A long recording gets the recording card without a model call; audio without metadata gets nothing until the
+  // metadata job runs the tick again.
   const route = routeInboxAttachments(await listInboxAttachments(client, [item.id]));
   if (route === "notReady") return null;
   if (route !== "compute") {
@@ -766,8 +684,7 @@ async function readTickSnapshot(
     return null;
   }
 
-  // Issue gh-1970: a photo whose metadata job has not run has no reduced copy to read yet. Nothing is written, and the
-  // job's own `update` announcement to the item's heartbeats starts the tick again.
+  // A photo without metadata has no reduced copy yet; the metadata job's `update` heartbeat restarts the tick.
   if (await hasAttachmentAwaitingMetadata(client, item.id)) return null;
 
   if (!type) {
@@ -797,7 +714,6 @@ async function readTickSnapshot(
   }
   const target = await resolveTickTarget(client, type, processingMethod);
 
-  // `cs` is the `users.locale` column default, used when the tenant has no bound user.
   const locale = (await getTenantUserLocale(client)) ?? "cs";
 
   return {
@@ -813,12 +729,9 @@ async function readTickSnapshot(
 }
 
 /**
- * Revises `existing` with `envelope`, through the locked re-check — a no-op if it lost the race. Under the lock it
- * writes the assistant's parts from `envelope` (`aiProposal` with its `aiVersion`, `fingerprint`, the history entry)
- * and keeps the manual values of the locked row that still apply: `proposal` is the effective envelope and
- * `userOverrides` and `userEditedKeys` follow it (`mergeRecomputeWithManualValues`). A card that holds a `context`
- * (a recording card's) loses it unless `recognitionPatch` brings a new one, so a card that stops being a recording
- * card does not keep the context of one.
+ * A no-op if it lost the race. Writes the assistant's parts and keeps manual values that still apply
+ * (`mergeRecomputeWithManualValues`). A stored `context` is dropped unless `recognitionPatch` brings a new one, so a
+ * card that stops being a recording card does not keep a recording's context.
  */
 async function reviseProposal(
   client: PoolClient,
@@ -838,7 +751,7 @@ async function reviseProposal(
     {
       databaseId: config.processingProposalsDatabaseId,
       itemId: locked.id,
-      ifVersion: locked.updatedAt,
+      ifVersion: locked.version,
       propertiesPatch: {
         fingerprint,
         proposal: merged.effective,
@@ -873,12 +786,7 @@ async function reviseProposal(
   await enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId);
 }
 
-/**
- * The source-item re-checks a write transaction runs before it writes anything for `snapshot`:
- * the item must still exist, undeleted, with the same source type edge and the same fingerprint.
- * Returns the item and its current fingerprint, or `null` after logging why the write is stale.
- * Shared by `writeTickResult` and `writeComputeFailure` (issue #1485).
- */
+/** The source must still exist, undeleted, with the same type edge and fingerprint; `null` after logging otherwise. */
 async function currentSourceFingerprint(
   client: PoolClient,
   config: SemprecTickActionConfig,
@@ -897,7 +805,6 @@ async function currentSourceFingerprint(
   const recognized = await resolveRecognizedType(client, config, item);
   if (sourceTypeId !== snapshot.sourceTypeId || (!snapshot.recognition && recognized?.type.id !== snapshot.type?.id))
     return null;
-  // Both sides are version 2: the snapshot's fingerprint was computed by `readTickSnapshot` the same way.
   const fingerprint = computeInboxFingerprintV2(
     await inboxFingerprintInput(client, item, snapshot.recognition ? null : (recognized?.type ?? null)),
   );
@@ -909,10 +816,8 @@ async function currentSourceFingerprint(
 }
 
 /**
- * The tick's write phase, run in its own transaction after the non-transactional
- * `computeProposal` call has returned. Re-validates every field `snapshot` was staked on before
- * writing anything: the source item must still exist, undeleted, with the same source type edge
- * and the same fingerprint. A mismatch skips the stale result; dispatch ownership is unchanged.
+ * Runs in its own transaction after the non-transactional `computeProposal` call, re-validating the source first; a
+ * mismatch skips the stale result.
  */
 async function writeTickResult(
   client: PoolClient,
@@ -937,10 +842,8 @@ async function writeTickResult(
     await assertValidProposalEnvelope(client, envelope);
   } catch (err) {
     if (!refusesEnvelope(err)) throw err;
-    // Same race as below: another tick may have created a proposal for this source while this
-    // one waited on the AI call, so a null `snapshot.existingProposal` doesn't mean there is
-    // still nothing to revise — re-check before falling through to `writeNeedsClarification`'s
-    // own create path, or this would create a second proposal row for the same source item.
+    // Another tick may have created a proposal while this one waited on the model; re-check so
+    // `writeNeedsClarification` does not create a second row for the same source.
     const existingForClarification = snapshot.existingProposal ?? (await findExistingProposal(client, config, item.id));
     await writeNeedsClarification(
       client,
@@ -954,8 +857,7 @@ async function writeTickResult(
     return;
   }
 
-  // Another tick may have created a proposal for this source while this one waited on the AI
-  // call — revise that one through the guarded path instead of creating a duplicate.
+  // Another tick may have created a proposal while this one waited on the model.
   const existing = snapshot.existingProposal ?? (await findExistingProposal(client, config, item.id));
   if (existing) {
     await reviseProposal(client, config, existing, item.id, fingerprint, envelope, reason, recognitionPatch);
@@ -1000,13 +902,8 @@ async function writeTickResult(
 }
 
 /**
- * The write phase of a failed `computeProposal` call (issue #1485), run in its own transaction
- * after the call has thrown an `AiGatewayFailedError`. It applies the same source re-checks as
- * `writeTickResult`, so an edit or deletion during the call writes nothing. It then stores the
- * card as `computeFailed` with a cleared fingerprint, so
- * the next tick computes again instead of skipping on an unchanged fingerprint. An existing
- * `proposal` stays stored as it was; a locked card is never touched; a card is created only when
- * none exists, with the `sourceInbox` edge to the source item.
+ * Same source re-checks as `writeTickResult`. Stores `computeFailed` with a cleared fingerprint so the next tick
+ * computes again. An existing `proposal` stays; a locked card is never touched; a card is created only when none exists.
  */
 async function writeComputeFailure(
   client: PoolClient,
@@ -1017,11 +914,10 @@ async function writeComputeFailure(
   const current = await currentSourceFingerprint(client, config, snapshot);
   if (!current) return;
   const { item } = current;
-  // The message carries the reason code only: the provider's own text never reaches the card.
+  // Reason code only: the provider's own text never reaches the card.
   const message = `Computing the proposal failed: ${reason}.`;
 
-  // Another tick may have created a proposal for this source while this one waited on the AI call,
-  // so a null `snapshot.existingProposal` does not mean there is nothing to update.
+  // Another tick may have created a proposal while this one waited on the model.
   const existing = snapshot.existingProposal ?? (await findExistingProposal(client, config, item.id));
   if (existing) {
     const locked = await lockUnlockedProposal(client, config, existing);
@@ -1032,7 +928,7 @@ async function writeComputeFailure(
       {
         databaseId: config.processingProposalsDatabaseId,
         itemId: locked.id,
-        ifVersion: locked.updatedAt,
+        ifVersion: locked.version,
         propertiesPatch: { fingerprint: null, status: "computeFailed", history },
       },
       { allowedSystemKeys: ["fingerprint", "status", "history"] },
@@ -1055,24 +951,17 @@ async function writeComputeFailure(
 }
 
 /**
- * The Inbox `onItemEvent` heartbeat re-reads the item by id, including when rapid edits coalesce.
+ * Three phases (staleness-checked bracket): a read transaction resolves no-call cases or returns a snapshot; the model
+ * call runs outside a transaction; the write transaction revalidates the source and preserves locked cards.
  *
- * Runs in three phases, per `docs/adr/2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions.md`:
- * a read transaction resolves no-call cases or returns a snapshot; the model call runs outside a
- * transaction; the write transaction revalidates the source and preserves locked cards. A changed
- * source causes a nonwrite. Invalid envelopes become `needsClarification`; card changes append AI history.
- *
- * A gateway failure (`AiGatewayFailedError`) from `computeProposal` is recorded on the card as
- * `computeFailed` (issue #1485) when its reason is `budget_exceeded` or the call is the final queue
- * attempt (`context.isFinalAttempt === true`), unless the source changed during the call or the card
- * is locked, in which case nothing is written. Any other gateway failure is rethrown, so the queue
- * retries the job. Every other error from `computeProposal` propagates unchanged.
+ * An `AiGatewayFailedError` is recorded as `computeFailed` when the reason is `budget_exceeded` or this is the final
+ * queue attempt (unless the source changed or the card is locked); otherwise it is rethrown so the queue retries.
+ * Other errors propagate unchanged.
  */
 export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemprecProposalFn): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
     if (!context.itemId) return;
-    // Throws (surfacing as a recorded heartbeat failure + notification, see sweep.ts's
-    // createHeartbeatFireCoreTask) rather than silently no-op'ing on a misconfigured heartbeat.
+    // Throws, surfacing as a recorded heartbeat failure, rather than silently no-op'ing on a misconfigured heartbeat.
     const config = semprecTickActionConfigSchema.parse(actionConfig);
     const sourceItemId = context.itemId;
 
@@ -1085,9 +974,6 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
     } catch (err) {
       if (!(err instanceof AiGatewayFailedError)) throw err;
       const reason = err.reason;
-      // A budget rejection is not worth retrying, and the final queue attempt has no retry left: both
-      // are recorded on the card. Any other gateway failure on a non-final attempt is rethrown, so the
-      // queue retries the job.
       if (reason !== "budget_exceeded" && context.isFinalAttempt !== true) throw err;
       logger.warn({ sourceItemId, reason }, "Recording a failed proposal computation on the card");
       try {

@@ -34,9 +34,7 @@ import { createSyncServer } from "../syncServer.js";
 
 let pool: Pool;
 
-// wireRealtimeHooks(pool) installs every hook, not just the one a given test exercises. Reset
-// all of them so a test that only unsets its own hook can never leave the rest wired to `pool`
-// for a later test in this file to trip over.
+// wireRealtimeHooks(pool) installs every hook; reset all of them so no test leaves hooks wired for a later one.
 function resetHooks(): void {
   setInvalidationHook(() => {});
   setInvalidationPublisher(async () => {});
@@ -56,10 +54,9 @@ function frameText(data: RawData): string {
 
 describe("realtime", () => {
   beforeEach(async () => {
-    // The shared embedded-Postgres instance (vitest globalSetup, packages/data) already has
-    // migrations applied, but other files leave rows behind in it. Every envelope assertion here
-    // depends on that state — `app_tenant_default()` resolves tenant zero only while it is the sole
-    // `tenants` row, and `users.tenant_id` is unique — so reset it before each test.
+    // The shared embedded Postgres keeps other files' rows, and the envelope assertions depend on its state
+    // (`app_tenant_default()` resolves tenant zero only while it is the sole tenant; `users.tenant_id` is unique), so
+    // it is reset before each test.
     pool ??= getTestPool();
     await resetDatabase(pool);
   });
@@ -378,8 +375,7 @@ describe("realtime", () => {
       notifyInvalidation({ scope: "mailThread", threadId, userId });
       await vi.waitFor(() => expect(received).toHaveLength(2));
 
-      // The two NOTIFY statements run on separate pooled connections, so their arrival order is not
-      // fixed; the payload without a user id is put first before the payloads are compared.
+      // The two NOTIFYs run on separate pooled connections, so arrival order is not fixed; sort before comparing.
       const payloads = received
         .map((notification) => notification.payload ?? "{}")
         .sort((left, right) => Number(left.includes('"userId"')) - Number(right.includes('"userId"')));
@@ -408,9 +404,8 @@ describe("realtime", () => {
       notifyInboxCardsInvalidation({ op: "created", cardId, userId });
       await vi.waitFor(() => expect(received).toHaveLength(2));
 
-      // Only the card and the operation travel: no proposal, status or history of the card. The two
-      // NOTIFY statements run on separate pooled connections, so the "closed" payload is put first
-      // before the payloads are compared.
+      // Only the card and the operation travel: no proposal, status or history. The two NOTIFYs run on separate pooled
+      // connections, so the "closed" payload is put first before comparing.
       const payloads = received
         .map((notification) => notification.payload ?? "{}")
         .sort((left, right) => Number(right.includes('"op":"closed"')) - Number(left.includes('"op":"closed"')));
@@ -611,7 +606,7 @@ describe("realtime", () => {
       }
     });
 
-    // Strict `app_tenant_default()` (#1067) no longer falls back to the sole tenant.
+    // Strict `app_tenant_default()` does not fall back to the sole tenant.
     it("stamps no tenant when a hook fires with no scope, even while tenant zero is the only tenant", async () => {
       wireRealtimeHooks(scopedPool);
       const listenClient = await pool.connect();
@@ -644,7 +639,6 @@ describe("realtime", () => {
   });
 });
 
-/** Inserts a user bound to `tenantId` and one session for it; returns the session id. */
 async function createSessionForUser(adminPool: Pool, tenantId: string): Promise<string> {
   return withTransaction(adminPool, async (client) => {
     const user = await client.query<{ id: string }>(

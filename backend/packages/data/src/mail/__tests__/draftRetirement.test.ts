@@ -43,7 +43,6 @@ let tenant: string;
 let foreign: string;
 let events: InvalidationEvent[];
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -75,7 +74,6 @@ async function seededIds(tenantId: string): Promise<SeededIds> {
   });
 }
 
-/** One tenant's mailbox with its folders, and the writers that fill a thread, every row written the way production writes it. */
 async function mailFixture(tenantId: string) {
   const ids = await seededIds(tenantId);
   const mailboxId = await inTenant(tenantId, async (client) => {
@@ -106,7 +104,6 @@ async function mailFixture(tenantId: string) {
   const drafts = await folder("drafts");
   const sent = await folder("sent");
 
-  /** One message through the ingest writer, as the sync adapters call it (they pass the mailbox's addresses). */
   const message = (input: {
     folderId: string;
     messageId: string;
@@ -147,7 +144,6 @@ async function mailFixture(tenantId: string) {
       return { itemId, threadId, created };
     });
 
-  /** A Semprec draft with its `mail_drafts` row; `source` is the message it answers. Answers the draft's Emails item id. */
   const draft = (input: {
     threadId: string | null;
     createdBy: MailDraftActor;
@@ -179,7 +175,6 @@ async function mailFixture(tenantId: string) {
 }
 type MailFixture = Awaited<ReturnType<typeof mailFixture>>;
 
-/** A thread with one received message at `FIRST`, and an agent draft that answers it. */
 async function threadWithSempDraft(f: MailFixture, name: string) {
   const received = await f.message({ folderId: f.inbox, messageId: ID(name), date: FIRST });
   const draftId = await f.draft({ threadId: received.threadId, createdBy: "agent", source: received.itemId });
@@ -191,7 +186,6 @@ const listPage = z.object({
   nextCursor: z.string().nullable(),
 });
 
-/** `hasSempDraft` of the listed thread `threadId` of `tenantId`, through the route the mailbox list calls. */
 async function hasSempDraft(tenantId: string, threadId: string): Promise<boolean> {
   const answer = await runInTenant(tenantId, () =>
     createMailThreadListRouteHandler(runtime)({ req: { url: "/api/mail/threads?limit=100" } }),
@@ -203,11 +197,8 @@ async function hasSempDraft(tenantId: string, threadId: string): Promise<boolean
 }
 
 interface DraftState {
-  /** The Emails item is in the trash. */
   trashed: boolean;
-  /** The `mail_drafts` row exists. */
   hasRow: boolean;
-  /** The row's `sent_at`, when it has a row. */
   sentAt: Date | null | undefined;
 }
 
@@ -235,7 +226,6 @@ function retire(
   return inTenant(tenantId, (client) => retireSupersededSempDrafts(client, input));
 }
 
-/** The user edits the draft's body through the draft write operation, as the update route does. */
 function editAsUser(draftId: string, body = "The user's own words"): Promise<unknown> {
   return inTenant(tenant, async (client) => {
     const { emailsDatabaseId } = await resolveMailModuleIds(client);
@@ -243,7 +233,7 @@ function editAsUser(draftId: string, body = "The user's own words"): Promise<unk
     if (!item) throw new Error(`draft ${draftId} is missing`);
     return updateEmailDraft(
       client,
-      { draftItemId: draftId, ifVersion: item.updatedAt, body },
+      { draftItemId: draftId, ifVersion: item.version, body },
       { writer: { writerKind: "user" }, actingUserId: randomUUID() },
     );
   });
@@ -303,7 +293,6 @@ describe("retireSupersededSempDrafts (issue gh-1902)", () => {
     const f = await mailFixture(tenant);
     const received = await f.message({ folderId: f.inbox, messageId: ID("kept"), date: FIRST });
     const { threadId } = received;
-    // An earlier agent draft of the thread, sent, which freed the thread for the next one.
     const sent = await f.draft({ threadId, createdBy: "agent", source: received.itemId });
     await inTenant(tenant, (client) => markMailDraftSent(client, sent));
     const excluded = await f.draft({ threadId, createdBy: "agent", source: received.itemId });
@@ -326,13 +315,12 @@ describe("retireSupersededSempDrafts (issue gh-1902)", () => {
     const edited = await threadWithSempDraft(f, "user-edited");
     const untouched = await threadWithSempDraft(f, "agent-only");
     await editAsUser(edited.draftId);
-    // An update by the agent keeps the draft the agent's.
     await inTenant(tenant, async (client) => {
       const item = await getItemById(client, f.ids.emailsDatabaseId, untouched.draftId);
       if (!item) throw new Error("draft is missing");
       await updateEmailDraft(
         client,
-        { draftItemId: untouched.draftId, ifVersion: item.updatedAt, body: "A better agent text" },
+        { draftItemId: untouched.draftId, ifVersion: item.version, body: "A better agent text" },
         { writer: { writerKind: "agent" } },
       );
     });
@@ -350,7 +338,6 @@ describe("retireSupersededSempDrafts (issue gh-1902)", () => {
   it("keeps a draft that holds the claim of a send in progress", async () => {
     const f = await mailFixture(tenant);
     const { received, draftId, threadId } = await threadWithSempDraft(f, "being-sent");
-    // What `sendDraftEmail` writes before it calls the provider.
     await inTenant(tenant, (client) =>
       upsertMailMessageMeta(client, {
         itemId: draftId,
@@ -432,7 +419,6 @@ describe("retireSupersededSempDrafts (issue gh-1902)", () => {
     });
     expect(merged.threadId).not.toBe(survivor);
     const draftId = await f.draft({ threadId: merged.threadId, createdBy: "agent", source: merged.itemId });
-    // The bridge answers the root and is answered by the reply: the thread of the reply joins the root's thread.
     const bridge = await f.message({
       folderId: f.inbox,
       messageId: ID("merge-bridge"),
@@ -566,7 +552,6 @@ describe("a send of the user's own (issue gh-1902)", () => {
       createMailDraftSendRouteHandler(runtime, { mailServerClients: { send: sendAdapters() } })(ctx(id)),
     );
 
-  /** A draft of the user that answers `source` in `threadId`, through the real create route, and the Sent folder it moves to. */
   async function userReply(f: MailFixture, input: { threadId: string; source: string }): Promise<string> {
     const created = await runInTenant(tenant, () =>
       createMailDraftCreateRouteHandler(runtime)({
@@ -602,10 +587,8 @@ describe("a send of the user's own (issue gh-1902)", () => {
     expect(answer.body.threadId).toBe(threadId);
     expect(await stateOf(tenant, semp)).toEqual(RETIRED);
     expect(await hasSempDraft(tenant, threadId)).toBe(false);
-    // The user's own sent draft and their other draft are not Semp drafts: the first was sent, the second stays.
     expect((await stateOf(tenant, mine)).sentAt).toEqual(expect.any(Date));
     expect(await stateOf(tenant, otherUserDraft)).toEqual(UNTOUCHED);
-    // The send announces the thread, and so does the retirement of a draft in it.
     expect(events).toEqual([
       { scope: "mailThread", threadId },
       { scope: "mailThread", threadId },
@@ -680,7 +663,6 @@ describe("an own message that is ingested (issue gh-1902)", () => {
     expect(own.created).toBe(true);
     expect(await stateOf(tenant, draftId)).toEqual(RETIRED);
     expect(await hasSempDraft(tenant, threadId)).toBe(false);
-    // The new message announces its thread, and so does the retirement of a draft in it.
     expect(events).toEqual([
       { scope: "mailThread", threadId },
       { scope: "mailThread", threadId },
@@ -750,9 +732,7 @@ describe("an own message that is ingested (issue gh-1902)", () => {
     expect(wip.created).toBe(true);
     expect(await stateOf(tenant, draftId)).toEqual(UNTOUCHED);
     expect(await hasSempDraft(tenant, threadId)).toBe(true);
-    // Only the new message announced its thread.
     expect(events).toEqual([{ scope: "mailThread", threadId }]);
-    // The reply the user then sends, filed in the Sent folder of the mailbox, is their answer.
     await f.message({
       folderId: f.sent,
       messageId: ID("sent-reply-after-draft"),

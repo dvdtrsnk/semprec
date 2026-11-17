@@ -47,7 +47,7 @@ async function userIn(tenantId: string): Promise<string> {
   return rows[0]!.id;
 }
 
-/** Ids left in `tenantId`, read inside that tenant so row-level security applies. */
+/** Read inside the tenant so RLS applies. */
 async function remainingIds(tenantId: string): Promise<string[]> {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM semp_problems");

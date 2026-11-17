@@ -1,7 +1,5 @@
-// The mail row of a person's related collections (issue gh-1874, `relation.related`): the number of mail threads that
-// hold a message the person is on, in place of the Emails collection the generic read would list with a message count.
-// It is the first contributor of `chokePoint/relatedContributors.ts` and is registered from `domainWriteHooks.ts`
-// (docs/adr/2026-11-13-related-rows-are-contributed-through-a-per-process-registry.md). It only reads.
+// The mail row of a person's related collections: the number of mail threads holding a message the person
+// is on, instead of the Emails collection the generic read would list. Read-only.
 import type { PoolClient } from "pg";
 import type { RelatedCollectionRow, RelatedContributorContext } from "../chokePoint/relatedContributors.js";
 import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
@@ -12,12 +10,9 @@ interface ThreadCountRow {
 }
 
 /**
- * The distinct threads that hold a counted message of the person in `$1`, and the id of the Threads database.
- * A message is the person's when its `senderPeople` or `recipientsPeople` edge reaches the person; the edge is read
- * from the Emails side of its definition. A message counts while its item is not in the Trash and it is not in the
- * Trash folder only: a message with a copy in the Trash folder and in another folder counts, and so does one with no
- * live folder. The thread counts through such a message, while its own item is not in the Trash. The text is fixed
- * SQL; the only parameter is the person's id.
+ * A message is the person's when its `senderPeople` or `recipientsPeople` edge (read from the Emails side)
+ * reaches them. A message counts while its item is live and it is not only in the Trash folder: a copy in
+ * Trash plus another folder counts, as does one with no live folder.
  */
 const PERSON_THREAD_COUNT_SQL = `
 WITH schema_ids AS (
@@ -56,10 +51,7 @@ LEFT JOIN LATERAL (
 ) f ON true
 WHERE COALESCE(f.has_non_trash, true)`;
 
-/**
- * The number of mail threads of a person, and the Threads database they are counted in; `null` when the person has
- * none. Runs in the tenant scope of `client`.
- */
+/** `null` when the person has none. Runs in the tenant scope of `client`. */
 export async function countPersonMailThreads(
   client: PoolClient,
   personId: string,
@@ -70,10 +62,7 @@ export async function countPersonMailThreads(
   return { databaseId: row.threads_database_id, count: row.count };
 }
 
-/**
- * The row the Threads collection has in the related collections of a person: the count of its mail threads. It has no
- * filter, as every row of the Threads database (`relatedOps.ts`): a client opens the thread list by the person's id.
- */
+/** Unfiltered, like every Threads row: a client opens the thread list by the person's id. */
 export async function personMailThreadsRelatedRow(
   context: RelatedContributorContext,
 ): Promise<RelatedCollectionRow | null> {

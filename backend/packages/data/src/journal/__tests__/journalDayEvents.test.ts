@@ -31,7 +31,6 @@ let dataPool: Pool;
 const USER = { writerKind: "user" } as const;
 const DAY = "2026-10-16";
 
-/** One element of `events`: exactly the fields issue #1721 lists. */
 const journalEventSchema = z
   .object({
     id: z.string(),
@@ -51,7 +50,6 @@ const journalEventSchema = z
 
 const dayResponseSchema = z.object({ type: z.literal("day"), period: z.string(), events: z.array(journalEventSchema) });
 
-/** One element of `birthdays`: exactly the fields issue #2015 lists. */
 const journalBirthdaySchema = z
   .object({
     id: z.string(),
@@ -70,7 +68,6 @@ const calendarSchema = z.object({
   properties: z.object({ isDefault: z.boolean(), systemKey: z.string().optional() }),
 });
 
-/** The response body as JSON carries it. */
 function wire(body: unknown): unknown {
   return JSON.parse(JSON.stringify(body));
 }
@@ -82,7 +79,7 @@ async function newTenant(): Promise<string> {
   return tenantId;
 }
 
-/** One tenant's fixture writes and Journal reads, each in that tenant's scope on the runtime-role pool. */
+/** Each read and write runs in that tenant's scope on the runtime-role pool. */
 function world(tenantId: string) {
   const chokePoint = createChokePoint(dataPool);
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenantId, fn);
@@ -103,7 +100,7 @@ function world(tenantId: string) {
     return item.id;
   }
 
-  /** A transcript as the transcription process writes it: `status` is its property, which a user's write may not set. */
+  /** As the transcription process writes it: a user's write may not set `status`. */
   async function createTranscript(name: string, status: string): Promise<string> {
     const id = await databaseId("transcripts");
     const item = await inTenant(() =>
@@ -132,10 +129,7 @@ function world(tenantId: string) {
     await inTenant(() => chokePoint.softDeleteItem(id, itemId));
   }
 
-  /**
-   * Puts a calendar in the Trash with a raw write: the delete hook of issue gh-1803 refuses to trash a system
-   * calendar, so a trashed Birthdays calendar is a state only a write that skips the hooks reaches.
-   */
+  /** Raw write: the delete hook refuses to trash a system calendar, so only a hook-skipping write reaches this state. */
   async function trashCalendarWithoutHooks(calendarId: string): Promise<void> {
     const id = await databaseId(CALENDARS_MODULE_ID);
     await withTenantTransaction(adminPool, tenantId, async (client) => {
@@ -155,7 +149,6 @@ function world(tenantId: string) {
     return calendar.id;
   }
 
-  /** The id of a calendar of the tenant's own that is not the default one (`Work`, `Family` or `Health`). */
   async function otherCalendarId(): Promise<string> {
     const id = await databaseId(CALENDARS_MODULE_ID);
     const rows = z.array(calendarSchema).parse((await inTenant(() => chokePoint.listItems(id, { limit: 50 }))).items);
@@ -164,7 +157,6 @@ function world(tenantId: string) {
     return calendar.id;
   }
 
-  /** An Event created in the calendar `calendarId` through the default-calendar create path of issue gh-1761. */
   async function createInCalendar(calendarId: string, properties: Record<string, unknown>): Promise<string> {
     const item = await inTenant(() =>
       withTransaction(dataPool, (client) =>
@@ -174,7 +166,6 @@ function world(tenantId: string) {
     return item.id;
   }
 
-  /** Materializes the occurrence of the series `seriesId` on `date` into an Event of its own, as a user's edit does. */
   async function materialize(seriesId: string, date: string): Promise<string> {
     const users = await adminPool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [tenantId]);
     const userId = users.rows[0]?.id;
@@ -196,20 +187,16 @@ function world(tenantId: string) {
     return calendar.id;
   }
 
-  /** The body of `GET /api/journal/periods/:type/:period` as the handler answers it, read through `pool`. */
   async function readPeriod(type: string, period: string, pool: Pool = dataPool): Promise<unknown> {
     const result = await inTenant(() => createJournalPeriodReadRouteHandler(pool)({ params: { type, period } }));
     expect(result.status).toBe(200);
     return wire(result.body);
   }
 
-  /** The `events` of a Journal day, each checked to carry exactly the listed fields. */
   const events = async (day: string) => dayResponseSchema.parse(await readPeriod("day", day)).events;
 
-  /** The `birthdays` of a Journal day, each checked to carry exactly the listed fields. */
   const birthdays = async (day: string) => birthdaysResponseSchema.parse(await readPeriod("day", day)).birthdays;
 
-  /** The ids of everything the calendar timeline returns for `day`, in its order, with each item's kind. */
   const timelineOf = async (day: string) =>
     (
       await inTenant(() =>
@@ -236,10 +223,7 @@ function world(tenantId: string) {
   };
 }
 
-/**
- * The fixture day of issue #1721: the all-day Conference and four timed Events on 2026-10-16, written in an
- * order that is not the expected one.
- */
+/** Written in an order that is not the expected one. */
 async function seedFixtureDay(w: ReturnType<typeof world>) {
   const website = await w.create("projects", { name: "Website", color: "#FF9500" });
   const deepWork = await w.create("projects", { name: "Deep work" });
@@ -262,7 +246,6 @@ async function seedFixtureDay(w: ReturnType<typeof world>) {
   return { website, deepWork, conference, standup, meeting, lunch, focus, transcript };
 }
 
-/** A pool that hands out clients of `pool` and records the text of every statement they send. */
 function observed(pool: Pool): { pool: Pool; statements: string[] } {
   const statements: string[] = [];
   const proxy = new Proxy(pool, {
@@ -404,7 +387,7 @@ describe("journal day events and birthdays (issues #1721, #2015)", () => {
       [trip, "2026-10-15", "2026-10-17"],
       [onTheDay, DAY, null],
     ]);
-    // A seeded tenant also has the sleep nights of the day (issue #1806) in its timeline; the Journal lists Events.
+    // A seeded tenant also has sleep nights in its timeline; the Journal lists Events only.
     const timelineEvents = (await w.timelineOf(DAY)).filter((item) => item.kind === "event");
     expect(events.map((event) => event.id)).toEqual(timelineEvents.map((item) => item.id));
   });
@@ -581,7 +564,6 @@ describe("journal day events and birthdays (issues #1721, #2015)", () => {
     const eventsSource = CALENDAR_TIMELINE_SOURCES.find((source) => source.id === "events");
     if (!eventsSource) throw new Error("No events source");
     const failure = new Error("events source failed");
-    // Restored by `vi.restoreAllMocks()` in `afterEach`.
     const readItems = vi.spyOn(eventsSource, "readItems").mockRejectedValue(failure);
 
     await expect(w.readPeriod("day", DAY)).rejects.toBe(failure);
@@ -604,13 +586,12 @@ describe("journal day events and birthdays (issues #1721, #2015)", () => {
     await seedDay(DAY, 1);
     await seedDay(busyDay, 6);
 
-    /** The statements one day read sends and the events it answers. */
     async function read(day: string) {
       const { pool, statements } = observed(dataPool);
       const { events } = dayResponseSchema.parse(await w.readPeriod("day", day, pool));
       return { statements, events };
     }
-    /** The statements that select a transcript; only the timeline's transcript lookup names a `transcript_id`. */
+    /** Only the timeline's transcript lookup names a `transcript_id`. */
     const transcriptReads = (statements: string[]) => statements.filter((sql) => sql.includes("transcript_id")).length;
 
     const quiet = await read(DAY);
@@ -746,8 +727,7 @@ describe("journal day events and birthdays (issues #1721, #2015)", () => {
     const birthdaysSource = CALENDAR_TIMELINE_SOURCES.find((source) => source.id === "birthdays");
     if (!birthdaysSource) throw new Error("No birthdays source");
     await w.create("events", { name: "Meeting", date: DAY, timeFrom: "10:00" });
-    // Both days that are compared by their total hold an Event: the task-in-event read (issue gh-1880) sends one more
-    // statement for a day that has Events than for one that has none.
+    // Both compared days hold an Event: the task-in-event read sends one more statement for a day with Events.
     await w.create("events", { name: "Meeting on the 17th", date: "2026-10-17", timeFrom: "10:00" });
     await w.create("people", { name: "Jana Kovářová", birthday: "1990-10-16" });
     await w.create("people", { name: "Petr Novák", birthday: "1991-10-17" });
@@ -755,7 +735,6 @@ describe("journal day events and birthdays (issues #1721, #2015)", () => {
       await w.create("people", { name: `Person ${index}`, birthday: `198${index}-10-16` });
     }
 
-    /** The statements one day read sends, and the statements one standalone timeline read for the day sends. */
     async function statementsOf(day: string) {
       const dayRead = observed(dataPool);
       await w.readPeriod("day", day, dayRead.pool);
@@ -776,7 +755,6 @@ describe("journal day events and birthdays (issues #1721, #2015)", () => {
       return { own: own.sort(), total: dayRead.statements.length };
     }
 
-    // Restored by `vi.restoreAllMocks()` in `afterEach`.
     const readItems = vi.spyOn(birthdaysSource, "readItems");
     const withBirthdays = await statementsOf(DAY);
     const oneBirthday = await statementsOf("2026-10-17");

@@ -62,8 +62,8 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 async function createGrantedTool(connectionConfig: McpConnectionConfig, tool: ContractServerTool = SEARCH_TOOL) {
-  // A raw insert: the live contract servers are `http://127.0.0.1`, which the choke point's MCP
-  // connectionConfig hook refuses, and this package cannot import `itemsStore`.
+  // Raw insert: the contract servers are `http://127.0.0.1`, which the MCP connectionConfig hook refuses, and this
+  // package cannot import `itemsStore`.
   const { rows } = await pool.query<{ id: string }>(
     "INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb) RETURNING id",
     [randomUUID(), mcpServersId, JSON.stringify({ name: "Contract server", active: true, connectionConfig })],
@@ -91,7 +91,7 @@ describe("MCP invoke adapter (issue #128)", () => {
     mcpServersId = await databaseIdFor("mcpServers");
     const passwordHash = await hashPassword("s3cret-password");
     const tenantId = getTenantZeroId();
-    // A `stdio` spawn needs an admin of tenant zero (issue #1033).
+    // A `stdio` spawn needs an admin of tenant zero.
     earliestUser = await createUser(pool, {
       email: `${randomUUID()}@example.test`,
       passwordHash,
@@ -509,8 +509,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       ]);
       expect(JSON.stringify(afterFirst)).not.toContain("private-argument-sentinel");
 
-      // A second, independent call is a different request (a different transition) and gets its
-      // own notification rather than being deduped against the first.
+      // A second, independent call is a different transition and gets its own notification.
       const second = await invoke({ query: "semprec again" });
       const secondRequestId = second.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
       expect(secondRequestId).not.toBe(firstRequestId);

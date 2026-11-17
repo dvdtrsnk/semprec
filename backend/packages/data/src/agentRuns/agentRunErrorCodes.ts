@@ -5,7 +5,6 @@ function isAgentRunErrorCode(value: unknown): value is AgentRunErrorCode {
   return typeof value === "string" && (AGENT_RUN_ERROR_CODES as readonly string[]).includes(value);
 }
 
-/** An error that carries the code its run closes with. */
 export class AgentRunError extends Error {
   readonly agentRunErrorCode: AgentRunErrorCode;
 
@@ -16,7 +15,7 @@ export class AgentRunError extends Error {
   }
 }
 
-/** The gateway refused a model call because the AI budget is spent; the message never carries provider or request text. */
+/** The message never carries provider or request text. */
 export class AiBudgetExceededError extends AgentRunError {
   constructor() {
     super("budgetExceeded", "AI budget exceeded");
@@ -24,7 +23,7 @@ export class AiBudgetExceededError extends AgentRunError {
   }
 }
 
-/** The code an error carries in `agentRunErrorCode`; any other thrown value is `internal`. */
+/** Any value that is not an `AgentRunError` is `internal`. */
 export function agentRunErrorCodeOf(err: unknown): AgentRunErrorCode {
   if (typeof err === "object" && err !== null && "agentRunErrorCode" in err) {
     const code: unknown = err.agentRunErrorCode;

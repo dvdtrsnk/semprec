@@ -33,9 +33,8 @@ const noopMailer: PasswordResetMailer = {
 const moduleRegistry = await loadFullModuleRegistry();
 
 /**
- * Issue #167's HTTP entry point: every request `app.ts`'s `dispatch` handles must run inside its
- * own fresh trace context (never inheriting a bare Node.js worker's ambient state), and two
- * concurrent requests must not observe each other's trace id.
+ * Every request `dispatch` handles runs in its own fresh trace context, never inheriting ambient worker state, and
+ * concurrent requests never observe each other's trace id.
  */
 describe("HTTP entry point trace context (issue #167)", () => {
   let server: Server;
@@ -93,9 +92,7 @@ describe("HTTP entry point trace context (issue #167)", () => {
     expect(resA.status).toBe(401);
     expect(resB.status).toBe(401);
 
-    // Each request runs through `dispatch`'s own `withTraceContext({}, ...)` call — per
-    // `traceContext.unit.test.ts`'s isolation proof, empty bindings on each of these two
-    // concurrent calls mint distinct trace ids that don't leak across the two in-flight requests.
+    // Empty bindings per call mint distinct trace ids (see `traceContext.unit.test.ts`).
     expect(withTraceContextSpy).toHaveBeenCalledTimes(2);
     expect(withTraceContextSpy).toHaveBeenNthCalledWith(1, {});
     expect(withTraceContextSpy).toHaveBeenNthCalledWith(2, {});

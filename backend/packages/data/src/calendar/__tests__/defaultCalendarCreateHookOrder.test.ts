@@ -19,9 +19,8 @@ let runtime: Pool;
 let tenant: string;
 
 /**
- * The hook next to another create hook that writes the calendar edge first (issue #1761). The create-hook
- * registry runs hooks in registration order and has no unregister, so each test starts from empty
- * registries and registers exactly the hooks of its scenario; no other production hook runs in this file.
+ * The create-hook registry runs hooks in registration order and has no unregister, so each test starts from empty
+ * registries and registers exactly the hooks of its scenario.
  */
 describe("default calendar create hook after an earlier calendar edge (issue #1761)", () => {
   beforeAll(async () => {
@@ -42,7 +41,6 @@ describe("default calendar create hook after an earlier calendar edge (issue #17
     await admin.end();
   });
 
-  /** The Events database, its `calendar` relation and the calendars the scenarios name, in the tenant in scope. */
   async function setup() {
     return withTransaction(runtime, async (client) => {
       const events = await databasesStore.getDatabaseByModuleId(client, EVENTS_MODULE_ID);
@@ -64,7 +62,6 @@ describe("default calendar create hook after an earlier calendar edge (issue #17
     });
   }
 
-  /** Creates an Event and returns the calendars it is linked to once its transaction has committed. */
   async function createEvent(f: Awaited<ReturnType<typeof setup>>): Promise<string[]> {
     const event = await withTransaction(runtime, (client) =>
       createItemWithClient(client, { databaseId: f.eventsId, properties: { name: "Planning" } }),

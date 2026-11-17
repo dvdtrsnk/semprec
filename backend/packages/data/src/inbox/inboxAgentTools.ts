@@ -15,8 +15,7 @@ import { lockInboxSource } from "./inboxSourceGuard.js";
 import { MAX_SPLIT_CARDS, splitInboxSourceWithClient } from "./proposalSplit.js";
 import { containsNul, MAX_REVISE_MESSAGE_LENGTH } from "./reviseInputChecks.js";
 
-// The prompt context of a thread turn on an Inbox item (issue #1938) is exported here, because `index.ts` exports this
-// file whole and has no line left under the ESLint line cap for another export.
+// Re-exported here because `index.ts` exports this file whole and has no line left under the ESLint line cap.
 export { loadInboxCardThreadContext, renderInboxCardThreadContext } from "./threadCardContext.js";
 
 export const inboxProposalGetArgsSchema = z.object({ proposalId: z.string().uuid() }).strict();
@@ -33,12 +32,9 @@ const cardSchema = z
   .passthrough();
 
 /**
- * The card of the calling run's own Inbox item thread that `proposalId` names, with the ids the revise tool records:
- * the run's persisted `thread_id`, the thread's source Inbox item and, from the same run, the actor. It answers
- * `null` for a run that is not in a live item thread, and for every card that is not linked to that thread's source
- * by the current `sourceInbox` edge. A thread's stored `subject_proposal_id` is only a hint and never decides.
- * With `lockEdge` the edge row is read `FOR SHARE`, so an edge removal waits for the transaction that passed the
- * check and a removal already committed is seen.
+ * `null` unless the card is linked by the current `sourceInbox` edge to the source of the run's live item thread; the
+ * thread's stored `subject_proposal_id` is only a hint. With `lockEdge` the edge is read `FOR SHARE`, so a concurrent
+ * edge removal waits for this transaction and an already committed removal is seen.
  */
 async function findOwnThreadCard(
   client: PoolClient,
@@ -72,7 +68,6 @@ async function findOwnThreadCard(
     : null;
 }
 
-/** Read only the live card associated with the calling run's current Inbox thread. */
 export function createInboxProposalGetTool(pool: Pool) {
   return async (runId: string, rawArgs: unknown): Promise<{ error: boolean; result: string }> => {
     const args = inboxProposalGetArgsSchema.safeParse(rawArgs);
@@ -96,7 +91,7 @@ export function createInboxProposalGetTool(pool: Pool) {
           attachments: attachments.map((attachment) => ({ attachmentId: attachment.attachmentId, name: null })),
           envelope: parseStoredProposalEnvelope(cardProperties.proposal, card.id),
           userEditedKeys: cardProperties.userEditedKeys ?? [],
-          version: card.updatedAt,
+          version: card.version,
           status: cardProperties.status,
           history: history.success ? history.data : [],
         }),
@@ -106,12 +101,9 @@ export function createInboxProposalGetTool(pool: Pool) {
 }
 
 /**
- * The arguments of `inbox.proposal.revise`: the card, the version of the card the revision was composed from, the
- * whole revised envelope and an optional note for the card's history. `entityKind` and `target` default to those of
- * the card's current proposal, so a revision that keeps the destination names only the new `properties`. The thread
- * and the message the revision is recorded under are never arguments: the tool reads them from the run. `ifVersion`
- * is the `version` the card context or `inbox.proposal.get` showed: the model composes the whole envelope from that
- * snapshot, so a card the user edited since is refused instead of being overwritten with the stale values.
+ * `entityKind` and `target` default to the card's current proposal. Thread and message come from the run, never from
+ * arguments. `ifVersion` is the version the model composed the whole envelope from, so a card the user edited since is
+ * refused instead of overwritten with stale values.
  */
 export const inboxProposalReviseArgsSchema = z
   .object({
@@ -133,11 +125,7 @@ export const inboxProposalReviseArgsSchema = z
   })
   .strict();
 
-/**
- * The id of the assistant message of the thread that is running this run's turn (the latest one, should more than
- * one be running), or `null` when the call is not part of a running reply. The tools that write on behalf of a thread
- * record it in the history of the cards they change.
- */
+/** The latest running assistant message of the thread for this run, or `null` outside a running reply. */
 async function findRunningReplyMessageId(client: PoolClient, runId: string, threadId: string): Promise<string | null> {
   const running = await client.query<{ id: string }>(
     `SELECT id FROM semp_messages
@@ -149,7 +137,6 @@ async function findRunningReplyMessageId(client: PoolClient, runId: string, thre
   return running.rows[0]?.id ?? null;
 }
 
-/** The error result of a refusal the model can act on: the status the route would answer, its code, message and field. */
 function refusal(error: ChokePointError): { error: true; result: string } {
   const field =
     typeof error.details === "object" && error.details !== null && "field" in error.details
@@ -167,22 +154,14 @@ function refusal(error: ChokePointError): { error: true; result: string } {
 }
 
 /**
- * `inbox.proposal.revise` (issues #1906 and #1938): the assistant of an Inbox item thread replaces the envelope of
- * that thread's own card with a revised one, through `reviseProposalFromThreadWithClient`: the envelope is validated
- * as the revise route validates it, and the user's manual values follow the rules of a thread revision. The tool never
- * writes to the target database: the card stays a proposal and only the user's confirm creates anything.
+ * Revises the envelope of the run's own item-thread card. Never writes to the target database: only the user's
+ * confirm creates anything.
  *
- * Only the card of the calling run's own item thread is revised. Any other id, whether it belongs to another card, to
- * another tenant or to nothing, gets the answer of the read tool, so the answer does not tell whether the card
- * exists. The thread id comes from the run and the message id from the assistant message of the thread that is
- * running this run's turn (the latest one, should more than one be running), never from the arguments. A card that is
- * `confirmed` or `rejected` and an invalid envelope give an error result and write nothing, and so does a card that
- * changed since the `ifVersion` the call names (`version_conflict`: the model reads the card again). After a successful
- * revision the card's invalidation is published once the transaction has committed. The result states the success for
- * the step of the reply and carries the card's new `version`, which a second revision of the same turn passes.
+ * Any other id (another card, another tenant, nothing) gets the read tool's answer, so existence is not leaked.
+ * Confirmed/rejected cards, invalid envelopes and `version_conflict` write nothing. The card invalidation is
+ * published after commit; the result carries the new `version` for a second revision in the same turn.
  *
- * Lock order (`docs/adr/2026-11-13-an-item-thread-tool-proves-its-card-with-a-shared-lock-on-its-source-edge.md`):
- * the card `FOR UPDATE`, then the card's `sourceInbox` edge `FOR SHARE`; the tool never locks the source.
+ * Lock order: the card `FOR UPDATE`, then its `sourceInbox` edge `FOR SHARE`; the source is never locked.
  */
 export function createInboxProposalReviseTool(pool: Pool) {
   return async (runId: string, rawArgs: unknown): Promise<{ error: boolean; result: string }> => {
@@ -226,7 +205,7 @@ export function createInboxProposalReviseTool(pool: Pool) {
         publishInboxCardChange(client, revised.id, "updated");
         return {
           error: false,
-          result: JSON.stringify({ proposalId: revised.id, revised: true, version: revised.updatedAt }),
+          result: JSON.stringify({ proposalId: revised.id, revised: true, version: revised.version }),
         };
       });
     } catch (error) {
@@ -237,10 +216,9 @@ export function createInboxProposalReviseTool(pool: Pool) {
 }
 
 /**
- * `findOwnThreadCard` for a caller that holds the card and needs the source row: the thread's source is read from an
- * unlocked association, locked `FOR UPDATE` (waiting, as confirm does after its card), and the association is then read
- * again with the edge `FOR SHARE`, so the edge is never held while the source is waited for. `null` when the card is
- * not the thread's own, as for `findOwnThreadCard`, including a source or an association that went away meanwhile.
+ * Reads the association unlocked, locks the source `FOR UPDATE` (as confirm does after its card), then re-reads the
+ * association with the edge `FOR SHARE`, so the edge is never held while waiting for the source. `null` also when the
+ * source or association went away meanwhile.
  */
 async function provedOwnCardUnderSource(client: PoolClient, runId: string, cardId: string) {
   const hinted = await findOwnThreadCard(client, runId, cardId, false);
@@ -256,11 +234,7 @@ async function provedOwnCardUnderSource(client: PoolClient, runId: string, cardI
 }
 
 /**
- * The arguments of `inbox.proposal.split`: the card to split, the version of the card the split was composed from and
- * the cards the source becomes, the first of which revises that card and the others become siblings of it. The thread
- * and the message the split is recorded under are never arguments: the tool reads them from the run. `ifVersion` is the
- * `version` the card context or `inbox.proposal.get` showed, as for `inbox.proposal.revise`: the first entry replaces
- * the card's whole envelope, so a card the user edited since is refused instead of being overwritten.
+ * The first entry revises the card, the others become its siblings. `ifVersion` works as for `inbox.proposal.revise`.
  */
 export const inboxProposalSplitArgsSchema = z
   .object({
@@ -291,21 +265,12 @@ export const inboxProposalSplitArgsSchema = z
   .strict();
 
 /**
- * `inbox.proposal.split` (issue #1939): the assistant of an Inbox item thread splits that thread's source into several
- * proposal cards, through `splitInboxSourceWithClient` in one transaction. The first entry revises the thread's own
- * card and the others become sibling cards of the same source, which the tick never recomputes. The tool never writes to
- * a target database: every card stays a proposal and only the user's confirm creates anything.
+ * Splits the thread's source into several cards in one transaction; siblings are never recomputed by the tick. Never
+ * writes to a target database.
  *
- * The own-card proof, the answer for any other card and the source of the thread id and the running assistant message
- * are those of `inbox.proposal.revise` (`createInboxProposalReviseTool`), never the arguments, with one difference in
- * the locks: the split needs the source row (it links its siblings to it), so the tool locks the card `FOR UPDATE`,
- * reads the card's association without a lock, locks the source `FOR UPDATE` and only then takes the edge `FOR SHARE`
- * (`provedOwnCardUnderSource`). Order and reason: `docs/adr/2026-11-14-a-source-split-locks-the-card-then-the-source-then-the-source-edge.md`;
- * the order of `docs/adr/2026-11-13-an-item-thread-tool-proves-its-card-with-a-shared-lock-on-its-source-edge.md` is
- * for a tool that never locks the source. A card that is
- * `confirmed` or `rejected`, a card that is itself a sibling, an invalid envelope in any entry and a card changed
- * since `ifVersion` give an error result and write nothing. The card changes are announced by the action after the
- * transaction commits, and the result lists the ids of the cards and the primary card's new `version`.
+ * Own-card proof and answers as for `inbox.proposal.revise`, but the split needs the source row to link siblings, so
+ * the lock order is card `FOR UPDATE`, source `FOR UPDATE`, then edge `FOR SHARE` (`provedOwnCardUnderSource`). A
+ * sibling card cannot be split. Card changes are announced after commit.
  */
 export function createInboxProposalSplitTool(pool: Pool) {
   return async (runId: string, rawArgs: unknown): Promise<{ error: boolean; result: string }> => {
@@ -348,7 +313,7 @@ export function createInboxProposalSplitTool(pool: Pool) {
             proposalId: split.primary.id,
             siblingProposalIds: split.siblings.map((sibling) => sibling.id),
             split: true,
-            version: split.primary.updatedAt,
+            version: split.primary.version,
           }),
         };
       });

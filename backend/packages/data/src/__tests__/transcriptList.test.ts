@@ -68,7 +68,6 @@ const transcriptListBodySchema = z
   })
   .strict();
 
-/** Parses the handler body at the boundary, so every assertion reads a checked shape. */
 function bodyOf(result: { status: number; body: unknown }) {
   expect(result.status).toBe(200);
   return transcriptListBodySchema.parse(JSON.parse(JSON.stringify(result.body)));
@@ -98,7 +97,6 @@ describe("GET /api/transcripts (issue #1636)", () => {
     await admin.end();
   });
 
-  /** Databases, relation property ids and the pipeline-owner writes a transcript fixture is built from. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -113,7 +111,6 @@ describe("GET /api/transcripts (issue #1636)", () => {
       if (!property) throw new Error(`Missing Transcripts.${key}`);
       return property.id;
     };
-    /** Written with the transcription process's own system keys, as the pipeline writes them. */
     const transcript = (input: { name: string; date: string | null; status: string; segments?: boolean }) =>
       withTransaction(runtime, async (client) => {
         const item = await createItemWithClient(
@@ -142,7 +139,6 @@ describe("GET /api/transcripts (issue #1636)", () => {
       );
     const item = async (moduleId: string, properties: Record<string, unknown>) =>
       (await cp.createItem({ databaseId: db(moduleId), properties })).id;
-    /** The real event-match producer: no Event in the window, so it creates the transcript's pairing card. */
     const pairingCard = async (transcriptId: string) => {
       const outcome = await withTransaction(runtime, (client) =>
         matchTranscriptToEvent(client, { transcriptId, durationSeconds: 600 }),
@@ -150,7 +146,6 @@ describe("GET /api/transcripts (issue #1636)", () => {
       expect(outcome).toBe("suggested");
       return cardsOf(transcriptId);
     };
-    /** The real speaker-suggestion producer: one card per unmapped speaker. */
     const speakerCards = (transcriptId: string) =>
       withTransaction(runtime, (client) => proposeSpeakerMappings(client, { transcriptId, suggestions: [] }));
     const cardsOf = async (transcriptId: string) => {
@@ -177,7 +172,6 @@ describe("GET /api/transcripts (issue #1636)", () => {
       identity: { user: { locale } },
     });
 
-  /** A pool whose connections record every statement they run, to count what one list request issues. */
   function recordingPool(statements: string[]): Pool {
     return new Proxy(runtime, {
       get(target, property, receiver) {
@@ -214,7 +208,6 @@ describe("GET /api/transcripts (issue #1636)", () => {
         const day = String((index % 28) + 1).padStart(2, "0");
         ids.push(await f.transcript({ name: `Part ${index}`, date: `2026-09-${day}T10:00:00.000Z`, status: "done" }));
       }
-      // Rows of every joined kind: an event edge, a pairing card and speaker cards.
       await f.relate("event", ids[0]!, event);
       await f.pairingCard(ids[1]!);
       await f.speakerCards(ids[2]!);
@@ -255,7 +248,6 @@ describe("GET /api/transcripts (issue #1636)", () => {
         recordItemAutomationFailure(client, failed, "provider detail never returned", "error", "providerFailed"),
       );
       const plain = await f.transcript({ name: "Plain", date: "2026-10-12T08:00:00Z", status: "done" });
-      // A speaker card is an open question, never a pairing card.
       await f.speakerCards(plain);
       const rejected = await f.transcript({ name: "Rejected", date: "2026-10-11T08:00:00Z", status: "done" });
       const [rejectedCard] = await f.pairingCard(rejected);
@@ -321,9 +313,8 @@ describe("GET /api/transcripts (issue #1636)", () => {
         ).rows[0]?.properties;
       const before = await properties();
       expect(before?.status).toBe("proposed");
-      // Labeled historical state (parent D4): no current producer moves a transcript pairing card to
-      // needsClarification while it keeps its Events envelope, so exactly one tenant-scoped UPDATE
-      // changes only `status` on the real event-match card.
+      // Fixture state: no current producer moves a pairing card to needsClarification while it keeps its Events
+      // envelope, so one tenant-scoped UPDATE changes only `status`.
       const updated = await runtime.query(
         `UPDATE items SET properties = jsonb_set(properties, '{status}', '"needsClarification"')
          WHERE tenant_id = app_tenant_default() AND id = $1`,
@@ -363,7 +354,6 @@ describe("GET /api/transcripts (issue #1636)", () => {
       await f.relate("event", first, meeting);
       await f.relate("event", second, meeting);
       await f.relate("speakers", first, petr, { speaker: "SPEAKER_00" });
-      // SPEAKER_01 of the first part stays unmapped: one open question, numbered by segment order.
       await f.speakerCards(first);
       expect(bodyOf(await list(`?personId=${petr}`)).transcripts.map((row) => row.id)).toEqual([first]);
       const parts = bodyOf(await list(`?eventId=${meeting}&order=asc`)).transcripts;

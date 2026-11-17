@@ -33,7 +33,6 @@ import {
   type InboxCardThreadContext,
 } from "../threadCardContext.js";
 
-/** The JSON object between the data tags of a rendered context. */
 function dataOf(text: string): Record<string, unknown> {
   const match = /<inbox-card-data>\n(.*)\n<\/inbox-card-data>$/s.exec(text);
   if (!match?.[1]) throw new Error("The rendered context has no data tags");
@@ -180,11 +179,11 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
   const load = (tenant: string, itemId: string) =>
     runInTenant(tenant, () => withTransaction(runtime, (client) => loadInboxCardThreadContext(client, itemId)));
 
-  /** The version of the card the context names: its stored `updatedAt`, the value the model passes back as `ifVersion`. */
+  /** The version of the card the context names: its stored `version`, the value the model passes back as `ifVersion`. */
   const versionOf = (cardId: string) =>
     runInTenant(owner, async () => {
-      const row = await runtime.query<{ updated_at: Date }>("SELECT updated_at FROM items WHERE id = $1", [cardId]);
-      return row.rows[0]?.updated_at.toISOString();
+      const row = await runtime.query<{ version: string }>("SELECT version FROM items WHERE id = $1", [cardId]);
+      return row.rows[0]?.version;
     });
 
   const decide = (fixture: Fixture, decision: "confirm" | "reject") =>
@@ -340,8 +339,7 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
 
   it("returns the newest card when more than one live card is linked to the source", async () => {
     const fixture = await createCard(owner);
-    // The tick makes one card per source; a source split into several cards (issue #1939) is not written yet, so the
-    // second card is made the way the tick makes one.
+    // The tick makes one card per source, so the second card of the source is made the way the tick makes one.
     const second = await runInTenant(owner, () =>
       withTransaction(runtime, async (client) => {
         const card = await createItemWithClient(
@@ -370,7 +368,7 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
   describe("the text of the prompt", () => {
     const base = {
       proposalId: randomUUID(),
-      version: "2026-11-06T12:31:00.000Z",
+      version: "7",
       status: "proposed",
       source: { text: "Buy milk", date: "2026-11-06", time: "12:30", type: "Task", attachments: [] },
     };

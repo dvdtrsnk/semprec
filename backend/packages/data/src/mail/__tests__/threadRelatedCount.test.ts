@@ -39,7 +39,6 @@ interface Fixture {
   plain: string;
   database: (key: string) => Promise<string>;
   person: (name: string) => Promise<string>;
-  /** Ingests one message into `folder`, in the thread `refs` names, and links `people` to it as the edge says. */
   message: (input: {
     id: string;
     refs?: string[];
@@ -172,7 +171,6 @@ describe("the mail threads of a person in the related collections (issue gh-1874
       await f.message({ id: "<one@example.test>", sender: person });
       for (const index of [1, 2, 3])
         await f.message({ id: `<reply-${index}@example.test>`, refs: ["<one@example.test>"], sender: person });
-      // Four messages, one thread.
       const threads = await admin.query<{ count: number }>(
         "SELECT count(DISTINCT thread_id)::int AS count FROM mail_message_meta WHERE tenant_id = $1",
         [tenant],

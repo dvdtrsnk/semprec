@@ -23,7 +23,6 @@ let foreign: string;
 
 const USER: WriterIdentity = { writerKind: "user" };
 const DESCRIPTION = "## Agenda\n- [ ] Confirm the budget";
-/** An Event as the calendar creates it: no `type` among its values. */
 const EVENT = {
   name: "Kickoff",
   date: "2026-11-20",
@@ -35,7 +34,6 @@ const EVENT = {
 
 const calendarRow = z.object({ id: z.string(), properties: z.object({ name: z.string() }).passthrough() });
 
-/** The writer kind of every Events.calendar edge write the choke point ran in this file, in order. */
 const calendarEdgeWriters: string[] = [];
 registerRelationEdgeWriteHook(async ({ edgeContext, writer }) => {
   if (edgeContext.property.key === "calendar") calendarEdgeWriters.push(writer.writerKind);
@@ -71,7 +69,6 @@ describe("an Event created with its calendar and relations in one write (issue #
     await admin.end();
   });
 
-  /** The ids, the fixture rows and the reads of the tenant in scope; every write goes through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -106,7 +103,6 @@ describe("an Event created with its calendar and relations in one write (issue #
       relationPropertyId: property(key),
       targetItemIds,
     });
-    /** `item.create` for an Event with `relations`, as a signed-in user sends it. */
     const create = (relations: InitialItemRelation[], input: { properties?: object; idempotencyKey?: string } = {}) =>
       cp.createItemWithRelations(
         {
@@ -119,13 +115,11 @@ describe("an Event created with its calendar and relations in one write (issue #
         undefined,
         USER,
       );
-    /** The live edges of a live item from its own side, as `[property key, target id]` pairs in the read's order. */
     const edgesOf = async (itemId: string) => {
       const entries = await cp.listItemRelations(itemId);
       if (!entries) throw new Error(`Item ${itemId} is not a live item of this tenant`);
       return entries.map((entry) => [entry.propertyKey, entry.targetItemId]);
     };
-    /** The stored properties of an Event, read anew. */
     const storedProperties = async (eventId: string) => {
       const item = await cp.getItem(db("events"), eventId);
       if (!item) throw new Error(`Event ${eventId} is not stored`);
@@ -137,7 +131,6 @@ describe("an Event created with its calendar and relations in one write (issue #
       ...[...people].sort().map((person) => ["people", person]),
       ["project", project],
     ];
-    /** Every Event row and every relation edge of the tenant in scope, trashed rows and edges to them included. */
     const stored = async () => ({
       events: (
         await runtime.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [db("events")])
@@ -249,8 +242,8 @@ describe("an Event created with its calendar and relations in one write (issue #
     it("does not read the default calendar, so a tenant without one still creates the Event in Work", () =>
       runInTenant(tenant, async () => {
         const f = await setup();
-        // A tenant without a live default is a state of before issue gh-1803: deleting the default calendar now hands
-        // the mark on, so only a raw write puts it in the Trash and leaves the tenant without one.
+        // A tenant without a live default: deleting the default calendar hands the mark on, so only a raw write
+        // puts it in the Trash and leaves the tenant without one.
         const trashed = await withTransaction(runtime, (client) =>
           client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
             f.db(CALENDARS_MODULE_ID),

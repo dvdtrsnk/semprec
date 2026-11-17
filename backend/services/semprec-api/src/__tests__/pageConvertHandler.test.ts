@@ -40,7 +40,6 @@ async function request(
   return { status: response.status, text: await response.text() };
 }
 
-/** A plain host item in tenant A. */
 async function host(): Promise<string> {
   return runInTenant(harness.tenantA, async () => {
     const chokePoint = createChokePoint(harness.runtime);
@@ -67,12 +66,12 @@ async function blocksOf(itemId: string): Promise<z.infer<typeof pageBody>["block
   return pageBody.parse(JSON.parse(read.text)).blocks;
 }
 
-/** Whether `GET /api/items/:id` still finds the item: a trashed item is answered as an unknown one. */
+/** A trashed item is answered as an unknown one. */
 async function isLive(itemId: string): Promise<boolean> {
   return (await request("GET", `/api/items/${itemId}`)).status === 200;
 }
 
-/** What a refused conversion must leave as it found it: the parent's blocks, the pages' liveness and the update count. */
+/** What a refused conversion must leave as it found it. */
 async function written(parentItemId: string, pageItemIds: string[]): Promise<unknown> {
   const { rows } = await runInTenant(harness.tenantA, () =>
     harness.runtime.query<{ n: number }>(`SELECT count(*)::int AS n FROM doc_updates`),
@@ -103,8 +102,8 @@ describe("POST /api/items/:id/page/convert (issue #1876)", () => {
     expect(answer.status, answer.text).toBe(200);
     const converted = convertedBody.parse(JSON.parse(answer.text));
     expect(converted.trashedPageCount).toBe(2);
-    // The page block was the only block of the parent's page; the trash left the empty text block an emptied document
-    // keeps, and the new block stands where the page block stood, before it.
+    // The page block was the parent page's only block; the trash left the empty text block of an emptied document,
+    // and the new block stands where the page block stood, before it.
     expect(await blocksOf(parent)).toEqual([
       { id: converted.blockId, type: "h1", text: "Release checklist", indent: 0 },
       { id: expect.any(String), type: "text", text: "", indent: 0 },

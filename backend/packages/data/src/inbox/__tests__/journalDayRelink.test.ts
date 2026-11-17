@@ -47,7 +47,6 @@ function capture(tenantId: string, inboxId: string, date: string, text: string) 
   );
 }
 
-/** The Journal day each Inbox item's `journalDay` edge points at. */
 async function dayOf(tenantId: string, inboxId: string, itemIds: string[]): Promise<Record<string, string[]>> {
   return runInTenant(tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -63,7 +62,6 @@ async function dayOf(tenantId: string, inboxId: string, itemIds: string[]): Prom
   );
 }
 
-/** Every relation edge of the tenant, every relation included, as stored. */
 async function edgeSet(tenantId: string) {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{
@@ -84,7 +82,6 @@ async function notificationCount(tenantId: string): Promise<number> {
   });
 }
 
-/** Drains the queued Inbox recompute jobs with the production API task list. */
 async function runRecomputeJobs(): Promise<void> {
   const handler = createApiCoreTaskList(pool, createActionRegistry())[recomputeTask];
   if (!handler) throw new Error("Journal Inbox recompute handler missing from production API task list");

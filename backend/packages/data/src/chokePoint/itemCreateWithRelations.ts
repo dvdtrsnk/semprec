@@ -16,11 +16,9 @@ export type InitialItemRelation =
   { kind: "resolved"; relationPropertyId: string; targetItemIds: string[] } | { kind: "unresolved" };
 
 /**
- * Creates an item and the edges of `input.relations` on the caller's client. The item is inserted and its
- * create hooks run first; the hooks are given the resolved relations as `initialRelations`
- * (docs/adr/2026-11-12-create-hooks-are-given-the-initial-relations-of-their-create.md). The relations are
- * checked and written after the hooks returned, and the first one that is refused throws. An
- * idempotency-key replay returns the stored item and writes no edge.
+ * Creates an item, then the edges of `input.relations`, on the caller's client. Create hooks run
+ * first and receive the resolved relations as `initialRelations`; the relations are checked and
+ * written after, and the first refused one throws. An idempotency-key replay writes no edge.
  */
 export async function createItemWithRelationsWithClient(
   client: PoolClient,

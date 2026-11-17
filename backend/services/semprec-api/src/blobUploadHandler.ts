@@ -11,15 +11,13 @@ import { logger } from "./logger.js";
 
 export interface BlobUploadRequestListenerOptions {
   storage: BlobStorageWriter;
-  /** Issue #158's `maxFileSizeMb`, already resolved to bytes by `serve.ts`. */
   maxFileSizeBytes: number;
 }
 
-/** A media type with optional token or quoted-string parameters. */
 const MEDIA_TYPE =
   /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+(?:\s*;\s*[!#$%&'*+.^_`|~0-9a-z-]+\s*=\s*(?:[!#$%&'*+.^_`|~0-9a-z-]+|"(?:[^"\\\r\n]|\\[^\r\n])*"))*\s*$/i;
 
-/** Returns the lowercased media type after validating the complete header. */
+/** Validates the complete header. */
 function requireMediaType(contentType: string): string {
   const mediaType = (contentType.split(";")[0] ?? "").trim().toLowerCase();
   if (!MEDIA_TYPE.test(contentType.trim())) {
@@ -29,14 +27,11 @@ function requireMediaType(contentType: string): string {
 }
 
 /**
- * `POST /api/blobs`: streams a body into a standalone blob without creating a Files item.
- * Same shape as `createFilesRequestListener`: bespoke listener so the body is
- * streamed, not buffered; authenticated through `authenticateRequest`; `maxFileSizeMb` enforced
- * from `Content-Length` first and always by the streaming counter. The `Content-Type` header must be a
- * well-formed media type, checked before any byte is read, but it does not decide what is stored: the
- * stored mime type comes from the first bytes (`ingestUploadedBlob`). Bytes of a type outside the allowed
- * list (the Inbox attachment types and HEIC) answer 415 `unsupported_media_type` once the bytes just
- * written have been removed again, so a rejected request leaves nothing in storage.
+ * A bespoke listener so the body is streamed, not buffered; no Files item is created. The size cap
+ * is enforced from `Content-Length` first and always by the streaming counter. `Content-Type` must
+ * be well-formed but does not decide the stored mime type, which comes from the first bytes. A type
+ * outside the allowed list answers 415 after the written bytes are removed again, so a rejected
+ * request leaves nothing in storage.
  */
 export function createBlobUploadRequestListener(pool: Pool, options: BlobUploadRequestListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

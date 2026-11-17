@@ -10,7 +10,6 @@ import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createPool, withTransaction } from "../../db/pool.js";
 import { runMigrations } from "../../db/migrate.js";
-import { activateCzechHunspellSearch } from "../../mail/czechHunspellSearch.js";
 import { createHeartbeat } from "../../scheduler/schedulerStore.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createSempChatThread, sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
@@ -42,12 +41,10 @@ let data: Pool;
 let own: string;
 let foreign: string;
 
-/** Runs `fn` in a managed transaction of the runtime-role pool, scoped to `tenant`. */
 function inTenant<T>(tenant: string, fn: (client: PoolClient) => Promise<T>, pool: Pool = data): Promise<T> {
   return runInTenant(tenant, () => withTransaction(pool, fn));
 }
 
-/** The ids of the threads the list returns for `search`, newest activity first. */
 async function findThreads(tenant: string, search: string, pool: Pool = data): Promise<string[]> {
   const page = await inTenant(
     tenant,
@@ -69,7 +66,6 @@ async function sendMessage(tenant: string, threadId: string, text: string, pool:
   await inTenant(tenant, (client) => sendSempMessage(client, { threadId, text, context: [], hasContext: false }), pool);
 }
 
-/** A chat thread whose user messages say `texts`, written through the production send path. */
 async function startThread(tenant: string, texts: readonly string[], pool: Pool = data): Promise<string> {
   const threadId = await inTenant(tenant, (client) => createSempChatThread(client), pool);
   for (const text of texts) await sendMessage(tenant, threadId, text, pool);
@@ -114,7 +110,6 @@ async function vectorText(tenant: string, messageId: string, pool: Pool = data):
   return rows[0].vector;
 }
 
-/** Inserts a system message that carries text. */
 async function insertSystemMessageWithText(
   tenant: string,
   threadId: string,
@@ -122,8 +117,7 @@ async function insertSystemMessageWithText(
   withVector: boolean,
 ): Promise<string> {
   return inTenant(tenant, async (client) => {
-    // Raw SQL: no production writer gives a system message text or a vector; the table allows both,
-    // and this is the state the "system messages are not matched" rule has to hold against.
+    // Raw SQL: no production writer gives a system message text or a vector, but the table allows both.
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO semp_messages (thread_id, role, system_key, system_params, text, search_vector)
        VALUES ($1, 'system', 'test.system', '{}'::jsonb, $2::text,
@@ -136,17 +130,14 @@ async function insertSystemMessageWithText(
   });
 }
 
-/** The assistant message the send path queued for the thread, in the order it was written. */
 async function queuedAssistantIds(tenant: string, threadId: string): Promise<string[]> {
   const messages = await storedMessages(tenant, threadId);
   return messages.filter((message) => message.role === "assistant").map((message) => message.id);
 }
 
 /**
- * A text far longer than a tsvector can hold: about 900,000 characters of distinct five-character
- * words, which makes Postgres refuse a vector of the whole text ("string is too long for
- * tsvector"). "pocatecni" is the first word, "w00rs" lies inside the indexed prefix, and "zaverecne"
- * is the last word, far beyond it.
+ * ~900,000 characters of distinct words, more than a tsvector can hold. "pocatecni" is first, "w00rs" inside the
+ * indexed prefix, "zaverecne" last, far beyond it.
  */
 const HUGE_TEXT = [
   "pocatecni",
@@ -157,13 +148,12 @@ const HUGE_TEXT = [
 /** Filler longer than the 140 code points of the preview window, so a word after it is not in the preview. */
 const PAST_PREVIEW = "vyplnek ".repeat(20);
 
-/** Gives the own tenant a user and the system seed, which the heartbeats of tick threads need. */
+/** Tick-thread heartbeats need a user and the system seed. */
 async function seedOwnTenant(): Promise<void> {
   await createUser(admin, { tenantId: own, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
   await runInTenant(own, () => seedSystem(data));
 }
 
-/** A heartbeat with its tick thread and an open agent run, ready for `finishTickRunWithMessage`. */
 async function startTickRun(name: string) {
   return inTenant(own, async (client) => {
     const inbox = await getDatabaseByModuleId(client, "inbox");
@@ -289,7 +279,6 @@ describe("Semp message search vector", () => {
   });
 
   describe("a message longer than a tsvector can hold", () => {
-    /** The words the huge text can be found by: inside the indexed prefix, and beyond it. */
     async function expectIndexedPrefixOnly(threadId: string): Promise<void> {
       expect(await findThreads(own, "pocatecni")).toEqual([threadId]);
       expect(await findThreads(own, "w00rs")).toEqual([threadId]);
@@ -369,8 +358,7 @@ describe("Semp message search vector", () => {
 
   describe("matching in the thread list", () => {
     it("finds a thread by a word without its diacritics and by a prefix", async () => {
-      // A later message follows each text, so the words below are in no preview and only the message
-      // rule of this issue can find them.
+      // A later message follows each text, so only the message rule can find these words.
       const receipt = await startThread(own, ["Nezapomenout účtenka z kavárny", "Posledni zprava"]);
       const other = await startThread(own, ["Něco úplně jiného", "Posledni zprava"]);
       expect(await findThreads(own, "uctenka")).toEqual([receipt]);
@@ -415,8 +403,7 @@ describe("Semp message search vector", () => {
       await insertSystemMessageWithText(own, threadId, "pokladna uzavrena", false);
       const poisoned = await startThread(own, ["Dalsi neutralni zprava"]);
       await insertSystemMessageWithText(own, poisoned, "pokladna otevrena", true);
-      // The preview rule of the list reads the text of the last message, so a message follows each
-      // system message and only the message rule of this issue is left to find the word.
+      // The preview reads the last message, so a message follows each system message and only the message rule is left.
       for (const id of [threadId, poisoned]) await sendMessage(own, id, "Posledni zprava");
       expect(await findThreads(own, "pokladna")).toEqual([]);
       const textless = await storedMessages(own, threadId);
@@ -467,7 +454,6 @@ describe("Semp message search vector", () => {
       });
       // The table owner analyzes; the runtime role does not own the table.
       await admin.query("ANALYZE semp_messages");
-      // The statement the list runs, recorded from a real call through the runtime role.
       const statements: { text: string; values: unknown[] }[] = [];
       await inTenant(own, async (client) => {
         const recording = new Proxy(client, {
@@ -494,12 +480,9 @@ describe("Semp message search vector", () => {
       });
       const listing = statements[0];
       if (!listing) throw new Error("The list query was not recorded");
-      // Planned on the superuser pool, as the plan checks of the scheduler do. A runtime role is
-      // subject to row-level security, and then Postgres evaluates the tenant policy before any
-      // operator that is not leakproof, `@@` among them, so it never uses that operator as an index
-      // condition. This check shows that the statement is shaped for the index. Which plan wins on
-      // cost depends on sampled statistics, so the other scans are turned off and the question left
-      // is whether the vector condition can be a bitmap index condition at all.
+      // Planned on the superuser pool: under RLS Postgres evaluates the tenant policy before non-leakproof operators
+      // like `@@`, so it never uses them as index conditions. This only checks the statement is index-shaped; other
+      // scans are turned off because the cost-based choice depends on sampled statistics.
       const client = await admin.connect();
       let plan: string;
       try {
@@ -559,13 +542,11 @@ describe("Semp message search vector", () => {
   });
 
   describe("reindexSempMessageSearch", () => {
-    /** Messages as the migration found them: text without a vector. */
     async function insertLegacyMessages(tenant: string, threadId: string, texts: readonly (string | null)[]) {
       return inTenant(tenant, async (client) => {
         const ids: string[] = [];
         for (const text of texts) {
-          // Raw SQL: the production writers now set the vector; this is the state of rows written before
-          // the column existed, which the backfill is for.
+          // Raw SQL: production writers set the vector; these are rows from before the column existed.
           const { rows } = await client.query<{ id: string }>(
             "INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', $2) RETURNING id",
             [threadId, text],
@@ -795,6 +776,12 @@ describe("Semp message search with the Hunspell configuration", () => {
     for (const file of ASSET_FILES) await rm(path.join(dir, file), { force: true });
   }
 
+  async function activateHunspell(pool: Pool): Promise<boolean> {
+    const { rows } = await pool.query<{ active: boolean }>("SELECT activate_czech_hunspell_search() AS active");
+    if (!rows[0]) throw new Error("activate_czech_hunspell_search() returned no row");
+    return rows[0].active;
+  }
+
   it(
     "finds faktura by faktury once Hunspell is active, and uctenka by účtenka in both modes",
     async () => {
@@ -811,7 +798,7 @@ describe("Semp message search with the Hunspell configuration", () => {
 
         await installAssets(pool);
         try {
-          expect(await activateCzechHunspellSearch(pool)).toBe(true);
+          expect(await activateHunspell(pool)).toBe(true);
           const after = await startThread(tenantId, ["Nova účtenka", "Druha faktura pro odberatele"], pool);
           expect(new Set(await findThreads(tenantId, "faktury", pool))).toEqual(new Set([before, after]));
           expect(new Set(await findThreads(tenantId, "uctenka", pool))).toEqual(new Set([before, after]));
@@ -836,7 +823,7 @@ describe("Semp message search with the Hunspell configuration", () => {
 
         await installAssets(pool);
         try {
-          expect(await activateCzechHunspellSearch(pool)).toBe(true);
+          expect(await activateHunspell(pool)).toBe(true);
           // The stored vector still has the form the unaccent/simple configuration made of the word.
           expect(await findThreads(tenantId, "fakturu", pool)).toEqual([]);
           const missingOnly = await inTenant(

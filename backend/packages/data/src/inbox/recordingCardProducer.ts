@@ -10,29 +10,21 @@ import { readProposalTimezone } from "./proposalComputedUpdates.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
 import { RECORDING_ENTITY_KIND, type RecordingCardContext } from "./recordingCardEnvelope.js";
 
-// The producer side of the recording card (issue gh-1978): what the Inbox tick proposes for an Inbox item that holds a
-// long recording (an audio attachment whose `audioKind` is `recording`, chosen by `routeInboxAttachments`).
-// `buildRecordingCard` only reads; the tick stores the draft (`writeTickResult`) and the confirm that starts the
-// transcription is `recordingCardConfirm.ts`.
+// What the tick proposes for an Inbox item holding a long recording (an audio attachment with `audioKind`
+// `recording`). `buildRecordingCard` only reads; the tick stores the draft.
 
-/** The longest name proposed from the text of an Inbox item, in characters. */
 const NAME_FROM_TEXT_MAX_LENGTH = 200;
 
-/** What the tick stores for a recording: the envelope that proposes the transcription and the `context` of the card. */
 export interface RecordingCardDraft {
   envelope: ProposalEnvelope;
   context: RecordingCardContext;
 }
 
-/** Whether `attachment` is an audio file. */
 function isAudioAttachment(attachment: InboxAttachmentRow): boolean {
   return attachment.mimeType.startsWith("audio/");
 }
 
-/**
- * The name the item's own text gives the recording: its first non-blank line, without a leading Markdown heading,
- * list or quote marker, cut to `NAME_FROM_TEXT_MAX_LENGTH` characters; `null` when the item has no text.
- */
+/** The first non-blank line of the item's text without a leading Markdown marker, cut to the limit; `null` if none. */
 function nameFromText(text: unknown): string | null {
   if (typeof text !== "string") return null;
   for (const line of text.split(/\r?\n/)) {
@@ -42,11 +34,7 @@ function nameFromText(text: unknown): string | null {
   return null;
 }
 
-/**
- * The localized default name of a recording whose item has no text: "Recording D. M. HH:mm" for the wall-clock time the
- * recording was made, "Recording" when that time is unknown. The labels are the ones of the Inbox catalogs
- * (`inbox.recordingCard.defaultName.dated` and `.undated`).
- */
+/** "Recording D. M. HH:mm" for the recording's wall-clock time, or "Recording" when unknown, from the Inbox catalogs. */
 async function defaultRecordingName(locale: string, recordedAt: WallClock | null): Promise<string> {
   const catalogs = await loadModuleCatalogs(new URL("../seed/systemDatabasesModuleManifest.js", import.meta.url).href);
   const label = (key: string) => resolveCatalogLabel(null, catalogs[toManifestLocale(locale)], catalogs.en, key);
@@ -59,13 +47,10 @@ async function defaultRecordingName(locale: string, recordedAt: WallClock | null
 }
 
 /**
- * Builds the recording card of `item` for its audio attachment `attachmentId`, in the caller's tenant scope. The
- * attachment is the one `routeInboxAttachments` chose, so its metadata exists; the recording's duration and time are
- * the metadata's, unchanged, and each is left out of the context when the metadata has none: there is no fallback to the
- * upload or the current time. With a recording time, `candidates` are the Events of the recording's local day
- * (`listRecordingDayCandidates`) and an item without text is named "Recording D. M. HH:mm"; without one `candidates` is
- * empty, no day is looked up and the name is "Recording". An item with text is named from it either way
- * (`nameFromText`). The envelope proposes no language, speaker count, Event or project.
+ * Builds the recording card for `attachmentId` (chosen by `routeInboxAttachments`, so its metadata exists), in the
+ * caller's tenant scope. Duration and recording time are the metadata's, with no fallback to upload or current time.
+ * With a recording time, `candidates` are that local day's Events; without, none. The name comes from the item's
+ * text, else the localized default. No language, speakers, Event or project is proposed.
  */
 export async function buildRecordingCard(
   client: PoolClient,

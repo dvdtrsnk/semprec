@@ -5,21 +5,16 @@ import { createHeartbeatFireAgentTask } from "./scheduler/sweep.js";
 import type { ActionRegistry } from "./scheduler/actions.js";
 
 /**
- * `agentRun`/`delegatedAgentRun`'s handler shape (issue #91 only closes the name catalog and
- * hosts these under the agents runtime — actually starting/continuing an agent session from a
- * standalone queued job, rather than from a heartbeat fire, is a later agent-orchestration
- * issue's business logic, the same "pluggable, injected, no real implementation yet" pattern
- * `RunAgentFn` (scheduler/actions.ts) and `LibraryMetadataFetcher` (library/libraryMetadataJob.ts)
- * already use for exactly this reason).
+ * Handler for `agentRun`/`delegatedAgentRun`, injected like `RunAgentFn` and `LibraryMetadataFetcher`: starting an
+ * agent session from a standalone queued job has no implementation in this layer.
  */
 export type AgentQueueTaskHandler = (payload: unknown, helpers: { job: { id: string } }) => Promise<void>;
 
 export const noopAgentQueueTask: AgentQueueTaskHandler = async () => {};
 
 /**
- * Composes the agents runtime's (issue #91's second composition root) own task list: the closed
- * `AGENT_TASK_NAMES` catalog only. Module tasks with `queueAffinity: 'agents'` are merged in
- * separately, by the composition root, via `mergeModuleTaskListForAffinity`.
+ * The agents runtime's task list: the closed `AGENT_TASK_NAMES` catalog only. The composition root merges
+ * `queueAffinity: 'agents'` module tasks via `mergeModuleTaskListForAffinity`.
  */
 export function createAgentTaskList(
   pool: Pool,

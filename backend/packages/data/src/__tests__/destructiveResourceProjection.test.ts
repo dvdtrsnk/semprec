@@ -16,11 +16,9 @@ afterAll(async () => {
 });
 
 /**
- * Snapshot hash correctness (issue #89): `computeDestructiveResourceProjection`'s sha256 is what
- * `DestructiveApprovalPreflight` persists and `ApprovedOperationExecutor` later recomputes to
- * detect a resource that changed between approval and execution — so for every one of the five
- * destructive kinds, the hash must be deterministic for an unchanged resource and must change
- * when the exact field its own projection includes changes.
+ * `computeDestructiveResourceProjection`'s sha256 is persisted at approval and recomputed at execution to
+ * detect a changed resource, so for each destructive kind it must be deterministic for an unchanged
+ * resource and change when a projected field changes.
  */
 describe("computeDestructiveResourceProjection snapshot hashing (issue #89)", () => {
   beforeEach(async () => {
@@ -195,9 +193,9 @@ describe("computeDestructiveResourceProjection snapshot hashing (issue #89)", ()
 });
 
 /**
- * The check of a `relation.delete` locks the two endpoint rows without waiting before it reserves the edge's value
- * links, as the check of a `relation.put` and a `relation.set` does. The held row here is the one a propagation job
- * or another writer of the item holds; the lock-order schedules are in `relationDeleteApprovalLockOrder.test.ts`.
+ * The check of a `relation.delete` locks both endpoint rows without waiting before it reserves the edge's
+ * value links, as `relation.put` and `relation.set` do. Lock-order schedules are in
+ * `relationDeleteApprovalLockOrder.test.ts`.
  */
 describe("computeDestructiveResourceProjection of relation.delete locks the endpoint rows (docs/adr/2026-11-15-the-approval-check-of-a-relation-delete-locks-the-edges-endpoint-rows-before-it-reserves-its-value-links.md)", () => {
   interface EdgeFixture {
@@ -242,7 +240,6 @@ describe("computeDestructiveResourceProjection of relation.delete locks the endp
     };
   }
 
-  /** Holds one item row `FOR UPDATE` in an open transaction on a connection of its own, as another writer of the item would. */
   async function holdingRow<T>(itemId: string, body: () => Promise<T>): Promise<T> {
     const holder = await pool.connect();
     try {

@@ -35,8 +35,8 @@ describe("tool event payload persistence", () => {
       }
       await runAgentTurn(pool, run.id, stream());
       const rows = await listAgentRunEvents(pool, run.id);
-      // The ids of this call resolve to no database, so the arguments of a content-bearing write are stored as the
-      // marker (issue #2001); the identity fields stay.
+      // The call's ids resolve to no database, so a content-bearing write's arguments are stored as the marker;
+      // identity fields stay.
       const [toolUse, toolResult] = messages;
       expect(rows.map((row) => row.payload)).toEqual(
         metadata.operation ? [{ ...toolUse, arguments: "[redacted: sensitive]" }, toolResult] : messages,

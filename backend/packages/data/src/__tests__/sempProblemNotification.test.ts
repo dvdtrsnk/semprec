@@ -26,7 +26,7 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 
 class RollbackSentinel extends Error {}
 
-/** The problem sources whose own notification is stored for the in-app list and never pushed (issue #1466). */
+/** Sources whose notification is stored for the in-app list and never pushed. */
 const SOURCE_KINDS = [
   "mail_sync_error",
   "mail_sync_stalled",
@@ -44,7 +44,6 @@ let pool: Pool;
 let tenantZero: string;
 let userId: string;
 
-/** Runs `fn` in a transaction scoped to tenant zero and commits it. */
 function inZero<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return withTenantTransaction(pool, tenantZero, fn);
 }
@@ -72,7 +71,6 @@ interface SempNotificationRow {
   payload: unknown;
 }
 
-/** Every `semp_problem` notification of tenant zero, oldest first. */
 async function sempNotifications(): Promise<SempNotificationRow[]> {
   const { rows } = await inZero((client) =>
     client.query<SempNotificationRow>(
@@ -88,13 +86,9 @@ async function countInZero(text: string, values: unknown[] = []): Promise<number
   return Number(rows[0]?.count ?? 0);
 }
 
-/**
- * A Friday afternoon in Europe/Prague. A test that seeds the system gives tenant zero the sleep module, whose
- * default plans would hold a push at night (issue #1794), so the fanout job does not run on the real clock.
- */
+/** A Friday afternoon in Europe/Prague: the sleep module's default plans would hold a push at night. */
 const FAN_OUT_AT = new Date("2026-10-16T14:00:00+02:00");
 
-/** Runs the fanout job for every notification of tenant zero, oldest first, as the queue would, at `FAN_OUT_AT`. */
 async function fanOutAll(senders: PushSenders): Promise<void> {
   const { rows } = await inZero((client) =>
     client.query<{ id: string }>(`SELECT id FROM notifications ORDER BY created_at, id`),
@@ -192,10 +186,7 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
     );
   });
 
-  /**
-   * Four failed syncs of one mailbox, as `mailSyncJob` reports them: each stores its own
-   * `mail_sync_error` notification and raises the mailbox's one problem at `severity`.
-   */
+  /** As `mailSyncJob` reports them: each stores a `mail_sync_error` notification and raises the mailbox's one problem. */
   async function reportFourSyncFailures(severity: "critical" | "warning"): Promise<void> {
     const mailboxId = randomUUID();
     const dedupeKey = `mail:${mailboxId}`;

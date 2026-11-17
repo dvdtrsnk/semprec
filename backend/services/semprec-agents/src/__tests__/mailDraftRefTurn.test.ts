@@ -1,7 +1,5 @@
-// Issue gh-1948: a chat message that refs a mail draft. The turn is run by the Semp message task the queue registers,
-// with a scripted model: the context the model receives holds the draft, and its `mail.draft.update` call changes that
-// same draft and publishes the ephemeral body delta of the run. A draft that is sent, in the Trash or another tenant's is
-// answered by the tool as a refusal, and the run finishes.
+// A chat message that refs a mail draft, with a scripted model. A sent, trashed or foreign-tenant draft is
+// refused by the tool and the run finishes.
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -73,10 +71,7 @@ function gatewayOf(faux: FauxProviderHandle): GatewayModel {
   };
 }
 
-/**
- * A tenant whose Semp chat project (the Semprec project, the project a chat turn runs in) holds the mail databases and so
- * the mail capabilities, with a mailbox that has a primary address and a Drafts folder.
- */
+/** The Semprec project holds the mail databases, and so the mail capabilities. */
 async function seededTenant(): Promise<MailTenant> {
   const tenantId = await createTestTenant(admin);
   await createUser(admin, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused", locale: "en" });
@@ -174,7 +169,6 @@ function draftRef(t: MailTenant, draftId: string): LabeledSempMessageRef {
 const toolCall = (name: string, args: Record<string, unknown>, id: string) =>
   fauxAssistantMessage([fauxToolCall(name, args, { id })], { stopReason: "toolUse" });
 
-/** Every text the model receives from the user in this request, the ephemeral ref context included. */
 function userTexts(context: Context): string {
   const texts: string[] = [];
   for (const message of context.messages) {

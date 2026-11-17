@@ -19,17 +19,15 @@ import { createLogger } from "@semprec/shared";
 
 const logger = createLogger("proposal-context");
 
-/** At most this many entries per kind of the workspace context (issue gh-1987). */
 export const CONTEXT_LIMIT_PER_KIND = 20;
 
 /**
- * The budget of the serialized request context in bytes (issue gh-1987): the gateway refuses a body over 1 MiB
- * (`MAX_BODY_BYTES` in `semprec-ai-gateway`'s `completeHandler.ts`), and what is not part of the context (the system
- * message, the type line, the attachment documents) has to fit in the rest.
+ * The gateway refuses a body over 1 MiB (`MAX_BODY_BYTES` in `semprec-ai-gateway`), and the system
+ * message, type line and attachment documents must fit in the rest.
  */
 export const REQUEST_BUDGET_BYTES = 900 * 1024;
 
-/** The order entries are dropped in when the context is over the budget: first kind first. */
+/** First kind first. */
 const BUDGET_DROP_ORDER: ReadonlyArray<ProposalWorkspaceGroup["moduleId"]> = [
   "events",
   "companies",
@@ -51,39 +49,36 @@ export interface CatalogTarget {
   relations: ProposalRelationCatalogEntry[];
 }
 
-/** What the model needs to resolve relative dates and times: the item's capture moment and the tenant's clock. */
+/** What the model needs to resolve relative dates and times. */
 export interface ProposalCaptureFacts {
-  /** The item's `date` and `time`: the person's wall clock at capture. Absent when the item holds no string there. */
+  /** The person's wall clock at capture. Absent when the item holds no string there. */
   captureDate?: string;
   captureTime?: string;
-  /** The item's `captureChannel`, when set. */
   captureChannel?: string;
-  /** The tenant's timezone (an IANA name) and the current date in it (`YYYY-MM-DD`). */
+  /** An IANA name, with the current date in it (`YYYY-MM-DD`). */
   timezone: string;
   today: string;
 }
 
-/** The object `proposalComputation.ts` serializes into the request. */
 export interface ProposalContext {
   /** The item's `text`, else its `transcribedText`, else an empty string. */
   text: string;
   facts: ProposalCaptureFacts;
   catalog: CatalogProperty[] | null;
   /**
-   * The option keys with labels and the known text values of the target database (issue gh-1990); `null` when the
-   * proposal has no target database or the database has neither a select property nor a text value to list.
+   * `null` when there is no target database or it has neither a select property nor a text value to
+   * list.
    */
   targetCatalog: TargetCatalog | null;
   targets: CatalogTarget[] | null;
   workspace: ProposalWorkspaceGroup[];
   /**
-   * For an Events target only (issue gh-1993): per person of the workspace's People group, up to five of the person's
-   * most recent same-day Events with both times, newest first, as `{ eventId, minutes, startDate }`. A person with no
-   * such Event has no key. Absent when the project may not read People or Events. The section follows the People group:
-   * a person dropped to fit the budget is dropped here too.
+   * Events target only: per person of the People group, up to five of their most recent same-day
+   * Events with both times, newest first. A person with none has no key. Absent when the project
+   * may not read People or Events. A person dropped from the People group to fit the budget is
+   * dropped here too.
    */
   pastEventDurations?: Record<string, PastEventDuration[]>;
-  /** The set parts of the card being recomputed (`ProposalComputationInput.previousProposal`). */
   previous?: ProposalComputationInput["previousProposal"];
 }
 
@@ -92,7 +87,6 @@ function stringProperty(properties: Record<string, unknown>, key: string): strin
   return typeof value === "string" ? value : undefined;
 }
 
-/** `text` when the item holds one that is not blank, else `transcribedText` (a voice note's transcript), else empty. */
 function itemText(properties: Record<string, unknown>): string {
   const text = stringProperty(properties, "text");
   if (text !== undefined && text.trim() !== "") return text;
@@ -104,18 +98,15 @@ function byteLength(value: unknown): number {
 }
 
 /**
- * Drops workspace entries until the serialized context fits `REQUEST_BUDGET_BYTES`: the kinds in
- * `BUDGET_DROP_ORDER`, and within a kind the last entry first, which is the one the reader ranked lowest (the oldest
- * update; for events the farthest date); a person dropped from the People group loses its past event durations too. The
- * item text, the facts and the previous state are never cut. A context that
- * still exceeds the budget with an empty workspace is returned as it is; the gateway refuses the request only when its
- * body exceeds its own 1 MiB limit, so a context between the budget and that limit is accepted.
+ * Drops kinds in `BUDGET_DROP_ORDER`, and within a kind the lowest-ranked (last) entry first; a
+ * dropped person loses their past event durations too. Item text, facts and the previous state are
+ * never cut. A context still over budget with an empty workspace is returned as is; the gateway
+ * only refuses past its own 1 MiB limit.
  */
 function fitToBudget(context: ProposalContext): ProposalContext {
   const workspace = structuredClone(context.workspace);
   const durations = context.pastEventDurations && structuredClone(context.pastEventDurations);
-  // The workspace and the durations are the only parts that change, so the rest is measured once, with an empty list
-  // in the place of the workspace and without the durations.
+  // Only the workspace and durations change, so the rest is measured once.
   const rest = byteLength({ ...context, workspace: [], pastEventDurations: undefined }) - byteLength([]);
   const size = () => rest + byteLength(workspace) + (durations ? byteLength({ pastEventDurations: durations }) : 0);
   let dropped = 0;
@@ -149,11 +140,10 @@ async function readPropertyCatalog(client: PoolClient, databaseId: string): Prom
 }
 
 /**
- * Reads, in one short transaction, what a proposal request carries beyond the model's own instructions (issue
- * gh-1987): the item's text and capture facts, the tenant's timezone and today, the bounded workspace context as the
- * project `input.projectItemId`, the property catalogs, the target database's option and known-value catalog in the
- * user's language (issue gh-1990, `buildTargetCatalog`; none for a database with no select) and, for a recompute, the previous state of the card. The
- * workspace is cut to `REQUEST_BUDGET_BYTES`. The read writes nothing and the transaction is closed on return.
+ * One short read-only transaction, read as the project `input.projectItemId`: item text and capture
+ * facts, the tenant's timezone and today, the bounded workspace context, the property catalogs, the
+ * target database's option and known-value catalog in the user's language, and the previous card
+ * state on recompute. The workspace is cut to `REQUEST_BUDGET_BYTES`.
  */
 export function readProposalContext(pool: Pool, input: ProposalComputationInput): Promise<ProposalContext> {
   const { properties } = input.sourceItem;
@@ -164,8 +154,8 @@ export function readProposalContext(pool: Pool, input: ProposalComputationInput)
       captureDate: properties.date,
       limitPerKind: CONTEXT_LIMIT_PER_KIND,
     });
-    // Issue gh-1993: only a proposal for the Events database carries the lengths of the people's earlier Events, and
-    // only when the project may read both People and Events: the workspace has no group for a database it may not read.
+    // Only an Events proposal carries the people's earlier Event lengths, and only when the project
+    // may read both People and Events (the workspace has no group for a database it may not read).
     const people = workspace.find((group) => group.moduleId === "people");
     const pastEventDurations =
       input.entityKind === "database" &&
@@ -185,8 +175,8 @@ export function readProposalContext(pool: Pool, input: ProposalComputationInput)
       input.entityKind === "database" && input.targetDatabaseId
         ? await buildTargetCatalog(client, input.targetDatabaseId, input.locale, input.projectItemId)
         : null;
-    // The Task of gh-1990 adds no block for a target database with no select, so the known text values of such a
-    // database are not sent either: the block exists to ground the choice of option keys.
+    // The block exists to ground the choice of option keys, so a target database with no select
+    // sends no block and no known text values.
     const targetCatalog = builtCatalog && builtCatalog.selects.length > 0 ? builtCatalog : null;
     let targets: CatalogTarget[] | null = null;
     if (input.entityKind === "database" || input.recognition) {

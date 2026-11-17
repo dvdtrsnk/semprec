@@ -1,6 +1,5 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import {
   createRelationPropertyWithClient,
@@ -9,7 +8,7 @@ import {
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "./inboxPipelineKeys.js";
 import { THREADS_MODULE_ID } from "./emailModuleKeys.js";
 import { TEN_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
@@ -21,21 +20,7 @@ import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
 import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
 import { INBOX_TRANSCRIBED_TEXT_KEY } from "../inbox/inboxVoiceNote.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
-
-// Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
-// copy of this helper for the full rationale.
-function selectConfig(options: string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
-}
-
-interface PropSpec {
-  key: string;
-  name: string;
-  type: PropertyType;
-  owner?: PropertyOwner;
-  ownerProcess?: string;
-  config?: Record<string, unknown>;
-}
+import { createProps, selectConfig } from "./propSpecs.js";
 
 async function createDb(
   client: PoolClient,
@@ -46,20 +31,6 @@ async function createDb(
   return databasesStore.createDatabase(client, { name, system: true, ownerModuleId, ownerProjectItemId });
 }
 
-async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
-  for (const spec of specs) {
-    await propertiesStore.createProperty(client, {
-      databaseId,
-      key: spec.key,
-      name: spec.name,
-      type: spec.type,
-      owner: spec.owner,
-      ownerProcess: spec.ownerProcess,
-      config: spec.config,
-    });
-  }
-}
-
 export interface InboxPipelineDatabases {
   inbox: DatabaseRow;
   inboxItemTypes: DatabaseRow;
@@ -67,19 +38,8 @@ export interface InboxPipelineDatabases {
 }
 
 /**
- * Seeds Inbox / Inbox item types / Processing proposals (issue #101: the three databases
- * issue #24's ten hardcoded databases deliberately exclude — see the epic, #100) as one
- * group of system databases owned by the existing Semprec project, the same class as
- * Mailboxes/Folders/Emails (issue #26). Must run after `seedTenDatabasesInTransaction`
- * (needs Journal for `journalDay` and Transcripts for `sourceTranscript`), after
- * `seedEmailModuleInTransaction` (needs Threads for `sourceThread`, issue gh-2034) and after the
- * Semprec project item exists (see seedSystem.ts).
- *
- * The baseline schema, ownership, canonical keys, the Journal relation, (issue #102)
- * types' `processingMethod`/`targetDatabase`, and (issue #103) the Inbox
- * `onItemEvent`/`semprec.tick` dispatch heartbeats are in scope here — fingerprinting/
- * proposal computation (#223) and the confirm/reject/revise endpoints (#105) are later
- * issues in the series and are not implemented by this seed.
+ * Seeds Inbox / Inbox item types / Processing proposals and the Inbox `semprec.tick` heartbeats. Needs the
+ * ten databases, Threads and the Semprec project item.
  */
 export async function seedInboxPipelineInTransaction(
   client: PoolClient,
@@ -95,9 +55,8 @@ export async function seedInboxPipelineInTransaction(
   ): Promise<{ property: unknown; inverseProperty: unknown }> =>
     createRelationPropertyWithClient(client, input, context, computedKeyRegistry);
 
-  // Issue #106: declares the Journal day cache key ahead of any writes, and registers
-  // "journal-inbox" into *this process's* registry the same way registerTemporalSwitcherViewType
-  // etc. do in seedSystem.ts — needed on every startup, not only the one-time DB seed.
+  // Declared ahead of any writes; the process-local registries need this on every startup, not only
+  // on the one-time seed.
   computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
   registerJournalInboxViewType(viewTypeRegistry);
 
@@ -110,19 +69,13 @@ export async function seedInboxPipelineInTransaction(
     semprecProjectItemId,
   );
 
-  // Both mandatory: the client always supplies date/time, and the server never derives
-  // them as "today" — offline capture on a phone and delayed batch submission after a
-  // connectivity outage both depend on the supplied values being preserved verbatim.
-  // Enforcement of "mandatory" lives in the Inbox item-create hook (inbox/inboxCreateHook.ts),
-  // which every writer's create passes through (the schema engine has no generic required-field
-  // concept), not here.
+  // Mandatory and never derived as "today" (offline and delayed capture rely on them); enforced by inboxCreateHook.ts.
   await createProps(client, inbox.id, [
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "time", name: "Time", type: "time", owner: "user" },
     { key: "text", name: "Text", type: "text", owner: "user", config: { format: "markdown" } },
-    // Issue gh-1964: how and from where the item was captured, and when the server accepted it. Declared here for fresh
-    // installs and added to populated tenants by inbox/inboxCapturePropertiesCutoverMigration.ts; keep the two lists
-    // identical. `addedAt` is written by the capture helper (`inbox/inboxStore.ts`), as the Inbox module.
+    // How and from where the item was captured and when the server accepted it; `addedAt` is written by
+    // `inbox/inboxStore.ts` as the Inbox module.
     {
       key: "captureChannel",
       name: "Capture channel",
@@ -139,9 +92,8 @@ export async function seedInboxPipelineInTransaction(
       ownerProcess: INBOX_MODULE_ID,
       config: { includeTime: true },
     },
-    // Issue gh-1980: the transcript of the item's short voice notes, written by the transcribe process and never by
-    // the person, whose own text stays in `text`. Declared here for fresh installs and added to populated tenants by
-    // seed/inboxTranscribedTextCutoverMigration.ts; keep the two identical.
+    // Transcript of the item's short voice notes, written by the transcribe process, never by the person,
+    // whose own text stays in `text`.
     {
       key: INBOX_TRANSCRIBED_TEXT_KEY,
       name: "Transcribed text",
@@ -154,16 +106,10 @@ export async function seedInboxPipelineInTransaction(
   await createProps(client, inboxItemTypes.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "emoji", name: "Emoji", type: "text", owner: "user" },
-    // Archiving (issue #102) removes a type from `GET /api/inbox-types` for new capture
-    // while existing Inbox items keep pointing at it validly.
+    // An archived type disappears from `GET /api/inbox-types` while existing items keep pointing at it.
     { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["active", "archived"]) },
-    // Replaces the mock's hardcoded label-text comparison (issue #100). Cross-field
-    // validation ("database" requires targetDatabase, "pageContent" and "journal" reject it) is
-    // enforced in inbox/inboxTypesStore.ts, not here — same reason inboxCreateHook.ts enforces
-    // date/time itself: the schema engine has no generic cross-field validation concept.
-    // The `journal` option (issue gh-1975) is added to populated tenants by
-    // inbox/inboxJournalMethodCutoverMigration.ts. The seed reads the options from PROCESSING_METHODS; the cutover
-    // appends the 'journal' key itself.
+    // Cross-field rules ("database" requires targetDatabase, "pageContent"/"journal" reject it) are enforced
+    // in inbox/inboxTypesStore.ts; the schema engine has no cross-field validation.
     {
       key: "processingMethod",
       name: "Processing method",
@@ -171,25 +117,19 @@ export async function seedInboxPipelineInTransaction(
       owner: "user",
       config: selectConfig([...PROCESSING_METHODS]),
     },
-    // Deliberately not a `relation` property: a relation's target database is fixed at
-    // creation time (chokePoint.ts's `createRelationPropertyWithClient`), but this must be
-    // able to point at any one of the ten hardcoded databases (issue #24) — the same reason
-    // Processing proposals' `resultItemId` above is `text`, not `relation`. Stores the
-    // target's canonical `owner_module_id` key (e.g. 'tasks', 'events'); which project/page
-    // within it is a runtime, content-driven decision (issue #100), never stored here.
+    // Not a `relation` (whose target is fixed): stores the target's `owner_module_id`; the item is decided at run time.
     {
       key: "targetDatabase",
       name: "Target database",
       type: "select",
       owner: "user",
-      // The ten hardcoded databases, then the module targets (issue #1973), appended like the cutover appends them.
+      // The ten hardcoded databases, then the module targets.
       config: selectConfig([...TEN_DATABASE_MODULE_IDS, ...INBOX_TYPE_MODULE_TARGET_DATABASES]),
     },
   ]);
 
   await createProps(client, processingProposals.id, [
-    // `mailThread` (issue gh-2034) is the card of a task that Semp proposes from a mail thread. A populated tenant gets
-    // the option from mail/threadTaskProposalCutoverMigration.ts; keep the two lists identical.
+    // `mailThread`: the card of a task Semp proposes from a mail thread.
     {
       key: "kind",
       name: "Kind",
@@ -198,9 +138,8 @@ export async function seedInboxPipelineInTransaction(
       config: selectConfig(["inbox", "transcript", "mailThread"]),
     },
     { key: "fingerprint", name: "Fingerprint", type: "text", owner: "system" },
-    // { entityKind, target, properties } — a single generic envelope regardless of
-    // processingMethod, so a chat-driven revise can rewrite it wholesale (issue #105);
-    // `entityKind` is 'database', 'pageContent' or 'relation' (issue #184).
+    // { entityKind, target, properties }: one generic envelope for every processingMethod, so a chat revise
+    // can rewrite it wholesale. `entityKind` is 'database', 'pageContent' or 'relation'.
     { key: "proposal", name: "Proposal", type: "json", owner: "system" },
     // [{ author: 'ai'|'user', message, at }] — chat + decision log.
     { key: "history", name: "History", type: "json", owner: "system" },
@@ -222,9 +161,7 @@ export async function seedInboxPipelineInTransaction(
     // Filled in by confirm; not a relation, since the target can be any system database's item.
     { key: "resultItemId", name: "Result item ID", type: "text", owner: "system" },
     { key: "resultLabel", name: "Result label", type: "text", owner: "system" },
-    // Card state (issue #1451). Declared here for fresh installs and added to populated tenants by
-    // inbox/processingProposalsCardStateCutoverMigration.ts; keep the two lists identical.
-    // The last proposal written by an automated producer, the base for "return to the assistant's proposal".
+    // The last proposal by an automated producer, the base for "return to the assistant's proposal".
     { key: "aiProposal", name: "AI proposal", type: "json", owner: "system" },
     { key: "userOverrides", name: "User overrides", type: "json", owner: "system" },
     { key: "userEditedKeys", name: "User-edited keys", type: "json", owner: "system" },
@@ -240,19 +177,12 @@ export async function seedInboxPipelineInTransaction(
     { key: "results", name: "Results", type: "json", owner: "system" },
     // Producer-written data of a transcript card; declared as an opaque json property until its producer defines the shape.
     { key: "context", name: "Context", type: "json", owner: "system" },
-    // Issue #1939: set on a sibling card made by splitting an Inbox source; holds the primary card's id. Declared here
-    // for fresh installs and added to populated tenants by inbox/processingProposalsSplitCutoverMigration.ts.
+    // Set on a sibling card split from an Inbox source; holds the primary card's id.
     { key: "splitFromProposalId", name: "Split from proposal ID", type: "text", owner: "system" },
   ]);
 
-  // Inbox -> Inbox item types: nullable (an item without a type is valid — it later enters
-  // `needsClarification`, issue #100), one-directional — no inverse is needed by this issue.
-  // `many_to_many`, not `one_to_many` (issue #82): property_id_a/item_a (the Inbox item) is
-  // single-valued for this field, so the enforced `one_to_many` contract would land its
-  // "at most one edge" constraint on item_b (the type) instead — wrongly capping each type to
-  // one Inbox item. With no inverse to swap this source/target pairing onto (Inbox item types'
-  // schema has no reciprocal property here), `one_to_many` can never correctly enforce this
-  // relation, same as Emails.attachments.
+  // Inbox -> Inbox item types: nullable, one-directional, `many_to_many` (with no inverse, `one_to_many` would
+  // cap each type to one item).
   await relate({
     sourceDatabaseId: inbox.id,
     key: "type",
@@ -262,15 +192,7 @@ export async function seedInboxPipelineInTransaction(
     owner: "user",
   });
 
-  // Inbox -> Journal ("journalDay"): system-owned, resolved at write time through the
-  // existing lazy Journal-day mechanism (journal/journalStore.ts's `getOrCreateJournalItem`,
-  // wired up in inbox/inboxCreateHook.ts's item-create hook) — no default database is
-  // added for this, it reuses the Journal relation directly. One-directional: Journal's
-  // schema is already locked by `seedTenDatabasesInTransaction`, the same reason
-  // Emails->Files/People (issue #26) carry no inverse either. `many_to_many`, not
-  // `one_to_many` (issue #82), for the same structural reason as Inbox.type above — many
-  // Inbox items share one Journal day, and this one-directional relation has no inverse to
-  // swap the source/target pairing onto.
+  // Inbox -> Journal: system-owned, resolved by the create hook; one-directional (Journal is locked), many_to_many.
   await relate(
     {
       sourceDatabaseId: inbox.id,
@@ -284,12 +206,7 @@ export async function seedInboxPipelineInTransaction(
     { ownerProcess: INBOX_MODULE_ID },
   );
 
-  // Processing proposals -> Inbox / Transcripts: nullable, populated according to `kind`.
-  // Both targets are already locked, so both are one-directional for the same reason as above.
-  // `many_to_many`, not `one_to_many` (issue #82): a source Inbox item/Transcript can end up
-  // referenced by more than one proposal over time (e.g. a superseding proposal created after
-  // an earlier one for the same source was rejected/soft-deleted), and with no inverse to
-  // swap onto, `one_to_many` would wrongly cap each source to a single proposal.
+  // Processing proposals -> Inbox / Transcripts: one-directional; many_to_many since a source can get several proposals.
   const processingProposalsContext: SystemRelationWriteContext = { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID };
   await relate(
     {
@@ -316,11 +233,8 @@ export async function seedInboxPipelineInTransaction(
     processingProposalsContext,
   );
 
-  // Processing proposals -> Threads (issue gh-2034): the thread a `mailThread` card proposes a task for, written
-  // with the card. The Threads database exists because seedSystem.ts runs seedEmailModuleInTransaction before this
-  // seed. Threads is schema-locked, so the relation is one-directional; `many_to_many` for the reason given above
-  // (a thread can be the source of several cards over time). A populated tenant gets it from
-  // mail/threadTaskProposalCutoverMigration.ts.
+  // Processing proposals -> Threads: the thread a `mailThread` card proposes a task for, written with the
+  // card. One-directional (Threads is locked); `many_to_many` as above.
   const threads = await databasesStore.getDatabaseByModuleId(client, THREADS_MODULE_ID);
   if (!threads) throw new Error("Threads database is missing: the email module must be seeded first");
   await relate(
@@ -336,10 +250,8 @@ export async function seedInboxPipelineInTransaction(
     processingProposalsContext,
   );
 
-  // Issue #103: react to a changed Inbox item without periodically scanning the whole
-  // database. One heartbeat row per event kind — `onItemEventRule.event` is a single enum,
-  // not an array — each dispatching the same `semprec.tick` action; the actual proposal
-  // computation is issue #223's scope, not this seed's.
+  // Reacts to changed Inbox items without scanning: one heartbeat per event kind (`onItemEventRule.event`
+  // is a single value), each dispatching `semprec.tick`.
   for (const event of ["create", "update", "delete"] as const) {
     await createHeartbeat(client, {
       projectItemId: semprecProjectItemId,
@@ -359,8 +271,7 @@ export async function seedInboxPipelineInTransaction(
     [inbox.id, inboxItemTypes.id, processingProposals.id],
   ]);
 
-  // View name is sourced from `database.name` — createDb above always supplies one for these
-  // three databases — so the label's single source of truth stays outside this file.
+  // View names come from `database.name`, so the label has one source outside this file.
   const defaultViewDatabases: DatabaseRow[] = [all.inbox, all.inboxItemTypes, all.processingProposals];
   for (const database of defaultViewDatabases) {
     await viewsStore.createView(

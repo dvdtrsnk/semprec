@@ -25,7 +25,6 @@ const APP_BASE_URL = "https://app.example.test";
 const INVITEE = "novak@example.cz";
 const PASSWORD = "correct-horse-battery";
 const UNISSUED_TOKEN = "a-token-that-was-never-issued";
-// Each test that runs the real provisioning builds a tenant's couple of dozen system databases.
 const PROVISIONING_TEST_TIMEOUT_MS = 60_000;
 // A test that migrates a database of its own runs every migration; late in the integration run that
 // competes with the instance's checkpoint I/O.
@@ -37,7 +36,7 @@ function testDatabaseUrl(): string {
   return url;
 }
 
-/** A database of its own, migrated by `runMigrations` alone. The shared test database has its guard dropped by the harness. */
+/** A database of its own, migrated by `runMigrations` alone. */
 async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<void> {
   // The name is a fixed prefix and a UUID's hex digits, so the interpolation below cannot break out of the quotes.
   const name = `accept_invitation_${randomUUID().replaceAll("-", "")}`;
@@ -78,7 +77,6 @@ function tokenFromUrl(inviteUrl: string): string {
   return token;
 }
 
-/** Counts of the rows an acceptance may write; a refused acceptance must leave all of them as they were. */
 interface Snapshot {
   tenants: number;
   users: number;
@@ -114,7 +112,6 @@ describe("acceptInvitation (issue #1087)", () => {
     await dataPool.end();
   });
 
-  /** Creates a pending invitation through the production store and returns its id and raw token. */
   async function invite(email: string): Promise<{ id: string; token: string }> {
     const created = await runAsSystem("acceptInvitationTest", () =>
       withTransaction(dataPool, (client) =>
@@ -134,7 +131,6 @@ describe("acceptInvitation (issue #1087)", () => {
     return { tenants: row.tenants, users: row.users, acceptedInvites: row.accepted };
   }
 
-  /** The number of `databases` rows of one tenant, read as the superuser. */
   async function countDatabases(tenantId: string): Promise<number> {
     const { rows } = await adminPool.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM databases WHERE tenant_id = $1",
@@ -340,7 +336,6 @@ describe("acceptInvitation (issue #1087)", () => {
     }
     expect(provision).not.toHaveBeenCalled();
     expect(await snapshot()).toEqual(before);
-    // The refusals consumed nothing: the same invitation still accepts.
     await expect(acceptInvitation(dataPool, { token, password: PASSWORD }, provision)).resolves.toMatchObject({
       email: INVITEE,
     });
@@ -411,7 +406,6 @@ describe("acceptInvitation (issue #1087)", () => {
           (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM tenants")).rows,
           "tenant count",
         );
-        // Tenant zero from the migration, and the one inserted above.
         expect(count.n).toBe(2);
       });
     },

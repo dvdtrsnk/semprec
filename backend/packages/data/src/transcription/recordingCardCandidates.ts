@@ -10,19 +10,16 @@ import { NotFoundError } from "../errors.js";
 import type { RecordingCardContext } from "../inbox/recordingCardEnvelope.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
-// The Events a recording card suggests (issue gh-1978) and the project an Event stands for.
-
-/** An Event the recording card suggests: one entry of `RecordingCardContext.candidates`. */
 export type RecordingCardCandidate = RecordingCardContext["candidates"][number];
 
-/** The `type` values of the Events that are suggested; an Event with no type (one that came from a calendar) is suggested too. */
+/** An Event with no type (one from a calendar) is suggested too. */
 const SUGGESTED_EVENT_TYPES = ["meeting", "standup"];
 
 const LEADING_DATE = /^\d{4}-\d{2}-\d{2}/;
 
 const itemNameSchema = z.object({ name: z.string().nullish() });
 
-/** The calendar date at the start of an Events `date` or `endDate` value (a value stored as a date-time keeps its own date), or `null` when it has none. */
+/** A value stored as a date-time keeps its own date; `null` when it has none. */
 function leadingDate(value: string | null): string | null {
   const part = value === null ? undefined : LEADING_DATE.exec(value)?.[0];
   return part !== undefined && DateTime.fromISO(part).isValid ? part : null;
@@ -37,7 +34,7 @@ interface EventRow {
   end_date: string | null;
 }
 
-/** The live project each of `eventIds` stands for: the first live item of its `project` relation, or `null`. */
+/** The first live item of each Event's `project` relation, or `null`. */
 export async function readEventProjects(
   client: PoolClient,
   eventsDatabaseId: string,
@@ -72,12 +69,9 @@ export async function readEventProjects(
 }
 
 /**
- * The live Events whose days include `day` (`YYYY-MM-DD`, the recording's day in the tenant's time zone) and whose
- * `type` is `meeting`, `standup` or empty, with the project of each, ordered by start date, start time and id. The days
- * of an Event are its `date` to its `endDate` (its `date` alone without an `endDate`), and a value stored as a
- * date-time is read by its leading date. Those values are free input, so an Event whose `date` or `endDate` has no
- * readable date is left out and never fails the query: the statement only compares text prefixes, which narrows the
- * rows read and cannot raise, and the days are decided in code on the parsed dates.
+ * Live Events of type `meeting`, `standup` or empty whose `date`..`endDate` span includes `day`.
+ * Those values are free input, so an Event with no readable date is left out rather than failing the
+ * query: SQL only compares text prefixes (narrows rows, cannot raise) and the span is decided in code.
  */
 export async function listRecordingDayCandidates(client: PoolClient, day: string): Promise<RecordingCardCandidate[]> {
   const events = await databasesStore.getDatabaseByModuleId(client, EVENTS_MODULE_ID);

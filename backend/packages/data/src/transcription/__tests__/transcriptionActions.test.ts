@@ -41,16 +41,13 @@ async function jobCount(key: string): Promise<number> {
   return rows[0]?.count ?? 0;
 }
 
-/**
- * Issue #180's Files `onItemEvent:create` trigger, exercised directly against the action
- * handler (the same pattern `inboxTickAction`'s own tests use) rather than through the queue's
- * heartbeat-fire machinery, which is covered separately.
- */
+/** Exercised directly against the action handler rather than through the heartbeat-fire machinery, covered separately. */
 describe("Files transcription trigger (issue #180)", () => {
   let viewTypeRegistry: ViewTypeRegistry;
   let filesId: string;
   let emailsId: string;
   let attachmentsPropertyId: string;
+  let eventsPropertyId: string;
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -64,6 +61,11 @@ describe("Files transcription trigger (issue #180)", () => {
     );
     if (!attachmentsProperty) throw new Error("Emails.attachments property was not seeded");
     attachmentsPropertyId = attachmentsProperty.id;
+    const eventsProperty = await withTransaction(pool, (client) =>
+      propertiesStore.getPropertyByKey(client, filesId, "events"),
+    );
+    if (!eventsProperty) throw new Error("Files.events property was not seeded");
+    eventsPropertyId = eventsProperty.id;
   });
 
   afterAll(async () => {
@@ -71,7 +73,11 @@ describe("Files transcription trigger (issue #180)", () => {
   });
 
   function actionConfig() {
-    return { filesDatabaseId: filesId, attachmentsRelationPropertyId: attachmentsPropertyId };
+    return {
+      filesDatabaseId: filesId,
+      attachmentsRelationPropertyId: attachmentsPropertyId,
+      eventsRelationPropertyId: eventsPropertyId,
+    };
   }
 
   async function createFileItem(mimeType: string): Promise<string> {
@@ -271,11 +277,7 @@ describe("Files transcription trigger (issue #180)", () => {
   });
 });
 
-/**
- * Issue #1698: an audio file attached to an Event is a plain attachment, not a recording. The trigger,
- * its fixtures and the assertions run on a `semprec_data` pool inside the tenant, so the trigger reads
- * the relation definition and the file's edges under row-level security.
- */
+/** Runs on a `semprec_data` pool inside the tenant, so the trigger reads the relation and edges under RLS. */
 describe("Files transcription trigger and Event attachments (issue #1698)", () => {
   let admin: Pool;
   let runtime: Pool;
@@ -327,7 +329,6 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
     await admin?.end();
   });
 
-  /** The `action_config` the seed gave the tenant's `Files transcription trigger` heartbeat, and the heartbeat's id. */
   async function seededTrigger(): Promise<{ id: string; config: Record<string, unknown> }> {
     const { rows } = await inTenant((client) =>
       client.query<{ id: string; action_config: unknown }>(
@@ -340,15 +341,12 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
     return { id: row.id, config: row.action_config };
   }
 
-  /** The config of a heartbeat seeded before issue #1698 and not cut over yet. */
-  function oldConfig(): Record<string, unknown> {
+  /** A config with every key but `eventsRelationPropertyId`. */
+  function configWithoutEvents(): Record<string, unknown> {
     return { filesDatabaseId: ids.files, attachmentsRelationPropertyId: ids.attachmentsProperty };
   }
 
-  /**
-   * An audio Files item. With `attachedToEvent`, a new Event and the file's `Files.events` edge are
-   * written in the transaction that creates the file, as the upload attach of issue #1645 does.
-   */
+  /** With `attachedToEvent`, the Event and the `Files.events` edge are written in the file's create transaction, as the upload attach does. */
   function createAudioFile(options: { attachedToEvent: boolean }): Promise<string> {
     return inTenant(async (client) => {
       const blob = await createBlob(client, {
@@ -385,10 +383,7 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
     );
   }
 
-  /**
-   * The keys of the file's two transcription jobs that are queued, in key order. The trigger writes no
-   * item itself: a Transcriptions row for the file comes from the transcribe worker running one of them.
-   */
+  /** The trigger writes no item itself: a Transcriptions row comes from the worker running one of these jobs. */
   async function queuedTranscriptionJobs(fileItemId: string): Promise<string[]> {
     const { rows } = await inTenant((client) =>
       client.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[]) ORDER BY key", [
@@ -402,7 +397,6 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
     return [`transcription-create:${fileItemId}`, transcriptionJobKey(fileItemId)];
   }
 
-  /** Runs the queued `heartbeatFireCore` jobs once, with the trigger registered under its action id. */
   async function runQueuedHeartbeatFires(): Promise<void> {
     const registry = createActionRegistry();
     registry.set(FILES_TRANSCRIPTION_TRIGGER_ACTION_ID, createFilesTranscriptionTriggerAction(runtime));
@@ -439,24 +433,18 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
     expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
   });
 
-  it.each([
-    ["a standalone audio file", false],
-    ["an audio file with a Files.events edge", true],
-  ])(
-    "a config without eventsRelationPropertyId still runs and enqueues %s, as before",
-    async (_label, attachedToEvent) => {
-      const fileItemId = await createAudioFile({ attachedToEvent });
+  it("rejects a config without eventsRelationPropertyId and enqueues nothing", async () => {
+    const fileItemId = await createAudioFile({ attachedToEvent: false });
 
-      await fire(oldConfig(), fileItemId);
+    await expect(fire(configWithoutEvents(), fileItemId)).rejects.toThrow(z.ZodError);
 
-      expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
-    },
-  );
+    expect(await queuedTranscriptionJobs(fileItemId)).toEqual([]);
+  });
 
   it("enqueues when eventsRelationPropertyId names no relation definition", async () => {
     const fileItemId = await createAudioFile({ attachedToEvent: true });
 
-    await fire({ ...oldConfig(), eventsRelationPropertyId: randomUUID() }, fileItemId);
+    await fire({ ...configWithoutEvents(), eventsRelationPropertyId: randomUUID() }, fileItemId);
 
     expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
   });
@@ -464,7 +452,9 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
   it("rejects a config whose eventsRelationPropertyId is not a uuid and enqueues nothing", async () => {
     const fileItemId = await createAudioFile({ attachedToEvent: false });
 
-    await expect(fire({ ...oldConfig(), eventsRelationPropertyId: "events" }, fileItemId)).rejects.toThrow(z.ZodError);
+    await expect(fire({ ...configWithoutEvents(), eventsRelationPropertyId: "events" }, fileItemId)).rejects.toThrow(
+      z.ZodError,
+    );
 
     expect(await queuedTranscriptionJobs(fileItemId)).toEqual([]);
   });

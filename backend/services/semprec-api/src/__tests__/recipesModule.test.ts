@@ -21,9 +21,8 @@ import { runInTenant } from "@semprec/shared";
 import { createDispatcher } from "../app.js";
 
 const PASSWORD = "s3cret-password";
-// Each test seeds two tenants with their couple of dozen system databases and hashes two passwords.
+// Each test seeds two tenants with their system databases and hashes two passwords.
 const SEEDING_HOOK_TIMEOUT_MS = 90_000;
-// A complete 1×1 RGBA PNG, including its image data and chunk checksums.
 const PNG_IMAGE = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
   "base64",
@@ -57,6 +56,7 @@ const databaseBody = z.object({
 const itemBody = z.object({
   id: z.string(),
   updatedAt: z.string(),
+  version: z.string(),
   properties: z.record(z.string(), z.unknown()),
 });
 const errorBody = z.object({
@@ -106,7 +106,6 @@ async function database(who: Tenant, key: string): Promise<z.infer<typeof databa
   return found;
 }
 
-/** Uploads bytes through `POST /api/blobs` as `who` and returns the blob id. */
 async function upload(who: Tenant, bytes: Buffer, contentType: string): Promise<string> {
   const response = await fetch(`${base}/api/blobs`, {
     method: "POST",
@@ -199,7 +198,7 @@ describe("Recipes module over HTTP (issue #1707)", () => {
       overviewHidden: false,
       defaultViewType: "gallery",
     });
-    // Ninth in the list: after the eight collections of switcher positions 1 to 8.
+    // After the eight collections of switcher positions 1 to 8.
     expect(all.map((entry) => entry.key).indexOf("recipes")).toBe(8);
 
     const inEnglish = await database(english, "recipes");
@@ -224,7 +223,7 @@ describe("Recipes module over HTTP (issue #1707)", () => {
 
     const all = await listDatabases(czech);
 
-    // Exactly the declarations of the loaded manifests: Journal and Recipes; every other database answers null.
+    // Only the loaded manifests declare it: Journal and Recipes; every other database answers null.
     expect(
       Object.fromEntries(all.filter((entry) => entry.defaultViewType !== null).map((entry) => [entry.key, entry])),
     ).toEqual({
@@ -245,7 +244,7 @@ describe("Recipes module over HTTP (issue #1707)", () => {
 
   it("serves the one view of recipes, its default view of type gallery, from GET /api/views/:id", async () => {
     const recipes = await database(czech, "recipes");
-    // No route lists the views of a database, so the id is read through the choke point in the tenant's scope.
+    // No route lists a database's views, so the id is read through the choke point.
     const views = await runInTenant(czech.id, () => createChokePoint(runtime).listViewsByDatabase(recipes.id));
     expect(views).toHaveLength(1);
 
@@ -377,10 +376,9 @@ describe("Recipes module over HTTP (issue #1707)", () => {
     expect(hidden.status).toBe(200);
     expect(databaseBody.parse(hidden.body)).toEqual({ ...czechRecipes, overviewHidden: true });
     expect(await recipeIds(czech, czechRecipes.id)).toEqual([recipe]);
-    // The other tenant's own recipes database is still shown.
     expect(await database(english, "recipes")).toEqual(englishRecipes);
 
-    // The other tenant cannot show it again: the id answers exactly like an id that does not exist.
+    // The id answers exactly like an id that does not exist.
     const unknownId = randomUUID();
     const foreign = await request(english, "PATCH", `/api/databases/${czechRecipes.id}`, { overviewHidden: false });
     const unknown = await request(english, "PATCH", `/api/databases/${unknownId}`, { overviewHidden: false });
@@ -389,7 +387,6 @@ describe("Recipes module over HTTP (issue #1707)", () => {
     expect(JSON.stringify(foreign).replaceAll(czechRecipes.id, unknownId)).toBe(JSON.stringify(unknown));
     expect(await database(czech, "recipes")).toEqual({ ...czechRecipes, overviewHidden: true });
 
-    // A database that is not hideable is refused for the runtime role as well.
     const projects = await database(czech, "projects");
     const refused = await request(czech, "PATCH", `/api/databases/${projects.id}`, { overviewHidden: true });
     expect(refused.status).toBe(403);
@@ -417,9 +414,8 @@ describe("Recipes module over HTTP (issue #1707)", () => {
     expect(recipe.properties.photo).toMatchObject({ blobId: image });
     expect(await recipeIds(czech, recipes.id)).toEqual([recipe.id]);
 
-    // An update is checked the same way and a refused one leaves the stored photo.
     const patch = (photo: unknown) =>
-      request(czech, "PATCH", `/api/items/${recipe.id}`, { properties: { photo }, ifVersion: recipe.updatedAt });
+      request(czech, "PATCH", `/api/items/${recipe.id}`, { properties: { photo }, ifVersion: recipe.version });
     expect(await patch({ blobId: pdf })).toEqual(PHOTO_REFUSED);
     expect(await patch({ blobId: foreign })).toEqual(PHOTO_REFUSED);
     const read = await request(czech, "GET", `/api/items/${recipe.id}`);
@@ -432,7 +428,6 @@ describe("Recipes module over HTTP (issue #1707)", () => {
     expect(replaced.status).toBe(200);
     expect(itemBody.parse(replaced.body).properties.photo).toMatchObject({ blobId: secondImage });
 
-    // The blob the first tenant was refused is usable by the tenant that owns it.
     const englishRecipes = await database(english, "recipes");
     const own = await request(english, "POST", `/api/databases/${englishRecipes.id}/items`, {
       properties: { name: "Stew", photo: { blobId: foreign } },
@@ -469,9 +464,8 @@ describe("Recipes module over HTTP (issue #1707)", () => {
     const recipe = itemBody.parse(created.body);
     expect(recipe.properties.sourceUrl).toBe("https://recipes.example.com/goulash");
 
-    // An update is checked the same way, and a refused one leaves the stored URL.
     const patch = (sourceUrl: unknown) =>
-      request(czech, "PATCH", `/api/items/${recipe.id}`, { properties: { sourceUrl }, ifVersion: recipe.updatedAt });
+      request(czech, "PATCH", `/api/items/${recipe.id}`, { properties: { sourceUrl }, ifVersion: recipe.version });
     expect(await patch("https://192.168.1.10/goulash")).toEqual(SOURCE_REFUSED);
     const read = await request(czech, "GET", `/api/items/${recipe.id}`);
     expect(itemBody.parse(read.body)).toMatchObject({

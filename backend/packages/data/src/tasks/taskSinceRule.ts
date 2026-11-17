@@ -1,7 +1,6 @@
 /**
- * Captures the first planned day and time of an open task that is about to move on, for a write that changes
- * its `date`. A patch that does not name a different `date` captures nothing; `firstPlannedDay` is the same rule
- * for a writer whose change is the task's effective day and not its `date`.
+ * For a write that changes `date`; a patch not naming a different `date` captures nothing. `firstPlannedDay` is
+ * the same rule for writers that change the effective day instead.
  */
 export function taskSinceRule(
   stored: Record<string, unknown>,
@@ -14,10 +13,8 @@ export function taskSinceRule(
 }
 
 /**
- * The `since` (and `sinceTime`) a task takes when its effective day moves on: the task is `notDone`, its current
- * effective day (a nonempty `effectiveDate`, else `date`) is before `today`, and its `since` is empty. `sinceTime`
- * is the task's time only while the effective day is the task's own `date` and a time exists. Returns `{}` when
- * the conditions do not hold.
+ * Applies when the task is `notDone`, its effective day (`effectiveDate`, else `date`) is before `today`, and
+ * `since` is empty; otherwise `{}`. `sinceTime` is set only while the effective day is the task's own `date`.
  */
 export function firstPlannedDay(stored: Record<string, unknown>, today: string): Record<string, unknown> {
   const currentDate = typeof stored.date === "string" ? stored.date : null;

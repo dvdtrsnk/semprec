@@ -23,14 +23,9 @@ import { logger } from "./logger.js";
 
 export const STT_STREAM_PATH = "/internal/stt/stream";
 
-/** The `ai_gateway_calls.operation` of every chunk row of this route. */
 export const STT_STREAM_OPERATION = "voice_transcribe_stream";
 
-/**
- * Limits of docs/adr/2026-10-28-live-voice-chains-speech-to-text-agent-turn-and-text-to-speech.md.
- * A binary frame over the cap is refused by the socket library itself (close 1009), before the
- * frame is buffered whole.
- */
+/** An oversized frame is refused by the socket library (close 1009) before it is buffered whole. */
 const MAX_BINARY_FRAME_BYTES = 16 * 1024;
 const MAX_TEXT_FRAME_BYTES = 4 * 1024;
 const MAX_SESSION_MS = 30 * 60 * 1000;
@@ -43,7 +38,7 @@ const MAX_BUFFERED_OUTGOING_BYTES = 256 * 1024;
 const CLOSE_GRACE_MS = 5_000;
 /** How many streams may run at once; each one holds a provider connection and a reserved chunk. */
 export const MAX_CONCURRENT_STT_STREAMS = 8;
-/** The ADR's chunk length; one `ai_gateway_calls` row covers this many seconds of audio. */
+/** One `ai_gateway_calls` row covers this many seconds of audio. */
 export const DEFAULT_STT_CHUNK_SECONDS = 30;
 
 const LANGUAGE_PATTERN = /^[a-z]{2}$/;
@@ -70,7 +65,6 @@ export interface SttStreamHandlerOptions {
 
 export interface SttStreamUpgradeHandler {
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
-  /** Ends every open stream and resolves once their chunk rows are settled or failed. */
   closeAll(): Promise<void>;
 }
 
@@ -89,17 +83,10 @@ function readLanguage(url: URL): string | undefined {
 }
 
 /**
- * Handles the WebSocket upgrade of `/internal/stt/stream` (#1396): bearer token and tenant as on
- * the other internal routes, a dedicated concurrency limit, and one stream per accepted socket.
- *
- * Inbound frames: raw 16 kHz PCM s16le in binary frames, one JSON `{type: "end"}` and any number of
- * JSON `{type: "attribute", sempMessageId}` (#2020): it sets `semp_message_id` on every chunk row this stream
- * reserved since it opened or since its previous `attribute` message, in the stream's tenant, and on no other row.
- * Rows that no later `attribute` message reaches stay unattributed. Outbound
- * JSON: `{type: "partial"|"final", text}` and `{type: "error", code}`. Budget is reserved in
- * chunks of `chunkSeconds` (one `ai_gateway_calls` row each), before the chunk's audio is
- * forwarded. Audio exists only in the frame being forwarded; it is never stored or logged, and
- * neither are transcripts.
+ * WebSocket `/internal/stt/stream`. Inbound: 16 kHz PCM s16le binary frames, one `{type: "end"}`,
+ * and `{type: "attribute", sempMessageId}`, which attributes the chunk rows reserved since the
+ * previous one. Outbound: `{type: "partial"|"final", text}` and `{type: "error", code}`. Budget is
+ * reserved per chunk before its audio is forwarded. Audio and transcripts are never stored or logged.
  */
 export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHandlerOptions): SttStreamUpgradeHandler {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BINARY_FRAME_BYTES });
@@ -162,10 +149,7 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
       }
     }
 
-    /**
-     * The single exit: stops timers and the provider session, accounts for the open chunk and frees
-     * the stream slot. `closeCode` null means the socket is already gone or being dropped.
-     */
+    /** The single exit. `closeCode` null means the socket is already gone or being dropped. */
     function finish(closeCode: number | null, errorCode?: SttStreamErrorCode): void {
       if (done) return;
       done = true;
@@ -404,8 +388,7 @@ export function createSttStreamUpgradeHandler(pool: Pool, options: SttStreamHand
         }
         throw err;
       }
-      // Unlike the HTTP routes there is no legacy caller without a tenant: a stream without one
-      // could not be attributed to a budget.
+      // A stream without a tenant could not be attributed to a budget.
       if (tenantId === null) {
         refuseUpgrade(socket, 400, "Bad Request");
         return;

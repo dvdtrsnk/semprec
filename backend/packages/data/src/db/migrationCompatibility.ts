@@ -1,18 +1,13 @@
 /**
- * Mechanical half of `docs/adr/2026-09-10-expand-contract-forward-only-migrations.md`: flags the
- * statements that would break the previous release's code, which keeps running against the
- * migrated schema both while a deploy migrates and after `deploy.sh --rollback` (issue #191).
+ * Flags migration statements that would break the previous release's code, which keeps running
+ * against the migrated schema during a deploy and after `deploy.sh --rollback`.
  *
- * It is a lexical check, not a SQL parser. Comments and string literals are blanked out first, so
- * a word in a comment or inside `EXECUTE '...'` is never flagged; statements inside a `DO $$ ... $$`
- * body are checked like top-level ones. A statement against a table an earlier statement of the same
- * file creates is never flagged, since no previous release can use that table; a table dropped before
- * the file (re)creates it is still the previous release's table and is flagged.
+ * A lexical check, not a SQL parser: comments and string literals are blanked first, and statements
+ * inside `DO $$ ... $$` are checked like top-level ones. A table created earlier in the same file is
+ * never flagged; one dropped and recreated in the file still is.
  *
- * A file whose change is safe for a reason a lexical check cannot see opts out with a line comment
- * `-- expand-contract-exemption: <reason>`: a contract step (the removal half of expand/contract,
- * shipped once no release that can still run uses the old shape), a type change that only widens,
- * or a breaking change the linked issue's Task explicitly calls for.
+ * A file opts out with `-- expand-contract-exemption: <reason>` (a contract step, a widening type
+ * change, or a breaking change the task explicitly calls for).
  */
 
 export type MigrationCompatibilityRule =
@@ -25,10 +20,7 @@ export interface MigrationCompatibilityFinding {
 
 const EXEMPTION_MARKER = /^--[ \t]*expand-contract-exemption:[ \t]*\S/;
 
-/**
- * Replaces comments with a space and string-literal contents with nothing, keeping the quotes, and
- * returns the line comments it removed.
- */
+/** Blanks comments to a space and string contents to nothing (quotes kept); returns the line comments removed. */
 function blankCommentsAndStrings(sql: string): { code: string; lineComments: string[] } {
   const lineComments: string[] = [];
   let out = "";
@@ -89,7 +81,7 @@ function splitTopLevel(text: string): string[] {
   return parts.map((p) => p.trim()).filter((p) => p.length > 0);
 }
 
-// Every capture group below is mandatory, so a match always has it; `?? ""` only satisfies the type.
+// Every capture group below is mandatory; `?? ""` only satisfies the type.
 const NAME = String.raw`((?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?)`;
 const CREATE_TABLE = new RegExp(
   String.raw`\bCREATE\s+(?:(?:GLOBAL\s+|LOCAL\s+)?(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?${NAME}`,

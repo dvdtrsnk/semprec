@@ -3,13 +3,8 @@ import { runAsSystem } from "@semprec/shared";
 import type { Queryable } from "./pool.js";
 
 /**
- * Issue #1085: the tenancy invariants of `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`,
- * read from the catalog of the database the deploy is about to activate a release on. The catalog
- * test (`__tests__/tenancyCatalog.test.ts`) proves the same invariants on the test database in CI;
- * this module catches a hole opened on the production database by hand (an `ALTER ROLE … BYPASSRLS`,
- * a dropped policy, a grant on an `items_p_*` partition, a hand-edited function).
- *
- * Every `object` and `detail` is built from catalog names only, never from row content.
+ * Tenancy invariants read from the catalog a deploy is about to activate, catching holes opened by hand in
+ * production. `object`/`detail` use catalog names only, never row content.
  */
 export type TenancyViolation = { invariant: string; object: string; detail: string };
 
@@ -130,10 +125,7 @@ async function findStrictDefaultViolations(client: Queryable): Promise<TenancyVi
   return [];
 }
 
-/**
- * A runtime role that is missing, superuser, `BYPASSRLS`, a member of a superuser or `BYPASSRLS`
- * role, or a member of (or itself) the owner of a relation in `public`.
- */
+/** Missing, superuser, `BYPASSRLS`, member of such a role, or owner (or member of the owner) of a `public` relation. */
 async function findRuntimeRoleViolations(client: Queryable): Promise<TenancyViolation[]> {
   const { rows } = await client.query<{
     role_name: string;
@@ -203,10 +195,7 @@ async function findPartitionPrivilegeViolations(client: Queryable): Promise<Tena
   }));
 }
 
-/**
- * The elements of the value of a `proconfig` `search_path=` setting: split on `,`, trimmed, the
- * surrounding double quotes of an element removed, empty elements dropped.
- */
+/** Splits a `proconfig` `search_path=` value into trimmed, unquoted, non-empty elements. */
 function parseSearchPath(value: string): string[] {
   return value
     .split(",")
@@ -219,11 +208,7 @@ function parseSearchPath(value: string): string[] {
 
 type SchemaFacts = { exists: boolean; runtimeRoleMayCreate: boolean };
 
-/**
- * For each schema name, whether the catalog of `client`'s database has it and whether `PUBLIC`,
- * `semprec_data` or `semprec_side` holds `CREATE` on it. A runtime role that does not exist is
- * skipped here; `findRuntimeRoleViolations` reports it.
- */
+/** Existence and `CREATE` for `PUBLIC`/`semprec_data`/`semprec_side`; a missing runtime role is skipped here. */
 async function readSchemaFacts(client: Queryable, names: string[]): Promise<Map<string, SchemaFacts>> {
   const facts = new Map<string, SchemaFacts>();
   if (names.length === 0) return facts;
@@ -244,15 +229,12 @@ async function readSchemaFacts(client: Queryable, names: string[]): Promise<Map<
 }
 
 /**
- * A `SECURITY DEFINER` function, in any schema but `pg_catalog` and `information_schema`, that
- * - has no pinned `search_path`, or one that does not end with `pg_temp` (the temporary schema is
- *   searched first for relation and type names unless it is listed, finding R2-DB-1 of gh-1086),
- *   lists `pg_temp` before its end, names a schema that does not exist (`"$user"` included), or
- *   names a schema in which `PUBLIC`, `semprec_data` or `semprec_side` may create objects;
- * - is executable by `PUBLIC` (a NULL `proacl` is the default, which grants it);
+ * A `SECURITY DEFINER` function outside `pg_catalog`/`information_schema` that
+ * - has no pinned `search_path`, or one not ending in `pg_temp` (otherwise the temporary schema is
+ *   searched first), lists `pg_temp` earlier, names a missing schema (`"$user"` included), or names a
+ *   schema `PUBLIC`, `semprec_data` or `semprec_side` may create in;
+ * - is executable by `PUBLIC` (a NULL `proacl` grants it);
  * - or is owned by neither `semprec_router` nor the owner of `public.items`.
- *
- * Schema details are named by the `search_path` element, never by anything read from a function body.
  */
 async function findDefinerFunctionViolations(client: Queryable): Promise<TenancyViolation[]> {
   const { rows } = await client.query<{
@@ -280,8 +262,7 @@ async function findDefinerFunctionViolations(client: Queryable): Promise<Tenancy
   const elementsOf = new Map(
     rows.map((row) => [row.function_name, row.search_path === null ? null : parseSearchPath(row.search_path)]),
   );
-  // `pg_catalog` is looked up too: it always exists, but a runtime role holding CREATE on it could
-  // shadow functions and operators in the schema that is searched first.
+  // `pg_catalog` always exists, but CREATE on it would let a runtime role shadow functions and operators.
   const schemaNames = new Set<string>();
   for (const elements of elementsOf.values()) {
     for (const element of elements ?? []) {
@@ -345,7 +326,6 @@ async function findForeignKeyViolations(client: Queryable): Promise<TenancyViola
   }));
 }
 
-/** Every tenancy invariant the catalog of `client`'s database breaks, in invariant order; empty when all hold. */
 export async function findTenancyViolations(client: Queryable): Promise<TenancyViolation[]> {
   const checks = [
     findClassificationViolations,
@@ -364,11 +344,7 @@ export async function findTenancyViolations(client: Queryable): Promise<TenancyV
   return violations;
 }
 
-/**
- * Checks every tenancy invariant and reports the outcome: `tenancy: verified` and 0 when all hold,
- * otherwise one `tenancy violation [<invariant>] <object>: <detail>` error line per violation and
- * 1. A failing catalog query rejects rather than reporting either outcome.
- */
+/** Returns 0 when all hold, else 1 with one line per violation; a failing catalog query rejects. */
 export async function verifyTenancy(
   pool: Pool,
   output: { info(line: string): void; error(line: string): void },

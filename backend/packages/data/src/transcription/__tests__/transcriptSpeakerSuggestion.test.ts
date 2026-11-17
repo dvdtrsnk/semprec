@@ -2,7 +2,7 @@ import { setSelfPersonId } from "../../selfPerson.js";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES } from "@semprec/queue";
 import * as relationStore from "../../chokePoint/relationsStore.js";
@@ -28,6 +28,7 @@ import {
   confirmProposalWithClient,
   rejectProposalWithClient,
   reviseProposalWithClient,
+  type ReviseProposalInput,
 } from "../../inbox/proposalActions.js";
 import { setInboxCardsInvalidationHook, type InboxCardsInvalidationEvent } from "../../realtimeHook.js";
 import { listTranscriptSpeakers } from "../transcriptionSpeakerEdges.js";
@@ -47,7 +48,7 @@ import { createActionQueueAffinity } from "../../scheduler/actions.js";
 
 let pool: Pool;
 
-/** An invitation of the shape issue #1757 gives a participant edge; an internal write without a writer stores it as `system`. */
+/** An internal write without a writer stores it as `system`. */
 const ACCEPTED_INVITATION = {
   status: "accepted",
   email: "alice@example.com",
@@ -65,11 +66,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/**
- * The value of `work`, or the string `"still waiting"` when it has not settled after `milliseconds`. The limit
- * only ends a wait that would otherwise last as long as a lock is held; work that does not wait settles long
- * before it.
- */
+/** `"still waiting"` after `milliseconds`: the limit only ends a wait that would last as long as a lock is held. */
 async function settledWithin<T>(work: Promise<T>, milliseconds = 10_000): Promise<T | "still waiting"> {
   let timer: NodeJS.Timeout | undefined;
   const limit = new Promise<"still waiting">((resolve) => {
@@ -91,7 +88,6 @@ async function propertyIdFor(databaseId: string, key: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Issue #185: AI-suggested speaker mappings are transcript cards; only a confirm writes the user-owned mapping. */
 describe("Speaker mapping suggestions (issue #185)", () => {
   let transcriptsId: string;
   let peopleId: string;
@@ -111,8 +107,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     peopleId = await databaseIdFor("people");
     eventsId = await databaseIdFor("events");
     proposalsId = await databaseIdFor("processingProposals");
-    // An Events `people` edge is a link-rule source (issue #1697): its write queues a propagation job, which
-    // needs a tenant scope.
+    // An Events `people` edge is a link-rule source: its write queues a job, which needs a tenant scope.
     chokePoint = bindToTenantZero(createChokePoint(pool));
 
     transcriptId = await withTransaction(pool, async (client) => {
@@ -120,7 +115,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       await writeComputed(client, transcriptsId, item.id, "segments", SEGMENTS);
       return item.id;
     });
-    // An Event's create requires a date (issue #1663); the speaker suggestion reads only its participants.
+    // An Event's create requires a date; the speaker suggestion reads only its participants.
     eventId = await createItem(eventsId, "Sync", { date: "2026-10-16" });
     aliceId = await createParticipant("Alice");
     bobId = await createParticipant("Bob");
@@ -193,19 +188,42 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     return cards[0].id;
   }
 
-  function confirm(cardId: string) {
-    return withTransaction(pool, (client) =>
-      confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-    );
+  const proposalOptions = () => ({ processingProposalsDatabaseId: proposalsId });
+
+  function confirm(cardId: string, db: Pool = pool) {
+    return withTransaction(db, (client) => confirmProposalWithClient(client, proposalOptions(), cardId));
   }
 
-  function revise(cardId: string, envelope: ProposalEnvelope) {
-    return withTransaction(pool, (client) =>
-      reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
-        message: "Revised by user.",
-        ...envelope,
-      }),
+  /** A bare envelope is revised with the default user message. */
+  function revise(cardId: string, input: ProposalEnvelope | ReviseProposalInput, db: Pool = pool) {
+    const body: ReviseProposalInput = "message" in input ? input : { message: "Revised by user.", ...input };
+    return withTransaction(db, (client) => reviseProposalWithClient(client, proposalOptions(), cardId, body));
+  }
+
+  function reject(cardId: string, db: Pool = pool) {
+    return withTransaction(db, (client) => rejectProposalWithClient(client, proposalOptions(), cardId));
+  }
+
+  /** Runs `work` on a runtime-role pool, which row-level security applies to, in tenant zero unless `scoped` is off. */
+  async function asRuntime<T>(work: (runtime: Pool) => Promise<T>, scoped = true): Promise<T> {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      );
+      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+      return await (scoped ? runInTenant(getTenantZeroId(), () => work(runtime)) : work(runtime));
+    } finally {
+      await runtime.end();
+    }
+  }
+
+  async function edgesBetween(db: Pool, a: string, b: string) {
+    const { rows } = await db.query<{ id: string; metadata: unknown }>(
+      "SELECT id, metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b) ORDER BY id",
+      [a, b],
     );
+    return rows;
   }
 
   function mapping(personId: string, speaker: string): ProposalEnvelope {
@@ -216,28 +234,28 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     return (await speakers()).map((entry) => entry.person?.id ?? null);
   }
 
+  /** Overwrites stored JSON the current writers refuse, standing in for a historical value. */
+  async function setHistoricalProperty(itemId: string, key: string, value: string): Promise<void> {
+    const historical = await pool.query(
+      "UPDATE items SET properties = jsonb_set(properties, ARRAY[$4::text], to_jsonb($5::text)) WHERE tenant_id = $1 AND database_id = $2 AND id = $3",
+      [getTenantZeroId(), peopleId, itemId, key, value],
+    );
+    expect(historical.rowCount).toBe(1);
+  }
+
+  const candidate = (id: string, name: string) => ({ id, name, title: null, invitationStatus: null });
+
   describe("readSpeakerSuggestionContext", () => {
     it("keeps unmapped speakers when the transcript has no linked Event", async () => {
       expect(await context()).toMatchObject({ unmappedSpeakers: ["SPEAKER_00", "SPEAKER_01"], candidates: [] });
     });
 
-    it("offers the tenant's own person even without an Event", async () => {
+    it("offers the tenant's own person even without an Event, also when the stored name is empty", async () => {
       await withTransaction(pool, (client) => setSelfPersonId(client, aliceId));
-      expect((await context())?.candidates).toEqual([
-        { id: aliceId, name: "Alice", title: null, invitationStatus: null },
-      ]);
-    });
-
-    it("keeps the tenant's own person even when the stored name is empty", async () => {
-      const ownId = await createItem(peopleId, "Owner");
-      // Synthetic historical value: the current item writer rejects an empty title.
-      const historical = await pool.query(
-        "UPDATE items SET properties = jsonb_set(properties, '{name}', '\"\"'::jsonb) WHERE tenant_id = $1 AND database_id = $2 AND id = $3",
-        [getTenantZeroId(), peopleId, ownId],
-      );
-      expect(historical.rowCount).toBe(1);
-      await withTransaction(pool, (client) => setSelfPersonId(client, ownId));
-      expect((await context())?.candidates).toEqual([{ id: ownId, name: "", title: null, invitationStatus: null }]);
+      expect((await context())?.candidates).toEqual([candidate(aliceId, "Alice")]);
+      // The current item writer rejects an empty title.
+      await setHistoricalProperty(aliceId, "name", "");
+      expect((await context())?.candidates).toEqual([candidate(aliceId, "")]);
     });
 
     it("offers the Event's named participants for every unmapped key", async () => {
@@ -248,22 +266,13 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       const found = await context();
 
       expect(found?.unmappedSpeakers).toEqual(["SPEAKER_00", "SPEAKER_01"]);
-      expect(found?.candidates).toEqual(
-        expect.arrayContaining([
-          { id: aliceId, name: "Alice", title: null, invitationStatus: null },
-          { id: bobId, name: "Bob", title: null, invitationStatus: null },
-        ]),
-      );
       expect(found?.candidates).toHaveLength(2);
+      expect(found?.candidates).toEqual(expect.arrayContaining([candidate(aliceId, "Alice"), candidate(bobId, "Bob")]));
     });
 
     it("ignores an incidental historical title on a participant", async () => {
-      // Synthetic historical JSON: the current People writer has no supported title property.
-      const historical = await pool.query(
-        "UPDATE items SET properties = jsonb_set(properties, '{title}', to_jsonb($4::text)) WHERE tenant_id = $1 AND database_id = $2 AND id = $3",
-        [getTenantZeroId(), peopleId, aliceId, "Historical title"],
-      );
-      expect(historical.rowCount).toBe(1);
+      // The current People writer has no supported title property.
+      await setHistoricalProperty(aliceId, "title", "Historical title");
       await linkEvent();
       expect((await context())?.candidates).toEqual(
         expect.arrayContaining([expect.objectContaining({ id: aliceId, name: "Alice", title: null })]),
@@ -274,9 +283,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       await withTransaction(pool, (client) => setSelfPersonId(client, aliceId));
       await linkEvent();
       await chokePoint.softDeleteItem(eventsId, eventId);
-      expect((await context())?.candidates).toEqual([
-        { id: aliceId, name: "Alice", title: null, invitationStatus: null },
-      ]);
+      expect((await context())?.candidates).toEqual([candidate(aliceId, "Alice")]);
     });
 
     it("uses only recognized invitation status metadata as an optional hint", async () => {
@@ -293,7 +300,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         callerItemId: eventId,
         targetItemId: bobId,
       });
-      // The participant edge hook (issue #1757) refuses this shape, so only an edge stored before it can hold it.
+      // The participant edge hook refuses this shape, so only an old stored edge can hold it.
       const legacy = await pool.query("UPDATE item_relations SET metadata = $2::jsonb WHERE id = $1", [
         bobEdge.id,
         JSON.stringify({ invitation: { status: "unknown" } }),
@@ -310,95 +317,99 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     it("leaves out keys and participants already mapped, and has nothing to ask once every key is", async () => {
       await linkEvent();
       await mapSpeaker(aliceId, "SPEAKER_01");
-
       expect(await context()).toMatchObject({
         unmappedSpeakers: ["SPEAKER_00"],
         locale: "cs",
-        candidates: [{ id: bobId, name: "Bob", title: null, invitationStatus: null }],
+        candidates: [candidate(bobId, "Bob")],
       });
-
       await mapSpeaker(bobId, "SPEAKER_00");
       expect(await context()).toBeNull();
     });
-  });
 
-  it("stores authentic selected quotes, source, reasons and alternatives on each speaker card", async () => {
-    const segments = [
-      { speaker: "SPEAKER_00", text: "We should review the entire proposal tomorrow.", startsAt: 0, endsAt: 1 },
-      { speaker: "SPEAKER_00", text: "The team can discuss the remaining details together.", startsAt: 1, endsAt: 2 },
-      { speaker: "SPEAKER_01", text: "This second speaker has enough words to quote.", startsAt: 2, endsAt: 3 },
-      { speaker: "SPEAKER_02", text: "The third speaker also has a recorded sentence.", startsAt: 3, endsAt: 4 },
-    ];
-    await withTransaction(pool, (client) => writeComputed(client, transcriptsId, transcriptId, "segments", segments));
-    await linkEvent();
-    await propose([
-      { speaker: "SPEAKER_00", personId: aliceId, reason: "Alice is named." },
-      { speaker: "SPEAKER_01", personId: null, reason: "Uncertain." },
-      { speaker: "SPEAKER_02", personId: aliceId, reason: "Duplicate candidate." },
-    ]);
-    const rows = await pool.query<{ status: string; context: unknown }>(
-      "SELECT properties ->> 'status' AS status, properties -> 'context' AS context FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript'",
-      [proposalsId],
-    );
-    const cards = rows.rows.map((row) => ({
-      status: row.status,
-      context: transcriptSpeakerCardContextSchema.parse(row.context),
-    }));
-    expect(cards).toHaveLength(3);
-    const first = cards.find((card) => card.context.speaker === "SPEAKER_00");
-    expect(first).toMatchObject({
-      status: "proposed",
-      context: { reason: "Alice is named.", firstStartsAt: 0, source: { transcriptName: "Sync" } },
+    it("uses only eligible quotes while retaining each speaker's actual first start", async () => {
+      const segment = (speaker: string, text: string, startsAt: number) => ({
+        speaker: `SPEAKER_0${speaker}`,
+        text,
+        startsAt,
+        endsAt: startsAt + 1,
+      });
+      const counted = (words: number) =>
+        "One two three four five six seven eight nine".split(" ").slice(0, words).join(" ");
+      const long = "We discussed this proposal with the team ".repeat(6);
+      const segments = [
+        segment("0", "First short", 0),
+        segment("1", "Short one", 1),
+        segment("1", "Short two", 2),
+        segment("2", "No quote one", 3),
+        segment("2", "No quote two", 4),
+        segment("2", counted(5), 5),
+        segment("0", counted(6), 6),
+        segment("0", counted(7), 7),
+        segment("0", counted(8), 8),
+        segment("0", counted(9), 9),
+        segment("0", long, 10),
+        segment("1", counted(6), 11),
+      ];
+      await withTransaction(pool, (client) => writeComputed(client, transcriptsId, transcriptId, "segments", segments));
+      expect((await context())?.details).toEqual([
+        {
+          speaker: "SPEAKER_00",
+          ordinal: 1,
+          firstStartsAt: 0,
+          quotes: [
+            { segmentIndex: 8, text: counted(8) },
+            { segmentIndex: 9, text: counted(9) },
+            { segmentIndex: 10, text: long.slice(0, 140) },
+          ],
+        },
+        { speaker: "SPEAKER_01", ordinal: 2, firstStartsAt: 1, quotes: [{ segmentIndex: 11, text: counted(6) }] },
+        { speaker: "SPEAKER_02", ordinal: 3, firstStartsAt: 3, quotes: [] },
+      ]);
     });
-    expect(first?.context.quotes).toEqual([
-      { segmentIndex: 0, text: segments[0]?.text },
-      { segmentIndex: 1, text: segments[1]?.text },
-    ]);
-    expect(first?.context.alternatives.map((entry) => entry.personId)).toEqual(
-      expect.arrayContaining([aliceId, bobId]),
-    );
-    expect(cards.filter((card) => card.status === "needsClarification")).toHaveLength(2);
-    for (const card of cards)
-      for (const quote of card.context.quotes)
-        expect(segments[quote.segmentIndex]?.text.startsWith(quote.text)).toBe(true);
-  });
-
-  it("uses only eligible quotes while retaining each speaker's actual first start", async () => {
-    const segments = [
-      { speaker: "SPEAKER_00", text: "First short", startsAt: 0, endsAt: 1 },
-      { speaker: "SPEAKER_01", text: "Short one", startsAt: 1, endsAt: 2 },
-      { speaker: "SPEAKER_01", text: "Short two", startsAt: 2, endsAt: 3 },
-      { speaker: "SPEAKER_02", text: "No quote one", startsAt: 3, endsAt: 4 },
-      { speaker: "SPEAKER_02", text: "No quote two", startsAt: 4, endsAt: 5 },
-      { speaker: "SPEAKER_02", text: "One two three four five", startsAt: 5, endsAt: 6 },
-      { speaker: "SPEAKER_00", text: "One two three four five six", startsAt: 6, endsAt: 7 },
-      { speaker: "SPEAKER_00", text: "One two three four five six seven", startsAt: 7, endsAt: 8 },
-      { speaker: "SPEAKER_00", text: "One two three four five six seven eight", startsAt: 8, endsAt: 9 },
-      { speaker: "SPEAKER_00", text: "One two three four five six seven eight nine", startsAt: 9, endsAt: 10 },
-      { speaker: "SPEAKER_00", text: "We discussed this proposal with the team ".repeat(6), startsAt: 10, endsAt: 11 },
-      { speaker: "SPEAKER_01", text: "One two three four five six", startsAt: 11, endsAt: 12 },
-    ];
-    expect(segments[5]!.text.split(/\s+/)).toHaveLength(5);
-    expect(segments[11]!.text.split(/\s+/)).toHaveLength(6);
-    await withTransaction(pool, (client) => writeComputed(client, transcriptsId, transcriptId, "segments", segments));
-    const result = await context();
-    expect(result?.details).toEqual([
-      {
-        speaker: "SPEAKER_00",
-        ordinal: 1,
-        firstStartsAt: 0,
-        quotes: [
-          { segmentIndex: 8, text: segments[8]!.text },
-          { segmentIndex: 9, text: segments[9]!.text },
-          { segmentIndex: 10, text: segments[10]!.text.slice(0, 140) },
-        ],
-      },
-      { speaker: "SPEAKER_01", ordinal: 2, firstStartsAt: 1, quotes: [{ segmentIndex: 11, text: segments[11]!.text }] },
-      { speaker: "SPEAKER_02", ordinal: 3, firstStartsAt: 3, quotes: [] },
-    ]);
   });
 
   describe("proposeSpeakerMappings", () => {
+    it("stores authentic selected quotes, source, reasons and alternatives on each speaker card", async () => {
+      const segments = [
+        { speaker: "SPEAKER_00", text: "We should review the entire proposal tomorrow.", startsAt: 0, endsAt: 1 },
+        { speaker: "SPEAKER_00", text: "The team can discuss the remaining details together.", startsAt: 1, endsAt: 2 },
+        { speaker: "SPEAKER_01", text: "This second speaker has enough words to quote.", startsAt: 2, endsAt: 3 },
+        { speaker: "SPEAKER_02", text: "The third speaker also has a recorded sentence.", startsAt: 3, endsAt: 4 },
+      ];
+      await withTransaction(pool, (client) => writeComputed(client, transcriptsId, transcriptId, "segments", segments));
+      await linkEvent();
+      await propose([
+        { speaker: "SPEAKER_00", personId: aliceId, reason: "Alice is named." },
+        { speaker: "SPEAKER_01", personId: null, reason: "Uncertain." },
+        { speaker: "SPEAKER_02", personId: aliceId, reason: "Duplicate candidate." },
+      ]);
+      const rows = await pool.query<{ status: string; context: unknown }>(
+        "SELECT properties ->> 'status' AS status, properties -> 'context' AS context FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript'",
+        [proposalsId],
+      );
+      const cards = rows.rows.map((row) => ({
+        status: row.status,
+        context: transcriptSpeakerCardContextSchema.parse(row.context),
+      }));
+      expect(cards).toHaveLength(3);
+      const first = cards.find((card) => card.context.speaker === "SPEAKER_00");
+      expect(first).toMatchObject({
+        status: "proposed",
+        context: { reason: "Alice is named.", firstStartsAt: 0, source: { transcriptName: "Sync" } },
+      });
+      expect(first?.context.quotes).toEqual([
+        { segmentIndex: 0, text: segments[0]?.text },
+        { segmentIndex: 1, text: segments[1]?.text },
+      ]);
+      expect(first?.context.alternatives.map((entry) => entry.personId)).toEqual(
+        expect.arrayContaining([aliceId, bobId]),
+      );
+      expect(cards.filter((card) => card.status === "needsClarification")).toHaveLength(2);
+      for (const card of cards)
+        for (const quote of card.context.quotes)
+          expect(segments[quote.segmentIndex]?.text.startsWith(quote.text)).toBe(true);
+    });
+
     it("creates one proposed card per valid suggestion and writes no mapping", async () => {
       await linkEvent();
       const carolId = await createItem(peopleId, "Carol");
@@ -421,42 +432,49 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       expect(await mappedPersonIds()).toEqual([null, null]);
     });
 
-    it("links each card to its transcript through sourceTranscript", async () => {
+    it("links the card to its transcript, stores the mapping as aiProposal at aiVersion 1 and the person as referencedItemIds", async () => {
       await linkEvent();
       await propose([{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }]);
 
-      const { rows } = await pool.query<{ count: number }>(
-        `SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)`,
-        [await onlyCardId(), transcriptId],
+      expect(await edgesBetween(pool, await onlyCardId(), transcriptId)).toHaveLength(1);
+      const { rows } = await pool.query<{
+        status: string;
+        ai: unknown;
+        proposal: unknown;
+        version: number;
+        refs: unknown;
+      }>(
+        `SELECT properties ->> 'status' AS status, properties -> 'aiProposal' AS ai, properties -> 'proposal' AS proposal,
+                (properties ->> 'aiVersion')::int AS version, properties -> 'referencedItemIds' AS refs
+           FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript' ORDER BY properties ->> 'status'`,
+        [proposalsId],
       );
-      expect(rows[0]?.count).toBe(1);
+      expect(rows).toEqual([
+        { status: "needsClarification", ai: null, proposal: null, version: 1, refs: [] },
+        {
+          status: "proposed",
+          ai: mapping(aliceId, "SPEAKER_01"),
+          proposal: mapping(aliceId, "SPEAKER_01"),
+          version: 1,
+          refs: [aliceId],
+        },
+      ]);
     });
 
-    it("never proposes the same key twice across runs", async () => {
-      await linkEvent();
-      await propose([{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }]);
-
-      expect(await propose([{ speaker: "SPEAKER_01", personId: bobId, reason: "Named." }])).toEqual([]);
-      expect(await speakerCards()).toHaveLength(2);
-    });
-
-    it("announces each new card once and nothing for a repeated run (issue #1811)", async () => {
+    it("announces each new card once, and never proposes the same key twice across runs", async () => {
       await linkEvent();
       const events: InboxCardsInvalidationEvent[] = [];
       setInboxCardsInvalidationHook((event) => events.push(event));
       try {
         await propose([{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }]);
-        const cardIds = (await speakerCards()).length;
-        expect(events).toHaveLength(cardIds);
-        const announced = events.splice(0);
-        expect(announced.every((event) => event.op === "created" && event.userId === undefined)).toBe(true);
-        const stored = await pool.query<{ id: string }>(
-          "SELECT id FROM items WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'processingProposals')",
-        );
-        expect(announced.map((event) => event.cardId).sort()).toEqual(stored.rows.map((row) => row.id).sort());
+        const cards = await speakerCards();
+        expect(events.every((event) => event.op === "created" && event.userId === undefined)).toBe(true);
+        expect(events.map((event) => event.cardId).sort()).toEqual(cards.map((card) => card.id).sort());
+        events.splice(0);
 
         expect(await propose([{ speaker: "SPEAKER_01", personId: bobId, reason: "Named." }])).toEqual([]);
         expect(events).toEqual([]);
+        expect(await speakerCards()).toHaveLength(2);
       } finally {
         setInboxCardsInvalidationHook(() => {});
       }
@@ -467,160 +485,64 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         "SPEAKER_00",
         "SPEAKER_01",
       ]);
-      expect(await speakerCards()).toHaveLength(2);
-      expect(
-        (await speakerCards()).every((card) => card.status === "needsClarification" && card.proposal === null),
-      ).toBe(true);
+      const cards = await speakerCards();
+      expect(cards).toHaveLength(2);
+      expect(cards.every((card) => card.status === "needsClarification" && card.proposal === null)).toBe(true);
     });
 
-    it("stores the mapping as aiProposal too, at aiVersion 1 (issue #1471)", async () => {
-      await linkEvent();
-      await propose([{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }]);
-
-      const { rows } = await pool.query<{ aiProposal: unknown; proposal: unknown; aiVersion: number }>(
-        `SELECT properties -> 'aiProposal' AS "aiProposal", properties -> 'proposal' AS proposal,
-                (properties ->> 'aiVersion')::int AS "aiVersion"
-           FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript' AND properties ->> 'status' = 'proposed'`,
-        [proposalsId],
-      );
-      expect(rows).toEqual([
-        { aiProposal: mapping(aliceId, "SPEAKER_01"), proposal: mapping(aliceId, "SPEAKER_01"), aiVersion: 1 },
-      ]);
-    });
-
-    it("stores the proposed person as the card's referencedItemIds, and none for a card without a proposal (issue #1916)", async () => {
-      await linkEvent();
-      await propose([{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }]);
-
-      const { rows } = await pool.query<{ status: string; referencedItemIds: unknown }>(
-        `SELECT properties ->> 'status' AS status, properties -> 'referencedItemIds' AS "referencedItemIds"
-           FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript' ORDER BY properties ->> 'status'`,
-        [proposalsId],
-      );
-      expect(rows).toEqual([
-        { status: "needsClarification", referencedItemIds: [] },
-        { status: "proposed", referencedItemIds: [aliceId] },
-      ]);
-    });
-  });
-
-  it.each(["rejected", "trashed"] as const)(
-    "does not recreate a %s speaker card and creates a different key",
-    async (state) => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      try {
-        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-        );
-        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-        const tenant = getTenantZeroId();
-        await runInTenant(tenant, async () => {
-          const eventProperty = await runtime.query<{ id: string }>(
-            "SELECT id FROM properties WHERE database_id = $1 AND key = 'event'",
-            [transcriptsId],
-          );
-          if (!eventProperty.rows[0]) throw new Error("Missing transcript event property");
+    it.each(["rejected", "trashed"] as const)(
+      "does not recreate a %s speaker card and creates a different key",
+      async (state) => {
+        await asRuntime(async (runtime) => {
           await createChokePoint(runtime).createRelation({
-            relationPropertyId: eventProperty.rows[0].id,
+            relationPropertyId: await propertyIdFor(transcriptsId, "event"),
             callerItemId: transcriptId,
             targetItemId: eventId,
           });
-          await withTransaction(runtime, (client) =>
-            writeComputed(client, transcriptsId, transcriptId, "segments", SEGMENTS.slice(0, 1)),
-          );
-          await withTransaction(runtime, (client) =>
-            proposeSpeakerMappings(client, {
-              transcriptId,
-              suggestions: [{ speaker: "SPEAKER_00", personId: aliceId, reason: "Named." }],
-            }),
-          );
-          const rows = await runtime.query<{ id: string }>(
-            "SELECT id FROM items WHERE database_id = $1 AND properties->'context'->>'speaker' = 'SPEAKER_00'",
-            [proposalsId],
-          );
-          if (rows.rows.length !== 1 || !rows.rows[0]) throw new Error("Missing first speaker card");
-          const first = rows.rows[0].id;
-          if (state === "rejected")
-            await withTransaction(runtime, (client) =>
-              rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first),
-            );
+          const proposeAs = (segments: typeof SEGMENTS, suggestions: SpeakerMappingSuggestion[]) =>
+            withTransaction(runtime, async (client) => {
+              await writeComputed(client, transcriptsId, transcriptId, "segments", segments);
+              return proposeSpeakerMappings(client, { transcriptId, suggestions });
+            });
+          await proposeAs(SEGMENTS.slice(0, 1), [{ speaker: "SPEAKER_00", personId: aliceId, reason: "Named." }]);
+          const first = await cardOf("SPEAKER_00");
+          if (state === "rejected") await reject(first, runtime);
           else await createChokePoint(runtime).softDeleteItem(proposalsId, first);
-          await withTransaction(runtime, (client) =>
-            writeComputed(client, transcriptsId, transcriptId, "segments", SEGMENTS),
-          );
-          await withTransaction(runtime, (client) =>
-            proposeSpeakerMappings(client, {
-              transcriptId,
-              suggestions: [
-                { speaker: "SPEAKER_00", personId: aliceId, reason: "Named." },
-                { speaker: "SPEAKER_01", personId: bobId, reason: "Named." },
-              ],
-            }),
-          );
+          await proposeAs(SEGMENTS, [
+            { speaker: "SPEAKER_00", personId: aliceId, reason: "Named." },
+            { speaker: "SPEAKER_01", personId: bobId, reason: "Named." },
+          ]);
           const cards = await runtime.query<{ id: string; speaker: string; deleted_at: Date | null }>(
-            "SELECT id, properties->'context'->>'speaker' AS speaker, deleted_at FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript' ORDER BY speaker",
+            "SELECT id, properties->'context'->>'speaker' AS speaker, deleted_at FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
             [proposalsId],
           );
-          expect(cards.rows.filter((card) => card.speaker === "SPEAKER_00")).toHaveLength(1);
-          expect(cards.rows.find((card) => card.speaker === "SPEAKER_00")?.id).toBe(first);
+          expect(cards.rows.filter((card) => card.speaker === "SPEAKER_00").map((card) => card.id)).toEqual([first]);
           expect(cards.rows.filter((card) => card.speaker === "SPEAKER_01" && card.deleted_at === null)).toHaveLength(
             1,
           );
         });
-      } finally {
-        await runtime.end();
-      }
-    },
-  );
+      },
+    );
+  });
 
   it("confirms a revised speaker without an Event and adds no participant edge", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    try {
-      const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-      );
-      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-      const tenant = getTenantZeroId();
-      await runInTenant(tenant, async () => {
-        await withTransaction(runtime, (client) => proposeSpeakerMappings(client, { transcriptId, suggestions: [] }));
-        const cards = await runtime.query<{ id: string }>(
-          "SELECT id FROM items WHERE database_id = $1 AND properties->'context'->>'speaker' = 'SPEAKER_00'",
-          [proposalsId],
-        );
-        if (!cards.rows[0]) throw new Error("Missing speaker card");
-        const cardId = cards.rows[0].id;
-        await withTransaction(runtime, (client) =>
-          reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
-            message: "Choose",
-            ...mapping(aliceId, "SPEAKER_00"),
-          }),
-        );
-        const before = await runtime.query<{ count: number }>(
+    await asRuntime(async (runtime) => {
+      await withTransaction(runtime, (client) => proposeSpeakerMappings(client, { transcriptId, suggestions: [] }));
+      const cardId = await cardOf("SPEAKER_00");
+      await revise(cardId, { message: "Choose", ...mapping(aliceId, "SPEAKER_00") }, runtime);
+      const eventEdges = () =>
+        runtime.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b)",
           [eventId],
         );
-        const confirmed = await withTransaction(runtime, (client) =>
-          confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-        );
-        const after = await runtime.query<{ count: number }>(
-          "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b)",
-          [eventId],
-        );
-        expect(after.rows).toEqual(before.rows);
-        expect(confirmed.properties.status).toBe("confirmed");
-        const history = z
-          .array(z.object({ addedRelations: z.unknown().optional() }))
-          .parse(confirmed.properties.history);
-        expect(history.at(-1)?.addedRelations).toBeUndefined();
-        const mappingRows = await runtime.query<{ count: number }>(
-          "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
-          [transcriptId, aliceId],
-        );
-        expect(mappingRows.rows).toEqual([{ count: 1 }]);
-      });
-    } finally {
-      await runtime.end();
-    }
+      const before = await eventEdges();
+      const confirmed = await confirm(cardId, runtime);
+      expect((await eventEdges()).rows).toEqual(before.rows);
+      expect(confirmed.properties.status).toBe("confirmed");
+      const history = z.array(z.object({ addedRelations: z.unknown().optional() })).parse(confirmed.properties.history);
+      expect(history.at(-1)?.addedRelations).toBeUndefined();
+      expect(await edgesBetween(runtime, transcriptId, aliceId)).toHaveLength(1);
+    });
   });
 
   describe("confirm, revise and reject of a speaker card", () => {
@@ -629,199 +551,101 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       await propose([{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }]);
     });
 
+    async function eventPeopleEdges(client: PoolClient) {
+      const propertyId = await propertyIdFor(eventsId, "people");
+      const definition = await relationStore.getRelationDefinitionByPropertyId(client, propertyId);
+      if (!definition) throw new Error("Missing Event people relation");
+      return { propertyId, edges: await relationStore.listRelationsForItem(client, definition.id, eventId) };
+    }
+
     it("adds a nonparticipant atomically and records only the inserted Event edge", async () => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      try {
-        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-        );
-        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-        const tenant = getTenantZeroId();
-        const foreign = await createTestTenant(pool);
-        const cardId = await onlyCardId();
-        const readEdges = async () =>
-          runInTenant(tenant, () =>
-            withTransaction(runtime, async (client) => {
-              const property = await client.query<{ id: string }>(
-                "SELECT id FROM properties WHERE database_id = $1 AND key = 'people'",
-                [eventsId],
-              );
-              if (!property.rows[0]) throw new Error("Missing Event people property");
-              const definition = await relationStore.getRelationDefinitionByPropertyId(client, property.rows[0].id);
-              if (!definition) throw new Error("Missing Event people relation");
-              return {
-                propertyId: property.rows[0].id,
-                edges: await relationStore.listRelationsForItem(client, definition.id, eventId),
-              };
-            }),
-          );
-        const person = await runInTenant(tenant, () =>
+      const foreign = await createTestTenant(pool);
+      const cardId = await onlyCardId();
+      await asRuntime(async (runtime) => {
+        const own = <T>(work: () => Promise<T>) => runInTenant(getTenantZeroId(), work);
+        const readEdges = () => own(() => withTransaction(runtime, eventPeopleEdges));
+        const person = await own(() =>
           createChokePoint(runtime).createItem({ databaseId: peopleId, properties: { name: "New participant" } }),
         );
-        await runInTenant(tenant, () =>
-          withTransaction(runtime, (client) =>
-            reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
-              message: "Choose person",
-              ...mapping(person.id, "SPEAKER_01"),
-            }),
-          ),
-        );
+        await own(() => revise(cardId, { message: "Choose person", ...mapping(person.id, "SPEAKER_01") }, runtime));
         const before = await readEdges();
-        await expect(
-          runInTenant(foreign, () =>
-            withTransaction(runtime, (client) =>
-              confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-            ),
-          ),
-        ).rejects.toMatchObject({ status: 404 });
-        const confirmed = await runInTenant(tenant, () =>
-          withTransaction(runtime, (client) =>
-            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-          ),
-        );
+        await expect(runInTenant(foreign, () => confirm(cardId, runtime))).rejects.toMatchObject({ status: 404 });
+        const confirmed = await own(() => confirm(cardId, runtime));
         const after = await readEdges();
         const extra = after.edges.filter((edge) => edge.itemA === person.id || edge.itemB === person.id);
         expect(extra).toHaveLength(1);
         expect(extra[0]?.metadata).toEqual({});
         expect(after.edges).toHaveLength(before.edges.length + 1);
-        const speakerEdges = await runInTenant(tenant, () =>
-          runtime.query<{ metadata: unknown }>(
-            "SELECT metadata FROM item_relations WHERE $1 IN (item_a, item_b) AND $2 IN (item_a, item_b)",
-            [transcriptId, person.id],
-          ),
-        );
-        expect(speakerEdges.rows).toEqual([{ metadata: { speaker: "SPEAKER_01" } }]);
-        expect(confirmed.properties.history).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              addedRelations: [
-                {
-                  edgeId: extra[0]!.id,
-                  relationPropertyId: after.propertyId,
-                  callerItemId: eventId,
-                  targetItemId: person.id,
-                },
-              ],
-            }),
-          ]),
-        );
+        expect((await own(() => edgesBetween(runtime, transcriptId, person.id))).map((edge) => edge.metadata)).toEqual([
+          { speaker: "SPEAKER_01" },
+        ]);
         const parsedHistory = z.array(proposalHistoryEntrySchema).parse(confirmed.properties.history);
         expect(parsedHistory.at(-1)?.addedRelations).toEqual([
           {
-            edgeId: extra[0]!.id,
+            edgeId: extra[0]?.id,
             relationPropertyId: after.propertyId,
             callerItemId: eventId,
             targetItemId: person.id,
           },
         ]);
-        const repeated = await runInTenant(tenant, () =>
-          withTransaction(runtime, (client) =>
-            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-          ),
-        );
+        const repeated = await own(() => confirm(cardId, runtime));
         expect(repeated.properties).toEqual(confirmed.properties);
         expect(repeated.updatedAt).toEqual(confirmed.updatedAt);
         expect((await readEdges()).edges).toEqual(after.edges);
-      } finally {
-        await runtime.end();
-      }
+      }, false);
     });
 
     it.each(["user-first", "confirm-first"] as const)(
       "serializes a real competing user write in the %s order",
       async (order) => {
-        const runtime = await createRuntimeRolePool(pool, "semprec_data");
-        let release = () => {};
-        const gate = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        let first: Promise<unknown> | undefined;
-        let second: Promise<unknown> | undefined;
-        let firstFailure: unknown;
-        let secondFailure: unknown;
-        let firstFailed = false;
-        let secondFailed = false;
-        let primaryFailure: unknown;
-        let primaryFailed = false;
-        const cleanupFailures: unknown[] = [];
-        try {
-          const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-          );
-          expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-          const tenant = getTenantZeroId();
-          const cardId = await onlyCardId();
-          await runInTenant(tenant, async () => {
-            const person = await createChokePoint(runtime).createItem({
-              databaseId: peopleId,
-              properties: { name: "Concurrent participant" },
-            });
-            const property = await runtime.query<{ id: string }>(
-              "SELECT id FROM properties WHERE database_id = $1 AND key = 'people'",
-              [eventsId],
-            );
-            if (!property.rows[0]) throw new Error("Missing Event people property");
-            const propertyId = property.rows[0].id;
-            await withTransaction(runtime, (client) =>
-              reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
-                message: "Choose",
-                ...mapping(person.id, "SPEAKER_01"),
-              }),
-            );
-            let firstPid = 0;
-            let secondPid = 0;
-            let firstReady = false;
-            const confirm = (client: import("pg").PoolClient) =>
-              confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId);
-            const userWrite = (client: import("pg").PoolClient) =>
-              createRelationWithClient(
-                client,
-                {
-                  relationPropertyId: propertyId,
-                  callerItemId: eventId,
-                  targetItemId: person.id,
-                  metadata: { role: "attendee" },
-                },
-                undefined,
-                { writerKind: "user" },
-              );
-            first = withTransaction(runtime, async (client) => {
-              const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-              firstPid = pid.rows[0]?.pid ?? 0;
-              const result = order === "user-first" ? await userWrite(client) : await confirm(client);
-              firstReady = true;
-              await gate;
-              return result;
-            });
-            void first.catch((error: unknown) => {
-              firstFailed = true;
-              firstFailure = error;
-            });
-            await vi.waitFor(
-              () => {
-                if (firstFailed)
-                  throw firstFailure instanceof Error
-                    ? firstFailure
-                    : new Error("First concurrent operation failed", { cause: firstFailure });
-                expect(firstReady).toBe(true);
+        const cardId = await onlyCardId();
+        await asRuntime(async (runtime) => {
+          const person = await createChokePoint(runtime).createItem({
+            databaseId: peopleId,
+            properties: { name: "Concurrent participant" },
+          });
+          const propertyId = await propertyIdFor(eventsId, "people");
+          await revise(cardId, { message: "Choose", ...mapping(person.id, "SPEAKER_01") }, runtime);
+          const confirmIn = (client: PoolClient) => confirmProposalWithClient(client, proposalOptions(), cardId);
+          const userWrite = (client: PoolClient) =>
+            createRelationWithClient(
+              client,
+              {
+                relationPropertyId: propertyId,
+                callerItemId: eventId,
+                targetItemId: person.id,
+                metadata: { role: "attendee" },
               },
-              { timeout: 5000 },
+              undefined,
+              { writerKind: "user" },
             );
+          const backendPid = async (client: PoolClient) =>
+            (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid ?? 0;
+          let release = () => {};
+          const gate = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          let firstPid = 0;
+          let secondPid = 0;
+          let firstReady = false;
+          const first = withTransaction(runtime, async (client) => {
+            firstPid = await backendPid(client);
+            const result = order === "user-first" ? await userWrite(client) : await confirmIn(client);
+            firstReady = true;
+            await gate;
+            return result;
+          });
+          void first.catch(() => {});
+          let second: Promise<unknown> | undefined;
+          try {
+            await vi.waitFor(() => expect(firstReady).toBe(true), { timeout: 5000 });
             second = withTransaction(runtime, async (client) => {
-              const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-              secondPid = pid.rows[0]?.pid ?? 0;
-              return order === "user-first" ? confirm(client) : userWrite(client);
+              secondPid = await backendPid(client);
+              return order === "user-first" ? confirmIn(client) : userWrite(client);
             });
-            void second.catch((error: unknown) => {
-              secondFailed = true;
-              secondFailure = error;
-            });
+            void second.catch(() => {});
             await vi.waitFor(
               async () => {
-                if (secondFailed)
-                  throw secondFailure instanceof Error
-                    ? secondFailure
-                    : new Error("Second concurrent operation failed", { cause: secondFailure });
                 expect(secondPid).not.toBe(0);
                 const blocked = await runtime.query<{
                   blocked: boolean;
@@ -832,12 +656,10 @@ describe("Speaker mapping suggestions (issue #185)", () => {
                   "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion, starts_with(query, 'SELECT graphile_worker.add_job(') AS enqueue, position('FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE' IN query) > 0 AS \"eventLock\" FROM pg_stat_activity WHERE pid = $1::int",
                   [secondPid, firstPid],
                 );
-                // Confirm-first: the user write's participant INSERT waits on the confirm's uncommitted participant
-                // edge. The confirm's insert-only write takes no Event row lock in the participant edge hook
-                // (issue #1757), so the user write passes that hook's lock and is not held there.
-                // User-first: the confirm writes its speakers edge first, and that edge's People `lastContact`
-                // enqueue (issue #1660) waits on the user write's uncommitted job under the same person's key, before
-                // the confirm reaches its participant insert.
+                // Confirm-first: the user write's participant INSERT waits on the confirm's uncommitted edge; the
+                // confirm's insert-only write takes no Event row lock, so the user write is not held in the hook.
+                // User-first: the confirm's speakers edge enqueues People `lastContact`, which waits on the user
+                // write's uncommitted job under the same person's key, before the participant insert.
                 expect(blocked.rows[0]).toEqual(
                   order === "user-first"
                     ? { blocked: true, insertion: false, enqueue: true, eventLock: false }
@@ -846,85 +668,51 @@ describe("Speaker mapping suggestions (issue #185)", () => {
               },
               { timeout: 5000 },
             );
+          } finally {
             release();
-            const [firstResult, secondResult] = await Promise.all([first, second]);
-            const confirmed = order === "user-first" ? secondResult : firstResult;
-            expect(confirmed).toMatchObject({ properties: { status: "confirmed" } });
-            const rows = await runtime.query<{ id: string; metadata: unknown }>(
-              "SELECT id, metadata FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
-              [eventId, person.id],
-            );
-            expect(rows.rows).toHaveLength(1);
-            expect(rows.rows[0]?.metadata).toEqual({ role: "attendee" });
-            // Both writers queued the same person's recompute; job-key deduplication left one job.
-            const lastContactJobs = await pool.query<{ task_identifier: string; key: string | null }>(
-              "SELECT task_identifier, key FROM graphile_worker.jobs WHERE key = $1",
-              [peopleLastContactJobKey(person.id)],
-            );
-            expect(lastContactJobs.rows).toEqual([
-              {
-                task_identifier: CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE,
-                key: peopleLastContactJobKey(person.id),
-              },
-            ]);
-            const card = await runtime.query<{ history: unknown }>(
-              "SELECT properties->'history' AS history FROM items WHERE database_id = $1 AND id = $2",
-              [proposalsId, cardId],
-            );
-            const history = z
-              .array(z.object({ addedRelations: z.array(z.object({ edgeId: z.string() })).optional() }))
-              .parse(card.rows[0]?.history);
-            if (order === "user-first") expect(history.at(-1)?.addedRelations).toBeUndefined();
-            else
-              expect(history.at(-1)?.addedRelations).toEqual([expect.objectContaining({ edgeId: rows.rows[0]?.id })]);
-          });
-        } catch (error) {
-          primaryFailed = true;
-          primaryFailure = error;
-        } finally {
-          release();
-          const settled = await Promise.allSettled(
-            [first, second].filter((entry): entry is Promise<unknown> => entry !== undefined),
-          );
-          for (const result of settled)
-            if (result.status === "rejected" && result.reason !== primaryFailure) cleanupFailures.push(result.reason);
-          try {
-            await runtime.end();
-          } catch (error) {
-            cleanupFailures.push(error);
+            await Promise.allSettled([first, second]);
           }
-        }
-        if (primaryFailed) {
-          if (cleanupFailures.length)
-            throw new AggregateError([primaryFailure, ...cleanupFailures], "Concurrent test and cleanup failed", {
-              cause: primaryFailure,
-            });
-          throw primaryFailure instanceof Error
-            ? primaryFailure
-            : new Error("Concurrent test failed", { cause: primaryFailure });
-        }
-        if (cleanupFailures.length)
-          throw new AggregateError(cleanupFailures, "Concurrent test cleanup failed", { cause: cleanupFailures[0] });
+          const [firstResult, secondResult] = await Promise.all([first, second]);
+          expect(order === "user-first" ? secondResult : firstResult).toMatchObject({
+            properties: { status: "confirmed" },
+          });
+          const rows = await edgesBetween(runtime, eventId, person.id);
+          expect(rows.map((row) => row.metadata)).toEqual([{ role: "attendee" }]);
+          // Both writers queued the same person's recompute; job-key deduplication left one job.
+          const lastContactJobs = await pool.query<{ task_identifier: string; key: string | null }>(
+            "SELECT task_identifier, key FROM graphile_worker.jobs WHERE key = $1",
+            [peopleLastContactJobKey(person.id)],
+          );
+          expect(lastContactJobs.rows).toEqual([
+            { task_identifier: CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE, key: peopleLastContactJobKey(person.id) },
+          ]);
+          const card = await runtime.query<{ history: unknown }>(
+            "SELECT properties->'history' AS history FROM items WHERE database_id = $1 AND id = $2",
+            [proposalsId, cardId],
+          );
+          const history = z
+            .array(z.object({ addedRelations: z.array(z.object({ edgeId: z.string() })).optional() }))
+            .parse(card.rows[0]?.history);
+          expect(history.at(-1)?.addedRelations).toEqual(
+            order === "user-first" ? undefined : [expect.objectContaining({ edgeId: rows[0]?.id })],
+          );
+        });
       },
       20_000,
     );
 
     it("confirms while an Event update holds the Event's row lock, and the update then queues the same person's recompute", async () => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const cardId = await onlyCardId();
       let confirming: Promise<unknown> | undefined;
-      try {
-        const cardId = await onlyCardId();
-        await runInTenant(getTenantZeroId(), async () => {
+      await asRuntime(async (runtime) => {
+        try {
           const outcome = await withTransaction(runtime, async (update) => {
             // What an Event update holds first: the row lock of the Event.
             await lockItemById(update, eventsId, eventId);
-            confirming = withTransaction(runtime, (client) =>
-              confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-            );
-            // The confirm's speakers edge queued Alice's `lastContact` recompute (issue #1660). Alice already takes
-            // part in the Event, so the update below queues the same job key. A confirm whose participant insert
-            // waited for the row lock here would hold that key while it waits, and the two would deadlock. Such a
-            // wait cannot end inside this callback, so it is given a limit.
+            confirming = confirm(cardId, runtime);
+            // The confirm queued Alice's `lastContact` recompute; the update below queues the same job key. A
+            // confirm whose participant insert waited for this row lock would hold that key and deadlock, so the
+            // wait is given a limit.
             const confirmed = await settledWithin(confirming);
             const updated = await updateItemWithClient(
               update,
@@ -935,154 +723,96 @@ describe("Speaker mapping suggestions (issue #185)", () => {
           });
           expect(outcome.confirmed).toMatchObject({ properties: { status: "confirmed" } });
           expect(outcome.date).toBe("2026-10-17");
-        });
-        expect(await mappedPersonIds()).toContain(aliceId);
-        const lastContactJobs = await pool.query<{ key: string | null }>(
-          "SELECT key FROM graphile_worker.jobs WHERE key = $1",
-          [peopleLastContactJobKey(aliceId)],
-        );
-        expect(lastContactJobs.rows).toEqual([{ key: peopleLastContactJobKey(aliceId) }]);
-      } finally {
-        // After the update ended, a confirm that did wait ends too; it is settled before the pool is closed.
-        await confirming?.catch(() => undefined);
-        await runtime.end();
-      }
+        } finally {
+          // After the update ended, a confirm that did wait ends too; it is settled before the pool is closed.
+          await confirming?.catch(() => undefined);
+        }
+      });
+      expect(await mappedPersonIds()).toContain(aliceId);
+      const lastContactJobs = await pool.query<{ key: string | null }>(
+        "SELECT key FROM graphile_worker.jobs WHERE key = $1",
+        [peopleLastContactJobKey(aliceId)],
+      );
+      expect(lastContactJobs.rows).toEqual([{ key: peopleLastContactJobKey(aliceId) }]);
     }, 30_000);
 
     it("keeps an existing participant's metadata and omits a new-edge history entry", async () => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      try {
-        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-        );
-        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-        const tenant = getTenantZeroId();
-        const cardId = await onlyCardId();
-        await runInTenant(tenant, async () => {
-          const property = await runtime.query<{ id: string }>(
-            "SELECT id FROM properties WHERE database_id = $1 AND key = 'people'",
-            [eventsId],
-          );
-          if (!property.rows[0]) throw new Error("Missing Event people property");
-          await createChokePoint(runtime).createRelation({
-            relationPropertyId: property.rows[0].id,
-            callerItemId: eventId,
-            targetItemId: aliceId,
-            metadata: { invitation: ACCEPTED_INVITATION },
-          });
-          const before = await runtime.query<{ id: string; metadata: unknown }>(
-            "SELECT id, metadata FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
-            [eventId, aliceId],
-          );
-          const confirmed = await withTransaction(runtime, (client) =>
-            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-          );
-          const after = await runtime.query<{ id: string; metadata: unknown }>(
-            "SELECT id, metadata FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
-            [eventId, aliceId],
-          );
-          expect(after.rows).toEqual(before.rows);
-          const history = z
-            .array(z.object({ message: z.string(), addedRelations: z.unknown().optional() }))
-            .parse(confirmed.properties.history);
-          expect(history.at(-1)).toMatchObject({ message: "Confirmed by user." });
-          expect(history.at(-1)?.addedRelations).toBeUndefined();
+      const cardId = await onlyCardId();
+      await asRuntime(async (runtime) => {
+        await createChokePoint(runtime).createRelation({
+          relationPropertyId: await propertyIdFor(eventsId, "people"),
+          callerItemId: eventId,
+          targetItemId: aliceId,
+          metadata: { invitation: ACCEPTED_INVITATION },
         });
-      } finally {
-        await runtime.end();
-      }
+        const before = await edgesBetween(runtime, eventId, aliceId);
+        const confirmed = await confirm(cardId, runtime);
+        expect(await edgesBetween(runtime, eventId, aliceId)).toEqual(before);
+        const history = z
+          .array(z.object({ message: z.string(), addedRelations: z.unknown().optional() }))
+          .parse(confirmed.properties.history);
+        expect(history.at(-1)).toMatchObject({ message: "Confirmed by user." });
+        expect(history.at(-1)?.addedRelations).toBeUndefined();
+      });
     });
 
     it("rolls back the speaker edge when its linked Event is trashed", async () => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      try {
-        const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-        );
-        expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-        const tenant = getTenantZeroId();
-        const cardId = await onlyCardId();
-        await runInTenant(tenant, async () => {
-          await createChokePoint(runtime).softDeleteItem(eventsId, eventId);
-          const before = await runtime.query<{ count: number }>(
-            "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
-            [transcriptId, aliceId],
-          );
-          const snapshot = () =>
-            runtime.query<{ card: unknown; edges: unknown }>(
-              `SELECT (SELECT to_jsonb(i) FROM items i WHERE i.id = $1) AS card,
+      const cardId = await onlyCardId();
+      await asRuntime(async (runtime) => {
+        await createChokePoint(runtime).softDeleteItem(eventsId, eventId);
+        const snapshot = () =>
+          runtime.query<{ card: unknown; edges: unknown }>(
+            `SELECT (SELECT to_jsonb(i) FROM items i WHERE i.id = $1) AS card,
                     (SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM item_relations r
                      WHERE $2 IN (r.item_a, r.item_b) OR $3 IN (r.item_a, r.item_b)) AS edges`,
-              [cardId, transcriptId, eventId],
-            );
-          const beforeState = await snapshot();
-          let firstWriteObserved = false;
-          await expect(
-            withTransaction(runtime, async (client) => {
-              const descriptor = Object.getOwnPropertyDescriptor(client, "query");
-              /* eslint-disable @typescript-eslint/unbound-method */
-              const query = client.query;
-              const pending: Promise<unknown>[] = [];
-              client.query = new Proxy(query, {
-                apply(target, receiver, args: unknown[]) {
-                  const result: unknown = Reflect.apply(target, receiver, args);
-                  if (typeof args[0] !== "string" || !args[0].includes("INSERT INTO item_relations")) return result;
-                  const values = args[1];
-                  if (!Array.isArray(values) || !values.includes(transcriptId) || !values.includes(aliceId))
-                    return result;
-                  const observed = Promise.resolve(result).then((actual: unknown) => {
-                    const parsed = z.object({ rowCount: z.number().nullable() }).parse(actual);
-                    firstWriteObserved = parsed.rowCount === 1;
-                    return actual;
-                  });
-                  pending.push(observed);
-                  return observed;
-                },
-              });
-              /* eslint-enable @typescript-eslint/unbound-method */
-              const outcome = await confirmProposalWithClient(
-                client,
-                { processingProposalsDatabaseId: proposalsId },
-                cardId,
-              ).then(
-                (value) => ({ ok: true as const, value }),
-                (error: unknown) => ({ ok: false as const, error }),
-              );
-              await Promise.allSettled(pending);
-              let restoration: { error: unknown } | undefined;
-              try {
-                if (descriptor) Object.defineProperty(client, "query", descriptor);
-                else if (!Reflect.deleteProperty(client, "query")) throw new Error("Cannot restore query descriptor");
-              } catch (error) {
-                restoration = { error };
-              }
-              if (!outcome.ok && restoration)
-                throw new AggregateError(
-                  [outcome.error, restoration.error],
-                  "Confirmation and observer cleanup failed",
-                  { cause: outcome.error },
-                );
-              if (!outcome.ok) throw outcome.error;
-              if (restoration) throw restoration.error;
-              return outcome.value;
-            }),
-          ).rejects.toMatchObject({ status: 400 });
-          expect(firstWriteObserved).toBe(true);
-          const after = await runtime.query<{ count: number }>(
-            "SELECT count(*)::int AS count FROM item_relations WHERE $1 IN (item_a,item_b) AND $2 IN (item_a,item_b)",
-            [transcriptId, aliceId],
+            [cardId, transcriptId, eventId],
           );
-          expect(after.rows).toEqual(before.rows);
-          expect((await snapshot()).rows).toEqual(beforeState.rows);
-          const card = await runtime.query<{ status: string }>(
-            "SELECT properties->>'status' AS status FROM items WHERE database_id = $1 AND id = $2",
-            [proposalsId, cardId],
-          );
-          expect(card.rows).toEqual([{ status: "proposed" }]);
-        });
-      } finally {
-        await runtime.end();
-      }
+        const before = await snapshot();
+        const speakerEdgesBefore = await edgesBetween(runtime, transcriptId, aliceId);
+        let firstWriteObserved = false;
+        await expect(
+          withTransaction(runtime, async (client) => {
+            // Observes the speaker-edge insert on this transaction's own client, so the rollback is shown to
+            // undo a write that did happen.
+            const own = Object.getOwnPropertyDescriptor(client, "query");
+            /* eslint-disable @typescript-eslint/unbound-method */
+            const query = client.query;
+            client.query = new Proxy(query, {
+              apply(target, receiver, args: unknown[]) {
+                const result: unknown = Reflect.apply(target, receiver, args);
+                const values = args[1];
+                if (
+                  typeof args[0] !== "string" ||
+                  !args[0].includes("INSERT INTO item_relations") ||
+                  !Array.isArray(values) ||
+                  !values.includes(transcriptId) ||
+                  !values.includes(aliceId)
+                )
+                  return result;
+                return Promise.resolve(result).then((actual: unknown) => {
+                  firstWriteObserved = z.object({ rowCount: z.number().nullable() }).parse(actual).rowCount === 1;
+                  return actual;
+                });
+              },
+            });
+            /* eslint-enable @typescript-eslint/unbound-method */
+            try {
+              return await confirmProposalWithClient(client, proposalOptions(), cardId);
+            } finally {
+              if (own) Object.defineProperty(client, "query", own);
+              else Reflect.deleteProperty(client, "query");
+            }
+          }),
+        ).rejects.toMatchObject({ status: 400 });
+        expect(firstWriteObserved).toBe(true);
+        expect(await edgesBetween(runtime, transcriptId, aliceId)).toEqual(speakerEdgesBefore);
+        expect((await snapshot()).rows).toEqual(before.rows);
+        const card = await runtime.query<{ status: string }>(
+          "SELECT properties->>'status' AS status FROM items WHERE database_id = $1 AND id = $2",
+          [proposalsId, cardId],
+        );
+        expect(card.rows).toEqual([{ status: "proposed" }]);
+      });
     });
 
     it("confirm writes the user-owned mapping with its speaker key, and a retry writes nothing more", async () => {
@@ -1093,7 +823,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
 
       expect(confirmed.properties).toMatchObject({ status: "confirmed", resultItemId: aliceId, resultLabel: "Alice" });
       expect(await mappedPersonIds()).toEqual([null, aliceId]);
-      // Only the `speakers` relation: the transcript also holds Alice in `people`, inherited from its Event (issue #1697).
+      // Only the `speakers` relation: the transcript also holds Alice in `people`, inherited from its Event.
       const { rows } = await pool.query<{ metadata: unknown }>(
         `SELECT r.metadata FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
          WHERE $1 IN (r.item_a, r.item_b) AND $2 IN (r.item_a, r.item_b) AND d.property_id_a = $3`,
@@ -1124,55 +854,58 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       expect(await mappedPersonIds()).toEqual([null, null]);
     });
 
-    it("revise can change the person, and confirm then maps that person", async () => {
+    it("revise can change the person, stores it as aiProposal at a new version, and confirm then maps that person", async () => {
       const cardId = await onlyCardId();
 
       await revise(cardId, mapping(bobId, "SPEAKER_01"));
-      await confirm(cardId);
-
-      expect(await mappedPersonIds()).toEqual([null, bobId]);
-    });
-
-    it("revise stores the revised mapping as aiProposal and counts a version (issue #1471)", async () => {
-      const cardId = await onlyCardId();
-
-      await revise(cardId, mapping(bobId, "SPEAKER_01"));
-
       const { rows } = await pool.query<{ aiProposal: unknown; aiVersion: number }>(
         `SELECT properties -> 'aiProposal' AS "aiProposal", (properties ->> 'aiVersion')::int AS "aiVersion"
            FROM items WHERE id = $1`,
         [cardId],
       );
       expect(rows).toEqual([{ aiProposal: mapping(bobId, "SPEAKER_01"), aiVersion: 2 }]);
+      await confirm(cardId);
+
+      expect(await mappedPersonIds()).toEqual([null, bobId]);
     });
 
-    it("revise refuses a key the transcript does not have", async () => {
-      await expect(revise(await onlyCardId(), mapping(aliceId, "SPEAKER_07"))).rejects.toMatchObject({
+    it.each([
+      {
+        name: "a key the transcript does not have",
+        envelope: () => mapping(aliceId, "SPEAKER_07"),
+        refusal: { reason: "unknownSpeaker" },
+      },
+      {
+        name: "an Event relation",
+        envelope: (): ProposalEnvelope => ({
+          entityKind: "relation",
+          target: eventId,
+          properties: { propertyKey: "event" },
+        }),
+        refusal: { field: "entityKind" },
+      },
+      {
+        name: "a database proposal",
+        envelope: (): ProposalEnvelope => ({ entityKind: "database", target: eventsId, properties: { name: "Sync" } }),
+        refusal: { field: "entityKind" },
+      },
+    ])("revise refuses $name", async ({ envelope, refusal }) => {
+      await expect(revise(await onlyCardId(), envelope())).rejects.toMatchObject({
         code: "validation_failed",
-        details: { reason: "unknownSpeaker" },
+        details: refusal,
       });
-    });
-
-    it("revise refuses to turn a speaker card into an Event proposal", async () => {
-      await expect(
-        revise(await onlyCardId(), { entityKind: "relation", target: eventId, properties: { propertyKey: "event" } }),
-      ).rejects.toMatchObject({ code: "validation_failed", details: { field: "entityKind" } });
-      await expect(
-        revise(await onlyCardId(), { entityKind: "database", target: eventsId, properties: { name: "Sync" } }),
-      ).rejects.toMatchObject({ code: "validation_failed", details: { field: "entityKind" } });
     });
 
     it("reject writes no mapping", async () => {
       const id = await onlyCardId();
-      await withTransaction(pool, (client) =>
-        rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, id),
-      );
+      await reject(id);
 
       expect((await speakerCards()).find((card) => card.id === id)?.status).toBe("rejected");
       expect(await mappedPersonIds()).toEqual([null, null]);
     });
   });
-  /** A card's stored `properties` and `updated_at`, read without the choke point. */
+
+  /** Read without the choke point. */
   async function cardRow(cardId: string) {
     const { rows } = await pool.query<{
       properties: Record<string, unknown>;
@@ -1198,8 +931,11 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       .alternatives.map((alternative) => alternative.personId)
       .sort();
 
-  /** What the producer does for the cards of a transcript whose Event or participants changed (issue gh-1942). */
-  describe("a clarification card is refreshed and no other card is rewritten (issue gh-1942)", () => {
+  describe("a clarification card is refreshed and no other card is rewritten", () => {
+    const greetedAsAlice = (): SpeakerMappingSuggestion[] => [
+      { speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." },
+    ];
+
     it("refreshes an untouched clarification card with the new alternatives and, when confident, a proposal", async () => {
       expect(await propose([])).toEqual(["SPEAKER_00", "SPEAKER_01"]);
       const confident = await cardOf("SPEAKER_00");
@@ -1208,9 +944,8 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       expect((await cardRow(confident)).properties.referencedItemIds).toEqual([]);
       await linkEvent();
 
-      const created = await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }]);
+      expect(await propose(greetedAsAlice())).toEqual([]);
 
-      expect(created).toEqual([]);
       expect(await cardOf("SPEAKER_00")).toBe(confident);
       const proposed = (await cardRow(confident)).properties;
       expect(proposed).toMatchObject({
@@ -1222,83 +957,50 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         history: [expect.objectContaining({ author: "ai", kind: "recompute" })],
       });
       expect(alternativeIds(proposed)).toEqual([aliceId, bobId].sort());
-      // The refreshed proposal names the person, so the card is found when that person is archived or deleted (issue gh-1916).
+      // The refreshed proposal names the person, so the card is found when that person is archived or deleted.
       expect(proposed.referencedItemIds).toEqual([aliceId]);
       const stillUnsure = (await cardRow(unsure)).properties;
       expect(stillUnsure).toMatchObject({ status: "needsClarification", proposal: null, aiVersion: 1 });
       expect(alternativeIds(stillUnsure)).toEqual([aliceId, bobId].sort());
-      expect((await speakerCards()).length).toBe(2);
+      expect(await speakerCards()).toHaveLength(2);
       expect(await mappedPersonIds()).toEqual([null, null]);
     });
 
-    it("writes nothing when the refresh would change nothing", async () => {
+    it.each<{ name: string; arrange: (cardId: string) => Promise<unknown>; event?: boolean; suggest?: boolean }>([
+      { name: "when the refresh would change nothing", arrange: async () => {}, event: false, suggest: false },
+      {
+        name: "a clarification card the user touched",
+        // A message alone is the user's own history entry; it changes nothing else of the card.
+        arrange: (cardId) => revise(cardId, { message: "Not sure yet" }),
+      },
+      { name: "a rejected card, and creates no second one", arrange: (cardId) => reject(cardId) },
+      {
+        name: "a clarification card in the Trash",
+        arrange: (cardId) =>
+          withTransaction(pool, (client) =>
+            itemDeleteWithClient(client, proposalsId, cardId, { queueAffinity: createActionQueueAffinity() }),
+          ),
+      },
+    ])("writes nothing for $name", async ({ arrange, event = true, suggest = true }) => {
       await propose([]);
       const cardId = await cardOf("SPEAKER_00");
+      await arrange(cardId);
+      if (event) await linkEvent();
       const before = await cardRow(cardId);
 
-      expect(await propose([])).toEqual([]);
+      expect(await propose(suggest ? greetedAsAlice() : [])).toEqual([]);
 
       expect(await cardRow(cardId)).toEqual(before);
-    });
-
-    it("leaves a clarification card the user touched", async () => {
-      await propose([]);
-      const cardId = await cardOf("SPEAKER_00");
-      // A message alone is the user's own history entry; it changes nothing else of the card.
-      await withTransaction(pool, (client) =>
-        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
-          message: "Not sure yet",
-        }),
-      );
-      await linkEvent();
-      const before = await cardRow(cardId);
-      expect((before.properties.history as Array<{ author: string }>).some((entry) => entry.author === "user")).toBe(
-        true,
-      );
-
-      await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }]);
-
-      expect(await cardRow(cardId)).toEqual(before);
+      expect(await speakerCards()).toHaveLength(2);
     });
 
     it("leaves a proposed card, whatever the model suggests now", async () => {
       await linkEvent();
-      await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }]);
+      await propose(greetedAsAlice());
       const cardId = await cardOf("SPEAKER_00");
       const before = await cardRow(cardId);
 
       await propose([{ speaker: "SPEAKER_00", personId: bobId, reason: "Changed its mind." }]);
-
-      expect(await cardRow(cardId)).toEqual(before);
-    });
-
-    it("leaves a rejected card and creates no second one", async () => {
-      await propose([]);
-      const cardId = await cardOf("SPEAKER_00");
-      await withTransaction(pool, (client) =>
-        rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-      );
-      await linkEvent();
-      const before = await cardRow(cardId);
-
-      expect(await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }])).toEqual([]);
-
-      expect(await cardRow(cardId)).toEqual(before);
-      expect(before.properties.status).toBe("rejected");
-      expect((await speakerCards()).length).toBe(2);
-    });
-
-    it("leaves a clarification card in the Trash", async () => {
-      await propose([]);
-      const cardId = await cardOf("SPEAKER_00");
-      await withTransaction(pool, (client) =>
-        itemDeleteWithClient(client, proposalsId, cardId, { queueAffinity: createActionQueueAffinity() }),
-      );
-      await linkEvent();
-      const before = await cardRow(cardId);
-      expect(before.deleted_at).not.toBeNull();
-
-      expect(await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }])).toEqual([]);
 
       expect(await cardRow(cardId)).toEqual(before);
     });
@@ -1313,12 +1015,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       try {
         await holder.query("BEGIN");
         await holder.query("SELECT 1 FROM items WHERE id = $1 FOR UPDATE", [cardId]);
-
-        const outcome = await settledWithin(
-          propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }]),
-        );
-
-        expect(outcome).toEqual([]);
+        expect(await settledWithin(propose(greetedAsAlice()))).toEqual([]);
       } finally {
         await holder.query("ROLLBACK");
         holder.release();
@@ -1327,11 +1024,10 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     });
   });
 
-  /** The checkpoint helpers the suggestion step shares with the task (issue gh-1942). */
   describe("the checkpoint binding", () => {
     const context = (eventId: string | null, ids: string[]) => ({
       eventId,
-      candidates: ids.map((id) => ({ id, name: id, title: null, invitationStatus: null })),
+      candidates: ids.map((id) => candidate(id, id)),
     });
 
     it("is current only for the Event and the candidates it was written for, in any order", () => {
@@ -1341,16 +1037,18 @@ describe("Speaker mapping suggestions (issue #185)", () => {
 
       expect(checkpoint).toEqual({ proposedSpeakers: ["SPEAKER_00"], eventId, candidateIds: [aliceId, bobId].sort() });
       expect(isSpeakerSuggestionCurrent(checkpoint, context(eventId, [aliceId, bobId]))).toBe(true);
-      expect(isSpeakerSuggestionCurrent(checkpoint, context(eventId, [aliceId]))).toBe(false);
-      expect(isSpeakerSuggestionCurrent(checkpoint, context(eventId, [aliceId, bobId, randomUUID()]))).toBe(false);
-      expect(isSpeakerSuggestionCurrent(checkpoint, context(randomUUID(), [aliceId, bobId]))).toBe(false);
-      expect(isSpeakerSuggestionCurrent(checkpoint, context(null, [aliceId, bobId]))).toBe(false);
+      for (const other of [
+        context(eventId, [aliceId]),
+        context(eventId, [aliceId, bobId, randomUUID()]),
+        context(randomUUID(), [aliceId, bobId]),
+        context(null, [aliceId, bobId]),
+      ])
+        expect(isSpeakerSuggestionCurrent(checkpoint, other)).toBe(false);
     });
 
     it("counts an absent, an old and an unreadable checkpoint as different, and a no-Event one as current for no Event", () => {
-      expect(isSpeakerSuggestionCurrent(undefined, context(null, []))).toBe(false);
-      expect(isSpeakerSuggestionCurrent({ proposedSpeakers: ["SPEAKER_00"] }, context(null, []))).toBe(false);
-      expect(isSpeakerSuggestionCurrent({ proposedSpeakers: "SPEAKER_00" }, context(null, []))).toBe(false);
+      for (const stale of [undefined, { proposedSpeakers: ["SPEAKER_00"] }, { proposedSpeakers: "SPEAKER_00" }])
+        expect(isSpeakerSuggestionCurrent(stale, context(null, []))).toBe(false);
       const noEvent = buildSpeakerSuggestionCheckpoint(context(null, []), undefined, []);
       expect(noEvent).toEqual({ proposedSpeakers: [], eventId: null, candidateIds: [] });
       expect(isSpeakerSuggestionCurrent(noEvent, context(null, []))).toBe(true);
@@ -1368,7 +1066,6 @@ describe("Speaker mapping suggestions (issue #185)", () => {
     });
   });
 
-  /** The hook that asks the speakers again after an edge write (issue gh-1942). */
   describe("the changed-edge trigger", () => {
     async function jobKeys(): Promise<string[]> {
       const { rows } = await pool.query<{ key: string; queue_name: string | null; max_attempts: number }>(
@@ -1388,12 +1085,14 @@ describe("Speaker mapping suggestions (issue #185)", () => {
 
     const keyOf = (id: string) => `transcript-speaker-suggestion:${id}`;
 
-    async function createOtherTranscript(): Promise<string> {
-      return withTransaction(pool, async (client) => {
-        const item = await createItemWithClient(client, { databaseId: transcriptsId, properties: { name: "Other" } });
-        await writeComputed(client, transcriptsId, item.id, "segments", SEGMENTS);
-        return item.id;
-      });
+    async function eventRelation(
+      write: "createRelation" | "deleteRelation",
+      databaseId: string,
+      key: string,
+      callerItemId: string,
+      targetItemId: string,
+    ) {
+      await chokePoint[write]({ relationPropertyId: await propertyIdFor(databaseId, key), callerItemId, targetItemId });
     }
 
     it("enqueues one job for the transcript when its Event edge is created, and again when it is deleted", async () => {
@@ -1401,57 +1100,40 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       expect(await jobKeys()).toEqual([keyOf(transcriptId)]);
       await clearJobs();
 
-      await chokePoint.deleteRelation({
-        relationPropertyId: await propertyIdFor(transcriptsId, "event"),
-        callerItemId: transcriptId,
-        targetItemId: eventId,
-      });
+      await eventRelation("deleteRelation", transcriptsId, "event", transcriptId, eventId);
 
       expect(await jobKeys()).toEqual([keyOf(transcriptId)]);
     });
 
     it("enqueues a job for every transcript that shares the Event when a participant is added or removed", async () => {
-      const other = await createOtherTranscript();
-      await linkEvent();
-      await chokePoint.createRelation({
-        relationPropertyId: await propertyIdFor(transcriptsId, "event"),
-        callerItemId: other,
-        targetItemId: eventId,
+      const other = await withTransaction(pool, async (client) => {
+        const item = await createItemWithClient(client, { databaseId: transcriptsId, properties: { name: "Other" } });
+        await writeComputed(client, transcriptsId, item.id, "segments", SEGMENTS);
+        return item.id;
       });
-      await clearJobs();
+      await linkEvent();
+      await eventRelation("createRelation", transcriptsId, "event", other, eventId);
       const carolId = await createItem(peopleId, "Carol");
-
-      await chokePoint.createRelation({
-        relationPropertyId: await propertyIdFor(eventsId, "people"),
-        callerItemId: eventId,
-        targetItemId: carolId,
-      });
-
-      expect(await jobKeys()).toEqual([keyOf(transcriptId), keyOf(other)].sort());
-      await clearJobs();
-
-      await chokePoint.deleteRelation({
-        relationPropertyId: await propertyIdFor(eventsId, "people"),
-        callerItemId: eventId,
-        targetItemId: carolId,
-      });
-
-      expect(await jobKeys()).toEqual([keyOf(transcriptId), keyOf(other)].sort());
+      for (const write of ["createRelation", "deleteRelation"] as const) {
+        await clearJobs();
+        await eventRelation(write, eventsId, "people", eventId, carolId);
+        expect(await jobKeys()).toEqual([keyOf(transcriptId), keyOf(other)].sort());
+      }
     });
 
-    it("enqueues nothing for a participant of an Event no transcript is linked to", async () => {
-      await clearJobs();
-
-      await createParticipant("Carol");
-
-      expect(await jobKeys()).toEqual([]);
-    });
-
-    it("enqueues nothing for a participant of an Event whose only transcript is in the Trash", async () => {
-      await linkEvent();
-      await withTransaction(pool, (client) =>
-        itemDeleteWithClient(client, transcriptsId, transcriptId, { queueAffinity: createActionQueueAffinity() }),
-      );
+    it.each([
+      { name: "a participant of an Event no transcript is linked to", arrange: async () => {} },
+      {
+        name: "a participant of an Event whose only transcript is in the Trash",
+        arrange: async () => {
+          await linkEvent();
+          await withTransaction(pool, (client) =>
+            itemDeleteWithClient(client, transcriptsId, transcriptId, { queueAffinity: createActionQueueAffinity() }),
+          );
+        },
+      },
+    ])("enqueues nothing for $name", async ({ arrange }) => {
+      await arrange();
       await clearJobs();
 
       await createParticipant("Carol");
@@ -1471,30 +1153,18 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         metadata: { role: "attendee", invitation: ACCEPTED_INVITATION },
       });
 
-      const { rows } = await pool.query<{ metadata: { invitation?: unknown } }>(
-        `SELECT r.metadata FROM item_relations r WHERE $1 IN (r.item_a, r.item_b) AND $2 IN (r.item_a, r.item_b)`,
-        [eventId, aliceId],
-      );
-      expect(rows[0]?.metadata.invitation).toEqual(ACCEPTED_INVITATION);
+      const edges = await edgesBetween(pool, eventId, aliceId);
+      expect(edges[0]?.metadata).toMatchObject({ invitation: ACCEPTED_INVITATION });
       expect(await jobKeys()).toEqual([]);
     });
 
     it("enqueues nothing for another relation of the Event or of the transcript", async () => {
-      await clearJobs();
       const projectId = await createItem(await databaseIdFor("projects"), "Apollo");
       await linkEvent();
       await clearJobs();
 
-      await chokePoint.createRelation({
-        relationPropertyId: await propertyIdFor(eventsId, "project"),
-        callerItemId: eventId,
-        targetItemId: projectId,
-      });
-      await chokePoint.createRelation({
-        relationPropertyId: await propertyIdFor(transcriptsId, "people"),
-        callerItemId: transcriptId,
-        targetItemId: aliceId,
-      });
+      await eventRelation("createRelation", eventsId, "project", eventId, projectId);
+      await eventRelation("createRelation", transcriptsId, "people", transcriptId, aliceId);
 
       expect(await jobKeys()).toEqual([]);
     });
@@ -1507,65 +1177,44 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       expect(await jobKeys()).toEqual([keyOf(transcriptId)]);
     });
 
-    describe("with the Event card of a recording", () => {
-      /** A transcript with a date that no Event overlaps, so the match step left a new-meeting card. */
-      async function eventCard(): Promise<{ cardId: string; cardTranscriptId: string }> {
-        const cardTranscriptId = await withTransaction(pool, async (client) => {
-          const item = await createItemWithClient(
-            client,
-            { databaseId: transcriptsId, properties: { name: "Recorded", date: "2024-03-01T12:00:00.000Z" } },
-            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
-          );
-          return item.id;
-        });
-        await withTransaction(pool, (client) =>
-          matchTranscriptToEvent(client, { transcriptId: cardTranscriptId, durationSeconds: 3600 }),
+    it.each([
+      { name: "a revise of the card to an Event, which is only checked, and one job for its confirm", revised: true },
+      { name: "the confirm of a new-meeting card, which writes the participants and the edge", revised: false },
+    ])("with the Event card of a recording, enqueues the right jobs for $name", async ({ revised }) => {
+      // No Event overlaps the date, so the match step leaves a new-meeting card.
+      const cardTranscriptId = await withTransaction(pool, async (client) => {
+        const item = await createItemWithClient(
+          client,
+          { databaseId: transcriptsId, properties: { name: "Recorded", date: "2024-03-01T12:00:00.000Z" } },
+          { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
         );
-        const { rows } = await pool.query<{ id: string }>(
-          `SELECT i.id FROM items i JOIN item_relations r ON r.item_a = i.id OR r.item_b = i.id
-            WHERE i.database_id = $1 AND i.properties ->> 'kind' = 'transcript' AND $2 IN (r.item_a, r.item_b)`,
-          [proposalsId, cardTranscriptId],
-        );
-        if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one card, found ${rows.length}`);
-        return { cardId: rows[0].id, cardTranscriptId };
-      }
+        await matchTranscriptToEvent(client, { transcriptId: item.id, durationSeconds: 3600 });
+        return item.id;
+      });
+      const { rows } = await pool.query<{ id: string }>(
+        `SELECT i.id FROM items i JOIN item_relations r ON r.item_a = i.id OR r.item_b = i.id
+          WHERE i.database_id = $1 AND i.properties ->> 'kind' = 'transcript' AND $2 IN (r.item_a, r.item_b)`,
+        [proposalsId, cardTranscriptId],
+      );
+      if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one card, found ${rows.length}`);
+      const cardId = rows[0].id;
+      await clearJobs();
 
-      it("enqueues nothing for a revise of the card to an Event, which is only checked, and one job for its confirm", async () => {
-        const { cardId, cardTranscriptId } = await eventCard();
-        await clearJobs();
-
-        await runInTenant(getTenantZeroId(), () =>
-          withTransaction(pool, (client) =>
-            reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
+      await runInTenant(getTenantZeroId(), async () => {
+        if (revised) {
+          await withTransaction(pool, (client) =>
+            reviseProposalWithClient(client, proposalOptions(), cardId, {
               entityKind: "relation",
               target: eventId,
               properties: { propertyKey: "event" },
             }),
-          ),
-        );
-        expect(await jobKeys()).toEqual([]);
-
-        await runInTenant(getTenantZeroId(), () =>
-          withTransaction(pool, (client) =>
-            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-          ),
-        );
-
-        expect(await jobKeys()).toEqual([keyOf(cardTranscriptId)]);
+          );
+          expect(await jobKeys()).toEqual([]);
+        }
+        await confirm(cardId);
       });
 
-      it("enqueues one job for the confirm of a new-meeting card, which writes the participants and the edge", async () => {
-        const { cardId, cardTranscriptId } = await eventCard();
-        await clearJobs();
-
-        await runInTenant(getTenantZeroId(), () =>
-          withTransaction(pool, (client) =>
-            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
-          ),
-        );
-
-        expect(await jobKeys()).toEqual([keyOf(cardTranscriptId)]);
-      });
+      expect(await jobKeys()).toEqual([keyOf(cardTranscriptId)]);
     });
   });
 });

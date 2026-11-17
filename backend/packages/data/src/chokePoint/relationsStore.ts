@@ -6,7 +6,7 @@ import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { visibleDatabaseIds } from "./itemsStore.js";
 
-/** The custom SQLSTATE `enforce_relation_cardinality` (0013_relation_cardinality.sql) raises on a cardinality conflict. */
+/** The custom SQLSTATE the `enforce_relation_cardinality` trigger raises on a cardinality conflict. */
 const CARDINALITY_VIOLATION_ERRCODE = "SC001";
 
 function isCardinalityViolation(err: unknown): boolean {
@@ -15,7 +15,6 @@ function isCardinalityViolation(err: unknown): boolean {
 
 const CARDINALITIES: readonly RelationDefinitionRow["cardinality"][] = ["one_to_one", "one_to_many", "many_to_many"];
 
-/** The raw `relation_definitions` row shape this module reads back from Postgres. */
 type RelationDefinitionDbRow = {
   id: string;
   property_id_a: string;
@@ -32,7 +31,6 @@ function mapRelationDefinitionRow(row: RelationDefinitionDbRow): RelationDefinit
   };
 }
 
-/** The raw `item_relations` row shape this module reads back from Postgres. */
 type ItemRelationDbRow = {
   id: string;
   relation_definition_id: string;
@@ -78,12 +76,7 @@ export async function getRelationDefinition(client: PoolClient, id: string): Pro
   return rows[0] ? mapRelationDefinitionRow(rows[0]) : null;
 }
 
-/**
- * The batched form of `getRelationDefinitionByPropertyId`: one query for a whole set of
- * relation properties, keyed by the property id each definition was looked up under. Used
- * when compiling a filter, where a database's relation properties would otherwise be
- * resolved one query at a time.
- */
+/** Batched `getRelationDefinitionByPropertyId`, keyed by property id, for filter compilation. */
 export async function getRelationDefinitionsByPropertyIds(
   client: PoolClient,
   propertyIds: string[],
@@ -118,10 +111,7 @@ export async function getRelationDefinitionByPropertyId(
   return rows[0] ? mapRelationDefinitionRow(rows[0]) : null;
 }
 
-/**
- * The properties of other databases that are the paired side of a relation property of `databaseId`. A relation
- * whose two sides are both in `databaseId` has none; both of its properties go with the database.
- */
+/** A relation with both sides in `databaseId` has none; both its properties go with the database. */
 export async function listPairedPropertiesOfOtherDatabases(
   client: PoolClient,
   databaseId: string,
@@ -139,10 +129,9 @@ export async function listPairedPropertiesOfOtherDatabases(
 }
 
 /**
- * The relation properties of other databases that point at `databaseId` (`config.targetDatabaseId`) and have no paired
- * side in it: a one-directional relation is created without an inverse, so `listPairedPropertiesOfOtherDatabases`
- * never meets it. A relation that has an inverse in `databaseId` is listed too, so the result is every relation
- * property outside `databaseId` that would point at a deleted database.
+ * Relation properties of other databases that point at `databaseId` (`config.targetDatabaseId`):
+ * every relation property outside it that would point at a deleted database, one-directional
+ * relations (which `listPairedPropertiesOfOtherDatabases` never meets) included.
  */
 export async function listRelationPropertiesTargetingDatabase(
   client: PoolClient,
@@ -168,7 +157,7 @@ export async function createItemRelation(client: PoolClient, input: CreateItemRe
   return (await createItemRelationReportingInsert(client, input)).edge;
 }
 
-/** `createItemRelation` that also reports whether this call inserted the edge (false: it existed and only its metadata was replaced). */
+/** Also reports whether this call inserted the edge (false: it existed and only its metadata was replaced). */
 export async function createItemRelationReportingInsert(
   client: PoolClient,
   input: CreateItemRelationInput,
@@ -202,7 +191,7 @@ export async function createItemRelationReportingInsert(
   }
 }
 
-/** Insert the normalized tuple only when absent; never replace a concurrent edge's metadata. */
+/** Never replaces a concurrent edge's metadata. */
 export async function insertItemRelationIfAbsent(
   client: PoolClient,
   input: CreateItemRelationInput,
@@ -234,7 +223,7 @@ export async function insertItemRelationIfAbsent(
   }
 }
 
-/** Full-replacement metadata update for an existing edge; returns `null` if the normalized tuple has no row (never merges JSON). */
+/** Full replacement (never a JSON merge); `null` when the normalized tuple has no row. */
 export async function updateItemRelationMetadata(
   client: PoolClient,
   relationDefinitionId: string,
@@ -251,7 +240,7 @@ export async function updateItemRelationMetadata(
   return rows[0] ? mapItemRelationRow(rows[0]) : null;
 }
 
-/** Read-only counterpart to `deleteItemRelation`'s tuple lookup — used where the caller needs the edge's own `id` (and full row) without removing it, e.g. a destructive-approval snapshot (issue #89). */
+/** The edge's full row by tuple without removing it, e.g. for a destructive-approval snapshot. */
 export async function getItemRelationByTuple(
   client: PoolClient,
   relationDefinitionId: string,
@@ -325,7 +314,7 @@ export async function deleteItemRelation(
   return rows[0] ? mapItemRelationRow(rows[0]) : null;
 }
 
-/** Every edge for `itemId` on this relation, from either side (relations are stored once, undirected in storage). */
+/** From either side; relations are stored once, undirected. */
 export async function listRelationsForItem(
   client: PoolClient,
   relationDefinitionId: string,
@@ -340,15 +329,8 @@ export async function listRelationsForItem(
 }
 
 /**
- * The batched form of `listRelationsForItem`: one query for every edge any of `itemIds` sits
- * on for a single relation definition, instead of one query per item. Added for issue #271's
- * explicit in-scope requirement — its Task lists "a bulk relations read alongside the
- * existing [relationsStore] helpers" as one of the two reads `deleteInboxTypeWithClient`
- * needs to stop issuing one `listRelationsForItem` call per referencing Inbox item — not a
- * speculative general-purpose addition. A returned edge's `itemA`/`itemB` may each be either
- * one of `itemIds` or its counterpart on the other side — a caller grouping by which of
- * `itemIds` an edge belongs to must check both sides itself, the same as `otherSide`
- * requires for the single-item form.
+ * Batched `listRelationsForItem` for one definition. An edge's `itemA`/`itemB` may each be one of
+ * `itemIds` or its counterpart, so a caller grouping by item must check both sides.
  */
 export async function listRelationsForItems(
   client: PoolClient,
@@ -364,10 +346,7 @@ export async function listRelationsForItems(
   return rows.map(mapItemRelationRow);
 }
 
-/**
- * Every edge `itemId` sits on, across a set of relation definitions, from either side — one query
- * however many definitions are listed (issue #1404). The caller keeps the edges its own side reads.
- */
+/** Across a set of definitions, from either side, in one query. The caller keeps the edges its side reads. */
 export async function listRelationEdgesForItemOnDefinitions(
   client: PoolClient,
   relationDefinitionIds: string[],
@@ -381,19 +360,15 @@ export async function listRelationEdgesForItemOnDefinitions(
   return rows.map(mapItemRelationRow);
 }
 
-/** The relation definitions whose edges `countRelationEdgesToTargets` counts, by the stored side the target items sit on. */
+/** The definitions `countRelationEdgesToTargets` counts, by the stored side the targets sit on. */
 export interface RelationEdgeTargetSides {
-  /** Definitions whose targets are stored as `item_b` (the caller's property is side A). */
+  /** The caller's property is side A. */
   targetOnSideB: readonly string[];
-  /** Definitions whose targets are stored as `item_a` (the caller's property is side B). */
+  /** The caller's property is side B. */
   targetOnSideA: readonly string[];
 }
 
-/**
- * How many edges point at each of `targetItemIds`, counted over the given relation definitions with one grouped query
- * (issue gh-1959). An edge is counted on the side its definition names as the target side. An id with no edge is
- * absent from the map, so a caller reads a missing id as zero.
- */
+/** One grouped query; an id with no edge is absent from the map (read it as zero). */
 export async function countRelationEdgesToTargets(
   client: PoolClient,
   sides: RelationEdgeTargetSides,
@@ -418,9 +393,8 @@ export async function countRelationEdgesToTargets(
 }
 
 /**
- * The items among `itemIds` that a relation may still point at (issue #1404): not in the trash and
- * in a database that is not archived, each with its database id. An id absent from the result is
- * trashed, in an archived database, missing, or another tenant's (row-level security hides it).
+ * Those of `itemIds` a relation may still point at: live and in a non-archived database. An absent id
+ * is trashed, archived, missing, or another tenant's.
  */
 export async function listLiveRelationTargets(
   client: PoolClient,
@@ -437,7 +411,7 @@ export async function listLiveRelationTargets(
   return rows.map((row) => ({ id: row.id, databaseId: row.database_id }));
 }
 
-/** Every edge `itemId` participates in, across all relation definitions — used for the soft-delete/restore rollup trigger. */
+/** Across all definitions; used by the soft-delete/restore rollup trigger. */
 export async function listAllRelationsForItem(client: PoolClient, itemId: string): Promise<ItemRelationRow[]> {
   const { rows } = await client.query<ItemRelationDbRow>(
     `SELECT id, relation_definition_id, item_a, item_b, metadata FROM item_relations WHERE item_a = $1 OR item_b = $1`,

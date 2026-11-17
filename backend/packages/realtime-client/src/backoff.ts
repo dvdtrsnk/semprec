@@ -2,13 +2,9 @@ const BASE_DELAY_MS = 1_000;
 const MAX_DELAY_MS = 30_000;
 
 /**
- * Reconnect backoff for `WS /api/sync` (issue #164's Task): exponential growth from a 1s base,
- * doubling per attempt and clamped to a 30s ceiling, with full jitter spread across each
- * attempt's own window so many clients dropped by the same server-side fault (a LISTEN outage, a
- * deploy) don't all reconnect in the same instant. The floor stays at the 1s base on every
- * attempt — including the first — so a reconnect never fires faster than the Task's "from 1s"
- * requirement, while `ceiling` alone (not the returned delay) is what's guaranteed non-decreasing
- * and capped at 30s.
+ * Reconnect backoff for `WS /api/sync`: the ceiling doubles from 1s per attempt up to 30s, and the
+ * delay is jittered between the 1s floor and that ceiling so clients dropped by the same fault do not
+ * reconnect at once. Only the ceiling, not the delay, is non-decreasing.
  */
 export function nextReconnectDelayMs(attempt: number, random: () => number = Math.random): number {
   if (!Number.isInteger(attempt) || attempt < 0) {

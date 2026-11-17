@@ -43,16 +43,14 @@ function partHeader(part: GmailPayloadPart, name: string): string | undefined {
   return part.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
 }
 
-/** Every occurrence of a header on this part (Gmail's `format=full` payload.headers preserves repeats, unlike `partHeader`'s single-match lookup above) — needed for "highest Delivered-To occurrence" (mail/deliveredTo.ts, issue #93). */
+/** Every occurrence of a header, in order; Delivered-To resolution needs repeats. */
 function partHeaderValues(part: GmailPayloadPart, name: string): string[] {
   return (part.headers ?? []).filter((h) => h.name.toLowerCase() === name.toLowerCase()).map((h) => h.value);
 }
 
 /**
- * Only the headers this issue's threading/envelope model needs, reconstructed as a tiny raw
- * header block (`Name: value\r\n...\r\n\r\n`, empty body) and run through mailparser purely for
- * its mature address-list/Message-ID parsing — bounded strictly by header size (a few KB),
- * never by the message's attachment bytes, unlike a whole-message `simpleParser` pass would be.
+ * Rebuilds a header-only raw block and runs mailparser on it for address-list/Message-ID
+ * parsing, so cost is bounded by header size, never by attachment bytes.
  */
 async function parseGmailHeaders(headers: GmailPayloadHeader[]) {
   const raw = headers.map((h) => `${h.name}: ${h.value.replace(/\r?\n/g, " ")}`).join("\r\n") + "\r\n\r\n";
@@ -65,7 +63,7 @@ interface GmailMimeTree {
   attachmentParts: GmailPayloadPart[];
 }
 
-/** Same structural walk as imapFlowClient.ts's walkBodyStructure, over Gmail's `payload.parts` tree instead of IMAP BODYSTRUCTURE — a body leaf is a text/plain or text/html part with no filename of its own; everything else is a candidate attachment. */
+/** The first unnamed text/plain and text/html leaves are the body; every other leaf is a candidate attachment. */
 function walkGmailPayload(root: GmailPayloadPart): GmailMimeTree {
   const tree: GmailMimeTree = { attachmentParts: [] };
   const visit = (node: GmailPayloadPart): void => {
@@ -93,10 +91,9 @@ function decodePartText(part: GmailPayloadPart | undefined): string | undefined 
 }
 
 /**
- * Gmail sometimes represents a Drive- or Docs-backed "attachment" as a tiny MIME part
- * containing its share URL. The actual file never accompanies that part, so passing it to
- * attachment ingest would create a Files item for the URL bytes. Ignore query/hash decoration
- * because Gmail can render the same share with a different `usp` value in the message body.
+ * Gmail can represent a Drive/Docs "attachment" as a tiny part holding only its share URL;
+ * ingesting it would store the URL bytes as a file. Query/hash are ignored because the body may
+ * render the same share with a different `usp` value.
  */
 function normalizedGoogleShareUrl(value: string): string | null {
   let url: URL;
@@ -110,9 +107,7 @@ function normalizedGoogleShareUrl(value: string): string | null {
 
   const path = url.pathname.replace(/\/+$/, "");
   if (!path) return null;
-  // `open`/`uc` carry the share identity in `id`, unlike the usual `/file/d/<id>` path.
-  // Retaining it prevents two unrelated shorthand URLs from being treated as the same link,
-  // on both hostnames that use this shorthand form.
+  // `open`/`uc` carry the share identity in the `id` query parameter.
   if (path === "/open" || path === "/uc") {
     const id = url.searchParams.get("id");
     if (!id) return null;
@@ -125,9 +120,7 @@ function normalizedGoogleShareUrls(text: string | undefined): Set<string> {
   const urls = new Set<string>();
   if (!text) return urls;
   for (const match of text.matchAll(/https:\/\/[^\s<>"']+/gi)) {
-    // Strip trailing prose punctuation (`.`, `,`, `)`, …) that commonly follows a URL in
-    // plain text — left in place it defeats matching against the rendered body's normalized
-    // form, since that form was parsed straight from an anchor's `href` with no such tail.
+    // Strip trailing prose punctuation so plain-text URLs match those parsed from an href.
     const trimmed = match[0].replace(/[.,;:!?)\]}>]+$/, "");
     const normalized = normalizedGoogleShareUrl(trimmed);
     if (normalized) urls.add(normalized);
@@ -148,13 +141,9 @@ function isGmailDriveReplacement(part: GmailPayloadPart, renderedDriveUrls: Set<
 }
 
 /**
- * Builds each candidate attachment's lazy byte source. Gmail's REST API has no true streamed
- * download (unlike imapflow's `download()`/Graph's `$value`) — its only per-attachment
- * primitive is a single JSON response containing the whole part as base64. What this still
- * avoids, versus the old `format=raw` whole-message fetch, is buffering *every* attachment of
- * a message at once: each part's bytes are only fetched, one at a time, when `ingestAttachments`
- * (mail/attachments.ts) actually calls `openStream()` for that specific part — small parts
- * Gmail already inlined into `format=full`'s response need no extra request at all.
+ * Builds each candidate attachment's lazy byte source. Gmail has no streamed attachment
+ * download, so each part is fetched whole as base64, but only when `openStream()` is called,
+ * one part at a time; parts already inlined in the `format=full` response need no request.
  */
 function classifyGmailAttachmentParts(
   fetchAttachmentBytes: (attachmentId: string) => Promise<Buffer>,
@@ -194,8 +183,7 @@ function classifyGmailAttachmentParts(
       },
     ];
   });
-  // Same "inline part actually referenced via cid: in the HTML body is a rendering asset, not
-  // a document" rule the other two adapters apply (attachments.ts / imapFlowClient.ts).
+  // An inline part referenced via cid: in the HTML is a rendering asset, not a document.
   return candidates.filter(
     (a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))),
   );
@@ -228,9 +216,7 @@ async function toFetchedMessage(
   const replyTo = toList(parsedHeaders.replyTo);
 
   return {
-    // Falls back to Gmail's own (always-unique) message id, not a fixed placeholder — two
-    // different messages both missing a Message-ID header must not collide and get merged
-    // into one Emails item by ingestEmailMessage's dedup-by-messageId.
+    // Unique fallback so messages lacking Message-ID are not merged by dedup-by-messageId.
     messageId: parsedHeaders.messageId ?? `<${gmailMessageId}@gmail-api>`,
     inReplyTo: parsedHeaders.inReplyTo ?? null,
     references,
@@ -261,34 +247,23 @@ async function toFetchedMessage(
   };
 }
 
-/** The most of a failed send's body that is read. It is only read to tell an invalid recipient apart from other refusals. */
+/** A failed send's body is read only to detect an invalid-recipient refusal. */
 const SEND_ERROR_BODY_READ_LIMIT = 4_096;
 
-/**
- * Gmail error text that names a refused recipient. The wording is inferred from Gmail's error messages; no live
- * Gmail refusal has been captured to confirm it, so a refusal worded differently is an ordinary failure.
- */
+/** Inferred wording (not confirmed against a live refusal); other wording is an ordinary failure. */
 const RECIPIENT_REFUSAL = /invalid (to|cc|bcc) header|invalid recipient|recipient address rejected/i;
 
-/** The sent message's id and the thread Gmail filed it into (`users.messages.send`). */
 export interface GmailSentMessage {
   id: string;
   threadId: string;
 }
 
-/**
- * Reads at most `SEND_ERROR_BODY_READ_LIMIT` bytes of a failed send's body and then releases the stream. A read
- * failure propagates, so the send fails as an ordinary error rather than with a classification it did not earn.
- */
+/** A read failure propagates, so the send fails as an ordinary error, not a misclassified one. */
 async function readSendErrorBodyStart(response: Response): Promise<string> {
   return (await readSendBody(response, SEND_ERROR_BODY_READ_LIMIT)).text;
 }
 
-/**
- * The error a refused `users.messages.send` becomes. A refusal that names an invalid recipient is
- * `MailRecipientRejectedError` whatever its status. Otherwise a 400 or 401 is `MailReauthorizationRequiredError`,
- * and any other status is an ordinary failure. The thrown messages name neither the body nor any token.
- */
+/** Invalid recipient wins over status; 400/401 means reauthorization. Messages never include body or token. */
 async function sendFailure(response: Response): Promise<Error> {
   const errorBodyStart = await readSendErrorBodyStart(response);
   if (RECIPIENT_REFUSAL.test(errorBodyStart)) return new MailRecipientRejectedError();
@@ -298,13 +273,7 @@ async function sendFailure(response: Response): Promise<Error> {
   return new Error(`Gmail send failed with status ${response.status}`);
 }
 
-/**
- * Real `GmailMailClient` (gmailReconcile.ts) over the Gmail REST API. CI never reaches Google: the
- * semprec-api tests in `mailSyncAdapters.test.ts` run it against a fake Gmail server through
- * `fetchImpl`, and the reconcile logic itself is tested against a fake client. `getAccessToken` is
- * injected (see oauthTokenExchange.ts) rather than baked in, so this class never itself holds a
- * refresh token in memory beyond one call. `fetchImpl` defaults to the global `fetch`.
- */
+/** `GmailMailClient` over the Gmail REST API. Tokens come from `getAccessToken`, so no refresh token is held here. */
 export class GmailRestClient implements GmailMailClient {
   constructor(
     private readonly getAccessToken: () => Promise<string>,
@@ -370,9 +339,6 @@ export class GmailRestClient implements GmailMailClient {
 
   async getCurrentHistoryId(): Promise<string> {
     const { status, json } = await this.request<{ historyId: string }>("/profile");
-    // `request` returns `{ json: null }` on a 404 (deleted account, suspended domain) — a
-    // non-null assertion here would throw an unhelpful "Cannot read properties of null"
-    // instead of a message that actually says what happened.
     if (!json)
       throw new Error(`Gmail /profile returned status ${status} with no body — account may be deleted or suspended`);
     return json.historyId;
@@ -432,9 +398,7 @@ export class GmailRestClient implements GmailMailClient {
       `/messages/${gmailMessageId}/attachments/${attachmentId}`,
     );
     if (!json) throw new Error("Gmail attachment not found");
-    // Checked against the API's own reported size *before* decoding — Gmail's real limit is
-    // 25MB, well under this, so this only ever binds against a malformed/rogue response, and
-    // catching it pre-decode avoids materializing the oversized buffer at all.
+    // Checked before decoding so an oversized (malformed) response is never materialized.
     if (json.size > MAX_ATTACHMENT_BYTES) {
       throw new Error(`Gmail attachment exceeds the ${MAX_ATTACHMENT_BYTES}-byte cap`);
     }
@@ -442,8 +406,7 @@ export class GmailRestClient implements GmailMailClient {
   }
 
   async fetchMessage(id: string): Promise<GmailFetchedMessage | null> {
-    // `format=full` (not `format=raw`): structure + headers + small-part bodies, without ever
-    // pulling every attachment's bytes into one response — see toFetchedMessage's header note.
+    // `format=full` avoids pulling every attachment's bytes into one response.
     const { status, json } = await this.request<{
       id: string;
       threadId: string;
@@ -502,11 +465,7 @@ export class GmailRestClient implements GmailMailClient {
     await response.body?.cancel();
   }
 
-  /**
-   * Sends a complete RFC 5322 message through `users.messages.send`, base64url-encoded in the `raw` field.
-   * `threadId` names the conversation the sent message is filed into. The In-Reply-To header is not enough for
-   * that, so a reply that must join its thread passes the thread here. Refusals are classified by `sendFailure`.
-   */
+  /** Gmail does not thread by In-Reply-To alone, so a reply must pass `threadId`. */
   async sendMessage(raw: Buffer, threadId?: string): Promise<GmailSentMessage> {
     const token = await this.getAccessToken();
     const response = await privateSendOperation(() =>

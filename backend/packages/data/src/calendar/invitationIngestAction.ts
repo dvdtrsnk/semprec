@@ -1,10 +1,5 @@
-// The heartbeat action that turns the iMIP `REQUEST` of a new email into a pending invitation (issue gh-1929), carries an
-// organizer's later `REQUEST` into an answered invitation and its Event (issue gh-2007) and applies the organizer's
-// `CANCEL` (issue gh-2006). Mail ingest writes nothing to the Invitations database: the calendar module reacts to the
-// new Emails item instead, the way `mail.linkPeopleByEmail` does.
-// Constrained by: docs/adr/2026-09-10-single-writer-ownership-model.md,
-// docs/adr/2026-09-10-choke-point-api-for-state-writes.md,
-// docs/adr/2026-11-14-an-organizers-update-is-adopted-into-an-event-by-the-calendar-module-until-the-user-changes-the-field.md
+// Turns the iMIP `REQUEST`/`CANCEL` of a new email into invitation writes. Mail ingest writes nothing to the
+// Invitations database: the calendar module reacts to the new Emails item instead, as `mail.linkPeopleByEmail` does.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { getTenantUserId } from "../auth/usersStore.js";
@@ -39,14 +34,10 @@ import { logger } from "./logger.js";
 
 export const CALENDAR_INGEST_INVITATION_ACTION_ID = "calendar.ingestInvitation";
 
-/** The `action_config` of the heartbeat: the two databases the action reads and writes, resolved once at seed time. */
+/** Both database ids are resolved once at seed time. */
 const configSchema = z.object({ emailsDatabaseId: z.uuid(), invitationsDatabaseId: z.uuid() });
 
-/**
- * The ingest's heartbeat, shared by `seedInvitationsDatabaseInTransaction` (fresh install) and
- * `runInvitationIngestHeartbeatCutoverMigration` (populated upgrade) so both create the same one: an `onItemEvent`
- * create rule on the Emails database, owned by `projectItemId`, the system project of the Invitations database.
- */
+/** `projectItemId` is the system project of the Invitations database. */
 export function invitationIngestHeartbeat(input: {
   projectItemId: string;
   emailsDatabaseId: string;
@@ -63,7 +54,7 @@ export function invitationIngestHeartbeat(input: {
 
 const CALENDAR_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: CALENDAR_MODULE_ID };
 
-/** The invitation properties a parsed event fills, and so the keys the calendar module writes as the owner process. */
+/** The keys the calendar module writes as the owner process. */
 const PARSED_KEYS = [
   "title",
   "startsAt",
@@ -76,10 +67,8 @@ const PARSED_KEYS = [
   "sequence",
 ] as const;
 const CREATE_KEYS = [...PARSED_KEYS, "status", "kind", "uid"] as const;
-/** The invitation properties a `CANCEL` writes. */
 const CANCEL_KEYS = ["status", "sequence"] as const;
 
-/** The invitation properties of a parsed event, an absent value as `null`. */
 function parsedFields(event: ICalendarEvent): Record<(typeof PARSED_KEYS)[number], unknown> {
   return {
     title: event.summary,
@@ -100,7 +89,7 @@ async function requireRelationPropertyId(client: PoolClient, databaseId: string,
   return property.id;
 }
 
-/** The id of the live calendar marked `isDefault` (the lowest id of several), its row locked `FOR SHARE`; `null` when there is none. */
+/** Locked `FOR SHARE`; the lowest id wins when several calendars are marked default. */
 async function lockDefaultCalendarId(client: PoolClient): Promise<string | null> {
   const calendars = await databasesStore.getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
   if (!calendars) return null;
@@ -114,14 +103,12 @@ async function lockDefaultCalendarId(client: PoolClient): Promise<string | null>
   return rows[0]?.id ?? null;
 }
 
-/** What the handling of one message's calendar parts knows about the message. */
 interface MessageContext {
   invitationsDatabaseId: string;
   emailItemId: string;
   mailboxItemId: string | null;
-  /** The message's own sender address (`envelope.from`), normalized; `null` when the message names none. */
+  /** `envelope.from`, normalized. */
   senderAddress: string | null;
-  /** The tenant's time zone, the one an Event's wall-clock values are read in. */
   timeZone: string;
 }
 
@@ -143,15 +130,11 @@ async function linkInvitation(
   );
 }
 
-/** The longest invitation title, in characters, that the notification title carries. */
 const NOTIFICATION_TITLE_MAX_CHARACTERS = 120;
 
 /**
- * Notifies the tenant's user of the new pending invitation `invitationItemId` (issue gh-1954), in the caller's
- * transaction: the notification commits or rolls back with the invitation. The title names the organizer (name,
- * else address) and the invitation's title cut to 120 characters; an organizer or title the message does not carry
- * is an empty text. The push is `link_href` `null`, the app opens the invitation from `payload.invitationId`.
- * A tenant with no bound user has nobody to notify: the invitation stays and the skip is logged with a reason code.
+ * Runs in the caller's transaction, so the notification commits or rolls back with the invitation. `link_href` is
+ * `null`: the app opens the invitation from `payload.invitationId`.
  */
 async function notifyNewInvitation(
   client: PoolClient,
@@ -206,11 +189,7 @@ async function createInvitation(client: PoolClient, context: MessageContext, eve
   logger.info({ emailItemId: context.emailItemId, invitationItemId: invitation.id }, "calendar invitation created");
 }
 
-/**
- * Whether the message's sender is the invitation's organizer: the message names a sender, the invitation stored an
- * organizer address, and the two are equal without regard to case. An organizer-only change (a cancellation or an
- * update of an answered invitation) is applied only for such a message.
- */
+/** Organizer-only changes (a cancellation, an update of an answered invitation) require this. */
 function isFromOrganizer(context: MessageContext, invitation: ItemRow): boolean {
   const { organizerEmail } = invitation.properties;
   return (
@@ -220,12 +199,10 @@ function isFromOrganizer(context: MessageContext, invitation: ItemRow): boolean 
   );
 }
 
-/** The stored `sequence` of an invitation; a value that is not a number reads as `0`. */
 function storedSequenceOf(invitation: ItemRow): number {
   return typeof invitation.properties.sequence === "number" ? invitation.properties.sequence : 0;
 }
 
-/** Writes the parsed fields and the `sequence` of `event` into the invitation and points its `sourceEmail` at this email. */
 async function updateInvitationFromRequest(
   client: PoolClient,
   context: MessageContext,
@@ -255,10 +232,7 @@ async function updateInvitationFromRequest(
   logger.info({ emailItemId: context.emailItemId, invitationItemId }, "calendar invitation updated");
 }
 
-/**
- * The Event the invitation links through its `event` relation, its row locked `FOR UPDATE`, trashed or live; `null`
- * when the invitation has no such edge. Reads the first edge, as the respond route does.
- */
+/** Locks the linked Event `FOR UPDATE`, trashed or live. Reads the first edge, as the respond route does. */
 async function lockLinkedEvent(
   client: PoolClient,
   invitationsDatabaseId: string,
@@ -275,14 +249,9 @@ async function lockLinkedEvent(
 }
 
 /**
- * The patch that carries an organizer's update into the Event of an answered invitation, field by field. The Event
- * holds what the invitation's previous fields produced through `invitationEventFields`, stored the way an Event's
- * own time rules store it (a missing end becomes one hour after the start), unless the user changed it since. A field
- * is in the patch when the Event still holds that previous value and the new fields produce another one, `null` when
- * the new fields produce none. A field the user changed, and one the update does not change, is left out. The title
- * (`name`) is never cleared: an update that carries no usable title (no SUMMARY, or a blank one) leaves the Event's
- * title as it is, because the system writer is not held to the non-blank title rule that a user write is, and an Event
- * must keep a title.
+ * A field is adopted only while the Event still holds what the previous invitation fields produced (as stored by
+ * the Events time rules), so a field the user changed is never overwritten. The title is never cleared: the system
+ * writer is not held to the non-blank title rule a user write is, and an Event must keep a title.
  */
 function eventPatchOfUpdate(
   invitation: ItemRow,
@@ -307,13 +276,8 @@ function eventPatchOfUpdate(
 }
 
 /**
- * Applies a higher-`sequence` `REQUEST` to an invitation the user answered (issue gh-2007): the invitation takes the
- * parsed fields, the `sequence` and the new `sourceEmail`, and keeps `status` and `respondedAt`. A live linked Event
- * takes, through the choke point, the fields of `eventPatchOfUpdate`; a trashed one (after `declined`, or trashed by
- * the user) and a missing one are not touched. Nothing is notified and nothing is sent. An Event write the Events rules
- * refuse is logged with the email and invitation ids and a reason code, then rethrown, so the whole message's
- * transaction rolls back and the action fails. The caller has checked that the message comes from the invitation's
- * organizer (`isFromOrganizer`).
+ * The invitation keeps `status` and `respondedAt`; a trashed or missing Event is not touched. A refused Event
+ * write is rethrown so the whole message's transaction rolls back. The caller has checked `isFromOrganizer`.
  */
 async function updateAnsweredInvitation(
   client: PoolClient,
@@ -345,7 +309,7 @@ async function updateAnsweredInvitation(
   }
 }
 
-/** Takes the transaction-scoped advisory lock of the tenant and `uid`, then returns the invitation of that `UID` (trashed ones count), its row locked. */
+/** The advisory lock serializes deliveries of one `UID`; trashed invitations count. */
 async function lockInvitationOfUid(client: PoolClient, context: MessageContext, uid: string): Promise<ItemRow | null> {
   await client.query(
     "SELECT pg_advisory_xact_lock(hashtextextended('invitationUid:' || app_tenant_default()::text || ':' || $1::text, 0))",
@@ -356,17 +320,8 @@ async function lockInvitationOfUid(client: PoolClient, context: MessageContext, 
 }
 
 /**
- * Applies one parsed `REQUEST` event inside the caller's transaction. The transaction-scoped advisory lock on the
- * tenant and `UID` comes first, so two deliveries of one `UID` cannot both find no invitation and both insert; the
- * invitation read after it is row-locked, so the update below acts on the row it read.
- *
- * - No invitation (trashed ones count) has the `UID`: creates a pending one and notifies the tenant's user of it (once,
- *   because only this branch notifies).
- * - One exists, is live, and has a lower `sequence` than the request (a stored `sequence` that is not a number reads as
- *   `0`): a `pending` one takes the parsed fields and the new `sourceEmail`; an `accepted`, `tentative` or `declined`
- *   one is updated by `updateAnsweredInvitation`, but only when the message's sender is the invitation's stored
- *   organizer (`isFromOrganizer`); otherwise nothing changes and `sender_not_organizer` is logged with the ids.
- * - Otherwise (an equal or higher `sequence`, a `cancelled` or `acknowledged` invitation, a trashed one): changes nothing.
+ * The advisory lock comes first so two deliveries of one `UID` cannot both find no invitation and both insert.
+ * Only the create branch notifies, so the user is notified once.
  */
 async function applyRequest(client: PoolClient, context: MessageContext, event: ICalendarEvent): Promise<void> {
   const existing = await lockInvitationOfUid(client, context, event.uid);
@@ -391,15 +346,7 @@ async function applyRequest(client: PoolClient, context: MessageContext, event: 
   }
 }
 
-/**
- * Applies one parsed `CANCEL` event inside the caller's transaction, under the same advisory lock on the tenant and
- * `UID` as `applyRequest` (issue gh-2006). Nothing changes when no live invitation has the `UID`, when the message's
- * sender is not the invitation's `organizerEmail` (compared without regard to case) or when the `CANCEL`'s `sequence`
- * is lower than the stored one; the last two are logged with the email and invitation ids and a reason code. An
- * invitation that is already `cancelled` is left as it is. Otherwise the invitation's live linked Event goes to the
- * trash, where the user can restore it, the invitation gets `status` `cancelled` and the `CANCEL`'s `sequence` (its
- * `respondedAt` stays), and its notification is resolved, all in the caller's transaction.
- */
+/** The linked Event is trashed, not deleted, so the user can restore it. */
 async function applyCancel(client: PoolClient, context: MessageContext, event: ICalendarEvent): Promise<void> {
   const invitation = await lockInvitationOfUid(client, context, event.uid);
   if (!invitation || invitation.deletedAt !== null) return;
@@ -430,19 +377,10 @@ async function applyCancel(client: PoolClient, context: MessageContext, event: I
 }
 
 /**
- * Registered as the `onItemEvent` ('create') heartbeat action `calendar.ingestInvitation` on the Emails database: reads
- * the calendar parts of the new message and, for each iMIP `REQUEST` or `CANCEL` among them, creates, updates or
- * cancels the invitation of the same `UID`, as `applyRequest` and `applyCancel` describe. Of a part's events it takes
- * the first that has no `RECURRENCE-ID`; an `RRULE` is ignored. All writes go through the choke point as the calendar
- * module's system owner process, and the whole message is handled in one transaction.
- *
- * Nothing is written, and the action does not fail, for a message of kind `dsn`, one without a calendar part, a part
- * the parser rejects (over its limits or malformed), a calendar with another `METHOD` (`REPLY`, `PUBLISH`, none) and a
- * message that is trashed or gone by the time the transaction locks it. A failure of the storage read or of a write
- * does fail the action, and so does a tenant time zone setting that is not an IANA zone. Logs carry the email and invitation ids and a reason code, never the invitation's content.
- *
- * The parts are read, and the tenant's time zone, before the transaction opens, so no transaction waits on storage.
- * Runs in the firing heartbeat's tenant.
+ * Of a part's events only the first without a `RECURRENCE-ID` is used; an `RRULE` is ignored. The whole message is
+ * handled in one transaction. Unusable input is skipped without failing; storage and write failures fail the action.
+ * Logs never carry the invitation's content. The parts are read before the transaction opens, so no transaction
+ * waits on storage.
  */
 export function createInvitationIngestAction(
   pool: Pool,

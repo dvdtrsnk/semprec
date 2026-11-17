@@ -20,23 +20,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 /**
- * Contract suite for the pinned pi runtime (`@earendil-works/pi-ai`,
- * `@earendil-works/pi-agent-core`, `@earendil-works/pi-coding-agent`).
- *
- * These tests exercise the real installed packages (no mocking of pi itself) so a
- * `pnpm install` that silently changes the resolved pi version, or a pi release that
- * breaks one of these relied-upon behaviors, fails here with a pi-contract-specific
- * message instead of surfacing later as an unexplained agent-runtime bug.
+ * Contract suite for the pinned pi runtime (`pi-ai`, `pi-agent-core`, `pi-coding-agent`), run against the real
+ * installed packages, so a version change that breaks a relied-upon behavior fails here with a pi-specific message.
  */
 
-// Never actually invoked below — these tests only cover construction, not a run —
-// so a minimal stand-in cast to `StreamFn` is enough.
+// Never invoked: these tests cover construction only.
 const noopStreamFn = async function* () {} as unknown as StreamFn;
 
-// `node:child_process`'s ESM namespace is non-configurable, so `vi.spyOn` on it
-// directly is not possible under vitest's module loader. `vi.mock` with a factory
-// that wraps every subprocess-spawning export is the supported way to observe calls
-// while still letting anything unrelated to this contract keep working normally.
+// `node:child_process`'s ESM namespace is non-configurable, so `vi.spyOn` cannot wrap it; `vi.mock` with a wrapping
+// factory observes calls while leaving everything else working.
 const subprocessSpawnCalls: string[] = [];
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -118,10 +110,7 @@ describe("pi runtime contract", () => {
       { kind: "message", role: "user", content: [{ type: "text", text: "hello" }] } as unknown as AgentMessage,
     ];
 
-    // `compact()` documents its first parameter as `CompactionPreparation` (from
-    // `prepareCompaction()`), not a bare `AgentMessage[]`. Casting past the type
-    // system to simulate what a caller that skipped `prepareCompaction()` would do
-    // proves the low-level function actually depends on that shape at runtime too.
+    // Casting past the type system to skip `prepareCompaction()` proves `compact()` depends on that shape at runtime.
     await expect(
       lowLevelCompact(
         messages as unknown as CompactionPreparation,

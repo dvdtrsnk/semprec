@@ -25,29 +25,24 @@ const ROUTE = "/internal/pi/messages";
 /** The only provider this route dispatches to: the gateway holds no credential but `ANTHROPIC_API_KEY`. */
 const PROVIDER = "anthropic";
 
-/** A whole agent context (system prompt, every prior message and tool result, tool schemas) travels in one body. */
+/** A whole agent context travels in one body. */
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /** Output tokens reserved against the budget when the caller sets no `maxTokens`, capped by the model's own maximum. */
 const DEFAULT_RESERVED_OUTPUT_TOKENS = 8192;
 
-/**
- * Upper bound on one streamed turn, so a provider that opens the stream and then stalls cannot
- * hold the connection and keep its `ai_gateway_calls` row `reserved` for as long as the SDK allows.
- */
+/** A stalled provider stream must not keep its `ai_gateway_calls` row `reserved` indefinitely. */
 export const STREAM_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface PiMessagesHandlerOptions {
-  /** Compared against the caller's `Authorization: Bearer <token>` header. */
   internalToken: string;
-  /** Resolves the requested model id; only `anthropic` models are ever looked up. */
   models: Models;
   apiKey: string;
   /** pi-ai's provider-dispatching stream (`streamSimple` from `@earendil-works/pi-ai/compat` in production). */
   streamFn: StreamFunction<Api, SimpleStreamOptions>;
-  /** Defaults to `STREAM_TIMEOUT_MS`; exists only so a test can shrink the bound to milliseconds. */
+  /** Test seam; defaults to `STREAM_TIMEOUT_MS`. */
   streamTimeoutMs?: number;
-  /** Operator-wide safety caps (`AI_GLOBAL_*_CAP_USD`), checked on every reservation against all tenants' spend. */
+  /** Operator-wide caps across all tenants' spend. */
   globalCaps: GlobalAiCaps;
 }
 
@@ -55,15 +50,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Shape check only: the content of a message is pi's own `Message` type and is handed to pi
- * unchanged, so the edge confirms it is an object with one of pi's three roles and nothing more.
- */
+/** Shape check only: the message is handed to pi unchanged. */
 function isMessageShaped(value: unknown): value is Message {
   return isRecord(value) && (value.role === "user" || value.role === "assistant" || value.role === "toolResult");
 }
 
-/** Shape check only, like `isMessageShaped`: the JSON Schema in `parameters` is passed to the provider as-is. */
+/** Shape check only: `parameters` is passed to the provider as-is. */
 function isToolShaped(value: unknown): value is Tool {
   return (
     isRecord(value) &&
@@ -87,9 +79,8 @@ const requestBodySchema = z.object({
       reasoning: z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
       cacheRetention: z.enum(["none", "short", "long"]).optional(),
       sessionId: z.string().optional(),
-      // The pi-messages protocol also names "required" and a function selector, but pi's Anthropic
-      // transport maps only these two onto a valid `tool_choice`; anything else is a guaranteed
-      // provider rejection after the budget has been reserved, so it is refused here instead.
+      // pi's Anthropic transport maps only these two to a valid `tool_choice`; anything else would be
+      // a provider rejection after the budget was reserved.
       toolChoice: z.enum(["auto", "none"]).optional(),
     })
     .optional(),
@@ -134,7 +125,7 @@ function parseBody(raw: unknown): PiMessagesRequestBody {
   return result.data;
 }
 
-/** Constant-time so a network caller can't recover `AI_GATEWAY_INTERNAL_TOKEN` byte-by-byte from response timing. */
+/** Constant-time, so the token cannot be recovered from response timing. */
 function tokensMatch(provided: string, expected: string): boolean {
   const providedBuf = Buffer.from(provided);
   const expectedBuf = Buffer.from(expected);
@@ -148,11 +139,8 @@ function extractBearerToken(req: IncomingMessage): string {
 }
 
 /**
- * Serializes one of pi-ai's `AssistantMessageEvent`s into the pi-messages wire event: `partial` is
- * dropped, and the few fields the wire event carries that pi's in-process event keeps only on
- * `partial` are read from it — a tool call's `id`/`toolName` at `toolcall_start`, and the text and
- * thinking signatures at `*_end`, which Anthropic requires back when the turn is replayed.
- * `done`/`error` hoist the final message's usage (and error message) as the protocol defines.
+ * Drops `partial`, but first reads the fields the wire event needs from it: a tool call's
+ * `id`/`toolName` at `toolcall_start`, and the signatures at `*_end` Anthropic requires on replay.
  */
 function serializeEvent(event: AssistantMessageEvent): PiMessagesEvent {
   switch (event.type) {
@@ -220,10 +208,8 @@ function isOpen(res: ServerResponse): boolean {
 }
 
 /**
- * Writes one SSE event and, when the socket buffer is full, waits for it to drain (or for the
- * connection to close) before the next provider event is read, so a slow reader never makes this
- * process buffer the whole turn. A connection that is already gone is skipped: the abort signal
- * has already told the provider to stop, and its terminal `error` event ends the loop.
+ * Waits for drain (or close) when the buffer is full, so a slow reader never makes this process
+ * buffer the whole turn. A gone connection is skipped: the abort already stopped the provider.
  */
 function writeEvent(res: ServerResponse, event: PiMessagesEvent): Promise<void> {
   if (!isOpen(res)) return Promise.resolve();
@@ -240,28 +226,13 @@ function writeEvent(res: ServerResponse, event: PiMessagesEvent): Promise<void> 
 }
 
 /**
- * Handles `POST /internal/pi/messages` — the server side of `@earendil-works/pi-ai`'s
- * `pi-messages` protocol, so `semprec-agents`' pi session drives Anthropic through this gateway
- * rather than calling the provider itself (docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md).
- * Authenticates the internal bearer token before reading the body, validates the body's shape,
- * resolves the requested model from pi-ai's catalog (Anthropic only), and runs the turn through
- * `@semprec/ai-gateway`'s `complete()`: one `ai_gateway_calls` row per request, `reserved` at an
- * estimate before the provider is contacted, then `settled` with the streamed usage and
- * `usage.cost.total`, or `failed` at cost 0.
+ * `POST /internal/pi/messages`: the server side of pi-ai's `pi-messages` protocol, so the agents'
+ * pi session reaches Anthropic only through this gateway. One `ai_gateway_calls` row per request,
+ * `reserved` at an estimate, then `settled` or `failed` at cost 0.
  *
- * The provider stream is relayed as `data: <PiMessagesEvent>` SSE frames ending in exactly one
- * `done` or `error`. The response is ended right after that event, before the row leaves
- * `reserved`: a client that has read `done` can still see the row `reserved` at its estimate until
- * the settle lands, and an `error` event (the provider refused, or the turn was aborted) is
- * delivered before the row is marked `failed`, so nothing else is sent after it.
- * When the client disconnects mid-turn, an abort signal stops the provider stream, which ends in
- * an `aborted` error event and therefore a `failed` row. A turn still running after
- * `STREAM_TIMEOUT_MS` is aborted the same way, whatever the provider SDK's own timeout is.
- *
- * Shutdown needs nothing of its own: an in-flight SSE response is not an idle connection, so the
- * graceful drain in `shutdown.ts` waits for it up to `SHUTDOWN_DRAIN_TIMEOUT_MS` and then
- * `closeAllConnections()`; a turn cut there closes its response, which aborts the provider stream
- * and ends as a `failed` row through the same path as a client disconnect.
+ * SSE frames end in exactly one `done` or `error`, and the response ends before the row leaves
+ * `reserved`, so a client may briefly still see it `reserved`. A disconnect, `STREAM_TIMEOUT_MS`,
+ * or the shutdown drain's `closeAllConnections()` all abort the provider stream into a `failed` row.
  */
 export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesHandlerOptions) {
   const streamTimeoutMs = options.streamTimeoutMs ?? STREAM_TIMEOUT_MS;
@@ -334,9 +305,8 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
           return;
         }
 
-        // #620: a rough upper bound (about 4 characters per token for the whole context, the output
-        // cap or a default one) reserved before the call and replaced by the real cost on settle.
-        // pi's `ModelCost` is USD per million tokens.
+        // Rough upper bound (about 4 characters per token plus the output cap), replaced by the real
+        // cost on settle. pi's `ModelCost` is USD per million tokens.
         const estimatedInputTokens = Math.ceil(JSON.stringify(body.context).length / 4);
         const reservedOutputTokens =
           body.options?.maxTokens ?? Math.min(model.maxTokens, DEFAULT_RESERVED_OUTPUT_TOKENS);
@@ -374,8 +344,7 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
           // Anything else that escaped before the head was written (the reservation itself failing)
           // is not a provider failure; the outer handler answers it as a 500.
           if (!res.headersSent) throw err;
-          // Standard failed-call observability event: the row is `failed` with no usage, so this log
-          // carries the cause. The context and the key are deliberately never logged.
+          // The `failed` row has no usage, so this log carries the cause. Never log the context or key.
           logger.error({ err, provider: PROVIDER, model: model.id, agentRunId }, "Streamed provider call failed");
           if (isOpen(res)) res.end();
         }
@@ -394,11 +363,7 @@ export function createPiMessagesRequestListener(pool: Pool, options: PiMessagesH
     }
   }
 
-  /**
-   * Same rationale as `completeHandler.ts`: keeping the boundary synchronous confines a rejection
-   * that escapes the try/catch above to that one request instead of an unhandled rejection that
-   * takes the whole process down.
-   */
+  /** Synchronous boundary: an escaped rejection fails one request, not the process. */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the pi-messages request listener");

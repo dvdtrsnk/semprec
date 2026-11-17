@@ -1,10 +1,7 @@
 import type { Pool } from "pg";
 import { readSempStatusReport } from "./sempStatusReport.js";
 
-/**
- * What Semp cannot do while a banner problem is active, by category and stored problem kind. A kind
- * of a banner category that is not listed falls back to its category's key.
- */
+/** What Semp cannot do while a banner problem is active; an unlisted kind falls back to its category's key. */
 const IMPACT_KEYS = {
   mail: { fallback: "mailNotSyncing", kinds: { mailSyncError: "mailNotSyncing" } },
   agents: {
@@ -35,21 +32,15 @@ export interface SempStatusBanner {
   shortText: string;
   impactKey: string;
   /**
-   * The problem id, so a hidden notice reappears when the id changes: a stored problem that is
-   * resolved and occurs again is a new row, and the id of an exhausted AI budget (issue gh-1871)
-   * carries the reset instant of its window. An exhaustion that ends and returns inside one window
-   * keeps its id.
+   * Changes when a hidden notice should reappear: a recurring stored problem is a new row, and the AI budget
+   * problem's id carries its window's reset instant.
    */
   instanceId: string;
 }
 
 /**
- * The profile and chat summary of the Semp status (issue #1631): the active problem count and the
- * banner, both taken from the one report read of issue #1555. The banner is the first critical
- * `mail` or `agents` problem in the report's order: the AI budget problem of issue gh-1871 when the
- * tenant has one, then the stored problems (critical first, then the latest `last_seen_at`, then
- * id), so of the stored problems the most severe and most recently seen one wins; `null` when
- * there is none.
+ * Active count and banner, from one report read. The banner is the first critical `mail` or `agents` problem in
+ * report order: the AI budget problem first, then stored problems by severity, latest `last_seen_at`, id.
  */
 export async function getSempStatusSummary(
   pool: Pool,

@@ -72,9 +72,8 @@ export function parseRequest(body: unknown): RecurrenceRequest {
 }
 
 /**
- * The rule a request stands for on `date`: `daily` is fixed weekdays with all seven days (not floating), `weekdays`
- * Monday to Friday, `weekly` the weekday of `date`, `monthly` the day of the month of `date`; `{mode, rule}` is parsed
- * with the existing rule schema.
+ * `daily` is fixed weekdays with all seven days (not floating), `weekdays` Monday to Friday, `weekly` the weekday
+ * of `date`, `monthly` its day of month; `{mode, rule}` goes through the rule schema.
  */
 export function resolveRule(request: RecurrenceRequest, date: string): TaskRecurrenceRule {
   const day = DateTime.fromISO(date, { zone: "utc" });

@@ -22,18 +22,8 @@ import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
 import { RETENTION_DAYS } from "./purgeExpiredTrash.js";
-
-/**
- * The custom-route handler shape this file's export is cast to by `semprec-api`'s mount (issue #239),
- * duck-typed the same way `aiUsageRouteHandler.ts` is: `req.url` carries the query string, and the
- * adapter always supplies the caller, whose `users.locale` the system database names resolve in.
- */
-interface TrashItemsRouteRequestContext {
-  req: { url?: string };
-  identity: { user: { locale: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
+import type { CustomRouteResult, RouteBody, RouteUser, RouteLocale, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_LIMIT = 50;
@@ -73,9 +63,8 @@ function encodeCursor(cursor: TrashCursor): string {
 }
 
 /**
- * The SQL that reads the id an item's `parentItemId` property names: the property's text cast to `uuid`, or NULL
- * when it is absent or not a UUID, so a stored value that is not an id matches no row and never fails the cast.
- * `expression` is the SQL of a `properties` column, written by this file and never taken from a request.
+ * The item id a `parentItemId` property names, or NULL when absent or not a UUID (never fails the cast).
+ * `expression` is SQL written by this file, never taken from a request.
  */
 function parentItemIdSql(expression: string): string {
   const text = `(${expression} ->> 'parentItemId')`;
@@ -83,16 +72,10 @@ function parentItemIdSql(expression: string): string {
 }
 
 /**
- * The trashed cascade roots the list shows, as the `WHERE` of statements over `items i JOIN databases d`.
- * `$1` is the ids of the tenant's databases that are not archived, `$2` the ids of all its databases, `$3` the owner
- * module id of the hidden Pages database. A trashed row is a root unless
- * - it sits in an inline database (`d.parent_item_id`) whose owner item has the very same `deleted_at`, or
- * - it is an item of the Pages database whose `parentItemId` names an item (a page or a host) with the very same
- *   `deleted_at`,
- * because it was trashed together with that item (`itemDeleteWithClient` stamps one `deleted_at` on the whole
- * subtree, the pages of a host included) and comes back with it. An owner in an archived database still counts, so
- * `$2`. The Pages test uses the stored link only; no document is read. Row-level security limits `items` and
- * `databases` to the tenant in scope.
+ * `WHERE` selecting trashed cascade roots over `items i JOIN databases d`. `$1` non-archived database ids, `$2` all
+ * database ids, `$3` the Pages owner module id. A row is not a root when its inline-database owner item, or the item
+ * its Pages `parentItemId` names, has the very same `deleted_at`: `itemDeleteWithClient` stamps one `deleted_at` on
+ * the whole subtree, so it comes back with that item. Owners in archived databases still count (`$2`).
  */
 const ROOTS_WHERE = `i.database_id = ANY($1::uuid[])
   AND i.deleted_at IS NOT NULL
@@ -112,10 +95,7 @@ const ROOTS_WHERE = `i.database_id = ANY($1::uuid[])
     )
   )`;
 
-/**
- * The rows after the cursor `($5, $6)` in the order `deleted_at DESC, id`. The bound on `deleted_at` alone repeats
- * what the second line already implies, so that the index on `deleted_at` can start its scan at the cursor.
- */
+/** The redundant bound on `deleted_at` alone lets the `deleted_at` index start its scan at the cursor. */
 const AFTER_CURSOR = `AND i.deleted_at <= $5::timestamptz
   AND (i.deleted_at < $5::timestamptz OR i.id > $6::uuid)`;
 
@@ -139,23 +119,20 @@ interface TrashRootRow {
   database_system: boolean;
 }
 
-/** One ancestor of a trashed page: its item id, its title and whether it is itself in the Trash. */
 interface PageAncestor {
   itemId: string;
   title: string;
   trashed: boolean;
 }
 
-/** What a row of the Pages database adds to the list: its title and the chain of its ancestors, host first. */
 interface PageRowInfo {
   title: string;
   path: PageAncestor[];
 }
 
 interface TrashRootsPage {
-  /** At most `limit + 1` rows: the extra one only tells that another page follows. */
+  /** At most `limit + 1` rows: the extra one only signals another page. */
   rows: TrashRootRow[];
-  /** The `page` object of each row of the Pages database among the first `limit` rows, by item id. */
   pages: Map<string, PageRowInfo>;
   totalCount: number;
   clock: CalendarClock;
@@ -173,15 +150,10 @@ function isPagesRow(row: TrashRootRow): boolean {
 }
 
 /**
- * The ancestors of the pages `rootIds` (items of the Pages database `pagesDatabaseId`) in one recursive read: from
- * each page its `parentItemId` item, and from a parent that is itself a Pages item that item's `parentItemId`, until
- * an item outside the Pages database (the host), an item that is gone, a missing or malformed `parentItemId`, or an
- * item the walk has already seen (a stored cycle), or `MAX_SUBPAGE_CHAIN` ancestors, so that a chain deeper than the
- * bound holds the snapshot transaction for a bounded time (docs/adr/2026-11-09-subpage-parent-chains-are-bounded-while-walked.md):
- * the walk keeps the nearest 1000 ancestors, so the path of such a page starts below the host, like a breadcrumb trail
- * of `getItemPath`, which is cut at its root end. Trashed ancestors are read like live ones. A title is the value of
- * the item's database's `title` property (the alphabetically first key when there are several), so a page's title is
- * its mirror and a host's is its own; an item with no such value has the empty title. Rows come host first per page.
+ * The ancestors of the pages `rootIds`, host first, in one recursive read following `parentItemId` until a non-Pages
+ * item (the host), a missing item or link, a cycle, or `MAX_SUBPAGE_CHAIN` ancestors. The bound keeps the snapshot
+ * transaction short; a deeper chain keeps its nearest ancestors. A
+ * title is the item's database's `title` property (alphabetically first key), or empty.
  */
 async function readPageAncestors(
   client: Queryable,
@@ -216,7 +188,6 @@ async function readPageAncestors(
   return rows;
 }
 
-/** The `page` object of each Pages row among `rows`, keyed by item id; no statement is sent without such a row. */
 async function readPageRowInfo(
   client: Queryable,
   rows: readonly TrashRootRow[],
@@ -246,11 +217,7 @@ async function readPageRowInfo(
   return info;
 }
 
-/**
- * Reads one page of roots, the `page` objects of its Pages rows, their total and the tenant's calendar clock in one
- * REPEATABLE READ transaction, so the page, `totalCount` and the databases and ancestors they refer to come from one
- * snapshot.
- */
+/** One REPEATABLE READ transaction, so the page, `totalCount` and referenced databases and ancestors share a snapshot. */
 async function readTrashRootsPage(
   client: Queryable,
   limit: number,
@@ -270,7 +237,6 @@ async function readTrashRootsPage(
   return { rows, pages, totalCount, clock: await getCalendarClock(client) };
 }
 
-/** The number of cascade roots `ROOTS_WHERE` selects with `rootParams` (the `totalCount` of the list). */
 async function countRoots(client: Queryable, rootParams: unknown[]): Promise<number> {
   const { rows: totals } = await client.query<{ total: number }>(
     `SELECT count(*)::int AS total FROM items i JOIN databases d ON d.id = i.database_id WHERE ${ROOTS_WHERE}`,
@@ -279,19 +245,11 @@ async function countRoots(client: Queryable, rootParams: unknown[]): Promise<num
   return totals[0]?.total ?? 0;
 }
 
-/**
- * The `totalCount` of `GET /api/trash/items` for the tenant in scope: the trashed cascade roots, read by the same
- * statement the list reads its total with. Row-level security limits it to the tenant.
- */
 export async function countTrashItemRoots(client: Queryable): Promise<number> {
   const databaseIds = await readDatabaseIds(client);
   return countRoots(client, [databaseIds.notArchived, databaseIds.all, PAGES_MODULE_ID]);
 }
 
-/**
- * The `totalCount` of `GET /api/trash/databases` for the tenant in scope: the archived user databases, read by the
- * statement the list reads its total with.
- */
 export async function countArchivedTrashDatabases(client: Queryable): Promise<number> {
   const { rows } = await client.query<{ total: number }>(
     "SELECT count(*)::int AS total FROM databases WHERE archived_at IS NOT NULL AND NOT system",
@@ -299,7 +257,6 @@ export async function countArchivedTrashDatabases(client: Queryable): Promise<nu
   return requireSingleRow(rows, "archived databases count").total;
 }
 
-/** The ids of the databases of the tenant in scope (row-level security): all of them, and those not archived. */
 async function readDatabaseIds(client: Queryable): Promise<{ all: string[]; notArchived: string[] }> {
   const { rows } = await client.query<{ all_ids: string[]; not_archived_ids: string[] }>(
     `SELECT coalesce(array_agg(id), '{}') AS all_ids,
@@ -313,9 +270,8 @@ async function readDatabaseIds(client: Queryable): Promise<{ all: string[]; notA
 let catalogResolverPromise: Promise<CatalogResolver> | undefined;
 
 /**
- * The catalog resolver the system database names are read through, built once per process from the full module
- * registry. The custom-route factory receives only the pool, so a handler cannot take the composition root's
- * registry. A failed load is not cached, so the next request retries instead of failing until restart.
+ * Built once per process from the full module registry, because the custom-route factory receives only the pool.
+ * A failed load is not cached, so the next request retries.
  */
 function getCatalogResolver(): Promise<CatalogResolver> {
   catalogResolverPromise ??= loadFullModuleRegistry()
@@ -327,10 +283,6 @@ function getCatalogResolver(): Promise<CatalogResolver> {
   return catalogResolverPromise;
 }
 
-/**
- * The display name of each database in `rows`, by database id: the stored name for a user database, the catalog
- * name in `locale` for a system database. The catalogs are loaded only when a system database is among the rows.
- */
 async function resolveDatabaseNames(
   rows: readonly TrashRootRow[],
   locale: ManifestLocale,
@@ -352,11 +304,7 @@ async function resolveDatabaseNames(
   return names;
 }
 
-/**
- * Whole calendar days from `now` to the purge day, both read in the tenant's zone. The purge day is the day of
- * the deletion plus `RETENTION_DAYS` calendar days, so an item deleted today has `RETENTION_DAYS` and an item
- * deleted `RETENTION_DAYS` days ago or earlier has 0.
- */
+/** Whole calendar days in the tenant's zone from `now` to the deletion day plus `RETENTION_DAYS`. */
 function daysLeft(clock: CalendarClock, deletedAt: Date, now: Date): number {
   const purgeDay = DateTime.fromISO(clock.today(deletedAt), { zone: "utc" }).plus({ days: RETENTION_DAYS });
   const today = DateTime.fromISO(clock.today(now), { zone: "utc" });
@@ -364,9 +312,8 @@ function daysLeft(clock: CalendarClock, deletedAt: Date, now: Date): number {
 }
 
 /**
- * Whole calendar days from `now` to the day of `purgeAt`, both read in the tenant's zone and never below 0: a
- * deadline that falls today has 0, one that has passed has 0 as well. Unlike `daysLeft` it does not derive the day
- * from the archive time, so it can differ from it by one day across a daylight-saving change.
+ * Whole calendar days in the tenant's zone from `now` to the day of `purgeAt`, never below 0. Can differ from
+ * `daysLeft` by one day across a daylight-saving change.
  */
 function daysUntil(clock: CalendarClock, purgeAt: Date, now: Date): number {
   const purgeDay = DateTime.fromISO(clock.today(purgeAt), { zone: "utc" });
@@ -375,22 +322,14 @@ function daysUntil(clock: CalendarClock, purgeAt: Date, now: Date): number {
 }
 
 /**
- * `GET /api/trash/items?cursor&limit` (issue gh-1851): everything the user deleted across all their databases,
- * newest deletion first, for the "Recently deleted" screen. Only cascade roots are rows (`ROOTS_WHERE`): an item
- * trashed together with its owner is not listed apart from it, an item trashed on its own is, and the items of an
- * archived database are not. A page (an item of the hidden Pages database) trashed with its parent page or host is
- * not a row either (`ROOTS_WHERE`); a page that is the root of its deletion is, and its row adds
- * `page: { title, path }` with the ancestors from the host to the parent as `{ itemId, title, trashed }`, read in one
- * batch per page of results. Each row carries the item, its database's id, key, owner module and display name,
- * `purgeAt` (`deletedAt` plus `RETENTION_DAYS`, the retention the purge sweep uses) and `daysLeft`.
- *
- * `limit` is 1 to 200 (default 50); a limit that is not such an integer and a cursor that is not one this route
- * issued are `400 validation_failed`. `nextCursor` is opaque, over `(deleted_at, id)`, and `null` on the last page;
- * `totalCount` counts all roots whatever the cursor. The tenant is the one the session scope resolves.
+ * `GET /api/trash/items?cursor&limit`: trashed cascade roots across all databases, newest deletion first. Items of
+ * archived databases are excluded. A Pages root adds `page: { title, path }` with its ancestors host first.
+ * `limit` is 1..200 (default 50); `nextCursor` is opaque over `(deleted_at, id)`; `totalCount` ignores the cursor.
+ * System databases are named in the caller's `users.locale`.
  */
 export function createTrashItemsRouteHandler(pool: Pool) {
-  return async (ctx: TrashItemsRouteRequestContext): Promise<CustomRouteResult> => {
-    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  return async (ctx: RouteLocale & RouteUrl): Promise<CustomRouteResult> => {
+    const url = requestUrl(ctx.req);
     const limit = readLimit(url.searchParams.get("limit"));
     const cursor = readCursor(url.searchParams.get("cursor"));
     const now = new Date();
@@ -428,7 +367,6 @@ export function createTrashItemsRouteHandler(pool: Pool) {
   };
 }
 
-/** The most archived databases the list returns; `totalCount` stays the real number. */
 const MAX_TRASH_DATABASES = 500;
 
 interface TrashDatabaseRow {
@@ -440,22 +378,10 @@ interface TrashDatabaseRow {
 }
 
 /**
- * `GET /api/trash/databases` (issues gh-1873 and gh-1875): the archived user databases of the caller's tenant, newest
- * archive first (`archived_at DESC, id`), for the "Databases" tab of the "Recently deleted" screen. A system database
- * cannot be archived and is excluded by `system = false` regardless. Each row carries the stored `name`, the `key`
- * (null for a user database), `liveItemCount` (`countItems` for the database: the items without `deleted_at`),
- * `archivedAt`, `purgeAt` (the stored `databases.purge_at`) and `daysLeft`, the calendar days in the tenant's zone from
- * today to the day of `purgeAt`, never below 0. It follows the calendar-day rule of `GET /api/trash/items` but counts to the
- * day of the stored deadline, not to the archive day plus `RETENTION_DAYS` calendar days: the deadline is 24-hour days
- * after the archive, so across a daylight-saving change in the tenant's zone it can fall on another calendar day than
- * that sum, and a database stamped by the first sweep after the deployment (archived long ago) would show 0 days
- * left for a deadline that is 30 days away. A database that has no deadline
- * yet, because it was archived before deadlines existed and the sweep has not seen it, has `purgeAt` and `daysLeft`
- * null.
- *
- * The list is not paged: it returns at most `MAX_TRASH_DATABASES` rows and `totalCount` counts all of them. The rows,
- * the total, the item counts and the calendar clock are read in one REPEATABLE READ transaction, so they come from one
- * snapshot. The tenant is the one the session scope resolves; row-level security limits `databases` and `items` to it.
+ * `GET /api/trash/databases`: archived user databases, newest archive first, at most `MAX_TRASH_DATABASES` rows
+ * (`totalCount` counts all). `daysLeft` counts to the day of the stored `purge_at`, not archive day plus
+ * `RETENTION_DAYS`, because the deadline is 24-hour days and can land on another calendar day across DST. A database
+ * not yet stamped by the sweep has `purgeAt` and `daysLeft` null. Read in one REPEATABLE READ snapshot.
  */
 export function createTrashDatabasesRouteHandler(pool: Pool) {
   return async (): Promise<CustomRouteResult> => {
@@ -493,14 +419,14 @@ export function createTrashDatabasesRouteHandler(pool: Pool) {
   };
 }
 
-/** The most ids one bulk restore takes, databases and items together once duplicates are merged. */
+/** Max ids per bulk restore, databases and items together after merging duplicates. */
 const MAX_RESTORE_IDS = 100;
 
 const restoreBodySchema = z
   .object({ itemIds: z.array(z.uuid()).optional(), databaseIds: z.array(z.uuid()).optional() })
   .strict();
 
-/** What the restore of one id came to: `restored` also covers an id that was not trashed. */
+/** `restored` also covers an id that was not trashed. */
 type RestoreStatus = "restored" | "not_found" | "database_archived" | "conflict";
 
 interface RestoreResult {
@@ -509,24 +435,13 @@ interface RestoreResult {
   status: RestoreStatus;
 }
 
-interface TrashRestoreRouteRequestContext {
-  body: unknown;
-  identity: { user: { id: string } };
-}
-
-/** Each item is restored as the person who asked, as `POST /api/items/:id/restore` does for a session. */
 const USER_WRITER: WriterIdentity = { writerKind: "user" };
 
-/** The ids of one list, lower-cased so that the two spellings of a UUID are one id, without repeats, first occurrence first. */
+/** Lower-cased (both UUID spellings are one id), deduplicated, first occurrence first. */
 function mergeDuplicates(ids: readonly string[] | undefined): string[] {
   return [...new Set((ids ?? []).map((id) => id.toLowerCase()))];
 }
 
-/**
- * Reads the body of `POST /api/trash/restore`: only `itemIds` and `databaseIds`, each a list of UUIDs, at least one
- * id and at most `MAX_RESTORE_IDS` of them in total once duplicates are merged. Anything else is
- * `400 validation_failed` before a transaction opens.
- */
 function parseRestoreBody(body: unknown): { itemIds: string[]; databaseIds: string[] } {
   const parsed = restoreBodySchema.safeParse(body);
   if (!parsed.success) {
@@ -543,9 +458,8 @@ function parseRestoreBody(body: unknown): { itemIds: string[]; databaseIds: stri
 }
 
 /**
- * The refusal a failed item restore stands for: a database that is archived (`ForbiddenError` with the code
- * `database_archived`) or a restore hook's rejection, which is a `409` (a Journal day whose period already has a live
- * entry). Anything else is not a refusal of this id but a defect or an outage, and is not mapped.
+ * `database_archived` or a restore hook's `409` (a Journal day whose period has a live entry). Anything else is a
+ * defect or outage and is not mapped.
  */
 function refusalOfItemRestore(error: unknown): "database_archived" | "conflict" | undefined {
   if (error instanceof ForbiddenError && error.code === "database_archived") return "database_archived";
@@ -554,9 +468,8 @@ function refusalOfItemRestore(error: unknown): "database_archived" | "conflict" 
 }
 
 /**
- * Restores one database in its own savepoint; an id the tenant has no database for is `not_found`. The row is locked
- * by the lookup that decides this and held to the commit, so the nightly purge cannot delete the database between
- * that decision and the restore: a purge that committed first leaves no row to lock and the id is `not_found`.
+ * Own savepoint. The lookup locks the row until commit, so the nightly purge cannot delete it between decision and
+ * restore; a purge that committed first leaves no row and the id is `not_found`.
  */
 async function restoreOneDatabase(client: PoolClient, id: string, actingUserId: string): Promise<RestoreStatus> {
   if (!(await databasesStore.lockDatabase(client, id))) return "not_found";
@@ -564,11 +477,7 @@ async function restoreOneDatabase(client: PoolClient, id: string, actingUserId: 
   return "restored";
 }
 
-/**
- * Restores one item in its own savepoint, in the database `databaseId` that the item was looked up in. A refusal rolls
- * back this item alone and discards what it queued for after the commit; an item that is gone by the time its row is
- * locked is `not_found`.
- */
+/** Own savepoint: a refusal rolls back this item alone and discards its post-commit queue. */
 async function restoreOneItem(
   client: PoolClient,
   id: string,
@@ -589,27 +498,13 @@ async function restoreOneItem(
 }
 
 /**
- * `POST /api/trash/restore` (issue gh-1904): restores the databases and items the "Recently deleted" screen selected,
- * in one transaction with one savepoint per id, so a refusal rolls back that id alone and the others still restore.
- * The body is `{ itemIds, databaseIds }` (each optional), at least one and at most 100 ids in total after duplicates
- * are merged, otherwise `400 validation_failed`. The databases are restored first, in the order sent, then the items,
- * so an item of a database restored by the same request restores with it.
- *
- * The answer is `200 { results: [{ id, kind, status }] }` in that order, whatever the statuses are. `restored` also
- * covers an id that was not trashed (a repeated call restores nothing again). `not_found` is an id the tenant has no
- * database or item for, another tenant's id included. `database_archived` is an item whose database is archived and
- * `conflict` an item a restore hook rejected with `409`; the item stays in the Trash. A restored item announces what
- * the single restore announces after the commit and a restored database its schema change; an id that was refused
- * announces nothing. Any other failure is not a refusal of one id: it aborts the request with its own error and
- * nothing is restored.
- *
- * An item is looked up by id with its deleted rows included, in the tenant's databases, in the same transaction that
- * restores it; `restoreItemWithClient` locks the row before it acts. A database is locked by its lookup, so an id
- * that the purge deletes meanwhile is `not_found` and not an abort of the request.
+ * `POST /api/trash/restore`: one transaction, one savepoint per id, so a refusal rolls back that id alone. Databases
+ * restore first, then items, so an item of a database restored by the same request restores with it. Answers
+ * `200 { results: [{ id, kind, status }] }`; any non-refusal failure aborts the whole request.
  */
 export function createTrashRestoreRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: TrashRestoreRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const { itemIds, databaseIds } = parseRestoreBody(ctx.body);
     const actingUserId = ctx.identity.user.id;
     const results = await withTransaction(pool, async (client) => {

@@ -16,7 +16,7 @@ import {
 import type { NotificationPushPayload } from "../pushSenders.js";
 import { ValidationError } from "../../errors.js";
 
-/** The source fields of a notification whose source has no durable identity (issue #1829), so no collapse key. */
+/** A source without durable identity, so no collapse key. */
 const NO_IDENTITY_SOURCE = {
   sourceTable: "project_heartbeats",
   sourceId: "heartbeat-1",
@@ -684,7 +684,7 @@ describe("sendApnsNotification approval fields (issue #1831)", () => {
       notification_id: "notif-approval",
       approvalRequestId: requestId,
     });
-    // The collapse id and the thread id are the ones of issue #1829 and stay the request id.
+    // The collapse id and the thread id stay the request id.
     expect(headers["apns-collapse-id"]).toBe(requestId);
   });
 

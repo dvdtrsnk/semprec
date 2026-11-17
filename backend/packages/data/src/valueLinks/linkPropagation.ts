@@ -72,7 +72,6 @@ function distinct(values: unknown[]): unknown[] {
   return result;
 }
 
-/** The target of a rule as the writes need it: the rule's database, property and, for a relation, its definition. */
 export type LinkRuleTarget = Pick<ResolvedLinkRule, "targetDatabase" | "targetProperty" | "targetDefinition">;
 
 export function targetIsMany(resolved: Pick<ResolvedLinkRule, "targetProperty" | "targetDefinition">): boolean {
@@ -109,12 +108,8 @@ export async function readTargetValues(
 }
 
 /**
- * The distinct values the sources `ids` give a rule's target. Both the first copy on a via edge and
- * every later propagation read their values here. Two kinds of value are left out:
- * - an item of a relation source that is in the Trash. The Trash keeps an item's edges and a relation
- *   write refuses a trashed endpoint, so copying it would fail the whole write. A target that
- *   already holds such an item loses the edge with the next recomputation;
- * - the items the rule's `valueFilter` names.
+ * The distinct values the sources give a rule's target, minus `valueFilter` items and trashed relation sources: a
+ * relation write refuses a trashed endpoint, so copying one would fail the whole write.
  */
 export async function sourceUnion(client: PoolClient, resolved: ResolvedLinkRule, ids: string[]): Promise<unknown[]> {
   const values: unknown[] = [];
@@ -235,7 +230,7 @@ export async function handleLinkPropagation(pool: Pool, raw: unknown): Promise<v
   }
 }
 
-/** The Threads-style target of a resolver rule: a relation property of a database, resolved in the caller's tenant. */
+/** A relation property of a database, resolved in the caller's tenant. */
 export async function resolveResolverTarget(
   client: PoolClient,
   rule: ResolverLinkRule,
@@ -261,16 +256,11 @@ function announceItem(client: PoolClient, item: { id: string; databaseId: string
 }
 
 /**
- * Brings the target property of item `itemId` in line with what the rule's resolver says now, in the caller's tenant
- * transaction. The item is locked first and then its link row, as the edge hook and the propagation job do.
- *
- * - A link that is `broken`, or that belongs to another rule, leaves the item alone.
- * - Without a link, an item that already holds a value keeps it as its own, and an empty resolution writes nothing.
- *   Otherwise the link is created `on` with the resolver's sources before the value is written.
- * - With an `on` link, the sources become the resolver's sources and the value becomes its values. An empty
- *   resolution removes the inherited value, while the link is still `on`, and then the link.
- *
- * An item that changed its sources but not its value is announced, so clients refetch its links.
+ * Brings the target property in line with the resolver, locking the item first and then its link row (as the edge
+ * hook and propagation job do). A `broken` link or one of another rule is left alone. Without a link, an existing
+ * value stays the item's own and an empty resolution writes nothing; otherwise the link is created `on` first. An
+ * empty resolution of an `on` link removes the value while still `on`, then the link. A sources-only change is still
+ * announced so clients refetch links.
  */
 export async function evaluateResolverRule(
   client: PoolClient,
@@ -308,10 +298,8 @@ export async function evaluateResolverRule(
 }
 
 /**
- * Relinks a link of a resolver rule in the caller's transaction: the resolver's current answer replaces the link's
- * sources and the item's value, and the link is `on` again. Returns `false`, having changed nothing, when the
- * resolver has no value for the item (for a sender-domain source: no company has that domain in its web address any
- * more), because there is nothing to follow. The caller has locked the item and the link.
+ * Returns `false`, changing nothing, when the resolver has no value for the item, since there is nothing to follow.
+ * The caller has locked the item and the link.
  */
 export async function relinkResolverLink(
   client: PoolClient,
@@ -330,10 +318,7 @@ export async function relinkResolverLink(
 
 const RESOLVER_PAGE_SIZE = 100;
 
-/**
- * The propagation job of a resolver rule: re-evaluates every item that a change of `changedItemId` may have
- * affected, `RESOLVER_PAGE_SIZE` items to a committed transaction, in ascending id order.
- */
+/** Re-evaluates affected items, `RESOLVER_PAGE_SIZE` per committed transaction, in ascending id order. */
 export async function propagateResolverRule(
   pool: Pool,
   rule: ResolverLinkRule,

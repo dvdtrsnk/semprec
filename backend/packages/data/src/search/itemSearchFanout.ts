@@ -1,12 +1,7 @@
-// Issue #1652: keeps the search documents of items that quote another item's text current. An item's
-// document contains the titles of the projects, areas, people and companies it links to, the area of
-// its project and, for a Journal day, its Inbox entries' text; a change to any of them is fanned out
-// as queued reindex jobs. Dependents are looked up when the job runs, in committed chunks
-// (docs/adr/2026-09-28-chunked-transactions-for-large-background-sweeps.md), so a write never expands
-// a referrer set inside its own transaction. Emails are never reindexed here: mail owns their rows.
-// A Journal day quotes its Inbox entries through its cached `computed.inboxItems`, which only the
-// Inbox owner's recompute rewrites, so a Journal day's `item` job runs that owner's recompute, which
-// rewrites the cache and reindexes the day (see `journalDaysOf`).
+// Keeps search documents that quote another item's text current (linked project, area, person and company
+// titles, a project's area, a Journal day's Inbox entries) by queuing reindex jobs. Dependents are looked up when
+// the job runs, in committed chunks, so a write never expands a referrer set inside its own transaction. Emails are
+// never reindexed here: mail owns their rows.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES } from "@semprec/queue";
@@ -39,12 +34,9 @@ const reindexPayloadSchema = z.discriminatedUnion("kind", [
 export type ItemSearchReindexPayload = z.infer<typeof reindexPayloadSchema>;
 
 /**
- * Queues one `itemSearchReindexDependents` job in the caller's managed transaction, on the tenant's
- * `item-search-index` lane, added at its pre-commit flush (`enqueueSearchLaneJob`). The key names the
- * item or the scope, so repeated changes before the job runs collapse into one (`jobKeyMode:
- * "replace"`); a continuation's cursor is part of its key, so a running chunk never absorbs it.
- * Outside a tenant scope (only the transitional `warn` mode lets a write run there) a tenant task
- * could not run, so nothing is queued.
+ * Queued on the tenant's `item-search-index` lane at the pre-commit flush. The key names the item or scope, so
+ * repeated changes collapse (`jobKeyMode: "replace"`); a continuation's cursor is part of its key, so a running
+ * chunk never absorbs it. Outside a tenant scope nothing is queued, since a tenant task could not run.
  */
 export async function enqueueItemSearchReindex(client: PoolClient, payload: ItemSearchReindexPayload): Promise<void> {
   const parsed = reindexPayloadSchema.parse(payload);
@@ -60,11 +52,7 @@ export async function enqueueItemSearchReindex(client: PoolClient, payload: Item
   });
 }
 
-/**
- * Queues the tenant-wide rebuild of every search document (`itemSearchBackfill` with
- * `onlyMissing: false`), for a change that alters every document of the tenant (the profile language
- * change of issue #1704). Must run in a tenant scope.
- */
+/** Rebuilds every search document of the tenant (e.g. a profile language change). Must run in a tenant scope. */
 export async function enqueueTenantSearchReindex(client: PoolClient): Promise<void> {
   await enqueueItemSearchBackfill(client, { onlyMissing: false });
 }
@@ -74,10 +62,7 @@ interface DependentRow {
   owner_module_id: string | null;
 }
 
-/**
- * The next chunk of live, non-Email items with a relation edge to `itemId` (in either direction), in
- * id order after `afterItemId`; `moduleIds` narrows them to those system databases.
- */
+/** Live non-Email items with an edge to `itemId` in either direction, in id order after `afterItemId`. */
 async function dependentChunk(
   client: PoolClient,
   itemId: string,
@@ -100,7 +85,7 @@ async function dependentChunk(
   return rows;
 }
 
-/** The system module that owns `itemId`'s database, read whether or not the item is in the Trash. */
+/** Read whether or not the item is in the Trash. */
 async function ownerModuleOf(client: PoolClient, itemId: string): Promise<string | null> {
   const { rows } = await client.query<{ owner_module_id: string | null }>(
     `SELECT d.owner_module_id FROM items i JOIN databases d ON d.tenant_id = i.tenant_id AND d.id = i.database_id
@@ -110,23 +95,20 @@ async function ownerModuleOf(client: PoolClient, itemId: string): Promise<string
   return rows[0]?.owner_module_id ?? null;
 }
 
-/** The databases whose items show a project's title and its area's: the items related to a project. */
+/** The items related to a project, which show its title and its area's. */
 const PROJECT_ITEM_MODULE_IDS = ["tasks", "events", "files", "healthRecords"] as const;
 
 /**
- * `itemSearchReindexDependents`: `item` rebuilds one document (a live Journal day's through the Inbox
- * owner's recompute of its cached entries); `referrers` rebuilds every live item
- * with an edge to `itemId`, and when that item is an Area also queues `projectItems` for each of its
- * live Project referrers, whose items quote the area through their project; `projectItems` rebuilds
- * the project's tasks, events, files and health records. Each invocation commits at most one chunk
- * of `CHUNK_SIZE` together with the job for the next one; an error rolls that chunk back.
+ * `item` rebuilds one document; `referrers` every live item with an edge to `itemId` (for an Area also queuing
+ * `projectItems` per live Project referrer); `projectItems` the project's items. Each invocation commits at most
+ * one `CHUNK_SIZE` chunk together with the next chunk's job.
  */
 export async function handleItemSearchReindexDependentsTask(pool: Pool, rawPayload: unknown): Promise<void> {
   const payload = reindexPayloadSchema.parse(rawPayload);
   await withTransaction(pool, async (client) => {
     if (payload.kind === "item") {
-      // A live Journal day's document quotes its cached Inbox entries: its owner rewrites that cache
-      // and indexes the day, in this transaction, under the day's row lock.
+      // A Journal day quotes its cached Inbox entries, which only the Inbox owner rewrites: the owner's recompute
+      // rewrites the cache and indexes the day under the day's row lock.
       if (await isLiveJournalDay(client, payload.itemId))
         await recomputeJournalInboxDayWithClient(client, payload.itemId);
       else await indexItem(client, payload.itemId);
@@ -162,10 +144,7 @@ export async function handleItemSearchReindexDependentsTask(pool: Pool, rawPaylo
   });
 }
 
-/**
- * After an edge is written or deleted (issue #1530's hook): both ends' documents; when the edge is a
- * project's `area` edge, also the project's items, which show the area through their project.
- */
+/** Both ends' documents; for a project's `area` edge also the project's items. */
 export const itemSearchEdgeChangedHook: RelationEdgeChangedHook = async (context) => {
   await enqueueItemSearchReindex(context.client, { kind: "item", itemId: context.itemA });
   await enqueueItemSearchReindex(context.client, { kind: "item", itemId: context.itemB });
@@ -185,11 +164,7 @@ export const itemSearchEdgeChangedHook: RelationEdgeChangedHook = async (context
     });
 };
 
-/**
- * An update whose patch writes the database's title property: the items that link to it. For an
- * Area, the queued `referrers` job also reaches its projects' items. A patch that writes the same
- * title again queues the same deduplicated job.
- */
+/** A title write reindexes the items linking to it (an Area's `referrers` job also reaches its projects' items). */
 export const itemSearchTitleUpdateHook: ItemUpdateHook = async ({ client, database, item, propertiesPatch }) => {
   const title = (await listPropertiesByDatabase(client, database.id)).find((property) => property.type === "title");
   if (!title || !Object.hasOwn(propertiesPatch, title.key)) return;
@@ -197,11 +172,8 @@ export const itemSearchTitleUpdateHook: ItemUpdateHook = async ({ client, databa
 };
 
 /**
- * The Journal days an Inbox entry's `journalDay` edges point at; none for an item of any other
- * database. A day's document quotes its entries through the day's cached `computed.inboxItems`
- * (issue #106), which only the Inbox owner's recompute rewrites: the day's `item` job runs that
- * recompute, which rewrites the cache and reindexes the day in one transaction under the day's row
- * lock, the lock `indexItem` also takes.
+ * The Journal days an Inbox entry's `journalDay` edges point at. Their `item` job runs the Inbox owner's
+ * recompute, which rewrites the cached entries and reindexes the day under the row lock `indexItem` also takes.
  */
 async function journalDaysOf(
   client: PoolClient,
@@ -215,18 +187,13 @@ async function journalDaysOf(
   return (await listRelationsForItem(client, definition.id, itemId)).map((edge) => otherSide(edge, itemId));
 }
 
-/**
- * A soft-deleted row (issue #1601's hook): the items that link to it stop quoting its text. For an
- * Inbox entry, its Journal days' documents too, whose jobs recompute the days' cached entry lists,
- * which leaves the trashed entry out.
- */
+/** Referrers stop quoting the trashed item; an Inbox entry's day recomputes and leaves it out. */
 export const itemSearchDeleteHook: ItemDeleteHook = async ({ client, database, item }) => {
   await enqueueItemSearchReindex(client, { kind: "referrers", itemId: item.id });
   for (const day of await journalDaysOf(client, database, item.id))
     await enqueueItemSearchReindex(client, { kind: "item", itemId: day });
 };
 
-/** A restored row: the items that link to it quote its text again, and an Inbox entry's Journal days. */
 export const itemSearchRestoreHook: ItemRestoreHook = async ({ client, database, item }) => {
   await enqueueItemSearchReindex(client, { kind: "referrers", itemId: item.id });
   for (const day of await journalDaysOf(client, database, item.id))
@@ -234,17 +201,14 @@ export const itemSearchRestoreHook: ItemRestoreHook = async ({ client, database,
 };
 
 /**
- * An Inbox entry created: the document of each Journal day its `journalDay` edges point at when this
- * hook runs. Registered before the Inbox owner's create hook (domainWriteHooks.ts), it finds no edge
- * for an ordinary capture: that owner hook then writes the `journalDay` edge, whose edge-changed hook
- * queues the day's document, and queues the day's recompute itself.
+ * Registered before the Inbox owner's create hook, so an ordinary capture finds no edge here: the owner then writes
+ * the `journalDay` edge, whose edge hook queues the day's document.
  */
 export const itemSearchInboxCreateHook: ItemCreateHook = async ({ client, database, item }) => {
   for (const day of await journalDaysOf(client, database, item.id))
     await enqueueItemSearchReindex(client, { kind: "item", itemId: day });
 };
 
-/** An Inbox entry changed: the Journal day's document, whose job recomputes the day's cached entries. */
 export const itemSearchInboxUpdateHook: ItemUpdateHook = async ({ client, database, item }) => {
   for (const day of await journalDaysOf(client, database, item.id))
     await enqueueItemSearchReindex(client, { kind: "item", itemId: day });

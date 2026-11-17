@@ -18,17 +18,12 @@ import {
 } from "./taskRecurrenceStore.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
-/** The Tasks module's own process identity: it writes the system-owned series properties and re-links carried edges. */
 const TASKS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: TASKS_MODULE_ID };
 
-/** The `owner: 'system'` Tasks properties the advance writes on the next instance (issue #1605). */
+/** The `owner: 'system'` series properties the advance writes on the next instance. */
 const SERIES_PROPERTY_KEYS = ["seriesId", "occurrenceDate", "recurrence"] as const;
 
-/**
- * The Tasks-side relation keys whose edges the next instance keeps (issue #1673); edge metadata is copied unchanged.
- * Every other relation (`hostEvents`, `completedInEvent`, `sourceEvents`, the Events-side `actionItems`, and any
- * relation added later) is not carried over until its key is added here.
- */
+/** Relations whose edges (with metadata) the next instance keeps; any other relation is not carried over. */
 const CARRIED_RELATION_KEYS: readonly string[] = ["project", "people", "files"];
 
 const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -40,9 +35,8 @@ export interface AdvanceTaskRecurrenceInput {
 }
 
 /**
- * The choke point's `createItemWithClient`, passed in by the caller rather than imported:
- * `chokePoint/itemWrites.ts` calls this module from `updateItemWithClient`, and importing it
- * back would form the import cycle the `no-choke-point-rollup-cycle` dependency rule forbids.
+ * Injected rather than imported: `chokePoint/itemWrites.ts` calls this module, and importing it back would form
+ * the cycle the `no-choke-point-rollup-cycle` dependency rule forbids.
  */
 export type CreateTaskInstance = (
   client: PoolClient,
@@ -55,30 +49,21 @@ function isCalendarDate(value: unknown): value is string {
 }
 
 /**
- * Advances the series of a completed or `wontDo` occurrence (issues #1605, #1670, #1673), inside the caller's
- * transaction — the choke point's status write calls it, so that write and the next occurrence commit or roll
- * back together. It does not change the old occurrence; the caller's own write does that.
+ * Advances the series of a completed or `wontDo` occurrence in the caller's transaction, so the status write and
+ * the next occurrence commit or roll back together. The old occurrence is left to the caller's write.
  *
- * - An item without a `seriesId`, or whose series row is missing or inactive, is a no-op.
- * - Locks the item first, then the series row (docs/adr/2026-10-25-task-and-event-recurrence-model.md).
- * - Only the occurrence the locked series row points at (its current open instance) advances the series. Any other
- *   occurrence of the series, an older one set to `done` or `wontDo` again on a later day included, is a no-op: its
- *   own status write still commits, but it creates no occurrence, moves no pointer and carries no edges or value-link
- *   sources (issue #1670).
- * - The next date is `firstOccurrenceAfter(rule, occurrenceDate, today)`, today being the server's day in
- *   `input.timezone`. A floating rule counts from the occurrence's `completedOn`, or from today when it has none
- *   (a `wontDo` occurrence, issue #1544).
- * - When a non-deleted occurrence of the series already has that date, nothing is created, so repeated
- *   transitions of one occurrence create at most one occurrence per date.
- * - Otherwise the next instance is created with that `date` and `occurrenceDate`, the same `seriesId` and a copy
- *   of `recurrence`; its `name`, `timeFrom`, `timeTo` and `notifications` come from the series
- *   template, its `flagged` and `description` from the completed occurrence (issue #1673). The series row is moved to
- *   it; the `project`, `people` and `files` edges are re-created on it; and the value-link sources naming the old
- *   instance are moved to it. The series template itself is not changed.
+ * - No `seriesId`, or a missing or inactive series row: no-op.
+ * - Locks the item first, then the series row.
+ * - Only the occurrence the locked row points at advances; any other occurrence is a no-op beyond its own write.
+ * - The next date is `firstOccurrenceAfter(rule, occurrenceDate, today)` in `input.timezone`; a floating rule
+ *   counts from `completedOn`, or today without one (`wontDo`).
+ * - An existing non-deleted occurrence on that date means nothing is created, so at most one per date.
+ * - Otherwise the next instance gets the date, `seriesId` and `recurrence`, template `name`/times/`notifications`
+ *   and the completed occurrence's `flagged`/`description`. The series row, carried edges and value-link sources
+ *   move to it; the template is unchanged.
  *
- * Every item/relation write goes through the choke-point's own logic — `createItemWithClient` /
- * `createRelationWithClient` — so idempotency handling, ownership checks, onItemEvent heartbeat triggering and
- * rollup-recompute enqueueing all still happen exactly as they would through the public API.
+ * All writes go through the choke point's own functions, so idempotency, ownership checks, triggers and rollup
+ * recomputes happen as through the public API.
  */
 export async function advanceTaskRecurrenceWithClient(
   client: PoolClient,
@@ -131,10 +116,8 @@ export async function advanceTaskRecurrenceWithClient(
 }
 
 /**
- * The next instance's properties taken from the series template: an explicit allowlist of template keys. A null
- * `name` is left out. Any string `name`, an empty or whitespace-only one included, is passed on unchanged, so the
- * Tasks pre-write transform refuses a blank title and the completion rolls back
- * (docs/adr/2026-10-29-tasks-date-and-time-rules-in-pre-write-transform.md).
+ * Explicit allowlist of template keys; a null `name` is left out. A blank string `name` is passed on so the Tasks
+ * transform refuses it and the completion rolls back.
  */
 function templateProperties(template: TaskRecurrenceTemplate): Record<string, unknown> {
   return {
@@ -145,10 +128,7 @@ function templateProperties(template: TaskRecurrenceTemplate): Record<string, un
   };
 }
 
-/**
- * The next instance's properties copied from the completed occurrence (issue #1673): an explicit allowlist. `flagged`
- * defaults to `false` and `description` to `null` when the occurrence has no such value.
- */
+/** `flagged` defaults to `false`, `description` to `null`. */
 function completedOccurrenceProperties(properties: Record<string, unknown>): Record<string, unknown> {
   return {
     flagged: typeof properties.flagged === "boolean" ? properties.flagged : false,
@@ -157,10 +137,8 @@ function completedOccurrenceProperties(properties: Record<string, unknown>): Rec
 }
 
 /**
- * Re-creates on `toItemId` every edge of `fromItemId` whose Tasks-side relation key is in `CARRIED_RELATION_KEYS`,
- * with its metadata unchanged (e.g. People edges keep theirs). Skips an edge whose counterpart item has been
- * soft-deleted since the edge was created — the advance must not fail over one stale link; it simply drops that
- * edge, rather than letting `createRelationWithClient`'s endpoint validation abort the whole transaction.
+ * Metadata is kept unchanged. An edge whose counterpart was soft-deleted is dropped instead of letting endpoint
+ * validation abort the whole advance over one stale link.
  */
 async function copyCarriedRelationEdges(
   client: PoolClient,

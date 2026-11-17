@@ -1,10 +1,8 @@
 import type { PoolClient } from "pg";
 
-// Reads the source database of every rollup of a set of databases, for the checks that decide what an agent may
-// learn through a rollup (issue #2000). Kept out of `rollup/dependencies.ts`, whose exports are the package's public surface.
-// It reads `rollup_dependencies`, the record `rollup/config.ts` writes with the property and `rollup/recompute.ts` aggregates by.
+// The source database of every rollup of a set of databases, for deciding what an agent may learn through a rollup.
+// Kept out of `rollup/dependencies.ts`, whose exports are the package's public surface.
 
-/** One rollup property of a database and the database whose items it aggregates. */
 export interface RollupSourceRow {
   databaseId: string;
   propertyKey: string;
@@ -13,7 +11,7 @@ export interface RollupSourceRow {
 
 type RollupSourceDbRow = { database_id: string; key: string; source_database_id: string };
 
-/** The rollup properties of `databaseIds` with their source databases, in one query; none, and no query, for no database. */
+/** One query; none for no database. */
 export async function listRollupSourcesByDatabases(
   client: PoolClient,
   databaseIds: readonly string[],

@@ -40,7 +40,6 @@ function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant):
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
-/** A user-created database with one live item. */
 async function newHost(): Promise<{ database: DatabaseRow; itemId: string }> {
   return runInTenant(tenant, async () => {
     const database = await cp.createDatabase({ name: `Notes ${randomUUID()}` });
@@ -135,8 +134,7 @@ describe("the database that owns a page (issue #1844)", () => {
 
     const host = await newHost();
     const sub = await newSubpage(host.itemId);
-    // A purge removes a host row; the API has no path that leaves its subpage behind, so this superuser delete stands
-    // in for an orphan the sweep has not collected yet.
+    // Superuser delete standing in for an orphan the sweep has not collected yet.
     await admin.query(`DELETE FROM items WHERE id = $1`, [host.itemId]);
     await expect(inTenant((client) => resolvePageOwnerDatabase(client, sub))).rejects.toBeInstanceOf(NotFoundError);
   });
@@ -144,7 +142,7 @@ describe("the database that owns a page (issue #1844)", () => {
   it("answers not found for a Pages item whose parentItemId is not an id", async () => {
     const host = await newHost();
     const sub = await newSubpage(host.itemId);
-    // The title mirror and the API always store a host id; this superuser write stands in for hand-edited data.
+    // Superuser write standing in for hand-edited data.
     await admin.query(`UPDATE items SET properties = properties - 'parentItemId' WHERE id = $1`, [sub]);
     await expect(inTenant((client) => resolvePageOwnerDatabase(client, sub))).rejects.toBeInstanceOf(NotFoundError);
   });
@@ -153,8 +151,7 @@ describe("the database that owns a page (issue #1844)", () => {
     const host = await newHost();
     const first = await newSubpage(host.itemId);
     const second = await newSubpage(first);
-    // The API never reparents a page, so a cycle cannot be built through it; this superuser write stands in for
-    // corrupted or hand-edited data, which is the case the walk must survive.
+    // Superuser write: the API never reparents a page, so a cycle only comes from corrupted data.
     await admin.query(
       `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
       [first, second],
@@ -172,8 +169,7 @@ describe("the database that owns a page (issue #1844)", () => {
     const host = await newHost();
     const head = await newSubpage(host.itemId);
     const pages = await inTenant((client) => ensurePagesDatabase(client));
-    // A 1001-deep chain would take 1001 API calls; this superuser insert builds it with one statement. Page 1's parent
-    // is the head created above, so the head is page 0 and page n has a chain of n + 1 pages.
+    // One superuser insert builds the 1001-deep chain; page n has a chain of n + 1 pages.
     const { rows } = await admin.query<{ id: string; label: string }>(
       `WITH chain AS (
          SELECT n, gen_random_uuid() AS id FROM generate_series(1, 1000) AS n

@@ -192,8 +192,8 @@ describe("external credentials store, tenant scheme only", () => {
       let failure: { error: unknown } | undefined;
       try {
         await client.query("BEGIN");
-        // Owner DDL and raw SQL, rolled back below: migration 0086 forbids any other scheme, so only a
-        // test that drops its constraint can produce the row this guard refuses.
+        // Owner DDL and raw SQL, rolled back below: the schema forbids any other scheme, so only a test that
+        // drops its constraint can produce the row this guard refuses.
         await client.query("ALTER TABLE external_credentials DROP CONSTRAINT external_credentials_scheme_tenant_only");
         await client.query("UPDATE external_credentials SET scheme = 'master' WHERE item_id = $1", [itemId]);
 

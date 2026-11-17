@@ -26,11 +26,10 @@ import { proposeSpeakerMappings } from "../transcriptSpeakerSuggestion.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
 
 const RECORDING_START = "2024-03-01T12:00:00.000Z";
-/** Inside the hour-long recording's window, so an Event starting then is a match candidate. */
 const IN_WINDOW_START = "2024-03-01T12:10:00.000Z";
 const USER: WriterIdentity = { writerKind: "user" };
 const ACTING_USER_ID = "7c0e2f6a-58a1-4d0e-9d55-2f1c6f7c9b01";
-/** A purge cutoff every trashed row is older than, so a trashed Event needs no backdating to be purged. */
+/** Every trashed row is older than this, so no backdating is needed to purge. */
 const EVERYTHING_EXPIRED = new Date("2999-01-01T00:00:00Z");
 
 let admin: Pool;
@@ -38,9 +37,8 @@ let pool: Pool;
 let cp: ChokePoint;
 
 /**
- * A test's stop inside the choke point's edge removal: the edge-delete hooks run before the edge is deleted,
- * and this one runs the stop a test has set, once. The hook registry has no removal, so the hook stays
- * registered for the rest of this file and does nothing while no stop is set.
+ * Runs a test's stop once inside the edge removal (edge-delete hooks run before the delete). The registry
+ * has no removal, so the hook stays registered and does nothing while no stop is set.
  */
 let beforeEdgeRemoval: (() => Promise<void>) | undefined;
 registerRelationEdgeDeleteHook(async () => {
@@ -50,9 +48,8 @@ registerRelationEdgeDeleteHook(async () => {
 });
 
 /**
- * A test's stop inside the permanent purge: the item purge hooks run in the purge's transaction after the row
- * and its edges were deleted, and this one runs the stop a test has set, once, with the purge's client. Like
- * the hook above it stays registered for the rest of this file and does nothing while no stop is set.
+ * Runs a test's stop once inside the purge's transaction, after the row and its edges were deleted, with
+ * the purge's client. Stays registered like the hook above.
  */
 let afterItemPurged: ((client: PoolClient) => Promise<void>) | undefined;
 registerItemPurgeHook(async ({ client }) => {
@@ -63,7 +60,6 @@ registerItemPurgeHook(async ({ client }) => {
 
 type DatabaseKey = "companies" | "events" | "people" | "processingProposals" | "projects" | "transcripts";
 
-/** The database and relation property ids of one seeded tenant. */
 interface Schema {
   db: Record<DatabaseKey, string>;
   eventProject: string;
@@ -78,9 +74,9 @@ interface Schema {
 }
 
 /**
- * One tenant: the Event "client meeting" of the project Web for client (company Novak Web s.r.o.) with the
- * tenant's own person, Alice and Bob as participants, and its transcript, linked by the match step. The
- * second project and company and Carol belong to no Event yet.
+ * The Event "client meeting" of project Web for client (company Novak Web s.r.o.) with the tenant's own
+ * person, Alice and Bob, and its transcript linked by the match step. The second project, company and
+ * Carol belong to no Event yet.
  */
 interface World {
   tenant: string;
@@ -137,7 +133,6 @@ async function seedTenant(): Promise<Scope> {
   });
 }
 
-/** Runs `fn` in the tenant, as every request and job of that tenant does. */
 function inTenant<T>(scope: Pick<World, "tenant">, fn: () => Promise<T>): Promise<T> {
   return runInTenant(scope.tenant, fn);
 }
@@ -146,7 +141,6 @@ async function item(scope: Scope, databaseId: string, properties: Record<string,
   return (await inTenant(scope, () => cp.createItem({ databaseId, properties }))).id;
 }
 
-/** A Transcripts row as the transcription process creates it, with the recording time as its `date`. */
 async function createTranscript(scope: Scope, name: string): Promise<string> {
   const created = await inTenant(scope, () =>
     withTransaction(pool, (client) =>
@@ -173,7 +167,6 @@ function unlink(
   return inTenant(scope, () => cp.deleteRelation({ relationPropertyId, callerItemId, targetItemId }, USER));
 }
 
-/** The match step of the transcription worker, in its own transaction. */
 type MatchResult = Awaited<ReturnType<typeof matchTranscriptToEvent>>;
 
 function match(scope: Scope, transcriptId: string): Promise<MatchResult> {
@@ -212,7 +205,6 @@ function restoreEvent(world: World, eventId = world.event) {
   return inTenant(world, () => cp.restoreItem(world.schema.db.events, eventId, ACTING_USER_ID, USER));
 }
 
-/** A second meeting inside the recording's window, of the other project and with Carol: a match candidate. */
 async function createCandidateEvent(world: World): Promise<string> {
   const eventId = await item(world, world.schema.db.events, {
     name: "follow-up meeting",
@@ -224,15 +216,11 @@ async function createCandidateEvent(world: World): Promise<string> {
   return eventId;
 }
 
-/** An Event without a type and a start: never a match candidate, only a card can link it. */
+/** Never a match candidate; only a card can link it. */
 function createUnmatchedEvent(world: World): Promise<string> {
   return item(world, world.schema.db.events, { name: "Planning", date: "2024-03-01" });
 }
 
-/**
- * The items the relation of `relationPropertyId` stores an edge to for `itemId`, sorted, read through the
- * runtime role inside the tenant. It includes an item that is in the Trash.
- */
 async function storedEdges(world: World, relationPropertyId: string, itemId: string): Promise<string[]> {
   return inTenant(world, async () => {
     const { rows } = await pool.query<{ other: string }>(
@@ -246,12 +234,10 @@ async function storedEdges(world: World, relationPropertyId: string, itemId: str
   });
 }
 
-/** The stored edges of the Transcripts <-> Events relation for the transcript, or for the Event `itemId`. */
 function storedEventEdges(world: World, itemId = world.transcript): Promise<string[]> {
   return storedEdges(world, world.schema.transcriptEvent, itemId);
 }
 
-/** The id of the tenant's Transcripts <-> Events relation definition. */
 async function eventRelationDefinitionId(world: World): Promise<string> {
   return inTenant(world, async () => {
     const { rows } = await pool.query<{ id: string }>(
@@ -263,7 +249,6 @@ async function eventRelationDefinitionId(world: World): Promise<string> {
   });
 }
 
-/** The ids of every Events row of the tenant, trashed ones included, sorted. */
 async function eventIds(world: World): Promise<string[]> {
   return inTenant(world, async () => {
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
@@ -273,7 +258,6 @@ async function eventIds(world: World): Promise<string[]> {
   });
 }
 
-/** The live items a transcript's relation points to, sorted, as the relation read of the choke point returns them. */
 async function related(world: World, relationPropertyId: string): Promise<string[]> {
   const edges = await inTenant(world, () => cp.listItemRelations(world.transcript, relationPropertyId));
   return (edges ?? []).map((edge) => edge.targetItemId).sort();
@@ -289,7 +273,6 @@ async function values(world: World) {
 
 const sorted = (ids: string[]): string[] => [...ids].sort();
 
-/** What the transcript took over from the Event "client meeting". */
 const inheritedValues = (world: World) => ({
   project: [world.web],
   company: [world.novak],
@@ -302,7 +285,6 @@ interface LinkRow {
   state: string;
 }
 
-/** The stored value-link rows of the transcript, read through the runtime role inside the tenant. */
 async function linkRows(world: World): Promise<LinkRow[]> {
   return inTenant(world, async () => {
     const { rows } = await pool.query<LinkRow>(
@@ -313,10 +295,7 @@ async function linkRows(world: World): Promise<LinkRow[]> {
   });
 }
 
-/**
- * Runs the queued value-link propagation jobs through the registered worker task until none is left. A queue
- * that never empties fails the test instead of letting an assertion about an unchanged value pass by accident.
- */
+/** A queue that never empties fails the test instead of letting an "unchanged value" assertion pass by accident. */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
   const handler = createCoreTaskList(pool, createActionRegistry())[taskName];
@@ -337,7 +316,6 @@ interface Card {
   properties: Record<string, unknown>;
 }
 
-/** Every `kind = 'transcript'` card of the tenant, trashed ones included. */
 async function transcriptCards(world: World): Promise<Card[]> {
   return inTenant(world, async () => {
     const { rows } = await pool.query<Card>(
@@ -348,7 +326,6 @@ async function transcriptCards(world: World): Promise<Card[]> {
   });
 }
 
-/** The one pairing card the match step created for the tenant's transcript. */
 async function pairingCard(world: World): Promise<Card> {
   const cards = await transcriptCards(world);
   const [card] = cards;
@@ -362,7 +339,6 @@ function confirmWithClient(client: PoolClient, world: World, cardId: string) {
   return confirmProposalWithClient(client, proposalConfig(world), cardId, undefined, ACTING_USER_ID);
 }
 
-/** `POST /api/proposals/:id/confirm` by the acting user, in its own transaction. */
 function confirm(world: World, cardId: string) {
   return inTenant(world, () => withTransaction(pool, (client) => confirmWithClient(client, world, cardId)));
 }
@@ -379,17 +355,13 @@ function linkExisting(eventId: string): ProposalEnvelope {
   return { entityKind: "relation", target: eventId, properties: { propertyKey: "event" } };
 }
 
-/**
- * Moves the transcript's Event to the Trash and runs the match again: with no other Event in the window it
- * creates the pairing card. Returns that card.
- */
+/** With no other Event in the window the match creates the pairing card, which is returned. */
 async function trashEventAndSuggest(world: World): Promise<Card> {
   await trashEvent(world);
   expect(await match(world, world.transcript)).toBe("suggested");
   return pairingCard(world);
 }
 
-/** Records the invalidations `fn` publishes; the hook is cleared again afterwards. */
 async function capturingInvalidations(fn: () => Promise<unknown>): Promise<InvalidationEvent[]> {
   const events: InvalidationEvent[] = [];
   setInvalidationHook((event) => events.push(event));
@@ -401,10 +373,7 @@ async function capturingInvalidations(fn: () => Promise<unknown>): Promise<Inval
   return events;
 }
 
-/**
- * Runs `work` in a tenant transaction that stays open until `release` is called. `ready` resolves with the
- * transaction's backend pid once `work` is done, and rejects if the transaction ends before that.
- */
+/** `ready` resolves with the backend pid once `work` is done, and rejects if the transaction ends before that. */
 function holdTransaction(world: World, work: (client: PoolClient) => Promise<unknown>) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -432,7 +401,6 @@ function holdTransaction(world: World, work: (client: PoolClient) => Promise<unk
   return { ready, release, done };
 }
 
-/** Waits until some backend is blocked by a lock the backend `holderPid` holds. */
 async function expectBlockedBy(holderPid: number): Promise<void> {
   await vi.waitFor(
     async () => {
@@ -447,11 +415,6 @@ async function expectBlockedBy(holderPid: number): Promise<void> {
   );
 }
 
-/**
- * Holds `first` open in its own transaction, starts `second` and requires it to wait for a lock of the first,
- * then lets both finish and returns what `second` resolved with. A failure of either, or `second` not
- * waiting, fails the caller.
- */
 async function runSecondBehindFirst<T>(
   world: World,
   first: (client: PoolClient) => Promise<unknown>,
@@ -472,11 +435,7 @@ async function runSecondBehindFirst<T>(
   return waiting;
 }
 
-/**
- * Holds `first` open in its own transaction and requires `second` to finish while it is still open, then lets
- * the first finish and returns what `second` resolved with. A `second` that has not finished after ten
- * seconds is taken to wait for the first, which fails the caller.
- */
+/** A `second` still unfinished after ten seconds is taken to wait for the first, which fails the caller. */
 async function runSecondBesideFirst<T>(
   world: World,
   first: (client: PoolClient) => Promise<unknown>,
@@ -596,7 +555,6 @@ describe("a transcript whose Event is in the Trash (issue #1743)", () => {
         status: "proposed",
         proposal: { entityKind: "database", target: world.schema.db.events },
       });
-      // The card is the transcript's one suggestion: a further run converges on it.
       expect(await match(world, world.transcript)).toBe("alreadySuggested");
       expect(await storedEventEdges(world)).toEqual([world.event]);
     });
@@ -615,7 +573,7 @@ describe("a transcript whose Event is in the Trash (issue #1743)", () => {
 
       expect(await match(world, world.transcript)).toBe("linked");
 
-      // Deleting the stale edge is a removal of the Transcripts `event` edge, so the release of issue #1697 runs.
+      // Deleting the stale edge removes the Transcripts `event` edge, so the company link release runs.
       expect(await linkRows(world)).toEqual([]);
       expect(await values(world)).toEqual({
         project: [world.bathroom],
@@ -679,8 +637,8 @@ describe("a transcript whose Event is in the Trash (issue #1743)", () => {
       expect(confirmedStatus).toBe("confirmed");
       expect(await storedEventEdges(world)).toEqual([planning]);
       expect(await storedEventEdges(world, world.event)).toEqual([]);
-      // One announcement per item and relation key: the transcript's removed edge and its new one share a key, and
-      // the later `put` stands for both.
+      // One announcement per item and relation key: the removed and new edge share a key, and the later
+      // `put` stands for both.
       const announced = events.filter(
         (event) => event.scope === "relation" && [world.transcript, world.event].includes(event.itemId),
       );
@@ -802,7 +760,6 @@ describe("a transcript whose Event is in the Trash (issue #1743)", () => {
       endsAt: index + 1,
     }));
 
-    /** The people the transcript's `speakers` relation stores an edge to, a person in the Trash included. */
     const storedSpeakerIds = (world: World): Promise<string[]> =>
       storedEdges(world, world.schema.transcriptSpeakers, world.transcript);
 

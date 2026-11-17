@@ -38,11 +38,8 @@ import { createCoreTaskList } from "../worker.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 /**
- * `connectMock.impl` is what the mocked `connectMcpServer` actually calls — defaults to the real
- * implementation (`connectMock.actual`, captured once the real module loads) and is swapped per
- * test to inject a connection whose `close()` rejects, without touching every other test's
- * use of a genuine contract server. Declared via `vi.hoisted` because the `vi.mock` factory below
- * is hoisted above this file's own top-level statements and needs this object to already exist.
+ * `connectMock.impl` defaults to the real `connectMcpServer` and is swapped per test to inject a
+ * connection whose `close()` rejects. `vi.hoisted` because the `vi.mock` factory is hoisted above it.
  */
 const connectMock = vi.hoisted(() => ({
   impl: undefined as unknown as typeof ConnectMcpServerFn,
@@ -91,7 +88,6 @@ async function getServerItem(itemId: string) {
   return item;
 }
 
-/** `vi.waitFor` guards against socket cleanup being asynchronous relative to when `close()` resolves — mirrors mcpConnectionFactory.test.ts's own helper. */
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
   await vi.waitFor(
     () => {
@@ -108,7 +104,7 @@ describe("MCP tool sync (issue #125)", () => {
     await resetDatabase(pool);
     await seedSystem(pool, viewTypeRegistry);
     mcpServersId = await databaseIdFor("mcpServers");
-    // A `stdio` spawn needs an admin of tenant zero (issue #1033).
+    // A `stdio` spawn needs an admin of tenant zero.
     const tenantId = getTenantZeroId();
     await createUser(pool, {
       email: "admin@example.test",
@@ -292,9 +288,7 @@ describe("MCP tool sync (issue #125)", () => {
 
     const item = await createMcpServerItem(workingUrl);
     await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow();
-    // No open-socket assertion possible once the server itself is stopped; the connection
-    // factory's own tests (mcpConnectionFactory.test.ts) already cover "no leak after a failed
-    // connect" at the transport level — this just confirms the sync path surfaces the failure.
+    // The connection factory's tests cover no-leak after a failed connect; this checks the sync path surfaces the failure.
   });
 
   it("keeps the original sync error when closing the connection also fails (issue #781)", async () => {
@@ -346,7 +340,6 @@ describe("MCP tool sync (issue #125)", () => {
   });
 
   describe("a server item that goes to the Trash while its tools are listed (issue gh-1984)", () => {
-    /** Trashes the server item through the choke point and returns the row as the Trash left it. */
     async function trashServer(itemId: string) {
       await withTransaction(pool, (client) =>
         itemDeleteWithClient(client, mcpServersId, itemId, { queueAffinity: createActionQueueAffinity() }),
@@ -525,9 +518,7 @@ describe("listAllTools (pagination)", () => {
       if (!page) throw new Error(`fakeClient: no page for cursor '${params?.cursor}'`);
       return page.nextCursor !== undefined ? { tools: page.tools, nextCursor: page.nextCursor } : { tools: page.tools };
     });
-    // The mock is handed back alongside the client: reading `client.listTools` off a value
-    // typed as the SDK's `Client` yields an unbound method, which is exactly the mistake
-    // `unbound-method` exists to catch and not something to assert on.
+    // Returned separately: `client.listTools` read off the SDK `Client` type is an unbound method.
     return { client: { listTools } as unknown as McpClientHandle["client"], listTools };
   }
 
@@ -574,7 +565,6 @@ describe("mcpServerSync job (issue gh-1976)", () => {
   let actingUserId: string;
   let announcements: InvalidationEvent[];
 
-  /** The pending or failed `mcpServerSync` jobs, read through graphile-worker's public `jobs` view. */
   async function syncJobs(): Promise<JobRow[]> {
     const { rows } = await pool.query<JobRow>(
       `SELECT task_identifier, key, max_attempts, attempts, last_error
@@ -584,11 +574,7 @@ describe("mcpServerSync job (issue gh-1976)", () => {
     return rows;
   }
 
-  /**
-   * The business payload of the pending `mcpServerSync` jobs. The public `jobs` view has no payload column, so this
-   * reads the private table, as the other job tests do (graphile-worker 0.17.3: `_private_jobs.payload` holds the
-   * queue envelope, whose `payload` is what `enqueueJob` was given).
-   */
+  /** The public `jobs` view has no payload column, so this reads `_private_jobs.payload` and unwraps the envelope. */
   async function syncJobPayloads(): Promise<Record<string, unknown>[]> {
     const { rows } = await pool.query<{ payload: { payload: Record<string, unknown> } }>(
       `SELECT j.payload FROM graphile_worker._private_jobs j
@@ -599,7 +585,6 @@ describe("mcpServerSync job (issue gh-1976)", () => {
     return rows.map((row) => row.payload.payload);
   }
 
-  /** Enqueues in a transaction of tenant zero that commits. */
   function enqueue(mcpServerItemId: string): Promise<void> {
     return inTenantZero(() =>
       withTransaction(pool, (client) => enqueueMcpServerSync(client, { mcpServerItemId, actingUserId })),
@@ -711,7 +696,6 @@ describe("mcpServerSync job (issue gh-1976)", () => {
         expect.objectContaining({ scope: "item", databaseId: mcpServersId, itemId: item.id, op: "update" }),
       );
       expect(announcements).toContainEqual(expect.objectContaining({ scope: "mcpServers" }));
-      // The job completed and left the queue.
       expect(await syncJobs()).toEqual([]);
       // The sync connected as the user whose confirmation queued it.
       const { rows: accesses } = await pool.query<{ actor_id: string | null; purpose: string }>(
@@ -739,19 +723,18 @@ describe("mcpServerSync job (issue gh-1976)", () => {
 
     /** Runs every due job through a core task list that was built with `gateway`, as the api worker does. */
     async function drainQueueWithGateway(gateway: AiGatewayClientPort): Promise<void> {
-      // `aiGateway` is the twelfth parameter of `createCoreTaskList`; the ones before it keep their defaults.
+      // `aiGateway` is the twelfth parameter of `createCoreTaskList`.
       const taskList = createCoreTaskList(
         pool,
         createActionRegistry(),
-        undefined, // libraryMetadataFetcher
-        undefined, // mailSyncAdapters
-        undefined, // mailBlobStorage
-        undefined, // legacyRawMimeFetcher
-        undefined, // moduleRegistry
-        undefined, // pushSenders
-        undefined, // genericOperationApprovalReplay
-        undefined, // filesBlobStorage
-        undefined, // tenantBlobStorageDirs
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
         gateway,
       );
       await runOnce({ pgPool: pool, taskList });
@@ -801,7 +784,6 @@ describe("mcpServerSync job (issue gh-1976)", () => {
           expect(gatewayCalls).toHaveLength(1);
           expect(await storedLabels(item.id)).toEqual({ search_web: null });
           expect((await getServerItem(item.id)).properties.syncStatus).toBe("ok");
-          // Completed rather than failed: no row is left in the queue.
           expect(await syncJobs()).toEqual([]);
         } finally {
           await contract.stop();
@@ -852,7 +834,6 @@ describe("mcpServerSync job (issue gh-1976)", () => {
     expect(updated.properties.syncStatus).toBe("error");
     expect(updated.properties.syncError).toEqual(expect.any(String));
     expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
-    // Completed rather than failed: no row is left to be retried.
     expect(await syncJobs()).toEqual([]);
   });
 
@@ -931,7 +912,6 @@ describe("mcpServerSync job (issue gh-1976)", () => {
   );
 });
 
-// Closed once, after every describe of this file has used the pool.
 afterAll(async () => {
   await pool?.end();
 });

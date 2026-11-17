@@ -165,21 +165,18 @@ describe("every write path gives a new Event the default calendar (issue #1761)"
     return { status: res.status, body: await res.json() };
   }
 
-  /** The calendars an Event is linked to, read through the generic relation list. */
   async function calendarsOf(eventId: string): Promise<string[]> {
     const listed = await rest("GET", `/api/items/${eventId}/relations?propertyKey=calendar`);
     expect(listed.status).toBe(200);
     return relationsBody.parse(listed.body).relations.map((relation) => relation.targetItemId);
   }
 
-  /** The Events the default calendar holds, read from the calendar's side. */
   async function eventsInPersonal(): Promise<string[]> {
     const listed = await rest("GET", `/api/items/${personalId}/relations`);
     expect(listed.status).toBe(200);
     return relationsBody.parse(listed.body).relations.map((relation) => relation.targetItemId);
   }
 
-  /** The live Events of the tenant. */
   async function eventIds(): Promise<string[]> {
     return (await createChokePoint(pool).listItems(eventsId, { limit: 50 })).items.map((item) => item.id);
   }
@@ -190,7 +187,7 @@ describe("every write path gives a new Event the default calendar (issue #1761)"
     return itemBody.parse(created.body).id;
   }
 
-  /** Semp's generic operations: the gateway invoked with an agent actor. */
+  /** The gateway invoked with an agent actor. */
   async function viaAgentGateway(): Promise<string> {
     const created = await gateway().invoke("item.create", agentActor, new Set(CAPABILITY_IDS), {
       databaseId: eventsId,
@@ -216,7 +213,6 @@ describe("every write path gives a new Event the default calendar (issue #1761)"
     return itemBody.parse(JSON.parse(text)).id;
   }
 
-  /** An Inbox item of a type that targets Events, its proposal from the tick, and the user's confirm over HTTP. */
   async function viaInboxConfirm(): Promise<string> {
     const chokePoint = createChokePoint(pool);
     const proposalId = await inTenantZero(async () => {
@@ -286,8 +282,7 @@ describe("every write path gives a new Event the default calendar (issue #1761)"
   });
 
   it("answers a create with a server error and stores no Event while no live calendar is the default", async () => {
-    // A tenant without a live default is a state of before issue gh-1803: deleting the default calendar now hands the
-    // mark on, so only a raw write puts it in the Trash.
+    // Deleting the default calendar hands the mark on, so only a raw write leaves a tenant without a live default.
     const trashed = await pool.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
       calendarsId,
       personalId,

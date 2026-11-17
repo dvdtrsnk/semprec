@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CustomRouteConfigurationError } from "../adapter/customRouteMount.js";
 import { createMailLiveSyncControl } from "../mailLiveSyncControl.js";
 
-/** The rejection of `promise`, failing when it resolves or rejects with something that is no `Error`. */
+/** Fails when `promise` resolves or rejects with a non-`Error`. */
 async function caught(promise: Promise<unknown>): Promise<Error> {
   try {
     await promise;

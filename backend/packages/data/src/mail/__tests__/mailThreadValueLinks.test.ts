@@ -17,7 +17,6 @@ import { createMailThreadDetailRouteHandler, createMailThreadListRouteHandler } 
 /** The writer of a person's own request: a relation write as this writer ends a value link, a system write does not. */
 const USER = { writerKind: "user" } as const;
 
-/** A mail thread as the route names it, and the Threads item its relations hang on. */
 interface TestThread {
   threadId: string;
   itemId: string;
@@ -58,7 +57,6 @@ async function propertyId(databaseKey: string, key: string): Promise<string> {
   return property.id;
 }
 
-/** The thread of one live message in the inbox, through the sync writer. */
 async function newThread(messageId: string): Promise<TestThread> {
   return inTenant(() =>
     withTransaction(runtime, async (client) => {
@@ -94,15 +92,11 @@ async function newItem(databaseKey: string, itemProperties: Record<string, unkno
   return (await inTenant(() => cp.createItem({ databaseId: databaseId(databaseKey), properties: itemProperties }))).id;
 }
 
-/** Links through the choke point as a user, as a person's own request does. */
 async function link(relationPropertyId: string, callerItemId: string, targetItemId: string): Promise<void> {
   await inTenant(() => cp.createRelation({ relationPropertyId, callerItemId, targetItemId }, USER));
 }
 
-/**
- * An `on` value link of one Threads property. The rule that writes such links for a thread (issue gh-1869) is not
- * part of this tree, so the row is written with the store function the link rules write theirs with.
- */
+/** An `on` value link of one Threads property, written with the store function the link rules use. */
 async function inherit(thread: TestThread, propertyKey: string, source: ValueLinkSourceInput): Promise<void> {
   await inTenant(() =>
     withTransaction(runtime, (client) =>
@@ -133,7 +127,6 @@ async function listOf(tenantId = tenant) {
   );
 }
 
-/** The thread's list row, which must be there. */
 async function rowOf(thread: TestThread, tenantId = tenant) {
   const row = (await listOf(tenantId)).find((entry) => entry.threadId === thread.threadId);
   if (!row) throw new Error("the thread is not in the list");
@@ -297,8 +290,7 @@ describe("company, project and links of the mail thread list and detail (issue g
     const thread = await newThread("<unbacked@example.test>");
     const project = await newItem("projects", { name: "Web" });
     await link(properties.threadProject, thread.itemId, project);
-    // A thread row written before its Threads item exists (the backfill of issue gh-1573 fills it in) has no item id;
-    // the API cannot produce that state, so the column is cleared directly.
+    // A thread row without its Threads item id: the API cannot produce that state, so the column is cleared directly.
     await admin.query("UPDATE mail_threads SET item_id = NULL WHERE id = $1", [thread.threadId]);
 
     const row = await rowOf(thread);

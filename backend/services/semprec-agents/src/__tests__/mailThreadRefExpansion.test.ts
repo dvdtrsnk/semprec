@@ -1,6 +1,5 @@
-// Issue gh-1933: what the agent receives for a `mailThread` ref. The turn is built by `expandSempRefs`, the function
-// the agent run calls; a merged-away thread id reaches the agent as the id of the current thread, which the agent
-// reads with `mail.thread.get` (issue gh-1927).
+// What `expandSempRefs` gives the agent for a `mailThread` ref; a merged-away thread id reaches it as the
+// current thread's id.
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

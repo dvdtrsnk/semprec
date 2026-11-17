@@ -55,7 +55,6 @@ function setClock(iso: string): void {
   vi.setSystemTime(new Date(iso));
 }
 
-/** One tenant's fixture writes and timeline reads, each in that tenant's scope on the runtime-role pool. */
 function world(tenant: SeededTenant) {
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenant.id, fn);
 
@@ -73,14 +72,14 @@ function world(tenant: SeededTenant) {
     return item.id;
   }
 
-  /** Puts the task into the event through the route of issue #1764, which stamps the edge's `addedAt`. */
+  /** Puts the task into the event through the route, which stamps the edge's `addedAt`. */
   const put = (taskId: string, eventId: string) =>
     inTenant(() => createTaskHostEventPutRouteHandler(pool)({ params: { id: taskId, eventId }, body: {}, identity }));
 
   const setStatus = (taskId: string, status: string) =>
     inTenant(() => cp.updateItem({ databaseId: tenant.tasksId, itemId: taskId, propertiesPatch: { status } }));
 
-  /** The delayed job that recomputes a task's stored host state once a host event has ended (issue #1782). */
+  /** The delayed job that recomputes a task's stored host state once a host event has ended. */
   const recompute = (taskId: string) => inTenant(() => handleTaskHostEventEndedTask(pool, { taskId }));
 
   const storedTask = async (taskId: string) => {
@@ -103,7 +102,6 @@ function world(tenant: SeededTenant) {
   const read = (from: string, to: string = from, shape: "full" | "compact" = "full") =>
     inTenant(() => withTransaction(pool, (client) => readCalendarTimeline(client, { from, to, shape })));
 
-  /** The stored Events and Tasks of a range in the full shape, without the derived entries. */
   const items = async (from: string, to: string = from) =>
     (await read(from, to)).items.filter(
       (entry): entry is CalendarTimelineItem | CalendarEventOccurrence =>
@@ -115,7 +113,6 @@ function world(tenant: SeededTenant) {
     return found;
   };
 
-  /** `GET /api/events/:id/tasks` as the tenant's member sends it. */
   async function getEventTasks(eventId: string) {
     const answer = await inTenant(() => createEventTasksRouteHandler(pool)({ params: { id: eventId } }));
     expect(answer.status).toBe(200);
@@ -176,7 +173,6 @@ describe("calendar timeline: tasks in events (issue gh-1880)", () => {
     const taskId = await w.task("Write agenda");
     await w.put(taskId, eventId);
 
-    // 13:30 in Prague on 15 October (UTC+2).
     setClock("2026-10-15T11:30:00.000Z");
     const running = await w.items("2026-10-15");
     expect(taskIds(running)).toEqual([]);
@@ -243,7 +239,6 @@ describe("calendar timeline: tasks in events (issue gh-1880)", () => {
     await w.put(taskId, first);
     await w.put(taskId, second);
 
-    // While the later event is running the task stays inside the events.
     setClock("2026-10-16T10:00:00.000Z");
     const during = await w.items("2026-10-15", "2026-10-17");
     expect(taskIds(during)).toEqual([]);
@@ -288,7 +283,6 @@ describe("calendar timeline: tasks in events (issue gh-1880)", () => {
       ]);
     }
 
-    // 13:00 on the 26th: the event has ended.
     setClock("2026-10-26T12:00:00.000Z");
     await w.recompute(taskId);
     expect(await w.items("2026-10-25", "2026-10-26")).toContainEqual(
@@ -302,11 +296,9 @@ describe("calendar timeline: tasks in events (issue gh-1880)", () => {
     const taskId = await w.task("Book", { date: "2026-10-24" });
     await w.put(taskId, eventId);
 
-    // Noon on the 26th in Prague: the last day is not over.
     setClock("2026-10-26T11:00:00.000Z");
     expect(taskIds(await w.items("2026-10-24", "2026-10-27"))).toEqual([]);
 
-    // 00:00 on the 27th in Prague (UTC+1).
     setClock("2026-10-26T23:00:00.000Z");
     await w.recompute(taskId);
     const after = await w.items("2026-10-24", "2026-10-27");
@@ -339,7 +331,6 @@ describe("calendar timeline: tasks in events (issue gh-1880)", () => {
       expect({ tasks: entry?.tasks, counts: entry?.counts }).toEqual({ tasks: route.tasks, counts: route.counts });
     }
     const inEvent = timeline.find((candidate) => candidate.id === eventId);
-    // The tasks were put in at the same fixed clock instant, so their order is by id and not asserted here.
     expect(Object.fromEntries((inEvent?.tasks ?? []).map((row) => [row.taskId, row.state.kind]))).toEqual({
       [open]: "missed",
       [completed]: "done",

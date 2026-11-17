@@ -1,9 +1,5 @@
-// `POST /api/calendar/invitations/:id/respond` (issue gh-1944): the user's answer to an incoming invitation, and the
-// Event that follows from it, in one transaction. A custom route because the status change and the Event write must
-// commit together, which the generic item endpoints cannot express.
-// Constrained by: docs/adr/2026-09-10-single-writer-ownership-model.md,
-// docs/adr/2026-09-10-choke-point-api-for-state-writes.md,
-// docs/adr/2026-11-11-new-events-get-their-calendar-in-a-create-hook.md
+// A custom route because the invitation status change and the Event write must commit together, which the generic
+// item endpoints cannot express.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -27,26 +23,15 @@ import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
 import { createEventInCalendar } from "./defaultCalendarCreateHook.js";
 import { invitationEventFields } from "./invitationEventFields.js";
 import { enqueueInvitationReply } from "./invitationReplyJob.js";
+import type { RouteParams, RouteBody, RouteUser } from "../customRoute.js";
+import { requireUuidParam } from "../customRoute.js";
 
-/**
- * Duck-typed the same way `duplicateCalendarItemRouteHandler.ts` is: matches `semprec-api`'s `AdapterRequestContext`
- * structurally, with no dependency on that service's HTTP types.
- */
-interface RespondToInvitationRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
-
-const invitationIdSchema = z.uuid();
-
-/** The answers the respond route accepts; the calendar agent tool takes the same ones (`calendarAgentTools.ts`). */
+/** The calendar agent tool accepts the same answers. */
 export const INVITATION_RESPONSES = ["accepted", "tentative", "declined", "acknowledged"] as const;
 type InvitationResponse = (typeof INVITATION_RESPONSES)[number];
 
 const bodySchema = z.object({ response: z.enum(INVITATION_RESPONSES), calendarId: z.uuid().optional() }).strict();
 
-/** The stored fields that decide whether and how an answer applies. */
 const stateSchema = z.object({
   status: z.enum(["pending", "accepted", "tentative", "declined", "acknowledged", "cancelled"]),
   kind: z.enum(["invite", "sharedCalendarNotice"]).nullish(),
@@ -54,10 +39,9 @@ const stateSchema = z.object({
 
 const USER_WRITER: WriterIdentity = { writerKind: "user" };
 const CALENDAR_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: CALENDAR_MODULE_ID };
-/** The invitation properties this route writes as the calendar module's owner process. */
 const ANSWER_KEYS = ["status", "respondedAt"] as const;
 
-/** The ids on the other end of the edges `itemId` holds on its relation `key`, trashed ones included. */
+/** Trashed counterparts included. */
 async function relatedIds(client: PoolClient, databaseId: string, itemId: string, key: string): Promise<string[]> {
   const property = await propertiesStore.getPropertyByKey(client, databaseId, key);
   if (!property) throw new Error(`The invitations database has no '${key}' relation`);
@@ -72,28 +56,14 @@ interface RespondInput {
   response: InvitationResponse;
   calendarId: string | undefined;
   userId: string;
-  /** Who writes the Event: the user for the route, the agent of a run for the calendar tool (`calendarAgentTools.ts`). */
+  /** The user for the route, the run's agent for the calendar tool. */
   writer: WriterIdentity;
 }
 
 /**
- * Applies one answer inside the caller's transaction and returns the invitation as stored afterwards.
- *
- * The invitation row is locked first; an unknown id, another tenant's id (row-level security hides it) and a trashed
- * invitation are the same `NotFoundError`. `acknowledged` fits only a `sharedCalendarNotice` and the other three
- * answers only an `invite` (`validation_failed` on `response`); a `cancelled` invitation is 409 `conflict`; an answer
- * equal to the stored status writes nothing.
- *
- * `accepted` and `tentative` give the invitation one Event, `meeting`, written as `input.writer` (the user for the route): a new one in the calendar
- * `calendarId` or else the invitation's `suggestedCalendar` (the default calendar when it has none), linked through the
- * invitation's `event` relation; a live linked Event stays as it is and `calendarId` is not read; a trashed one is
- * restored. `declined` trashes the linked Event, if any. A failure of the Event write or its validation propagates and
- * rolls the whole transaction back, so the invitation keeps its status.
- *
- * `status` and `respondedAt` are written last, as the calendar module's owner process; the reply to the organizer is
- * then queued (`enqueueInvitationReply`, issue gh-1953) for `accepted`, `tentative` and `declined`, and the invitation's
- * notification is resolved (read, and a silent dismiss push follows after commit), in the same transaction. An
- * answer equal to the stored status returns before any of that.
+ * The invitation row is locked first; another tenant's id is hidden by RLS and reads as not found. An existing
+ * linked Event is kept (or restored) and `calendarId` is then ignored. A failed Event write rolls the whole
+ * transaction back, so the invitation keeps its status; `status` and `respondedAt` are written last.
  */
 async function respondToInvitation(client: PoolClient, input: RespondInput, now: Date): Promise<ItemRow> {
   const invitations = await databasesStore.getDatabaseByModuleId(client, INVITATIONS_MODULE_ID);
@@ -174,8 +144,7 @@ async function respondToInvitation(client: PoolClient, input: RespondInput, now:
     },
     { allowedSystemKeys: ANSWER_KEYS, systemOwnerProcess: CALENDAR_MODULE_ID, actingUserId: input.userId },
   );
-  // Every answer but `acknowledged` belongs to an invitation of kind `invite` (checked above) and is told to the
-  // organizer; the job exists only when this transaction commits.
+  // The job exists only when this transaction commits.
   if (input.response !== "acknowledged") {
     await enqueueInvitationReply(client, { invitationId: invitation.id, response: input.response, respondedAt });
   }
@@ -186,21 +155,15 @@ async function respondToInvitation(client: PoolClient, input: RespondInput, now:
 }
 
 /**
- * `POST /api/calendar/invitations/:id/respond` (issue gh-1944). The body is `{ response, calendarId? }`: `response` is
- * `accepted`, `tentative`, `declined` or `acknowledged` and `calendarId` the calendar of the new Event; any other key is
- * refused. The answer is 200 with the invitation item. `respondToInvitation` describes what an answer does and which
- * answers are refused; an `id` or `calendarId` that is not a UUID and a body of another shape are `400
- * validation_failed` on the field before the transaction starts, and so are a `calendarId` that is not one of the
- * tenant's own live calendars and an Event whose dates or times the Events rules refuse. The Event is written as
- * `writer`, the user by default; the calendar agent tool passes the agent of the run and so records no human writer.
+ * `POST /api/calendar/invitations/:id/respond`. The calendar agent tool passes the run's agent as `writer`, so no
+ * human writer is recorded.
  */
 export function createRespondToInvitationRouteHandler(pool: Pool) {
   return async (
-    ctx: RespondToInvitationRequestContext,
+    ctx: RouteParams & RouteBody & RouteUser,
     writer: WriterIdentity = USER_WRITER,
   ): Promise<{ status: number; item: ItemRow }> => {
-    const id = invitationIdSchema.safeParse(ctx.params.id);
-    if (!id.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const id = requireUuidParam(ctx.params, "id");
     const body = bodySchema.safeParse(ctx.body);
     if (!body.success) {
       const issue = body.error.issues[0];
@@ -213,7 +176,7 @@ export function createRespondToInvitationRouteHandler(pool: Pool) {
       respondToInvitation(
         client,
         {
-          invitationId: id.data,
+          invitationId: id,
           response: body.data.response,
           calendarId: body.data.calendarId,
           userId: ctx.identity.user.id,

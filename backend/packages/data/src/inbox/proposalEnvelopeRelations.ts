@@ -5,7 +5,7 @@ import { ChokePointError, ValidationError } from "../errors.js";
 import type { ProposalEnvelope } from "./inboxTickAction.js";
 import { requireRelationPropertyId } from "./proposalItemOrigin.js";
 
-/** A `'relation'` envelope's optional edge metadata; `assertValidProposalEnvelope` has already rejected anything but a plain object. */
+/** A `'relation'` envelope's optional edge metadata (already validated as a plain object). */
 export function relationEnvelopeMetadata(envelope: ProposalEnvelope): Record<string, unknown> | undefined {
   const { metadata } = envelope.properties;
   if (metadata === undefined) return undefined;
@@ -16,10 +16,8 @@ export function relationEnvelopeMetadata(envelope: ProposalEnvelope): Record<str
 }
 
 /**
- * Writes the envelope's `relations` edges from the freshly created item, in the order of the keys
- * and ids in the envelope, as `writer` (the confirming user's). Runs in the confirm transaction, so a failing edge
- * aborts the item and every earlier edge; the edge's own canonical error is rethrown with `details.field` set to the
- * relation key.
+ * Writes the envelope's `relations` edges from the created item, in envelope order, as `writer`. Runs in the confirm
+ * transaction, so a failing edge aborts everything; its error is rethrown with `details.field` set to the relation key.
  */
 export async function writeEnvelopeRelations(
   client: PoolClient,

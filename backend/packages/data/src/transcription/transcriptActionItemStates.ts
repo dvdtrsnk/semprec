@@ -7,12 +7,9 @@ import { NotFoundError } from "../errors.js";
 import { TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 /**
- * The `transcript_action_item_states` store (issue #1754): what the user did with one action item of
- * a transcript's meeting notes. A row is keyed by the transcript and the item's position in the
- * stored `computed.meetingNotes.actionItems` array; an open item has no row. The reads and the delete
- * filter by `app_tenant_default()` and the insert takes `tenant_id` from the column default, so every
- * statement stays in the tenant in scope. The transcript row lock the writers take is recorded in
- * `docs/adr/2026-11-11-transcript-action-item-states-serialize-on-the-transcript-row.md`.
+ * What the user did with one action item of a transcript's meeting notes, keyed by the transcript
+ * and the item's position in `computed.meetingNotes.actionItems`; an open item has no row. Every
+ * statement stays in the tenant in scope via `app_tenant_default()` / the `tenant_id` default.
  */
 
 const ACTION_ITEM_STATES = ["added", "noted", "dismissed"] as const;
@@ -56,10 +53,8 @@ function toStateRow(row: ActionItemStateDbRow): TranscriptActionItemStateRow {
 }
 
 /**
- * Locks the transcript's item row until the transaction ends. Both writers below take this lock
- * before their statement, so two transactions writing states of one transcript run one after the
- * other, and a writer that waited for a permanent purge of the transcript finds no row and is
- * refused. A transcript in the Trash is locked like a live one.
+ * Both writers take this lock first, so state writes for one transcript serialize, and a writer that
+ * waited for a permanent purge finds no row and is refused. A trashed transcript is locked too.
  */
 async function lockTranscript(client: PoolClient, transcriptId: string): Promise<void> {
   const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
@@ -69,7 +64,6 @@ async function lockTranscript(client: PoolClient, transcriptId: string): Promise
   }
 }
 
-/** The stored states of a transcript's action items, ordered by action item id. An open item is absent. */
 export async function listActionItemStates(
   client: PoolClient,
   transcriptId: string,
@@ -84,10 +78,8 @@ export async function listActionItemStates(
 }
 
 /**
- * Stores the state of one action item and returns the row as stored. A row that already holds
- * exactly `input`'s state, task and owner is left untouched, `updated_at` included; any other row of
- * the item is overwritten. Throws `NotFoundError` when the transcript's item row does not exist. It
- * does not check that the transcript has an action item at `actionItemId`: the caller does.
+ * A row already holding exactly `input` is left untouched, `updated_at` included. Throws
+ * `NotFoundError` without the transcript row. The caller checks that `actionItemId` exists.
  */
 export async function setActionItemState(
   client: PoolClient,
@@ -117,9 +109,8 @@ export async function setActionItemState(
 }
 
 /**
- * Deletes the state row of one action item, which makes the item open again. The row must exist;
- * the route reads it under the transcript lock before it clears it. Throws `NotFoundError` when the
- * transcript's item row does not exist, and a plain `Error` when the item has no state row.
+ * The row must exist (the route reads it under the transcript lock first). Throws `NotFoundError`
+ * without the transcript row and a plain `Error` without a state row.
  */
 export async function clearActionItemState(
   client: PoolClient,

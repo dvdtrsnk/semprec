@@ -13,8 +13,7 @@ import { setActionItemState } from "../../transcription/transcriptActionItemStat
 import { purgeExpiredTrash } from "../purgeExpiredTrash.js";
 import { logger } from "../logger.js";
 
-// Passthrough spies: the paging test sees how many candidates each page loaded, and a test can make the hard delete
-// refuse or archive a database between the candidate read and the purge.
+// Passthrough spies: count candidates per page, and refuse or archive between the candidate read and the purge.
 vi.mock("../../chokePoint/itemsStore.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../chokePoint/itemsStore.js")>();
   return {
@@ -27,7 +26,6 @@ vi.mock("../../chokePoint/itemsStore.js", async (importOriginal) => {
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-/** A storage double whose only exercised method is `delete`; the purge never reads or writes bytes. */
 function fakeStorage(onDelete: (storageKey: string) => Promise<void> = async () => {}) {
   const deleteMock = vi.fn(onDelete);
   const storage: BlobStorageWriter = {
@@ -40,7 +38,6 @@ function fakeStorage(onDelete: (storageKey: string) => Promise<void> = async () 
   return { storage, deleteMock };
 }
 
-/** Backdates an already soft-deleted item's `deleted_at` past the retention cutoff, the way real trash ages over time. */
 async function ageDeletion(itemId: string, daysAgo: number, databaseId: string): Promise<void> {
   await pool.query(
     `UPDATE items SET deleted_at = now() - ($2 || ' days')::interval WHERE id = $1 AND database_id = $3`,
@@ -131,8 +128,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
     const leafDb = await chokePoint.createInlineDatabase({ name: "Leaf", parentItemId: midItem.id });
     const leafItem = await chokePoint.createItem({ databaseId: leafDb.id, properties: {} });
 
-    // Trashing the root cascades to the whole subtree; restoring the mid item brings it and its
-    // leaf back to life, leaving a live branch under an expired root. Only the root is then aged.
+    // Restoring the mid item revives it and its leaf: a live branch under an expired root. Only the root is aged.
     await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
     const restored = await chokePoint.restoreItem(midDb.id, midItem.id);
     expect(restored?.deletedAt).toBeNull();
@@ -199,7 +195,6 @@ describe("purgeExpiredTrash (issue #156)", () => {
         await ageDeletion(id, 31, dbId);
       }
       await ageDeletion(freshItem.id, 5, midDb.id);
-      // Restoring liveItem cascades to its leaf, leaving both live under an expired root.
       const restored = await chokePoint.restoreItem(midDb.id, liveItem.id);
       expect(restored?.deletedAt).toBeNull();
 
@@ -220,7 +215,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
       await chokePoint.softDeleteItem(rootDb.id, rootItem.id);
       await ageDeletion(rootItem.id, 31, rootDb.id);
       await ageDeletion(midItem.id, 31, midDb.id);
-      // Corrupt the tree into a loop: the root's own database now hangs under its descendant.
+      // Corrupt the tree into a loop: the root's own database hangs under its descendant.
       await pool.query("UPDATE databases SET parent_item_id = $1 WHERE id = $2", [midItem.id, rootDb.id]);
 
       const { purgedItemIds: purgedIds } = await chokePoint.purgeExpiredTrashSubtree(rootItem.id, retentionCutoff());
@@ -230,7 +225,6 @@ describe("purgeExpiredTrash (issue #156)", () => {
   });
 
   describe("items of archived databases (issue gh-1878)", () => {
-    /** An item deleted `daysAgo` days ago in a fresh database, with its trash age backdated like real trash. */
     async function trashedItemInNewDatabase(name: string, daysAgo: number) {
       const db = await chokePoint.createDatabase({ name });
       const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
@@ -252,7 +246,6 @@ describe("purgeExpiredTrash (issue #156)", () => {
 
         expect(await itemRows(item.id)).toHaveLength(1);
         expect(errorSpy).not.toHaveBeenCalled();
-        // The item is not even a candidate, so the quiet skip of the archived-meanwhile case has nothing to log.
         expect(debugSpy).not.toHaveBeenCalled();
       } finally {
         errorSpy.mockRestore();
@@ -331,18 +324,14 @@ describe("purgeExpiredTrash (issue #156)", () => {
   });
 
   it("never destroys an item a concurrent restore un-deletes between the purge's eligibility scan and its delete loop", async () => {
-    // itemsStore.hardDeleteItem is purgeExpiredTrashSubtree's only path to a permanent delete, and
-    // its eligibility read has no row lock — this is the one guard standing between a race and
-    // silently destroying an item a concurrent restoreItem just brought back to life. Exercised
-    // directly here since the actual race (an interleaved restoreItem call mid-transaction) isn't
-    // reproducible deterministically from a test.
+    // hardDeleteItem's eligibility read has no row lock, so this guard is all that stops a race from destroying an
+    // item a concurrent restoreItem just revived. Exercised directly since the race is not deterministic.
     const db = await makeMoviesDb();
     const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
     await chokePoint.softDeleteItem(db.id, item.id);
     await ageDeletion(item.id, 31, db.id);
 
-    // Simulates a concurrent restoreItem committing after purgeExpiredTrashSubtree's eligibility
-    // scan already read this row as trashed, but before its delete loop reaches it.
+    // Simulates a restore committing after the eligibility scan read this row as trashed.
     const restored = await chokePoint.restoreItem(db.id, item.id);
     expect(restored?.deletedAt).toBeNull();
 
@@ -425,7 +414,6 @@ describe("purgeExpiredTrash (issue #156)", () => {
         [page.id, inlineRow.id],
       );
       await pool.query("INSERT INTO item_automation (item_id) VALUES ($1)", [page.id]);
-      // The create hooks already indexed both items; assert the purge starts with real dependent rows.
       expect(await countRows("item_search_index WHERE item_id = ANY($1)", [[page.id, inlineRow.id]])).toBe(2);
 
       await chokePoint.softDeleteItem(db.id, page.id);
@@ -447,7 +435,6 @@ describe("purgeExpiredTrash (issue #156)", () => {
       expect(await countRows("item_automation WHERE item_id = ANY($1)", [purged])).toBe(0);
       expect(await countRows("item_search_index WHERE item_id = ANY($1)", [purged])).toBe(0);
       expect(await countRows("item_search_index WHERE item_id = $1", [other.id])).toBe(1);
-      // The surviving item's own curated-view membership is untouched.
       const { rows: keptViewItems } = await pool.query<{ item_id: string }>("SELECT item_id FROM view_items");
       expect(keptViewItems.map((row) => row.item_id)).toEqual([other.id]);
 
@@ -457,7 +444,6 @@ describe("purgeExpiredTrash (issue #156)", () => {
       expect(await partitionExists(inlineDb.id)).toBe(false);
       const children = await withClient(pool, (client) => databasesStore.listDatabasesByParentItem(client, page.id));
       expect(children).toEqual([]);
-      // The root's own database keeps its row and partition.
       expect(await partitionExists(db.id)).toBe(true);
     });
 
@@ -505,8 +491,7 @@ describe("purgeExpiredTrash (issue #156)", () => {
       await ageDeletion(inlineRow.id, 31, inlineDb.id);
       const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-      // The nested row is a candidate of its own and may be reached first: its own database is
-      // never dropped by that call.
+      // The nested row is a candidate of its own and may be reached first; that call never drops its database.
       const first = await chokePoint.purgeExpiredTrashSubtree(inlineRow.id, cutoff);
       expect(first.purgedItemIds).toEqual([inlineRow.id]);
       expect(await partitionExists(inlineDb.id)).toBe(true);
@@ -647,8 +632,8 @@ describe("purgeExpiredTrash (issue #156)", () => {
         const inlineDb = await chokePoint.createInlineDatabase({ name: "Rollback blocker", parentItemId: file.id });
         await trash(db.id, file.id);
 
-        // This test-only FK makes the final inline-database cleanup fail, after deleteItemDependents
-        // has deleted all three blob rows inside the same purge transaction.
+        // This test-only FK fails the final inline-database cleanup after all three blob rows were deleted in the same
+        // transaction.
         await pool.query(
           "CREATE TABLE purge_rollback_database_guard (database_id uuid NOT NULL REFERENCES databases(id))",
         );

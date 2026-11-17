@@ -17,10 +17,7 @@ const END_TIMEOUT_MS = 10_000;
 const MAX_PROVIDER_MESSAGE_BYTES = 1024 * 1024;
 const MAX_OUTBOUND_BUFFER_BYTES = 256 * 1024;
 
-/**
- * Resamples a continuous 16 kHz mono PCM stream to the 24 kHz the realtime transcription input
- * requires (linear interpolation), keeping state across frames so frame boundaries add no click.
- */
+/** Linear 16 to 24 kHz resampling with state across frames, so boundaries add no click. */
 export class Pcm16To24kResampler {
   private consumed = 0;
   private outIndex = 0;

@@ -9,9 +9,8 @@ import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js"
 
 /**
  * The API queue runtime under the production default of tenant scope. `tenantScopeMode.ts` sets
- * `SEMPREC_TENANT_SCOPE=warn` for the files on its list, this one included, which hides a start-up call made
- * outside any scope, so each case removes the variable and runs on a `semprec_data` runtime-role pool, the role
- * the API authenticates as.
+ * `SEMPREC_TENANT_SCOPE=warn` for this file, which would hide a start-up call outside any scope, so each case
+ * removes it and runs on a `semprec_data` runtime-role pool.
  */
 
 const LEGACY_JOB_KEY = "legacy-key-strict-scope";
@@ -32,7 +31,6 @@ describe("createApiQueueRuntime under strict tenant scope (the production defaul
   beforeEach(async () => {
     adminPool = getTestPool();
     await resetDatabase(adminPool);
-    // The runtime resolves the seeded mail databases' ids at startup.
     await seedSystem(adminPool);
     await adminPool.query("TRUNCATE graphile_worker._private_known_crontabs");
     // `createApiActionRegistry` composes `core.agentGuidanceDrift` eagerly, which requires it.
@@ -83,8 +81,7 @@ describe("createApiQueueRuntime under strict tenant scope (the production defaul
 
     runtime = await createApiQueueRuntime(pool, new ModuleRegistry(() => new Set()));
 
-    // The API start neither migrates the job under a split task name nor refuses it: the deploy-time
-    // migration is the one place that moves it (docs/adr/2026-09-10-app-code-post-migration-steps.md).
+    // The API start neither migrates the job under a split task name nor refuses it.
     expect(await legacyJobs()).toEqual([{ task_identifier: "heartbeatFire", key: LEGACY_JOB_KEY, attempts: 0 }]);
   });
 });

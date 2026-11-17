@@ -1,8 +1,7 @@
 import { DateTime } from "luxon";
 import type { FixedRecurrenceRule, FloatingRecurrenceRule, TaskRecurrenceRule, Weekday } from "./taskRecurrenceRule.js";
 
-// Keyed by `Weekday` rather than `string`: the rule schema validates the value against the
-// same seven-name enum, so a total map is the accurate type and the lookup cannot miss.
+// The rule schema validates against the same seven names, so the map is total.
 const WEEKDAY_TO_LUXON: Record<Weekday, number> = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7 };
 
 const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -23,7 +22,7 @@ function toDay(day: DateTime): string {
   return iso;
 }
 
-/** Fixed rules carry a `kind` discriminator (taskRecurrenceRule.ts); floating rules never do. */
+/** Fixed rules carry a `kind` discriminator; floating rules never do. */
 function isFixedRule(rule: TaskRecurrenceRule): rule is FixedRecurrenceRule {
   return "kind" in rule;
 }
@@ -40,7 +39,6 @@ function nthWeekdayOfMonth(monthStart: DateTime, weekday: Weekday, n: number): D
   return lastOfKind.plus({ weeks: n + 1 });
 }
 
-/** Whether `day` is a date of the fixed rule. */
 function matchesFixedRule(rule: FixedRecurrenceRule, day: DateTime): boolean {
   switch (rule.kind) {
     case "weekdays":
@@ -57,10 +55,8 @@ function matchesFixedRule(rule: FixedRecurrenceRule, day: DateTime): boolean {
 }
 
 /**
- * Finds the next date matching a fixed calendar rule, strictly after `reference` — always
- * computed from the rule itself, never from a prior due date (issue #24's "regardless of
- * when the previous instance was completed"). Mirrors scheduler/nextFireAt.ts's `dailyTime`/
- * `weekly` handling, at day granularity instead of an instant.
+ * The next date strictly after `reference`, always from the rule itself, never from a prior due date. Mirrors
+ * scheduler/nextFireAt.ts's `dailyTime`/`weekly` handling at day granularity.
  */
 function nextFixedDate(rule: FixedRecurrenceRule, reference: DateTime): DateTime {
   switch (rule.kind) {
@@ -74,8 +70,7 @@ function nextFixedDate(rule: FixedRecurrenceRule, reference: DateTime): DateTime
     }
     case "monthDates": {
       const targetDates = new Set(rule.dates);
-      // A 366-day (just over a year) sweep safely covers every combination of requested
-      // dates (e.g. only the 31st, skipping months without one) without an unbounded loop.
+      // 366 days covers every combination (e.g. only the 31st) without an unbounded loop.
       for (let offset = 1; offset <= 366; offset++) {
         const candidate = reference.plus({ days: offset }).startOf("day");
         if (targetDates.has(candidate.day)) return candidate;
@@ -111,13 +106,9 @@ function estimateFloatingStep(rule: FloatingRecurrenceRule, base: DateTime, boun
 }
 
 /**
- * The first date by `rule` that is after `occurrenceDate` and not before `notBefore` (issue #1670), as
- * `YYYY-MM-DD`. A fixed rule's dates come from the calendar alone. A floating rule's dates are
- * `floatingBase` plus whole multiples of its interval: the advance passes the completion day (`completedOn`)
- * for a `done` occurrence and the day of the write for a `wontDo` one; `floatingBase` defaults to `notBefore`.
- *
- * Pure: every date is an argument. The caller supplies `notBefore` (the advance uses the server's today in the
- * system timezone), because this function has no clock.
+ * The first date after `occurrenceDate` and not before `notBefore`, as `YYYY-MM-DD`. Fixed rules use the calendar
+ * alone; floating rules step from `floatingBase` (the advance passes `completedOn` for `done`, the write day for
+ * `wontDo`; defaults to `notBefore`). Pure: there is no clock here.
  */
 export function firstOccurrenceAfter(
   rule: TaskRecurrenceRule,
@@ -138,11 +129,7 @@ export function firstOccurrenceAfter(
   return toDay(floatingDate(rule, base, k));
 }
 
-/**
- * The last date by `rule` that is on or before `today` and not before `anchorDate` (issue #1670), as `YYYY-MM-DD`,
- * or `null` when there is none. A floating rule's dates are `anchorDate` plus whole multiples of its interval,
- * the anchor itself included. Pure: every date is an argument.
- */
+/** The last date on or before `today` and not before `anchorDate` (the anchor itself included), or `null`. Pure. */
 export function latestOccurrenceOnOrBefore(rule: TaskRecurrenceRule, anchorDate: string, today: string): string | null {
   const anchor = parseDay(anchorDate, "anchorDate");
   const end = parseDay(today, "today");
@@ -160,11 +147,7 @@ export function latestOccurrenceOnOrBefore(rule: TaskRecurrenceRule, anchorDate:
   return toDay(floatingDate(rule, anchor, k));
 }
 
-/**
- * Every date by `rule` within `[from, to]` and not before `anchorDate`, ascending (issue #1672). A floating rule's
- * dates are `anchorDate` plus whole multiples of its interval. The caller bounds the range; this walks it day by day
- * for a fixed rule.
- */
+/** Ascending dates in `[from, to]`, not before `anchorDate`. The caller bounds the range; fixed rules walk it daily. */
 export function occurrenceDatesInRange(
   rule: TaskRecurrenceRule,
   anchorDate: string,

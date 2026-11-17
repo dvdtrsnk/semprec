@@ -51,10 +51,8 @@ import {
   generateWebmFixture,
 } from "./__tests__/fixtures/mediaFixtures.js";
 
-// Issue gh-1965: the metadata job of an Inbox attachment, run through the queue with the real `ffprobe` and `ffmpeg` over
-// real media, on the runtime role pool, with a second tenant for the cross-tenant case. The attachments are created as a
-// capture creates them (`ingestUploadedBlob`, `insertInboxAttachments`, `enqueueInboxAttachmentMetadata`); that the capture
-// itself enqueues the job is proven in `packages/data/src/inbox/__tests__/captureAttachments.test.ts`.
+// Runs through the queue with the real ffprobe/ffmpeg on the runtime role pool, with a second tenant
+// for the cross-tenant case. Attachments are created as a capture creates them.
 
 /** A local-filesystem storage that remembers which keys were read and can hold every write until a gate opens. */
 class ObservedStorage extends LocalFsBlobStorageWriter {
@@ -130,7 +128,6 @@ afterAll(async () => {
   else process.env.SEMPREC_TENANT_SCOPE = previousScope;
 });
 
-/** A transaction whose tenant is `tenant` for the test's own reads, in the tenant scope the strict mode asks for. */
 function inTenantTransaction<T>(tenant: string, fn: Parameters<typeof withTenantTransaction<T>>[2]): Promise<T> {
   return runInTenant(tenant, () => withTenantTransaction(runtimePool, tenant, fn));
 }
@@ -234,7 +231,6 @@ async function blobCount(tenant: string): Promise<number> {
   });
 }
 
-/** The files the job wrote for `tenant`, as storage keys. */
 async function derivedFiles(tenant: string): Promise<string[]> {
   try {
     return (await readdir(join(blobDir, tenant, "inbox-attachments"))).sort();
@@ -252,7 +248,6 @@ async function storedSize(tenant: string, blobId: string | null): Promise<{ widt
   return probeImage(join(blobDir, blob.storage_key));
 }
 
-/** The Inbox item's stored row, read as a whole, to compare before and after the job. */
 async function itemSnapshot(tenant: string, itemId: string): Promise<string> {
   return inTenantTransaction(tenant, async (client) => {
     const { rows } = await client.query<{ snapshot: string }>("SELECT i::text AS snapshot FROM items i WHERE id = $1", [
@@ -786,10 +781,7 @@ describe("the inboxAttachmentMetadata job (issue gh-1965)", () => {
 
 const voiceNoteJobSchema = z.object({ inboxItemId: z.string() });
 
-/**
- * The queued transcription jobs of voice notes: their keys (public jobs view) and the tenant and payload of their
- * envelopes. The view has no payload, so the envelopes come from the queue's test support.
- */
+/** The jobs view has no payload, so envelopes come from the queue's test support. */
 async function voiceNoteJobs(): Promise<{
   keys: string[];
   envelopes: Array<{ tenantId: string | null; inboxItemId: string }>;

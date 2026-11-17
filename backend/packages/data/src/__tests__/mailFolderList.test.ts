@@ -35,7 +35,6 @@ let storage: LocalFsBlobStorageWriter;
 let tenant: string;
 let foreign: string;
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -67,7 +66,6 @@ async function seededIds(tenantId: string): Promise<SeededIds> {
   });
 }
 
-/** One tenant's mail fixture, every row written through the writers production uses. */
 async function mailFixture(tenantId: string) {
   const ids = await seededIds(tenantId);
 
@@ -80,7 +78,6 @@ async function mailFixture(tenantId: string) {
       return item.id;
     });
 
-  /** A folder of `mailboxId` under the provider's own `name`, through folder discovery. */
   const folder = (
     mailboxId: string,
     name: string,
@@ -99,7 +96,7 @@ async function mailFixture(tenantId: string) {
       }),
     );
 
-  /** One message through the ingest writer; a repeated `messageId` in the mailbox adds a folder to the same message. */
+  /** One message through the ingest writer; a repeated `messageId` in the mailbox adds a folder to it. */
   const message = (input: {
     mailboxId: string;
     folderId: string;
@@ -133,7 +130,6 @@ async function mailFixture(tenantId: string) {
       return result.itemId;
     });
 
-  /** A draft the user wrote in Semprec, through the draft writer. */
   const draft = (draftsFolderId: string): Promise<string> =>
     inTenant(tenantId, async (client) => {
       const item = await createEmailDraft(client, {
@@ -146,7 +142,6 @@ async function mailFixture(tenantId: string) {
       return item.id;
     });
 
-  /** Soft-deletes one item through the choke point and fails if nothing was deleted. */
   const softDelete = async (databaseId: string, itemId: string): Promise<void> => {
     const deleted = await runInTenant(tenantId, () => createChokePoint(runtime).softDeleteItem(databaseId, itemId));
     if (deleted === null) throw new Error(`item ${itemId} was not soft-deleted`);
@@ -168,7 +163,6 @@ const folderEntry = z
 
 type FolderEntry = z.infer<typeof folderEntry>;
 
-/** `GET /api/mail/mailboxes/:id/folders` as a user of `tenantId` with `locale`, inside that tenant as the adapter calls it. */
 async function folders(tenantId: string, mailboxId: string, locale = "en"): Promise<FolderEntry[]> {
   const handler = createMailFolderListRouteHandler(runtime);
   const answer = await runInTenant(tenantId, () =>
@@ -178,7 +172,6 @@ async function folders(tenantId: string, mailboxId: string, locale = "en"): Prom
   return z.array(folderEntry).parse(answer.body);
 }
 
-/** The rejection of `GET /api/mail/mailboxes/:id/folders`, failing when the request is answered. */
 async function refusal(tenantId: string, mailboxId: string): Promise<unknown> {
   const handler = createMailFolderListRouteHandler(runtime);
   try {
@@ -194,7 +187,6 @@ const listPage = z.object({
   nextCursor: z.string().nullable(),
 });
 
-/** Every thread `GET /api/mail/threads?folderId=...&unread=true` returns, following its cursor page by page. */
 async function unreadThreadsInFolder(tenantId: string, folderId: string): Promise<string[]> {
   const handler = createMailThreadListRouteHandler(runtime);
   const ids: string[] = [];
@@ -208,7 +200,6 @@ async function unreadThreadsInFolder(tenantId: string, folderId: string): Promis
   return ids;
 }
 
-/** The six system folders of a Gmail-mode mailbox under the names Gmail gives them, created out of sidebar order. */
 async function gmailSystemFolders(
   fixture: Awaited<ReturnType<typeof mailFixture>>,
   mailboxId: string,
@@ -313,7 +304,6 @@ describe("GET /api/mail/mailboxes/:id/folders (issue gh-1689)", () => {
   it.each([
     ["cs", ["Doručená pošta", "Odeslané", "Koncepty", "Archiv", "Nevyžádaná pošta", "Koš"]],
     ["en", ["Inbox", "Sent", "Drafts", "Archive", "Junk", "Trash"]],
-    // A locale without a catalog reads the English reference catalog.
     ["de", ["Inbox", "Sent", "Drafts", "Archive", "Junk", "Trash"]],
   ])("names the system folders in the %s locale and keeps the name of every other folder", async (locale, labels) => {
     const fixture = await mailFixture(tenant);
@@ -372,7 +362,6 @@ describe("GET /api/mail/mailboxes/:id/folders (issue gh-1689)", () => {
     // One unread message in two folders is one message and one unread thread in each of them.
     await send("labelled", system.inbox);
     await send("labelled", label);
-    // A deleted message counts nowhere.
     const deleted = await send("junk-deleted", system.junk);
     await fixture.softDelete(fixture.ids.emailsDatabaseId, deleted);
     await send("junk-unread", system.junk);

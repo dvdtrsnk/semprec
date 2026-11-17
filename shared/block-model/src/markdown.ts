@@ -61,9 +61,7 @@ function clampIndent(value: number): number {
   return Math.min(MAX_INDENT, Math.max(MIN_INDENT, Math.floor(value)));
 }
 
-// ---------------------------------------------------------------------------
 // Serializer
-// ---------------------------------------------------------------------------
 
 interface Marks {
   bold: boolean;
@@ -395,9 +393,7 @@ export function serializeBlocks(blocks: readonly SerializableBlock[], options: S
   return lines.join("\n");
 }
 
-// ---------------------------------------------------------------------------
 // Inline parser
-// ---------------------------------------------------------------------------
 
 interface InlineState {
   bold: boolean;
@@ -670,9 +666,7 @@ function parseInline(source: string): TextRun[] {
   return merged;
 }
 
-// ---------------------------------------------------------------------------
 // Block parser
-// ---------------------------------------------------------------------------
 
 interface CommentAttributes {
   id?: string;
@@ -855,9 +849,7 @@ export function parseMarkdown(markdown: string, options: ParseOptions = {}): Par
   });
 }
 
-// ---------------------------------------------------------------------------
 // stripMarkdown
-// ---------------------------------------------------------------------------
 
 /**
  * Plain text of `markdown` for subtitles and full-text indexing: markers, emphasis and link
@@ -883,9 +875,7 @@ export function stripMarkdown(markdown: string, maxChars: number): string {
   return characters.length <= maxChars ? text : characters.slice(0, Math.floor(maxChars)).join("").trimEnd();
 }
 
-// ---------------------------------------------------------------------------
 // Item links
-// ---------------------------------------------------------------------------
 
 /** Item references found in parsed blocks. */
 export interface ItemLinks {

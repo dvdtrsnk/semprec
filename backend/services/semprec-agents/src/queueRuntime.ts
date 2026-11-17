@@ -30,34 +30,26 @@ export interface AgentRunnerStopAttempt {
   chat: Promise<PromiseSettledResult<void>>;
 }
 
-/**
- * The agent session wiring `serve.ts` composes (issue #647). Each one left out keeps its
- * placeholder: `core.agentRun` closes its run as `error`, and the optional queued handlers
- * complete without doing anything.
- */
+/** Each one left out keeps its placeholder: `core.agentRun` closes as `error`, other handlers no-op. */
 export interface AgentsQueueRuntimeOptions {
   runAgent?: RunAgentFn;
   agentRunTask?: AgentQueueTaskHandler;
   delegatedAgentRunTask?: AgentQueueTaskHandler;
   sempMessageTask?: AgentQueueTaskHandler;
-  /** The client of `core.agentRun`'s `answerExpectedFilter` gate (issue gh-1941); `serve.ts` composes it. */
+  /** For `core.agentRun`'s `answerExpectedFilter` gate. */
   aiGateway?: AiGatewayClientPort;
 }
 
 /**
- * Issue #91's `agents` composition root: the second long-lived graphile-worker runner over the
- * same queue as `services/semprec-api`'s. Hosts every `queueAffinity: 'agents'` handler —
- * `heartbeatFireAgent`, `agentRun`, `delegatedAgentRun`, `sempMessage`, plus active modules'
- * agents-affinity tasks. A dedicated runner reserves capacity for Semp messages. Neither runner
- * installs a crontab; `semprec-api` is the queue's scheduler.
+ * Hosts every `queueAffinity: 'agents'` handler. A dedicated runner reserves capacity for Semp
+ * messages. Neither runner installs a crontab; `semprec-api` is the scheduler.
  */
 export async function createAgentsQueueRuntime(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
   options: AgentsQueueRuntimeOptions = {},
 ): Promise<AgentsQueueRuntime> {
-  // Idempotent (graphile-worker's own migration runner and this GRANT block are both re-runnable)
-  // — this runtime starts independently of, and possibly before, the API runtime's own install.
+  // Idempotent: this runtime may start before the API runtime's own install.
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
 
@@ -72,8 +64,7 @@ export async function createAgentsQueueRuntime(
   );
   const taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "agents");
 
-  // Before this runner reports readiness (returns from `run()` below), prove its registered
-  // handler set matches exactly what the shared affinity resolution says the agents runtime owns.
+  // Before reporting readiness, prove the handler set matches the shared affinity resolution.
   const affinitySets = await resolveTaskAffinitySets(moduleRegistry);
   assertTaskListMatchesAffinity(taskList, affinitySets.agents, "agents");
 

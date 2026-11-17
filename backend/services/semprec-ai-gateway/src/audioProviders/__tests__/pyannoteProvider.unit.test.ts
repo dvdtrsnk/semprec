@@ -172,8 +172,7 @@ describe("createPyannoteDiarizationProvider", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const pending = createPyannoteDiarizationProvider("test-key").diarize(REQUEST);
-    // Attach the rejection assertion before advancing timers, so `pending` has a handler in
-    // place the instant it rejects rather than for one unobserved microtask turn.
+    // Attach the assertion before advancing timers, so the rejection is never unobserved.
     const assertion = expect(pending).rejects.toBeInstanceOf(AudioProviderCallError);
     await vi.advanceTimersByTimeAsync(1_000);
 

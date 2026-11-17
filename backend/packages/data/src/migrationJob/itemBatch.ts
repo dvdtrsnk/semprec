@@ -10,10 +10,8 @@ interface LockItemBatchInput {
 }
 
 /**
- * Reads the next id-ordered page of `databaseId`'s items and row-locks it (`FOR UPDATE`,
- * optionally `SKIP LOCKED`). Must run inside the caller's transaction: the rows stay locked
- * until that transaction commits or rolls back, so a full-replace write of a row read here
- * cannot overwrite a concurrent choke-point update committed in between.
+ * Reads and row-locks the next id-ordered page. Must run in the caller's transaction, so a full-replace write of a
+ * row read here cannot overwrite a concurrent choke-point update.
  */
 export async function lockItemBatch(
   client: PoolClient,

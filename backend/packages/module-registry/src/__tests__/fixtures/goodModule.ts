@@ -38,14 +38,6 @@ export const manifest: ModuleManifest = {
   ],
   workers: [{ name: "fixtureGood.worker", handlerExport: "runWorker" }],
   migrations: ["0001_fixture_good.sql"],
-  dataMigrations: [
-    {
-      databaseKey: "fixtureGoodItems",
-      fromVersion: "1.0.0",
-      toVersion: "2.0.0",
-      converterExport: "convertFixtureGoodItem",
-    },
-  ],
   customRoutes: [
     {
       name: "fixtureGood.customRoute",
@@ -75,10 +67,6 @@ export const widgetTickRuleSchema = { safeParse: (value: unknown) => ({ success:
 
 export function computeWidgetTickNextFireAt(): Date {
   return new Date(0);
-}
-
-export function convertFixtureGoodItem(properties: Record<string, unknown>): Record<string, unknown> {
-  return properties;
 }
 
 export const toolArgsSchema = z.object({});

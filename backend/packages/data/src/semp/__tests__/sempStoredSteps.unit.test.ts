@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import type { SempReplyStep } from "../sempReplySteps.js";
 import { parseStoredSempReplySteps } from "../sempStoredSteps.js";
 
-/** A stored tool step with every optional field, as `projectSempReplySteps` writes it. */
 function fullToolStep(): SempReplyStep {
   return {
     kind: "tool",

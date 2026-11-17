@@ -17,7 +17,7 @@ import {
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway } from "../genericOperationGateway.js";
 
-// The subscription URL of a calendar (issue gh-1925) through the operations `/mcp` and the agent tools call. The
+// The subscription URL of a calendar through the operations `/mcp` and the agent tools call. The
 // rule itself is tested against the choke point in `@semprec/data` (`calendar/__tests__/calendarSubscriptionUrl.test.ts`).
 
 const metadataResolver: CollectionMetadataResolver = {
@@ -73,8 +73,8 @@ async function storedUrl(itemId: string): Promise<unknown> {
 
 /** The version a write of the item must name, as the choke point reports it. */
 async function storedVersion(itemId: string): Promise<string> {
-  const { rows } = await pool.query<{ updated_at: Date }>("SELECT updated_at FROM items WHERE id = $1", [itemId]);
-  return rows[0]?.updated_at.toISOString() ?? "";
+  const { rows } = await pool.query<{ version: string }>("SELECT version FROM items WHERE id = $1", [itemId]);
+  return rows[0]?.version ?? "";
 }
 
 async function calendarCount(): Promise<number> {
@@ -124,7 +124,7 @@ describe("a calendar's subscriptionUrl through the generic operation gateway (is
           gateway().invoke("item.patch", actor, ALL_CAPABILITIES, {
             itemId: feed.id,
             properties: { subscriptionUrl: url },
-            ifVersion: feed.updatedAt,
+            ifVersion: feed.version,
           }),
         ).rejects.toMatchObject(INVALID_URL);
         expect(await storedUrl(feed.id)).toBeNull();
@@ -157,7 +157,7 @@ describe("a calendar's subscriptionUrl through the generic operation gateway (is
           gateway().invoke("item.patch", actor, ALL_CAPABILITIES, {
             itemId: own.id,
             properties: { subscriptionUrl: "https://example.com/a.ics" },
-            ifVersion: own.updatedAt,
+            ifVersion: own.version,
           }),
         ).rejects.toMatchObject(INVALID_URL);
         expect(await storedUrl(own.id)).toBeNull();
@@ -172,7 +172,7 @@ describe("a calendar's subscriptionUrl through the generic operation gateway (is
         await gateway().invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: feed.id,
           properties: { subscriptionUrl: "https://example.com/a.ics" },
-          ifVersion: feed.updatedAt,
+          ifVersion: feed.version,
         });
         expect(await storedUrl(feed.id)).toBe("https://example.com/a.ics");
 

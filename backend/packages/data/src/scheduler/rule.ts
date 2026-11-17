@@ -26,7 +26,7 @@ export type FixedRule = z.infer<typeof dailyTimeRule> | z.infer<typeof weeklyRul
 export type FloatingRule = z.infer<typeof everyNDaysRule> | z.infer<typeof intervalRule>;
 export type OnItemEventRule = z.infer<typeof onItemEventRule>;
 
-/** Every rule "kind" core itself owns — a module's `heartbeatRuleKinds` may never reuse one (see `@semprec/module-registry`'s `reservedHeartbeatRuleKinds`). */
+/** A module's `heartbeatRuleKinds` may never reuse one (`reservedHeartbeatRuleKinds`). */
 export const CORE_HEARTBEAT_RULE_KINDS = ["dailyTime", "weekly", "everyNDays", "interval", "onItemEvent"] as const;
 export type CoreHeartbeatRuleKind = (typeof CORE_HEARTBEAT_RULE_KINDS)[number];
 
@@ -34,7 +34,6 @@ export function isCoreHeartbeatRuleKind(kind: string): kind is CoreHeartbeatRule
   return (CORE_HEARTBEAT_RULE_KINDS as readonly string[]).includes(kind);
 }
 
-/** A heartbeat rule whose kind is declared by an active module's manifest, not core. */
 export interface ModuleHeartbeatRule {
   kind: string;
   [key: string]: unknown;
@@ -42,13 +41,13 @@ export interface ModuleHeartbeatRule {
 
 export type AnyHeartbeatRule = HeartbeatRule | ModuleHeartbeatRule;
 
-/** What the scheduler needs to validate and schedule one module-declared rule kind, resolved from `ModuleRegistry.getHeartbeatRuleKindDefinitions()`. */
+/** Resolved from `ModuleRegistry.getHeartbeatRuleKindDefinitions()`. */
 export interface HeartbeatRuleKindHandler {
   schema: { safeParse: (raw: unknown) => { success: boolean; data?: unknown; error?: { message: string } } };
   nextFireAt: (rule: unknown, timezone: string, after: Date) => Date | null;
 }
 
-/** Keyed by rule `kind`. Empty by default — a caller with no active module rule kinds to offer passes nothing, and only core kinds validate/schedule. */
+/** Keyed by rule `kind`. Empty means only core kinds validate and schedule. */
 export type HeartbeatRuleKindRegistry = ReadonlyMap<string, HeartbeatRuleKindHandler>;
 
 export function isFixedRule(rule: HeartbeatRule): rule is FixedRule {
@@ -62,21 +61,16 @@ export function isOnItemEventRule(rule: AnyHeartbeatRule): boolean {
 }
 
 /**
- * Floating by `kind` alone, not by parsed shape — the sweep and the occurrence fire task
- * (issue #213) both need this before deciding whether a rule needs full parsing/module
- * dispatch at all: `everyNDays`/`interval` are the only kinds whose `next_fire_at` is computed
- * from actual execution time rather than the calendar, and both are core-owned, so checking the
- * raw `kind` string never risks throwing for a module-declared kind.
+ * Decided by the raw `kind` alone, so callers can ask before full parsing without throwing for a
+ * module kind. `everyNDays`/`interval` compute `next_fire_at` from actual execution time.
  */
 export function isFloatingRuleKind(kind: string): boolean {
   return kind === "everyNDays" || kind === "interval";
 }
 
 /**
- * Validates a raw rule against core's fixed schema when its `kind` is core-owned, or against
- * the matching entry of `moduleRuleKinds` otherwise — the "union of core and active
- * heartbeatRuleKinds" the scheduler validates against (issue #109). A `kind` that is neither
- * core nor a currently-active module (e.g. its module was deactivated) is rejected.
+ * Validates against core's schema for a core kind, otherwise against `moduleRuleKinds`. A kind in
+ * neither (e.g. its module was deactivated) is rejected.
  */
 export function parseHeartbeatRule(
   raw: unknown,

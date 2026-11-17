@@ -2,20 +2,17 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { withTransaction } from "../db/pool.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 import { AREAS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { runSleepSettingsAreaCutoverMigration } from "../sleep/sleepSettingsAreaCutoverMigration.js";
 import { sleepNightsGet } from "../sleep/sleepRouteHandlers.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// Each test builds one or two tenants with their couple of dozen system databases.
 const SEEDING_TEST_TIMEOUT_MS = 90_000;
 
 const USER = { writerKind: "user" } as const;
@@ -74,7 +71,6 @@ interface AreaRelationRow {
   edge_count: number;
 }
 
-/** The `area` property of `sleepSettings` with its relation definition and edge count, as the runtime role sees them. */
 function areaRelation(t: TenantFixture): Promise<AreaRelationRow[]> {
   return inTenant(t.tenantId, async (client) => {
     const { rows } = await client.query<AreaRelationRow>(
@@ -91,7 +87,6 @@ function areaRelation(t: TenantFixture): Promise<AreaRelationRow[]> {
   });
 }
 
-/** How many properties `sleepSettings` has under any key `area`, with or without a relation definition. */
 async function areaPropertyCount(t: TenantFixture): Promise<number> {
   return inTenant(t.tenantId, async (client) => {
     const { rows } = await client.query<{ count: number }>(
@@ -102,7 +97,6 @@ async function areaPropertyCount(t: TenantFixture): Promise<number> {
   });
 }
 
-/** The relation as a tenant-independent value: what the seed and the cutover must both produce. */
 function expectedRelation(t: TenantFixture) {
   return {
     name: null,
@@ -133,7 +127,7 @@ function relationValue(row: AreaRelationRow) {
   };
 }
 
-/** Removes the `area` property and its definition, leaving the state of a tenant seeded before issue gh-1833. */
+/** The state of a tenant seeded before the `area` relation existed. */
 async function removeAreaRelation(t: TenantFixture): Promise<void> {
   await inTenant(t.tenantId, async (client) => {
     // Raw SQL: the settings schema is locked, so no production path deletes a property of it.
@@ -173,7 +167,6 @@ async function connect(t: TenantFixture, targetItemId: string) {
   );
 }
 
-/** The ids the settings item's `area` property points at, read through the choke point. */
 async function areaTargets(t: TenantFixture): Promise<string[]> {
   const relationPropertyId = await areaPropertyId(t);
   const edges = await runInTenant(t.tenantId, () =>
@@ -184,7 +177,6 @@ async function areaTargets(t: TenantFixture): Promise<string[]> {
 
 const nightsBody = z.object({ areaId: z.string().nullable(), planCount: z.number() }).passthrough();
 
-/** `areaId` of `GET /api/sleep/nights`, parsed from what JSON carries. */
 async function nightsAreaId(tenantId: string): Promise<string | null> {
   const result = await runInTenant(tenantId, () => sleepNightsGet(dataPool)({ req: { url: NIGHTS_URL } }));
   expect(result.status).toBe(200);
@@ -192,10 +184,6 @@ async function nightsAreaId(tenantId: string): Promise<string | null> {
   // The seeded plans are in the answer, so a null `areaId` is not an empty fixture.
   expect(body.planCount).toBe(2);
   return body.areaId;
-}
-
-function runCutovers(): Promise<void> {
-  return runAsSystem("test sleep area cutover", () => runTenantCutoverMigrations(dataPool));
 }
 
 describe("sleepSettings.area relation (issue gh-1833)", () => {
@@ -242,114 +230,6 @@ describe("sleepSettings.area relation (issue gh-1833)", () => {
         expect(locked).toBe(true);
         expect(areaProperties).toEqual([]);
         expect(await areaTargets(t)).toEqual([]);
-      },
-      SEEDING_TEST_TIMEOUT_MS,
-    );
-  });
-
-  describe("cutover", () => {
-    it(
-      "gives an existing tenant the same relation as the seed, and a second run changes nothing",
-      async () => {
-        const fresh = await seededFixture();
-        const existing = await seededFixture();
-        await removeAreaRelation(existing);
-
-        await runCutovers();
-
-        const delivered = await areaRelation(existing);
-        expect(delivered).toHaveLength(1);
-        const [row] = delivered;
-        if (!row) throw new Error("unreachable");
-        expect(relationValue(row)).toEqual(expectedRelation(existing));
-        expect(row.property_id_a).toBe(row.property_id);
-        const [freshRow] = await areaRelation(fresh);
-        if (!freshRow) throw new Error("The fresh tenant has no area relation");
-        expect(relationValue(row)).toEqual({
-          ...relationValue(freshRow),
-          config: { targetDatabaseId: existing.areasDatabaseId },
-        });
-        const freshBefore = await areaRelation(fresh);
-
-        await runCutovers();
-
-        // The same rows at the same row versions: the second run wrote neither the property nor the definition.
-        expect(await areaRelation(existing)).toEqual(delivered);
-        expect(await areaRelation(fresh)).toEqual(freshBefore);
-        expect(await areaPropertyCount(existing)).toBe(1);
-        const schemaLocked = await inTenant(existing.tenantId, (client) =>
-          databasesStore.getDatabase(client, existing.settingsDatabaseId),
-        );
-        expect(schemaLocked?.schemaLocked).toBe(true);
-      },
-      SEEDING_TEST_TIMEOUT_MS,
-    );
-
-    it(
-      "keeps the area a user set when it runs again",
-      async () => {
-        const t = await seededFixture();
-        await removeAreaRelation(t);
-        await runCutovers();
-        const areaId = await createArea(t, "Health");
-        await connect(t, areaId);
-
-        await runCutovers();
-
-        expect(await areaTargets(t)).toEqual([areaId]);
-        expect(await areaPropertyCount(t)).toBe(1);
-      },
-      SEEDING_TEST_TIMEOUT_MS,
-    );
-
-    it.each([SLEEP_SETTINGS_MODULE_ID, AREAS_MODULE_ID])(
-      "does nothing when the %s database is missing",
-      async (moduleId) => {
-        const t = await seededFixture();
-        await removeAreaRelation(t);
-        await inTenant(t.tenantId, async (client) => {
-          // No production path removes a system database; hiding its module id is the state of a tenant without it.
-          const hidden = await client.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = $1", [
-            moduleId,
-          ]);
-          expect(hidden.rowCount).toBe(1);
-        });
-
-        await expect(
-          runInTenant(t.tenantId, () => runSleepSettingsAreaCutoverMigration(dataPool)),
-        ).resolves.toBeUndefined();
-
-        expect(await areaPropertyCount(t)).toBe(0);
-      },
-      SEEDING_TEST_TIMEOUT_MS,
-    );
-
-    it("does nothing for a tenant that has not been seeded", async () => {
-      const bare = await createTestTenant(adminPool);
-
-      await expect(runInTenant(bare, () => runSleepSettingsAreaCutoverMigration(dataPool))).resolves.toBeUndefined();
-
-      const { rows } = await adminPool.query<{ count: number }>(
-        "SELECT count(*)::int AS count FROM properties WHERE tenant_id = $1",
-        [bare],
-      );
-      expect(rows).toEqual([{ count: 0 }]);
-    });
-
-    it(
-      "changes only the tenant in scope",
-      async () => {
-        const inScope = await seededFixture();
-        const other = await seededFixture();
-        await removeAreaRelation(inScope);
-        await removeAreaRelation(other);
-
-        await runInTenant(inScope.tenantId, () => runSleepSettingsAreaCutoverMigration(dataPool));
-
-        expect((await areaRelation(inScope)).map(relationValue)).toEqual([expectedRelation(inScope)]);
-        expect(await areaPropertyCount(other)).toBe(0);
-        // The delivered relation points at the tenant's own Areas database.
-        expect(inScope.areasDatabaseId).not.toBe(other.areasDatabaseId);
       },
       SEEDING_TEST_TIMEOUT_MS,
     );

@@ -25,11 +25,9 @@ import { logger } from "./logger.js";
 const BLOB_PATH = /^\/api\/blobs\/([^/]+)$/;
 
 /**
- * `?disposition=inline` (issue #158) is only honored for MIME types that are safe for a browser
- * to render directly in the same origin — deliberately excludes anything HTML/script-capable
- * (`text/html`, `image/svg+xml`, `application/xhtml+xml`, …), since an attacker-supplied blob
- * rendered inline under this API's origin would otherwise be a stored-XSS vector. Anything not in
- * this set always downloads as `attachment`, regardless of the query parameter.
+ * Excludes anything HTML/script-capable (`text/html`, `image/svg+xml`, ...): such a blob rendered
+ * inline under this origin would be a stored-XSS vector. Anything else always downloads as
+ * `attachment`.
  */
 const INLINE_SAFE_MIME_TYPES = new Set([
   "image/png",
@@ -46,10 +44,9 @@ interface ParsedRange {
 }
 
 /**
- * A single `bytes=start-end` range (RFC 7233 §2.1) against a resource of `size` bytes. A
- * syntactically valid but out-of-bounds range is `"unsatisfiable"` (416); anything the regex
- * doesn't recognize at all is treated as absent — RFC 7233 §3.1: a server that doesn't understand
- * a Range header must serve the full representation, not fail the request.
+ * A single `bytes=start-end` range. An out-of-bounds range is `"unsatisfiable"` (416); an
+ * unrecognized header is treated as absent, since RFC 7233 §3.1 says to serve the full
+ * representation.
  */
 function parseRange(header: string | undefined, size: number): ParsedRange | "unsatisfiable" | undefined {
   if (!header) return undefined;
@@ -76,7 +73,6 @@ function parseRange(header: string | undefined, size: number): ParsedRange | "un
   return { start, end: Math.min(end, size - 1) };
 }
 
-/** `If-None-Match` (RFC 7232 §3.2): `"*"` or a comma-separated list of (optionally weak) entity tags. */
 function ifNoneMatchMatches(header: string | undefined, etag: string): boolean {
   if (!header) return false;
   if (header.trim() === "*") return true;
@@ -84,10 +80,9 @@ function ifNoneMatchMatches(header: string | undefined, etag: string): boolean {
 }
 
 /**
- * RFC 6266 + RFC 5987: an ASCII-only fallback `filename=` (control characters, quotes and
- * backslashes stripped so nothing can break out of the quoted string or inject a second header
- * directive) plus a percent-encoded UTF-8 `filename*` for clients that support it — malicious or
- * merely non-ASCII filenames stay display-only, never header-structural.
+ * An ASCII-only `filename=` fallback (control characters, quotes and backslashes stripped so
+ * nothing breaks out of the quoted string) plus a percent-encoded UTF-8 `filename*`, so filenames
+ * stay display-only, never header-structural.
  */
 function contentDispositionHeader(kind: "inline" | "attachment", filename: string): string {
   const asciiFallback = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
@@ -95,11 +90,9 @@ function contentDispositionHeader(kind: "inline" | "attachment", filename: strin
 }
 
 /**
- * The blob and its download filename, read in one transaction in the caller's tenant. `null` when
- * the blob is not visible there, so a foreign id and an unknown id take the same path. The filename
- * is the lowest-id Files item pointing at this blob (same convergence lookup `POST /api/files` dedup
- * uses), if any — its `name` property is the best available display filename for a download that
- * only knows a blob id.
+ * `null` when the blob is not visible in the caller's tenant, so a foreign and an unknown id take
+ * the same path. The filename is the `name` of the lowest-id Files item pointing at the blob (the
+ * convergence lookup `POST /api/files` dedup uses).
  */
 async function resolveDownload(
   pool: Pool,
@@ -117,21 +110,15 @@ async function resolveDownload(
 }
 
 export interface BlobsRequestListenerOptions {
-  /** The roots a blob's bytes can lie in: uploads under `files`, synced mail attachments under `mailAttachments`. */
+  /** Uploads under `files`, synced mail attachments under `mailAttachments`. */
   files: BlobStorageWriter;
   mailAttachments: BlobStorageWriter;
 }
 
 /**
- * `GET /api/blobs/:id` (issue #158): authenticated, streamed, `Range`/conditional-request aware.
- * Like `filesHandler.ts`, this can't go through `createAdapterRequestListener` — a binary
- * download's response isn't a JSON envelope and its body is piped, not buffered — so it's a
- * bespoke listener the same way `notificationsHandler.ts` is, sharing this adapter's auth and
- * error-code contract without its JSON-specific machinery.
- *
- * What the caller may see is decided first, in the caller's tenant: the blob and its filename are
- * read in one transaction before any conditional branch (`304`, `416`), so a foreign blob id
- * answers exactly like an unknown one.
+ * A bespoke listener because a binary download is piped, not a JSON envelope. The blob and filename
+ * are read before any conditional branch (`304`, `416`), so a foreign blob id answers exactly like
+ * an unknown one.
  */
 export function createBlobsRequestListener(pool: Pool, options: BlobsRequestListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -145,10 +132,10 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
           sendJson(res, 404, { error: { code: "not_found" } });
           return;
         }
-        // Group 1 of BLOB_PATH is not optional, so a successful match always captured it.
+        // Group 1 of BLOB_PATH is not optional.
         const blobId = assertUuid(match[1]!, "id");
 
-        // Decided before any conditional branch: a blob this tenant cannot see never reaches the 304 or 416 answers.
+        // A blob this tenant cannot see never reaches the 304 or 416 answers.
         const download = await resolveDownload(pool, blobId);
         if (!download) throw new NotFoundError(`Blob ${blobId} not found`);
         const { blob, filename, primaryRoot } = download;
@@ -183,7 +170,8 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
         if (etag) headers.ETag = etag;
         headers["Cache-Control"] = NO_STORE;
 
-        // Opened before any header is written, so a missing or unreadable file still gets a JSON error status.
+        // Opened before any header is written, so a missing or unreadable file still gets a JSON
+        // error status.
         const stream = await openBlobFromRoots({
           primary: options[primaryRoot],
           alternate: primaryRoot === "files" ? options.mailAttachments : options.files,
@@ -201,9 +189,9 @@ export function createBlobsRequestListener(pool: Pool, options: BlobsRequestList
           res.writeHead(200, headers);
         }
 
-        // Not awaited: handleRequest returns once headers are written, and handleRequestSafely
-        // only guards the pre-stream phase. pipeline (unlike pipe) destroys the other side on
-        // premature close of either stream, so an aborted client releases the read stream's fd.
+        // Not awaited: handleRequestSafely only guards the pre-stream phase. pipeline (unlike pipe)
+        // destroys the other side on premature close, so an aborted client releases the read
+        // stream's fd.
         pipeline(stream, res, (err) => {
           if (!err) return;
           if (err.code === "ERR_STREAM_PREMATURE_CLOSE") {

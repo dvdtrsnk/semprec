@@ -35,7 +35,6 @@ let cp: ChokePoint;
 
 type DatabaseKey = "companies" | "events" | "people" | "processingProposals" | "projects" | "transcripts";
 
-/** The database and relation property ids of one seeded tenant. */
 interface Schema {
   db: Record<DatabaseKey, string>;
   eventProject: string;
@@ -47,7 +46,6 @@ interface Schema {
   transcriptPeople: string;
 }
 
-/** One tenant's people, companies and projects, and the Event "client meeting" with its transcript. */
 interface World {
   tenant: string;
   schema: Schema;
@@ -99,7 +97,6 @@ async function seedTenant(): Promise<{ tenant: string; schema: Schema }> {
   });
 }
 
-/** Runs `fn` in the tenant, as every request and job of that tenant does. */
 function inTenant<T>(world: Pick<World, "tenant">, fn: () => Promise<T>): Promise<T> {
   return runInTenant(world.tenant, fn);
 }
@@ -108,7 +105,6 @@ async function item(scope: Pick<World, "tenant">, databaseId: string, properties
   return (await inTenant(scope, () => cp.createItem({ databaseId, properties }))).id;
 }
 
-/** A Transcripts row as the transcription process creates it, with the recording time as its `date`. */
 async function createTranscript(scope: Pick<World, "tenant" | "schema">, name: string): Promise<string> {
   const created = await inTenant(scope, () =>
     withTransaction(pool, (client) =>
@@ -143,9 +139,8 @@ function unlink(
 }
 
 /**
- * The Event "client meeting" of the project Web for client (company Novak Web s.r.o.) with the
- * organizer (the tenant's own person), Alice and Bob as participants, and a transcript that has no
- * Event, project, company or people yet.
+ * The Event "client meeting" of project Web for client (company Novak Web s.r.o.) with the organizer
+ * (the tenant's own person), Alice and Bob, and a transcript with no Event, project, company or people.
  */
 async function buildWorld(): Promise<World> {
   const { tenant, schema } = await seedTenant();
@@ -167,16 +162,11 @@ async function buildWorld(): Promise<World> {
   return { tenant, schema, me, alice, bob, novak, siko, web, bathroom, event, transcript };
 }
 
-/** The items a transcript's relation points to, sorted. */
 async function related(world: World, relationPropertyId: string, transcriptId = world.transcript): Promise<string[]> {
   const edges = await inTenant(world, () => cp.listItemRelations(transcriptId, relationPropertyId));
   return (edges ?? []).map((edge) => edge.targetItemId).sort();
 }
 
-/**
- * The items the relation of `relationPropertyId` stores an edge to for `itemId`, sorted, read through the runtime
- * role inside the tenant. Unlike `related` it includes an item that is in the Trash.
- */
 async function storedEdges(world: World, relationPropertyId: string, itemId = world.transcript): Promise<string[]> {
   return inTenant(world, async () => {
     const { rows } = await pool.query<{ other: string }>(
@@ -202,13 +192,14 @@ async function linksOf(world: World, transcriptId = world.transcript) {
   return (await inTenant(world, () => cp.getValueLinksForItems([transcriptId]))).get(transcriptId) ?? {};
 }
 
+const sorted = (ids: string[]): string[] => [...ids].sort();
+
 interface LinkRow {
   property_key: string;
   rule_key: string;
   state: string;
 }
 
-/** The stored link rows of a transcript, read through the runtime role inside the tenant. */
 async function linkRows(world: World, transcriptId = world.transcript): Promise<LinkRow[]> {
   return inTenant(world, async () => {
     const { rows } = await pool.query<LinkRow>(
@@ -219,16 +210,64 @@ async function linkRows(world: World, transcriptId = world.transcript): Promise<
   });
 }
 
-const ALL_LINKS_ON: LinkRow[] = [
-  { property_key: "company", rule_key: "transcriptCompanyFromProject", state: "on" },
-  { property_key: "people", rule_key: "transcriptPeopleFromEvent", state: "on" },
-  { property_key: "project", rule_key: "transcriptProjectFromEvent", state: "on" },
+const RULE_KEYS = {
+  company: "transcriptCompanyFromProject",
+  people: "transcriptPeopleFromEvent",
+  project: "transcriptProjectFromEvent",
+} as const;
+
+/** The value_links rows of a transcript with the given states, in property order. */
+function linkStates(states: Partial<Record<keyof typeof RULE_KEYS, "on" | "broken">>): LinkRow[] {
+  return (["company", "people", "project"] as const).flatMap((key) => {
+    const state = states[key];
+    return state ? [{ property_key: key, rule_key: RULE_KEYS[key], state }] : [];
+  });
+}
+
+const ALL_LINKS_ON = linkStates({ company: "on", people: "on", project: "on" });
+
+/** The values a transcript linked to the world's Event inherits. */
+const inheritedValues = (world: World) => ({
+  project: [world.web],
+  company: [world.novak],
+  people: sorted([world.alice, world.bob]),
+});
+
+/** The source of a value copied from the world's Event, as a value link names it. */
+const fromEvent = (world: World, propertyKey: string) => [
+  { kind: "item", itemId: world.event, databaseKey: "events", title: "client meeting", propertyKey },
+];
+const fromWebProject = (world: World) => [
+  { kind: "item", itemId: world.web, databaseKey: "projects", title: "Web for client", propertyKey: "company" },
 ];
 
+/** Links the transcript to the world's Event through the generic relation write. */
+const linkEvent = (world: World, transcriptId = world.transcript, eventId = world.event) =>
+  link(world, world.schema.transcriptEvent, transcriptId, eventId);
+const unlinkEvent = (world: World) => unlink(world, world.schema.transcriptEvent, world.transcript, world.event);
+
+/** Writes an edge in the caller's transaction, as the worker and the Semp tools do. */
+const writeEdge = (
+  client: PoolClient,
+  relationPropertyId: string,
+  callerItemId: string,
+  targetItemId: string,
+  writer?: WriterIdentity,
+) => createRelationWithClient(client, { relationPropertyId, callerItemId, targetItemId }, undefined, writer);
+
+const runMatch = (world: World, transcriptId = world.transcript, durationSeconds = 3600) =>
+  inTenant(world, () =>
+    withTransaction(pool, (client) => matchTranscriptToEvent(client, { transcriptId, durationSeconds })),
+  );
+
+const trash = (world: World, databaseId: string, itemId: string) =>
+  inTenant(world, () => cp.softDeleteItem(databaseId, itemId, ACTING_USER_ID, USER));
+
+const person = (world: World, name: string) => item(world, world.schema.db.people, { name });
+
 /**
- * Runs the queued value-link propagation jobs through the registered worker task until none is left.
- * One `runOnce` pass does not empty a tenant's lane, so the passes repeat; a queue that never empties
- * fails the test instead of letting an assertion about an unchanged value pass by accident.
+ * One `runOnce` pass does not empty a tenant's lane, so passes repeat; a queue that never empties
+ * fails the test instead of letting an "unchanged value" assertion pass by accident.
  */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
@@ -245,7 +284,6 @@ async function runPropagation(): Promise<void> {
   throw new Error("Propagation queue did not drain");
 }
 
-/** Replaces the single edge of a one-valued relation, as a user changing the value does. */
 async function replace(
   world: World,
   relationPropertyId: string,
@@ -258,12 +296,9 @@ async function replace(
   await link(world, relationPropertyId, callerItemId, to, writer);
 }
 
-const sorted = (ids: string[]): string[] => [...ids].sort();
-
 /**
- * Removes the relation whose inverse side is the Transcripts property `propertyId`, both properties and the
- * definition: the schema of a tenant before the cutover that adds the pair has run. Raw SQL on the admin pool,
- * because no API removes a property of a system database. The relation must hold no edge.
+ * Removes the relation pair whose inverse side is `propertyId`. Raw SQL on the admin pool, because no API
+ * removes a property of a system database. The relation must hold no edge.
  */
 async function removeRelationPair(propertyId: string): Promise<void> {
   const definition = await admin.query<{ other: string }>(
@@ -277,7 +312,6 @@ async function removeRelationPair(propertyId: string): Promise<void> {
   expect(removed.rowCount).toBe(2);
 }
 
-/** Records the invalidations `fn` publishes; the hook is cleared again afterwards. */
 async function capturingInvalidations(fn: () => Promise<unknown>): Promise<InvalidationEvent[]> {
   const events: InvalidationEvent[] = [];
   setInvalidationHook((event) => events.push(event));
@@ -292,14 +326,12 @@ async function capturingInvalidations(fn: () => Promise<unknown>): Promise<Inval
 const itemUpdatesOf = (events: InvalidationEvent[], itemId: string): InvalidationEvent[] =>
   events.filter((event) => event.scope === "item" && event.op === "update" && event.itemId === itemId);
 
-/** Chooses, changes or clears the tenant's own person as `PUT /api/auth/self-person` does. */
 function setOwnPerson(world: World, personId: string | null): Promise<void> {
   return inTenant(world, () =>
     withTransaction(pool, (client) => setSelfPersonId(client, personId, USER, ACTING_USER_ID)),
   );
 }
 
-/** The System settings row and its `selfPerson` relation property, for a write through the generic relation endpoint. */
 async function ownPersonRelation(world: World): Promise<{ relationPropertyId: string; callerItemId: string }> {
   return inTenant(world, async () => {
     const settings = (await cp.listDatabases()).find((database) => database.ownerModuleId === "systemSettings");
@@ -311,7 +343,6 @@ async function ownPersonRelation(world: World): Promise<{ relationPropertyId: st
   });
 }
 
-/** How many propagation jobs are queued, for any tenant. */
 async function queuedPropagationJobs(): Promise<number> {
   const { rows } = await admin.query<{ count: string }>(
     "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE task_identifier = $1",
@@ -320,19 +351,13 @@ async function queuedPropagationJobs(): Promise<number> {
   return Number(rows[0]?.count);
 }
 
-/**
- * Runs the propagation jobs the fixture's own writes queued (every Events `people` or `project` edge queues one),
- * so that a later `runPropagation` runs only what the step under test queued.
- */
+/** Runs the fixture's own queued jobs, so a later `runPropagation` runs only what the step under test queued. */
 async function settleFixture(): Promise<void> {
   await runPropagation();
   expect(await queuedPropagationJobs()).toBe(0);
 }
 
-/**
- * Runs `work` in a tenant transaction that stays open until `release` is called. `ready` resolves with the
- * transaction's backend pid once `work` is done, and rejects if the transaction ends before that.
- */
+/** `ready` resolves with the backend pid once `work` is done, and rejects if the transaction ends before that. */
 function holdTransaction(world: World, work: (client: PoolClient) => Promise<unknown>) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -360,7 +385,6 @@ function holdTransaction(world: World, work: (client: PoolClient) => Promise<unk
   return { ready, release, done };
 }
 
-/** Waits until some backend is blocked by a lock the backend `holderPid` holds. */
 async function expectBlockedBy(holderPid: number): Promise<void> {
   await vi.waitFor(
     async () => {
@@ -375,10 +399,6 @@ async function expectBlockedBy(holderPid: number): Promise<void> {
   );
 }
 
-/**
- * Holds `first` open in its own transaction, starts `second` and requires it to wait for a lock of the first,
- * then lets both finish. A failure of either, or `second` not waiting, fails the caller.
- */
 async function runSecondBehindFirst(
   world: World,
   first: (client: PoolClient) => Promise<unknown>,
@@ -460,12 +480,7 @@ describe("a transcript inherits its project, company and people from its Event (
       [
         "the match step of the transcription worker",
         async (world) => {
-          const outcome = await inTenant(world, () =>
-            withTransaction(pool, (client) =>
-              matchTranscriptToEvent(client, { transcriptId: world.transcript, durationSeconds: 3600 }),
-            ),
-          );
-          expect(outcome).toBe("linked");
+          expect(await runMatch(world)).toBe("linked");
         },
       ],
       [
@@ -487,19 +502,9 @@ describe("a transcript inherits its project, company and people from its Event (
       [
         "a Semp relation.put",
         async (world) => {
-          // What the generic operation gateway runs for `relation.put` under an agent writer.
           await inTenant(world, () =>
             withTransaction(pool, (client) =>
-              createRelationWithClient(
-                client,
-                {
-                  relationPropertyId: world.schema.transcriptEvent,
-                  callerItemId: world.transcript,
-                  targetItemId: world.event,
-                },
-                undefined,
-                SEMP,
-              ),
+              writeEdge(client, world.schema.transcriptEvent, world.transcript, world.event, SEMP),
             ),
           );
         },
@@ -513,41 +518,13 @@ describe("a transcript inherits its project, company and people from its Event (
         await write(world);
 
         expect(await related(world, world.schema.transcriptEvent)).toEqual([world.event]);
-        expect(await values(world)).toEqual({
-          project: [world.web],
-          company: [world.novak],
-          people: sorted([world.alice, world.bob]),
-        });
+        expect(await values(world)).toEqual(inheritedValues(world));
         expect(await linkRows(world)).toEqual(ALL_LINKS_ON);
-        const links = await linksOf(world);
-        const fromEvent = (propertyKey: string) => [
-          { kind: "item", itemId: world.event, databaseKey: "events", title: "client meeting", propertyKey },
-        ];
-        expect(links.project).toEqual({
-          valueKind: "inherited",
-          sources: fromEvent("project"),
-          brokenBy: null,
-          brokenAt: null,
-        });
-        expect(links.people).toEqual({
-          valueKind: "inherited",
-          sources: fromEvent("people"),
-          brokenBy: null,
-          brokenAt: null,
-        });
-        expect(links.company).toEqual({
-          valueKind: "inherited",
-          sources: [
-            {
-              kind: "item",
-              itemId: world.web,
-              databaseKey: "projects",
-              title: "Web for client",
-              propertyKey: "company",
-            },
-          ],
-          brokenBy: null,
-          brokenAt: null,
+        const inherited = (sources: unknown) => ({ valueKind: "inherited", sources, brokenBy: null, brokenAt: null });
+        expect(await linksOf(world)).toEqual({
+          project: inherited(fromEvent(world, "project")),
+          people: inherited(fromEvent(world, "people")),
+          company: inherited(fromWebProject(world)),
         });
       },
     );
@@ -559,17 +536,7 @@ describe("a transcript inherits its project, company and people from its Event (
     await expect(
       inTenant(world, () =>
         withTransaction(pool, async (client) => {
-          await createRelationWithClient(
-            client,
-            {
-              relationPropertyId: world.schema.transcriptEvent,
-              callerItemId: world.transcript,
-              targetItemId: world.event,
-            },
-            undefined,
-            USER,
-          );
-          // Before the commit, on the writer's own connection: the three links and their values exist.
+          await writeEdge(client, world.schema.transcriptEvent, world.transcript, world.event, USER);
           const links = await client.query<LinkRow>(
             "SELECT property_key, rule_key, state FROM value_links WHERE item_id = $1 ORDER BY property_key",
             [world.transcript],
@@ -594,35 +561,24 @@ describe("a transcript inherits its project, company and people from its Event (
   });
 
   describe("while the transcript follows its Event", () => {
-    it("takes the Event's new project through the propagation job", async () => {
+    it("takes the Event's new project and its company through the propagation job, and keeps following that project", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
+      const sourceIds = async (propertyKey: string) =>
+        ((await linksOf(world))[propertyKey]?.sources ?? []).map((source) =>
+          source.kind === "item" ? source.itemId : "",
+        );
 
       await replace(world, world.schema.eventProject, world.event, world.web, world.bathroom);
-      // The source edge change only queues the propagation; the transcript is unchanged until the job runs.
       expect((await values(world)).project).toEqual([world.web]);
-      await runPropagation();
-
-      expect((await values(world)).project).toEqual([world.bathroom]);
-      const links = await linksOf(world);
-      expect(links.project?.valueKind).toBe("inherited");
-      expect(links.project?.sources.map((source) => (source.kind === "item" ? source.itemId : ""))).toEqual([
-        world.event,
-      ]);
-    });
-
-    it("takes the new project's company when the Event's project changes, and keeps following that project", async () => {
-      const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
-
-      await replace(world, world.schema.eventProject, world.event, world.web, world.bathroom);
       await runPropagation();
 
       expect(await values(world)).toMatchObject({ project: [world.bathroom], company: [world.siko] });
       expect(await linkRows(world)).toEqual(ALL_LINKS_ON);
-      const company = (await linksOf(world)).company;
-      expect(company?.valueKind).toBe("inherited");
-      expect(company?.sources.map((source) => (source.kind === "item" ? source.itemId : ""))).toEqual([world.bathroom]);
+      expect((await linksOf(world)).project?.valueKind).toBe("inherited");
+      expect((await linksOf(world)).company?.valueKind).toBe("inherited");
+      expect(await sourceIds("project")).toEqual([world.event]);
+      expect(await sourceIds("company")).toEqual([world.bathroom]);
 
       // The company link names the new project: a change of that project's company reaches the transcript.
       const agency = await item(world, world.schema.db.companies, { name: "Nova Agency" });
@@ -633,17 +589,13 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("loses the company with the project when the Event loses its project, and takes both from a project the Event gets later", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
 
       await unlink(world, world.schema.eventProject, world.event, world.web);
       await runPropagation();
       expect(await storedEdges(world, world.schema.transcriptProject)).toEqual([]);
       expect(await storedEdges(world, world.schema.transcriptCompany)).toEqual([]);
-      // The project still follows the Event; the company link went with the project edge it followed.
-      expect(await linkRows(world)).toEqual([
-        { property_key: "people", rule_key: "transcriptPeopleFromEvent", state: "on" },
-        { property_key: "project", rule_key: "transcriptProjectFromEvent", state: "on" },
-      ]);
+      expect(await linkRows(world)).toEqual(linkStates({ people: "on", project: "on" }));
 
       await link(world, world.schema.eventProject, world.event, world.bathroom);
       await runPropagation();
@@ -653,7 +605,7 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("keeps a company the user changed by hand when the Event's project changes", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       const agency = await item(world, world.schema.db.companies, { name: "Nova Agency" });
       await replace(world, world.schema.transcriptCompany, world.transcript, world.novak, agency);
       expect((await linksOf(world)).company?.valueKind).toBe("inheritedBroken");
@@ -667,30 +619,23 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("keeps the company as an own value when the user replaces the transcript's project by hand", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
 
       await replace(world, world.schema.transcriptProject, world.transcript, world.web, world.bathroom);
 
       // A disconnect by the user is not a replaced inherited value: the company stays and its link ends.
       expect(await values(world)).toMatchObject({ project: [world.bathroom], company: [world.novak] });
-      expect(await linkRows(world)).toEqual([
-        { property_key: "people", rule_key: "transcriptPeopleFromEvent", state: "on" },
-        { property_key: "project", rule_key: "transcriptProjectFromEvent", state: "broken" },
-      ]);
+      expect(await linkRows(world)).toEqual(linkStates({ people: "on", project: "broken" }));
     });
 
     it("moves a company that follows a project the user chose when the user relinks the project to the Event", async () => {
       const world = await buildWorld();
       // The Event's project has no company, so the transcript's company is empty when the user picks a project.
       await unlink(world, world.schema.projectCompany, world.web, world.novak);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await replace(world, world.schema.transcriptProject, world.transcript, world.web, world.bathroom);
       expect(await values(world)).toMatchObject({ project: [world.bathroom], company: [world.siko] });
-      expect(await linkRows(world)).toEqual([
-        { property_key: "company", rule_key: "transcriptCompanyFromProject", state: "on" },
-        { property_key: "people", rule_key: "transcriptPeopleFromEvent", state: "on" },
-        { property_key: "project", rule_key: "transcriptProjectFromEvent", state: "broken" },
-      ]);
+      expect(await linkRows(world)).toEqual(linkStates({ company: "on", people: "on", project: "broken" }));
 
       const relinked = await inTenant(world, () =>
         cp.relinkValue({ itemId: world.transcript, propertyKey: "project" }, ACTING_USER_ID),
@@ -708,8 +653,8 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("takes over added and removed participants of the Event, still without the organizer", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
-      const carol = await item(world, world.schema.db.people, { name: "Carol Svobodova" });
+      await linkEvent(world);
+      const carol = await person(world, "Carol Svobodova");
 
       await unlink(world, world.schema.eventPeople, world.event, world.alice);
       await link(world, world.schema.eventPeople, world.event, carol);
@@ -722,7 +667,7 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("takes the new company when the company of the transcript's project changes", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       const agency = await item(world, world.schema.db.companies, { name: "Nova Agency" });
 
       await replace(world, world.schema.projectCompany, world.web, world.novak, agency);
@@ -736,7 +681,7 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("stops following the Event's project once the user changed the transcript's project by hand", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       const garden = await item(world, world.schema.db.projects, { name: "Garden" });
 
       await replace(world, world.schema.transcriptProject, world.transcript, world.web, world.bathroom);
@@ -744,21 +689,20 @@ describe("a transcript inherits its project, company and people from its Event (
       expect(broken?.valueKind).toBe("inheritedBroken");
       expect(broken?.brokenBy).toBe("user");
 
-      const carol = await item(world, world.schema.db.people, { name: "Carol Svobodova" });
+      const carol = await person(world, "Carol Svobodova");
       await replace(world, world.schema.eventProject, world.event, world.web, garden);
       await link(world, world.schema.eventPeople, world.event, carol);
       await runPropagation();
       expect((await values(world)).project).toEqual([world.bathroom]);
       expect((await linksOf(world)).project?.valueKind).toBe("inheritedBroken");
-      // The same propagation run still reaches the people, whose link the user did not touch.
       expect((await values(world)).people).toEqual(sorted([world.alice, world.bob, carol]));
     });
 
     it("stops following the Event's participants once Semp changed the transcript's people", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
-      const carol = await item(world, world.schema.db.people, { name: "Carol Svobodova" });
-      const dave = await item(world, world.schema.db.people, { name: "Dave Kral" });
+      await linkEvent(world);
+      const carol = await person(world, "Carol Svobodova");
+      const dave = await person(world, "Dave Kral");
 
       await link(world, world.schema.transcriptPeople, world.transcript, carol, SEMP);
       const broken = (await linksOf(world)).people;
@@ -769,7 +713,6 @@ describe("a transcript inherits its project, company and people from its Event (
       await replace(world, world.schema.eventProject, world.event, world.web, world.bathroom);
       await runPropagation();
       expect((await values(world)).people).toEqual(sorted([world.alice, world.bob, carol]));
-      // The same propagation run still reaches the project, whose link Semp did not touch.
       expect((await values(world)).project).toEqual([world.bathroom]);
     });
   });
@@ -779,7 +722,7 @@ describe("a transcript inherits its project, company and people from its Event (
       const world = await buildWorld();
       for (const person of [world.alice, world.bob]) await unlink(world, world.schema.eventPeople, world.event, person);
 
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       expect((await values(world)).people).toEqual([]);
       expect((await linksOf(world)).people?.valueKind).toBe("inherited");
 
@@ -791,10 +734,10 @@ describe("a transcript inherits its project, company and people from its Event (
     it("is left out when the propagation job copies an Event it was added to later", async () => {
       const world = await buildWorld();
       await unlink(world, world.schema.eventPeople, world.event, world.me);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       expect((await values(world)).people).toEqual(sorted([world.alice, world.bob]));
 
-      const carol = await item(world, world.schema.db.people, { name: "Carol Svobodova" });
+      const carol = await person(world, "Carol Svobodova");
       await link(world, world.schema.eventPeople, world.event, world.me);
       await link(world, world.schema.eventPeople, world.event, carol);
       await runPropagation();
@@ -805,14 +748,14 @@ describe("a transcript inherits its project, company and people from its Event (
       const world = await buildWorld();
       await inTenant(world, () => withTransaction(pool, (client) => setSelfPersonId(client, null)));
 
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       expect((await values(world)).people).toEqual(sorted([world.me, world.alice, world.bob]));
     });
 
     it("leaves the transcript's people once it is chosen after the transcript was linked", async () => {
       const world = await buildWorld();
       await setOwnPerson(world, null);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await settleFixture();
       expect((await values(world)).people).toEqual(sorted([world.me, world.alice, world.bob]));
 
@@ -828,7 +771,7 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("follows a change of the own person and its removal: the previous one returns and the new one leaves", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await settleFixture();
       expect((await values(world)).people).toEqual(sorted([world.alice, world.bob]));
 
@@ -845,7 +788,7 @@ describe("a transcript inherits its project, company and people from its Event (
     it("leaves the transcript's people when it is chosen through the generic relation endpoint", async () => {
       const world = await buildWorld();
       await setOwnPerson(world, null);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await settleFixture();
       const ownPerson = await ownPersonRelation(world);
 
@@ -858,7 +801,7 @@ describe("a transcript inherits its project, company and people from its Event (
     it("queues nothing for people the user had changed by hand, which stay as they are", async () => {
       const world = await buildWorld();
       await setOwnPerson(world, null);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await unlink(world, world.schema.transcriptPeople, world.transcript, world.bob);
       expect((await linksOf(world)).people?.valueKind).toBe("inheritedBroken");
       await settleFixture();
@@ -894,17 +837,7 @@ describe("a transcript inherits its project, company and people from its Event (
 
       await runSecondBehindFirst(
         world,
-        (client) =>
-          createRelationWithClient(
-            client,
-            {
-              relationPropertyId: world.schema.transcriptEvent,
-              callerItemId: world.transcript,
-              targetItemId: world.event,
-            },
-            undefined,
-            USER,
-          ),
+        (client) => writeEdge(client, world.schema.transcriptEvent, world.transcript, world.event, USER),
         () => inTenant(world, () => cp.createRelation({ ...ownPerson, targetItemId: world.me }, USER, ACTING_USER_ID)),
       );
 
@@ -916,7 +849,7 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("is left out again when the user relinks people they had changed by hand", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await unlink(world, world.schema.transcriptPeople, world.transcript, world.bob);
       expect((await linksOf(world)).people?.valueKind).toBe("inheritedBroken");
 
@@ -930,21 +863,15 @@ describe("a transcript inherits its project, company and people from its Event (
 
   it("keeps a project chosen on the recording card when an Event with another project is linked, and fills the empty people", async () => {
     const world = await buildWorld();
-    // The create step of the transcription worker writes the recording's project as a system writer (issue #1696).
+    // The worker's create step writes the recording's project as a system writer.
     await inTenant(world, () =>
       withTransaction(pool, (client) =>
-        createRelationWithClient(client, {
-          relationPropertyId: world.schema.transcriptProject,
-          callerItemId: world.transcript,
-          targetItemId: world.bathroom,
-        }),
+        writeEdge(client, world.schema.transcriptProject, world.transcript, world.bathroom),
       ),
     );
-    expect(await linkRows(world)).toEqual([
-      { property_key: "company", rule_key: "transcriptCompanyFromProject", state: "on" },
-    ]);
+    expect(await linkRows(world)).toEqual(linkStates({ company: "on" }));
 
-    await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+    await linkEvent(world);
 
     expect(await values(world)).toEqual({
       project: [world.bathroom],
@@ -956,7 +883,7 @@ describe("a transcript inherits its project, company and people from its Event (
     expect(links.people?.valueKind).toBe("inherited");
     // A later change of the Event's project does not reach the own project, while its new participant arrives.
     const garden = await item(world, world.schema.db.projects, { name: "Garden" });
-    const carol = await item(world, world.schema.db.people, { name: "Carol Svobodova" });
+    const carol = await person(world, "Carol Svobodova");
     await replace(world, world.schema.eventProject, world.event, world.web, garden);
     await link(world, world.schema.eventPeople, world.event, carol);
     await runPropagation();
@@ -965,65 +892,44 @@ describe("a transcript inherits its project, company and people from its Event (
   });
 
   describe("a value that is in the Trash", () => {
-    const trash = (world: World, databaseId: string, itemId: string) =>
-      inTenant(world, () => cp.softDeleteItem(databaseId, itemId, ACTING_USER_ID, USER));
-
     it("is left out when the match step links an Event whose project and one participant are in the Trash", async () => {
       const world = await buildWorld();
       await trash(world, world.schema.db.projects, world.web);
       await trash(world, world.schema.db.people, world.bob);
-      // The Trash kept the Event's edges to both.
       expect(await storedEdges(world, world.schema.eventPeople, world.event)).toEqual(
         sorted([world.me, world.alice, world.bob]),
       );
       expect(await storedEdges(world, world.schema.eventProject, world.event)).toEqual([world.web]);
 
-      const outcome = await inTenant(world, () =>
-        withTransaction(pool, (client) =>
-          matchTranscriptToEvent(client, { transcriptId: world.transcript, durationSeconds: 3600 }),
-        ),
-      );
-
-      expect(outcome).toBe("linked");
+      expect(await runMatch(world)).toBe("linked");
       expect(await related(world, world.schema.transcriptEvent)).toEqual([world.event]);
-      // Stored edges, not only the live ones a read returns.
       expect(await storedEdges(world, world.schema.transcriptProject)).toEqual([]);
       expect(await storedEdges(world, world.schema.transcriptCompany)).toEqual([]);
       expect(await storedEdges(world, world.schema.transcriptPeople)).toEqual([world.alice]);
       // The project link is on with no value; without a project edge there is no company link.
-      expect(await linkRows(world)).toEqual([
-        { property_key: "people", rule_key: "transcriptPeopleFromEvent", state: "on" },
-        { property_key: "project", rule_key: "transcriptProjectFromEvent", state: "on" },
-      ]);
+      expect(await linkRows(world)).toEqual(linkStates({ people: "on", project: "on" }));
     });
 
     it("does not fail the write of a recording-card project whose company is in the Trash", async () => {
       const world = await buildWorld();
       await trash(world, world.schema.db.companies, world.siko);
 
-      // The write the create step of the transcription worker makes for the recording's project (issue #1696).
       await inTenant(world, () =>
         withTransaction(pool, (client) =>
-          createRelationWithClient(client, {
-            relationPropertyId: world.schema.transcriptProject,
-            callerItemId: world.transcript,
-            targetItemId: world.bathroom,
-          }),
+          writeEdge(client, world.schema.transcriptProject, world.transcript, world.bathroom),
         ),
       );
 
       expect(await storedEdges(world, world.schema.transcriptProject)).toEqual([world.bathroom]);
       expect(await storedEdges(world, world.schema.transcriptCompany)).toEqual([]);
-      expect(await linkRows(world)).toEqual([
-        { property_key: "company", rule_key: "transcriptCompanyFromProject", state: "on" },
-      ]);
+      expect(await linkRows(world)).toEqual(linkStates({ company: "on" }));
     });
 
     it("is not added by the propagation job, and leaves a transcript that held it", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
-      const carol = await item(world, world.schema.db.people, { name: "Carol Svobodova" });
-      const dave = await item(world, world.schema.db.people, { name: "Dave Kral" });
+      await linkEvent(world);
+      const carol = await person(world, "Carol Svobodova");
+      const dave = await person(world, "Dave Kral");
       await link(world, world.schema.eventPeople, world.event, dave);
       await trash(world, world.schema.db.people, world.bob);
       await trash(world, world.schema.db.people, dave);
@@ -1031,14 +937,14 @@ describe("a transcript inherits its project, company and people from its Event (
       await link(world, world.schema.eventPeople, world.event, carol);
       await runPropagation();
 
-      // Stored edges, not only the live ones a read returns: Bob's edge is gone and Dave's was never written.
+      // Stored edges: Bob's edge is gone and Dave's was never written.
       expect(await storedEdges(world, world.schema.transcriptPeople)).toEqual(sorted([world.alice, carol]));
       expect((await linksOf(world)).people?.valueKind).toBe("inherited");
     });
 
     it("is left out when the user relinks people they had changed by hand", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await unlink(world, world.schema.transcriptPeople, world.transcript, world.alice);
       await trash(world, world.schema.db.people, world.alice);
 
@@ -1052,15 +958,11 @@ describe("a transcript inherits its project, company and people from its Event (
   });
 
   describe("when the Event goes", () => {
-    /**
-     * After the release: later changes of the old sources reach a second transcript that is linked to the
-     * Event now, and do not reach the released one, which has no link row.
-     */
     async function expectValuesStayOwn(world: World): Promise<void> {
       const following = await createTranscript(world, "Following recording");
       await link(world, world.schema.transcriptEvent, following, world.event);
       const agency = await item(world, world.schema.db.companies, { name: "Nova Agency" });
-      const carol = await item(world, world.schema.db.people, { name: "Carol Svobodova" });
+      const carol = await person(world, "Carol Svobodova");
       await replace(world, world.schema.projectCompany, world.web, world.novak, agency);
       await link(world, world.schema.eventPeople, world.event, carol);
       await runPropagation();
@@ -1073,47 +975,34 @@ describe("a transcript inherits its project, company and people from its Event (
       await runPropagation();
       expect((await values(world, following)).project).toEqual([world.bathroom]);
 
-      expect(await values(world)).toEqual({
-        project: [world.web],
-        company: [world.novak],
-        people: sorted([world.alice, world.bob]),
-      });
+      expect(await values(world)).toEqual(inheritedValues(world));
       expect(await linkRows(world)).toEqual([]);
       expect(await linksOf(world)).toEqual({});
     }
 
     it("keeps project, company and people as own values after the user disconnects the Event", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
 
-      await unlink(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await unlinkEvent(world);
 
-      expect(await values(world)).toEqual({
-        project: [world.web],
-        company: [world.novak],
-        people: sorted([world.alice, world.bob]),
-      });
+      expect(await values(world)).toEqual(inheritedValues(world));
       expect(await linkRows(world)).toEqual([]);
       await expectValuesStayOwn(world);
     });
 
     it("keeps them as own values after the Event is moved to the Trash, and restoring the Event reconnects nothing", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
 
-      await inTenant(world, () => cp.softDeleteItem(world.schema.db.events, world.event, ACTING_USER_ID, USER));
-      expect(await values(world)).toEqual({
-        project: [world.web],
-        company: [world.novak],
-        people: sorted([world.alice, world.bob]),
-      });
+      await trash(world, world.schema.db.events, world.event);
+      expect(await values(world)).toEqual(inheritedValues(world));
       expect(await linkRows(world)).toEqual([]);
 
       const restored = await inTenant(world, () =>
         cp.restoreItem(world.schema.db.events, world.event, ACTING_USER_ID, USER),
       );
       expect(restored?.deletedAt).toBeNull();
-      // The edge to the restored Event is still there; no link came back with it.
       expect(await related(world, world.schema.transcriptEvent)).toEqual([world.event]);
       expect(await linkRows(world)).toEqual([]);
       await expectValuesStayOwn(world);
@@ -1129,13 +1018,11 @@ describe("a transcript inherits its project, company and people from its Event (
         date: RECORDING_START,
       });
       await link(world, world.schema.eventProject, otherEvent, world.bathroom);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await link(world, world.schema.transcriptEvent, second, world.event);
       await link(world, world.schema.transcriptEvent, elsewhere, otherEvent);
 
-      const events = await capturingInvalidations(() =>
-        inTenant(world, () => cp.softDeleteItem(world.schema.db.events, world.event, ACTING_USER_ID, USER)),
-      );
+      const events = await capturingInvalidations(() => trash(world, world.schema.db.events, world.event));
 
       expect(await linkRows(world)).toEqual([]);
       expect(await linkRows(world, second)).toEqual([]);
@@ -1145,7 +1032,6 @@ describe("a transcript inherits its project, company and people from its Event (
         "people",
         "project",
       ]);
-      // Each released transcript is announced to the acting user; the other Event's transcript is not.
       for (const transcriptId of [world.transcript, second]) {
         const announced = itemUpdatesOf(events, transcriptId);
         expect(announced.length).toBeGreaterThan(0);
@@ -1156,7 +1042,7 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("announces the transcript after the commit of the disconnect, and not at all when the disconnect rolls back", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       const edge = {
         relationPropertyId: world.schema.transcriptEvent,
         callerItemId: world.transcript,
@@ -1183,48 +1069,33 @@ describe("a transcript inherits its project, company and people from its Event (
     it("leaves a transcript without a company link alone and announces nothing for it", async () => {
       const world = await buildWorld();
       await unlink(world, world.schema.eventProject, world.event, world.web);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       // The Event has no project, so the transcript's project link is on with no value and no company link exists.
       expect((await linkRows(world)).map((row) => row.property_key)).toEqual(["people", "project"]);
 
-      const events = await capturingInvalidations(() =>
-        unlink(world, world.schema.transcriptEvent, world.transcript, world.event),
-      );
+      const events = await capturingInvalidations(() => unlinkEvent(world));
       expect(itemUpdatesOf(events, world.transcript)).toEqual([]);
       expect(await linkRows(world)).toEqual([]);
     });
 
-    it("keeps the company link when another relation of the transcript loses an edge", async () => {
+    it("keeps the company link when another relation of the transcript loses an edge, or the transcript itself is trashed", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
 
       await unlink(world, world.schema.transcriptPeople, world.transcript, world.bob);
+      expect(await linkRows(world)).toEqual(linkStates({ company: "on", people: "broken", project: "on" }));
 
-      expect(await linkRows(world)).toEqual([
-        { property_key: "company", rule_key: "transcriptCompanyFromProject", state: "on" },
-        { property_key: "people", rule_key: "transcriptPeopleFromEvent", state: "broken" },
-        { property_key: "project", rule_key: "transcriptProjectFromEvent", state: "on" },
-      ]);
-    });
-
-    it("keeps the company link when the transcript itself, not its Event, is moved to the Trash", async () => {
-      const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
-
-      await inTenant(world, () =>
-        cp.softDeleteItem(world.schema.db.transcripts, world.transcript, ACTING_USER_ID, USER),
-      );
-
-      expect(await linkRows(world)).toEqual(ALL_LINKS_ON);
+      await trash(world, world.schema.db.transcripts, world.transcript);
+      expect(await linkRows(world)).toEqual(linkStates({ company: "on", people: "broken", project: "on" }));
     });
 
     it("also ends a company link the user had broken, so the company reads as own", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await replace(world, world.schema.transcriptCompany, world.transcript, world.novak, world.siko);
       expect((await linksOf(world)).company?.valueKind).toBe("inheritedBroken");
 
-      await unlink(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await unlinkEvent(world);
 
       expect((await values(world)).company).toEqual([world.siko]);
       expect(await linkRows(world)).toEqual([]);
@@ -1239,24 +1110,19 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("ends a project link and a people link the user had changed, so a relink after the disconnect is refused", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await replace(world, world.schema.transcriptProject, world.transcript, world.web, world.bathroom);
       await unlink(world, world.schema.transcriptPeople, world.transcript, world.bob);
-      expect(await linkRows(world)).toEqual([
-        { property_key: "people", rule_key: "transcriptPeopleFromEvent", state: "broken" },
-        { property_key: "project", rule_key: "transcriptProjectFromEvent", state: "broken" },
-      ]);
+      expect(await linkRows(world)).toEqual(linkStates({ people: "broken", project: "broken" }));
 
-      const events = await capturingInvalidations(() =>
-        unlink(world, world.schema.transcriptEvent, world.transcript, world.event),
-      );
+      const events = await capturingInvalidations(() => unlinkEvent(world));
 
       expect(await linkRows(world)).toEqual([]);
       expect(itemUpdatesOf(events, world.transcript)).toHaveLength(1);
       for (const propertyKey of ["project", "people"])
         await expect(relink(world, propertyKey)).rejects.toMatchObject({ status: 409, code: "value_link_conflict" });
       // The refused relinks wrote nothing, and a later change of the Event reaches nothing.
-      const carol = await item(world, world.schema.db.people, { name: "Carol Svobodova" });
+      const carol = await person(world, "Carol Svobodova");
       const garden = await item(world, world.schema.db.projects, { name: "Garden" });
       await link(world, world.schema.eventPeople, world.event, carol);
       await replace(world, world.schema.eventProject, world.event, world.web, garden);
@@ -1267,12 +1133,10 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("announces the transcript once when the disconnect ends a changed people link and the company link", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await unlink(world, world.schema.transcriptPeople, world.transcript, world.bob);
 
-      const events = await capturingInvalidations(() =>
-        unlink(world, world.schema.transcriptEvent, world.transcript, world.event),
-      );
+      const events = await capturingInvalidations(() => unlinkEvent(world));
 
       expect(await linkRows(world)).toEqual([]);
       expect(itemUpdatesOf(events, world.transcript)).toHaveLength(1);
@@ -1280,10 +1144,10 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("leaves no link that names a trashed Event either, a people link the user had changed included", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await unlink(world, world.schema.transcriptPeople, world.transcript, world.bob);
 
-      await inTenant(world, () => cp.softDeleteItem(world.schema.db.events, world.event, ACTING_USER_ID, USER));
+      await trash(world, world.schema.db.events, world.event);
 
       expect(await linkRows(world)).toEqual([]);
       await expect(relink(world, "people")).rejects.toMatchObject({ status: 409, code: "value_link_conflict" });
@@ -1292,24 +1156,23 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("takes the people of an Event linked after the disconnect into people the user had emptied", async () => {
       const world = await buildWorld();
-      const carol = await item(world, world.schema.db.people, { name: "Carol Svobodova" });
+      const carol = await person(world, "Carol Svobodova");
       const otherEvent = await item(world, world.schema.db.events, {
         name: "other meeting",
         type: "meeting",
         date: RECORDING_START,
       });
       await link(world, world.schema.eventPeople, otherEvent, carol);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       for (const person of [world.alice, world.bob])
         await unlink(world, world.schema.transcriptPeople, world.transcript, person);
-      await unlink(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await unlinkEvent(world);
 
       await link(world, world.schema.transcriptEvent, world.transcript, otherEvent);
 
       // The broken link went with the first Event, so the empty people are an empty own value again.
       expect((await values(world)).people).toEqual([carol]);
       expect(await sourceItemIds(world, "people")).toEqual([otherEvent]);
-      // The project and the company the first Event gave stay as own values.
       expect(await values(world)).toMatchObject({ project: [world.web], company: [world.novak] });
     });
 
@@ -1320,7 +1183,7 @@ describe("a transcript inherits its project, company and people from its Event (
         type: "meeting",
         date: RECORDING_START,
       });
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await unlink(world, world.schema.transcriptPeople, world.transcript, world.bob);
       // A transcript has one Event, so no rule gives its people link a second one: the store fixture adds the source.
       await inTenant(world, () =>
@@ -1331,24 +1194,20 @@ describe("a transcript inherits its project, company and people from its Event (
         }),
       );
 
-      await unlink(world, world.schema.transcriptEvent, world.transcript, world.event);
-      expect(await linkRows(world)).toEqual([
-        { property_key: "people", rule_key: "transcriptPeopleFromEvent", state: "broken" },
-      ]);
+      await unlinkEvent(world);
+      expect(await linkRows(world)).toEqual(linkStates({ people: "broken" }));
       expect(await sourceItemIds(world, "people")).toEqual([otherEvent]);
 
       // Linked again, the broken link gets no new source from the engine, so it does not name this Event.
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
-      const events = await capturingInvalidations(() =>
-        unlink(world, world.schema.transcriptEvent, world.transcript, world.event),
-      );
+      await linkEvent(world);
+      const events = await capturingInvalidations(() => unlinkEvent(world));
       expect(itemUpdatesOf(events, world.transcript)).toEqual([]);
       expect(await sourceItemIds(world, "people")).toEqual([otherEvent]);
     });
 
     it("fails the disconnect and rolls it back when the company link keeps a source it cannot remove", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await unlink(world, world.schema.eventProject, world.event, world.web);
       await runPropagation();
       expect((await linkRows(world)).map((row) => row.property_key)).toEqual(["people", "project"]);
@@ -1364,9 +1223,7 @@ describe("a transcript inherits its project, company and people from its Event (
         ),
       );
 
-      await expect(unlink(world, world.schema.transcriptEvent, world.transcript, world.event)).rejects.toThrow(
-        "Transcript company link kept a source during its release",
-      );
+      await expect(unlinkEvent(world)).rejects.toThrow("Transcript company link kept a source during its release");
 
       expect(await related(world, world.schema.transcriptEvent)).toEqual([world.event]);
       expect((await linkRows(world)).map((row) => row.property_key)).toEqual(["company", "people", "project"]);
@@ -1400,9 +1257,7 @@ describe("a transcript inherits its project, company and people from its Event (
       const world = await buildWorld();
       await removeRelationPair(world.schema.transcriptEvent);
 
-      const trashed = await inTenant(world, () =>
-        cp.softDeleteItem(world.schema.db.events, world.event, ACTING_USER_ID, USER),
-      );
+      const trashed = await trash(world, world.schema.db.events, world.event);
       expect(trashed?.deletedAt).not.toBeNull();
     });
   });
@@ -1432,37 +1287,31 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("returns project, company and people with their link state and the name of their source", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
 
-      const fromEvent = (propertyKey: string) => [
-        { kind: "item", itemId: world.event, databaseKey: "events", title: "client meeting", propertyKey },
-      ];
       expect((await detail(world)).context).toEqual({
-        project: { id: world.web, name: "Web for client", valueKind: "inherited", sources: fromEvent("project") },
+        project: {
+          id: world.web,
+          name: "Web for client",
+          valueKind: "inherited",
+          sources: fromEvent(world, "project"),
+        },
         company: {
           id: world.novak,
           name: "Novak Web s.r.o.",
           valueKind: "inherited",
-          sources: [
-            {
-              kind: "item",
-              itemId: world.web,
-              databaseKey: "projects",
-              title: "Web for client",
-              propertyKey: "company",
-            },
-          ],
+          sources: fromWebProject(world),
         },
         people: [
-          { personId: world.alice, name: "Alice Novak", valueKind: "inherited", sources: fromEvent("people") },
-          { personId: world.bob, name: "Bob Dvorak", valueKind: "inherited", sources: fromEvent("people") },
+          { personId: world.alice, name: "Alice Novak", valueKind: "inherited", sources: fromEvent(world, "people") },
+          { personId: world.bob, name: "Bob Dvorak", valueKind: "inherited", sources: fromEvent(world, "people") },
         ],
       });
     });
 
     it("returns a value the user changed as inheritedBroken and, after the Event is disconnected, every value as own", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
       await unlink(world, world.schema.transcriptPeople, world.transcript, world.alice);
 
       const changed = (await detail(world)).context;
@@ -1471,20 +1320,12 @@ describe("a transcript inherits its project, company and people from its Event (
           personId: world.bob,
           name: "Bob Dvorak",
           valueKind: "inheritedBroken",
-          sources: [
-            {
-              kind: "item",
-              itemId: world.event,
-              databaseKey: "events",
-              title: "client meeting",
-              propertyKey: "people",
-            },
-          ],
+          sources: fromEvent(world, "people"),
         },
       ]);
       expect(changed.project?.valueKind).toBe("inherited");
 
-      await unlink(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await unlinkEvent(world);
       // The disconnect also ended the people link the user had broken, so no value names the Event any more.
       expect((await detail(world)).context).toEqual({
         project: { id: world.web, name: "Web for client", valueKind: "own", sources: [] },
@@ -1500,14 +1341,14 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("leaves out a project, a company and a person that are in the Trash", async () => {
       const world = await buildWorld();
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
-      await unlink(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
+      await unlinkEvent(world);
       for (const [databaseId, itemId] of [
         [world.schema.db.projects, world.web],
         [world.schema.db.companies, world.novak],
         [world.schema.db.people, world.alice],
       ] as const)
-        await inTenant(world, () => cp.softDeleteItem(databaseId, itemId, ACTING_USER_ID, USER));
+        await trash(world, databaseId, itemId);
 
       expect((await detail(world)).context).toEqual({
         project: null,
@@ -1518,13 +1359,13 @@ describe("a transcript inherits its project, company and people from its Event (
 
     it("orders people by name and then by id, with a person stored without a name first and named null", async () => {
       const world = await buildWorld();
-      const twin = await item(world, world.schema.db.people, { name: "Alice Novak" });
-      const nameless = await item(world, world.schema.db.people, { name: "Historical" });
-      // A row without a title is a historical state the item writer no longer produces: raw SQL on the admin pool.
+      const twin = await person(world, "Alice Novak");
+      const nameless = await person(world, "Historical");
+      // The item writer never produces a row without a title: raw SQL on the admin pool.
       const stripped = await admin.query("UPDATE items SET properties = properties - 'name' WHERE id = $1", [nameless]);
       expect(stripped.rowCount).toBe(1);
       for (const person of [twin, nameless]) await link(world, world.schema.eventPeople, world.event, person);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
 
       const people = (await detail(world)).context.people;
       expect(people.map((person) => [person.personId, person.name])).toEqual([
@@ -1537,7 +1378,7 @@ describe("a transcript inherits its project, company and people from its Event (
     it("reads a relation the tenant's Transcripts database does not have yet as no value", async () => {
       const world = await buildWorld();
       await removeRelationPair(world.schema.transcriptCompany);
-      await link(world, world.schema.transcriptEvent, world.transcript, world.event);
+      await linkEvent(world);
 
       const context = (await detail(world)).context;
       expect(context.company).toBeNull();
@@ -1547,7 +1388,6 @@ describe("a transcript inherits its project, company and people from its Event (
 
   it("creates no value while an Event card is only validated, and inherits when the card is confirmed", async () => {
     const world = await buildWorld();
-    // A transcript outside every Event's time window gets a card instead of an edge.
     const transcript = await inTenant(world, () =>
       withTransaction(pool, (client) =>
         createItemWithClient(
@@ -1587,11 +1427,7 @@ describe("a transcript inherits its project, company and people from its Event (
     expect(await linkRows(world, transcript.id)).toEqual([]);
 
     await inTenant(world, () => withTransaction(pool, (client) => confirmProposalWithClient(client, config, cardId)));
-    expect(await values(world, transcript.id)).toEqual({
-      project: [world.web],
-      company: [world.novak],
-      people: sorted([world.alice, world.bob]),
-    });
+    expect(await values(world, transcript.id)).toEqual(inheritedValues(world));
     expect(await linkRows(world, transcript.id)).toEqual(ALL_LINKS_ON);
   });
 
@@ -1604,12 +1440,11 @@ describe("a transcript inherits its project, company and people from its Event (
     expect((await values(b)).people).toEqual(sorted([b.alice, b.bob]));
 
     await unlink(a, a.schema.transcriptEvent, a.transcript, a.event);
-    await inTenant(a, () => cp.softDeleteItem(a.schema.db.events, a.event, ACTING_USER_ID, USER));
+    await trash(a, a.schema.db.events, a.event);
 
     expect(await linkRows(a)).toEqual([]);
     expect(await linkRows(b)).toEqual(ALL_LINKS_ON);
-    expect(await values(b)).toEqual({ project: [b.web], company: [b.novak], people: sorted([b.alice, b.bob]) });
-    // Tenant A sees neither tenant B's transcript nor its links, and cannot end them.
+    expect(await values(b)).toEqual(inheritedValues(b));
     expect(await linkRows({ ...a, transcript: b.transcript })).toEqual([]);
     await expect(
       inTenant(a, () =>

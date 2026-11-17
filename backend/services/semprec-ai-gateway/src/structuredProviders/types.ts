@@ -1,8 +1,4 @@
-/**
- * Issue #215: the registry of providers `POST /internal/complete` may dispatch to. Kept inside
- * `semprec-ai-gateway` — never `packages/ai-gateway` or any other package — so no model-provider
- * dependency exists outside this one process (the issue's acceptance criterion).
- */
+/** Kept inside this service so no model-provider dependency exists outside this process. */
 
 import type { AiGatewayContentBlock } from "@semprec/shared";
 
@@ -39,10 +35,7 @@ export class ProviderCallError extends Error {
 
 export interface StructuredCompletionProvider {
   id: string;
-  /**
-   * Startup requires this to be `true` for `AI_GATEWAY_STRUCTURED_PROVIDER` (#215's "the provider
-   * id must exist in the registry and advertise native JSON-Schema structured output").
-   */
+  /** Startup requires this to be `true` for `AI_GATEWAY_STRUCTURED_PROVIDER`. */
   supportsJsonSchemaStructuredOutput: boolean;
   complete(request: StructuredCompletionRequest): Promise<StructuredCompletionResponse>;
 }

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { ValidationError } from "../errors.js";
 import { normalizeWallClockTime } from "../timezone.js";
 
-/** Returns what `run` threw, so each assertion can check the error contract (status, code, field). */
 function thrownBy(run: () => unknown): unknown {
   try {
     run();

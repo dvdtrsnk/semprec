@@ -1,26 +1,17 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { requireAffectedRows } from "../db/pool.js";
 import { RECIPES_DATABASE_DESCRIPTOR } from "../recipes/recipesModuleManifest.js";
-import type { PropertyOwner, PropertyType } from "../types.js";
 import { RECIPES_MODULE_ID, RECIPE_SOURCE_URL_KEY } from "./recipesModuleKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
-
-interface PropSpec {
-  key: string;
-  type: PropertyType;
-  owner: PropertyOwner;
-  config?: Record<string, unknown>;
-}
+import { createProps, type PropSpec } from "./propSpecs.js";
 
 /**
- * The seven properties of a recipe; the labels of each, of the options and of the presets are in `recipes/i18n`.
- * `sourceUrl` (issue gh-1974) is the page a recipe was taken from; `recipes/recipeSourceUrlHook.ts` checks each value
- * written and `recipes/recipesSourceUrlCutoverMigration.ts` gives it to a tenant seeded before it.
+ * Labels of properties, options and presets are in `recipes/i18n`. `sourceUrl` values are checked by
+ * `recipes/recipeSourceUrlHook.ts`.
  */
 const RECIPE_PROPERTIES: readonly PropSpec[] = [
   { key: "name", type: "title", owner: "user" },
@@ -56,18 +47,15 @@ const RECIPE_PROPERTIES: readonly PropSpec[] = [
 ];
 
 export interface RecipesModuleResult {
-  /** The Projects item "Recipes" that owns the `recipes` database. */
   projectItemId: string;
 }
 
 /**
- * Seeds the Recipes module (issue #1707) into the caller's open transaction: the system project item "Recipes"
- * in the Projects database, the `recipes` system database it owns, the seven properties of `RECIPE_PROPERTIES`,
- * and the default `gallery` view (two columns, 4:3 tiles, the photo as the tile image). The schema is locked
- * once the view exists. Resolves with the id of the project item it created.
+ * Seeds the Recipes module into the caller's transaction: the "Recipes" system project, its `recipes`
+ * database and properties, and the default `gallery` view; the schema is locked after the view.
+ * Resolves with the project item id.
  *
- * Not idempotent on its own: `seedSystem` calls it once for a new tenant and
- * `recipes/recipesModuleCutoverMigration.ts` calls it only for a tenant without a `recipes` database.
+ * Not idempotent: `seedSystem` calls it once per new tenant.
  */
 export async function seedRecipesModuleInTransaction(
   client: PoolClient,
@@ -89,17 +77,7 @@ export async function seedRecipesModuleInTransaction(
     ownerModuleId: RECIPES_MODULE_ID,
     ownerProjectItemId: project.id,
   });
-  for (const spec of RECIPE_PROPERTIES) {
-    // `name` stays null: the label of each property comes from the module catalog.
-    await propertiesStore.createProperty(client, {
-      databaseId: recipes.id,
-      key: spec.key,
-      name: null,
-      type: spec.type,
-      owner: spec.owner,
-      config: spec.config,
-    });
-  }
+  await createProps(client, recipes.id, RECIPE_PROPERTIES);
   await viewsStore.createView(
     client,
     {

@@ -75,17 +75,13 @@ function shareLocalDefinitions(schema: Record<string, unknown>, holder: "filter"
 }
 
 /**
- * The JSON Schema an MCP `tools/list` response advertises for one operation's real input shape
- * (issue #220) — derived from the same `GENERIC_OPERATION_BINDINGS[operation].input` Zod schema
- * `tools/call` validates against, so the two can never drift apart. `io: "input"` reports what a
- * caller must actually supply (a field with a Zod `.default()` is not `required`), rather than
- * `z.toJSONSchema`'s own default of describing the parsed *output* shape.
+ * The JSON Schema MCP `tools/list` advertises for an operation, derived from the same Zod schema `tools/call` validates
+ * against, so the two cannot drift. `io: "input"` describes what a caller must supply (a `.default()` field is not
+ * `required`), not the parsed output.
  *
- * `item.count` carries the filter tree in each entry, so its schema shares local definitions under
- * `properties.items`; it has this one schema and no compact mode
- * (docs/adr/2026-11-10-item-count-schema-shares-local-definitions.md). `database.facets` (issue #1759) carries the
- * filter tree in `filter` and again below its root in `extra.open`, so it gets the treatment that decision asks of
- * a later operation: one schema, with the definitions under `properties.filter`.
+ * Operations carrying the filter tree in nested positions share local definitions under one property: `item.count`
+ * under `properties.items`, `database.facets` (filter in `filter` and again in `extra.open`) under `properties.filter`.
+ * Each has one schema and no compact mode.
  */
 export function operationInputJsonSchema(
   operation: GenericOperationName,

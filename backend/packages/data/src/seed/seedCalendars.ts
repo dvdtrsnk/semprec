@@ -3,7 +3,6 @@ import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registr
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import {
   NEXT_OCCURRENCE_REFRESH_ACTION_ID,
@@ -12,24 +11,25 @@ import {
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { CALENDARS_MODULE_ID } from "./calendarsKeys.js";
 import { seedSubscribedEventsInTransaction } from "./seedSubscribedEvents.js";
+import { createProps, type PropSpec } from "./propSpecs.js";
 
 /** The `kind` options of a calendar; a row without a `kind` is `own`. */
 const CALENDAR_KINDS = ["own", "system", "subscription"] as const;
 
 interface CalendarRow {
-  /** Names the row's label `seed.calendars.<catalogKey>.name` in the calendar module catalog. */
+  /** Label key `seed.calendars.<catalogKey>.name` in the calendar module catalog. */
   catalogKey: string;
   color: string;
   notify: boolean;
   isDefault?: true;
-  /** Set on the system calendars only, as their `systemKey`. */
+  /** System calendars only. */
   systemKey?: string;
 }
 
-/** The default and system calendars every tenant starts with (issue #1600); `Personal` is the default. */
+/** `Personal` is the default. */
 const CALENDAR_ROWS: readonly CalendarRow[] = [
   { catalogKey: "personal", color: "#5856D6", notify: true, isDefault: true },
   { catalogKey: "work", color: "#007AFF", notify: true },
@@ -40,14 +40,6 @@ const CALENDAR_ROWS: readonly CalendarRow[] = [
   { catalogKey: "sleep", color: "#5856D6", notify: false, systemKey: "sleep" },
   { catalogKey: "holidaysCz", color: "#34C759", notify: false, systemKey: "holidaysCz" },
 ];
-
-interface PropSpec {
-  key: string;
-  type: PropertyType;
-  owner: PropertyOwner;
-  ownerProcess?: string;
-  config?: Record<string, unknown>;
-}
 
 const CALENDAR_PROPERTIES: readonly PropSpec[] = [
   { key: "name", type: "title", owner: "user" },
@@ -63,7 +55,7 @@ const CALENDAR_PROPERTIES: readonly PropSpec[] = [
     config: { options: CALENDAR_KINDS.map((key) => ({ key })) },
   },
   { key: "systemKey", type: "text", owner: "system", ownerProcess: CALENDAR_MODULE_ID },
-  // The feed address of a subscription calendar (issue gh-1925); judged by `calendar/calendarSubscriptionUrlTransform.ts`.
+  // Validated by `calendar/calendarSubscriptionUrlTransform.ts`.
   { key: "subscriptionUrl", type: "url", owner: "user" },
 ];
 
@@ -78,13 +70,9 @@ async function insertUserRelationProperty(client: PoolClient, databaseId: string
 }
 
 /**
- * The `Calendars.events` / `Events.calendar` pair: one calendar, many Events, so `Calendars.events` is
- * property A of a `one_to_many` definition and each Event has at most one calendar. Events is
- * `schema_locked` and `propertiesStore` refuses to change a locked schema, so both properties, the
- * relation definition and the property configs are written with raw SQL in the three steps
- * `transcription/transcriptsCatalogCutoverMigration.ts` uses, under an exclusive `properties` lock.
- * The fresh seed and the cutover both reach it through `seedCalendarsInTransaction`, so the
- * definitions are identical. Returns the relation definition id.
+ * `Calendars.events` (property A of a `one_to_many`) / `Events.calendar`. Events is `schema_locked` and
+ * `propertiesStore` refuses locked schemas, so the properties, definition and configs are written with
+ * raw SQL under an exclusive `properties` lock. Returns the relation definition id.
  */
 async function createCalendarEventsRelation(
   client: PoolClient,
@@ -122,18 +110,12 @@ export interface CalendarsSeedResult {
 }
 
 /**
- * Seeds the calendar module's first database (issue #1600) into the caller's open transaction: a system
- * project item for the module, the `calendars` system database with its properties (`kind` and
- * `systemKey` system-owned by the calendar module), the `Calendars.events` / `Events.calendar` relation,
- * and the eight default and system calendars. The project's and the rows' names come from the calendar
- * module catalog in the tenant user's language (`cs` while the tenant has no user), and the daily
- * `calendar.refreshNextOccurrence` heartbeat of the module's system project (issue gh-1905; a populated tenant
- * that already has the calendars database gets it from `calendar/nextOccurrenceDateCutoverMigration.ts`). The schema
- * is locked once complete. The `subscribedEvents` system database (issue gh-1962) is created last, after the
- * calendars, by `seedSubscribedEventsInTransaction`.
+ * Seeds the calendar module into the caller's transaction: a system project, the `calendars` database
+ * (`kind` and `systemKey` system-owned), the events relation, the eight default calendars, and the daily
+ * `calendar.refreshNextOccurrence` heartbeat. Names come from the module catalog in the tenant user's
+ * language (`cs` without a user). The schema is locked once complete; `subscribedEvents` is created last.
  *
- * Not idempotent on its own: `seedSystem` calls it once for a new tenant and
- * `calendar/calendarsCutoverMigration.ts` calls it only for a tenant without a calendars database.
+ * Not idempotent: `seedSystem` calls it once per new tenant.
  */
 export async function seedCalendarsInTransaction(
   client: PoolClient,
@@ -154,18 +136,7 @@ export async function seedCalendarsInTransaction(
     ownerModuleId: CALENDARS_MODULE_ID,
     ownerProjectItemId: project.id,
   });
-  for (const spec of CALENDAR_PROPERTIES) {
-    // `name` is null like every built-in property of a system database; labels come from the catalog.
-    await propertiesStore.createProperty(client, {
-      databaseId: calendars.id,
-      key: spec.key,
-      name: null,
-      type: spec.type,
-      owner: spec.owner,
-      ownerProcess: spec.ownerProcess,
-      config: spec.config,
-    });
-  }
+  await createProps(client, calendars.id, CALENDAR_PROPERTIES);
   const relationDefinitionId = await createCalendarEventsRelation(client, calendars.id, eventsDatabaseId);
   requireAffectedRows(
     await client.query("UPDATE databases SET schema_locked = true WHERE id = $1", [calendars.id]),

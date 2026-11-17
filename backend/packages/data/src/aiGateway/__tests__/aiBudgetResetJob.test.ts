@@ -17,11 +17,7 @@ import { createCoreTaskList } from "../../worker.js";
 import { recordTokenGatewayCall } from "../aiGatewayCallsStore.js";
 import { aiBudgetResetJobKey, enqueueAiBudgetReset, handleAiBudgetResetTask } from "../aiBudgetResetJob.js";
 
-/**
- * Issue gh-2024: the one-shot `aiBudgetReset` job. Every tenant-side call runs on a `semprec_data` pool, so
- * row-level security applies. The job runs through the production `createCoreTaskList` handler drained with
- * `runOnce`; the queue is read through graphile-worker's public `jobs` view.
- */
+/** Tenant-side calls run on a `semprec_data` pool so RLS applies; the job runs through `createCoreTaskList`. */
 
 interface QueuedJob {
   key: string | null;
@@ -40,7 +36,7 @@ let tenantA: string;
 let tenantB: string;
 let announced: Announcement[];
 
-/** 23 November 2026, 00:00 in Europe/Prague (UTC+1): an arbitrary window end in the future of the case. */
+/** 00:00 Europe/Prague: an arbitrary future window end. */
 const RESETS_AT = new Date("2026-11-22T23:00:00.000Z");
 
 async function queuedJobs(): Promise<QueuedJob[]> {
@@ -66,7 +62,6 @@ function recordAnnouncements(): void {
   });
 }
 
-/** Spend of `costUsd` for `tenantId`, written by the gateway's accounting writer in the tenant's scope. */
 async function recordSpend(tenantId: string, costUsd: number): Promise<void> {
   await runInTenant(tenantId, () =>
     recordTokenGatewayCall(runtime, {
@@ -191,8 +186,7 @@ describe("the aiBudgetReset task", () => {
     await recordSpend(tenantA, 1);
     expect(await statusProblemIds(tenantA)).toEqual([expect.stringMatching(/^aiBudgetExhausted:/)]);
 
-    // Raw SQL: the clock of the database cannot be moved, so the spend of the exhausted day is moved two days back,
-    // which is where it sits once the window has reset. The monthly cap is null, so the month does not matter.
+    // Raw SQL: the DB clock cannot move, so the exhausted day's spend is moved two days back instead.
     await admin.query("UPDATE ai_gateway_calls SET at = at - interval '2 days' WHERE tenant_id = $1", [tenantA]);
     await runDueJob(tenantA);
 

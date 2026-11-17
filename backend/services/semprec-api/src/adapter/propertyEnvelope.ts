@@ -1,9 +1,8 @@
 import type { PropertyRow, ResolvedProperty } from "@semprec/data";
 
 /**
- * The wire shape every property read/write returns (issue #240) — the raw row, with `name`
- * (and, for select/multi_select, each option's `label`) replaced by its localized-metadata
- * resolution (issue #35's `resolveProperty`), same reasoning as `databaseEnvelope.ts`.
+ * `name` (and each select option's `label`) is replaced by its localized-metadata resolution, as in
+ * `databaseEnvelope.ts`.
  */
 export interface PropertyEnvelope {
   id: string;

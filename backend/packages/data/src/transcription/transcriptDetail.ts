@@ -46,16 +46,12 @@ export async function labelTranscriptSpeakers(speakers: TranscriptSpeaker[], loc
   }));
 }
 
-/**
- * The link state of one context value: the `valueKind` and `sources` of the property's value link as
- * `getValueLinksForItems` returns them, or `own` with no source for a property without a link.
- */
+/** `own` with no source for a property without a value link. */
 interface TranscriptContextLinkState {
   valueKind: "own" | ValueLinkEntry["valueKind"];
   sources: ValueLinkSource[];
 }
 
-/** A live item a transcript's context relation points to, with its name and the property's link state. */
 interface TranscriptContextValue extends TranscriptContextLinkState {
   id: string;
   name: string | null;
@@ -64,10 +60,8 @@ interface TranscriptContextValue extends TranscriptContextLinkState {
 const contextItemSchema = z.object({ name: z.string().nullish() });
 
 /**
- * The transcript's project, company and people (issue #1697): the live items its `project`,
- * `company` and `people` relations point to, each with the link state of its property. `project` and
- * `company` are `null` without a live item; `people` is ordered by name, then by id. A relation the
- * tenant's Transcripts database does not have reads as no value.
+ * `project` and `company` are `null` without a live item; `people` is ordered by name, then id. A
+ * relation the tenant's Transcripts database lacks reads as no value.
  */
 async function readTranscriptContext(client: PoolClient, transcriptsDatabaseId: string, transcriptId: string) {
   const links = (await getValueLinksForItems(client, [transcriptId])).get(transcriptId) ?? {};
@@ -187,19 +181,18 @@ export async function readTranscriptDetail(client: PoolClient, transcriptId: str
       language: z.string().nullish(),
     })
     .parse(transcript.computed);
-  // Issue #1695: rendered from the stored notes and the current speaker edges on every read.
+  // Rendered from the stored notes and the current speaker edges on every read.
   const storedNotes = parseStoredMeetingNotes(transcript.computed[TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY]);
   const meetingNotes = storedNotes
     ? {
         ...(await renderMeetingNotes(storedNotes, transcriptSpeakers, locale)),
-        // Issue #1767: each action item also carries its state, its live task and whether it is the reader's own.
         actionItems: await listTranscriptActionItems(client, transcript.id, locale),
       }
     : null;
   const nameFacts = { name: properties.name, eventName: event?.name };
   return {
     id: transcript.id,
-    // Issue #1830: the user's name, else the live Event's name, else "Recording D. M. HH:MM".
+    // The user's name, else the live Event's name, else "Recording D. M. HH:MM".
     displayName: await resolveTranscriptDisplayName(
       { ...nameFacts, date: properties.date },
       await getSystemTimezone(client),

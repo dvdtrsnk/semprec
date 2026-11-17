@@ -12,28 +12,20 @@ import type { ApprovalRequest } from "./approvalRequestsStore.js";
 
 export interface CreateModuleToolApprovalRequestInput {
   agentRunId: string;
-  /** The tool's manifest name. */
   toolName: string;
   riskClass: RiskClass;
-  /** The arguments the tool's schema accepted. */
   args: Record<string, unknown>;
-  /** The snapshot hash read at request time (`ResolvedModuleAgentTool.snapshotOf`); `null` for a tool that declares no snapshot. */
+  /** `null` for a tool that declares no snapshot. */
   snapshotSha256: string | null;
-  /** The model-runtime tool call that produced the request; a repeated call returns the existing request. */
+  /** A repeated call returns the existing request. */
   toolCallId: string | null;
 }
 
 /**
- * Creates the `pending` approval request of a deferred module agent tool call (issue #1791) and,
- * in the same transaction, its `approval_pending` notification linked by source (issue #1787), so a
- * rollback drops both. The request records the localisable description (issue #1683), the tool call
- * (issue #1618) and the snapshot hash, and raises the requesting run's thread in the activity order
- * (issue #1728, `insertPendingApprovalRequest`). The description is the generic `approval.moduleTool`, or
- * for the heartbeat write tools their own template (issue #1846, `buildHeartbeatToolApprovalDescription`),
- * which refuses an automation or a project the run cannot reach. The new request is announced after the commit
- * (`createPendingApprovalRequestAndPublish`); a repeated `(agentRunId, toolCallId)` returns the
- * existing request and announces nothing. The notification goes to the actor of the requesting run,
- * the only user who can decide the request (`decideApprovalRequest`).
+ * The request and its `approval_pending` notification share one transaction. The description is the generic
+ * `approval.moduleTool`, except heartbeat write tools use their own template, which refuses an automation or project
+ * the run cannot reach. Announced after commit; a repeated `(agentRunId, toolCallId)` returns the existing request
+ * silently. The notification goes to the run's actor, the only user who can decide it.
  */
 export async function createModuleToolApprovalRequest(
   pool: Pool,

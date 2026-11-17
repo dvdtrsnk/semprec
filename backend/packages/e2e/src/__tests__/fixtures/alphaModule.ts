@@ -4,11 +4,8 @@ import { createItemWithClient } from "@semprec/data";
 import { enqueueJob } from "@semprec/queue";
 
 /**
- * One half of the e2e cross-module scenario (module-contract issue #114): declares its own
- * database, a task, a data migration, and a heartbeat rule kind, then hands off to the "beta"
- * module's task by name only (never by importing beta's fixture file) once its own work is
- * done — exactly the boundary `@semprec/module-boundaries` (issue #113) enforces for real
- * modules.
+ * One half of the e2e cross-module scenario: declares a database, a task, a data migration and a
+ * heartbeat rule kind, then hands off to the beta module's task by name only, never by import.
  */
 export const manifest: ModuleManifest = {
   id: "e2e-alpha",
@@ -31,9 +28,6 @@ export const manifest: ModuleManifest = {
     },
   ],
   migrations: ["0001_e2e_alpha_marker.sql"],
-  dataMigrations: [
-    { databaseKey: "e2eAlphaItems", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "convertAlphaItem" },
-  ],
 };
 
 export interface IngestPayload {
@@ -79,8 +73,4 @@ export const alphaTickRuleSchema = {
 
 export function computeAlphaTickNextFireAt(_rule: unknown, _timezone: string, after: Date): Date {
   return new Date(after.getTime() + 60_000);
-}
-
-export function convertAlphaItem(properties: Record<string, unknown>): Record<string, unknown> {
-  return { ...properties, migrated: true };
 }

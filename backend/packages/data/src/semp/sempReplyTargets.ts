@@ -10,24 +10,20 @@ import {
 } from "./sempReplyToolCalls.js";
 
 /**
- * What the tool calls of a Semp turn point at, read once when the turn ends (issues #1860 and #1885): the items
- * they name, the databases those items and the calls are in, and the relation properties they link through. The
- * summaries store a name or a database fact only from here, never from a call's text.
+ * What a turn's tool calls point at, read once when the turn ends. Summaries take names and database facts only
+ * from here, never from a call's text.
  */
 export interface SempReplyTargets {
   /** The items by id, trashed ones included; `name` is the item's title (else `name`) property, `null` when neither is text. */
   items: ReadonlyMap<string, { databaseId: string; name: string | null }>;
   /** The databases by id: the module that owns it (`null` for none) and whether its content is marked sensitive. */
   databases: ReadonlyMap<string, { moduleId: string | null; sensitive: boolean }>;
-  /** The relation properties by id. */
   properties: ReadonlyMap<string, { key: string }>;
 }
 
 /**
- * The ids a generic operation's call names: the items of its `itemId`, `callerItemId`, result and (for a create)
- * `createdItemId`, the databases of its `databaseId` and result, and the relation property of its
- * `relationPropertyId`. The model wrote the arguments, so only a uuid is kept and the lookup (in the caller's
- * tenant scope) decides whether it names anything. An MCP tool and a tool without identity name nothing.
+ * The model wrote the arguments, so only uuids are kept and the tenant-scoped lookup decides whether they name
+ * anything. MCP tools and tools without identity name nothing.
  */
 export function sempToolCallTargetIds(call: SempToolCall): {
   itemIds: string[];
@@ -50,11 +46,7 @@ export function sempToolCallTargetIds(call: SempToolCall): {
   };
 }
 
-/**
- * Resolves `calls` to their targets in three queries, however many calls there are. Everything is read
- * under the caller's tenant scope, so an id of another tenant is simply not found. The databases of the found
- * items are read with the databases the calls name.
- */
+/** Three queries however many calls, all under the caller's tenant scope, so foreign ids are simply not found. */
 export async function loadSempReplyTargets(
   client: PoolClient,
   calls: readonly SempToolCall[],

@@ -15,9 +15,8 @@ let adminPool: Pool;
 let dataPool: Pool;
 
 /**
- * Issue #1698: `seedSystem` puts the `Files.events` property id into the transcription trigger's config.
- * `seedTenDatabasesInTransaction` always creates that property, so the missing-property refusal is
- * reached by making the one lookup of the key `events` answer "not found".
+ * `seedTenDatabasesInTransaction` always creates `Files.events`, so the missing-property refusal is
+ * reached by making the lookup of the key `events` answer "not found".
  */
 describe("seedSystem without a Files.events property (issue #1698)", () => {
   let realGetPropertyByKey: typeof propertiesStore.getPropertyByKey;

@@ -170,10 +170,9 @@ describe("notificationsStore (issue #152)", () => {
     await pool?.end();
   });
 
-  /** The tenant each test user is bound to: a notification may only name its own tenant's user (issue #1066). */
+  /** A notification may only name its own tenant's user. */
   const tenantOfUser = new Map<string, string>();
 
-  /** The first user is tenant zero's; each later one gets a tenant of its own, as a tenant has one user. */
   async function createTestUser(locale?: "en" | "cs"): Promise<string> {
     const passwordHash = await hashPassword("s3cret-password");
     const tenantId = tenantOfUser.size === 0 ? getTenantZeroId() : await createTestTenant(pool);

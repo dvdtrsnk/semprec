@@ -19,7 +19,7 @@ import {
 import { describeUpdateSteps, type ProposalChange } from "../proposalChanges.js";
 import type { ProposalStep } from "../proposalEnvelope.js";
 
-/** Issue #2028: what the active update steps of a page of cards change, labelled in the reader's locale. */
+/** What the active update steps of a page of cards change, labelled in the reader's locale. */
 let adminPool: Pool;
 
 async function databaseIdFor(moduleId: string): Promise<string> {
@@ -53,7 +53,6 @@ function describeCards(cards: Record<string, ProposalStep[]>, locale = "en"): Pr
   );
 }
 
-/** The changes of the one card `card`; fails when the card was not described. */
 function changesOf(described: Map<string, ProposalChange[]>, card = "card"): ProposalChange[] {
   const changes = described.get(card);
   if (!changes) throw new Error(`Card ${card} was not described`);

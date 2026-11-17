@@ -78,7 +78,6 @@ describe("transcriptSegment message refs (issue #1834)", () => {
     await admin.end();
   });
 
-  /** What one tenant's tests build on: its databases and the writes a transcript fixture needs. */
   async function setup(tenantId: string) {
     return runInTenant(tenantId, async () => {
       const cp = createChokePoint(runtime);
@@ -91,7 +90,6 @@ describe("transcriptSegment message refs (issue #1834)", () => {
       const properties = await cp.listProperties(db("transcripts"));
       const speakersProperty = properties.find((entry) => entry.key === "speakers");
       if (!speakersProperty) throw new Error("Missing Transcripts.speakers");
-      /** A transcript as the pipeline leaves it. */
       const transcript = (input: { segments?: typeof SEGMENTS; name?: string; date?: string | null } = {}) =>
         withTransaction(runtime, async (client) => {
           const date = input.date === undefined ? RECORDED_AT : input.date;
@@ -139,7 +137,7 @@ describe("transcriptSegment message refs (issue #1834)", () => {
     );
     return text;
   };
-  /** The statements `work` sends on its client, counted per call, with the value it returns. */
+  /** Counts the statements `work` sends on its client. */
   const countStatements = async <T>(tenantId: string, work: (client: PoolClient) => Promise<T>) => {
     let statements = 0;
     const value = await runInTenant(tenantId, () =>
@@ -529,7 +527,6 @@ describe("transcriptSegment message refs (issue #1834)", () => {
       }
       const ref = segmentRef(id, 312, 390);
       expect(await label(tenant, ref)).toBe("Weekly sync 5:12-6:30");
-      // The user's own name still comes first.
       expect(await label(tenant, segmentRef(named, 312, 390))).toBe("Own name 5:12-6:30");
 
       await runInTenant(tenant, () => f.cp.softDeleteItem(f.db("transcripts"), id));

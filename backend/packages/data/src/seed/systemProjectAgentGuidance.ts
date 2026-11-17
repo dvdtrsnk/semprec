@@ -5,12 +5,10 @@ import { MCP_SERVERS_MODULE_ID } from "./mcpModuleKeys.js";
 import { RECIPES_MODULE_ID } from "./recipesModuleKeys.js";
 
 /**
- * The agent guidance of each system project in its legacy `Purpose:` / `Allowed:` / `Not allowed:` /
- * `General instructions:` form (issue #1449). The key is the owner module id of the system database the
- * project owns, a stable identifier that survives renaming the project.
- *
- * The seeds write each text as the Projects `agents` property value, and account creation seeds the same
- * text into `project_agent_guidance` through `seedSystemProjectAgentGuidance`.
+ * Agent guidance of each system project in the `Purpose:` / `Allowed:` / `Not allowed:` /
+ * `General instructions:` form, keyed by the owner module id of the project's system database (stable
+ * across renames). Seeded as the Projects `agents` value and into `project_agent_guidance` at account
+ * creation.
  */
 export const SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS = {
   [SYSTEM_SETTINGS_MODULE_ID]:

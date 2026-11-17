@@ -1,33 +1,28 @@
-// Owns the `idempotent_responses` table (issue gh-1894): the first response of a card action per Idempotency-Key.
-// Constrained by: docs/adr/2026-11-13-card-actions-replay-the-stored-response-of-an-idempotency-key.md
+// Stores the first response of a card action per Idempotency-Key.
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { canonicalizeJson, type TenantScope } from "@semprec/shared";
 import { requireManagedTransaction, requireSingleRow } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 
-/** How long a stored response answers a repeat of its key. */
 export const IDEMPOTENT_RESPONSE_TTL_HOURS = 24;
 
-/** The most expired rows one write or one purge deletes, so no request pays for a backlog. */
+/** Bounded so no request pays for a backlog. */
 const EXPIRED_DELETE_BATCH_SIZE = 100;
 
-/** The longest `Idempotency-Key` a card route takes; a longer one is refused instead of stored. */
 export const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 
-/** What one call of `runIdempotent` is about: the caller, the key, the route template and the request. */
 export interface IdempotentRequest {
-  /** The scope the request runs in, as `currentTenantScope()` returns it; the key is held per tenant, so a missing or system scope is refused. */
+  /** Keys are held per tenant, so a missing or system scope is refused. */
   tenantScope: TenantScope | undefined;
   userId: string;
   key: string;
-  /** The route template, for example `PATCH /api/proposals/:id/values`, never the resolved path. */
+  /** The route template, never the resolved path. */
   route: string;
-  /** `hashIdempotentRequest` of everything the request carries that changes what it does, the resolved path parameters included. */
+  /** Must include the resolved path parameters. */
   requestHash: string;
 }
 
-/** A response the store keeps: the status and the JSON body of what the action answered. */
 export interface IdempotentResponse {
   status: number;
   body: object;
@@ -39,15 +34,10 @@ interface StoredResponseRow {
   body: unknown;
 }
 
-/** The hash `IdempotentRequest.requestHash` takes: SHA-256, hex, of the canonical JSON of `request`. */
 export function hashIdempotentRequest(request: unknown): string {
   return createHash("sha256").update(canonicalizeJson(request)).digest("hex");
 }
 
-/**
- * The `Idempotency-Key` of a request, or `undefined` when it carries none or an empty one. A key that is not a single
- * header value or is longer than `MAX_IDEMPOTENCY_KEY_LENGTH` is a `ValidationError` on the header.
- */
 export function readIdempotencyKeyHeader(
   headers: Record<string, string | string[] | undefined> | undefined,
 ): string | undefined {
@@ -62,10 +52,7 @@ export function readIdempotencyKeyHeader(
   return value;
 }
 
-/**
- * Deletes at most one batch of the tenant's expired rows and answers how many it deleted; none is a normal outcome.
- * Rows another transaction is deleting are skipped. Runs in the caller's transaction and tenant scope.
- */
+/** Rows another transaction is deleting are skipped. */
 export async function deleteExpiredIdempotentResponses(client: PoolClient): Promise<number> {
   const result = await client.query(
     `DELETE FROM idempotent_responses
@@ -82,18 +69,12 @@ export async function deleteExpiredIdempotentResponses(client: PoolClient): Prom
 }
 
 /**
- * Runs `action` once per (tenant, user, key, route) within the stored response's 24 hours and answers what it
- * answered the first time to every repeat. Must run in a managed transaction (`withTransaction`) of the caller's
- * tenant; `action` runs in that transaction too, on the same `client`.
+ * Must run in a managed transaction of the caller's tenant; `action` runs on the same `client`.
  *
- * The transaction first takes a transaction-scoped advisory lock on the (tenant, user, key, route) tuple, so a
- * concurrent call with the same tuple waits for the first one to commit or roll back and then reads its row. Under
- * the lock, a live row of the same `requestHash` is answered as stored and `action` is not called; a live row of
- * another hash is a `ValidationError` (`validation_failed`) and nothing runs; with no live row `action` runs and,
- * when it answers a status below 400, its response is stored and returned as the database holds it. A response of
- * 400 or above is returned and not stored. An error `action` throws propagates, and the caller's transaction rolls
- * back with nothing stored, which leaves the key free. An expired row is replaced by the new response. Each stored response also deletes one batch of the
- * tenant's expired rows (`deleteExpiredIdempotentResponses`).
+ * A transaction-scoped advisory lock on (tenant, user, key, route) makes a concurrent repeat wait for the first to
+ * finish and then read its row. A live row with the same `requestHash` is replayed without calling `action`; another
+ * hash is a `ValidationError`. Only responses below 400 are stored. A thrown error rolls back with nothing stored,
+ * leaving the key free. Each stored response also sweeps one batch of expired rows.
  */
 export async function runIdempotent(
   client: PoolClient,

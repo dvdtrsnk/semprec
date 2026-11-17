@@ -6,11 +6,8 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { findTenancyViolations, verifyTenancy, type TenancyViolation } from "../db/tenancyInvariants.js";
 
 /**
- * Issue #1085: the deploy-time tenancy verification. Each break runs inside a transaction that is
- * rolled back, so the catalog is unchanged for the next test. Every SQL identifier interpolated
- * below is a fixed name, a random hex probe name generated here, or `partitionName`, which is
- * `items_p_` followed by the server-generated UUID of a database created here with its hyphens
- * removed (hex only); none is input. DDL takes no bind parameters.
+ * The deploy-time tenancy verification. Each break runs in a rolled-back transaction. Interpolated identifiers
+ * are fixed names, random hex probe names, or `partitionName` (hex only); DDL takes no bind parameters.
  */
 let pool: Pool;
 let partitionName: string;
@@ -19,7 +16,6 @@ function probeName(prefix: string): string {
   return `${prefix}_${randomBytes(4).toString("hex")}`;
 }
 
-/** Runs `statements` in a transaction, returns the violations seen inside it, and rolls it back. */
 async function violationsAfter(statements: string[]): Promise<TenancyViolation[]> {
   const client: PoolClient = await pool.connect();
   try {
@@ -263,7 +259,7 @@ describe("findTenancyViolations", () => {
           `ALTER TABLE ${ownedBySide} OWNER TO semprec_side`,
         ]),
       ).toEqual([
-        // semprec_data inherits semprec_side (0040_least_privilege_roles.sql), so it is flagged for both owners.
+        // semprec_data inherits semprec_side (granted by the schema), so it is flagged for both owners.
         {
           invariant: "runtimeRole",
           object: "semprec_data",
@@ -325,7 +321,6 @@ describe("findTenancyViolations", () => {
     });
 
     describe("definerFunction: the shape of the search_path", () => {
-      /** A definer function that is revoked from PUBLIC, so only its `search_path` can be reported. */
       function definerFunction(name: string, searchPath: string): string[] {
         return [
           `CREATE FUNCTION ${name}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = ${searchPath} AS 'SELECT 1'`,
@@ -542,8 +537,7 @@ describe("verifyTenancy", () => {
   });
 
   it("returns 1 for create_items_partition(uuid) with the search_path of finding R2-DB-1", async () => {
-    // verifyTenancy reads through its own pool connections, so the break must be committed and is
-    // restored below; integration files run one at a time.
+    // verifyTenancy reads through its own connections, so the break is committed and restored below; integration files run serially.
     await verifyPool.query("ALTER FUNCTION create_items_partition(uuid) SET search_path = pg_catalog, public");
     try {
       const output = recordingOutput();
@@ -564,8 +558,7 @@ describe("verifyTenancy", () => {
   });
 
   it("returns 1 and writes one error line per violation", async () => {
-    // verifyTenancy reads through its own pool connections, so the break must be committed; the
-    // probe tables are dropped again below, and integration files run one at a time.
+    // verifyTenancy reads through its own connections, so the break is committed and dropped below; integration files run serially.
     const first = probeName("tenancy_invariants_verify_a");
     const second = probeName("tenancy_invariants_verify_b");
     const [a, b] = [first, second].sort();

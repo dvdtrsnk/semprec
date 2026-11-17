@@ -1,9 +1,5 @@
-// Expands recurring Events into their occurrences for a date range (issue gh-1877): a virtual occurrence for a date
-// nobody has touched, the item for a date that was changed or linked, and nothing for a cancelled date. The timeline
-// source uses it, and so will every other reader of occurrences.
-// Constrained by: docs/adr/2026-11-13-an-event-occurrence-is-an-events-item-named-by-its-series-event-and-date.md,
-// docs/adr/2026-11-10-calendar-timeline-merges-a-list-of-sources.md,
-// docs/adr/2026-10-25-task-and-event-recurrence-model.md
+// Expands recurring Events into occurrences for a range: virtual for an untouched date, the item for a changed or
+// linked date, nothing for a cancelled one.
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { occurrenceDatesInRange } from "../tasks/nextDueDate.js";
@@ -13,17 +9,14 @@ import { readEventSeries, type EventSeriesDefinition } from "./eventSeries.js";
 import { effectiveTo, readEventTranscripts, toTimelineItems, type StoredRow } from "./timelineRead.js";
 import type { CalendarEventOccurrence, CalendarTimelineContext, CalendarTimelineItem } from "./timelineSources.js";
 
-/** The most occurrences of one series that one expansion returns, the earliest first. */
+/** Earliest first. */
 export const MAX_OCCURRENCES_PER_SERIES = 100;
 
-/** The range an expansion covers and the zone the entries' end times are read in. */
 export type EventOccurrenceRange = Pick<CalendarTimelineContext, "from" | "to" | "timezone">;
 
 /**
- * The live recurring series among the Events of `eventsDatabaseId` whose first day is on or before `to`, in one
- * statement. A row is a candidate when its `recurrence` is an object and it is not an occurrence item; whether the
- * stored rule is readable is judged by `readEventSeries` in `expandEventOccurrences`. Stored days are compared as
- * text, never cast, so an unreadable value cannot fail the statement.
+ * Candidates have an object `recurrence` and are not occurrence items; `readEventSeries` judges the rule later.
+ * Stored days are compared as text, never cast, so an unreadable value cannot fail the statement.
  */
 export async function readLiveEventSeries(
   client: PoolClient,
@@ -31,7 +24,7 @@ export async function readLiveEventSeries(
   to: string,
 ): Promise<StoredRow[]> {
   const { rows } = await client.query<StoredRow>(
-    `SELECT id, properties, updated_at FROM items
+    `SELECT id, properties, updated_at, version FROM items
       WHERE database_id = $1 AND deleted_at IS NULL
         AND jsonb_typeof(properties->'recurrence') = 'object'
         AND properties->'seriesId' IS NULL
@@ -42,7 +35,7 @@ export async function readLiveEventSeries(
   return rows;
 }
 
-/** The days an Event spans after its first: the distance from its `date` to its `endDate`, 0 without one. */
+/** 0 without an `endDate`. */
 function lengthInDays(item: CalendarTimelineItem): number {
   if (item.endDate === null) return 0;
   const days = DateTime.fromISO(item.endDate, { zone: "utc" }).diff(
@@ -58,10 +51,8 @@ function dayBefore(date: string, days: number): string {
   return day;
 }
 
-/** `<seriesId> <date>`: the key under which the occurrence items of a series are looked up. */
 const occurrenceKey = (seriesId: string, occurrenceDate: string): string => `${seriesId} ${occurrenceDate}`;
 
-/** A live occurrence item as a timeline item, with the occurrence it stands for. */
 interface RealOccurrence {
   item: CalendarTimelineItem;
   seriesId: string;
@@ -69,9 +60,8 @@ interface RealOccurrence {
 }
 
 interface OccurrenceItems {
-  /** The `occurrenceKey` of every occurrence item found, live or in the Trash, wherever its own days are. */
+  /** Live or trashed, wherever its own days are. */
   taken: Set<string>;
-  /** The live items whose own days overlap the range and that `toTimelineItems` can read. */
   inRange: RealOccurrence[];
 }
 
@@ -83,13 +73,9 @@ interface OccurrenceRow extends StoredRow {
 }
 
 /**
- * The occurrence items of `seriesIds` that matter for the range `range.from`..`range.to`, read with one statement
- * for the items, the batched reads of `toTimelineItems` for the edges of the ones that are entries and
- * `readEventTranscripts` for their transcripts, as the core Events source reads them: the items,
- * trashed ones included, whose `occurrenceDate` is between `firstDate` and `lastDate` (they decide which rule dates
- * are not virtual), and the live items whose own days overlap the range (they are the real entries, also an item
- * moved here from another rule date). Stored days are compared as text. A live item that `toTimelineItems` leaves out
- * for an invalid stored value gives no entry, and its rule date is not shown as virtual either.
+ * Reads items (trashed included) whose `occurrenceDate` is in `firstDate`..`lastDate`, which decide which rule
+ * dates are not virtual, and live items whose own days overlap the range, which are the real entries. A live item
+ * `toTimelineItems` drops for an invalid value gives no entry, and its rule date is not shown as virtual either.
  */
 async function readOccurrenceItems(
   client: PoolClient,
@@ -99,7 +85,7 @@ async function readOccurrenceItems(
   range: EventOccurrenceRange,
 ): Promise<OccurrenceItems> {
   const { rows } = await client.query<OccurrenceRow>(
-    `SELECT i.id, i.properties, i.updated_at, i.deleted_at,
+    `SELECT i.id, i.properties, i.updated_at, i.version, i.deleted_at,
             i.properties->>'seriesId' AS series_id, i.properties->>'occurrenceDate' AS occurrence_date,
             (left(i.properties->>'date', 10) COLLATE "C" <= $6
              AND coalesce(left(i.properties->>'endDate', 10), left(i.properties->>'date', 10)) COLLATE "C" >= $5)
@@ -132,26 +118,15 @@ async function readOccurrenceItems(
 }
 
 /**
- * The occurrences of the recurring Events `series` (rows of the Events database `eventsDatabaseId`, as
- * `readLiveEventSeries` returns them) that fall in `[range.from, range.to]`, as entries of the Event timeline.
+ * - A multi-day series overlaps the range from as many days before `range.from` as it is long.
+ * - A rule date without an item gives a virtual entry (`overridden: false`, `readOnly: true`, id
+ *   `<seriesId>@<date>`); a trashed item cancels its date.
+ * - A live occurrence item is an entry when its own days overlap the range, whichever rule date it stands for; its
+ *   rule date is never also virtual.
+ * - Dates are shifted as dates and wall-clock times, never instants, so DST does not move an occurrence.
+ * - At most `MAX_OCCURRENCES_PER_SERIES` per series; the caller bounds the range.
  *
- * - A row that is not a series (`readEventSeries`) or whose stored schedule is invalid (`toTimelineItems` logs it) gives
- *   no occurrence.
- * - The rule dates are those on which the series' rule occurs (`occurrenceDatesInRange`, the day matching of
- *   `eventRecurrenceOccursOn`). A series that spans several days has an occurrence in the range when its days overlap
- *   it, so the search starts as many days before `range.from` as the series is long.
- * - A rule date with no occurrence item gives a virtual entry: `overridden: false`, `readOnly: true`, the id
- *   `<seriesId>@<date>`, the series' details, `date` and `endDate` of the occurrence (the `endDate` keeps the series'
- *   length), and no transcript. A rule date whose occurrence item is in the Trash is cancelled and gives none.
- * - A live occurrence item is an entry (`overridden: true`) when its own days overlap the range, whichever rule
- *   date it stands for: an item moved out of the range is not an entry of that range, and one moved into it is. Its
- *   rule date is never also virtual. It carries the transcript linked to it, as a stored Event does.
- * - Dates are compared and shifted as dates and wall-clock times, never as instants, so a daylight-saving change does
- *   not move an occurrence.
- * - One series gives at most `MAX_OCCURRENCES_PER_SERIES` entries, the earliest first. The caller bounds the range, as
- *   the timeline route does with its 93 days.
- *
- * It reads with a number of statements that does not depend on the number of series.
+ * The statement count does not depend on the number of series.
  */
 export async function expandEventOccurrences(
   client: PoolClient,

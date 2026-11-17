@@ -1,24 +1,17 @@
 import * as Y from "yjs";
 
 /**
- * Legacy flat-map block API: free-form `sys:flavour` and `sys:children`, no document order
- * and no validation. New code uses the block model in `shared/block-model`
- * (`@semprec/block-model`, see docs/adr/2026-10-28-block-model-for-page-documents.md).
- * This API stays until its production caller, the page-content proposal path, moves over (#1681).
+ * Legacy flat-map block API: free-form `sys:flavour` and `sys:children`, no document order and no validation. New
+ * code uses `@semprec/block-model`; this remains for the page-content proposal path.
  */
 
-/**
- * A block is its own `Y.Map` inside the doc's shared `blocks` map, keyed by id — the
- * page tree is a flat map of blocks plus id references, hierarchy arising from
- * `sys:children` rather than from nesting the data structure (issue #23, point 4).
- */
 const BLOCKS_MAP_NAME = "blocks";
 
 export interface BlockInput {
   id: string;
   flavour: string;
   children?: string[];
-  /** Additional block-type-specific fields (e.g. paragraph text) — stored alongside the sys: fields. */
+  /** Stored alongside the sys: fields. */
   fields?: Record<string, unknown>;
 }
 
@@ -40,9 +33,7 @@ export function putBlock(doc: Y.Doc, input: BlockInput): void {
     block = new Y.Map();
     blocks.set(input.id, block);
   }
-  // fields first, sys: fields last — the reserved sys: namespace must never be
-  // overwritable by a caller-supplied field (e.g. fields: { "sys:id": "other" }), or a
-  // block's identity in the map key stops matching its own sys:id.
+  // sys: fields last, so a caller field like `sys:id` can never override the block's identity.
   for (const [key, value] of Object.entries(input.fields ?? {})) {
     block.set(key, value);
   }

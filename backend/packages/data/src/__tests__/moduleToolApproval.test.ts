@@ -53,7 +53,7 @@ const userByTenant = new Map<string, string>();
 let approvalAnnouncements: Array<{ approvalRequestId: string; userId: string | undefined }>;
 let threadAnnouncements: Array<{ tenantId: string; threadId: string }>;
 
-/** What the fixture module's snapshot export returns for a thread titled `title`, hashed as the request stores it. */
+/** The fixture module's snapshot export for a thread titled `title`, hashed as the request stores it. */
 const hashOfTitle = (title: string | null) => hashOf({ title });
 const hashOf = (source: unknown) => createHash("sha256").update(canonicalizeJson(source), "utf8").digest("hex");
 
@@ -71,13 +71,12 @@ interface Fixture {
   threadId: string;
 }
 
-/** A run with a chat thread, owned by the tenant's user, as an agent session would hold it. */
 async function createRunFixture(tenant: string, options: { project?: boolean } = {}): Promise<Fixture> {
   const userId = userByTenant.get(tenant);
   if (!userId) throw new Error("Missing user");
   const projectItemId = randomUUID();
   return runInTenant(tenant, async () => {
-    // There is no production chat-thread creator on this tip.
+    // No production chat-thread creator exists.
     const thread = await runtime.query<{ id: string }>(
       "INSERT INTO semp_threads (kind, title) VALUES ('chat', 'T') RETURNING id",
     );
@@ -105,7 +104,6 @@ async function resolveTool(fixture: Fixture, name: string): Promise<ResolvedModu
   return tool;
 }
 
-/** What `agentSessionComposition` does for a gated tool call: read the snapshot, then create the request. */
 async function requestCall(
   fixture: Fixture,
   toolName: string,
@@ -130,7 +128,6 @@ async function setTitle(fixture: Fixture, title: string): Promise<void> {
   await admin.query("UPDATE semp_threads SET title = $2 WHERE id = $1", [fixture.threadId, title]);
 }
 
-/** The source of the fixture tools; `T` plus one `+<value>` for every time a handler ran. */
 async function titleOf(fixture: Fixture): Promise<string | null> {
   const { rows } = await admin.query<{ title: string | null }>("SELECT title FROM semp_threads WHERE id = $1", [
     fixture.threadId,
@@ -138,10 +135,7 @@ async function titleOf(fixture: Fixture): Promise<string | null> {
   return rows[0]?.title ?? null;
 }
 
-/**
- * Holds a row lock on the thread so that a handler's write to it waits: the handler of a delivery
- * is then verifiably still running. `release` ends the lock.
- */
+/** A row lock on the thread so a handler's write waits, proving it is still running. */
 async function holdThreadLock(fixture: Fixture): Promise<{ release: () => Promise<void> }> {
   const client = await admin.connect();
   await client.query("BEGIN");
@@ -178,7 +172,6 @@ function decide(fixture: Fixture, requestId: string, decision: "approved" | "rej
   );
 }
 
-/** `moduleRegistry` is the worker's registry: the loaded one by default, `null` for a worker that has none. */
 function deliver(tenant: string, requestId: string, moduleRegistry: ModuleRegistry | null = registry) {
   return runInTenant(tenant, () =>
     handleApprovalRequestExecuteTask(runtime, { approvalRequestId: requestId }, undefined, moduleRegistry ?? undefined),
@@ -548,8 +541,7 @@ describe("module tool approval requests (issue #1791)", () => {
             toolCallId,
           }),
         );
-      // `gated.apply` declares a snapshot now but the request was made without one, and `gated.noSnapshot`
-      // declares none now but the request carries a hash.
+      // The request snapshot state no longer matches what each tool declares.
       const gained = await create("gated.apply", null, "gained");
       const lost = await create("gated.noSnapshot", hashOfTitle("T"), "lost");
       await decide(fixture, gained.id, "approved");
@@ -696,15 +688,9 @@ describe("module tool approval requests (issue #1791)", () => {
     it("executes through the worker's task list, which hands over its module registry", async () => {
       const fixture = await createRunFixture(tenantA);
       const request = await approvedRequest(fixture);
-      const handler = createCoreTaskList(
-        runtime,
-        createActionRegistry(),
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        registry,
-      )[CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE];
+      const handler = createCoreTaskList(runtime, createActionRegistry(), undefined, undefined, undefined, registry)[
+        CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE
+      ];
       if (!handler) throw new Error("Missing approval handler");
 
       await runOnce({ pgPool: runtime, taskList: { [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: handler } });

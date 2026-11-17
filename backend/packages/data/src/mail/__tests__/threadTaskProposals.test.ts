@@ -1,7 +1,5 @@
-// Issue gh-2035: `mail.thread.proposeTask` writes one Processing proposals card of kind `mailThread` and its `sourceThread`
-// edge, never a task. The tool is driven as a session drives it (`resolveModuleAgentToolsForRun`) and, where the session
-// would refuse the arguments before the handler runs, through its factory. Every read and write runs on the runtime role
-// pool inside a tenant, so row-level security applies.
+// `mail.thread.proposeTask` writes one Processing proposals card of kind `mailThread` and its `sourceThread` edge,
+// never a task. Every read and write runs on the runtime role pool inside a tenant, so row-level security applies.
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
@@ -111,7 +109,6 @@ async function seededTenant(): Promise<MailTenant> {
   });
 }
 
-/** A mail thread and its Threads item, through the production thread writer. */
 async function newThread(t: MailTenant, subject?: string): Promise<Thread> {
   return inTenant(t, () =>
     withTransaction(runtime, async (client) => {
@@ -145,7 +142,6 @@ async function toolFor(t: MailTenant, runId: string): Promise<ResolvedModuleAgen
   return tool;
 }
 
-/** Calls the tool as a session does: the arguments are parsed against its schema before the handler runs. */
 async function propose(t: MailTenant, runId: string, args: unknown): Promise<ToolResult> {
   const tool = await toolFor(t, runId);
   const { result, error } = await inTenant(t, () => tool.invoke(args));
@@ -162,7 +158,6 @@ function refusalOf(result: ToolResult) {
   return refusalSchema.parse(JSON.parse(result.result));
 }
 
-/** What the tenant holds that a proposal could add to, as counts the runtime role reads under its own scope. */
 async function writtenState(t: MailTenant) {
   return inTenant(t, async () => {
     const count = async (sql: string, params: unknown[] = []) =>
@@ -182,7 +177,6 @@ async function cardOf(t: MailTenant, cardId: string) {
   return cardSchema.parse(rows[0]?.properties);
 }
 
-/** The ids at the other end of the card's `sourceThread` edge. */
 async function sourceThreadsOf(t: MailTenant, cardId: string): Promise<string[]> {
   const { rows } = await inTenant(t, () =>
     runtime.query<{ other: string }>(
@@ -197,7 +191,6 @@ async function sourceThreadsOf(t: MailTenant, cardId: string): Promise<string[]>
   return rows.map((row) => row.other);
 }
 
-/** The cards of the tenant that came from a thread's item, whatever their status. */
 async function cardIdsOfThread(t: MailTenant, threadItemId: string): Promise<string[]> {
   const { rows } = await inTenant(t, () =>
     runtime.query<{ card: string }>(

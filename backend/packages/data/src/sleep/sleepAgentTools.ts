@@ -1,8 +1,5 @@
-// Issue gh-1840: the two agent tools of the sleep module, declared in `sleepModuleManifest.ts`. `sleepNightsGet`
-// reads the resolved nights of a range and `sleepNightSet` sets, changes or resets the exception of one night.
-// Plans and settings are ordinary items that an agent changes with the generic `item.patch`, so no tool exists
-// for them. The handlers take the run's project from the stored run, never from an argument, and answer in the
-// shape of the other module tools: a result string that holds JSON, and an `error` flag.
+// Agent tools of the sleep module. Plans and settings are ordinary items changed with `item.patch`. The run's
+// project is taken from the stored run, never from an argument.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { assertAgentDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
@@ -15,18 +12,10 @@ import { ChokePointError, ForbiddenError, NotFoundError, ValidationError } from 
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 import { loadSleepNights, parseNightPutBody, upsertSleepNight } from "./sleepRouteHandlers.js";
 
-/**
- * The arguments of `sleepNightsGet`: the first and last night of the range. Their form (a calendar date
- * `YYYY-MM-DD`, `from` not after `to`, at most 62 nights) is judged by `loadSleepNights`, which answers a 400 naming
- * the field.
- */
+/** Range form is judged by `loadSleepNights`. */
 export const sleepNightsGetArgsSchema = z.strictObject({ from: z.string(), to: z.string() });
 
-/**
- * The arguments of `sleepNightSet`: the night and the fields of its exception. A time is judged by
- * `parseNightPutBody` and `night` by `isCalendarDate`, the checks of `PUT /api/sleep/nights/:night`, so a value
- * they refuse is a 400 naming the field. A field that is omitted is left as it is; null follows the plan again.
- */
+/** Values are judged by the same checks as `PUT /api/sleep/nights/:night`; null follows the plan. */
 export const sleepNightSetArgsSchema = z.strictObject({
   night: z.string(),
   bedTime: z.string().nullable().optional(),
@@ -34,10 +23,7 @@ export const sleepNightSetArgsSchema = z.strictObject({
   alarm: z.boolean().nullable().optional(),
 });
 
-/**
- * What a sleep tool answers. `sensitive` marks an answer that carries the content of the sensitive sleep
- * databases, so that the stored tool result is redacted (docs/adr/2026-11-13-sensitive-tool-results-are-marked-by-the-tool-and-stored-redacted.md).
- */
+/** `sensitive` makes the stored tool result redacted. */
 export interface SleepAgentToolResult {
   error: boolean;
   result: string;
@@ -46,7 +32,6 @@ export interface SleepAgentToolResult {
 
 export type SleepAgentTool = (runId: string, args: unknown) => Promise<SleepAgentToolResult>;
 
-/** The error result of a refusal: the HTTP status the route would answer, its error code and message. */
 function refusal(error: ChokePointError): SleepAgentToolResult {
   const field =
     typeof error.details === "object" && error.details !== null && "field" in error.details
@@ -63,16 +48,13 @@ function refusal(error: ChokePointError): SleepAgentToolResult {
   };
 }
 
-/** The 400 result for an argument object that does not have the shape of the tool's schema. */
 function invalidArguments(): SleepAgentToolResult {
   return refusal(new ValidationError("Invalid arguments"));
 }
 
 /**
- * Throws a 403 `forbidden` unless the project of the run holds the user's grant on the sleep databases: `nights` on
- * the nights database and `read` on the settings and the plans, which both tools read to resolve a night. A tenant
- * without the sleep module gets a 404. The reads lock the decision rows `FOR SHARE` in the transaction of `client`
- * (`assertAgentDatabaseAccess`), so a revoke waits for the transaction that passed.
+ * `read` on settings and plans is needed because both tools resolve nights from them. The grant rows are locked
+ * `FOR SHARE` in `client`'s transaction, so a revoke waits for the transaction that passed.
  */
 export async function assertSleepAccess(
   client: PoolClient,
@@ -90,7 +72,6 @@ export async function assertSleepAccess(
   }
 }
 
-/** The run's stored project and user. A run of the tenant that has no project holds no grant, so it is refused. */
 async function runProject(
   client: PoolClient,
   runId: string,
@@ -101,11 +82,7 @@ async function runProject(
   return { agentProjectItemId: run.projectItemId, actorUserId: run.actorUserId };
 }
 
-/**
- * Runs `work`, answering a `ChokePointError` it throws (a 400, 403 or 404 of the checks and of the choke point) as an
- * error result. Whatever else it throws is not an answer of this tool and propagates, so the session reports a failed
- * tool and the transaction of `work` is rolled back.
- */
+/** Only a `ChokePointError` becomes an error result; anything else propagates and rolls `work` back. */
 async function answering(work: () => Promise<SleepAgentToolResult>): Promise<SleepAgentToolResult> {
   try {
     return await work();
@@ -115,12 +92,7 @@ async function answering(work: () => Promise<SleepAgentToolResult>): Promise<Sle
   }
 }
 
-/**
- * `sleepNightsGet { from, to }` (issue gh-1840): what `loadSleepNights` answers for the range, which is the body of
- * `GET /api/sleep/nights`. The project's read grant on the three sleep databases is checked first, in the same
- * REPEATABLE READ transaction as the reads, so the answer describes one state of the data. Without the grant the
- * answer is a 403 `forbidden` and no sleep item is read.
- */
+/** Grant check and reads share one REPEATABLE READ transaction, so the answer describes one state. */
 export function createSleepNightsGetTool(pool: Pool): SleepAgentTool {
   return async function sleepNightsGet(runId, rawArgs) {
     const args = sleepNightsGetArgsSchema.safeParse(rawArgs);
@@ -141,14 +113,9 @@ export function createSleepNightsGetTool(pool: Pool): SleepAgentTool {
 }
 
 /**
- * `sleepNightSet { night, bedTime?, wakeTime?, alarm? }` (issue gh-1840): `upsertSleepNight` as the agent of the run,
- * answering the resolved night as `PUT /api/sleep/nights/:night` does. It never deletes: null follows the plan. The
- * write is made at once, with no approval request: it only creates or updates items of the sleep nights database.
- *
- * The project's write grant on the nights database and its read grant on the settings and the plans are checked
- * first, in the transaction of the write, because the choke point checks the write grant only when it writes and a
- * call that changes nothing must be refused too. A refused call writes nothing and enqueues no resync job. The
- * writer is `agent` with the run and the project of the stored run, acting for the run's user.
+ * Writes at once with no approval request: it only creates or updates sleep night items, never deletes. The
+ * grants are checked up front because the choke point checks the write grant only when it actually writes, and a
+ * no-op call must be refused too.
  */
 export function createSleepNightSetTool(pool: Pool): SleepAgentTool {
   return async function sleepNightSet(runId, rawArgs) {

@@ -404,7 +404,6 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       return type.id;
     }
 
-    /** A two-operation answer: the primary Files create carries `relations`, the second step is a follow-up. */
     function filesComputation(relations: Record<string, string[]>): ComputeSemprecProposalFn {
       return async () => ({
         properties: {},
@@ -422,8 +421,8 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     }
 
     /**
-     * Sets a card's `proposal` directly. The tick cannot store these envelopes (a page target, an unknown kind, a
-     * primary update step written by hand), so the test checks how the summary reads them.
+     * Sets a card's `proposal` directly: the tick cannot store these envelopes (a page target, an unknown
+     * kind, a hand-written primary update step).
      */
     async function setCardProposal(cardId: string, proposal: unknown): Promise<void> {
       const { rows } = await pool.query<{ id: string }>(
@@ -433,7 +432,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       expect(rows).toHaveLength(1);
     }
 
-    /** Sets a card's `status` directly: no production path writes `computing` yet, so the display rule is checked on that state. */
+    /** Sets a card's `status` directly: no production path writes `computing` yet. */
     async function setCardStatus(cardId: string, status: string): Promise<void> {
       const { rows } = await pool.query<{ id: string }>(
         "UPDATE items SET properties = jsonb_set(properties, '{status}', $2::jsonb) WHERE id = $1 RETURNING id",

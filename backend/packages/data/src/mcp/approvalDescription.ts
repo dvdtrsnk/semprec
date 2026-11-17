@@ -1,36 +1,33 @@
-// Builds the snapshotted, localisable description of a new approval request (issue #1683).
+// Builds the snapshotted, localisable description of a new approval request.
 //
-// Template contract (read by the web catalog `web/src/i18n/messages.ts`, `approval.*` keys, in
-// English and Czech; push notifications render the same keys):
-// - The stored `key` is an English camelCase template key and `params` hold names and counts taken
-//   at the moment of the request. The description is never rendered text and never changes later.
-// - Names are display names, never ids. `databaseKey` is the canonical database key (null for a
-//   user-created database) so a client can choose the word and its grammatical form; the backend
-//   does not know singular forms or declension of a database name.
-// - An MCP request names its server and tool; recurrence descriptions include the old and new rules.
-// - `breaksLinks` and `endsInheritance` are added by `approvalBreaksLink.ts` when the operation would end value links, and are otherwise omitted.
+// Template contract (web catalog `approval.*` keys in English and Czech; push notifications render the same keys):
+// - `key` is an English camelCase template key; `params` are names and counts taken at request time. Never
+//   rendered text and never changed later.
+// - Names are display names, never ids. `databaseKey` is the canonical key (null for a user-created database) so
+//   the client picks the word and its grammatical form; the backend knows no declension.
+// - Argument values (restored instants, Markdown, recipients, subject, body, page content) are never included.
+// - `breaksLinks`/`endsInheritance` are added by `approvalBreaksLink.ts` only when value links would end.
 // Templates and params:
 //   approval.itemPatch        {itemName, databaseKey, databaseName}
 //   approval.relationPut      {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
 //   approval.relationSet      {fromItemName, fromDatabaseKey, propertyName}
-//   approval.itemDelete       {itemName, databaseKey, databaseName, projectName?, linkedCount, restorableDays, seriesInstanceCount?, attachmentCount?, hostEventCount?}   (the three counts, issue gh-1882, are the module's delete impact in the projection and are omitted for an item whose module reports none)
+//   approval.itemDelete       {itemName, databaseKey, databaseName, projectName?, linkedCount, restorableDays, seriesInstanceCount?, attachmentCount?, hostEventCount?}   (the optional counts are the module's delete impact, omitted when it reports none)
 //   approval.propertyDelete   {propertyName, databaseKey, databaseName, affectedCount}
 //   approval.databaseArchive  {databaseName, affectedCount}
 //   approval.viewDelete       {viewName, databaseName}
 //   approval.relationDelete   {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
-//   approval.pageRestore      {itemName, databaseKey, databaseName}   (issue #1617; the restored instant is an argument value, so it is not in the description)
-//   approval.pageReplace      {itemName, databaseKey, databaseName}   (issue #1844; the new Markdown is an argument value, so it is not in the description)
-//   approval.pageConvertToBlock {pageName, blockType, pageCount}   (issue #1876; the stored title of the page, the block type it becomes, and the pages that go to the Trash, the page included)
-//   approval.journalMerge     {periodType, period, survivorName, mergedName}   (issue #2017; the stored titles of the two entries, `null` when the period has no two live entries; no page content)
+//   approval.pageRestore      {itemName, databaseKey, databaseName}
+//   approval.pageReplace      {itemName, databaseKey, databaseName}
+//   approval.pageConvertToBlock {pageName, blockType, pageCount}   (pageCount includes the page itself)
+//   approval.journalMerge     {periodType, period, survivorName, mergedName}   (names `null` when the period has no two live entries)
 //   approval.mcpInvoke        {serverName, toolName}
-//   approval.moduleTool       {toolName}   (issue #1791; the manifest name of the module agent tool)
-//   approval.emailSend        {mailboxName, recipientCount}   (issue gh-1913, `mail/mailSendApproval.ts`; the recipients, the subject and the body are argument values, so they are not in the description)
-//   approval.heartbeatCreate      {heartbeatName, projectName, rule, task}   (issue #1846, `scheduler/heartbeatApprovalDescription.ts`; the stored form of the rule and a cut JSON string of the task)
-//   approval.heartbeatUpdate      {heartbeatName, projectName, changes}   (issue #1846; `changes` lists each changed field with its new value)
-//   approval.heartbeatSetEnabled  {heartbeatName, projectName, state}   (issue #1846)
+//   approval.moduleTool       {toolName}   (the module agent tool's manifest name)
+//   approval.emailSend        {mailboxName, recipientCount}   (`mail/mailSendApproval.ts`)
+//   approval.heartbeatCreate      {heartbeatName, projectName, rule, task}   (`scheduler/heartbeatApprovalDescription.ts`; task is a cut JSON string)
+//   approval.heartbeatUpdate      {heartbeatName, projectName, changes}   (each changed field with its new value)
+//   approval.heartbeatSetEnabled  {heartbeatName, projectName, state}
 //   approval.changesSeries    {taskName, fromRule, toRule}
-//   approval.breaksLink       {itemName, databaseKey, propertyName, sourceItemName, sourceDatabaseKey, newValueName}   (issue #1758, `approvalBreaksLink.ts`)
-// Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
+//   approval.breaksLink       {itemName, databaseKey, propertyName, sourceItemName, sourceDatabaseKey, newValueName}
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { ItemDeleteImpact } from "../chokePoint/hooks.js";
@@ -76,7 +73,7 @@ async function requireDatabase(client: PoolClient, id: string) {
   return database;
 }
 
-/** The database's display name; a system database without a name override falls back to its key. */
+/** A system database without a name override falls back to its key. */
 function databaseDisplayName(database: { name: string | null; key: string | null }): string {
   return database.name ?? database.key ?? "";
 }
@@ -87,7 +84,7 @@ async function requireItem(client: PoolClient, id: string) {
   return item;
 }
 
-/** Live items of a database; with a `propertyKey`, only those holding a non-null value for it. */
+/** With a `propertyKey`, only items holding a non-null value for it. */
 async function countLiveItems(client: PoolClient, databaseId: string, propertyKey: string | null): Promise<number> {
   const { rows } = await client.query<{ count: string }>(
     `SELECT count(*) AS count FROM items
@@ -99,11 +96,9 @@ async function countLiveItems(client: PoolClient, databaseId: string, propertyKe
 }
 
 /**
- * The description of a generic operation, read on the same client (and
- * so in the same transaction) as the request insert that stores it. `valueLinks` are the links the
- * operation would end (issue #1758): their lists are added to the description, and for an `item.patch`,
- * `relation.put`, `relation.set` or `link.unlink` the description is `approval.breaksLink` instead,
- * unless the owning module supplied its own through the projection.
+ * Read on the request insert's client, so in the same transaction. When `valueLinks` would end, an
+ * `item.patch`, `relation.put`, `relation.set` or `link.unlink` becomes `approval.breaksLink`, unless the owning
+ * module supplied its own description through the projection.
  */
 export async function buildDestructiveApprovalDescription(
   client: PoolClient,
@@ -133,8 +128,7 @@ export async function buildDestructiveApprovalDescription(
 }
 
 /**
- * The module's delete impact the `item.delete` projection put into `currentResource` (`destructiveProjection.ts`); `null`
- * when the item's module reports none. The counts are the ones the approval's snapshot covers, so the description says what
+ * `null` when the module reports none. These are the counts the snapshot covers, so the description matches what
  * the approver is asked about.
  */
 function itemDeleteImpactOf(currentResource: unknown): ItemDeleteImpact | null {
@@ -336,12 +330,12 @@ async function buildOperationDescription(
   }
 }
 
-/** The description of a deferred MCP tool call: only the server and tool names, never argument values. */
+/** Never argument values. */
 export function buildMcpInvokeApprovalDescription(serverName: string | null, toolName: string): ApprovalDescription {
   return { key: "approval.mcpInvoke", params: { serverName, toolName } };
 }
 
-/** The description of a deferred module agent tool call: only the tool's manifest name, never argument values. */
+/** Never argument values. */
 export function buildModuleToolApprovalDescription(toolName: string): ApprovalDescription {
   return { key: "approval.moduleTool", params: { toolName } };
 }

@@ -33,7 +33,6 @@ async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
-/** Never triggers compaction — `shouldCompact` always false. */
 const noopCompaction: CompactionAdapter = {
   estimateContextTokens: (messages) => messages.length,
   shouldCompact: () => false,
@@ -532,8 +531,7 @@ describe("reconstructConversationHistory", () => {
       noopCompaction,
     );
 
-    // Everything from runA is superseded by runB's checkpoint; only the checkpoint and what
-    // came after it in runB survive the walk.
+    // runB's checkpoint supersedes runA: only the checkpoint and what followed it in runB survive.
     const texts = result?.entries.map((e) => (e.message as { text?: string }).text);
     expect(texts).toEqual(["compacted summary", "third"]);
     expect(result?.entries[1]!.parentId).toBe("checkpoint");

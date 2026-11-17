@@ -31,8 +31,6 @@ import { createInvitationIngestAction } from "../invitationIngestAction.js";
 import { logger } from "../logger.js";
 import { createRespondToInvitationRouteHandler } from "../invitationRouteHandlers.js";
 
-/** The `calendar_invitation` notification of an invitation (issue gh-1954): its write, push, resolution and count. */
-
 let admin: Pool;
 let runtime: Pool;
 
@@ -58,7 +56,6 @@ const notificationRow = z.object({
 });
 type NotificationRow = z.infer<typeof notificationRow>;
 
-/** A storage that keeps the bytes it was given, so the ingest reads back what mail ingest wrote. */
 function memoryStorage(): BlobStorageWriter {
   const blobs = new Map<string, Buffer>();
   return {
@@ -88,7 +85,6 @@ interface IcsOptions {
   organizer?: string;
 }
 
-/** The text of an iMIP REQUEST of one UTC meeting. */
 function ics(options: IcsOptions = {}): string {
   return [
     "BEGIN:VCALENDAR",
@@ -110,7 +106,6 @@ function ics(options: IcsOptions = {}): string {
 
 let storage: BlobStorageWriter;
 
-/** A message with one calendar part arrives through the sync writer; returns its Emails item id. */
 async function receive(world: World, messageId: string, text: string): Promise<string> {
   const result = await runInTenant(world.tenantId, () =>
     withTransaction(runtime, (client) =>
@@ -142,7 +137,6 @@ async function receive(world: World, messageId: string, text: string): Promise<s
   return result.itemId;
 }
 
-/** Fires the ingest heartbeat action for `emailItemId` the way the heartbeat of the Emails database does. */
 function ingest(world: World, emailItemId: string): Promise<void> {
   return runInTenant(world.tenantId, () =>
     createInvitationIngestAction(runtime, { storage })(
@@ -152,14 +146,12 @@ function ingest(world: World, emailItemId: string): Promise<void> {
   );
 }
 
-/** Delivers one message and ingests it; returns the Emails item id. */
 async function deliver(world: World, messageId: string, text: string = ics()): Promise<string> {
   const emailItemId = await receive(world, messageId, text);
   await ingest(world, emailItemId);
   return emailItemId;
 }
 
-/** Every notification of the tenant, read as the runtime role inside that tenant, oldest first. */
 async function notificationsOf(tenantId: string): Promise<NotificationRow[]> {
   return withTenantTransaction(runtime, tenantId, async (client) => {
     const { rows } = await client.query(
@@ -171,7 +163,6 @@ async function notificationsOf(tenantId: string): Promise<NotificationRow[]> {
   });
 }
 
-/** The ids of every invitation of the tenant, trashed ones included, in id order. */
 async function invitationIds(world: World): Promise<string[]> {
   return withTenantTransaction(runtime, world.tenantId, async (client) => {
     const { rows } = await client.query("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
@@ -192,7 +183,6 @@ async function onlyNotification(tenantId: string): Promise<NotificationRow> {
 
 const jobRow = z.object({ key: z.string().nullable(), payload: z.unknown() });
 
-/** The queued jobs of one task, as the key and the stored envelope. */
 async function queuedJobs(task: string): Promise<Array<z.infer<typeof jobRow>>> {
   const { rows } = await admin.query(
     `SELECT j.key, j.payload
@@ -204,7 +194,6 @@ async function queuedJobs(task: string): Promise<Array<z.infer<typeof jobRow>>> 
   return z.array(jobRow).parse(rows);
 }
 
-/** `POST /api/calendar/invitations/:id/respond` as the session user of `tenantId`. */
 function respond(tenantId: string, userId: string, invitationId: string, response: string): Promise<unknown> {
   return runInTenant(tenantId, () =>
     createRespondToInvitationRouteHandler(runtime)({
@@ -217,7 +206,6 @@ function respond(tenantId: string, userId: string, invitationId: string, respons
 
 const badgeBody = z.object({ pendingApprovals: z.number(), pendingInvites: z.number(), openInboxItems: z.number() });
 
-/** The answer of `GET /api/badge-counts` for the session user `userId` of `tenantId`. */
 async function badgeCountsOf(tenantId: string, userId: string): Promise<z.infer<typeof badgeBody>> {
   const answer = await runInTenant(tenantId, () =>
     createBadgeCountsRouteHandler(runtime)({ identity: { user: { id: userId } } }),
@@ -232,7 +220,6 @@ describe("calendar invitation notification (issue gh-1954)", () => {
   let userId: string;
   let otherUserId: string;
 
-  /** A tenant with one English-speaking user, seeded, with its mail world. */
   async function tenantWithUser(): Promise<{ world: World; userId: string }> {
     const tenantId = await createTestTenant(admin);
     const user = await createUser(admin, {
@@ -473,7 +460,6 @@ describe("calendar invitation notification (issue gh-1954)", () => {
   });
 
   describe("answering the invitation", () => {
-    /** Delivers the sprint review and returns the invitation id with its notification. */
     async function pendingInvitation(): Promise<{ invitationId: string; notification: NotificationRow }> {
       await deliver(world, `<answer-${randomUUID()}@example.test>`);
       const [invitationId] = await invitationIds(world);

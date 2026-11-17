@@ -85,7 +85,7 @@ type DestructiveOperationName =
   | "relation.set"
   | "link.unlink";
 
-/** The operations whose request, when it ends value links, is a `breaksLink` request (issue #1758). */
+/** The operations whose request, when it ends value links, is a `breaksLink` request. */
 const LINK_DEFERRAL_OPERATIONS: readonly GenericOperationName[] = [
   "item.patch",
   "relation.put",
@@ -111,7 +111,7 @@ function isDestructiveOperationName(operation: GenericOperationName): operation 
   );
 }
 
-/** A destructive check the choke point's own projection covers, or a page one (restore, replace, convert to a block), which the docs module projects, or a Journal merge, which the Journal module projects (`chokePoint` may not import `docs` or `journal`). */
+/** A destructive check projected by the choke point, the docs module (page restore/replace/convert) or the Journal module (merge); `chokePoint` may not import `docs` or `journal`. */
 type GatewayCheck =
   DestructiveOperationCheck | PageRestoreCheck | PageReplaceCheck | PageConvertCheck | JournalMergeCheck;
 
@@ -131,7 +131,7 @@ function projectCheck(client: PoolClient, check: GatewayCheck): Promise<Destruct
   }
 }
 
-/** Maps one destructive operation's already-validated input (plus the data-layer `Actor` form of the caller, needed only by `view.delete`'s writability check) onto the shared projection/authorization check both request-time snapshotting and execution-time revalidation run. */
+/** Maps a destructive operation's validated input onto the check both request-time snapshotting and execution-time revalidation run; `actor` is used only by `view.delete`. */
 function buildDestructiveCheck(operation: DestructiveOperationName, input: unknown, actor: Actor): GatewayCheck {
   switch (operation) {
     case "page.restoreVersion":
@@ -190,7 +190,7 @@ function buildDestructiveCheck(operation: DestructiveOperationName, input: unkno
   }
 }
 
-/** Runs the actual destructive mutation on the caller's own transaction — the same `*WithClient` function the choke-point's public API delegates to, so approval-gated execution and a direct call share one implementation. */
+/** Runs the destructive mutation on the caller's transaction through the same `*WithClient` function the choke point's public API uses. */
 async function executeDestructiveWithClient(
   client: PoolClient,
   operation: DestructiveOperationName,
@@ -228,25 +228,26 @@ async function executeDestructiveWithClient(
     case "relation.set":
       return setRelationWithClient(client, input as InputByOperation["relation.set"], writer, actingUserId);
     case "page.restoreVersion": {
-      // Authored `user`: the approver's decision is the user's (issue #1617).
+      // Authored `user`: the approver's decision is the user's.
       const { itemId, at } = input as { itemId: string; at: string };
       return restorePageVersionWithClient(client, itemId, new Date(at));
     }
     case "page.replace": {
-      // Authored `user`, as the restore: the approver's decision is the user's (docs/adr/2026-10-29-agent-page-write-policy.md, decision 4).
+      // Authored `user`, as the restore: the approver's decision is the user's.
       const { itemId, markdown, expectedEtag } = input as InputByOperation["page.replace"];
       return replacePageMarkdown(client, itemId, { markdown, expectedEtag, origin: "user", writer, actingUserId });
     }
     case "page.convertToBlock":
-      // Authored `user`, as the replace: the approver's decision is the user's. The page tree is trashed as the agent
-      // that asked, so the trash hooks and the grant check see it (docs/adr/2026-10-29-agent-page-write-policy.md, decision 4).
+      // Authored `user`, as the replace; the page tree is trashed as the agent that asked, so the trash hooks and the
+      // grant check see it.
       return convertPageToBlockWithClient(client, input as InputByOperation["page.convertToBlock"], {
         origin: "user",
         writer,
         actingUserId,
       });
     case "page.mergeJournalDuplicates":
-      // The entries the replay's projection found must be the ones merged; a drift throws, which rolls the replay back, and the next attempt ends it as a conflict (docs/adr/2026-11-13-the-assistant-proposes-a-journal-merge-and-the-user-approves-the-pair.md).
+      // The replay must merge the entries its projection found; a drift throws and rolls back, and the next attempt
+      // ends the request as a conflict.
       return mergeApprovedJournalDuplicates(
         client,
         input as InputByOperation["page.mergeJournalDuplicates"],
@@ -290,11 +291,8 @@ async function executeDestructiveWithClient(
 }
 
 /**
- * Extracts the `currentResource` projection `computeDestructiveResourceProjection` attaches to a
- * non-not-found domain error's `details` (issue #89: "otherwise it is the current projection"), so
- * `replayApprovedGenericOperation`'s conflict terminalization can report it instead of always
- * reporting `null`. A `details` shape without `currentResource` (e.g. `not_found`, which never
- * loads a resource to report) falls back to `null`, matching the spec's `not_found` case exactly.
+ * The `currentResource` projection a non-not-found domain error carries in `details`, reported on a
+ * conflict; `null` when absent (e.g. `not_found`, which loads no resource).
  */
 function currentResourceFromErrorDetails(details: unknown): unknown {
   if (typeof details === "object" && details !== null && "currentResource" in details) {
@@ -304,10 +302,9 @@ function currentResourceFromErrorDetails(details: unknown): unknown {
 }
 
 /**
- * Whether this gateway serves `operation` under `grantedCapabilities`. A REST-only operation
- * (`REST_ONLY_OPERATION_NAMES`: adding and changing select options, issue #1699) is
- * served under no grant, so the AgentTool and MCP transports, which reach the catalog through this gateway, neither
- * list nor call it. The assistant will propose a new option on an Inbox proposal instead (#1994).
+ * Whether this gateway serves `operation` under `grantedCapabilities`. REST-only operations
+ * (`REST_ONLY_OPERATION_NAMES`: adding and changing select options) are served under no grant, so
+ * AgentTool and MCP neither list nor call them.
  */
 function isGranted(operation: GenericOperationName, grantedCapabilities: ReadonlySet<CapabilityId>): boolean {
   if (REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === operation)) return false;
@@ -324,7 +321,7 @@ function assertCompleteAgentIdentity(actor: AuthenticatedActor): void {
   }
 }
 
-/** Validates a stored payload's `operationName` against the closed catalog instead of casting it straight to `GenericOperationName` — the payload came back through a `jsonb` column, a boundary this codebase's own types don't protect. */
+/** Checks a stored `operationName` against the closed catalog: it came back through a `jsonb` column. */
 function assertGenericOperationName(value: string): GenericOperationName {
   if (!(GENERIC_OPERATION_NAMES as readonly string[]).includes(value)) {
     throw new ValidationError(`Unknown operation '${value}' in approval request payload`);
@@ -374,17 +371,14 @@ async function invokeBinding<K extends GenericOperationName>(
 }
 
 /**
- * `DestructiveApprovalPreflight` (issue #89): revalidates the persisted actor provenance against
- * the current `agent_run` row first — the same check execution later repeats — so a request whose
- * actor can never pass that check at execution time is rejected here instead of being queued for a
- * human to approve something that can only end in `owner_violation`. Only then runs the exact
- * resource projection and its guards before, in the same transaction, inserting the pending
- * approval request plus its `approval_pending` notification, carrying the resulting
- * `resourceSnapshot`. For a flagged non-destructive write the original transaction has already
- * reached the flag after its preceding write guards; replay also runs the actual writer's guards.
- * The notification's link depends on the source of the request and names the request
- * (`approvalNotificationLinkHref`, issue #1787). The new request is announced to its owner after
- * the commit (`createPendingApprovalRequestAndPublish`); a replayed tool call announces nothing.
+ * `DestructiveApprovalPreflight`: first revalidates the persisted actor provenance against the
+ * current `agent_run` row (as execution will), so a request that could only end in
+ * `owner_violation` is rejected instead of queued for approval. Then runs the resource projection
+ * and its guards and, in the same transaction, inserts the pending request and its
+ * `approval_pending` notification (link from `approvalNotificationLinkHref`). For a flagged
+ * non-destructive write the original transaction already passed its preceding guards; replay runs
+ * the writer's guards again. The request is announced after commit; a replayed tool call announces
+ * nothing.
  */
 async function preflightDestructiveApproval(
   pool: Pool,
@@ -449,16 +443,12 @@ async function preflightDestructiveApproval(
 }
 
 export interface GenericOperationGateway {
-  /** The operations visible given `grantedCapabilities` — an ungranted one is simply absent, never present-but-forbidden, and so is a REST-only one under every grant. */
+  /** The operations visible under `grantedCapabilities`; ungranted and REST-only ones are absent, never forbidden. */
   listOperations(grantedCapabilities: ReadonlySet<CapabilityId>): GenericOperationName[];
   /**
-   * Dispatches one operation for an agent actor (`actor.runId`/`actor.agentProjectItemId` set):
-   * capability-gates, then approval-gates a destructive operation by queuing a pending approval
-   * request and throwing `ApprovalRequiredError` — the AgentTool composition root (#220) catches
-   * that specifically and returns a synthetic success instead of surfacing it, matching
-   * `mcpInvokeTool.ts`'s existing dual-path convention; MCP surfaces it as a JSON-RPC error, same
-   * as REST does for its own (never approval-gated, since a REST actor never carries
-   * `agentProjectItemId`) `ChokePointError`s.
+   * Dispatches one operation for an agent actor: capability-gates, then for a destructive operation
+   * queues a pending approval request and throws `ApprovalRequiredError`. The AgentTool root turns
+   * that into a synthetic success; MCP surfaces it as a JSON-RPC error.
    */
   invoke<K extends GenericOperationName>(
     operation: K,
@@ -474,12 +464,9 @@ export interface GenericOperationGateway {
 }
 
 /**
- * The one gateway both the AgentTool (`packages/agent-runtime`) and MCP (`services/semprec-api`)
- * composition roots construct over their own injected `Pool` (issue #220), sitting between
- * capability/approval and the neutral `GenericApplicationPort` (#219). REST's own
- * `dispatchGenericOperation` (services/semprec-api/src/adapter/genericBinding.ts) calls the port
- * directly without this gate — a REST human actor never carries `agentProjectItemId`, the one
- * condition this gate's approval check keys on, so this gate would only ever be a no-op there.
+ * The gateway the AgentTool and MCP composition roots build over their `Pool`, between
+ * capability/approval and `GenericApplicationPort`. REST calls the port directly: a REST actor
+ * never carries `agentProjectItemId`, which is what the approval check keys on.
  */
 export function createGenericOperationGateway(
   pool: Pool,
@@ -525,9 +512,8 @@ export function createGenericOperationGateway(
         return await invokeBinding(service, operation, actor, input);
       } catch (err) {
         if (!(err instanceof ApprovalRequiredForWrite)) throw err;
-        // An operation outside the deferrable set (`item.create` with initial relations) has no snapshot to
-        // revalidate and no replay, so its flagged write is refused with a defined error instead of leaking the
-        // internal one. The transaction has rolled back; nothing was written and no request exists (issue #1758).
+        // An operation outside the deferrable set (`item.create` with initial relations) has no snapshot or replay, so
+        // its flagged write is refused with a defined error; the transaction rolled back and no request exists.
         if (!isDestructiveOperationName(operation)) {
           throw new ValidationError(
             `Operation '${operation}' cannot ask for the approval this write requires; write the parts that need approval with their own operations`,
@@ -553,36 +539,24 @@ export function createGenericOperationGateway(
 }
 
 /**
- * `ApprovedOperationExecutor` (issue #89, the `approvalExecute` job's actual handler for a
- * generic-operation approval request — replacing this function's own former binding-replay
- * internals while keeping its exported name/signature so `worker.ts`'s
- * `GenericOperationApprovalReplay` contract, and every composition root injecting it, are
- * untouched): opens **one** transaction, row-locks the request (`getApprovalRequest(client, id,
- * true)`), and:
+ * `ApprovedOperationExecutor`, the `approvalExecute` handler for a generic-operation request. In
+ * one transaction it row-locks the request and:
  *
- * - returns the persisted `execution_result` unmutated, without ever touching the resource, when
- *   the row is already `succeeded`/`conflict`/`legacy_terminal` — a redelivered queue job is a
- *   deterministic no-op, never a second mutation;
- * - rejects (throws, rolling back the transaction) when the row is missing/malformed or is not
- *   `approved`+`queued` — the caller (`handleApprovalRequestExecuteTask`) discards this function's
- *   resolved value and relies solely on whether the returned promise rejects to decide whether
- *   graphile-worker retries the job, so nothing here may swallow a thrown error into a normal-
- *   looking `{error: true, ...}` return: doing so would report success to graphile for a row that
- *   is, in fact, still stuck `queued` with no job left to ever retry it;
- * - otherwise revalidates the persisted actor provenance against the current `agent_run` row
- *   (`owner_violation` on drift, same as before), re-authorizes the resource with the exact same
- *   `computeDestructiveResourceProjection` check the request-time preflight ran, and requires the
- *   freshly computed `resourceSnapshot` to equal the one persisted at approval time;
- * - a snapshot mismatch or revalidation domain error terminalizes the request as `conflict`
- *   before mutation. A transient approval reservation refusal or infrastructure failure escapes,
- *   so the transaction rolls back and the row stays `queued` for graphile's own retry.
- * - on a clean revalidation, executes the same `*WithClient` function the choke-point's own public
- *   API delegates to, on this same transaction and client, then marks `succeeded` and commits — the
- *   mutation and its terminal-state write land in the same commit, so a crash before commit rolls
- *   both back together (staying `queued`) and a crash after commit is safe (nothing left to redo).
- * - each terminal write (`conflict` or `succeeded`) is announced to the request's owner after the
- *   commit (`publishApprovalRequestChange`); a request found already terminal writes and announces
- *   nothing.
+ * - returns the persisted `execution_result` untouched when the row is already
+ *   `succeeded`/`conflict`, so a redelivered job never mutates twice;
+ * - throws when the row is missing, malformed, or not `approved`+`queued`. The caller retries
+ *   solely on rejection, so no error may be turned into a normal-looking return, or a row could
+ *   stay `queued` with no job left to retry it;
+ * - otherwise revalidates actor provenance against `agent_run` (`owner_violation` on drift),
+ *   reruns the preflight's `computeDestructiveResourceProjection`, and requires the snapshot to
+ *   equal the persisted one. A mismatch or revalidation domain error ends the request as
+ *   `conflict` before mutation; a transient reservation refusal or infrastructure failure escapes
+ *   so the row stays `queued` for retry;
+ * - on success runs the `*WithClient` mutation on the same transaction and marks `succeeded`, so
+ *   mutation and terminal state commit together.
+ *
+ * Each terminal write is announced to the owner after commit; an already-terminal request writes
+ * and announces nothing.
  */
 export async function replayApprovedGenericOperation(
   pool: Pool,
@@ -595,11 +569,7 @@ export async function replayApprovedGenericOperation(
     }
     const lockedPayload = locked.payload;
 
-    if (
-      locked.executionStatus === "succeeded" ||
-      locked.executionStatus === "conflict" ||
-      locked.executionStatus === "legacy_terminal"
-    ) {
+    if (locked.executionStatus === "succeeded" || locked.executionStatus === "conflict") {
       return { error: locked.executionStatus !== "succeeded", result: JSON.stringify(locked.executionResult) };
     }
     if (locked.status !== "approved" || locked.executionStatus !== "queued") {

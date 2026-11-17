@@ -28,7 +28,7 @@ async function createProjectItem(): Promise<string> {
 }
 
 async function createTestUser(): Promise<string> {
-  // Tenant zero's user: guidance may only be owned by its own tenant's user (issue #1066).
+  // Tenant zero's user: guidance may only be owned by its own tenant's user.
   const user = await createUser(pool, {
     email: `${randomUUID()}@example.com`,
     passwordHash: "hash",
@@ -165,8 +165,7 @@ describe("createGuidanceNotificationWriter (issue #85)", () => {
       }),
     );
 
-    // Same finding.id and fingerprint reactivate — this must be a distinct notification, not a
-    // dedup collision with the first activation above.
+    // The same finding.id and fingerprint reactivate: a distinct notification, not a dedup collision.
     const reappearedAt = new Date("2026-01-03T00:00:00.000Z");
     const reactivated = await withTransaction(pool, (client) =>
       agentGuidanceDriftFindingsStore.upsertActive(client, {

@@ -20,7 +20,6 @@ let chokePoint: ChokePoint;
 let tenantZero: string;
 let tenantB: string;
 
-/** A storage double whose only exercised method is `delete`; the purge never reads or writes bytes. */
 function fakeStorage(onDelete: (storageKey: string) => Promise<void> = async () => {}) {
   const deleteMock = vi.fn(onDelete);
   const storage: BlobStorageWriter = {
@@ -33,14 +32,10 @@ function fakeStorage(onDelete: (storageKey: string) => Promise<void> = async () 
   return { storage, deleteMock };
 }
 
-// Raw SQL because the choke point stamps `deleted_at = now()` and has no way to trash an item in the past.
+// The choke point stamps `deleted_at = now()` and cannot trash an item in the past.
 const BACKDATE_SQL = `UPDATE items SET deleted_at = now() - ($2 || ' days')::interval WHERE id = $1 AND database_id = $3`;
 
-/**
- * Soft-deletes `itemId` through the choke point, then backdates `deleted_at` (tenant scope required).
- * Rejects unless the backdate touched exactly one row, so a wrong database/item pair or an item
- * invisible to the current tenant fails here instead of silently leaving the item un-backdated.
- */
+/** Rejects unless the backdate touched exactly one row, so a wrong pair or invisible item fails loudly. */
 async function trash(databaseId: string, itemId: string, daysAgo: number): Promise<void> {
   await chokePoint.softDeleteItem(databaseId, itemId);
   const result = await pool.query(BACKDATE_SQL, [itemId, String(daysAgo), databaseId]);
@@ -51,7 +46,6 @@ async function trash(databaseId: string, itemId: string, daysAgo: number): Promi
   }
 }
 
-/** Creates a database with an expired and a recently trashed item in `tenantId`. */
 async function seedTrash(tenantId: string): Promise<{ databaseId: string; expiredId: string; recentId: string }> {
   return runInTenant(tenantId, async () => {
     const db = await chokePoint.createDatabase({ name: "Movies" });
@@ -85,10 +79,9 @@ async function blobExists(blobId: string): Promise<boolean> {
   return rows.length === 1;
 }
 
-// Raw SQL because the fixture database has no files property through which the choke point could store a blob id.
+// The fixture database has no files property through which the choke point could store a blob id.
 const FILE_PROPERTY_SQL = `UPDATE items SET properties = jsonb_build_object('file', jsonb_build_object('blobId', $2::text)) WHERE id = $1`;
 
-/** Creates an item whose `file` property references `blobId`; rejects unless exactly one row took the reference. */
 async function makeFilesItem(databaseId: string, blobId: string) {
   const item = await chokePoint.createItem({ databaseId, properties: {} });
   const result = await pool.query(FILE_PROPERTY_SQL, [item.id, blobId]);
@@ -100,17 +93,12 @@ async function makeFilesItem(databaseId: string, blobId: string) {
   return item;
 }
 
-/**
- * Runs `fn` with `pool.query` answering a zero-row result for every call whose text is exactly `sql`,
- * without executing it; every other query runs unchanged. Returns the parameters of each intercepted
- * call. The spy is restored even when `fn` rejects.
- */
+/** Answers zero rows for every call whose text is exactly `sql`, without executing it; returns their parameters. */
 async function withZeroRowResult(sql: string, fn: () => Promise<void>): Promise<unknown[][]> {
   const original = pool.query.bind(pool) as (...args: unknown[]) => Promise<unknown>;
   const intercepted: unknown[][] = [];
   const zeroRows: QueryResult = { command: "UPDATE", rowCount: 0, oid: 0, rows: [], fields: [] };
-  // pg's overloaded `query` includes void-returning callback forms; typing the double's return as
-  // `unknown` lets it stand in for all of them while still returning the promise the fixtures await.
+  // `unknown` lets the double stand in for pg's overloaded (incl. callback) `query` forms.
   const spy = vi.spyOn(pool, "query").mockImplementation((...args: unknown[]): unknown => {
     if (args[0] === sql) {
       intercepted.push(Array.isArray(args[1]) ? (args[1] as unknown[]) : []);
@@ -172,7 +160,7 @@ describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
       return blob;
     });
 
-    // The admin pool is a separate connection: the row is only gone there once the purge committed.
+    // A separate connection: the row is only gone there once the purge committed.
     const blobRowSeenAtDelete: boolean[] = [];
     const { storage, deleteMock } = fakeStorage(async () => {
       blobRowSeenAtDelete.push(await blobExists(blobB.id));
@@ -225,7 +213,6 @@ describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
 
     await runAsSystem("test", () => handleItemTrashPurgeSweepTask(pool, fakeStorage().storage));
 
-    // The item of an archived database is no candidate any more (issue gh-1878), so there is nothing to log.
     expect(logger.error).not.toHaveBeenCalledWith(
       expect.objectContaining({ itemId: archivedItemId }),
       "Failed to purge trashed item",
@@ -250,7 +237,6 @@ describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
         await runInTenant(tenantB, async () => {
           const db = await chokePoint.createDatabase({ name: "Movies" });
           const item = await chokePoint.createItem({ databaseId: db.id, properties: {} });
-          // A zero-row result is what a wrong database/item pair or an item invisible to tenant B yields.
           await expect(trash(db.id, item.id, 31)).rejects.toThrow(
             `trash: backdating item ${item.id} in database ${db.id} affected 0 rows, expected 1`,
           );

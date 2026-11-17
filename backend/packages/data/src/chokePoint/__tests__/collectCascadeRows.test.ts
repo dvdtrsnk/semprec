@@ -1,4 +1,4 @@
-// Issue gh-1882: the rows a cascade reaches when the owning module registered a cascade expansion.
+// The rows a cascade reaches when the owning module registered a cascade expansion.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";

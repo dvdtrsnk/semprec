@@ -28,7 +28,7 @@ const HOSTILE_BODY =
   '<p onclick="steal()">Dobrý den</p><script>alert(1)</script>' +
   '<img src="https://tracker.example/pixel.gif" onerror="track()" alt="logo"><a href="https://example.test/offer">Nabídka</a>';
 
-/** A protocol-relative tracking pixel beside an inline image (R1 F1). */
+/** A protocol-relative tracking pixel beside an inline image. */
 const PROTOCOL_RELATIVE_BODY =
   '<p>Dobrý den</p><img src="//tracker.example/pixel.gif" alt="pixel"><img src="cid:logo" alt="logo">';
 
@@ -63,7 +63,6 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
     await rm(storageRoot, { recursive: true, force: true });
   });
 
-  /** Two mailboxes and their folders, and an ingest through the sync writer (`ingestEmailMessage`). */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -214,7 +213,6 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
       params: { threadId },
     });
 
-  /** The real `mail_attachments` rows and the Files items linked through the Emails `attachments` edge. */
   async function storedAttachments(emailItemId: string) {
     const rows = await runtime.query<{ blob_id: string; filename: string; byte_size: number }>(
       "SELECT blob_id, filename, byte_size::int AS byte_size FROM mail_attachments WHERE tenant_id = app_tenant_default() AND message_item_id = $1 ORDER BY filename",
@@ -242,8 +240,9 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
   }
 
   /**
-   * What the detail adds to an attachment of a thread that has no project (issue gh-1922): no project and, because ingest
-   * links every attachment to its thread's project even before it has one, the inherited link of `Files.projects`.
+   * What the detail adds to an attachment of a thread without a project: no project and, because ingest
+   * links every attachment to its thread's project even before it has one, the inherited `Files.projects`
+   * link.
    */
   function shownWithoutProject(files: Awaited<ReturnType<typeof storedAttachments>>) {
     return files.map((file) => ({
@@ -304,7 +303,7 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
       const list = await createMailThreadListRouteHandler(runtime)({ req: { url: "/api/mail/threads" } });
       const row = list.body.threads.find((candidate) => candidate.threadId === threadId);
       if (!row) throw new Error("Thread missing from the list");
-      // `tasks` (issue gh-1692) is not part of the list row; this thread has none.
+      // `tasks` is not part of the list row; this thread has none.
       const { messages, tasks, ...header } = (await detail(threadId)).body;
       expect(messages).toHaveLength(4);
       expect(tasks).toEqual([]);
@@ -319,7 +318,7 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
         flagged: row.flagged,
         mailboxes: row.mailboxes,
         senderPerson: row.senderPerson,
-        // The thread's company, project and their link state (issue gh-1897) are the list row's too.
+        // The thread's company, project and their link state are the list row's too.
         project: row.project,
         company: row.company,
         links: row.links,

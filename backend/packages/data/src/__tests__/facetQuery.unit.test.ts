@@ -126,7 +126,6 @@ describe("loadFacetMetadata (issue #1759)", () => {
     const metadata = await loadFacetMetadata();
     expect(loadFullModuleRegistry).toHaveBeenCalledTimes(2);
 
-    // The declared area filters of the system databases, by database key.
     expect(metadata.areaFilters.get("tasks")).toEqual({
       type: "relation_path_contains",
       path: ["project", "area"],

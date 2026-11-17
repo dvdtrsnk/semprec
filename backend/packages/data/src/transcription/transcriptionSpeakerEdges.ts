@@ -11,19 +11,16 @@ import { TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { TRANSCRIPT_SEGMENTS_COMPUTED_KEY } from "./transcriptionComputedKeys.js";
 import { runValueLinkAdmissionLock } from "../chokePoint/valueLinkRelationAdmission.js";
 
-/** The Transcripts -> People relation property whose edges map a diarization speaker key to a person. */
 export const TRANSCRIPT_SPEAKERS_PROPERTY_KEY = "speakers";
 
-/** A `speakers` edge's metadata: exactly the diarization key (`SPEAKER_00`, ...) this person is the voice of. */
+/** Exactly the diarization key (`SPEAKER_00`, ...) this person is the voice of. */
 const speakerEdgeMetadataSchema = z.object({ speaker: z.string().min(1) }).strict();
 
-/** Only the key each merged segment carries; the rest of the segment is not read here. */
 const segmentSpeakersSchema = z.array(z.object({ speaker: z.string() }));
 
 /**
- * The distinct speaker keys of a transcript's `computed.segments`, in order of first appearance —
- * none before the pipeline's merge step has written them. `segments` is written once and never
- * rewritten, so this order (and every ordinal derived from it) never changes with the mappings.
+ * In order of first appearance; none before the merge step. `segments` is written once, so this order
+ * (and every ordinal derived from it) never changes with the mappings.
  */
 export function listSegmentSpeakers(transcript: ItemRow): string[] {
   const raw = transcript.computed[TRANSCRIPT_SEGMENTS_COMPUTED_KEY];
@@ -31,7 +28,7 @@ export function listSegmentSpeakers(transcript: ItemRow): string[] {
   return [...new Set(segmentSpeakersSchema.parse(raw).map((segment) => segment.speaker))];
 }
 
-/** Whether `property` is the Transcripts `speakers` relation, the one relation whose edge metadata has a required shape. */
+/** The one relation whose edge metadata has a required shape. */
 export async function isTranscriptSpeakersProperty(client: PoolClient, property: PropertyRow): Promise<boolean> {
   if (property.key !== TRANSCRIPT_SPEAKERS_PROPERTY_KEY) return false;
   const database = await databasesStore.getDatabase(client, property.databaseId);
@@ -48,13 +45,11 @@ export interface SpeakerEdgeWriteInput {
 }
 
 /**
- * Rejects a `speakers` edge write (add, or replace of an existing edge's metadata) that would not
- * map exactly one of the transcript's own speaker keys to exactly one person: metadata other than
- * `{ speaker }`, a key that no segment of the transcript carries (including every key before the
- * merge step has run), or a key another person is already mapped to — replacing that mapping means
- * removing the other person's edge first. Row-locks the transcript, so two concurrent writes for
- * the same key serialize and the second sees the first's edge. Every rejection is
- * `validation_failed` on `metadata`.
+ * Rejects an add or metadata replace that would not map exactly one of the transcript's own speaker
+ * keys to one person: metadata other than `{ speaker }`, a key no segment carries, or a key another
+ * person already maps (remove that edge first). Row-locks the transcript, so concurrent writes for the
+ * same key serialize and the second sees the first's edge. Rejections are `validation_failed` on
+ * `metadata`.
  */
 export async function assertSpeakerEdgeWritable(client: PoolClient, input: SpeakerEdgeWriteInput): Promise<void> {
   const parsed = speakerEdgeMetadataSchema.safeParse(input.metadata ?? {});
@@ -99,12 +94,8 @@ export async function assertSpeakerEdgeWritable(client: PoolClient, input: Speak
 }
 
 /**
- * The choke point's relation-edge-write hook for the Transcripts `speakers` relation (registered
- * by `../domainWriteHooks.ts`): rejects edge metadata its relation gives a required shape to —
- * today only the Transcripts `speakers` relation (issue #185), whose edges each map one speaker
- * key of the transcript to one person. Runs on both add and metadata replace, so neither can
- * leave a mapping the render path cannot read; removing an edge needs no metadata and is not
- * checked here.
+ * Runs on add and metadata replace, so neither can leave a mapping the render path cannot read;
+ * removal needs no metadata and is not checked.
  */
 export const transcriptSpeakerEdgeWriteHook: RelationEdgeWriteHook = async ({
   client,
@@ -125,7 +116,7 @@ export const transcriptSpeakerEdgeWriteHook: RelationEdgeWriteHook = async ({
   });
 };
 
-/** One speaker key of a transcript as it is shown: its 1-based ordinal for the "Speaker N" label, and the person it is mapped to, if any. */
+/** `ordinal` is 1-based for the "Speaker N" label. */
 export interface TranscriptSpeaker {
   speaker: string;
   ordinal: number;
@@ -133,10 +124,8 @@ export interface TranscriptSpeaker {
 }
 
 /**
- * Every speaker key of a transcript's segments, each with the live person its `speakers` edge maps
- * it to, or `null` when it is unmapped — a normal state, not an error. The segments themselves are
- * only read: who spoke is composed here, at read time, from the edges. An edge to a person who has
- * since been deleted leaves its key unmapped.
+ * Composed at read time from the edges; `null` (unmapped) is a normal state. An edge to a since-deleted
+ * person leaves its key unmapped.
  */
 export async function listTranscriptSpeakers(
   client: PoolClient,
@@ -162,7 +151,7 @@ export async function listTranscriptSpeakers(
 
   const personBySpeaker = new Map<string, string>();
   for (const edge of await relationsStore.listRelationsForItem(client, relationDefinition.id, transcriptId)) {
-    // Every write through the choke point carries `{ speaker }`; an edge without it maps no key.
+    // An edge without `{ speaker }` maps no key.
     const metadata = speakerEdgeMetadataSchema.safeParse(edge.metadata);
     if (metadata.success) personBySpeaker.set(metadata.data.speaker, relationsStore.otherSide(edge, transcriptId));
   }

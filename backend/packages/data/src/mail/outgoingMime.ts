@@ -13,12 +13,11 @@ function domainOf(address: string): string {
   return at === -1 ? "semprec.local" : address.slice(at + 1);
 }
 
-/** RFC 5322 §3.6.4: generated only at send time, never at draft creation — a draft has no Message-ID until it is actually submitted (epic #92). */
+/** Generated only at send time: a draft has no Message-ID until it is submitted. */
 export function generateOutgoingMessageId(fromAddress: string): string {
   return `<${randomUUID()}@${domainOf(fromAddress)}>`;
 }
 
-/** Raised when an attachment's blob row, or its bytes in both storage roots, cannot be found. */
 export class OutgoingAttachmentMissingError extends NotFoundError {
   constructor(blobId: string, filename: string) {
     super(`Attachment blob ${blobId} (${filename}) was not found`, { blobId, filename });
@@ -40,31 +39,27 @@ export interface OutgoingMimeInput {
   cc?: MailEnvelopeAddress[];
   bcc?: MailEnvelopeAddress[];
   subject: string;
-  /** Plain text body. */
   text: string;
-  /** Optional HTML body, sent as a `multipart/alternative` part beside the text body. */
   html?: string;
   messageId: string;
   inReplyTo?: string;
   references?: string[];
   attachments?: OutgoingAttachmentInput[];
-  /** Optional `text/calendar` alternative next to the plain text body. */
   calendar?: { method: OutgoingCalendarMethod; content: string };
 }
 
-/** Where attachment bytes are read from, and the read path's tenant scope. */
 export interface OutgoingMimeDeps {
   client: Queryable;
   files: BlobStorageWriter;
   mailAttachments: BlobStorageWriter;
-  /** Cap on the summed attachment sizes (bytes); defaults to 25 MiB. */
+  /** Defaults to 25 MiB. */
   maxAttachmentBytes?: number;
 }
 
 export interface OutgoingMime {
   raw: Buffer;
   messageId: string;
-  /** To, cc and bcc combined. Bcc addresses appear here and in no header. */
+  /** Bcc addresses appear here and in no header. */
   envelopeRecipients: string[];
 }
 
@@ -87,11 +82,8 @@ function toComposerAddress(address: MailEnvelopeAddress): { name: string; addres
 }
 
 /**
- * Builds the complete outgoing message once, as raw RFC 5322 bytes, for any transport (SMTP, the
- * Gmail API, Microsoft Graph) to submit unchanged. Every header-bound value is rejected when it
- * contains a line break, so a subject, name or address cannot inject headers. Attachment bytes are
- * read through `openBlobFromRoots`, which serves a blob from either storage root; a missing blob
- * throws `OutgoingAttachmentMissingError`.
+ * Builds the raw RFC 5322 message once for any transport to submit unchanged. Header-bound values with
+ * a line break are rejected, so nothing can inject headers.
  */
 export async function buildOutgoingMime(input: OutgoingMimeInput, deps: OutgoingMimeDeps): Promise<OutgoingMime> {
   const to = input.to;

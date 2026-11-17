@@ -3,25 +3,12 @@ import { ConflictError } from "../errors.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 import { attachItemPatchChangeMetadata } from "./itemPatchChangeMetadata.js";
 import { z } from "zod";
-// Owns the choke point's item writes: `createItem` / `updateItem` and their transaction-scoped
-// `createItemWithClient` / `updateItemWithClient` counterparts, the property writability checks
-// they share, the archived-database create guard with its idempotent-replay exception, the
-// owning module's pre-write transforms (the ownership check on the keys they add), and
-// `writeComputedAndAnnounce`. A domain's own derived property (e.g. Tasks' `time`) is a pre-write
-// transform registered by that domain, and a domain's own transactional side effect on an item
-// update (e.g. the Emails flag-sync write, the Tasks recurrence advance on a `status: 'done'`
-// write) runs through `runItemUpdateHooks` (./hooks.ts), never a direct import
-// of the domain, with `convergeObservedEmailFlagsWithClient` below as mail sync's own declared,
-// narrow ownership handoff for Emails' owner:'user' `read`/`flagged` properties — see its doc
-// comment. It does not own item reads
-// (itemReads.ts), trash and restore (itemTrash.ts), or relation writes (relationOps.ts).
-// Constrained by:
-// - docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md
-// - docs/adr/2026-09-28-module-transactional-side-effects-inline-at-choke-point.md
-// - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
-// - docs/adr/2026-09-10-choke-point-api-for-state-writes.md
-// - docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
-// - docs/adr/2026-09-10-single-writer-ownership-model.md
+// The choke point's item writes: `createItem`/`updateItem` and their `*WithClient` counterparts, the
+// shared property writability checks, the archived-database create guard with its idempotent-replay
+// exception, the owning module's pre-write transforms, and `writeComputedAndAnnounce`. Domain side
+// effects run through the hooks in ./hooks.ts, never a direct domain import;
+// `convergeObservedEmailFlagsWithClient` is mail sync's declared ownership handoff for Emails'
+// `read`/`flagged`.
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
@@ -32,7 +19,7 @@ import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
-import { findDependenciesBySource } from "../rollup/dependencies.js";
+import { findDependenciesBySources } from "../rollup/dependencies.js";
 import { enqueueRollupRecompute } from "../rollup/recompute.js";
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
@@ -62,26 +49,20 @@ import { isDeepStrictEqual } from "node:util";
 
 interface AssertWritablePropertiesOptions {
   /**
-   * Relaxes the owner:'system' rejection below, but only for the exact keys listed — the one
-   * narrow escape hatch for a trusted, code-defined system writer that is itself the module
-   * contract's declared owning process for those specific fields (e.g. Journal's lazy item
-   * creation is the owning process for exactly `name`/`type`/`period`, see
-   * journal/journalStore.ts). Scoped per-key, not a blanket bypass, so a caller can't
-   * accidentally (or a future caller couldn't deliberately) use it to write a *different*
-   * database's system-owned field it was never granted. Never set from a request-handling path.
+   * Relaxes the owner:'system' rejection for exactly these keys, for a code-defined system writer that
+   * is their declared owning process (e.g. Journal's lazy creation of `name`/`type`/`period`). Per key,
+   * so it cannot write another system-owned field. Never set from a request-handling path.
    */
   allowedSystemKeys?: readonly string[];
-  /** The identity of a trusted in-process system writer, required to match each system field it writes. */
+  /** Must match each system field's `ownerProcess`. */
   systemOwnerProcess?: string;
 }
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 /**
- * Value check for `color` properties: `null` clears the color, anything else must be `#RRGGBB`.
- * Inspects only the keys present in the write, so rows already stored in another format stay
- * untouched until that key is written again. Runs unconditionally, independent of the
- * `allowedSystemKeys` escape hatch.
+ * `null` clears the color, anything else must be `#RRGGBB`. Only keys in the write are checked, so
+ * values stored in another format stay until rewritten. Not relaxed by `allowedSystemKeys`.
  */
 function assertColorValues(properties: PropertyRow[], values: Record<string, unknown>): void {
   const byKey = new Map(properties.map((p) => [p.key, p]));
@@ -112,7 +93,7 @@ function assertMarkdownValues(properties: PropertyRow[], values: Record<string, 
   }
 }
 
-/** Keys the generic write path never accepts: relation values live only in item_relations, and computed is internal-only. */
+/** Relation values live only in item_relations, and computed is internal-only. */
 function assertWritableProperties(
   properties: PropertyRow[],
   patchKeys: string[],
@@ -125,8 +106,7 @@ function assertWritableProperties(
       throw new ValidationError(`Unknown property key '${key}'`, { field: key });
     }
     if (property.type === "rollup") {
-      // Rollup values live in items.computed, written only by the recompute worker —
-      // matches the issue's "the generic update path refuses this field — computed_readonly, 403".
+      // Rollup values live in items.computed, written only by the recompute worker.
       throw new ForbiddenError(
         `Property '${key}' is a rollup; its value lives in computed and is read-only here`,
         { field: key },
@@ -143,8 +123,7 @@ function assertWritableProperties(
     }
     if (property.owner === "system") {
       if (!options.allowedSystemKeys?.includes(key)) {
-        // Same code as the relation-write refusal in relationEdgeContext.ts, so both refusals of a
-        // system-owned field share one code (issue #1454).
+        // Same code as the relation-write refusal in relationEdgeContext.ts.
         throw new ForbiddenError(
           `Property '${key}' is owned by 'system' and cannot be written by this caller`,
           { field: key },
@@ -163,13 +142,10 @@ function assertWritableProperties(
 }
 
 /**
- * A user or agent write into a system database that has no user-owned property is refused whole, not only key by
- * key (a request that names a system-owned key is refused first, by `assertWritableProperties`, with that key as
- * the error's field): `assertWritableProperties` and `assertTitlePresent` look at the keys a request names and at a user-owned
- * title, so an empty create (`{}` or `{"properties":{}}`) or an empty patch names no key to refuse and would insert
- * or touch a row of a database that only its owning process may write (`subscribedEvents`, issue gh-1962). A
- * trusted in-process owner (`allowedSystemKeys`) and the system writer are unaffected, and so is a database
- * that the user created or that has at least one user-owned property.
+ * A user or agent write into a system database with no user-owned property is refused whole: an
+ * empty create or patch names no key for `assertWritableProperties` to refuse and would otherwise
+ * touch a row only the owning process may write. Trusted owners (`allowedSystemKeys`), the system
+ * writer and user-created databases are unaffected.
  */
 function assertCallerMayWriteDatabase(
   database: DatabaseRow,
@@ -188,11 +164,9 @@ function assertCallerMayWriteDatabase(
 }
 
 /**
- * A user or agent write must leave the database's user-owned title property non-blank. Internal
- * writers keep their behavior (several create items whose title is written later or derived) and
- * Transcripts is exempt, since a transcript is named from its event or recording date. Stored
- * titles are not trimmed; only a value that is blank after trimming is rejected. On create the
- * title must be present; on patch only a title key that the patch mentions is checked.
+ * A user or agent write must leave the user-owned title non-blank (after trimming; stored titles are
+ * not trimmed). Internal writers and Transcripts (named from its date) are exempt. On create the
+ * title must be present; on patch only a mentioned title key is checked.
  */
 function assertTitlePresent(
   properties: PropertyRow[],
@@ -214,16 +188,12 @@ function assertTitlePresent(
 const selectOptionsConfigSchema = z.object({ options: z.array(z.object({ key: z.string() })).optional() });
 
 /**
- * A user or agent write must name only catalog options in a `select` or `multi_select` property: a `select`
- * value is `null` or one `config.options[].key`; a `multi_select` value is `null` or an array of such keys,
- * and `[]` clears it. Internal writers are not checked, since mail, transcription and similar ingest paths write
- * their own values. Only the keys of `patch` are inspected. A value that deep-equals the one in `stored` (the
- * item's properties on an update) is accepted, so a client that sends a whole record back does not fail on an
- * old value that left the catalog; `stored` is `null` on a create and for an Inbox proposal's database envelope
- * or `create` step, where nothing is stored and every value is checked. A violation is a `ValidationError` whose `field` is the
- * property key: a value that is not in the catalog is named in the message, a value of the wrong shape is
- * described by the shape expected. The caller passes only values the caller or a transform supplied, never
- * one a create filled in from `config.default`.
+ * A user or agent write may name only catalog options: a `select` value is `null` or an option key, a
+ * `multi_select` value is `null` or an array of them (`[]` clears). Internal ingest writers are not
+ * checked. Only `patch` keys are inspected; a value deep-equal to the one in `stored` passes, so a
+ * client sending a whole record back does not fail on a retired option (`stored` is `null` when
+ * nothing is stored). A violation is a `ValidationError` on the property key. The caller never passes
+ * values filled from `config.default`.
  */
 export function assertSelectValuesKnown(
   properties: PropertyRow[],
@@ -259,7 +229,7 @@ export function assertSelectValuesKnown(
   }
 }
 
-/** Checks a proposed user patch using the side-effect-free checks of an item update. */
+/** The side-effect-free checks of an item update, for a proposed user patch. */
 export function assertUserItemPatchValid(
   properties: PropertyRow[],
   values: Record<string, unknown>,
@@ -272,9 +242,8 @@ export function assertUserItemPatchValid(
 }
 
 /**
- * Prepares a user patch without a database client or write hooks. `timezone` is the tenant zone the
- * caller read and validated in its own tenant transaction (`getSystemTimezone` + `assertValidTimezone`);
- * preparations that depend on the wall clock, such as the Events time rules, use it as a plain value.
+ * Prepares a user patch without a client or write hooks. `timezone` is the tenant zone the caller
+ * validated in its own tenant transaction; wall-clock preparations (e.g. Events time rules) use it.
  */
 export async function prepareUserItemPatch(
   properties: PropertyRow[],
@@ -326,10 +295,9 @@ export async function prepareUserItemPatch(
 }
 
 /**
- * The ownership rule for keys a pre-write transform adds (the caller's own keys were already checked by
- * `assertWritableProperties`): the key must exist on the database, must be writable through the generic
- * path (not a rollup or relation), and when it is `owner: 'system'` its `ownerProcess` must be unset or
- * name the transform's own module. Only keys absent from the caller's patch are inspected.
+ * Keys a transform adds (the caller's were checked by `assertWritableProperties`) must exist, be
+ * writable through the generic path, and if `owner: 'system'` have an unset `ownerProcess` or name the
+ * transform's own module.
  */
 function assertTransformAddedKeysWritable(
   properties: PropertyRow[],
@@ -367,11 +335,7 @@ function assertTransformAddedKeysWritable(
   }
 }
 
-/**
- * Runs the owning module's pre-write transforms over one write's properties, then enforces the ownership
- * rule on the keys they added. The caller checks `hasItemPreWriteTransform` first, so a database whose
- * module registered none never reaches this function.
- */
+/** The caller checks `hasItemPreWriteTransform` first. */
 async function applyItemPreWriteTransforms(
   moduleId: string,
   context: ItemPreWriteTransformContext,
@@ -383,28 +347,31 @@ async function applyItemPreWriteTransforms(
   return transformed;
 }
 
+/** Re-reads a row this transaction wrote and still holds locked. */
+async function requireStoredItem(client: PoolClient, item: ItemRow): Promise<ItemRow> {
+  const stored = await itemsStore.getItemById(client, item.databaseId, item.id);
+  if (!stored) throw new NotFoundError(`Item ${item.id} not found`);
+  return stored;
+}
+
 /**
- * Item creation's own archived-database guard: unlike every other mutation, a create must let
- * through the one no-write exception the issue carves out — a replay of an idempotency key
- * that already committed a row before the database was archived returns that existing row
- * instead of failing, so a retried request doesn't turn a transient error into a permanent
- * failure. A new key, or a key reserved for this database whose item is missing or trashed
- * (see `findIdempotentReplay`'s `deletedAt` filter), still gets `database_archived` — only
- * an exact, already-satisfied replay is spared. Returns the replay row to return verbatim (no
- * further writes or event emission), or `null` when the database isn't archived at all.
+ * A create on an archived database is let through only as an exact replay of an idempotency key that
+ * committed a row before archiving, so a retry does not turn a transient error permanent. Any other
+ * key (including one whose item is missing or trashed) gets `database_archived`. Returns the
+ * database row the create goes on with, or the replay row to return verbatim.
  */
 async function assertDatabaseWritableForCreate(
   client: PoolClient,
   databaseId: string,
   idempotencyKey: string | undefined,
-): Promise<ItemRow | null> {
+): Promise<{ database: DatabaseRow; replay?: never } | { replay: ItemRow; database?: never }> {
   const database = await databasesStore.getDatabase(client, databaseId);
   if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
-  if (!database.archivedAt) return null;
+  if (!database.archivedAt) return { database };
 
   if (idempotencyKey) {
     const replay = await itemsStore.findIdempotentReplay(client, databaseId, idempotencyKey, { requireLive: true });
-    if (replay) return replay;
+    if (replay) return { replay };
   }
   throw new ForbiddenError(
     `Database ${databaseId} is archived and cannot be written to`,
@@ -414,13 +381,13 @@ async function assertDatabaseWritableForCreate(
 }
 
 export interface CreateItemWithClientOptions extends AssertWritablePropertiesOptions {
-  /** Queue affinity to route the onItemEvent heartbeat-fire job to, looked up by the matched heartbeat's action id. */
+  /** Routes the onItemEvent heartbeat-fire job, by the matched heartbeat's action id. */
   queueAffinity?: ActionQueueAffinity;
-  /** The user whose write this is, when there is one — see `InvalidationEvent`'s doc comment. Absent for a system/background caller. */
+  /** Absent for a system/background caller; see `InvalidationEvent`. */
   actingUserId?: string;
-  /** Set only for a human REST writer (`restSession` actor); read by domain hooks that confine a write to humans. */
+  /** Set only for a human REST writer; read by hooks that confine a write to humans. */
   humanWriterUserId?: string;
-  /** Who made the write; defaults to `SYSTEM_WRITER`. Derived server-side by the caller, never from a request body. */
+  /** Defaults to `SYSTEM_WRITER`. Derived server-side, never from a request body. */
   writer?: WriterIdentity;
 }
 
@@ -431,16 +398,9 @@ export interface CreateItemInput {
 }
 
 /**
- * The item-creation logic, factored out (same reason as `createRelationPropertyWithClient`
- * above) so a caller already holding an open transaction can run it against that same
- * `client` — namely `tasks/advanceTaskRecurrenceWithClient.ts`, whose rolling-model advance must create
- * the next task instance and re-link its relations in the same transaction as the `done` write,
- * and `journal/journalStore.ts`, whose lazy item creation writes
- * owner:'system' properties (`allowedSystemKeys`) as Journal's declared owning process for
- * exactly those keys. `createChokePoint(...)`'s `createItem` below is a thin wrapper over this.
- * An idempotency-key replay (`insertItemWithReplay`'s `created: false`) returns the
- * already-committed item as-is: no heartbeat trigger, no invalidation, since both already
- * fired for the call that actually created it.
+ * For callers already in a transaction (e.g. the Tasks recurrence advance, Journal's lazy creation
+ * with `allowedSystemKeys`). An idempotency-key replay returns the committed item as-is, with no
+ * heartbeat or invalidation, since both fired for the original create.
  */
 export async function createItemWithClient(
   client: PoolClient,
@@ -451,10 +411,8 @@ export async function createItemWithClient(
 }
 
 /**
- * `createItemWithClient` that also reports whether this call inserted the item (`created: true`) or
- * returned the row of an idempotency-key replay. `createItemWithRelationsWithClient`
- * (itemCreateWithRelations.ts) passes as `initialRelations` the relations it writes after this function
- * returned; they reach the create hooks as `ItemCreateHookContext.initialRelations`.
+ * Also reports whether this call inserted the item. `initialRelations` reach the create hooks as
+ * `ItemCreateHookContext.initialRelations`.
  */
 export async function createItemReportingReplay(
   client: PoolClient,
@@ -462,14 +420,13 @@ export async function createItemReportingReplay(
   options: CreateItemWithClientOptions,
   initialRelations?: readonly ItemCreateInitialRelation[],
 ): Promise<{ item: ItemRow; created: boolean }> {
-  // An agent's project needs `write` access to the database, also for an idempotent replay (issue #1810).
+  // Also required for an idempotent replay.
   await assertWriterDatabaseAccess(client, options.writer, input.databaseId, "write");
-  const replay = await assertDatabaseWritableForCreate(client, input.databaseId, input.idempotencyKey);
-  if (replay) return { item: replay, created: false };
+  const writable = await assertDatabaseWritableForCreate(client, input.databaseId, input.idempotencyKey);
+  if (writable.replay) return { item: writable.replay, created: false };
+  const { database } = writable;
 
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
-  const database = await databasesStore.getDatabase(client, input.databaseId);
-  if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const writer = options.writer ?? SYSTEM_WRITER;
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
   assertCallerMayWriteDatabase(database, properties, writer, options);
@@ -479,7 +436,7 @@ export async function createItemReportingReplay(
   let itemProperties = input.properties ?? {};
   const defaultedKeys = new Set<string>();
   const moduleId = database.ownerModuleId;
-  const { item, created } = await itemsStore.insertItemWithReplay(
+  const { item: inserted, created } = await itemsStore.insertItemWithReplay(
     client,
     { databaseId: input.databaseId, properties: itemProperties, idempotencyKey: input.idempotencyKey },
     async () => {
@@ -500,7 +457,7 @@ export async function createItemReportingReplay(
       itemProperties = { ...itemProperties };
       let today: string | undefined;
       for (const property of properties) {
-        // A key already set by the caller or by a transform keeps its value; only an absent key takes its default.
+        // Only a key absent after the caller and transforms takes its default.
         if (Object.hasOwn(itemProperties, property.key) || !Object.hasOwn(property.config, "default")) continue;
         const value = property.config.default;
         defaultedKeys.add(property.key);
@@ -518,8 +475,8 @@ export async function createItemReportingReplay(
       assertColorValues(properties, itemProperties);
       assertMarkdownValues(properties, itemProperties);
       assertTitlePresent(properties, itemProperties, database.ownerModuleId, writer, "create");
-      // A value the create filled in from `config.default` is not a caller value: its option key was checked when
-      // the default was written, and a multi_select default is stored as that bare key, not as an array.
+      // A defaulted value is not a caller value: its option key was checked when the default was written,
+      // and a multi_select default is stored as a bare key.
       assertSelectValuesKnown(
         properties,
         Object.fromEntries(Object.entries(itemProperties).filter(([key]) => !defaultedKeys.has(key))),
@@ -529,20 +486,24 @@ export async function createItemReportingReplay(
       return itemProperties;
     },
   );
-  if (!created) return { item, created: false };
+  if (!created) return { item: inserted, created: false };
 
-  // Domain validation/side effects of a real insert run here, in the same transaction, so a
-  // rejection rolls the row back — see docs/adr/2026-10-09-item-create-domain-hooks.md.
+  // In the same transaction, so a rejection rolls the row back.
   await runItemCreateHooks({
     client,
     database,
-    item,
+    item: inserted,
     properties: itemProperties,
     defaultedKeys,
     humanWriterUserId: options.humanWriterUserId,
     writer,
     initialRelations,
   });
+  // A create hook may write the new item again (Areas assigns its `position`): answer with the row as stored.
+  const item =
+    itemsStore.itemPropertyWriteCount(client, inserted.databaseId, inserted.id) === 0
+      ? inserted
+      : await requireStoredItem(client, inserted);
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   runAfterCommit(client, () =>
     notifyInvalidation({
@@ -558,11 +519,8 @@ export async function createItemReportingReplay(
 }
 
 /**
- * `itemsStore.writeComputed` for a declared module cache writer whose computed value the UI
- * shows live (the transcription worker's Transcripts `segments`/`language`/summaries): writes
- * the key inside the caller's transaction, then announces it over the generic realtime channel
- * once that transaction commits — `writeComputed` alone announces nothing. The announced
- * `updatedAt` is the one the write itself read back, not a caller's earlier snapshot.
+ * `itemsStore.writeComputed` for a module cache value the UI shows live: writes in the caller's
+ * transaction and announces over realtime after commit, with the `updatedAt` the write read back.
  */
 export async function writeComputedAndAnnounce(
   client: PoolClient,
@@ -583,32 +541,25 @@ export interface UpdateItemInput {
 }
 
 export interface UpdateItemWithClientOptions extends AssertWritablePropertiesOptions {
-  /** Queue affinity to route the onItemEvent heartbeat-fire job to, looked up by the matched heartbeat's action id. */
+  /** Routes the onItemEvent heartbeat-fire job, by the matched heartbeat's action id. */
   queueAffinity?: ActionQueueAffinity;
-  /** The user whose write this is, when there is one — see `InvalidationEvent`'s doc comment. Absent for a system/background caller. */
+  /** Absent for a system/background caller; see `InvalidationEvent`. */
   actingUserId?: string;
-  /** Set only for a human REST writer (`restSession` actor); read by domain hooks that confine a write to humans. */
+  /** Set only for a human REST writer; read by hooks that confine a write to humans. */
   humanWriterUserId?: string;
-  /** Who made the write; defaults to `SYSTEM_WRITER`. Derived server-side by the caller, never from a request body. */
+  /** Defaults to `SYSTEM_WRITER`. Derived server-side, never from a request body. */
   writer?: WriterIdentity;
   /**
-   * Set only by `convergeObservedEmailFlagsWithClient` below, mail sync's declared, narrow
-   * ownership handoff for Emails' owner:'user' `read`/`flagged` properties — never by a
-   * user-initiated write. Skips `recordDesiredMailMessageFlags`: that call exists to persist
-   * *user/agent triage intent* (its own comment below), and a provider observation is not
-   * that — `mailFlagObservation.ts`'s `recordObservedMailMessageFlags` already derives
-   * `mail_message_flag_sync_state`'s desired/current state correctly for an observation.
+   * Set only by `convergeObservedEmailFlagsWithClient`. Skips `recordDesiredMailMessageFlags`, which
+   * persists user/agent triage intent; a provider observation is not that, and
+   * `recordObservedMailMessageFlags` already derives the sync state for it.
    */
   skipMailDesiredStateRecording?: boolean;
 }
 
 /**
- * The item-update logic, factored out for the same reason as `createItemWithClient` above.
- * `options.allowedSystemKeys` (issue #25) mirrors `createItemWithClient`'s escape hatch: a
- * declared owning process — e.g. the library metadata heartbeat writing `cover` after an
- * item already exists — needs to patch its owner:'system' fields post-creation, not only
- * at insert time. `createChokePoint(...).updateItem` below never passes it, same as
- * `createItem`'s public wrapper.
+ * `options.allowedSystemKeys` lets a declared owning process (e.g. library metadata writing `cover`)
+ * patch its owner:'system' fields after creation. The public wrapper never passes it.
  */
 export async function updateItemWithClient(
   client: PoolClient,
@@ -616,11 +567,9 @@ export async function updateItemWithClient(
   options: UpdateItemWithClientOptions = {},
 ): Promise<itemsStore.UpdateItemResult> {
   await assertWriterDatabaseAccess(client, options.writer, input.databaseId, "write", input.itemId);
-  await assertDatabaseNotArchived(client, input.databaseId);
+  const database = await assertDatabaseNotArchived(client, input.databaseId);
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
-  const database = await databasesStore.getDatabase(client, input.databaseId);
-  if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const command = database.ownerModuleId ? getItemUpdateCommand(database.ownerModuleId) : undefined;
   const commandProperty = command && properties.find((property) => property.key === command.key);
   const hasCommand =
@@ -643,8 +592,8 @@ export async function updateItemWithClient(
   assertTitlePresent(properties, input.propertiesPatch, database.ownerModuleId, writer, "patch");
   let propertiesPatch = input.propertiesPatch;
   const moduleId = database.ownerModuleId;
-  // The module's own locks come before the first lock on the written row, which the transform lock below and
-  // the row update take: see docs/adr/2026-11-12-an-update-takes-the-module-locks-before-it-locks-the-row.md.
+  // Module locks come before the first lock on the written row (the transform lock below and the row
+  // update): docs/architecture/data-model-and-writes.md#update-updateitemwithclient.
   if (moduleId !== null) {
     await runItemUpdatePreLockHooks(moduleId, {
       client,
@@ -667,7 +616,7 @@ export async function updateItemWithClient(
     stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
     if (!stored || stored.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
   }
-  if (stored && input.ifVersion !== undefined && input.ifVersion !== stored.updatedAt) {
+  if (stored && input.ifVersion !== undefined && input.ifVersion !== stored.version) {
     throw new ConflictError("Item was modified since ifVersion was read", { current: stored });
   }
   const ordinaryPatch = { ...input.propertiesPatch };
@@ -700,9 +649,8 @@ export async function updateItemWithClient(
     if (Object.keys(propertiesPatch).length === 0)
       return { ...stored, previous: { [command.key]: stored.properties[command.key] ?? null } };
   }
-  // Every key this update writes, including any a transform added. Value links, rollup dependencies
-  // and the timezone check treat these like any other written key; `patchKeys` (the caller's keys)
-  // stays the basis of the returned `previous`.
+  // Every key written, transform-added included, counts for value links, rollup dependencies and the
+  // timezone check; `patchKeys` (the caller's) stays the basis of `previous`.
   const writtenKeys = Object.keys(propertiesPatch);
   if (valueLinksHandoff) {
     const userKeys = new Set(
@@ -714,52 +662,55 @@ export async function updateItemWithClient(
     }
   }
 
-  const { previous, ...item } = await itemsStore.updateItemProperties(client, {
+  const { previous, ...written } = await itemsStore.updateItemProperties(client, {
     databaseId: input.databaseId,
     itemId: input.itemId,
     propertiesPatch,
     ifVersion: input.ifVersion,
   });
-  // A user or agent write that changes a linked value ends its link, in this transaction. An agent under
-  // a run asks for approval first (issue #1758), which rolls this transaction back.
+  const ownWriteCount = itemsStore.itemPropertyWriteCount(client, written.databaseId, written.id);
+  // A user or agent write that changes a linked value ends its link here. An agent under a run asks
+  // for approval first, rolling this transaction back.
   const changedKeys = writtenKeys.filter((key) => !isDeepStrictEqual(previous[key], propertiesPatch[key]));
-  await requireApprovalForChangedItemLinks(client, writer, { itemId: item.id, changedKeys });
-  await breakValueLinks(client, { itemId: item.id, propertyKeys: changedKeys, writerKind: writer.writerKind });
-  // Every domain's transactional side effect on this write (the Tasks recurrence advance on a
-  // `status: 'done'` write, the Emails flag-sync write, ...) runs here, in the same transaction,
-  // through the per-process registry — see docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md.
-  // `skipMailDesiredStateRecording` opts a provider-observation convergence out of the Emails
-  // flag-sync write — see `UpdateItemWithClientOptions`'s doc comment.
+  await requireApprovalForChangedItemLinks(client, writer, { itemId: written.id, changedKeys });
+  await breakValueLinks(client, { itemId: written.id, propertyKeys: changedKeys, writerKind: writer.writerKind });
+  // Every domain's transactional side effect on this write runs here, in the same transaction.
   await runItemUpdateHooks({
     client,
     database,
-    item,
+    item: written,
     propertiesPatch,
     previous,
     humanWriterUserId: options.humanWriterUserId,
     writer,
     skipMailDesiredStateRecording: options.skipMailDesiredStateRecording,
   });
+  // An update hook may write the same item again: answer with the row as stored, so its `version` is current.
+  const item =
+    itemsStore.itemPropertyWriteCount(client, written.databaseId, written.id) === ownWriteCount
+      ? written
+      : await requireStoredItem(client, written);
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
 
-  for (const key of writtenKeys) {
-    const dependencies = await findDependenciesBySource(client, input.databaseId, key);
-    for (const dependency of dependencies) {
-      const edges = await relationsStore.listRelationsForItem(client, dependency.relationDefinitionId, item.id);
-      for (const edge of edges) {
-        await enqueueRollupRecompute(client, dependency.rollupPropertyId, relationsStore.otherSide(edge, item.id));
-      }
+  for (const dependency of await findDependenciesBySources(client, input.databaseId, writtenKeys)) {
+    const edges = await relationsStore.listRelationsForItem(client, dependency.relationDefinitionId, item.id);
+    for (const edge of edges) {
+      await enqueueRollupRecompute(client, dependency.rollupPropertyId, relationsStore.otherSide(edge, item.id));
     }
   }
 
-  const settingsItemId = await getSystemSettingsItemId(client).catch((err) => {
-    if (err instanceof NotFoundError) return null; // system not seeded yet
-    throw err;
-  });
-  if (settingsItemId === item.id && typeof propertiesPatch.timezone === "string") {
-    const timezone = propertiesPatch.timezone;
-    // Validated before it reaches computeNextFireAt, where an invalid zone would surface
-    // much later as a Postgres "Invalid time value" from serializing next_fire_at = NaN.
+  // Only the settings item's own `timezone` write needs to know which item that is.
+  const timezone = typeof propertiesPatch.timezone === "string" ? propertiesPatch.timezone : null;
+  const settingsItemId =
+    timezone === null
+      ? null
+      : await getSystemSettingsItemId(client).catch((err) => {
+          if (err instanceof NotFoundError) return null; // system not seeded yet
+          throw err;
+        });
+  if (timezone !== null && settingsItemId === item.id) {
+    // Validated here; an invalid zone would otherwise surface much later as a Postgres "Invalid time
+    // value" from next_fire_at = NaN.
     assertValidTimezone(timezone);
     await recomputeAllForTimezoneChange(client, timezone);
   }
@@ -793,18 +744,9 @@ export interface ConvergeObservedEmailFlagsInput {
 }
 
 /**
- * The explicit ownership handoff docs/adr/2026-09-10-single-writer-ownership-model.md's
- * "Consequences" section calls for when a feature needs a second writer: mail sync
- * (mail/mailFlagObservation.ts) is the sole declared writer of Emails' owner:'user'
- * `read`/`flagged` properties for exactly one case — folding a *converged* provider
- * observation (no pending user write-back to protect) into the item, so the mailbox doesn't
- * keep showing state the provider itself has already moved past. Distinct from a plain call to
- * `updateItemWithClient` (which a user-initiated PATCH also uses, indistinguishably, since
- * `assertWritableProperties` never restricts owner:'user' fields) so this one narrow,
- * code-reviewed call site is the only thing that can pass `skipMailDesiredStateRecording` —
- * see that option's doc comment for why an observation must skip it. Never call
- * `updateItemWithClient` directly with that option from anywhere else, and never use this
- * function for any field but Emails' `read`/`flagged`.
+ * Mail sync's declared second writer of Emails' owner:'user' `read`/`flagged`: folds a converged
+ * provider observation (no pending user write-back) into the item. The only call site allowed to pass
+ * `skipMailDesiredStateRecording`; never use it for any other field.
  */
 export async function convergeObservedEmailFlagsWithClient(
   client: PoolClient,
@@ -821,7 +763,7 @@ export type RolloverTaskInput =
   | { databaseId: string; itemId: string; date: string; status?: never }
   | { databaseId: string; itemId: string; status: "missed"; date?: never };
 
-/** Nightly Tasks ownership handover; see the rollover and missed-occurrence ADRs. */
+/** Nightly Tasks ownership handover. */
 export async function rolloverTaskWithClient(client: PoolClient, input: RolloverTaskInput): Promise<ItemRow> {
   const propertiesPatch =
     input.status === "missed" ? { status: "missed" } : { date: input.date, timeFrom: null, timeTo: null };
@@ -829,12 +771,8 @@ export async function rolloverTaskWithClient(client: PoolClient, input: Rollover
 }
 
 /**
- * The items-row `FOR UPDATE` lock `mail/mailFlagObservation.ts`'s `applyObservedMailMessageFlags`
- * takes before it locks `mail_message_flag_sync_state`, in that order — see that function's doc
- * comment for why the ordering matters. Exposed here, next to `convergeObservedEmailFlagsWithClient`
- * (mail sync's other declared handoff into the choke point), so mail sync locks the items row
- * through chokePoint's own public write surface instead of importing `itemsStore.js` — an internal
- * module only chokePoint/ files import from — directly.
+ * The items-row `FOR UPDATE` lock `applyObservedMailMessageFlags` takes before locking
+ * `mail_message_flag_sync_state`. Exposed here so mail sync need not import `itemsStore.js`.
  */
 export async function lockItemForObservedMailFlags(
   client: PoolClient,
@@ -892,6 +830,7 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
                   createdAt: z.string(),
                   updatedAt: z.string(),
                   deletedAt: z.string().nullable(),
+                  version: z.string(),
                 })
                 .passthrough(),
             })

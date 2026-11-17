@@ -121,17 +121,14 @@ describe("collection metadata resolver (issue #1407)", () => {
     const resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
     const declared = resolver.collectionFilter({ key: "projects", system: true });
     expect(declared).toEqual({ type: "is_empty", property: "systemActive" });
-    // A caller changing its copy does not change what the resolver answers next.
     if (declared) declared.property = "changed";
     expect(resolver.collectionFilter({ key: "projects", system: true })).toEqual({
       type: "is_empty",
       property: "systemActive",
     });
-    // A system database without a declaration, one without a descriptor and one without a key.
     for (const key of ["tasks", "unknownInternal", null]) {
       expect(resolver.collectionFilter({ key, system: true })).toBeUndefined();
     }
-    // A user-created database never takes a module's declaration, whatever its key column holds.
     expect(resolver.collectionFilter({ key: null, system: false })).toBeUndefined();
     expect(resolver.collectionFilter({ key: "projects", system: false })).toBeUndefined();
   });
@@ -142,13 +139,11 @@ describe("collection metadata resolver (issue #1407)", () => {
     // Projects omit Tasks, and the order lists the future key of a database that is not active.
     expect(projects?.omit).toEqual(["tasks"]);
     expect(projects?.order.slice(0, 3)).toEqual(["projects", "events", "files"]);
-    // People omit Emails: the mail of a person is listed as threads (issue gh-1874).
+    // People omit Emails: the mail of a person is listed as threads.
     expect(resolver.relatedOrder?.({ key: "people", system: true })?.omit).toEqual(["emails"]);
-    // A system database without a declaration, one without a descriptor and one without a key.
     for (const key of ["tasks", "unknownInternal", null]) {
       expect(resolver.relatedOrder?.({ key, system: true })).toBeUndefined();
     }
-    // A user-created database never takes a module's declaration, whatever its key column holds.
     expect(resolver.relatedOrder?.({ key: "projects", system: false })).toBeUndefined();
 
     const registry = {
@@ -174,14 +169,11 @@ describe("collection metadata resolver (issue #1407)", () => {
     const resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
     const declared = resolver.areaFilter?.({ key: "projects", system: true });
     expect(declared).toEqual({ type: "relation_contains", property: "area", value: { areaValue: true } });
-    // A caller changing its copy does not change what the resolver answers next.
     if (declared?.type === "relation_contains") declared.property = "changed";
     expect(resolver.areaFilter?.({ key: "projects", system: true })).toMatchObject({ property: "area" });
-    // A system database without a declaration, one without a descriptor and one without a key.
     for (const key of ["transcripts", "unknownInternal", null]) {
       expect(resolver.areaFilter?.({ key, system: true })).toBeUndefined();
     }
-    // A user-created database never takes a module's declaration, whatever its key column holds.
     expect(resolver.areaFilter?.({ key: "projects", system: false })).toBeUndefined();
   });
 

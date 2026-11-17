@@ -61,6 +61,7 @@ const draftSchema = z.looseObject({
   createdBy: z.string(),
   lastEditedBy: z.string(),
   updatedAt: z.string(),
+  version: z.string(),
   sentAt: z.string().nullable(),
 });
 const refusalSchema = z.looseObject({
@@ -116,7 +117,6 @@ interface ReceiveOptions {
   references?: string[];
   deliveredToHeaders?: string[];
   attachmentNames?: string[];
-  /** Which folder of the mailbox the message is ingested into. */
   folder?: "inbox" | "drafts";
 }
 
@@ -190,7 +190,6 @@ async function seededTenant(locale = "en"): Promise<MailTenant> {
   });
 }
 
-/** Ingests a message into the Inbox (or the Drafts folder) of the tenant's mailbox as the sync worker does. */
 async function receive(t: MailTenant, options: ReceiveOptions = {}): Promise<string> {
   return inTenant(t, async () => {
     const cp = createChokePoint(runtime);
@@ -247,7 +246,6 @@ async function threadOf(t: MailTenant, emailItemId: string): Promise<string> {
   return threadId;
 }
 
-/** A run of the project, with the Semp thread it belongs to when `withThread` is set. */
 async function runOf(
   t: MailTenant,
   options: {
@@ -288,7 +286,6 @@ async function toolNamed(t: MailTenant, runId: string, name: string): Promise<Re
   return tool;
 }
 
-/** Calls the tool as a session does and parses the answer: `error` and the JSON text it holds. */
 async function call(t: MailTenant, runId: string, name: string, args: unknown): Promise<ToolResult> {
   const tool = await toolNamed(t, runId, name);
   const { result, error } = await inTenant(t, () => tool.invoke(args));
@@ -311,7 +308,6 @@ async function draftRow(t: MailTenant, draftId: string) {
   return row;
 }
 
-/** What the tenant holds that a draft write adds to: Emails items, `mail_drafts` rows and relation edges. */
 async function writtenState(t: MailTenant) {
   return inTenant(t, async () => {
     const emails = await runtime.query<{ n: number }>(
@@ -328,7 +324,6 @@ async function writtenState(t: MailTenant) {
   });
 }
 
-/** The Files items an email holds through `Emails.attachments`, trashed ones included. */
 async function attachmentsOf(t: MailTenant, emailItemId: string): Promise<{ fileId: string; name: string }[]> {
   const { rows } = await inTenant(t, () =>
     runtime.query<{ file_id: string; name: string }>(
@@ -345,7 +340,80 @@ async function attachmentsOf(t: MailTenant, emailItemId: string): Promise<{ file
   return rows.map((row) => ({ fileId: row.file_id, name: row.name }));
 }
 
-/** A draft created by a person through the draft operation, as the compose window would. */
+/** The id of the item of tenant `t` with module `moduleKey`'s database. */
+async function databaseIdOf(t: MailTenant, moduleKey: string): Promise<string> {
+  const found = await inTenant(t, () =>
+    withTransaction(runtime, (client) => databasesStore.getDatabaseByModuleId(client, moduleKey)),
+  );
+  if (!found) throw new Error(`Missing ${moduleKey}`);
+  return found.id;
+}
+
+/** Relates the item of `threadId` through its `propertyKey` to a new item of `moduleKey` named `name`. */
+async function relateThread(t: MailTenant, threadId: string, propertyKey: string, moduleKey: string, name: string) {
+  const targetDatabaseId = await databaseIdOf(t, moduleKey);
+  const threadsDatabaseId = await databaseIdOf(t, "threads");
+  return inTenant(t, async () => {
+    const cp = createChokePoint(runtime);
+    const target = await cp.createItem({ databaseId: targetDatabaseId, properties: { name } });
+    const threadItem = await runtime.query<{ item_id: string }>("SELECT item_id FROM mail_threads WHERE id = $1", [
+      threadId,
+    ]);
+    const threadItemId = threadItem.rows[0]?.item_id;
+    if (!threadItemId) throw new Error("The thread has no item");
+    const property = (await cp.listProperties(threadsDatabaseId)).find((row) => row.key === propertyKey);
+    if (!property) throw new Error(`Missing the Threads ${propertyKey} property`);
+    await cp.createRelation(
+      { relationPropertyId: property.id, callerItemId: threadItemId, targetItemId: target.id },
+      { writerKind: "user" },
+    );
+    return target.id;
+  });
+}
+
+/** A new thread merged into `keptId`, whose id still resolves to it. */
+function mergedThreadInto(t: MailTenant, keptId: string): Promise<string> {
+  return inTenant(t, () =>
+    withTransaction(runtime, async (client) => {
+      const gone = await createMailThread(client, "Old");
+      await reassignThread(client, gone.id, keptId);
+      return gone.id;
+    }),
+  );
+}
+
+/** A mailbox item without addresses, optionally moved to the Trash. */
+async function bareMailbox(t: MailTenant, trashed: boolean): Promise<string> {
+  const mailboxesId = await databaseIdOf(t, "mailboxes");
+  return inTenant(t, async () => {
+    const created = await createChokePoint(runtime).createItem({
+      databaseId: mailboxesId,
+      properties: { name: "Bare", provider: "gmail" },
+    });
+    if (trashed) {
+      await withTransaction(runtime, (client) =>
+        itemDeleteWithClient(client, mailboxesId, created.id, { queueAffinity: createActionQueueAffinity() }),
+      );
+    }
+    return created.id;
+  });
+}
+
+/** Makes the tenant's mailbox a generic one, which has no provider attachment limit. */
+async function makeMailboxGeneric(t: MailTenant): Promise<void> {
+  await admin.query(
+    'UPDATE items SET properties = properties || \'{"provider": "generic"}\'::jsonb WHERE tenant_id = $1 AND id = $2',
+    [t.tenantId, t.mailboxId],
+  );
+}
+
+async function storedBody(draftId: string): Promise<string | undefined> {
+  const { rows } = await admin.query<{ body: string }>("SELECT properties->>'body' AS body FROM items WHERE id = $1", [
+    draftId,
+  ]);
+  return rows[0]?.body;
+}
+
 async function userDraft(t: MailTenant, overrides: { threadId?: string | null } = {}): Promise<EmailDraftView> {
   return inTenant(t, () =>
     withTransaction(runtime, (client) =>
@@ -369,7 +437,7 @@ async function userDraft(t: MailTenant, overrides: { threadId?: string | null } 
   );
 }
 
-describe("the mail agent tools (issue gh-1927)", () => {
+describe("the mail agent tools", () => {
   beforeAll(async () => {
     admin = getTestPool();
     runtime = await createRuntimeRolePool(admin, "semprec_data");
@@ -405,7 +473,6 @@ describe("the mail agent tools (issue gh-1927)", () => {
     });
   }
 
-  /** Records every ephemeral delta published, and the body the draft held in the database at that moment. */
   function recordDeltas(): void {
     deltas = [];
     storedBodiesAtPublish = [];
@@ -549,23 +616,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
       });
       const threadId = await threadOf(tenant, first);
       expect(await threadOf(tenant, second)).toBe(threadId);
-      await inTenant(tenant, async () => {
-        const cp = createChokePoint(runtime);
-        const databases = await cp.listDatabases();
-        const db = (key: string) => databases.find((row) => row.ownerModuleId === key)?.id ?? "";
-        const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Website" } });
-        const threadItem = await runtime.query<{ item_id: string }>("SELECT item_id FROM mail_threads WHERE id = $1", [
-          threadId,
-        ]);
-        const threadItemId = threadItem.rows[0]?.item_id;
-        if (!threadItemId) throw new Error("The thread has no item");
-        const projectProperty = (await cp.listProperties(db("threads"))).find((row) => row.key === "project");
-        if (!projectProperty) throw new Error("Missing the Threads project property");
-        await cp.createRelation(
-          { relationPropertyId: projectProperty.id, callerItemId: threadItemId, targetItemId: project.id },
-          { writerKind: "user" },
-        );
-      });
+      await relateThread(tenant, threadId, "project", "projects", "Website");
       const { runId } = await runOf(tenant);
 
       const answer = await call(tenant, runId, "mail.thread.get", { threadId });
@@ -596,25 +647,15 @@ describe("the mail agent tools (issue gh-1927)", () => {
     it("returns the company of the thread and the person who wrote its latest message, with their ids and names", async () => {
       const message = await receive(tenant, { subject: "Offer", envelope: { from: PETR, to: [JANA] } });
       const threadId = await threadOf(tenant, message);
-      const { companyId, personId } = await inTenant(tenant, async () => {
-        const cp = createChokePoint(runtime);
-        const databases = await cp.listDatabases();
-        const db = (key: string) => databases.find((row) => row.ownerModuleId === key)?.id ?? "";
-        const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Acme" } });
-        const person = await cp.createItem({ databaseId: db("people"), properties: { name: "Petr Novák" } });
+      const companyId = await relateThread(tenant, threadId, "company", "companies", "Acme");
+      const peopleId = await databaseIdOf(tenant, "people");
+      const personId = await inTenant(tenant, async () => {
+        const person = await createChokePoint(runtime).createItem({
+          databaseId: peopleId,
+          properties: { name: "Petr Novák" },
+        });
         await withTransaction(runtime, (client) => reindexPersonEmails(client, person.id, [PETR.address]));
-        const threadItem = await runtime.query<{ item_id: string }>("SELECT item_id FROM mail_threads WHERE id = $1", [
-          threadId,
-        ]);
-        const threadItemId = threadItem.rows[0]?.item_id;
-        if (!threadItemId) throw new Error("The thread has no item");
-        const companyProperty = (await cp.listProperties(db("threads"))).find((row) => row.key === "company");
-        if (!companyProperty) throw new Error("Missing the Threads company property");
-        await cp.createRelation(
-          { relationPropertyId: companyProperty.id, callerItemId: threadItemId, targetItemId: company.id },
-          { writerKind: "user" },
-        );
-        return { companyId: company.id, personId: person.id };
+        return person.id;
       });
       const { runId } = await runOf(tenant);
 
@@ -630,13 +671,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
     it("returns the current thread for the id of a thread that was merged into it", async () => {
       const message = await receive(tenant, { subject: "Merged" });
       const keptId = await threadOf(tenant, message);
-      const goneId = await inTenant(tenant, () =>
-        withTransaction(runtime, async (client) => {
-          const gone = await createMailThread(client, "Old");
-          await reassignThread(client, gone.id, keptId);
-          return gone.id;
-        }),
-      );
+      const goneId = await mergedThreadInto(tenant, keptId);
       const { runId } = await runOf(tenant);
 
       const answer = await call(tenant, runId, "mail.thread.get", { threadId: goneId });
@@ -769,47 +804,32 @@ describe("the mail agent tools (issue gh-1927)", () => {
       expect(await writtenState(tenant)).toEqual(before);
     });
 
-    it("refuses a new draft without a mailbox with a 400 and writes nothing", async () => {
+    it.each<[string, () => Promise<Record<string, unknown>>, string]>([
+      ["without a mailbox", async () => ({}), "mailboxId"],
+      [
+        "that names a source message",
+        async () => ({ mailboxId: tenant.mailboxId, sourceEmailId: randomUUID() }),
+        "sourceEmailId",
+      ],
+      [
+        "in a mailbox that has no address to send from",
+        async () => ({ mailboxId: await bareMailbox(tenant, false) }),
+        "mailboxId",
+      ],
+    ])("refuses a new draft %s with a 400 and writes nothing", async (_name, args, field) => {
       const { runId } = await runOf(tenant);
+      const extra = await args();
       const before = await writtenState(tenant);
 
-      const answer = await call(tenant, runId, "mail.draft.create", { mode: "new", body: "x" });
+      const answer = await call(tenant, runId, "mail.draft.create", { mode: "new", body: "x", ...extra });
 
-      expect(refusalOf(answer)).toMatchObject({ status: 400, field: "mailboxId" });
-      expect(await writtenState(tenant)).toEqual(before);
-    });
-
-    it("refuses a new draft that names a source message with a 400 and writes nothing", async () => {
-      const { runId } = await runOf(tenant);
-      const before = await writtenState(tenant);
-
-      const answer = await call(tenant, runId, "mail.draft.create", {
-        mode: "new",
-        mailboxId: tenant.mailboxId,
-        sourceEmailId: randomUUID(),
-        body: "x",
-      });
-
-      expect(refusalOf(answer)).toMatchObject({ status: 400, field: "sourceEmailId" });
+      expect(refusalOf(answer)).toMatchObject({ status: 400, field });
       expect(await writtenState(tenant)).toEqual(before);
     });
 
     it("answers 404 for an unknown mailbox, another tenant's mailbox and a mailbox in the Trash, and writes nothing", async () => {
       const { runId } = await runOf(tenant);
-      const trashed = await inTenant(tenant, async () => {
-        const cp = createChokePoint(runtime);
-        const databases = await cp.listDatabases();
-        const mailboxes = databases.find((row) => row.ownerModuleId === "mailboxes");
-        if (!mailboxes) throw new Error("Missing mailboxes");
-        const created = await cp.createItem({
-          databaseId: mailboxes.id,
-          properties: { name: "Old", provider: "gmail" },
-        });
-        await withTransaction(runtime, (client) =>
-          itemDeleteWithClient(client, mailboxes.id, created.id, { queueAffinity: createActionQueueAffinity() }),
-        );
-        return created.id;
-      });
+      const trashed = await bareMailbox(tenant, true);
       const before = await writtenState(tenant);
 
       for (const mailboxId of [randomUUID(), other.mailboxId, trashed]) {
@@ -818,23 +838,6 @@ describe("the mail agent tools (issue gh-1927)", () => {
       }
       expect(await writtenState(tenant)).toEqual(before);
       expect(await writtenState(other)).toMatchObject({ drafts: 0 });
-    });
-
-    it("answers 400 for a mailbox that has no address to send from", async () => {
-      const { runId } = await runOf(tenant);
-      const addressless = await inTenant(tenant, async () => {
-        const cp = createChokePoint(runtime);
-        const databases = await cp.listDatabases();
-        const mailboxes = databases.find((row) => row.ownerModuleId === "mailboxes");
-        if (!mailboxes) throw new Error("Missing mailboxes");
-        return (await cp.createItem({ databaseId: mailboxes.id, properties: { name: "Empty", provider: "gmail" } })).id;
-      });
-      const before = await writtenState(tenant);
-
-      const answer = await call(tenant, runId, "mail.draft.create", { mode: "new", mailboxId: addressless, body: "x" });
-
-      expect(refusalOf(answer)).toMatchObject({ status: 400, field: "mailboxId" });
-      expect(await writtenState(tenant)).toEqual(before);
     });
   });
 
@@ -973,7 +976,6 @@ describe("the mail agent tools (issue gh-1927)", () => {
 
     it("replaces the computed recipients and subject of a reply and a reply-all with those the call gives, field by field", async () => {
       const envelope = { from: PETR, to: [{ name: "Me", address: OWN_ADDRESS }, JANA] };
-      // Two threads, as an agent has one unsent draft for each.
       const source = await receive(tenant, { subject: "Offer", envelope });
       const second = await receive(tenant, { subject: "Offer", envelope });
       const { runId } = await runOf(tenant);
@@ -996,9 +998,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
         }),
       );
 
-      // The reply's recipients are the ones given and its subject stays computed.
       expect(reply).toMatchObject({ to: [JANA], subject: "Re: Offer" });
-      // The reply-all keeps its computed recipients and takes the subject and the Cc the call gives.
       expect(replyAll).toMatchObject({ to: [PETR, JANA], cc: [PETR], subject: "Re: Offer, new terms" });
     });
 
@@ -1046,10 +1046,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
     });
 
     it("refuses a forward over MAX_FILE_SIZE_MB in a mailbox without a provider limit with a 413, as the HTTP forward does, and writes nothing", async () => {
-      await admin.query(
-        'UPDATE items SET properties = properties || \'{"provider": "generic"}\'::jsonb WHERE tenant_id = $1 AND id = $2',
-        [tenant.tenantId, tenant.mailboxId],
-      );
+      await makeMailboxGeneric(tenant);
       const source = await receive(tenant, { subject: "Offer", attachmentNames: ["one.pdf", "two.pdf"] });
       const { runId } = await runOf(tenant);
       // About 105 bytes: one fixture attachment weighs about 54 bytes, the two together about 108.
@@ -1068,10 +1065,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
     });
 
     it("forwards in a mailbox without a provider limit what fits MAX_FILE_SIZE_MB, and with its default of 100 MB when it is not set", async () => {
-      await admin.query(
-        'UPDATE items SET properties = properties || \'{"provider": "generic"}\'::jsonb WHERE tenant_id = $1 AND id = $2',
-        [tenant.tenantId, tenant.mailboxId],
-      );
+      await makeMailboxGeneric(tenant);
       const single = await receive(tenant, { subject: "One", attachmentNames: ["one.pdf"] });
       const pair = await receive(tenant, { subject: "Two", attachmentNames: ["a.pdf", "b.pdf"] });
       const { runId } = await runOf(tenant);
@@ -1093,13 +1087,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
       const sourceThread = await threadOf(tenant, source);
       const otherMessage = await receive(tenant, { subject: "Unrelated" });
       const otherThread = await threadOf(tenant, otherMessage);
-      const mergedId = await inTenant(tenant, () =>
-        withTransaction(runtime, async (client) => {
-          const gone = await createMailThread(client, "Old");
-          await reassignThread(client, gone.id, sourceThread);
-          return gone.id;
-        }),
-      );
+      const mergedId = await mergedThreadInto(tenant, sourceThread);
       const { runId } = await runOf(tenant);
       const before = await writtenState(tenant);
 
@@ -1207,7 +1195,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
       expect((await draftRow(tenant, first.id)).sentAt).toBeNull();
     });
 
-    it("names the open agent draft of the thread in the conflict it answers to a reply or a reply-all, by thread or by source message (issue gh-1941)", async () => {
+    it("names the open agent draft of the thread in the conflict it answers to a reply or a reply-all, by thread or by source message", async () => {
       const source = await receive(tenant);
       const threadId = await threadOf(tenant, source);
       const { runId } = await runOf(tenant);
@@ -1312,15 +1300,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
       expect(await draftRow(tenant, created.id)).toMatchObject({ createdBy: "agent", lastEditedBy: "agent" });
     });
 
-    describe("a draft the user edited and a run no person asked for (issue gh-1941)", () => {
-      async function bodyOf(draftId: string): Promise<string | undefined> {
-        const { rows } = await admin.query<{ body: string }>(
-          "SELECT properties->>'body' AS body FROM items WHERE id = $1",
-          [draftId],
-        );
-        return rows[0]?.body;
-      }
-
+    describe("a draft the user edited and a run no person asked for", () => {
       it("refuses a run started by a heartbeat a draft whose last editor is the user, with a 409 naming the draft, and writes nothing", async () => {
         const draft = await userDraft(tenant);
         const { runId } = await runOf(tenant, { triggeredBy: "heartbeat" });
@@ -1328,7 +1308,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
         const answer = await call(tenant, runId, "mail.draft.update", { draftId: draft.id, body: "Overwritten" });
 
         expect(refusalOf(answer)).toMatchObject({ status: 409, error: "mail_draft_edited_by_user", draftId: draft.id });
-        expect(await bodyOf(draft.id)).toBe("My text");
+        expect(await storedBody(draft.id)).toBe("My text");
         expect(await draftRow(tenant, draft.id)).toMatchObject({ lastEditedBy: "user" });
       });
 
@@ -1341,7 +1321,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
           withTransaction(runtime, (client) =>
             updateEmailDraft(
               client,
-              { draftItemId: created.id, ifVersion: created.updatedAt, body: "Edited by the user" },
+              { draftItemId: created.id, ifVersion: created.version, body: "Edited by the user" },
               { writer: { writerKind: "user" }, actingUserId: tenant.userId },
             ),
           ),
@@ -1350,7 +1330,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
         const answer = await call(tenant, runId, "mail.draft.update", { draftId: created.id, body: "Agent again" });
 
         expect(refusalOf(answer)).toMatchObject({ status: 409, error: "mail_draft_edited_by_user" });
-        expect(await bodyOf(created.id)).toBe("Edited by the user");
+        expect(await storedBody(created.id)).toBe("Edited by the user");
         expect(await draftRow(tenant, created.id)).toMatchObject({ createdBy: "agent", lastEditedBy: "user" });
       });
 
@@ -1362,7 +1342,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
         const answer = await call(tenant, child.runId, "mail.draft.update", { draftId: draft.id, body: "Overwritten" });
 
         expect(refusalOf(answer)).toMatchObject({ status: 409, error: "mail_draft_edited_by_user" });
-        expect(await bodyOf(draft.id)).toBe("My text");
+        expect(await storedBody(draft.id)).toBe("My text");
       });
 
       it("still updates the draft the agent last edited, and a run a person asked for may rewrite the user's draft", async () => {
@@ -1388,40 +1368,41 @@ describe("the mail agent tools (issue gh-1927)", () => {
       });
     });
 
-    it("refuses a sent draft with a 409 and changes nothing", async () => {
+    it("refuses a sent draft with a 409, publishes no frame and changes nothing", async () => {
       const draft = await userDraft(tenant);
       await inTenant(tenant, () => withTransaction(runtime, (client) => markMailDraftSent(client, draft.id)));
-      const { runId } = await runOf(tenant);
+      const { runId } = await runOf(tenant, { withThread: true });
+      recordDeltas();
 
       const answer = await call(tenant, runId, "mail.draft.update", { draftId: draft.id, body: "Too late" });
 
       expect(refusalOf(answer)).toMatchObject({ status: 409, error: "mail_draft_already_sent" });
-      const row = await draftRow(tenant, draft.id);
-      expect(row.lastEditedBy).toBe("user");
-      const reread = await inTenant(tenant, () =>
-        runtime.query<{ body: string }>("SELECT properties->>'body' AS body FROM items WHERE id = $1", [draft.id]),
-      );
-      expect(reread.rows[0]?.body).toBe("My text");
+      expect(deltas).toEqual([]);
+      expect((await draftRow(tenant, draft.id)).lastEditedBy).toBe("user");
+      expect(await storedBody(draft.id)).toBe("My text");
     });
 
-    it("refuses a discarded draft with a 404", async () => {
+    it("refuses a discarded draft with a 404 and publishes no frame", async () => {
       const draft = await userDraft(tenant);
       await inTenant(tenant, () =>
         withTransaction(runtime, (client) =>
           discardEmailDraft(client, draft.id, { writer: { writerKind: "user" }, actingUserId: tenant.userId }),
         ),
       );
-      const { runId } = await runOf(tenant);
+      const { runId } = await runOf(tenant, { withThread: true });
+      recordDeltas();
 
       const answer = await call(tenant, runId, "mail.draft.update", { draftId: draft.id, body: "Back" });
 
       expect(refusalOf(answer)).toMatchObject({ status: 404, message: "Draft not found" });
+      expect(deltas).toEqual([]);
     });
 
-    it("refuses a message that has no draft row with a 409, and an unknown or another tenant's draft with a 404", async () => {
+    it("refuses a message that has no draft row with a 409, and an unknown or another tenant's draft with the same 404, publishing no frame", async () => {
       const received = await receive(tenant);
       const foreignDraft = await userDraft(other);
-      const { runId } = await runOf(tenant);
+      const { runId } = await runOf(tenant, { withThread: true });
+      recordDeltas();
 
       const notEditable = await call(tenant, runId, "mail.draft.update", { draftId: received, body: "x" });
       const unknown = await call(tenant, runId, "mail.draft.update", { draftId: randomUUID(), body: "x" });
@@ -1430,11 +1411,12 @@ describe("the mail agent tools (issue gh-1927)", () => {
       expect(refusalOf(notEditable)).toMatchObject({ status: 409, error: "mail_draft_not_editable" });
       expect(refusalOf(unknown)).toMatchObject({ status: 404, message: "Draft not found" });
       expect(refusalOf(crossTenant)).toEqual(refusalOf(unknown));
+      expect(deltas).toEqual([]);
       expect(await draftRow(other, foreignDraft.id)).toMatchObject({ lastEditedBy: "user" });
     });
   });
 
-  describe("mail.draft.update delta frames (issue gh-1948)", () => {
+  describe("mail.draft.update delta frames", () => {
     it("publishes the new body of the draft to the run before the update is committed, and then writes it", async () => {
       const draft = await userDraft(tenant);
       const { runId } = await runOf(tenant, { withThread: true });
@@ -1475,84 +1457,23 @@ describe("the mail agent tools (issue gh-1927)", () => {
       expect(answer).toMatchObject({ body: "Agent text", lastEditedBy: "agent" });
     });
 
-    it("publishes nothing for a sent draft, which is refused with a 409 and left as it was", async () => {
-      const draft = await userDraft(tenant);
-      await inTenant(tenant, () => withTransaction(runtime, (client) => markMailDraftSent(client, draft.id)));
-      const { runId } = await runOf(tenant, { withThread: true });
-      recordDeltas();
-
-      const answer = await call(tenant, runId, "mail.draft.update", { draftId: draft.id, body: "Too late" });
-
-      expect(refusalOf(answer)).toMatchObject({ status: 409, error: "mail_draft_already_sent" });
-      expect(deltas).toEqual([]);
-      expect((await draftRow(tenant, draft.id)).lastEditedBy).toBe("user");
-    });
-
-    it("publishes nothing for a discarded draft, which is refused with a 404", async () => {
-      const draft = await userDraft(tenant);
-      await inTenant(tenant, () =>
-        withTransaction(runtime, (client) =>
-          discardEmailDraft(client, draft.id, { writer: { writerKind: "user" }, actingUserId: tenant.userId }),
-        ),
-      );
-      const { runId } = await runOf(tenant, { withThread: true });
-      recordDeltas();
-
-      const answer = await call(tenant, runId, "mail.draft.update", { draftId: draft.id, body: "Back" });
-
-      expect(refusalOf(answer)).toMatchObject({ status: 404, message: "Draft not found" });
-      expect(deltas).toEqual([]);
-    });
-
-    it("publishes nothing for a message that has no draft row, which is refused with a 409", async () => {
-      const received = await receive(tenant);
-      const { runId } = await runOf(tenant, { withThread: true });
-      recordDeltas();
-
-      const answer = await call(tenant, runId, "mail.draft.update", { draftId: received, body: "x" });
-
-      expect(refusalOf(answer)).toMatchObject({ status: 409, error: "mail_draft_not_editable" });
-      expect(deltas).toEqual([]);
-    });
-
-    it("publishes nothing for another tenant's draft, which is refused as an unknown id is", async () => {
-      const foreignDraft = await userDraft(other);
-      const { runId } = await runOf(tenant, { withThread: true });
-      recordDeltas();
-
-      const crossTenant = await call(tenant, runId, "mail.draft.update", { draftId: foreignDraft.id, body: "x" });
-      const unknown = await call(tenant, runId, "mail.draft.update", { draftId: randomUUID(), body: "x" });
-
-      expect(refusalOf(crossTenant)).toEqual(refusalOf(unknown));
-      expect(deltas).toEqual([]);
-      expect(await draftRow(other, foreignDraft.id)).toMatchObject({ lastEditedBy: "user" });
-    });
-
-    it("publishes nothing for a blank subject, which the write would refuse, and leaves the draft as it was", async () => {
+    it("publishes nothing for arguments the schema refuses, a blank subject among them, and leaves the draft as it was", async () => {
       const draft = await userDraft(tenant);
       const { runId } = await runOf(tenant, { withThread: true });
       recordDeltas();
 
-      for (const subject of ["", "   "]) {
-        const answer = await inTenant(tenant, () =>
-          createMailDraftUpdateTool(runtime)(runId, { draftId: draft.id, body: "New text", subject }),
-        );
+      for (const args of [
+        { draftId: draft.id },
+        { draftId: draft.id, body: "New text", subject: "" },
+        { draftId: draft.id, body: "New text", subject: "   " },
+      ]) {
+        const answer = await inTenant(tenant, () => createMailDraftUpdateTool(runtime)(runId, args));
         expect(refusalOf(answer)).toMatchObject({ status: 400, message: "Invalid arguments" });
       }
 
       expect(deltas).toEqual([]);
       expect(await draftRow(tenant, draft.id)).toMatchObject({ lastEditedBy: "user" });
-    });
-
-    it("publishes nothing for arguments the schema refuses", async () => {
-      const draft = await userDraft(tenant);
-      const { runId } = await runOf(tenant, { withThread: true });
-      recordDeltas();
-
-      const answer = await inTenant(tenant, () => createMailDraftUpdateTool(runtime)(runId, { draftId: draft.id }));
-
-      expect(refusalOf(answer)).toMatchObject({ status: 400, message: "Invalid arguments" });
-      expect(deltas).toEqual([]);
+      expect(await storedBody(draft.id)).toBe("My text");
     });
   });
 });

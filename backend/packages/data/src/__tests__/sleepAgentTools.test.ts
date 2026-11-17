@@ -25,11 +25,9 @@ import { sleepNightPut, sleepNightsGet } from "../sleep/sleepRouteHandlers.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 
-// A seeded tenant has the settings item (enabled, prepReminder 30 minutes before bed) and two plans: wake days mon to
-// fri from 23:00 to 06:45 with the alarm, and sat and sun from 00:00 to 08:30 without it. Its time zone is
-// Europe/Prague, which is at +02:00 on the dates below. 2026-10-16 is a Friday, so its night is a weekend night.
-// The sleep databases are owned by the system project "Sleep", so a run of that project holds the sleep
-// capabilities; the user's grants on the sensitive databases (issue gh-1810) decide what its calls may do.
+// Seeded plans in Europe/Prague (+02:00 below): weekdays mon-fri 23:00-06:45 with alarm, weekend sat-sun
+// 00:00-08:30 without. 2026-10-16 is a Friday, so its night is a weekend night. The system project "Sleep" owns the
+// sleep databases; the user's grants on those sensitive databases decide what a run may do.
 
 const NIGHT = "2026-10-16";
 const USER = { writerKind: "user" } as const;
@@ -64,7 +62,6 @@ interface SleepTenant {
   settingsDatabaseId: string;
   plansDatabaseId: string;
   nightsDatabaseId: string;
-  /** The system project "Sleep", the owner of the three sleep databases. */
   sleepProjectId: string;
   weekendPlanId: string;
 }
@@ -84,8 +81,7 @@ let registry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
 const createdBy: WriterIdentity[] = [];
 const updatedBy: WriterIdentity[] = [];
 
-// Hooks cannot be unregistered; these recorders stay registered for this file's process only and are emptied before
-// each test. They record the writer of a write to the sleep nights database.
+// Hooks cannot be unregistered: these record the writer of sleep-night writes and are emptied before each test.
 registerItemCreateHook(async ({ database, writer }) => {
   if (database.ownerModuleId === SLEEP_NIGHTS_MODULE_ID) createdBy.push(writer);
 });
@@ -135,7 +131,6 @@ async function seededTenant(): Promise<SleepTenant> {
   };
 }
 
-/** Stores the user's decision of `access` for the Sleep project on the given databases (default: all three). */
 async function grant(
   t: SleepTenant,
   access: "none" | "read" | "write",
@@ -159,17 +154,13 @@ function runOf(t: SleepTenant, projectItemId: string = t.sleepProjectId) {
   );
 }
 
-/**
- * Takes the sleep module away from the tenant: the Sleep project item and the run stay, but no system database belongs
- * to the sleep module any more.
- */
+/** The Sleep project item and the run stay, but no system database belongs to the sleep module any more. */
 async function removeSleepModule(t: SleepTenant): Promise<void> {
   await adminPool.query("UPDATE databases SET owner_module_id = 'removed-' || owner_module_id WHERE id = ANY($1)", [
     [t.settingsDatabaseId, t.plansDatabaseId, t.nightsDatabaseId],
   ]);
 }
 
-/** The sleep tools composed for the run of the project, as a session composes them. */
 function toolsFor(
   t: SleepTenant,
   runId: string,
@@ -218,7 +209,6 @@ function plansOf(t: SleepTenant): Promise<PlanRow[]> {
   });
 }
 
-/** The keys of the pending `sleep.resync` jobs, read through the public view of the queue schema. */
 async function resyncKeys(): Promise<string[]> {
   const { rows } = await adminPool.query<{ key: string }>(
     "SELECT key FROM graphile_worker.jobs WHERE task_identifier = 'sleep.resync' ORDER BY key",

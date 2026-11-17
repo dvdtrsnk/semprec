@@ -40,7 +40,7 @@ const ROW = {
 const restError = z.object({
   error: z.object({ code: z.string(), details: z.record(z.string(), z.unknown()) }).strict(),
 });
-/** What `/mcp` answers: a JSON-RPC result, or an error that carries the operation's error code in `data`. */
+/** An error carries the operation's error code in `data`. */
 const rpcBody = z.object({
   result: z.object({ content: z.array(z.object({ text: z.string() })) }).optional(),
   error: z
@@ -51,9 +51,8 @@ const rpcBody = z.object({
 let pool: Pool;
 
 /**
- * The generic write routes of the production dispatcher, REST and `/mcp`, against the read-only
- * `subscribedEvents` database (issue gh-1962): a user's token is refused on every property, and a row written
- * by the calendar module with its system owner process stays as it was.
+ * REST and `/mcp` against the read-only `subscribedEvents` database: a user's token is refused on every property, and
+ * a row the calendar module wrote with its system owner process stays as it was.
  */
 describe("the generic write routes refuse the subscribedEvents database (issue gh-1962)", () => {
   let server: Server;
@@ -80,7 +79,7 @@ describe("the generic write routes refuse the subscribedEvents database (issue g
     if (!database) throw new Error("Missing the subscribedEvents database");
     subscribedEventsId = database.id;
     const properties = await chokePoint.listProperties(subscribedEventsId);
-    // The write the later feed import makes: the system writer with the calendar module's owner process.
+    // The system writer with the calendar module's owner process, as the feed import writes.
     const row = await withTransaction(pool, (client) =>
       createItemWithClient(
         client,
@@ -121,7 +120,6 @@ describe("the generic write routes refuse the subscribedEvents database (issue g
     await pool?.end();
   });
 
-  /** A refusal as REST exposes it: the HTTP status and the error body's `code` and `details`. */
   async function restRefusal(method: string, path: string, body: unknown) {
     const res = await fetch(`${baseUrl}${path}`, { method, headers, body: JSON.stringify(body) });
     const parsed = restError.parse(await res.json());

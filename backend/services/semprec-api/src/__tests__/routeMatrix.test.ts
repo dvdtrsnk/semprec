@@ -21,13 +21,9 @@ const noopMailer: PasswordResetMailer = {
 const moduleRegistry = await loadFullModuleRegistry();
 
 /**
- * Issue #143's route-matrix test: every route this service answers is listed in
- * `routeMatrix.ts`, tagged `public` or not. This drives every `surface: "api"` entry end to end
- * against the real dispatcher with zero credentials — a protected route whose handler doesn't
- * actually call `authenticateRequest` fails here with a non-401 response, and a route marked
- * `public` without a `publicReason` fails the documentation check below. `surface: "view"`
- * entries (client-side-only paths this backend doesn't serve) are covered by that same
- * documentation check but skip the fetch assertions — there's no server here to hit.
+ * Every route this service answers is listed in `routeMatrix.ts`. Each `surface: "api"` entry is driven against the
+ * real dispatcher with no credentials, so a protected route that skips `authenticateRequest` fails with a non-401.
+ * A `public` route needs a `publicReason`; `surface: "view"` entries are client-only and skip the fetch.
  */
 describe("route matrix (issue #143)", () => {
   let server: Server;

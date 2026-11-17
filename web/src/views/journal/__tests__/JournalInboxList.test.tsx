@@ -21,6 +21,7 @@ function makeDayItem(computed: Record<string, unknown>): Item {
     computed,
     updatedAt: "2026-08-28T00:00:00.000Z",
     deletedAt: null,
+    version: "1",
   };
 }
 

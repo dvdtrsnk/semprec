@@ -25,9 +25,8 @@ export type SempItemResolution = SempRefResolution & { label: string | null };
 const PURGED: SempItemResolution = { label: null, databaseKey: null, state: "purged" };
 
 /**
- * Resolves item-shaped references (the item, block, transcript segment and task trace refs of a context, and the
- * changed items of a reply) in one statement, in the order given. An item that is not found under the tenant scope,
- * or not in the database a ref names, resolves as purged. A ref without a database matches the item in any database.
+ * Resolves item-shaped refs in one statement, in order. Not found under the tenant scope or not in the named
+ * database resolves as purged; a ref without a database matches any database.
  */
 export async function resolveSempItemRefs(
   client: PoolClient,
@@ -93,9 +92,7 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
         })),
       );
       if (kind === "transcriptSegment") {
-        // State and database key are the generic ones above; the label is the transcript's current display name
-        // with the stretch (issue #1834), so a rename shows, read for the whole page at once. An item that is no
-        // transcript keeps the generic label.
+        // The label is the transcript's current display name with the stretch, read for the whole page at once.
         const named = entries.flatMap(({ ref }, position) => {
           const value = values[position];
           return ref.kind === "transcriptSegment" && value && value.state !== "purged" ? [{ ref, position }] : [];
@@ -146,8 +143,7 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
         row.filename === null ? PURGED : { label: row.filename, databaseKey: row.database_key, state: "active" },
       );
     } else if (kind === "mailThread") {
-      // The thread a merged-away id leads to is the one labelled; an id with no thread and no alias is purged. A thread
-      // is not an item the client can address, so it carries no database key.
+      // A merged-away id resolves to its target thread. Threads are not client-addressable items, so no database key.
       const ids = entries.map(({ ref }) => {
         if (ref.kind !== "mailThread") throw new Error("Invalid thread reference group");
         return ref.threadId;

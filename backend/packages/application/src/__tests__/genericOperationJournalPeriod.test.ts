@@ -16,7 +16,7 @@ import {
 import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
 import { createGenericOperationGateway } from "../genericOperationGateway.js";
 
-// `page.ensureJournalPeriod` and the summary an agent writes into a Journal period (issue #1861).
+// `page.ensureJournalPeriod` and the summary an agent writes into a Journal period.
 
 const metadataResolver: CollectionMetadataResolver = {
   resolve: () => ({
@@ -66,8 +66,8 @@ async function setJournalGrant(actor: AuthenticatedActor, access: AgentDatabaseA
 }
 
 async function setJournalSensitive(sensitive: boolean): Promise<void> {
-  // A non-sensitive system database is always open and its grant rows are ignored (docs/adr/2026-11-12-per-database-agent-grants.md),
-  // so the one way to make the grant on Journal decide is the flag the product sets on the Health and sleep databases.
+  // A non-sensitive system database is always open and its grant rows are ignored, so the sensitive flag is the only
+  // way to make the Journal grant decide.
   await pool.query(`UPDATE databases SET sensitive = $2 WHERE id = $1`, [journal.id, sensitive]);
 }
 

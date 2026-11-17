@@ -9,7 +9,7 @@ export interface TranscriptSegment {
   endsAt: number;
 }
 
-/** One checkpointed ASR chunk: its place in the recording, and Whisper's segments with times relative to the chunk. */
+/** Segment times are relative to the chunk. */
 export interface AsrChunkInput {
   boundary: AsrChunkBoundary;
   segments: TranscriptionSegment[];
@@ -18,11 +18,7 @@ export interface AsrChunkInput {
 /** A silence longer than this between two runs of the same speaker still starts a new segment. */
 export const SEGMENT_PAUSE_BREAK_SECONDS = 1.5;
 
-/**
- * The speaker given to every segment when diarization found no turns at all (e.g. a recording
- * pyannoteAI heard no speech in, while Whisper still produced text): the recording then has a
- * single anonymous voice, keyed the way pyannoteAI keys its first speaker.
- */
+/** Used when diarization found no turns but ASR produced text; keyed like pyannoteAI's first speaker. */
 export const FALLBACK_SPEAKER = "SPEAKER_00";
 
 interface TimedText {
@@ -37,11 +33,9 @@ function roundTime(seconds: number): number {
 }
 
 /**
- * Drops the overlap duplicates of neighbouring chunks with the symmetric mid-band cut: the band
- * two chunks share is `[later.start, earlier.end]`, and a segment is owned by the chunk on the
- * side of the band's midpoint its own time midpoint falls. The earlier chunk keeps midpoints
- * strictly before the cut, the later one keeps midpoints at or after it, so every instant has
- * exactly one owner.
+ * Symmetric mid-band cut over the shared band `[later.start, earlier.end]`: the earlier chunk keeps
+ * segment midpoints strictly before the band's midpoint, the later one the rest, so every instant
+ * has exactly one owner.
  */
 function dedupeChunkOverlaps(chunks: readonly AsrChunkInput[]): TimedText[] {
   const kept: TimedText[] = [];
@@ -74,9 +68,8 @@ function gapSeconds(segment: TimedText, turn: DiarizationTurn): number {
 }
 
 /**
- * The ASR endpoint returns segment-level times only, so this is the segment-level rule: the
- * turn with the largest time overlap wins; a segment no turn overlaps falls to the time-nearest
- * turn. Ties go to the earliest turn, so the choice never depends on the provider's turn order.
+ * Largest overlap wins, else the time-nearest turn. Ties go to the earliest turn, so the choice
+ * never depends on the provider's turn order.
  */
 function assignSpeaker(segment: TimedText, sortedTurns: readonly DiarizationTurn[]): string {
   let best: DiarizationTurn | undefined;
@@ -102,12 +95,8 @@ function assignSpeaker(segment: TimedText, sortedTurns: readonly DiarizationTurn
 }
 
 /**
- * Step 4 (`merge`): a pure function of the diarization turns and the raw ASR chunks, no I/O.
- * Removes the chunk-overlap duplicates, gives each ASR segment its speaker, and joins
- * consecutive segments of one speaker into one unless a pause longer than
- * `SEGMENT_PAUSE_BREAK_SECONDS` separates them. The output is ordered, and times are monotonic:
- * each segment starts no earlier than the previous one ended, and ends no earlier than it starts.
- * Speaker keys are the diarization's own anonymous keys, never renamed.
+ * Pure. Joins consecutive same-speaker segments unless a longer pause separates them. Output is
+ * ordered with monotonic times; speaker keys are the diarization's own, never renamed.
  */
 export function mergeTranscriptSegments(
   turns: readonly DiarizationTurn[],

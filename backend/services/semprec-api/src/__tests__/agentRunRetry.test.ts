@@ -48,7 +48,6 @@ let pool: Pool;
 let server: Server;
 let baseUrl: string;
 
-/** A tenant with its user, a seeded system and that user's bearer header. */
 async function tenantSession(): Promise<Session> {
   const tenant = await createTestTenant(admin);
   const email = `${randomUUID()}@example.test`;
@@ -61,13 +60,13 @@ async function tenantSession(): Promise<Session> {
 type OccurrenceStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 interface RunOptions {
-  /** The status of the occurrence the run belongs to. Defaults to `failed`. */
+  /** Defaults to `failed`. */
   occurrence?: OccurrenceStatus | null;
   attempt?: number;
   triggeredBy?: "heartbeat" | "user";
-  /** Whether the run row names its heartbeat. Defaults to `true`. */
+  /** Defaults to `true`. */
   withHeartbeat?: boolean;
-  /** How the run is closed: `error` (the default) or `done`; `running` leaves it open. */
+  /** `error` (the default) or `done`; `running` leaves it open. */
   close?: "error" | "done" | "running";
 }
 
@@ -79,10 +78,7 @@ interface HeartbeatRun {
   run: AgentRunRow;
 }
 
-/**
- * A heartbeat of a project of the tenant, an occurrence of it with the given status (none when `occurrence` is
- * `null`) and one run of that occurrence, closed as the options say.
- */
+/** No occurrence when `occurrence` is `null`. */
 async function heartbeatRun(session: Session, options: RunOptions = {}): Promise<HeartbeatRun> {
   return runInTenant(session.tenant, async () => {
     const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
@@ -102,7 +98,7 @@ async function heartbeatRun(session: Session, options: RunOptions = {}): Promise
     );
     let occurrenceId: string | null = null;
     if (options.occurrence !== null) {
-      // Raw SQL: only the sweep inserts an occurrence, and it does so for a due rule at a time the test cannot set.
+      // Raw SQL: only the sweep inserts an occurrence, at a time the test cannot set.
       const { rows } = await pool.query<{ id: string }>(
         `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
          VALUES ($1, now(), $2::jsonb, $3) RETURNING id`,
@@ -143,10 +139,7 @@ interface QueuedJob {
   payload: unknown;
 }
 
-/**
- * The jobs queued under a key with the task and queue they run on and their payload, read from graphile-worker
- * 0.17.3's private tables: the public `jobs` view has neither the payload nor the queue name.
- */
+/** Read from graphile-worker 0.17.3's private tables: the public `jobs` view has neither payload nor queue name. */
 async function jobsByKey(key: string): Promise<QueuedJob[]> {
   const { rows } = await admin.query<{
     identifier: string;
@@ -170,7 +163,7 @@ async function jobsByKey(key: string): Promise<QueuedJob[]> {
   }));
 }
 
-/** The job's own payload inside graphile-worker's `{ traceId, payload }` envelope (issue #167), as the task receives it. */
+/** Unwraps graphile-worker's `{ traceId, payload }` envelope, as the task receives it. */
 function innerPayloadOf(envelope: unknown): unknown {
   if (typeof envelope !== "object" || envelope === null || !("payload" in envelope)) {
     throw new Error("queued job has no envelope");
@@ -182,7 +175,7 @@ const jobAnswerSchema = z.object({ jobKey: z.string() });
 const errorAnswerSchema = z.object({ code: z.string() });
 const retriedBySchema = z.object({ retriedByRunId: z.string().nullable() });
 
-/** The runs that retry `runId` (at most one, by the unique key), read with the superuser pool. */
+/** At most one, by the unique key. */
 async function successorsOf(runId: string): Promise<{ id: string; attempt: number; task: string; status: string }[]> {
   const { rows } = await admin.query<{ id: string; attempt: number; task: string; status: string }>(
     "SELECT id, attempt, task, status FROM agent_runs WHERE retry_of_run_id = $1",
@@ -191,7 +184,7 @@ async function successorsOf(runId: string): Promise<{ id: string; attempt: numbe
   return rows;
 }
 
-/** Runs the retry job queued for `runId` through the real fire task, the way the agents worker does, with one attempt. */
+/** As the agents worker does, with one attempt. */
 async function runRetryJob(fixture: HeartbeatRun, runAgent: RunAgentFn): Promise<void> {
   const [job] = await jobsByKey(retryHeartbeatFireJobKey(fixture.run.id));
   if (!job) throw new Error("no retry job is queued for the run");
@@ -262,7 +255,7 @@ describe("POST /api/agent-runs/:id/retry (issue #1908)", () => {
         heartbeatId: fixture.heartbeatId,
         retryOfRunId: fixture.run.id,
       });
-      // The endpoint writes no run row: the worker creates it per job attempt.
+      // The worker creates the run row per job attempt.
       expect(await successorsOf(fixture.run.id)).toEqual([]);
 
       const tasks: string[] = [];
@@ -503,7 +496,7 @@ describe("POST /api/agent-runs/:id/retry (issue #1908)", () => {
       expect(foreign).toEqual({ status: 404, body: { error: "Not found" } });
       expect(unknown).toEqual(foreign);
       expect(await jobsByKey(retryHeartbeatFireJobKey(owner.run.id))).toEqual([]);
-      // The owner's own request for the same run is accepted, so the 404 above is the tenant, not the run.
+      // Proves the 404 above is the tenant, not the run.
       expect((await post(owner.session, owner.run.id)).status).toBe(202);
     });
   });

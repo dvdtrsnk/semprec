@@ -10,7 +10,7 @@ and this document in the same change.
 
 `develop` is the integration branch every issue targets; `main` holds released versions and
 advances only through a `develop -> main` promotion pull request
-([ADR](../adr/2026-09-24-monorepo-release-tag-from-guarded-command.md)). Both branches
+([rules](../architecture/delivery-and-operations.md#releases)). Both branches
 are protected: a pull request is required, required checks are `strict` (the head must be up
 to date with the base), the rules apply to administrators too, and force pushes and
 deletions are refused.
@@ -50,10 +50,10 @@ The release command checks those per-commit results before it tags a `main` comm
 
 ## Mobile checks (reported, not required)
 
-| Context | Runs when `mobile/` changes | Required on |
-| --- | --- | --- |
-| `mobile-android` | `mobile/scripts/verify architecture android` on Ubuntu | neither branch |
-| `mobile-apple` | `mobile/scripts/verify shared apple` on an Apple-silicon macOS runner | neither branch |
+| Context          | Runs when `mobile/` changes                                           | Required on    |
+| ---------------- | --------------------------------------------------------------------- | -------------- |
+| `mobile-android` | `mobile/scripts/verify architecture android` on Ubuntu                | neither branch |
+| `mobile-apple`   | `mobile/scripts/verify shared apple` on an Apple-silicon macOS runner | neither branch |
 
 Both jobs omit device flags: the shared iOS simulator tests, Android instrumented tests,
 Swift simulator tests and XCUITest execution report NOT RUN. Apple UI tests still compile.
@@ -66,7 +66,7 @@ checks.
 ## Why there is no separate "is this head up to date" check
 
 With `implement-issue` and `merge-pull-request` both running with more than one
-worker at a time (docs/adr/2026-09-24-issue-batches-as-dependency-dags.md), two pull
+worker at a time (docs/architecture/delivery-and-operations.md), two pull
 requests can legitimately race to merge into the same base branch. That race needs no
 extra CI job: branch protection's `strict` mode already refuses to merge a head that
 is not up to date with the base, and `merge-pull-request`'s own steps
@@ -98,4 +98,4 @@ refresh review checks with a push or a Code Review dispatch. Actions reads the P
 head policy, so dispatching an old branch that still has enabled=false keeps the
 pause. A previous neutral result is not a new review. Missing or malformed policy fails closed. No branch-protection edits or
 provider-account changes are needed. See
-[decision](../adr/2026-10-26-owner-controlled-review-bot-pause.md).
+[decision](../architecture/delivery-and-operations.md#owner-controlled-review-pause).

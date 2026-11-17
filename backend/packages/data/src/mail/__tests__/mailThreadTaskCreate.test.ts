@@ -29,7 +29,6 @@ import { createThreadTask, THREAD_TASK_PEOPLE_RULE_KEY } from "../threadTasks.js
 const USER = { writerKind: "user" } as const;
 const USER_ID = "7c0e2f6a-58a1-4d0e-9d55-2f1c6f7c9b01";
 
-/** A mail thread as the route names it, the Threads item its relations hang on, and the Emails item of its first message. */
 interface TestThread {
   threadId: string;
   itemId: string;
@@ -79,7 +78,6 @@ async function propertyId(databaseKey: string, key: string): Promise<string> {
   return property.id;
 }
 
-/** A gateway client that answers `answer` and records every call, as the port's tests of other callers do. */
 function gatewayAnswering(answer: () => unknown) {
   const calls: AiGatewayCompletionInput[] = [];
   const client: AiGatewayClientPort = {
@@ -97,7 +95,6 @@ function failingGateway(reason: "timeout" | "http" | "budget_exceeded" | "invali
   });
 }
 
-/** A message in the inbox through the sync writer; a message that names `references` joins their thread. */
 async function newMessage(messageId: string, references: string[] = [], bodyText = `body of ${messageId}`) {
   return inTenant(() =>
     withTransaction(runtime, async (client) => {
@@ -144,7 +141,6 @@ async function unlink(relationPropertyId: string, callerItemId: string, targetIt
   await inTenant(() => cp.deleteRelation({ relationPropertyId, callerItemId, targetItemId }, USER));
 }
 
-/** The conversation's person: a People item linked to a message of the thread the way the heartbeat action links it. */
 async function addPerson(
   emailItemId: string,
   name: string,
@@ -172,7 +168,6 @@ async function linkPersonToEmail(
   );
 }
 
-/** Calls the route handler as the user of the tenant. */
 function createTask(threadId: string, body: unknown, gateway?: AiGatewayClientPort, tenantId = tenant, locale = "cs") {
   const handler = createMailThreadTaskCreateRouteHandler(runtime, gateway ? { aiGateway: gateway } : {});
   return inTenant(() => handler({ params: { threadId }, body, identity: { user: { id: USER_ID, locale } } }), tenantId);
@@ -186,7 +181,6 @@ async function threadDetail(thread: TestThread) {
   );
 }
 
-/** What the tenant holds that a task create adds to: Tasks items, Threads.tasks edges and value links of Tasks items. */
 async function writtenState() {
   return inTenant(async () => {
     const tasks = await runtime.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
@@ -207,7 +201,6 @@ async function linksOf(itemId: string) {
   return (await inTenant(() => cp.getValueLinksForItems([itemId]))).get(itemId) ?? {};
 }
 
-/** Runs the queued value-link propagation jobs until none is left. */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
   const handler = createCoreTaskList(runtime, createActionRegistry())[taskName];
@@ -284,7 +277,7 @@ describe("POST /api/mail/threads/:threadId/tasks (issue gh-1900)", () => {
         target: { databaseKey: "tasks", propertyKey: "project" },
         via: { databaseKey: "threads", relationKey: "tasks" },
       },
-      // The rule of the attachments of a thread (issue gh-1898) is declared next to it.
+      // The rule of the attachments of a thread is declared next to it.
       {
         moduleId: "mailSync",
         key: "fileProjectFromThread",
@@ -375,12 +368,10 @@ describe("POST /api/mail/threads/:threadId/tasks (issue gh-1900)", () => {
     const reply = await newMessage("<second@example.test>", ["<first@example.test>"]);
     expect(reply.threadId).toBe(thread.threadId);
     const alice = await addPerson(thread.emailItemId, "Alice");
-    // Alice is also a recipient of the reply: one edge to her, not two.
     await linkPersonToEmail(reply.emailItemId, alice, "emailRecipients");
     const bob = await addPerson(reply.emailItemId, "Bob", "emailRecipients");
     const me = await addPerson(reply.emailItemId, "Me Myself");
     const trashed = await addPerson(thread.emailItemId, "Gone");
-    // The own mailbox address is one the mailbox lists and the person's address index holds.
     await inTenant(() =>
       withTransaction(runtime, async (client) => {
         await writeMailboxAddresses(client, {

@@ -16,12 +16,10 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { handleLinkPropagation } from "../../valueLinks/linkPropagation.js";
 import { createTaskHostEventPutRouteHandler } from "../taskHostEventRouteHandlers.js";
 
-// The lock order of the trash of an Event against the propagation of the Event's project into the tasks it feeds. The
-// source detach of the trash takes the rows of the Tasks items whose links it detaches, in item id order, before it takes
-// any link, and the hosted-tasks hook then finds locked the rows of the hosted tasks that are also sourced from the Event. See
-// docs/adr/2026-11-15-the-trash-of-an-event-takes-the-rows-of-the-tasks-it-hosts-before-the-value-links-it-detaches.md.
-// Every call is a production call on a pool of the runtime role `semprec_data`, one pool per participant, so that
-// `pg_blocking_pids` tells the participants apart by their `application_name`.
+// Lock order of an Event trash against propagation of the Event's project: the source detach takes the sourced
+// tasks' rows in item id order before any link, so the hosted-tasks hook finds those rows already locked. See
+// docs/architecture/domain-calendar-tasks-and-media.md#event-trash-lock-order. One runtime-role pool per participant,
+// so `pg_blocking_pids` tells them apart by `application_name`.
 
 const USER: WriterIdentity = { writerKind: "user" };
 const IDENTITY = { user: { id: "00000000-0000-4000-8000-0000000000a1" } };
@@ -29,7 +27,6 @@ const PROJECT_RULE = "taskProjectFromEvent";
 /** The server clock of every case, as in `eventHostedTasksHooks.test.ts`: the Event of the cases is still ahead. */
 const START = "2026-10-10T08:00:00.000Z";
 const EVENT_DATE = "2026-10-22";
-/** The task's own date in every case. */
 const OWN_DATE = "2026-10-12";
 
 interface Participant {
@@ -51,7 +48,6 @@ async function participant(name: string): Promise<Participant> {
   return { name, pool, cp: createChokePoint(pool) };
 }
 
-/** One tenant: the Event "client meeting" of the project Web, its participant Alice and the other project Bathroom. */
 interface World {
   tenant: string;
   tasksDatabase: string;
@@ -115,7 +111,7 @@ async function buildWorld(): Promise<World> {
   });
 }
 
-/** A task that is an action item of the Event, linked as a user does: it gets the Event's project and participants. */
+/** An action item linked as a user does: it gets the Event's project and participants. */
 async function actionItemOf(world: World): Promise<string> {
   return runInTenant(world.tenant, async () => {
     const task = (
@@ -132,7 +128,6 @@ async function actionItemOf(world: World): Promise<string> {
   });
 }
 
-/** Puts the task into the Event through the route of issue #1764. */
 function host(world: World, taskId: string): Promise<unknown> {
   return runInTenant(world.tenant, () =>
     createTaskHostEventPutRouteHandler(fixture.pool)({
@@ -143,7 +138,7 @@ function host(world: World, taskId: string): Promise<unknown> {
   );
 }
 
-/** A user replaces the Event's project, which queues the propagation job the schedules run the handler for. */
+/** Queues the propagation job the schedules run the handler for. */
 async function changeEventProject(world: World): Promise<void> {
   await runInTenant(world.tenant, async () => {
     const edge = { relationPropertyId: world.eventProjectProperty, callerItemId: world.event };
@@ -220,14 +215,12 @@ async function blockersOrEnd(running: Running): Promise<string[] | null> {
 interface ScheduleResult {
   /** What blocked each call when it was started, in the order the calls were started; `null` for a call that ended at once. */
   blockedBy: Array<string[] | null>;
-  /** How each call ended, in the same order. */
   outcomes: Outcome[];
 }
 
 /**
- * Starts the steps one after the other while a third transaction holds the row `lock` locks, each only after the
- * one before it waits for a lock or has ended, runs `whileWaiting` with every step started, then releases the row and
- * lets every call end.
+ * While a third transaction holds the row `lock` locks, starts each step once the previous one waits or ended,
+ * runs `whileWaiting`, then releases the row and lets every call end.
  */
 async function behindHeldRow(
   world: World,
@@ -288,7 +281,6 @@ const taskRow = (world: World, taskId: string) => (client: PoolClient) =>
 
 const projectLink = (taskId: string) => (client: PoolClient) => lockValueLink(client, taskId, "project");
 
-/** The task's value link keys, its host state and the Event's trash state, read through the runtime role. */
 async function settledState(world: World, taskId: string) {
   return runInTenant(world.tenant, async () => {
     const links = await fixture.pool.query<{ property_key: string }>(
@@ -342,10 +334,8 @@ describe("the trash of an Event that hosts a task which it also sources", () => 
     await admin?.end();
   });
 
-  // The propagation of the Event's project takes the task row and then its `project` link. The trash used to take the
-  // task's links in the source detach and the task row afterwards, in the hosted-tasks hook. With a third transaction
-  // holding the task row and the propagation started first, the trash held the link while it waited for the row and the
-  // propagation, which got the row first, waited for that link.
+  // Propagation takes the task row, then its `project` link. A trash taking the link in the source detach before the
+  // task row in the hosted-tasks hook would hold the link while waiting for the row the propagation holds.
   describe("against the propagation of the Event's project, with the task row held", () => {
     it("commits both when the propagation starts first", async () => {
       const world = await buildWorld();
@@ -376,10 +366,9 @@ describe("the trash of an Event that hosts a task which it also sources", () => 
     });
   });
 
-  // The Event sources two tasks and hosts only the one with the larger id. The trash that takes the hosted task's row
-  // first, as a hosted-tasks hook registered before the source detach would, waits for the smaller task's link while it
-  // holds the larger task's row, and the propagation, which holds that link and then waits for the larger row, ends the
-  // pair with a deadlock. The source detach takes the rows of both tasks in item order instead.
+  // The Event sources two tasks and hosts only the larger id. Taking the hosted task's row first would wait on the
+  // smaller task's link while holding the larger row, deadlocking with the propagation. The source detach takes both
+  // rows in item order instead.
   describe("when the Event also sources a task it does not host, whose id is the smaller", () => {
     it("commits both when the smaller task's project link is held and the propagation starts first", async () => {
       const world = await buildWorld();
@@ -398,8 +387,8 @@ describe("the trash of an Event that hosts a task which it also sources", () => 
     });
   });
 
-  // The trash holds the task row before it waits for a value link row of the task, which the propagation job needs the
-  // row for first. The check is a nonblocking lock of the row on another connection while the trash waits.
+  // The trash holds the task row before waiting on a link row the propagation needs the task row for. Checked by a
+  // nonblocking row lock from another connection while the trash waits.
   describe("when the task's project link is held", () => {
     it("holds the task row while the trash waits for the link, and returns the task to its day", async () => {
       const world = await buildWorld();

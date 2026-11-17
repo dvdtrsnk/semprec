@@ -5,11 +5,9 @@ import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { withTransaction } from "../db/pool.js";
 import { findInvalidLinkRuleReferences } from "../manifest/driftCheck.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
-import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -39,7 +37,6 @@ async function item(databaseId: string, name: string): Promise<string> {
   return (await inTenant(() => cp.createItem({ databaseId, properties: { name } }))).id;
 }
 
-/** Links two items through the relation property `relationPropertyId`, as the given writer. */
 async function link(relationPropertyId: string, callerItemId: string, targetItemId: string): Promise<void> {
   await inTenant(() => cp.createRelation({ relationPropertyId, callerItemId, targetItemId }, USER));
 }
@@ -48,7 +45,6 @@ async function unlink(relationPropertyId: string, callerItemId: string, targetIt
   await inTenant(() => cp.deleteRelation({ relationPropertyId, callerItemId, targetItemId }, USER));
 }
 
-/** The companies on a file's own `companies` relation, sorted. */
 async function fileCompanies(fileId: string): Promise<string[]> {
   const entries = await inTenant(() => cp.listItemRelations(fileId, ids.fileCompanies));
   return (entries ?? []).map((entry) => entry.targetItemId).sort();
@@ -75,9 +71,9 @@ async function valueLinkRows(fileId: string): Promise<ValueLinkRow[]> {
 }
 
 /**
- * Runs every queued value-link propagation job through the registered worker task. A tenant's jobs share one lane
- * and one `runOnce` runs one of them, so it repeats until none is left: the Companies.projects edges this file writes
- * also queue the jobs of the Threads project rule (issue gh-1869).
+ * Runs every queued value-link propagation job. A tenant's jobs share one lane and one `runOnce` runs one
+ * of them, so it repeats until none is left; the Companies.projects edges also queue the Threads project
+ * rule's jobs.
  */
 async function runPropagation(): Promise<void> {
   const handler = createCoreTaskList(pool, createActionRegistry())[CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE];
@@ -96,7 +92,6 @@ async function runPropagation(): Promise<void> {
 
 const sorted = (values: string[]): string[] => [...values].sort();
 
-/** Two projects, Web for client (Novak Web s.r.o.) and Bathroom renovation (Siko Koupelny a.s.). */
 async function twoProjects() {
   const novak = await item(ids.companies, "Novak Web s.r.o.");
   const siko = await item(ids.companies, "Siko Koupelny a.s.");
@@ -273,78 +268,5 @@ describe("the fileCompaniesFromProjects link rule (issue #1653)", () => {
     expect(await fileCompanies(file)).toEqual([]);
     await runPropagation();
     expect(await fileCompanies(file)).toEqual([company]);
-  });
-
-  it("changes no existing file when the rule is deployed", async () => {
-    const { web } = await twoProjects();
-    const file = await item(ids.files, "Archive");
-    // Synthetic pre-rule state: a file already attached to a project before the rule shipped. Through the choke point
-    // the rule now reacts to the via edge, so the edge is written directly, as an older release stored it.
-    await inTenant(async () => {
-      const { rows } = await pool.query<{ id: string }>(
-        "SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1",
-        [ids.fileProjects],
-      );
-      const definition = rows[0]?.id;
-      if (!definition) throw new Error("Files.projects definition missing");
-      const { rows: sides } = await pool.query<{ a: string }>(
-        "SELECT property_id_a AS a FROM relation_definitions WHERE id = $1",
-        [definition],
-      );
-      const fileIsA = sides[0]?.a === ids.fileProjects;
-      const inserted = await pool.query(
-        "INSERT INTO item_relations (relation_definition_id, item_a, item_b) VALUES ($1, $2, $3)",
-        [definition, fileIsA ? file : web, fileIsA ? web : file],
-      );
-      expect(inserted.rowCount).toBe(1);
-    });
-
-    // The deploy-time steps: the per-tenant cutovers and the module data migrations.
-    await runAsSystem("test:deploy", () => runTenantCutoverMigrations(pool));
-    await inTenant(async () => runModuleDataMigrations(pool, await loadFullModuleRegistry()));
-    await runPropagation();
-    expect(await fileCompanies(file)).toEqual([]);
-    expect(await valueLinkRows(file)).toEqual([]);
-
-    // An unrelated later write to the file does not start inheriting either.
-    await inTenant(() => cp.updateItem({ databaseId: ids.files, itemId: file, propertiesPatch: { name: "Renamed" } }));
-    expect(await fileCompanies(file)).toEqual([]);
-  });
-
-  it("keeps an existing file's own nonempty companies unchanged when the rule is deployed and a project changes", async () => {
-    const { novak, web } = await twoProjects();
-    const own = await item(ids.companies, "Own Studio s.r.o.");
-    const file = await item(ids.files, "Contract archive");
-    // The file's own company, set by hand before it had any project: no link is created for it.
-    await link(ids.fileCompanies, file, own);
-    // Synthetic pre-rule state, as in the case above: the project edge an older release stored directly.
-    await inTenant(async () => {
-      const { rows } = await pool.query<{ id: string; a: string }>(
-        "SELECT id, property_id_a AS a FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1",
-        [ids.fileProjects],
-      );
-      const definition = rows[0];
-      if (!definition) throw new Error("Files.projects definition missing");
-      const fileIsA = definition.a === ids.fileProjects;
-      const inserted = await pool.query(
-        "INSERT INTO item_relations (relation_definition_id, item_a, item_b) VALUES ($1, $2, $3)",
-        [definition.id, fileIsA ? file : web, fileIsA ? web : file],
-      );
-      expect(inserted.rowCount).toBe(1);
-    });
-
-    await runAsSystem("test:deploy", () => runTenantCutoverMigrations(pool));
-    await inTenant(async () => runModuleDataMigrations(pool, await loadFullModuleRegistry()));
-    await runPropagation();
-    expect(await fileCompanies(file)).toEqual([own]);
-    expect(await valueLinkRows(file)).toEqual([]);
-
-    // A later change of the project's company does not reach the file either.
-    const agency = await item(ids.companies, "Agency a.s.");
-    await unlink(ids.projectCompany, web, novak);
-    await link(ids.projectCompany, web, agency);
-    await runPropagation();
-    expect(await fileCompanies(file)).toEqual([own]);
-    expect(await valueLinkRows(file)).toEqual([]);
   });
 });

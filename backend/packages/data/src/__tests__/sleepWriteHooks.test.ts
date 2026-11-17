@@ -35,7 +35,6 @@ function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): 
   return runInTenant(tenantId, () => withTransaction(dataPool, fn));
 }
 
-/** A new tenant seeded as production seeds one, so it has the settings item, the two default plans and no night. */
 async function seededTenant(): Promise<SleepTenant> {
   const tenantId = await createTestTenant(adminPool);
   await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
@@ -69,7 +68,6 @@ function chokePoint(t: SleepTenant) {
   };
 }
 
-/** The non-deleted items of one database, by id. */
 async function liveItems(t: SleepTenant, databaseId: string): Promise<StoredItem[]> {
   return inTenant(t.tenantId, async (client) => {
     const { rows } = await client.query<StoredItem>(
@@ -86,10 +84,7 @@ async function storedProperties(t: SleepTenant, databaseId: string, itemId: stri
   return item.properties;
 }
 
-/**
- * Creates an item through the choke point in a transaction that stays open until `release` is called: `created`
- * resolves once the item is inserted and its create hooks have run, `first` resolves when the transaction has ended.
- */
+/** The create runs in a transaction held open until `release`: `created` after insert and hooks, `first` at the end. */
 function holdCreateOpen(t: SleepTenant, databaseId: string, properties: Record<string, unknown>) {
   let signalCreated: () => void = () => {};
   const created = new Promise<void>((resolve) => {
@@ -109,10 +104,7 @@ function holdCreateOpen(t: SleepTenant, databaseId: string, properties: Record<s
   return { created, release, first };
 }
 
-/**
- * Waits until a transaction of this database waits for an advisory lock. `pg_locks` is the server's own view of
- * that wait, so no timing guess stands in for it.
- */
+/** Waits on `pg_locks`, not a timing guess. */
 async function waitForAdvisoryLockWaiter(): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -125,10 +117,7 @@ async function waitForAdvisoryLockWaiter(): Promise<void> {
   throw new Error("No transaction waited for an advisory lock");
 }
 
-/**
- * Waits until a backend waits for a lock and returns the statements of all backends that wait. `pg_stat_activity`
- * is the server's own view of that wait, so no timing guess stands in for it.
- */
+/** Waits on `pg_stat_activity`, not a timing guess, and returns the waiting statements. */
 async function waitingStatements(): Promise<string[]> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -160,10 +149,7 @@ async function expectDuplicate(write: Promise<unknown>, field: string): Promise<
   expect(error).toMatchObject({ status: 409, code: "duplicate_item", details: { field } });
 }
 
-/**
- * The seeded settings item carries `systemActive`, which the choke point refuses to trash, so a tenant without a
- * live settings item is a state only a raw `UPDATE` produces.
- */
+/** The choke point refuses to trash the `systemActive` settings item, so a raw `UPDATE` makes this state. */
 async function trashSeededSettings(t: SleepTenant): Promise<void> {
   const result = await inTenant(t.tenantId, (client) =>
     client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND deleted_at IS NULL", [t.settingsId]),
@@ -171,7 +157,6 @@ async function trashSeededSettings(t: SleepTenant): Promise<void> {
   expect(result.rowCount).toBe(1);
 }
 
-/** The title of a settings item; the seeded one has none, but a user write needs one. */
 const SETTINGS_NAME = "Sleep settings";
 
 const PLAN = { name: "Short nights", wakeDays: ["tue"], bedTime: "23:30", wakeTime: "06:00", alarm: true, position: 2 };
@@ -460,7 +445,7 @@ describe("sleep plan values (issue gh-1784)", () => {
 
   it("judges a patch over the merged plan: a stored plan without wakeTime refuses an unrelated rename", async () => {
     const created = await chokePoint(tenant).create(tenant.plansId, PLAN);
-    // A plan without a wake time cannot be written; only a raw update produces the state a legacy row would hold.
+    // No write produces a plan without a wake time; only a raw update gives the legacy state.
     await inTenant(tenant.tenantId, (client) =>
       client.query("UPDATE items SET properties = properties - 'wakeTime' WHERE id = $1", [created.id]),
     );
@@ -635,7 +620,7 @@ describe("one exception per night (issue gh-1784)", () => {
   });
 
   it("takes the night lookup only when the patch names night", async () => {
-    // Restoring a trashed duplicate is not checked (the issue's decision), which leaves two live exceptions.
+    // Restoring a trashed duplicate is not checked, which leaves two live exceptions.
     const first = await chokePoint(tenant).create(tenant.nightsId, { night: "2026-10-16" });
     await chokePoint(tenant).trash(tenant.nightsId, first.id);
     const second = await chokePoint(tenant).create(tenant.nightsId, { night: "2026-10-16" });
@@ -692,8 +677,7 @@ describe("one exception per night (issue gh-1784)", () => {
     try {
       await created;
 
-      // The night lock of another night is not in its way. The one lock it waits for is the tenant's single
-      // `sleep.resync` job (issue gh-1838), which the open transaction enqueued.
+      // Another night's lock is not in its way; the only lock it waits for is the tenant's single `sleep.resync` job.
       second = chokePoint(tenant).create(tenant.nightsId, { night: "2026-10-17" });
       expect(await waitingStatements()).toEqual([expect.stringContaining("graphile_worker.add_job")]);
       release();

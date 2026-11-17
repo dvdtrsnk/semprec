@@ -30,11 +30,9 @@ import { SEMPREC_TICK_ACTION_ID } from "../inboxTickKeys.js";
 import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inboxTypesStore.js";
 
 /**
- * Issue #1718: the edge-changed hook of the Inbox `type` relation. Every relation edge write under test goes
- * through the choke point on a `semprec_data` pool inside a tenant, so row-level security applies to the hook's
- * own reads. The side-B fixture writes a `properties` row and the `relation_definitions` swap with raw SQL on
- * that same pool, because no writer can produce that definition. The queued jobs are read through the superuser
- * pool, which sees the jobs of every tenant.
+ * The edge-changed hook of the Inbox `type` relation. Edge writes go through the choke point on a `semprec_data` pool
+ * inside a tenant, so row-level security applies to the hook's own reads; the side-B fixture uses raw SQL on that pool
+ * because no writer can produce that definition. Queued jobs are read through the superuser pool.
  */
 
 let admin: Pool;
@@ -46,7 +44,6 @@ const TICK_TASK = CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE;
 const RECOMPUTE_TASK = CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE;
 const DAY = "2026-10-16";
 
-/** What a test needs to know of one tenant's seeded Inbox pipeline. */
 interface Pipeline {
   tenant: string;
   inboxId: string;
@@ -55,7 +52,6 @@ interface Pipeline {
   typePropertyId: string;
   typeDefinitionId: string;
   journalDayDefinitionId: string;
-  /** The seeded `semprec.tick` heartbeats of the Inbox database, by the item event they watch. */
   heartbeatIds: { create: string; update: string };
 }
 
@@ -110,7 +106,6 @@ async function createType(p: Pipeline, name: string): Promise<string> {
   return type.id;
 }
 
-/** Captures one Inbox item of `DAY` through the production Inbox writer, with its type edge when `typeId` is given. */
 async function capture(p: Pipeline, text: string, typeId?: string): Promise<string> {
   const item = await runInTenant(p.tenant, () =>
     withTransaction(pool, (client) =>
@@ -120,7 +115,6 @@ async function capture(p: Pipeline, text: string, typeId?: string): Promise<stri
   return item.id;
 }
 
-/** The Journal day the Inbox item's `journalDay` edge points at. */
 async function dayOf(p: Pipeline, inboxItemId: string): Promise<string> {
   return runInTenant(p.tenant, () =>
     withTransaction(pool, async (client) => {
@@ -131,7 +125,6 @@ async function dayOf(p: Pipeline, inboxItemId: string): Promise<string> {
   );
 }
 
-/** The ids of the Inbox item's stored `type` edge rows. */
 async function typeEdgeIdsOf(p: Pipeline, inboxItemId: string): Promise<string[]> {
   return runInTenant(p.tenant, () =>
     withTransaction(pool, async (client) => {
@@ -147,7 +140,6 @@ function typeEdge(p: Pipeline, inboxItemId: string, typeId: string) {
 
 const jobEnvelope = z.object({ tenantId: z.string().nullable(), payload: z.record(z.string(), z.unknown()) });
 
-/** Every queued job of `task`: the tenant its producer stamped and its business payload. */
 async function queued(task: string): Promise<Array<z.infer<typeof jobEnvelope>>> {
   return (await readJobPayloadsByIdentifier(admin, task)).map((raw) => {
     const { tenantId, payload } = jobEnvelope.parse(raw);
@@ -165,10 +157,8 @@ async function queuedJobCount(): Promise<number> {
 }
 
 /**
- * Empties the queue through the worker: every queued job runs a handler that does nothing. A job enqueued
- * afterwards is then a new row, where a keyed enqueue would otherwise only update the queued job of the same key
- * that the fixture's capture left behind. One run may leave jobs of a serialized lane for the next one, so it
- * repeats while it makes progress.
+ * Empties the queue through a no-op worker, so a job enqueued afterwards is a new row rather than an update of a keyed
+ * job the capture left. Repeats while it makes progress, as one run may leave jobs of a serialized lane.
  */
 async function discardQueuedJobs(): Promise<void> {
   let remaining = Number.POSITIVE_INFINITY;

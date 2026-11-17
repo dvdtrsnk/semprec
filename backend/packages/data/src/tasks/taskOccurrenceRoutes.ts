@@ -15,34 +15,25 @@ import {
   publicTaskRecurrenceTemplate,
   type TaskRecurrenceTemplate,
 } from "./taskRecurrenceStore.js";
+import type { RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 
-interface Context {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
-
-/** The fields of one occurrence the body may write; every other key is refused by name. */
+/** Every other key is refused by name. */
 const OCCURRENCE_FIELDS: ReadonlySet<string> = new Set(["status", "completedOn", "date", "timeFrom", "timeTo"]);
 
-/** The statuses a caller may give one occurrence; `missed` is written by the Tasks module and the nightly job. */
+/** `missed` is written only by the Tasks module and the nightly job. */
 const OCCURRENCE_STATUSES: readonly unknown[] = ["notDone", "done", "wontDo"];
 
-/** The `owner: 'system'` Tasks properties a materialized occurrence is created with (issue #1605). */
+/** The `owner: 'system'` properties a materialized occurrence is created with. */
 const SERIES_PROPERTY_KEYS = ["seriesId", "occurrenceDate"] as const;
 
-/**
- * The series id of the path, in lower case. PostgreSQL prints `task_recurrence.series_id` in lower case, and that text
- * is what the occurrences of the series hold in `seriesId`. A path may spell the same UUID with upper-case digits; the
- * queries below compare `properties->>'seriesId'` as text, and a new occurrence stores the value returned here.
- */
-function seriesIdOf(ctx: Context): string {
+/** Lower-cased: occurrences store `seriesId` as PostgreSQL prints it, and the queries compare it as text. */
+function seriesIdOf(ctx: RouteParams & RouteBody & RouteUser): string {
   const result = z.uuid().safeParse(ctx.params.seriesId);
   if (!result.success) throw new ValidationError("Series id must be a UUID", { field: "seriesId" });
   return result.data.toLowerCase();
 }
 
-function occurrenceDateOf(ctx: Context): string {
+function occurrenceDateOf(ctx: RouteParams & RouteBody & RouteUser): string {
   const date = ctx.params.date;
   if (!isCalendarDate(date)) {
     throw new ValidationError("The occurrence date must be a calendar date YYYY-MM-DD", { field: "occurrenceDate" });
@@ -50,11 +41,6 @@ function occurrenceDateOf(ctx: Context): string {
   return date;
 }
 
-/**
- * The patch one occurrence takes: an object with `status`, `completedOn`, `date`, `timeFrom` and `timeTo`, each
- * optional. A `status` must be `notDone`, `done` or `wontDo`. The other four values are checked by the Tasks write
- * the patch is applied through.
- */
 function parsePatch(body: unknown): Record<string, unknown> {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw new ValidationError("The body must be an object", { field: "body" });
@@ -71,9 +57,8 @@ function parsePatch(body: unknown): Record<string, unknown> {
 }
 
 /**
- * The live Tasks item that stands for `occurrenceDate` of series `seriesId`, with its row locked, or `null` when there
- * is none. One statement finds and locks the row, so PostgreSQL checks the row again once it has the lock: a row that
- * another transaction trashed or took out of the series while this one waited is not returned.
+ * One statement finds and locks the row, so PostgreSQL re-checks it after the lock: a row trashed or taken out
+ * of the series meanwhile is not returned.
  */
 async function lockOccurrence(
   client: PoolClient,
@@ -91,34 +76,26 @@ async function lockOccurrence(
   return rows[0] ? itemsStore.getItemById(client, databaseId, rows[0].id) : null;
 }
 
-/** A new occurrence's properties taken from the series template; a null `name` is left out, as the advance does. */
 function templateProperties(template: TaskRecurrenceTemplate): Record<string, unknown> {
   const { name, ...rest } = publicTaskRecurrenceTemplate(template);
   return { ...(name === null ? {} : { name }), ...rest };
 }
 
 /**
- * `POST /api/tasks/series/:seriesId/occurrences/:date` (issue #1720): turns one occurrence of a recurring series into
- * a stored item, or writes the item that already stands for it. It writes neither the series template nor another
- * stored occurrence. `:date` is the occurrence's `occurrenceDate`.
+ * `POST /api/tasks/series/:seriesId/occurrences/:date`: stores one occurrence as an item, or writes the item
+ * already standing for it. Never writes the template or another occurrence.
  *
- * In one transaction it locks the live item with that `seriesId` and `occurrenceDate`, when there is one, and then the
- * `task_recurrence` row `FOR UPDATE` (items before `task_recurrence`,
- * docs/adr/2026-10-25-task-and-event-recurrence-model.md). An unknown, a turned-off and another tenant's series are
- * not found alike. A date the locked rule does not give on or after the series' anchor date is refused with 400 on
- * `occurrenceDate`, whether or not an item is stored for it.
+ * Locks the existing item, then `task_recurrence` `FOR UPDATE` (items before `task_recurrence`). Unknown,
+ * turned-off and foreign series are not found alike; a date the rule does not give is 400 on `occurrenceDate`.
  *
- * Without an item it creates one as the Tasks module: the template's `name`, `timeFrom`, `timeTo`, `notifications`,
- * `flagged` and `description`, `status` `notDone`, and `date`, `occurrenceDate` and `seriesId`. It then applies the
- * body to the item as the caller's own Tasks write, so `done` or `wontDo` on the series' current occurrence advances
- * the series through the Tasks update hook, and on any other occurrence creates nothing. A body `date`, `timeFrom` or
- * `timeTo` is written to this item alone; its `occurrenceDate` stays. An empty body writes nothing more.
+ * A missing item is created as the Tasks module from the template with `notDone`. The body is then applied as
+ * the caller's Tasks write, so `done`/`wontDo` on the current occurrence advances the series via the update hook.
+ * Body schedule fields change this item only; `occurrenceDate` stays.
  *
- * Responds with the item: 201 when this request created it, 200 when it was stored before. When another request
- * stored the occurrence after this one looked for it, this one is refused with 409 and creates nothing.
+ * 201 when created here, 200 when already stored, 409 when another request stored it concurrently.
  */
 export function createTaskOccurrenceMaterializeRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; item: ItemRow }> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<{ status: number; item: ItemRow }> => {
     const seriesId = seriesIdOf(ctx);
     const occurrenceDate = occurrenceDateOf(ctx);
     const propertiesPatch = parsePatch(ctx.body);
@@ -138,10 +115,9 @@ export function createTaskOccurrenceMaterializeRouteHandler(pool: Pool) {
 
       let occurrence = stored;
       if (!occurrence) {
-        // Read while holding the series row lock, which the advance, the nightly close and this route all hold when
-        // they store an occurrence of the series: none of them can store this one between the read and the create.
-        // A series edit reads the series' open occurrences again under the same lock (taskSeriesRoutes.ts), so one
-        // that waited for the row while this item was stored is refused with 409 and does not leave the item out.
+        // The advance, the nightly close and this route all store occurrences under the series row lock, so none can
+        // store this one in between. A series edit re-reads open occurrences under the same lock, so one that waited is
+        // refused with 409 instead of leaving this item out.
         if (await hasSeriesOccurrence(client, tasks.id, seriesId, occurrenceDate)) {
           throw new ConflictError("The occurrence was stored while this request waited", { seriesId, occurrenceDate });
         }

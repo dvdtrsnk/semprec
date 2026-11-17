@@ -3,10 +3,9 @@ import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** `<uuid>-<safe filename>`: the last segment of an upload's storage key (see `ingestUploadedFile`). */
+/** `<uuid>-<safe filename>`, the last segment of an `ingestUploadedFile` storage key. */
 const UPLOAD_KEY_SEGMENT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(.+)$/i;
 
-/** What an item envelope reports about the blob a `file`/`image` property points at. */
 export interface BlobMetadata {
   blobId: string;
   byteSize: number;
@@ -20,7 +19,6 @@ export type ItemBlobMetadata = Record<string, BlobMetadata>;
 
 type BlobMetadataDbRow = { id: string; mime_type: string; byte_size: string; storage_key: string };
 
-/** The filename part of a storage key written by `ingestUploadedFile`, or `null` for any other shape. */
 export function filenameFromStorageKey(storageKey: string): string | null {
   const segment = storageKey.slice(storageKey.lastIndexOf("/") + 1);
   return UPLOAD_KEY_SEGMENT_RE.exec(segment)?.[1] ?? null;
@@ -32,12 +30,7 @@ function readBlobId(value: unknown): string | undefined {
   return typeof blobId === "string" && UUID_RE.test(blobId) ? blobId.toLowerCase() : undefined;
 }
 
-/**
- * Per item id, the metadata of the blobs its `file`/`image` properties point at, keyed by
- * property key; an item with no visible blob has no entry. Two queries whatever the number of
- * items (property types of the items' databases, then one `blobs` read), under the caller's
- * tenant scope: a blob of another tenant, or one that no longer exists, is left out.
- */
+/** Two queries regardless of item count. Missing or foreign blobs are left out. */
 export async function loadBlobMetadataForItems(
   client: PoolClient,
   items: readonly { id: string; databaseId: string; properties: Record<string, unknown> }[],

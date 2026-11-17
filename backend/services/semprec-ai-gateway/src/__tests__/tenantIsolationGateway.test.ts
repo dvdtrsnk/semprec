@@ -275,7 +275,7 @@ async function totalRows(): Promise<number> {
   return Number(rows[0]?.count);
 }
 
-/** Snapshot of what each of A, B and tenant zero can see, to prove a call changed only its own tenant. */
+/** Proves a call changed only its own tenant. */
 async function snapshot(): Promise<Record<"a" | "b" | "zero", CallRow[]>> {
   return {
     a: await rowsVisibleIn(tenantA.id),
@@ -345,8 +345,7 @@ describe("AI gateway tenant isolation across every endpoint", () => {
 
     tenantA = await createFixture(await createTestTenant(adminPool));
     tenantB = await createFixture(await createTestTenant(adminPool));
-    // C has no `tenant_ai_budgets` row. The suspended tenant keeps the budget row it was provisioned
-    // with, as a tenant suspended after provisioning does, so its refusal comes from the suspension.
+    // C has no budget row; the suspended tenant keeps one, so its refusal comes from the suspension.
     tenantC = await createTestTenant(adminPool);
     suspendedTenant = await createTestTenant(adminPool, { status: "suspended" });
     await setTenantAiBudget(adminPool, suspendedTenant);

@@ -25,9 +25,7 @@ const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
-/** An error body as REST sends it. */
 const errorBody = z.object({ error: z.object({ code: z.string() }) });
-/** An item body, as far as the trash state. */
 const itemBody = z.object({ id: z.string(), deletedAt: z.string().nullable() });
 
 let pool: Pool;
@@ -100,7 +98,7 @@ describe("PUT of a transcript's Event edge while its Event is in the Trash (issu
     });
   }
 
-  /** The Events the transcript's `event` relation stores an edge to, an Event in the Trash included. */
+  /** An Event in the Trash included. */
   async function storedEventIds(transcriptId: string): Promise<string[]> {
     const { rows } = await pool.query<{ other: string }>(
       `SELECT CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS other

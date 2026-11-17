@@ -20,10 +20,9 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { handleLinkPropagation } from "../valueLinks/linkPropagation.js";
 import { createCoreTaskList } from "../worker.js";
 
-// The link rule `fileProjectsFromEvents` (issue #1756) and the release of a file's company link when its attachment
-// is removed (`blobs/eventAttachmentLinkRelease.ts`). Every call runs through the choke point on a pool of the
-// runtime role `semprec_data`, in a tenant; the administrator pool only reads the job queue and runs the
-// fixture SQL that is marked as such.
+// The link rule `fileProjectsFromEvents` and the release of a file's company link when its attachment is
+// removed (`blobs/eventAttachmentLinkRelease.ts`). Calls run through the choke point on the runtime role
+// `semprec_data`; the administrator pool only reads the job queue and runs marked fixture SQL.
 
 const RULE = "fileProjectsFromEvents";
 const COMPANIES_RULE = "fileCompaniesFromProjects";
@@ -88,7 +87,6 @@ async function unlink(
   await inTenant(() => cp.deleteRelation({ relationPropertyId, callerItemId, targetItemId }, writer));
 }
 
-/** The items on an item's own relation property, sorted. */
 async function related(itemId: string, relationPropertyId: string): Promise<string[]> {
   const entries = await inTenant(() => cp.listItemRelations(itemId, relationPropertyId));
   return (entries ?? []).map((entry) => entry.targetItemId).sort();
@@ -105,7 +103,6 @@ interface ValueLinkRow {
   broken_by: string | null;
 }
 
-/** The value link rows of an item, read through the runtime role in the tenant. */
 async function linkRows(itemId: string): Promise<ValueLinkRow[]> {
   return inTenant(async () => {
     const { rows } = await pool.query<ValueLinkRow>(
@@ -116,7 +113,6 @@ async function linkRows(itemId: string): Promise<ValueLinkRow[]> {
   });
 }
 
-/** The ids of the items that feed the link of one property of an item, sorted. */
 async function sourcesOf(itemId: string, propertyKey: string): Promise<string[]> {
   return inTenant(async () => {
     const { rows } = await pool.query<{ source_item_id: string }>(
@@ -136,8 +132,8 @@ async function linkSummary(itemId: string): Promise<string[]> {
 }
 
 /**
- * Runs every queued value-link propagation job through the registered worker task. A tenant's jobs share one lane
- * and one `runOnce` runs one of them, so it repeats until none is left.
+ * Runs every queued value-link propagation job. A tenant's jobs share one lane and one `runOnce` runs one
+ * of them, so it repeats until none is left.
  */
 async function runPropagation(): Promise<void> {
   const handler = createCoreTaskList(pool, createActionRegistry())[CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE];
@@ -154,7 +150,6 @@ async function runPropagation(): Promise<void> {
   throw new Error("Propagation jobs are still queued");
 }
 
-/** Records the invalidations `fn` publishes; the hook is cleared again afterwards. */
 async function capturingInvalidations(fn: () => Promise<unknown>): Promise<InvalidationEvent[]> {
   const events: InvalidationEvent[] = [];
   setInvalidationHook((event) => events.push(event));
@@ -169,14 +164,12 @@ async function capturingInvalidations(fn: () => Promise<unknown>): Promise<Inval
 const itemUpdatesOf = (events: InvalidationEvent[], itemId: string): InvalidationEvent[] =>
   events.filter((event) => event.scope === "item" && event.op === "update" && event.itemId === itemId);
 
-/** A user replaces the Event's project and the queued propagation runs. */
 async function changeEventProject(event: string, from: string, to: string): Promise<void> {
   await unlink(ids.eventProject, event, from);
   await link(ids.eventProject, event, to);
   await runPropagation();
 }
 
-/** A user replaces the company of a project and the queued propagation runs. */
 async function changeProjectCompany(project: string, from: string, to: string): Promise<void> {
   await unlink(ids.projectCompany, project, from);
   await link(ids.projectCompany, project, to);
@@ -192,8 +185,8 @@ const detach = (file: string, event: string, writer: WriterIdentity = USER): Pro
   unlink(ids.fileEvents, file, event, writer);
 
 /**
- * A `Files.events` edge written as the release before this rule stored it, without the hooks, so the file has no value
- * link: the edge API cannot produce that state any more, since the rule reacts to every new edge.
+ * A `Files.events` edge written without the hooks, so the file has no value link: the edge API cannot
+ * produce that state, since the rule reacts to every new edge.
  */
 async function insertEdgeWithoutHooks(file: string, event: string): Promise<void> {
   await inTenant(async () => {
@@ -345,7 +338,7 @@ describe("the fileProjectsFromEvents link rule and the release of a removed atta
 
       expect(await projectsOf(file)).toEqual([world.bathroom]);
       expect(await companiesOf(file)).toEqual([world.siko]);
-      // The company link of #1653 follows the own project; no `projects` link exists.
+      // The company link follows the own project; no `projects` link exists.
       expect(await linkSummary(file)).toEqual([`companies:${COMPANIES_RULE}:on`]);
     });
   });
@@ -704,7 +697,7 @@ describe("the fileProjectsFromEvents link rule and the release of a removed atta
       const file = await newFile();
       await attach(file, world.event);
       await inTenant(() => cp.softDeleteItem(ids.events, world.event, undefined, USER));
-      // The source detach of #1656 has already deleted the file's `projects` link.
+      // The source detach has already deleted the file's `projects` link.
       expect(await linkSummary(file)).toEqual([`companies:${COMPANIES_RULE}:on`]);
 
       await detach(file, world.event);
@@ -724,7 +717,7 @@ describe("the fileProjectsFromEvents link rule and the release of a removed atta
         [ids.fileEvents],
       );
       expect(definition.rowCount).toBe(1);
-      // Fixture SQL: no API removes a property of a system database. This is the schema before the cutover of #1588.
+      // Fixture SQL: no API removes a property of a system database.
       const removed = await admin.query("DELETE FROM properties WHERE id = ANY($1::uuid[])", [
         [ids.fileEvents, definition.rows[0]?.other],
       ]);
@@ -812,7 +805,6 @@ describe("the fileProjectsFromEvents link rule and the release of a removed atta
       done: Promise<void>;
     }
 
-    /** Locks the file row in a transaction of the holder pool that stays open until `release` is called. */
     function holdFileRow(file: string): Held {
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
@@ -941,11 +933,9 @@ describe("the fileProjectsFromEvents link rule and the release of a removed atta
       }
     }
 
-    /** The propagation of the Event's project that a change of that project queued, run as its handler runs it. */
     const propagate = (): Promise<unknown> =>
       handleLinkPropagation(propagationPool, { ruleKey: RULE, sourceItemId: world.event, hop: 1 });
 
-    /** A user removes the file's project, the edge of `Files.projects`. */
     const userRemovesProject = (file: string, project: string): Promise<unknown> =>
       createChokePoint(edgeWriterPool).deleteRelation(
         { relationPropertyId: ids.fileProjects, callerItemId: file, targetItemId: project },
@@ -997,7 +987,6 @@ describe("the fileProjectsFromEvents link rule and the release of a removed atta
       expect(["committed", "busy"]).toContain(outcomes[0]);
       await expectUserRemovalSettled(file);
 
-      // Run again, the propagation commits and writes nothing.
       expect(await outcomeOf(inTenant(propagate))).toBe("committed");
       await expectUserRemovalSettled(file);
     });

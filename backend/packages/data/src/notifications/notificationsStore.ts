@@ -11,7 +11,7 @@ export interface NotificationRow {
   userId: string;
   kind: NotificationKind;
   title: string;
-  /** The rendered body, in the recipient's locale at write time; `null` for a kind that has none (issue #1773). */
+  /** Rendered in the recipient's locale at write time; `null` for a kind that has none. */
   body: string | null;
   linkHref: string | null;
   sourceTable: string;
@@ -74,12 +74,8 @@ const NOTIFICATION_COLUMNS =
   "id, user_id, kind, title, body, link_href, source_table, source_id, transition_instance, payload, created_at, read_at, resolved_at";
 
 /**
- * Caps how many unread rows a single reconnect-recovery fetch or mark-all-read sweep touches in
- * one go, so a user who accumulated an unbounded backlog (a long offline stretch, a runaway
- * producer) can't force this service to pull or update an arbitrarily large result set — and hold
- * a client connection — in a single query. A user past this cap simply needs another round of
- * either operation to keep converging; there's no correctness requirement that either happen in
- * exactly one query.
+ * Bounds one recovery fetch or mark-all-read sweep so an unbounded backlog cannot force a huge
+ * query; a user past the cap converges over further rounds.
  */
 const MAX_UNREAD_NOTIFICATIONS_PER_QUERY = 500;
 
@@ -106,7 +102,6 @@ export async function listResolvedNotificationIds(
   });
 }
 
-/** Reload for the `notificationFanout` job (issue #151) — the writer's transaction has already committed by the time the job runs. */
 export async function getNotificationById(client: Pool | PoolClient, id: string): Promise<NotificationRow | null> {
   const { rows } = await client.query<NotificationDbRow>(
     `SELECT ${NOTIFICATION_COLUMNS} FROM notifications WHERE id = $1`,
@@ -115,12 +110,7 @@ export async function getNotificationById(client: Pool | PoolClient, id: string)
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * A reconnecting client's recovery path (issue #152): every unread notification for `userId`,
- * ordered deterministically by creation and then id so a client that paginates or dedupes against
- * a previously seen id gets a stable order even when two rows share a `created_at` timestamp.
- * Backed by `notifications_unread_idx` (migration 0030).
- */
+/** Reconnect recovery. Ordered by creation then id so ties are stable. Uses `notifications_unread_idx`. */
 export async function listUnreadNotificationsForUser(
   client: Pool | PoolClient,
   userId: string,
@@ -136,15 +126,8 @@ export async function listUnreadNotificationsForUser(
 }
 
 /**
- * Issue #152's visit-and-read operation: validates `notificationId` belongs to `userId` and, only
- * if it does, atomically marks it read (a no-op if it already was) and returns its current row —
- * the caller navigates to the returned row's `linkHref`. Returns `null` for both an unknown id and
- * one owned by a different user, deliberately indistinguishable so an authenticated caller can
- * never probe for another user's notification ids.
- *
- * The row-changed branch is what actually flips `read_at`; a repeat call on an already-read row
- * falls through to the plain, ownership-scoped re-fetch below and fires no realtime event — the
- * client already converged on that read the first time.
+ * `null` for unknown and foreign ids alike, so other users' ids cannot be probed. Only a call that
+ * actually flips `read_at` fires a realtime event.
  */
 export async function visitNotification(
   client: PoolClient,
@@ -171,11 +154,7 @@ export async function visitNotification(
   return existing[0] ? mapRow(existing[0]) : null;
 }
 
-/**
- * Issue #152's optional mark-all-read convenience: every currently unread notification for
- * `userId` in one statement, so cross-device badge convergence is a single realtime event instead
- * of one per row.
- */
+/** One statement, so cross-device convergence is one realtime event rather than one per row. */
 export async function markAllNotificationsRead(client: PoolClient, userId: string): Promise<NotificationRow[]> {
   const { rows } = await client.query<NotificationDbRow>(
     `UPDATE notifications SET read_at = now()
@@ -201,19 +180,10 @@ export async function markAllNotificationsRead(client: PoolClient, userId: strin
 }
 
 /**
- * Marks every unresolved notification of one source resolved ("the thing it pointed at was
- * handled") and, in the same statement, read when it was not yet. Runs on the caller's client so
- * it commits or rolls back with the decision that handled the source. Rows already resolved are
- * untouched, so a replay changes nothing and publishes nothing.
- *
- * Publishes `notification_read_state` after commit, one event per user, for the rows whose
- * `read_at` this call set; a row that was already read converged on its read earlier. Returns
- * every row this call resolved.
- *
- * For the rows whose kind is pushed (`push: true` in its kind policy), whether read or not, it also
- * enqueues the `pushDismiss` job (issue #1826) on `client`, one per user, so the devices that
- * received the visible push remove it. The job commits or rolls back with this transaction. A kind
- * that is never pushed enqueues nothing.
+ * Resolves (and reads) a source's notifications in the caller's transaction, so it commits with
+ * the decision that handled the source; a replay changes and publishes nothing. Read-state events
+ * fire after commit only for rows this call newly read. For pushed kinds it also enqueues one
+ * `pushDismiss` per user so devices remove the visible push.
  */
 export async function resolveNotificationsBySource(
   client: PoolClient,

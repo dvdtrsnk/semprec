@@ -50,7 +50,7 @@ async function session(tenantId: string): Promise<string> {
   return `Bearer ${result.token}`;
 }
 
-/** A date-only Event, which has no start, so no transcript is matched to it by time (issue #1663 requires a date). */
+/** A date-only Event has no start, so no transcript is matched to it by time. */
 async function event(tenantId: string, name: string): Promise<string> {
   return runInTenant(tenantId, async () => {
     const database = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "events"));
@@ -442,12 +442,18 @@ describe("POST /api/recordings through the dispatcher", () => {
       if (!files || !emails) throw new Error("Missing recording heartbeat databases");
       const attachments = (await cp.listProperties(emails.id)).find((property) => property.key === "attachments");
       if (!attachments) throw new Error("Missing Emails attachments relation");
+      const fileEvents = (await cp.listProperties(files.id)).find((property) => property.key === "events");
+      if (!fileEvents) throw new Error("Missing Files events relation");
       const before = await withTransaction(runtime, (client) =>
         getItemAutomation(client, consumed.result.transcriptId),
       );
       if (!before) throw new Error("Missing transcription automation");
       await createFilesTranscriptionTriggerAction(runtime)(
-        { filesDatabaseId: files.id, attachmentsRelationPropertyId: attachments.id },
+        {
+          filesDatabaseId: files.id,
+          attachmentsRelationPropertyId: attachments.id,
+          eventsRelationPropertyId: fileEvents.id,
+        },
         { heartbeatId: "fixture", projectItemId: "fixture", itemId: uploaded.fileItemId },
       );
       const after = await withTransaction(runtime, (client) => getItemAutomation(client, consumed.result.transcriptId));

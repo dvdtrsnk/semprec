@@ -26,56 +26,37 @@ import {
 } from "./approvalRequestsStore.js";
 
 /**
- * A payload summary safe to send to the client: which target and which argument *names* the
- * deferred call carries, never the argument *values* — those are exactly where a credential
- * or other sensitive value would live (issue #132's "sensitive credential values are never
- * rendered" criterion). A reviewer who needs the actual values still has the audit trail
- * (`approval_requests.payload` in the database); this queue is a triage list, not that trail.
- *
- * A discriminated union, not all-optional fields: `mcpToolRegistrationId`/`mcpServerItemId` are
- * only ever present together (an MCP-invoke-originated request), `operationName` only for a
- * generic-operation-originated request (issue #220), `toolName` only for a module-agent-tool
- * request (issue #1791), which an agent's mail send request (issue gh-1913) is too, with the tool
- * `mail.draft.send` and the names of its payload — the three kinds never mix on the same entry, and the `kind` tag
- * lets a client narrow to the right one instead of every field reading `string | undefined`
- * regardless of the entry's actual origin.
+ * Carries the target and argument *names*, never argument *values*: those are where credentials live. The full
+ * values remain only in `approval_requests.payload`. A discriminated union so a client narrows on `kind` (MCP
+ * invoke, generic operation, or module tool, which includes `mail.draft.send`).
  */
 export type ApprovalRequestSafeSummary =
   | {
       kind: "mcpInvoke";
       mcpToolRegistrationId: string;
       mcpServerItemId: string;
-      /** The server item's current `name`; `null` when the server item no longer exists. */
+      /** `null` when the server item no longer exists. */
       mcpServerName: string | null;
-      /** The registration's current `tool_name`; `null` when the registration no longer exists. */
+      /** `null` when the registration no longer exists. */
       mcpToolName: string | null;
       argKeys: string[];
     }
   | { kind: "genericOperation"; operationName: string; argKeys: string[] }
   | { kind: "moduleTool"; toolName: string; argKeys: string[] };
 
-/**
- * Where an approval request came from (issue #1766), derived when it is read from the run that
- * raised it and never stored on the request.
- */
+/** Derived at read time from the run that raised the request, never stored. */
 export interface ApprovalRequestSource {
   /**
-   * `tick`: a tick thread, or a run without a thread whose root run a heartbeat started. `mcp`: a run
-   * without a thread whose root run an external MCP client started. `chat`: a chat or item thread, and
-   * every other run. The root run is the run at which following `parent_run_id` ends
-   * (`getRootAgentRuns`); a run without a parent is its own root. For a run without a thread only the
-   * root run's `triggered_by` decides the kind.
+   * A thread decides first: tick thread is `tick`, chat or item thread `chat`. Without a thread, the root run's
+   * `triggered_by` decides: `heartbeat` is `tick`, `mcp` is `mcp`, anything else `chat`.
    */
   kind: ApprovalRequestSourceKind;
-  /** The Semp thread of the run that raised the request; `null` when that run has no thread. */
   threadId: string | null;
-  /** The thread's title by the rule of the thread list; `null` without a thread, and for a thread that has no title. */
+  /** By the thread list's title rule. */
   threadTitle: string | null;
-  /** The heartbeat of a `tick` source; `null` for the other kinds, and for a tick run that names no heartbeat. */
   heartbeatId: string | null;
-  /** The current `project_heartbeats.name` of `heartbeatId`; `null` with it. */
   heartbeatName: string | null;
-  /** The name of the MCP client of a `mcp` source. The source does not read the name a run stores (issue #1788), so it is `null`. */
+  /** Always `null`: the source does not read the name a run stores. */
   mcpClientName: string | null;
 }
 
@@ -83,22 +64,19 @@ export interface ApprovalRequestQueueEntry {
   id: string;
   toolName: string;
   riskClass: RiskClass;
-  /** Closed key the client maps to a label; derived from the class and, for generic operations, the operation. */
+  /** Closed key the client maps to a label. */
   riskLevel: ApprovalRiskLevel;
   requestedAt: string;
   safeSummary: ApprovalRequestSafeSummary;
   agentRunId: string;
-  /** `null` when the run itself is not tied to any project (e.g. Semp's own supervisor run). */
+  /** `null` when the run is not tied to a project (e.g. Semp's own supervisor run). */
   projectItemId: string | null;
-  /** `null` alongside `projectItemId` when there is no project, or when the project item has since been deleted. */
+  /** Also `null` when the project item has since been deleted. */
   projectName: string | null;
-  /** The agent's own explanation of why it asked; `null` when it gave none. */
   reason: string | null;
-  /** The snapshotted template key and parameters clients render; `null` for requests created before issue #1683. */
+  /** `null` for older requests. */
   description: ApprovalDescription | null;
-  /** The active value links the request would end (issue #1758); empty for a request that ends none. */
   breaksLinks: BreaksLinkEntry[];
-  /** The links that follow a broken link's property and so lose its value; empty when there are none. */
   endsInheritance: EndsInheritanceEntry[];
   source: ApprovalRequestSource;
 }
@@ -108,7 +86,6 @@ interface ResolvedMcpNames {
   toolNameById: Map<string, string>;
 }
 
-/** Batched read-time resolution of the server and tool names the `mcpInvoke` summaries carry. */
 async function resolveMcpNames(client: Queryable, requests: ApprovalRequest[]): Promise<ResolvedMcpNames> {
   const registrationIds = new Set<string>();
   const serverItemIds = new Set<string>();
@@ -163,36 +140,28 @@ function riskLevelOf(request: ApprovalRequest): ApprovalRiskLevel {
   });
 }
 
-/**
- * What `PATCH /api/approval-requests/:id` returns for a decided (or already-decided) request: the
- * decision's outcome plus the same triage fields the queue shows, with the payload reduced to
- * `safeSummary` for the same reason as there. `payload`, `resourceSnapshot` and the execution
- * outcome fields (`executionResult`, `executionError`, `executedAt`) are deliberately absent.
- */
+/** `payload`, `resourceSnapshot` and the execution outcome fields are deliberately absent. */
 export interface ApprovalRequestDecisionView {
   id: string;
   status: ApprovalRequest["status"];
   decidedAt: string | null;
   decidedBy: string | null;
   executionStatus: ApprovalRequest["executionStatus"];
-  /** Why an approved request was not carried out; `null` unless `executionStatus` is `conflict`. */
+  /** `null` unless `executionStatus` is `conflict`. */
   conflictReason: ApprovalConflictReason | null;
   toolName: string;
   riskClass: RiskClass;
-  /** Closed key the client maps to a label; derived from the class and, for generic operations, the operation. */
   riskLevel: ApprovalRiskLevel;
   requestedAt: string;
   agentRunId: string;
   safeSummary: ApprovalRequestSafeSummary;
   reason: string | null;
   description: ApprovalDescription | null;
-  /** As on `ApprovalRequestQueueEntry`, so the single-request read carries the same lists as the list. */
   breaksLinks: BreaksLinkEntry[];
   endsInheritance: EndsInheritanceEntry[];
   source: ApprovalRequestSource;
 }
 
-/** The `semp_threads` columns a source is derived from. */
 interface SourceThreadRow {
   id: string;
   kind: string;
@@ -201,7 +170,6 @@ interface SourceThreadRow {
   subject_inbox_item_id: string | null;
 }
 
-/** The value of `key` in `map`; `null` for a `null` key and for a key the map does not hold. */
 function lookup<V>(map: Map<string, V>, key: string | null): V | null {
   return (key === null ? undefined : map.get(key)) ?? null;
 }
@@ -224,7 +192,6 @@ async function getHeartbeatNames(client: Queryable, heartbeatIds: string[]): Pro
   return new Map(rows.map((row) => [row.id, row.name]));
 }
 
-/** The fields of a source that has neither a thread nor a heartbeat. */
 const NO_SOURCE_DETAIL = {
   threadId: null,
   threadTitle: null,
@@ -233,31 +200,19 @@ const NO_SOURCE_DETAIL = {
   mcpClientName: null,
 };
 
-/** The kind of the source of a run that has a thread: a tick thread is `tick`, a chat or item thread `chat`. */
 function threadSourceKind(threadKind: SempThreadKind): ApprovalRequestSourceKind {
   return threadKind === "tick" ? "tick" : "chat";
 }
 
-/**
- * The kind of the source of a run without a thread, from the `triggered_by` of its root run: `mcp`
- * is `mcp`, `heartbeat` is `tick`, and anything else, a root run that was not read included, is `chat`.
- */
+/** A root run that was not read counts as `chat`. */
 function rootSourceKind(root: AgentRunRow | undefined): ApprovalRequestSourceKind {
   if (root?.triggeredBy === "mcp") return "mcp";
   return root?.triggeredBy === "heartbeat" ? "tick" : "chat";
 }
 
 /**
- * Reads what the sources of the requests of `runs` are derived from and returns the derivation by
- * run id (issue #1766). It reads the threads, the parent runs level by level, the heartbeats and the
- * Inbox items of item threads, each for all `runs` at once, so the number of queries does not grow
- * with the number of runs.
- *
- * A run that has a thread takes its source from the thread: a chat or item thread is `chat`, a tick
- * thread is `tick` with the thread's heartbeat, also when the heartbeat's run was started by a chat
- * run. `threadTitle` is the title the thread list shows for `locale`. A run without a thread takes
- * its kind from the `triggered_by` of its root run (`getRootAgentRuns`): `mcp` is `mcp`, `heartbeat`
- * is `tick` with the root run's heartbeat, and anything else is `chat`.
+ * Each lookup (threads, parent levels, heartbeats, item-thread Inbox items) is batched for all runs, so the query
+ * count does not grow with the run count. A tick thread keeps its heartbeat even when a chat run started it.
  */
 async function loadApprovalSources(
   client: Queryable,
@@ -299,7 +254,6 @@ async function loadApprovalSources(
           heartbeatName,
           subjectText: lookup(subjectTextById, thread.subject_inbox_item_id),
         }),
-        // Only a tick thread stores a heartbeat (`semp_threads_kind_columns_check`).
         heartbeatId: thread.heartbeat_id,
         heartbeatName,
         mcpClientName: null,
@@ -319,13 +273,7 @@ async function loadApprovalSources(
   };
 }
 
-/**
- * The kind of the source of a request raised by run `agentRunId` (issue #1787), for a caller that
- * needs it when it creates the request. It applies the rules the queue derives `source.kind` by
- * (`threadSourceKind`, `rootSourceKind`): the kind of the run's thread, and for a run without a
- * visible thread the root run that `getRootAgentRuns` reaches. `null` when the run is not visible
- * to `client`.
- */
+/** For a caller creating a request; same rules as the queue. `null` when the run is not visible to `client`. */
 export async function getApprovalRequestSourceKind(
   client: Queryable,
   agentRunId: string,
@@ -338,7 +286,6 @@ export async function getApprovalRequestSourceKind(
   return rootSourceKind((await getRootAgentRuns(client, [run])).get(run.id));
 }
 
-/** `locale` is the caller's `users.locale`; the title of an item thread in `source` is written in it. */
 export async function toApprovalRequestDecisionView(
   client: Queryable,
   request: ApprovalRequest,
@@ -368,13 +315,8 @@ export async function toApprovalRequestDecisionView(
 }
 
 /**
- * Reads what the queue entries of `requests` are joined with and returns the projection of one of
- * them: the source project's display name and agent-run id, so the UI can show "where this came
- * from" without a per-project detour, the MCP names of `safeSummary` and the `source` (issue #1766,
- * `loadApprovalSources`). `agent_runs.project_item_id` and `items.id` carry no Postgres FK to each
- * other (see `0001_core_schema.sql`'s header note on partitioned `items`), so both joins are done
- * here as two batched follow-up reads instead of one SQL join. `locale` is the caller's
- * `users.locale`, in which the title of an item thread is written.
+ * `agent_runs.project_item_id` has no FK to `items.id` (`items` is partitioned), so the project join is two
+ * batched follow-up reads rather than one SQL join.
  */
 async function loadQueueEntries(
   client: Queryable,
@@ -416,11 +358,7 @@ async function loadQueueEntries(
   };
 }
 
-/**
- * The approval queue's read model (issue #132): every pending request of `ownerUserId`'s runs
- * across every project, oldest first, as `loadQueueEntries` projects it. This is the answer of
- * `GET /api/approval-requests` without parameters; `listApprovalRequestsQueuePage` is the paged one.
- */
+/** Oldest first; the unparameterized `GET /api/approval-requests`. */
 export async function listApprovalRequestsQueue(
   client: Queryable,
   ownerUserId: string,
@@ -431,21 +369,15 @@ export async function listApprovalRequestsQueue(
   return pending.map(await loadQueueEntries(client, pending, locale));
 }
 
-/** A row of the decided list (issue #1785): the queue entry, the decision and what became of it. */
 export interface DecidedApprovalRequestQueueEntry extends ApprovalRequestQueueEntry {
   status: ApprovalRequest["status"];
   decidedAt: string | null;
   executionStatus: ApprovalRequest["executionStatus"];
-  /** Why an approved request was not carried out; `null` unless `executionStatus` is `conflict`. */
+  /** `null` unless `executionStatus` is `conflict`. */
   conflictReason: ApprovalConflictReason | null;
 }
 
-/**
- * One page of the owner's requests as queue entries (issue #1785): `listApprovalRequestsPage`
- * selects and orders the requests of the page and `loadQueueEntries` projects them. A row of the
- * decided list also carries `status`, `decidedAt`, `executionStatus` and `conflictReason`; a row of
- * the pending list has exactly the fields `listApprovalRequestsQueue` returns.
- */
+/** A pending row has exactly the fields `listApprovalRequestsQueue` returns; a decided row adds the decision. */
 export async function listApprovalRequestsQueuePage(
   client: PoolClient,
   input: ListApprovalRequestsPageInput & { locale: string },
@@ -465,20 +397,16 @@ export async function listApprovalRequestsQueuePage(
   };
 }
 
-/**
- * The live state of the approval request a stored Semp reply step asked for (issue #1887): the three fields a
- * reader may see. The payload, the arguments and the execution result are never part of it.
- */
+/** The payload, arguments and execution result are never part of it. */
 export interface LiveStepApproval {
   status: ApprovalRequest["status"];
   executionStatus: ApprovalRequest["executionStatus"];
-  /** Why an approved request was not carried out; `null` unless `executionStatus` is `conflict`. */
+  /** `null` unless `executionStatus` is `conflict`. */
   conflictReason: ApprovalConflictReason | null;
 }
 
-/** A stored step as the messages read returns it: with `approval` on a step that carries an `approvalRequestId`. */
 export type SempReplyStepWithApproval = SempReplyStep & {
-  /** `null` when the request no longer exists or its run belongs to another user than the caller. */
+  /** `null` when the request is gone or belongs to another user (indistinguishable). */
   approval?: LiveStepApproval | null;
 };
 
@@ -492,12 +420,8 @@ function liveStepApproval(state: ApprovalRequestStateView | undefined): LiveStep
 }
 
 /**
- * Attaches the live approval state to the steps of `messages`, the messages of one page of a Semp thread
- * (issue #1887). The requests of every step of the page that carries an `approvalRequestId` are read in one
- * query, owned by `ownerUserId`, and each such step gets `approval`: the request's `status`, `executionStatus`
- * and `conflictReason` as they are now, or `null` when the caller's scope reads no such request (a missing one
- * and one of another user cannot be told apart). A step without an `approvalRequestId` is returned as it is. The
- * stored steps are not rewritten: the object is added to the copy that is returned.
+ * One query for every step of the page. The stored steps are not rewritten; `approval` is added to the returned
+ * copy.
  */
 export async function attachLiveStepApprovals<M extends { steps?: SempReplyStep[] }>(
   client: Queryable,

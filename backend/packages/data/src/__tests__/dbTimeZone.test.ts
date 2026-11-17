@@ -119,7 +119,6 @@ describe("view filters and sorts do not depend on the session time zone", () => 
     return result.items.map((item) => String(item.properties.name));
   }
 
-  /** Restricts a condition to the stored values that carry a time and an offset or `Z`. */
   const withTime = (condition: FilterNode): FilterNode => ({
     type: "and",
     nodes: [condition, { type: "contains", property: "date", value: "T" }],

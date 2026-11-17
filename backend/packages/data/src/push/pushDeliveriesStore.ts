@@ -7,13 +7,7 @@ export interface PushDeliveryStatus {
   failedPermanently: boolean;
 }
 
-/**
- * Establishes the durable fanout list for this notification (issue #151): one `push_deliveries`
- * row per registration id passed in, keyed `(notification_id, push_subscription_id)` — migration
- * 0032's unique index. `ON CONFLICT DO NOTHING` makes this safe to call again on every retry of
- * the `notificationFanout` job: a registration already claimed on an earlier attempt is left
- * untouched, only newly-active registrations (none, in the common case) get a fresh row.
- */
+/** `ON CONFLICT DO NOTHING` makes this safe on every fanout retry; claimed rows are left untouched. */
 export async function claimPushDeliveryTargets(
   client: Pool | PoolClient,
   notificationId: string,
@@ -28,7 +22,6 @@ export async function claimPushDeliveryTargets(
   );
 }
 
-/** Every delivery row claimed so far for this notification, so the fanout job can skip anything already resolved. */
 export async function getPushDeliveryStatuses(
   client: Pool | PoolClient,
   notificationId: string,
@@ -51,7 +44,6 @@ export async function getPushDeliveryStatuses(
   }));
 }
 
-/** Terminal success — never dispatched again (the fanout job filters it out via `getPushDeliveryStatuses`). */
 export async function markPushDeliveryDelivered(client: Pool | PoolClient, id: string): Promise<void> {
   await client.query(
     `UPDATE push_deliveries SET delivered_at = now(), updated_at = now(), last_error = NULL WHERE id = $1`,
@@ -59,7 +51,6 @@ export async function markPushDeliveryDelivered(client: Pool | PoolClient, id: s
   );
 }
 
-/** Terminal provider rejection (404/410/BadDeviceToken) — paired with `revokePushSubscriptionByProviderInvalidation` by the caller. */
 export async function markPushDeliveryFailedPermanently(
   client: Pool | PoolClient,
   id: string,
@@ -71,7 +62,7 @@ export async function markPushDeliveryFailedPermanently(
   );
 }
 
-/** Non-terminal — the row stays pending so the next job retry (graphile-worker) dispatches it again. */
+/** Non-terminal: the row stays pending for the next job retry. */
 export async function recordPushDeliveryTransientFailure(
   client: Pool | PoolClient,
   id: string,

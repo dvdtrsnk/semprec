@@ -1,4 +1,4 @@
-/** Canonical `databases.owner_module_id` values for the ten hardcoded databases (issue #24) — see the `canonical-keys` skill's established vocabulary. */
+/** `databases.owner_module_id` values of the ten hardcoded databases. */
 export const AREAS_MODULE_ID = "areas";
 export const PROJECTS_MODULE_ID = "projects";
 export const TASKS_MODULE_ID = "tasks";

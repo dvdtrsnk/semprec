@@ -30,9 +30,8 @@ import type { AppOptions } from "./app.js";
 import { logger } from "./logger.js";
 
 /**
- * The account route family (issue #1043): the caller's own account, in the caller's own tenant.
- * Every route is an adapter route, so it is authenticated and runs inside the session's tenant
- * scope. `options` is the dispatcher's own options object; account deletion reads its `trustProxy`.
+ * Every route runs inside the session's tenant scope. `options` is the dispatcher's options object;
+ * account deletion reads its `trustProxy`.
  */
 export function createAccountRoutes(pool: Pool, options: AppOptions): RouteDefinition[] {
   return [
@@ -50,7 +49,8 @@ export function createAccountRoutes(pool: Pool, options: AppOptions): RouteDefin
       handler: async () => ({ status: 200, body: { exports: await listTenantExports(pool) } }),
     },
     {
-      // Issue gh-1903: the figures of the profile screen in one read. The user is the session's, never a request's.
+      // The figures of the profile screen in one read. The user is the session's, never a
+      // request's.
       method: "GET",
       path: "/api/account/summary",
       handler: async (ctx) => ({
@@ -77,7 +77,7 @@ export function createAccountRoutes(pool: Pool, options: AppOptions): RouteDefin
       },
     },
     {
-      // Issue #1704: the profile language. The account is the authenticated one; the body cannot name another.
+      // The account is the authenticated one; the body cannot name another.
       method: "PATCH",
       path: "/api/account/profile",
       handler: async (ctx) => {
@@ -91,8 +91,8 @@ export function createAccountRoutes(pool: Pool, options: AppOptions): RouteDefin
         const userId = ctx.identity.user.id;
         const { user, personId } = await withTransaction(pool, async (client) => {
           const updated = await updateUserLocale(client, userId, locale);
-          // Search documents hold select and multi-select option labels in the user's language, so a
-          // changed locale queues the tenant's reindex in this transaction. An unchanged one queues nothing.
+          // Search documents hold option labels in the user's language, so a changed locale queues
+          // the tenant's reindex in this transaction.
           if (updated) await enqueueTenantSearchReindex(client);
           const user = updated ?? (await getUserById(client, userId));
           if (!user) throw new NotFoundError("Account not found", { userId });
@@ -113,15 +113,13 @@ function errorName(err: unknown): string {
 const DOWNLOAD_PATH = /^\/api\/account\/exports\/([^/]+)\/download$/;
 
 export interface AccountExportDownloadListenerOptions {
-  /** The files root, where `tenantExport` writes its archives. */
   storage: BlobStorageWriter;
 }
 
 /**
- * `GET /api/account/exports/:id/download` (issue #1043): streams a `ready`, unexpired export of the
- * caller's tenant. Like `blobsHandler.ts` it is a bespoke listener, because the body is piped, not
- * a JSON envelope. The id is validated first, then the session is authenticated, and the export is
- * resolved inside the session's tenant: a foreign, unknown, not-ready or expired id is the same 404.
+ * A bespoke listener because the body is piped, not a JSON envelope. The id is validated first,
+ * then the session, and the export is resolved inside the session's tenant: a foreign, unknown,
+ * not-ready or expired id is the same 404.
  */
 export function createAccountExportDownloadListener(pool: Pool, options: AccountExportDownloadListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -132,7 +130,7 @@ export function createAccountExportDownloadListener(pool: Pool, options: Account
         sendJson(res, 404, { error: { code: "not_found" } });
         return;
       }
-      // Group 1 of DOWNLOAD_PATH is not optional, so a successful match always captured it.
+      // Group 1 of DOWNLOAD_PATH is not optional.
       const exportId = assertUuid(match[1]!, "id");
       const identity = await authenticateRequest(pool, req);
 
@@ -148,8 +146,8 @@ export function createAccountExportDownloadListener(pool: Pool, options: Account
           "Cache-Control": NO_STORE,
         });
 
-        // Not awaited, as in blobsHandler.ts: pipeline destroys the read stream when the client
-        // aborts, so the file descriptor is released.
+        // Not awaited: pipeline destroys the read stream when the client aborts, so the file
+        // descriptor is released.
         pipeline(stream, res, (err) => {
           if (!err) return;
           if (err.code === "ERR_STREAM_PREMATURE_CLOSE") {

@@ -56,7 +56,6 @@ async function newTenant(): Promise<string> {
   return tenantId;
 }
 
-/** One tenant's fixture writes and timeline reads, each in that tenant's scope on the runtime-role pool. */
 function world(tenantId: string) {
   const chokePoint = createChokePoint(dataPool);
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenantId, fn);
@@ -180,7 +179,6 @@ function world(tenantId: string) {
   const read = (from: string, to: string = from, shape: "full" | "compact" = "full") =>
     inTenant(() => withTransaction(dataPool, (client) => readCalendarTimeline(client, { from, to, shape })));
 
-  /** The sleep entries of a range, each checked to carry exactly the documented fields. */
   const nights = async (from: string, to: string = from) =>
     z.array(sleepSchema).parse((await read(from, to)).items.filter((item) => item.kind === "sleep"));
 
@@ -503,7 +501,6 @@ describe("sleep timeline source (issue #1806)", () => {
 
     const nights = await w.nights("2026-10-16");
 
-    // Without the weekday plan the Thursday night has none; the weekend plan still gives the Friday night.
     expect(nights.map((night) => night.night)).toEqual(["2026-10-16"]);
     expect(warn.mock.calls.map(([fields, message]) => [fields, message])).toEqual([
       [expect.objectContaining({ itemId: weekdays, property: key }), SKIP_MESSAGE],
@@ -541,7 +538,6 @@ describe("sleep timeline source (issue #1806)", () => {
     const full = await w.read("2026-10-15", "2026-10-16");
     const compact = await w.read("2026-10-15", "2026-10-16", "compact");
 
-    // The night 2026-10-14 is the night before the range that ends inside it.
     const ids = ["sleep:2026-10-14", event, task, "sleep:2026-10-15", nextDay, "sleep:2026-10-16"];
     expect(full.items.map((item) => item.id)).toEqual(ids);
     expect(compact.items.map((item) => item.id)).toEqual(full.items.map((item) => item.id));

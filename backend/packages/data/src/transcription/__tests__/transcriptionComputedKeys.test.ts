@@ -23,11 +23,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/**
- * Issue #180's declared `items.computed` keys: registering them (seed/seedSystem.ts) must
- * actually reserve them against collision with a future property of the same name, on any
- * database — the guard `assertNoComputedKeyCollision` enforces is global, not Transcripts-only.
- */
+/** The collision guard is global: a registered key is reserved on any database, not only Transcripts. */
 describe("Transcripts computed key registration (issue #180)", () => {
   let computedKeyRegistry: ComputedKeyRegistry;
   let transcriptsId: string;

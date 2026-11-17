@@ -45,13 +45,10 @@ interface Part {
 
 interface Store {
   storage: BlobStorageWriter;
-  /** The storage keys `readStream` was asked for. */
   reads: string[];
-  /** Replaces what `readStream` returns for the keys that `override` answers. */
   override: { replace?: (storageKey: string) => Readable | undefined };
 }
 
-/** A storage that keeps the bytes it was given, so the action reads back what mail ingest wrote. */
 function memoryStore(): Store {
   const blobs = new Map<string, Buffer>();
   const store: Store = {
@@ -92,11 +89,9 @@ interface IcsOptions {
   dtStart?: string;
   dtEnd?: string | null;
   extra?: string[];
-  /** Extra VEVENT blocks that follow the first one. */
   moreEvents?: string[][];
 }
 
-/** The text of an iMIP calendar part: one VEVENT of a UTC meeting unless an option says otherwise. */
 function ics(options: IcsOptions = {}): string {
   const method = options.method === undefined ? "REQUEST" : options.method;
   const event = (lines: string[]) => ["BEGIN:VEVENT", ...lines, "END:VEVENT"];
@@ -124,7 +119,6 @@ function ics(options: IcsOptions = {}): string {
 
 const calendarPart = (text: string): Part => ({ contentType: "text/calendar", text });
 
-/** A message that arrives through the sync writer with `parts` as its attachments; returns its Emails item id. */
 async function receive(
   world: World,
   messageId: string,
@@ -168,7 +162,6 @@ function actionFor(storage: BlobStorageWriter = store.storage): ActionHandler {
   return createInvitationIngestAction(runtime, { storage });
 }
 
-/** Fires the heartbeat action for `emailItemId` the way a heartbeat for the Emails database does, in the tenant of `world`. */
 function ingest(world: World, emailItemId: string, config: Record<string, unknown> = configOf(world)): Promise<void> {
   return runInTenant(world.tenantId, () =>
     actionFor()(config, { heartbeatId: "test", projectItemId: "test", itemId: emailItemId }),
@@ -182,7 +175,6 @@ const invitationRow = z.object({
 });
 type InvitationRow = z.infer<typeof invitationRow>;
 
-/** Every invitation row of the tenant, trashed ones included, in id order, read on the admin pool by database id. */
 async function invitationsOf(world: World): Promise<InvitationRow[]> {
   const { rows } = await admin.query(
     "SELECT id, properties, deleted_at FROM items WHERE database_id = $1 ORDER BY id",
@@ -199,7 +191,6 @@ async function onlyInvitation(world: World): Promise<InvitationRow> {
   return row;
 }
 
-/** The ids an invitation's relation `key` points at. */
 async function edgesOf(world: World, invitationId: string, key: string): Promise<string[]> {
   return runInTenant(world.tenantId, async () => {
     const property = (await world.cp.listProperties(world.databases.invitations!)).find((entry) => entry.key === key);
@@ -230,7 +221,6 @@ async function writeInvitation(world: World, invitationId: string, patch: Record
   );
 }
 
-/** Every argument that the spied logger methods were called with, as text. */
 function loggedText(...spies: Array<{ mock: { calls: unknown[][] } }>): string {
   return JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
 }
@@ -448,7 +438,6 @@ describe("calendar.ingestInvitation (issue gh-1929)", () => {
       expect(after.properties).toEqual({
         title: "Sprint review (moved)",
         startsAt: "2026-11-21T13:00:00.000Z",
-        // A value the new request no longer carries is cleared, not left as it was.
         endsAt: null,
         place: null,
         timeZone: "UTC",
@@ -461,7 +450,6 @@ describe("calendar.ingestInvitation (issue gh-1929)", () => {
         sequence: 1,
       });
       expect(await edgesOf(world, after.id, "sourceEmail")).toEqual([second]);
-      // The receiving mailbox and the suggested calendar were chosen when the invitation arrived and stay.
       expect(await edgesOf(world, after.id, "mailbox")).toEqual([world.inbox.mailboxId]);
       expect(await edgesOf(world, after.id, "suggestedCalendar")).toEqual([await defaultCalendarId(world)]);
     });
@@ -684,7 +672,6 @@ describe("calendar.ingestInvitation (issue gh-1929)", () => {
       await Promise.all(emails.map((emailId) => ingest(world, emailId)));
 
       const invitation = await onlyInvitation(world);
-      // Whatever the order, a delivery only ever raises the sequence of a pending invitation.
       expect(invitation.properties.sequence).toBe(3);
       expect(await edgesOf(world, invitation.id, "sourceEmail")).toEqual([emails[3]]);
     });

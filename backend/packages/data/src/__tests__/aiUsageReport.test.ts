@@ -197,14 +197,12 @@ describe("getAiUsageReport", () => {
   });
 });
 
-/** Local calendar day of `instant` in `timeZone`, YYYY-MM-DD, derived with the same Intl API the report's day buckets are read against. */
 function localDay(instant: string, timeZone: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(
     new Date(instant),
   );
 }
 
-/** A report range of two days either side of `instant`, so it always contains calls recorded at that instant. */
 function rangeAround(instant: string | Date): { from: string; to: string } {
   const centre = new Date(instant).getTime();
   const twoDaysMs = 2 * 24 * 60 * 60 * 1000;
@@ -217,7 +215,6 @@ describe("getAiUsageReport across tenants (issue #1048)", () => {
   let tenantA: string;
   let tenantB: string;
 
-  /** Seeds the tenant's systemSettings database with one settings item carrying `timezone`. */
   async function seedTimezone(tenantId: string, timezone: string): Promise<void> {
     await runInTenant(tenantId, () =>
       withTransaction(runtimePool, async (client) => {

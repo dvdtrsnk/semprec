@@ -11,11 +11,8 @@ import {
 } from "./taskRecurrenceRule.js";
 
 /**
- * The properties a series' occurrences are created from (issue #1605). The advance takes `name`, `timeFrom`,
- * `timeTo` and `notifications` from it and `flagged`/`description` from the completed occurrence (#1673); the
- * projection uses every field but `persistent` for a virtual occurrence (#1672). `persistent` is a legacy field: the
- * Tasks property was removed (issue #2009), stored templates keep the boolean, new series store `false`, and no reader
- * outside this module sees it (`publicTaskRecurrenceTemplate`).
+ * The properties a series' occurrences are created from. `persistent` is legacy: stored templates keep the
+ * boolean, new series store `false`, and no reader outside this module sees it (`publicTaskRecurrenceTemplate`).
  */
 const templateSchema = z
   .object({
@@ -31,7 +28,6 @@ const templateSchema = z
 
 export type TaskRecurrenceTemplate = z.infer<typeof templateSchema>;
 
-/** A template as callers outside the store show it: every field but the legacy `persistent` (issue #2009). */
 export type PublicTaskRecurrenceTemplate = Omit<TaskRecurrenceTemplate, "persistent">;
 
 export function publicTaskRecurrenceTemplate(template: TaskRecurrenceTemplate): PublicTaskRecurrenceTemplate {
@@ -46,15 +42,9 @@ export function publicTaskRecurrenceTemplate(template: TaskRecurrenceTemplate): 
 }
 
 /**
- * Not `types.ts`'s `TaskRecurrenceRow` (which keeps `rule` as a loosely-typed jsonb bag,
- * matching how other Row types like `PropertyRow.config` stay untyped at that layer) — this
- * store's callers (advanceTaskRecurrenceWithClient.ts) need the already-validated, discriminated
- * `TaskRecurrenceRule`, not a round-trip cast back through `unknown`.
- *
- * `seriesId`, `anchorDate` and `template` are null on a row without a series: one written before issue #1605 that the
- * series cutover left alone (inactive, or its instance done), one whose tenant's cutover failed or has not run yet,
- * or one a previous release inserted.
- * `createTaskRecurrence` and the cutover always set the three together.
+ * Unlike `types.ts`'s loosely typed `TaskRecurrenceRow`, carries the validated, discriminated `TaskRecurrenceRule`.
+ * `seriesId`, `anchorDate` and `template` are null together on a row without a series; `createTaskRecurrence`,
+ * the only insert, sets all three.
  */
 export interface TaskRecurrence {
   itemId: string;
@@ -66,7 +56,6 @@ export interface TaskRecurrence {
   template: TaskRecurrenceTemplate | null;
 }
 
-/** The raw `task_recurrence` row shape this module reads back from Postgres; `anchor_date` is selected as text. */
 type TaskRecurrenceDbRow = {
   item_id: string;
   mode: string;
@@ -77,7 +66,7 @@ type TaskRecurrenceDbRow = {
   template: unknown;
 };
 
-/** Parses a stored template; a malformed one is a corrupt row, not a template with defaults. */
+/** A malformed template is a corrupt row, not a template with defaults. */
 export function parseTaskRecurrenceTemplate(raw: unknown): TaskRecurrenceTemplate {
   const parsed = templateSchema.safeParse(raw);
   if (!parsed.success) throw new Error("Malformed task recurrence template in database row");
@@ -103,17 +92,14 @@ export interface CreateTaskRecurrenceInput {
   itemId: string;
   mode: TaskRecurrenceMode;
   rule: TaskRecurrenceRule;
-  /** The calendar day (`YYYY-MM-DD`) the series starts on. */
   anchorDate: string;
   template: TaskRecurrenceTemplate;
   active?: boolean;
 }
 
 /**
- * Creates a series (issue #1605): a new `series_id`, its anchor date and its template, pointing at `itemId`.
- * Not item/database state (no `properties`/`owner`), so it is written directly — same pattern as
- * `project_heartbeats` via schedulerStore.ts, not through the choke-point. The item's own `seriesId`,
- * `occurrenceDate` and `recurrence` properties are written by the Tasks module through the choke point.
+ * Creates a series pointing at `itemId`. Not item state, so it is written directly rather than through the
+ * choke point (like `project_heartbeats`); the item's own series properties are written by the Tasks module.
  */
 export async function createTaskRecurrence(
   client: Queryable,
@@ -130,10 +116,8 @@ export async function createTaskRecurrence(
 }
 
 /**
- * Starts a new series in the item's own inactive row (issue #1665): `task_recurrence.item_id` is the row's primary key,
- * so a task whose recurrence was turned off gets its next series in the same row, with a new `series_id`, the given
- * rule, anchor and template, and `active` again. Occurrences of the old series keep their `seriesId` as history. Call
- * it holding the row lock; an item without an inactive row has nothing to restart and fails.
+ * Starts a new series in the item's own inactive row (`item_id` is the primary key) with a new `series_id`;
+ * old occurrences keep their `seriesId`. Call holding the row lock; fails without an inactive row.
  */
 export async function restartTaskRecurrence(
   client: PoolClient,
@@ -151,10 +135,7 @@ export async function restartTaskRecurrence(
   return mapRow(requireSingleRow(result.rows, "inactive task_recurrence row"));
 }
 
-/**
- * Replaces the rule of series `seriesId` (issue #1665) and marks it active; `anchorDate`, when given, moves the series
- * start. Call it holding the series row lock (`getTaskRecurrenceBySeriesId(..., true)`).
- */
+/** `anchorDate` moves the start. Call holding the series row lock. */
 export async function replaceTaskRecurrenceRule(
   client: PoolClient,
   seriesId: string,
@@ -170,10 +151,7 @@ export async function replaceTaskRecurrenceRule(
   return mapRow(requireSingleRow(result.rows, "task_recurrence series row"));
 }
 
-/**
- * Stores the merged template of series `seriesId` (issue #1667). Call it holding the series row lock, after locking the
- * occurrences the series edit writes.
- */
+/** Call holding the series row lock, after locking the occurrences the series edit writes. */
 export async function updateTaskRecurrenceTemplate(
   client: PoolClient,
   seriesId: string,
@@ -187,21 +165,16 @@ export async function updateTaskRecurrenceTemplate(
   requireAffectedRows(result, "task_recurrence series row");
 }
 
-/** Turns series `seriesId` off (issue #1665): the row stays, inactive, so the advance creates no next occurrence. */
+/** The row stays, inactive, so the advance creates no next occurrence. */
 export async function deactivateTaskRecurrenceSeries(client: PoolClient, seriesId: string): Promise<void> {
   const result = await client.query("UPDATE task_recurrence SET active = false WHERE series_id = $1::uuid", [seriesId]);
   requireAffectedRows(result, "task_recurrence series row");
 }
 
 /**
- * `forUpdate` row-locks the recurrence so two concurrent writers acting on it within their own
- * transactions serialize on the row: the second blocks until the first commits or rolls back,
- * then re-reads it. A plain read (no intent to mutate) should omit it.
- *
- * `forUpdate: true` requires a `PoolClient`, not the broader `Queryable` (`Pool | PoolClient`):
- * `FOR UPDATE` against a bare `Pool` acquires and immediately auto-commit-releases the lock on
- * that single statement, silently defeating the whole point of locking. These two overloads
- * make that a compile error instead of a runtime footgun.
+ * `forUpdate` row-locks the recurrence so concurrent writers serialize on it. It requires a `PoolClient`:
+ * `FOR UPDATE` on a bare `Pool` auto-commits and releases the lock immediately, so the overloads make that a
+ * compile error.
  */
 export function getTaskRecurrence(client: PoolClient, itemId: string, forUpdate: true): Promise<TaskRecurrence | null>;
 export function getTaskRecurrence(client: Queryable, itemId: string, forUpdate?: false): Promise<TaskRecurrence | null>;
@@ -217,11 +190,7 @@ export async function getTaskRecurrence(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * The series row of `seriesId` (issue #1605), with the same `forUpdate` contract and overloads as
- * `getTaskRecurrence`. Callers that also lock the series' instance item lock the item first
- * (docs/adr/2026-10-25-task-and-event-recurrence-model.md, "Lock order").
- */
+/** Same `forUpdate` contract as `getTaskRecurrence`. Lock order: the series' instance item before this row. */
 export function getTaskRecurrenceBySeriesId(
   client: PoolClient,
   seriesId: string,
@@ -244,7 +213,6 @@ export async function getTaskRecurrenceBySeriesId(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** Points the series row at its new current instance (issue #1605): the row is moved, never duplicated. */
 export async function moveTaskRecurrenceToItem(client: PoolClient, seriesId: string, itemId: string): Promise<void> {
   const result = await client.query(`UPDATE task_recurrence SET item_id = $2 WHERE series_id = $1::uuid`, [
     seriesId,
@@ -253,11 +221,7 @@ export async function moveTaskRecurrenceToItem(client: PoolClient, seriesId: str
   requireAffectedRows(result, "task_recurrence series row");
 }
 
-/**
- * Whether the Tasks database `databaseId` holds a non-deleted occurrence of `seriesId` dated `occurrenceDate`
- * (issue #1670). Run it while holding the series row lock, so a concurrent advance of the same series cannot
- * create the occurrence between this read and the caller's write.
- */
+/** Run holding the series row lock, so a concurrent advance cannot create the occurrence before the caller's write. */
 export async function hasSeriesOccurrence(
   client: PoolClient,
   databaseId: string,
@@ -275,11 +239,9 @@ export async function hasSeriesOccurrence(
 }
 
 /**
- * Turns the repeat rule of series `seriesId` off because the series went to the Trash (issue gh-1882) and records, in
- * `trashed_active_item_id`, the instance the row pointed at while it was active. A rule that is already off, as one
- * the user turned off or one an earlier row of the same cascade turned off, is left as it is. Returns whether this call
- * turned the rule off; zero rows is valid, for a series without a row and for a rule that is already off. Call it holding
- * the locks of the series' instance items (items before `task_recurrence`).
+ * Turns the rule off because the series was trashed and records the instance it pointed at in
+ * `trashed_active_item_id`. A rule already off is left alone. Returns whether this call turned it off. Call
+ * holding the instance item locks (items before `task_recurrence`).
  */
 export async function deactivateTaskRecurrenceForTrash(client: PoolClient, seriesId: string): Promise<boolean> {
   const result = await client.query(
@@ -291,11 +253,9 @@ export async function deactivateTaskRecurrenceForTrash(client: PoolClient, serie
 }
 
 /**
- * Turns the repeat rule of series `seriesId` back on when the restore reached `itemId`, the instance
- * `deactivateTaskRecurrenceForTrash` recorded, and clears the record. Any other instance, and a series whose rule the trash
- * did not turn off, change nothing. Returns whether this call turned the rule on; zero rows is valid, as every other
- * instance of the series reaches this with nothing recorded for it. Call it holding the locks of the series' instance
- * items (items before `task_recurrence`).
+ * Turns the rule back on only when the restore reached the instance `deactivateTaskRecurrenceForTrash` recorded,
+ * and clears the record; anything else changes nothing. Returns whether this call turned it on. Call holding the
+ * instance item locks (items before `task_recurrence`).
  */
 export async function reactivateTaskRecurrenceAfterTrash(
   client: PoolClient,
@@ -314,7 +274,7 @@ export async function setTaskRecurrenceActive(client: Queryable, itemId: string,
   await client.query(`UPDATE task_recurrence SET active = $2 WHERE item_id = $1`, [itemId, active]);
 }
 
-/** Removes the recurrence rule of a hard-deleted item (trash purge, issue #675); zero rows is valid — most items have none. */
+/** Zero rows is valid. */
 export async function deleteTaskRecurrence(client: Queryable, itemId: string): Promise<void> {
   await client.query(`DELETE FROM task_recurrence WHERE item_id = $1`, [itemId]);
 }

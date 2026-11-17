@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 
 const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "migrations");
 
-/** Structural (DDL) migrations only — see the db-migrations skill for why data backfills are queue jobs instead. */
+/** Structural (DDL) migrations only; data backfills are queue jobs. */
 export async function runMigrations(pool: Pool, migrationsDir = MIGRATIONS_DIR): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

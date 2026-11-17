@@ -60,7 +60,7 @@ export function buildSpeakerSuggestionRequest(
   };
 }
 
-/** Validates the gateway's structured content: it crossed a process boundary, so it is checked, not cast. */
+/** Crossed a process boundary, so it is checked, not cast. */
 export function parseSpeakerSuggestionContent(content: unknown): SpeakerMappingSuggestion[] {
   return speakerSuggestionResponseSchema.parse(content).mappings;
 }

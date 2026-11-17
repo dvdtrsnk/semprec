@@ -1,26 +1,21 @@
 import type { MailLiveSyncRoot } from "@semprec/data";
 import { CustomRouteConfigurationError, type MailLiveSyncControl } from "./adapter/customRouteMount.js";
 
-/** The part of the mail live-sync root the custom routes reach through their `mailLiveSync` member. */
 type ControlledMailLiveSyncRoot = Pick<MailLiveSyncRoot, "restartAccount" | "stopMailbox">;
 
 export interface MailLiveSyncControlBinding {
-  /** The member the composition root puts into the custom-route dependencies. */
   control: MailLiveSyncControl;
-  /** Connects `control` to the live-sync root, once the composition root has created it. */
+  /** Called once the composition root has created the root. */
   bind(root: ControlledMailLiveSyncRoot): void;
 }
 
 /**
- * The custom routes' control of the mail live-sync root (issue gh-1742). The composition root creates
- * the root after the request dispatcher, so the dispatcher gets this control first and the root is
- * bound to it afterwards (docs/adr/2026-10-29-custom-route-composition-root-dependencies.md).
+ * The composition root creates the live-sync root after the request dispatcher, so the dispatcher
+ * gets this control first and the root is bound afterwards.
  *
- * `restartAccount` forwards to the bound root's `restartAccount`, and `stopMailbox` (issue gh-2030)
- * to its `stopMailbox`; each settles as the root's call does. Called before a root is bound, either
- * refuses with a configuration error. The adapter answers that error with a generic 500 when a route
- * lets it through; the cleanup of a removed mailbox reports it as a failed step instead. `startMailbox`
- * refuses the same way on every call: the root has no start of one mailbox to forward to.
+ * `restartAccount` and `stopMailbox` forward to the bound root. Before binding, both refuse with a
+ * configuration error (a generic 500 through the adapter; the removed-mailbox cleanup reports it as
+ * a failed step). `startMailbox` always refuses: the root has no single-mailbox start.
  */
 export function createMailLiveSyncControl(): MailLiveSyncControlBinding {
   let boundRoot: ControlledMailLiveSyncRoot | undefined;

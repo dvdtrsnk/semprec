@@ -315,10 +315,8 @@ describe("repairInterruptedRuns", () => {
           }
           return originalQuery(...args);
         }) as PoolClient["query"];
-        // withTransaction's ROLLBACK succeeds here, so it releases this client
-        // with no error and pg would return it — with its COMMIT still
-        // intercepted — to the real pool's idle queue for reuse by the next
-        // withTransaction call below. Force pg to discard it instead.
+        // ROLLBACK succeeds, so pg would return this client, with COMMIT still intercepted, to the idle queue for the
+        // next withTransaction. Force pg to discard it.
         client.release = (err?: Error | boolean) => {
           originalRelease(err instanceof Error ? err : new Error("discard client contaminated by commitFailingPool"));
         };

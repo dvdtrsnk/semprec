@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/notifications` path family. */
 export const NOTIFICATIONS_ROUTES: RouteMatrixEntry[] = [
   {
     name: "unread notifications",

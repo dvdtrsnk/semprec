@@ -10,16 +10,15 @@ import {
 import { createDatabase } from "../chokePoint/databasesStore.js";
 
 /**
- * Finding R2-DB-1 of gh-1086: a `SECURITY DEFINER` function whose `search_path` does not name
- * `pg_temp` looks up unqualified relation and type names in the caller's temporary schema first.
- * These cases replay the exploit as `semprec_data`, logged in with its own password so that
- * `session_user` is the runtime role: the session creates `pg_temp.text` (or `pg_temp.uuid`) as a
- * domain whose check calls `pg_temp.pwn`, then calls a partition function on a database of its own
- * tenant. `pwn` never changes a role; it raises `escalated as <current_user>` when it runs as anyone
- * but `semprec_data`, so a run as the function's owner is visible without escalating anything.
+ * A `SECURITY DEFINER` function whose `search_path` does not name `pg_temp` resolves unqualified
+ * relation and type names in the caller's temporary schema first. These cases replay that exploit as
+ * `semprec_data` (logged in with its own password, so `session_user` is the runtime role): the session
+ * creates a `pg_temp.text`/`pg_temp.uuid` domain whose check calls `pg_temp.pwn`, then calls a
+ * partition function. `pwn` raises `escalated as <current_user>` when it runs as anyone but
+ * `semprec_data`, so running as the owner is visible without escalating anything.
  *
- * Every attack runs in a transaction that is rolled back. Every interpolated SQL identifier is an
- * element of the closed unions below; the database id is bound as a parameter.
+ * Every attack runs in a rolled-back transaction. Every interpolated identifier is an element of the
+ * closed unions below; the database id is bound as a parameter.
  */
 type Target = "create_items_partition" | "drop_items_partition";
 type ShadowedType = "text" | "uuid";
@@ -49,14 +48,12 @@ let dataPool: Pool;
 let tenantId: string;
 let databaseId: string;
 
-/** What the session saw right after the partition function returned. */
 type AttackOutcome = { partitionExists: boolean; sessionIsSuperuser: boolean };
 
 /**
- * Creates the shadowing domain in the temporary schema of a `semprec_data` session and calls
- * `target` on the tenant's own database, all in a transaction that is rolled back.
- * `create_items_partition` needs a database without a partition, so the production
- * `drop_items_partition` runs first in that case.
+ * Creates the shadowing domain in a `semprec_data` session and calls `target` on the tenant's own
+ * database, in a rolled-back transaction. `create_items_partition` needs a database without a partition,
+ * so `drop_items_partition` runs first in that case.
  */
 async function attack(target: Target, shadowed: ShadowedType): Promise<AttackOutcome> {
   const client = await dataPool.connect();

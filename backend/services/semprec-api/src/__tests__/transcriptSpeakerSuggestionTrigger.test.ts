@@ -48,8 +48,8 @@ const createdItem = z.object({ id: z.string() }).passthrough();
 let pool: Pool;
 
 /**
- * The trigger of the speaker suggestion (issue gh-1942) fires for an edge written by `semprec-api`: the generic edge
- * `PUT` of the route matrix, and the generic operation gateway that Semp's tools and every MCP client write through.
+ * The trigger fires for edges written by `semprec-api`: the generic edge `PUT` and the generic
+ * operation gateway that Semp's tools and every MCP client write through.
  */
 describe("the speaker suggestion trigger over the generic edge writes (issue gh-1942)", () => {
   let server: Server;

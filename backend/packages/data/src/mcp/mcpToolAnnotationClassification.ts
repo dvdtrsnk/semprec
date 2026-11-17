@@ -7,28 +7,24 @@ export interface McpToolAnnotationHints {
   openWorldHint?: boolean;
 }
 
-/** The default `risk_class` and `requires_approval` of a tool registration. */
 export interface McpToolClassification {
   riskClass: RiskClass;
   requiresApproval: boolean;
 }
 
 /**
- * Derives a tool's default classification from the annotations its server advertised. Annotations are hints,
- * not guarantees, so the result only chooses the default of a registration whose classification no person set.
+ * Annotations are hints, not guarantees, so this only picks the default for a registration no person classified.
  *
- * `null` is a tool that advertised no annotations object: it stays `unclassified` and asks for approval. For a
- * present object the first matching rule wins:
+ * `null` (no annotations object) stays `unclassified` with approval. Otherwise the first matching rule wins:
  *
  * 1. `readOnlyHint` true: `read`, no approval.
  * 2. `destructiveHint` not explicitly false (the MCP default is true): `destructive`, approval.
- * 3. `openWorldHint` explicitly true: `outbound`, approval. An absent value does not count, although the MCP
- *    default is also true, because nearly every tool would then be `outbound`.
+ * 3. `openWorldHint` explicitly true: `outbound`, approval. Absent does not count, although the MCP default is
+ *    true, because nearly every tool would then be `outbound`.
  * 4. Otherwise `write`, approval.
  *
- * So `outbound` and `write` need `destructiveHint` explicitly false. A present object with no `destructiveHint`
- * (`{}`, a title only, or `{ openWorldHint: true }` alone) is `destructive`, which is also what the issue's
- * mapping says although its first acceptance criterion words "only `openWorldHint: true`" as `outbound`.
+ * So `outbound` and `write` need `destructiveHint` explicitly false; `{}` or `{ openWorldHint: true }` alone is
+ * `destructive`.
  */
 export function classifyMcpToolFromAnnotations(hints: McpToolAnnotationHints | null): McpToolClassification {
   if (hints === null) return { riskClass: "unclassified", requiresApproval: true };

@@ -33,7 +33,7 @@ const AGENT_GUIDANCE_DRIFT_SYSTEM_INSTRUCTION =
   "target database id, or null when the contradiction is not database specific. Copy both values " +
   "verbatim from the manifest; never invent them.";
 
-/** Draft 2020-12 JSON Schema for the gateway's structured completion (validated server-side, issue #215). */
+/** Draft 2020-12 JSON Schema for the gateway's structured completion, validated by the gateway. */
 const AGENT_GUIDANCE_DRIFT_RESPONSE_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -83,23 +83,17 @@ export interface AgentGuidanceDriftActionInput {
 }
 
 /**
- * `core.agentGuidanceDrift` (issue #85): semantically compares a project's hand-written guidance
- * (#214) against the mechanically enforced permission manifest (#147), and reconciles the
- * project's drift findings and their owner notifications against that comparison's result.
+ * `core.agentGuidanceDrift`: compares a project's hand-written guidance with its enforced
+ * permission manifest and reconciles the drift findings and owner notifications.
  *
- * Two `repeatable read` transactions bracket one non-transactional gateway call (issue #215's
- * `AiGatewayClientPort.complete`, which cannot itself run inside a DB transaction):
- *
- * 1. **Read transaction** — captures one consistent snapshot: the guidance row (so its
- *    `ownerUserId`/`updatedAt` can be checked for staleness later), its markdown, the owner's
- *    locale, and a canonicalized render of the permission manifest for that project/locale.
- * 2. **Gateway call** — outside any transaction; a failure here propagates with no state change.
- * 3. **Write transaction** — reloads the guidance row and requires its `ownerUserId`/`updatedAt`
- *    to match the captured snapshot (otherwise: `guidance_changed`, no writes), re-renders the
- *    manifest and requires it to equal the captured string byte-for-byte (otherwise:
- *    `guidance_context_changed`, no writes) — only then persists findings and fans out
- *    notifications. This is what makes gateway output computed against a guidance/permission
- *    state that mutated mid-call get discarded rather than silently applied against newer state.
+ * Two `repeatable read` transactions bracket the non-transactional gateway call:
+ * 1. Read: snapshots the guidance row (`ownerUserId`/`updatedAt`), its markdown, the owner's locale
+ *    and a canonical render of the permission manifest.
+ * 2. Gateway call outside any transaction; a failure propagates with no state change.
+ * 3. Write: requires the guidance row to match the snapshot (else `guidance_changed`) and the
+ *    re-rendered manifest to equal the captured string byte for byte (else
+ *    `guidance_context_changed`), with no writes on either refusal; only then persists findings and
+ *    notifies. Output computed against state that changed mid-call is discarded.
  */
 export function createAgentGuidanceDriftAction<Tx>(
   deps: AgentGuidanceDriftActionDeps<Tx>,
@@ -181,9 +175,7 @@ export function createAgentGuidanceDriftAction<Tx>(
             linkHref,
             sourceTable: "agent_guidance_drift_findings",
             sourceId: finding.id,
-            // Scoped to this activation cycle (not just the fingerprint) so a finding that
-            // resolves and later reappears gets a fresh notification instead of colliding with
-            // its original activation's dedup key.
+            // Scoped to the activation cycle so a finding that resolves and reappears gets a fresh notification.
             transitionInstance: `${fingerprint}:${seenAt.toISOString()}`,
             payload: {
               projectItemId,
@@ -216,8 +208,7 @@ export function createAgentGuidanceDriftAction<Tx>(
             linkHref,
             sourceTable: "agent_guidance_drift_findings",
             sourceId: finding.id,
-            // Scoped to this resolution cycle for the same reason as the active-transition
-            // notification above: the same finding can resolve more than once over its lifetime.
+            // Scoped to the resolution cycle: a finding can resolve more than once.
             transitionInstance: `${active.fingerprint}:${seenAt.toISOString()}`,
             payload: { projectItemId, fingerprint: active.fingerprint },
           });
@@ -253,10 +244,8 @@ export function createAgentGuidanceDriftAction<Tx>(
 }
 
 /**
- * Defensive re-validation of the gateway's response content: the gateway already enforces
- * `AGENT_GUIDANCE_DRIFT_RESPONSE_SCHEMA` server-side (issue #215's ajv compilation), but this
- * package stays neutral (no schema-validation library dependency) and never trusts a value typed
- * `unknown` without narrowing it itself.
+ * The gateway already enforces `AGENT_GUIDANCE_DRIFT_RESPONSE_SCHEMA`; this package has no schema
+ * library and re-validates the `unknown` content itself.
  */
 type SubjectContradiction = GuidanceDriftPermissionContradiction & { subject: GuidanceDriftPermissionSubject };
 

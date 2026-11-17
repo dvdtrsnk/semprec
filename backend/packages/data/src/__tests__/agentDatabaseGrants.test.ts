@@ -31,7 +31,6 @@ import {
 } from "../testSupport/testDb.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
-// Seeding the system databases of one tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 120_000;
 const FORBIDDEN = { status: 403, code: "forbidden" };
 const FAR_FUTURE_CUTOFF_MS = 60_000;
@@ -65,7 +64,6 @@ function newProject(): Promise<string> {
   return inTenant(() => createTestProjectItem(dataPool));
 }
 
-/** A user-created database with a title and a text property. */
 async function newUserDatabase(name = "Notes"): Promise<DatabaseRow> {
   return inTenant(async () => {
     const database = await cp.createDatabase({ name });
@@ -521,7 +519,6 @@ describe("per-database agent grants (issue #1810)", () => {
       );
 
       const forAgent = await inTenant(() => cp.listItemRelations(sourceItem.id, undefined, project));
-      // Ordered by property key, as for a person.
       expect(forAgent).toEqual([
         {
           relationPropertyId: toMiddle.property.id,

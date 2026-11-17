@@ -1165,7 +1165,7 @@ describe("message speech HTTP", () => {
       const original = "x".repeat(4000);
       const value = await turn(original);
       const cached = await cache(value.threadId, value.messageId, original, "alloy");
-      // Synthetic historical state: only this source text changes after its real cache is created.
+      // Only the source text changes after its real cache is created.
       await runInTenant(tenant, () =>
         withTransaction(pool, async (client) => {
           const updated = await client.query<{ id: string }>(

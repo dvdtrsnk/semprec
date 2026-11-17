@@ -1,10 +1,8 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 
 /**
- * Deliberately declares a `queueAffinity` value outside `MODULE_TASK_AFFINITIES` (issue #91's
- * two composition roots only understand `'api'`/`'agents'`) — cast past `ModuleManifest`'s own
- * type, since `moduleManifestSchema.safeParse` (the runtime check `ModuleRegistry.loadModule`
- * actually applies) is what this fixture proves rejects it, not the TypeScript compiler.
+ * A `queueAffinity` outside `MODULE_TASK_AFFINITIES`, cast past `ModuleManifest`'s type: the runtime check
+ * `moduleManifestSchema.safeParse` in `ModuleRegistry.loadModule` is what must reject it.
  */
 export const manifest = {
   id: "fixture-api-invalid-affinity-task",

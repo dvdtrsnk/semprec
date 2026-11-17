@@ -1,6 +1,5 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import {
   createRelationPropertyWithClient,
@@ -17,24 +16,11 @@ import {
   MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
 } from "../mail/personLinkingActions.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID, THREADS_MODULE_ID } from "./emailModuleKeys.js";
 import { COMPANIES_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID } from "./tenDatabaseKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
-
-// Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
-// copy of this helper for the full rationale.
-function selectConfig(options: string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
-}
-
-interface PropSpec {
-  key: string;
-  name: string;
-  type: PropertyType;
-  owner?: PropertyOwner;
-  config?: Record<string, unknown>;
-}
+import { createProps, selectConfig } from "./propSpecs.js";
 
 async function createDb(
   client: PoolClient,
@@ -49,19 +35,6 @@ async function createDb(
     ownerModuleId,
     ownerProjectItemId,
   });
-}
-
-async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
-  for (const spec of specs) {
-    await propertiesStore.createProperty(client, {
-      databaseId,
-      key: spec.key,
-      name: spec.name,
-      type: spec.type,
-      owner: spec.owner,
-      config: spec.config,
-    });
-  }
 }
 
 export async function createThreadsDatabase(
@@ -91,8 +64,8 @@ export async function createThreadsDatabase(
       computedKeyRegistry,
     );
   }
-  // Threads -> Tasks (issue #1612): Tasks is schema-locked, so the relation lives on Threads only. Threads is the
-  // "one" side of `one_to_many`, so a task has at most one thread. User-owned: Semp links a task with `relation.put`.
+  // Threads -> Tasks: Tasks is schema-locked, so the relation lives on Threads only. Threads is the "one"
+  // side, so a task has at most one thread. User-owned: Semp links a task with `relation.put`.
   const tasks = await databasesStore.getDatabaseByModuleId(client, TASKS_MODULE_ID);
   if (!tasks) throw new Error("Tasks database is missing");
   await createRelationPropertyWithClient(
@@ -108,10 +81,7 @@ export async function createThreadsDatabase(
     undefined,
     computedKeyRegistry,
   );
-  // Threads -> Files (issue gh-1898): the files that the messages of a thread brought as attachments. Files is
-  // schema-locked, so the relation lives on Threads only. Threads is the "one" side of `one_to_many`, so a file
-  // belongs to at most one thread. System-owned by the `emails` process, the one that writes the Emails
-  // attachments edge (`mail/attachments.ts`); the link rule `fileProjectFromThread` follows the edge.
+  // Threads -> Files (attachments): one-directional (Files is locked), one thread per file, system-owned by `emails`.
   const files = await databasesStore.getDatabaseByModuleId(client, FILES_MODULE_ID);
   if (!files) throw new Error("Files database is missing");
   await createRelationPropertyWithClient(
@@ -142,26 +112,8 @@ export interface EmailModuleResult {
 }
 
 /**
- * Seeds Mailboxes/Folders/Emails (issue #26's sync core: only the tables/schema and the
- * deterministic People-linking wiring — drafts/sending belong to issue #95, the mailbox UI to
- * issues #96-98) as one system project, the same class as Books/Movies (issue #25). Must run after
- * `seedTenDatabasesInTransaction` (needs Projects/People/Files) and after `seedLibraryModule`
- * doesn't matter relative to this — order between the two module seeds is irrelevant, both
- * only depend on the ten databases.
- *
- * Also adds `People.emails` (issue #26 is this property's sole owner — issue #24's baseline
- * People schema does not include it) directly via `propertiesStore.createProperty` bypassing
- * the normal `schema_locked` rejection is not applicable here since we call the store
- * directly with a raw client, same as `seedSystem.ts`'s own "a code-level migration with
- * direct DB access is the one sanctioned way to write a system DB's schema" pattern — People
- * is unlocked just long enough for this one property, then re-locked.
- *
- * `emails` (free-form, one address per line) rather than a dedicated list-of-scalars
- * property type: no existing `PropertyType` holds a freeform list (`multi_select` requires a
- * fixed `config.options` enum, unsuitable for arbitrary addresses), and introducing a new
- * property type for exactly one field is more machinery than this issue's Task asks for —
- * `person_email_index` maintenance (personLinkingActions.ts) parses newline/comma-separated
- * values, the same shape a "one address per line" textarea naturally produces.
+ * Seeds Mailboxes/Folders/Emails as one system project, after the ten databases. Also adds `People.emails`
+ * (one address per line in a longText; no property type holds a free list), briefly unlocking People.
  */
 export async function seedEmailModuleInTransaction(
   client: PoolClient,
@@ -203,13 +155,10 @@ export async function seedEmailModuleInTransaction(
       owner: "user",
       config: selectConfig(["gmail", "outlook", "icloud", "generic"]),
     },
-    // Owned by the system since issue #1454: the OAuth connect flow (#1686) and the password connect
-    // flow (#1736) record the verified address through mail/mailboxAddresses.ts, and a generic item
-    // write (REST or agent) is refused with owner_violation.
+    // System-owned: the OAuth and password connect flows record the verified address through
+    // mail/mailboxAddresses.ts; a generic item write is refused with owner_violation.
     { key: "addresses", name: "Addresses", type: "longText", owner: "system" },
-    // Overrides the sync worker's provider-derived default IMAP simultaneous-connection cap
-    // (imapConnectionLimiter.ts) — unset by default, since most accounts should just take the
-    // conservative per-provider default.
+    // Overrides the provider-derived IMAP connection cap (imapConnectionLimiter.ts); unset by default.
     { key: "connectionLimit", name: "Connection limit", type: "number", owner: "user" },
     {
       key: "syncStatus",
@@ -223,10 +172,9 @@ export async function seedEmailModuleInTransaction(
   const folders = await createDb(client, "Folders", FOLDERS_MODULE_ID, emailProject.id);
   await createProps(client, folders.id, [
     { key: "name", name: "Name", type: "title", owner: "system" },
-    // 'folder' = the IMAP model (one message, one parent folder); 'label' = the Gmail model
-    // (one message, many labels) — the mock's distinction the issue's spec names directly.
+    // 'folder': IMAP model (one parent folder); 'label': Gmail model (many labels).
     { key: "behavior", name: "Behavior", type: "select", owner: "system", config: selectConfig(["folder", "label"]) },
-    // A stable semantic key independent of how the folder happens to be named/localized.
+    // Stable semantic key independent of the folder's name or localization.
     {
       key: "specialPurpose",
       name: "Special purpose",
@@ -234,18 +182,11 @@ export async function seedEmailModuleInTransaction(
       owner: "system",
       config: selectConfig(["inbox", "sent", "junk", "trash", "drafts", "archive", "all", "none"]),
     },
-    // The provider's own folder identifier (IMAP path, Gmail label id, Graph folder id) —
-    // how `mail/folderDiscovery.ts` finds/creates the right Folder item for an incoming
-    // message, scoped per-mailbox (two accounts can both have a folder whose providerId is
-    // literally "INBOX").
+    // The provider's folder identifier (IMAP path, Gmail label id, Graph folder id), scoped per mailbox,
+    // since two accounts can both have "INBOX".
     { key: "providerId", name: "Provider ID", type: "text", owner: "system" },
   ]);
-  // Written by mail/folderDiscovery.ts as the Folders module's own process — system-owned so
-  // no caller outside that discovery path can attach a Folder to a different Mailbox.
-  // `property_id_a` is Mailboxes.folders (the "one" side, per issue #82's cardinality
-  // contract: one mailbox may have many folder edges), with Folders.mailbox as the inverse —
-  // not the other way around, since a folder's own `mailbox` field is single-valued and must
-  // be the side the enforced `one_to_many` constraint lands on.
+  // Written by folderDiscovery.ts; Mailboxes.folders is property A so `one_to_many` binds the single-valued side.
   await relate(
     {
       sourceDatabaseId: mailboxes.id,
@@ -255,9 +196,7 @@ export async function seedEmailModuleInTransaction(
       cardinality: "one_to_many",
       owner: "system",
       ownerProcess: FOLDERS_MODULE_ID,
-      // Also system-owned by the same process: otherwise a caller could write this edge
-      // through the inverse property's default owner:'user', bypassing the ownership the
-      // source side declares.
+      // The inverse is system-owned too, or a caller could write the edge through its default owner:'user'.
       inverse: { key: "mailbox", name: "Mailbox", owner: "system", ownerProcess: FOLDERS_MODULE_ID },
     },
     { ownerProcess: FOLDERS_MODULE_ID },
@@ -266,23 +205,18 @@ export async function seedEmailModuleInTransaction(
   const emails = await createDb(client, "Emails", EMAILS_MODULE_ID, emailProject.id);
   await createProps(client, emails.id, [
     { key: "name", name: "Subject", type: "title", owner: "system" },
-    // Derived display text (issue #26) — the structured source of truth is
-    // `mail_message_meta.envelope`, not this column.
+    // Derived display text; the source of truth is `mail_message_meta.envelope`.
     { key: "sender", name: "Sender", type: "text", owner: "system" },
     { key: "recipients", name: "Recipients", type: "text", owner: "system" },
     { key: "body", name: "Body", type: "longText", owner: "system" },
     { key: "date", name: "Date", type: "date", owner: "system", config: { includeTime: true } },
-    // Read and flag state as ordinary generic properties, mirroring the canonical IMAP
-    // `\\Seen`/`\\Flagged` flags (mail/messageFlags.ts): the sync worker seeds them from the
-    // flags a message arrives with, and the mailbox's triage actions (issue #97) set them
-    // afterwards. owner:'user' — unlike every other Emails field, these two are user state,
-    // written through the ordinary generic item-update path rather than by a sync-only writer.
+    // Mirror IMAP `\\Seen`/`\\Flagged` (mail/messageFlags.ts): seeded by sync, then set by triage actions.
+    // Unlike every other Emails field these are user state, written through the generic item-update path.
     { key: "read", name: "Read", type: "checkbox", owner: "user" },
     { key: "flagged", name: "Flagged", type: "checkbox", owner: "user" },
   ]);
-  // Every Emails relation below is system-owned by the Emails module process — written only
-  // by the sync/ingest/send/attachments/person-linking writers, matching the "every field ...
-  // is owner: 'system'" contract above for Emails' plain properties.
+  // Every Emails relation is system-owned by the Emails process (sync, ingest, send, attachments and
+  // person-linking writers), like its plain properties.
   const emailsContext: SystemRelationWriteContext = { ownerProcess: EMAILS_MODULE_ID };
   const folderRelation = await relate(
     {
@@ -293,18 +227,13 @@ export async function seedEmailModuleInTransaction(
       cardinality: "many_to_many",
       owner: "system",
       ownerProcess: EMAILS_MODULE_ID,
-      // Also system-owned by the same process: otherwise a caller could write this edge
-      // through the inverse property's default owner:'user', bypassing the ownership the
-      // source side declares.
+      // The inverse is system-owned too, or a caller could write the edge through its default owner:'user'.
       inverse: { key: "emails", name: "Emails", owner: "system", ownerProcess: EMAILS_MODULE_ID },
     },
     emailsContext,
   );
-  // One-directional: Files' schema is already locked by the time this runs (issue #24),
-  // same reason Movies -> People (issue #25) carries no inverse property on People either.
-  // `one_to_many` (issue #82): property_id_a/item_a (the Email) is the "one" side that may
-  // have many item_b edges — one email, many attachment files — while each Files item
-  // (item_b), freshly created per attachment, is used by exactly one email.
+  // One-directional because Files is already locked. `one_to_many`: one email, many attachment files,
+  // each Files item used by exactly one email.
   const attachmentsRelation = await relate(
     {
       sourceDatabaseId: emails.id,
@@ -317,11 +246,8 @@ export async function seedEmailModuleInTransaction(
     },
     emailsContext,
   );
-  // People's schema is likewise already locked — both People-facing relations below are
-  // one-directional for the same reason.
-  // A person may send many emails (issue #1457), so this is many_to_many. Cardinality does not
-  // keep "one message, one sender"; today mail/personLinkingActions.ts is the only writer of this
-  // edge. Populated installs are switched by mail/emailsSenderPeopleCardinalityCutoverMigration.ts.
+  // People is locked too, so both People relations below are one-directional. A person may send many
+  // emails, so many_to_many; mail/personLinkingActions.ts is the only writer of this edge.
   await relate(
     {
       sourceDatabaseId: emails.id,
@@ -347,8 +273,7 @@ export async function seedEmailModuleInTransaction(
     emailsContext,
   );
 
-  // The mailbox's default view, resolved by the client through the registered view type
-  // (clientComponent 'mailboxClient') the same way Journal resolves its temporal switcher.
+  // Resolved by the client through the registered view type (clientComponent 'mailboxClient').
   await viewsStore.createView(
     client,
     {
@@ -375,11 +300,8 @@ export async function seedEmailModuleInTransaction(
   ]);
   if (lockedDatabases.rowCount !== 4) throw new Error("Expected four mail databases to be locked");
 
-  // People.emails (issue #26 is its sole owner) — direct store call against the raw client,
-  // the same "code-level migration with direct DB access" exception seedSystem.ts documents
-  // for a system DB's schema, bypassing the schema_locked rejection that would otherwise
-  // reject this on the already-locked People database. Idempotent via the properties table's
-  // own UNIQUE(database_id, key).
+  // People.emails via the raw client, bypassing the schema lock on People (the direct-DB seed exception).
+  // Idempotent through the properties table's UNIQUE(database_id, key).
   await client.query(
     `INSERT INTO properties (database_id, key, name, type, config, owner)
      VALUES ($1, 'emails', 'Emails', 'longText', '{}'::jsonb, 'user')
@@ -412,12 +334,8 @@ export async function seedEmailModuleInTransaction(
       recipientsPeopleKey: "recipientsPeople",
     },
   });
-  // issue #99: a new Inbox message should nudge the owning project's agent — dispatched through
-  // the same core.agentRun action any other project heartbeat uses (no mail-specific scheduler),
-  // gated by itemRelationFilter.ts so junk/trash-only mail (and reconciliation of an
-  // already-known message, which never re-enters createItemWithClient — see mail/ingest.ts)
-  // never triggers it. Issue gh-1941: the run starts in the thread's project (`runProject`) and only for a message that
-  // expects an answer (`answerExpectedFilter`, after the sender gate).
+  // A new Inbox message nudges the project's agent via core.agentRun, gated by itemRelationFilter (no
+  // junk/trash), `runProject` and `answerExpectedFilter`.
   await createHeartbeat(client, {
     projectItemId: emailProject.id,
     name: "newEmail",

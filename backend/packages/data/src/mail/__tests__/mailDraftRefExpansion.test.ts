@@ -1,5 +1,5 @@
-// Issue gh-1948: what `readSempRefContext` hands the agent for an `item` ref of an Emails item that has a `mail_drafts`
-// row. Reads go through the runtime role pool in two tenants, as the agents process makes them.
+// What `readSempRefContext` hands the agent for an `item` ref of an Emails item that has a `mail_drafts` row, read
+// through the runtime role pool in two tenants.
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -102,7 +102,6 @@ async function seededTenant(): Promise<MailTenant> {
   });
 }
 
-/** A draft written by a person, as the compose window does, through the draft operation. */
 function userDraft(
   t: MailTenant,
   fields: { subject?: string; body?: string; threadId?: string | null; to?: { name: string; address: string }[] } = {},
@@ -127,7 +126,6 @@ function userDraft(
   );
 }
 
-/** A received message, ingested as the sync worker does. */
 function receivedMessage(t: MailTenant): Promise<string> {
   return inTenant(t, async (client) => {
     const ids = await resolveMailModuleIds(client);
@@ -159,7 +157,6 @@ function receivedMessage(t: MailTenant): Promise<string> {
   });
 }
 
-/** What `expandSempRefs` reads for the item ref, as the tenant's runtime role. */
 function read(t: MailTenant, itemId: string, databaseId = t.emailsDatabaseId) {
   return inTenant(t, (client) => readSempRefContext(client, { kind: "item", itemId, databaseId }));
 }

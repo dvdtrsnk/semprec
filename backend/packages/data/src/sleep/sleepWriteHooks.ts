@@ -18,7 +18,6 @@ import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { normalizeWallClockTime } from "../timezone.js";
 import { enqueueSleepResync } from "./sleepResync.js";
 
-/** The sleep time keys; they exist on `sleepPlans` and `sleepNights` only. */
 const TIME_KEYS = ["bedTime", "wakeTime"] as const;
 
 const SETTINGS_BOOLEAN_KEYS = ["enabled", "prepReminder", "muteSemp", "alarmSnooze", "showInCalendar"] as const;
@@ -30,10 +29,8 @@ const WAKE_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const SLEEP_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /**
- * The patch with `bedTime` and `wakeTime`, when it names them, as zero-padded 24-hour `HH:MM` (`6:45` becomes
- * `06:45`). An empty value becomes `null`, which `sleepNights` keeps as "follow the plan" and which the plan
- * rule of `validateSleepPlan` then refuses. `24:00` and an unreadable value are a 400 naming the key.
- * Pure, so it serves the write and the proposal preparation of an agent's patch alike.
+ * Normalizes `bedTime`/`wakeTime` to zero-padded `HH:MM`; an empty value becomes `null` ("follow the plan" on a
+ * night, refused on a plan). `24:00` and unreadable values are a 400. Pure, so proposals share it.
  */
 function normalizeSleepTimes(patch: Record<string, unknown>): Record<string, unknown> {
   const output = { ...patch };
@@ -44,10 +41,9 @@ function normalizeSleepTimes(patch: Record<string, unknown>): Record<string, unk
   return output;
 }
 
-/** The pre-write transform of issue gh-1784, registered by `../domainWriteHooks.ts` for each of the three sleep module ids. */
 export const sleepPreWriteTransform: ItemPreWriteTransform = async ({ patch }) => normalizeSleepTimes(patch);
 
-/** The proposal preparation of `sleepPreWriteTransform`: it reads no row and allocates nothing. */
+/** Proposal preparation of `sleepPreWriteTransform`: reads no row and allocates nothing. */
 export const prepareSleepWrite: ItemPreWritePreparation = async ({ patch }) => ({
   patch: normalizeSleepTimes(patch),
   deferredKeys: [],
@@ -65,10 +61,7 @@ function isSleepTime(value: unknown): boolean {
   return typeof value === "string" && SLEEP_TIME_PATTERN.test(value);
 }
 
-/**
- * Each present checkbox and number key of the settings item holds an allowed value. An absent key is not judged.
- * The `alarmSound` select is not judged here: the choke point checks it against its option catalog.
- */
+/** An absent key is not judged; `alarmSound` is checked by the choke point against its option catalog. */
 function validateSleepSettings(properties: Record<string, unknown>): void {
   for (const key of SETTINGS_BOOLEAN_KEYS) {
     if (Object.hasOwn(properties, key) && typeof properties[key] !== "boolean") {
@@ -86,11 +79,6 @@ function validateSleepSettings(properties: Record<string, unknown>): void {
   }
 }
 
-/**
- * A plan has a non-blank `name` and a `bedTime` and `wakeTime` of `HH:MM`. Of the other keys, a present one is
- * judged: `wakeDays` lists distinct weekdays (an empty list is valid), `alarm` is a boolean and `position` is an
- * integer from 0.
- */
 function validateSleepPlan(properties: Record<string, unknown>): void {
   if (typeof properties.name !== "string" || properties.name.trim() === "") {
     throw invalid("name", "must be a non-empty string");
@@ -115,10 +103,7 @@ function validateSleepPlan(properties: Record<string, unknown>): void {
   }
 }
 
-/**
- * A night exception has a `night` that is a calendar date `YYYY-MM-DD`. A present `bedTime` or `wakeTime` is
- * `HH:MM` or `null` and a present `alarm` is a boolean or `null`; `null` means "follow the plan". Returns the night.
- */
+/** `null` on `bedTime`, `wakeTime` or `alarm` means "follow the plan". Returns the night. */
 function validateSleepNight(properties: Record<string, unknown>): string {
   const night = properties.night;
   if (!isCalendarDate(night)) throw invalid("night", "is required and must be a calendar date YYYY-MM-DD");
@@ -134,10 +119,8 @@ function validateSleepNight(properties: Record<string, unknown>): string {
 }
 
 /**
- * Takes the transaction-scoped advisory lock `hashtext('sleepNight:' || <tenant id> || ':' || <night>)`, held
- * until the transaction ends. Its key is the contract of every writer of a night item: the duplicate check of
- * the write hooks below and the find-or-create of `PUT /api/sleep/nights/:night` (issue gh-1835) take it. The
- * tenant is `app_tenant_default()`, the tenant of the scope the caller runs in.
+ * Transaction-scoped advisory lock on (tenant, night). Every writer of a night item takes it: the duplicate check
+ * below and the find-or-create of `PUT /api/sleep/nights/:night`.
  */
 export async function lockSleepNight(client: PoolClient, night: string): Promise<void> {
   await client.query(
@@ -146,11 +129,7 @@ export async function lockSleepNight(client: PoolClient, night: string): Promise
   );
 }
 
-/**
- * Serializes the writers of one night: takes `lockSleepNight`, then looks in a new statement for another
- * non-deleted item of the database with the same `night` and refuses with a 409 `duplicate_item` naming `night`
- * when one exists. The tenant of the lock key is never NULL here, because the item was inserted in a scope.
- */
+/** Takes `lockSleepNight`, then checks in a new statement (fresh snapshot) for another live item of that night. */
 async function assertNightIsFree(client: PoolClient, databaseId: string, itemId: string, night: string): Promise<void> {
   await lockSleepNight(client, night);
   const { rows } = await client.query<{ taken: boolean }>(
@@ -166,10 +145,8 @@ async function assertNightIsFree(client: PoolClient, databaseId: string, itemId:
 }
 
 /**
- * Serializes the creators of the settings item: takes `pg_advisory_xact_lock(hashtext('sleepSettings:' ||
- * <tenant id>))`, then counts the non-deleted items of the database in a new statement. The new item is already
- * inserted, so more than one means another creator committed first, and the create is refused with a 409
- * `duplicate_item` naming `sleepSettings`.
+ * Serializes settings creators on a per-tenant advisory lock, then counts in a new statement: the new item is
+ * already inserted, so more than one means another creator committed first.
  */
 async function assertSingleSettingsItem(client: PoolClient, databaseId: string): Promise<void> {
   await client.query("SELECT pg_advisory_xact_lock(hashtext('sleepSettings:' || app_tenant_default()::text))");
@@ -183,9 +160,7 @@ async function assertSingleSettingsItem(client: PoolClient, databaseId: string):
 }
 
 /**
- * The create rules of issue gh-1784 for the three sleep databases. It runs after the insert, in the write's
- * transaction, on the stored properties, which the pre-write transform has already normalized: every rule of the
- * database passes, then a second settings item or a second exception for a night is refused. A refusal rolls the
+ * Runs after the insert, in the write's transaction, on already-normalized properties; a refusal rolls the
  * insert back.
  */
 export const sleepItemCreateHook: ItemCreateHook = async ({ client, database, item }) => {
@@ -201,11 +176,7 @@ export const sleepItemCreateHook: ItemCreateHook = async ({ client, database, it
   }
 };
 
-/**
- * The update rules of issue gh-1784. It runs after the update, in the write's transaction, and judges the
- * merged item (the stored properties with the patch applied), so a partial patch is judged as a whole. A patch
- * that names `night` on a night exception also needs the date to be free.
- */
+/** Judges the merged item, so a partial patch is judged as a whole. */
 export const sleepItemUpdateHook: ItemUpdateHook = async ({ client, database, item, propertiesPatch }) => {
   const moduleId = database.ownerModuleId;
   if (moduleId === SLEEP_SETTINGS_MODULE_ID) {
@@ -219,41 +190,30 @@ export const sleepItemUpdateHook: ItemUpdateHook = async ({ client, database, it
 };
 
 /**
- * The update pre-lock rule of the night exceptions, registered by `../domainWriteHooks.ts` under the `sleepNights`
- * module id (see docs/adr/2026-11-12-an-update-takes-the-module-locks-before-it-locks-the-row.md). A patch that
- * names `night` takes the per-night lock of that date before the choke point locks the written row, which is the
- * order of `PUT /api/sleep/nights/:night` (the lock of the night, then the row). Without it the update would lock
- * the row first and ask `sleepItemUpdateHook` for the lock after, and a PUT of the same night that holds the lock
- * and waits for the row would deadlock with it. The later `assertNightIsFree` takes the same lock again, which
- * returns at once. A patch that does not name `night`, or names something that is not a calendar date (the
- * update rule refuses it with a 400), takes no lock.
+ * A patch naming `night` takes the per-night lock before the choke point locks the row, matching the lock order
+ * of `PUT /api/sleep/nights/:night` (night, then row); the reverse order would deadlock with it. The later
+ * `assertNightIsFree` re-takes the same lock, which returns at once.
  */
 export const sleepNightUpdatePreLockHook: ItemUpdatePreLockHook = async ({ client, patch }) => {
   if (isCalendarDate(patch.night)) await lockSleepNight(client, patch.night);
 };
 
-/** A sleep plan another plan's write has to take days from: its id and the `wakeDays` it holds once locked. */
 interface PlanHoldingDays {
   id: string;
   wakeDays: readonly string[];
 }
 
-/** Postgres SQLSTATE `deadlock_detected`. */
 const DEADLOCK_DETECTED = "40P01";
 
 /**
- * The clients whose transaction is removing days from other plans right now. The removal is a nested
- * `updateItemWithClient`, which runs every update hook again, this one included; a plan that lost days must not
- * take days back from the plan that took them, so the hook skips a nested run.
+ * Transactions currently removing days from other plans. The removal is a nested `updateItemWithClient` that
+ * reruns this hook; a plan that lost days must not take them back, so nested runs are skipped.
  */
 const clientsRemovingDays = new WeakSet<PoolClient>();
 
 /**
- * Selects, in a new statement, the other non-deleted plans of the database that hold any of `days` and locks them
- * `FOR UPDATE` in id order. A deadlock between two transactions that lock each other's plans (A takes a day from B
- * while B takes a day from A) ends one of them with `40P01`; that one is answered as a 409 so the client repeats
- * the request. Only this statement is mapped: any other failure, a deadlock of another statement included, passes
- * through unchanged.
+ * Locks other plans holding any of `days` `FOR UPDATE` in id order. A deadlock (A and B taking days from each
+ * other) is answered as a 409 so the client retries; only this statement's deadlock is mapped.
  */
 async function lockPlansHoldingDays(
   client: PoolClient,
@@ -284,19 +244,12 @@ async function lockPlansHoldingDays(
 }
 
 /**
- * The create and update hook of issue gh-1799 for the sleep plans (the same function serves both registries): a
- * wake day is in at most one plan. After a write whose merged item has non-empty `wakeDays`, every other
- * non-deleted plan of the database that holds one of those days loses it, by a nested `updateItemWithClient`
- * without `ifVersion` in this transaction, so the other plan's hooks, realtime invalidation and `updatedAt` apply
- * as for any write. A plan keeps its empty `wakeDays` when it loses all days. Restores from the trash are not
- * checked.
+ * A wake day is in at most one plan: other plans holding one of the written plan's days lose it via a nested
+ * `updateItemWithClient` (no `ifVersion`), so their hooks, realtime and `updatedAt` apply. Restores are not checked.
  *
- * The plans are read and locked by a `SELECT ... FOR UPDATE` that is repeated as a new statement. A statement
- * that waited for a plan another transaction was changing rechecks that plan against its new version, but does
- * not see a plan that transaction committed in the meantime and that now holds the day, so an empty result can be
- * stale. The loop therefore ends only after two statements in a row returned no plan: the second one starts after
- * the first one ended, which is after every wait of the first one. A day nobody holds when the loop ends is not
- * serialized by it; two transactions that take the same free day into two plans are not detected.
+ * The locking SELECT is repeated as a new statement until two in a row return nothing: a statement that waited on
+ * a plan does not see a plan another transaction committed meanwhile, so one empty result can be stale. Two
+ * transactions taking the same free day into two plans are not detected.
  */
 export async function keepWakeDaysInOnePlan({
   client,
@@ -337,11 +290,7 @@ const SLEEP_MODULE_IDS: readonly (string | null)[] = [
   SLEEP_NIGHTS_MODULE_ID,
 ];
 
-/**
- * Enqueues the debounced `sleep.resync` job (issue gh-1838) for the tenant of the write, on the write's client, so
- * the job commits or rolls back with the write. The tenant is the one `app_tenant_default()` names for the
- * transaction, which is the tenant the written row belongs to.
- */
+/** Enqueues the debounced `sleep.resync` job on the write's client, so it commits or rolls back with the write. */
 async function enqueueResyncForWrite(client: PoolClient): Promise<void> {
   const { rows } = await client.query<{ tenant_id: string | null }>("SELECT app_tenant_default()::text AS tenant_id");
   const { tenant_id: tenantId } = requireSingleRow(rows, "sleep resync tenant");
@@ -349,16 +298,11 @@ async function enqueueResyncForWrite(client: PoolClient): Promise<void> {
   await enqueueSleepResync(client, tenantId);
 }
 
-/** The create hook of issue gh-1838: a new item of a sleep database enqueues a resync. */
 export const sleepResyncCreateHook: ItemCreateHook = async ({ client, database }) => {
   if (SLEEP_MODULE_IDS.includes(database.ownerModuleId)) await enqueueResyncForWrite(client);
 };
 
-/**
- * The update hook of issue gh-1838: an update of an item of a sleep database enqueues a resync, and so does an
- * update of the System settings item whose patch names `timezone`, because the zone decides the instants of
- * every night.
- */
+/** A System settings `timezone` change also resyncs, because the zone decides every night's instants. */
 export const sleepResyncUpdateHook: ItemUpdateHook = async ({ client, database, propertiesPatch }) => {
   const moduleId = database.ownerModuleId;
   if (
@@ -369,12 +313,10 @@ export const sleepResyncUpdateHook: ItemUpdateHook = async ({ client, database, 
   }
 };
 
-/** The delete hook of issue gh-1838: a soft-deleted item of a sleep database enqueues a resync. */
 export const sleepResyncDeleteHook: ItemDeleteHook = async ({ client, database }) => {
   if (SLEEP_MODULE_IDS.includes(database.ownerModuleId)) await enqueueResyncForWrite(client);
 };
 
-/** The restore hook of issue gh-1838: a restored item of a sleep database enqueues a resync. */
 export const sleepResyncRestoreHook: ItemRestoreHook = async ({ client, database }) => {
   if (SLEEP_MODULE_IDS.includes(database.ownerModuleId)) await enqueueResyncForWrite(client);
 };

@@ -4,13 +4,7 @@ export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/**
- * Reads a response body with a hard byte cap, independent of any (absent, wrong, or
- * adversarial) Content-Length header, so a pathologically large or malformed provider
- * response can't be buffered into memory wholesale before parsing. Shared by every audio
- * provider adapter — errors never carry the raw response body, matching
- * AudioProviderCallError's documented contract.
- */
+/** Hard byte cap regardless of Content-Length. Errors never carry the raw body. */
 export async function readJsonBodyWithSizeCap(res: Response, providerName: string, maxBytes: number): Promise<unknown> {
   const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = res.body?.getReader();
   if (!reader) throw new AudioProviderCallError(`${providerName} response body stream was unavailable`);

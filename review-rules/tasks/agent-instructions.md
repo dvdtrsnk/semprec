@@ -3,16 +3,16 @@ Check the agent-facing instruction documents this pull request touches —
 `README.md`. These are read by every agent working in this repository, so a
 wrong sentence here is executed rather than merely misread.
 
-1. An instruction that contradicts another instruction file, or an ADR under
-   `docs/adr/` — high severity. Name both sides. An agent handed two
+1. An instruction that contradicts another instruction file, a
+   `docs/architecture/` document or an ADR — high severity. Name both sides. An agent handed two
    conflicting rules picks one silently.
-2. A factual claim about this repository that is checkable and wrong: a path,
-   a filename, a command, a script name, a skill name, a test-tier suffix, a
-   directory that does not exist. High severity — these are followed
-   literally. Verify each one against the repository rather than assuming.
-3. A skill or rules file that restates an existing ADR's rationale at length
-   instead of linking to it by slug — low. The ADR is the source of truth for
-   "why"; a second copy drifts.
+2. A checkable factual claim that is wrong: a path, filename, command, script,
+   skill name, test-tier suffix or directory that does not exist. High — these
+   are followed literally. Verify each against the repository.
+3. A skill or rules file that restates an architecture document at length
+   instead of linking to it — low; a second copy drifts. An instruction that
+   requires an ADR per pattern, a test per branch, a docstring per function or
+   issue numbers in comments — medium (`.bb/AGENTS.md`).
 4. An instruction that is ambiguous about what an agent must actually do —
    two readings that lead to materially different work — medium. Say which
    readings you found.

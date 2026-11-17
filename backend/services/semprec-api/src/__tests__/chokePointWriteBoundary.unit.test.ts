@@ -7,11 +7,8 @@ import { ROUTE_MATRIX, type RouteMatrixEntry } from "../routeMatrix.js";
 const backendRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 /**
- * Maps every `surface: "api"` entry in `routeMatrix.ts` to the source file that actually owns
- * it, mirroring `app.ts`'s fixed dispatch table for built-in routes and the `customRoutes`
- * declared on the module manifests (#239) that `mountCustomRoutes` dispatches ahead of it. A
- * route added to `ROUTE_MATRIX` without a matching entry here fails the "every route is mapped"
- * test below — the mapping cannot silently drift out of date the way a route-count check could.
+ * Every `surface: "api"` route in `routeMatrix.ts` mapped to its owning source file, mirroring `app.ts`'s dispatch
+ * table and the manifests' `customRoutes`. A route without an entry fails the "every route is mapped" test.
  */
 const ROUTE_HANDLER_FILES: Record<string, string> = {
   "project guidance read": "packages/data/src/projectAgentGuidance/projectAgentGuidanceRouteHandlers.ts",
@@ -240,14 +237,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");
 
 /**
- * Issue #154: every route this service and the ModuleRegistry manifest it mounts (#239) register
- * is dispatched from `app.ts` into a handler under `src/`, which reaches `items`/`databases`/
- * `properties` only by calling into `@semprec/data`'s choke-point (`createChokePoint` and its
- * individually re-exported functions) — never by importing the write-capable stores that back it
- * directly. `dependency-cruiser.rules.json`'s `no-core-table-write-outside-choke-point` rule
- * (enforced fixture-level in `@semprec/module-boundaries`) makes that structurally impossible; this
- * test runs the same rule against the real adapter, choke-point, and module-registry source instead
- * of a fixture, so a handler that bypasses the choke-point fails here, not just in code review.
+ * Runs dependency-cruiser's `no-core-table-write-outside-choke-point` rule against the real handler, choke-point and
+ * module-registry source, so a route handler that imports the write-capable stores directly fails here.
  */
 describe("choke-point write boundary for route handlers (issue #154)", () => {
   it("maps every registered api route to the handler file that owns it", () => {
@@ -264,8 +255,7 @@ describe("choke-point write boundary for route handlers (issue #154)", () => {
       "packages/module-registry",
     ]);
 
-    // Prove the scan actually reached each route's handler file before trusting its clean bill
-    // of health — an unmapped or unreached handler would otherwise pass this test vacuously.
+    // The scan must have reached each handler file, or an unmapped handler would pass vacuously.
     for (const route of apiRoutes) {
       const handlerFile = ROUTE_HANDLER_FILES[route.name];
       expect(scannedFiles, `handler for route "${route.name}" (${handlerFile}) was not scanned`).toContain(handlerFile);

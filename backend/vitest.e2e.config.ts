@@ -2,12 +2,9 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 /**
- * E2e tier (module-contract issue #114): a small number of scenarios that load real modules
- * through `@semprec/module-registry`, wire them into the real queue and a real Postgres
- * instance the same way a production composition root would, and assert on cross-module
- * behavior no single package's own test suite exercises. Named `*.e2e.test.ts` and excluded
- * from `vitest.integration.config.ts` so a scenario here never doubles as an integration test.
- * Reuses the integration tier's `globalSetup` since it needs the same real, ephemeral Postgres.
+ * E2e tier: scenarios that load real modules through `@semprec/module-registry`, wire them into the
+ * real queue and Postgres as a composition root would, and assert cross-module behavior. Excluded
+ * from the integration tier; reuses its `globalSetup`.
  */
 export default defineConfig({
   resolve: {
@@ -70,10 +67,10 @@ export default defineConfig({
     include: ["packages/*/src/**/*.e2e.test.ts", "services/*/src/**/*.e2e.test.ts"],
     globalSetup: ["./packages/data/src/testSupport/globalSetup.ts"],
     environment: "node",
-    // Issue #1199: warn-level output, chiefly tenant_scope_missing, can exceed
+    // Warn-level output, chiefly tenant_scope_missing, can exceed
     // Relay's output limit and hide real failures. Preserve developer overrides.
-    // The e2e tier keeps `warn`: its scenarios still write through fixtures outside any scope. `globalSetup` no
-    // longer sets the mode, so it is pinned here, as `vitest.unit.config.ts` pins the unit tier.
+    // The e2e tier keeps `warn` because its scenarios still write through fixtures outside any scope; pinned here as
+    // `vitest.unit.config.ts` pins the unit tier.
     env: {
       LOG_LEVEL: process.env.LOG_LEVEL ?? "error",
       SEMPREC_TENANT_SCOPE: process.env.SEMPREC_TENANT_SCOPE ?? "warn",

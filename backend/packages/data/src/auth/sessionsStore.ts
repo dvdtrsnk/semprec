@@ -5,11 +5,8 @@ import { notifySessionRevoked } from "../realtimeHook.js";
 import { SESSION_DEVICE_KINDS, SESSION_PLATFORMS, type SessionDeviceKind, type SessionRow } from "./types.js";
 
 /**
- * Fires the realtime session-revocation event (issue #160's `WS /api/sync` closes that
- * session's sockets with 4401 on it) for an id that was just actually revoked. Deferred via
- * `runAfterCommit` when `client` is a transaction-scoped `PoolClient` — this store's revoke
- * functions accept a bare `Pool` too (single auto-committed statement, so there's no later
- * commit/rollback to wait for and the event fires immediately).
+ * Deferred to commit on a `PoolClient`; on a bare `Pool` the statement already auto-committed, so
+ * it fires immediately.
  */
 function fireSessionRevoked(client: Pool | PoolClient, sessionId: string): void {
   if ("release" in client) {
@@ -19,7 +16,6 @@ function fireSessionRevoked(client: Pool | PoolClient, sessionId: string): void 
   }
 }
 
-/** The raw `sessions` row shape this module reads back from Postgres. */
 type SessionDbRow = {
   id: string;
   user_id: string;
@@ -73,7 +69,6 @@ export interface CreateSessionInput {
   appVersion?: string | null;
 }
 
-/** Throws (unique violation) in the astronomically unlikely event `tokenHash` collides with a live session. */
 export async function createSession(client: Pool | PoolClient, input: CreateSessionInput): Promise<SessionRow> {
   const { rows } = await client.query<SessionDbRow>(
     `INSERT INTO sessions (user_id, token_hash, platform, expires_at, user_agent, device_id, device_name, device_kind, os_version, app_version)
@@ -95,7 +90,7 @@ export async function createSession(client: Pool | PoolClient, input: CreateSess
   return mapRow(requireSingleRow(rows, "sessions row"));
 }
 
-/** A session is "active" when it is neither revoked nor past its expiry — the two independent ways a token stops working. */
+/** Active means neither revoked nor expired. */
 export async function getActiveSessionByTokenHash(
   client: Pool | PoolClient,
   tokenHash: string,
@@ -108,11 +103,7 @@ export async function getActiveSessionByTokenHash(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * Marks the session as used and slides its expiry in one statement: `expires_at` becomes
- * `now() + idle window`, but never earlier than it already is and never later than
- * `created_at + max lifetime`. Idleness itself is enforced by `getActiveSessionByTokenHash`.
- */
+/** Slides `expires_at` to `now() + idle`, never backwards and never past `created_at + max lifetime`. */
 export async function touchSessionLastSeen(
   client: Pool | PoolClient,
   input: { id: string; idleSeconds: number; maxLifetimeSeconds: number },
@@ -137,12 +128,7 @@ export async function revokeSession(client: Pool | PoolClient, id: string): Prom
   if ((result.rowCount ?? 0) > 0) fireSessionRevoked(client, id);
 }
 
-/**
- * Same revocation as `revokeSession`, scoped to a specific owning user — the guard remote
- * "revoke that other session" needs so a caller can't revoke a session id they don't own by
- * guessing it. Returns whether a row was actually revoked, so the caller can tell an unknown or
- * not-owned id apart from an already-revoked one without a separate lookup.
- */
+/** Scoped to the owner so a guessed foreign id cannot be revoked. */
 export async function revokeSessionForUser(client: Pool | PoolClient, id: string, userId: string): Promise<boolean> {
   const result = await client.query(
     `UPDATE sessions SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
@@ -153,11 +139,6 @@ export async function revokeSessionForUser(client: Pool | PoolClient, id: string
   return revoked;
 }
 
-/**
- * Revokes every still-active session for `userId` in one statement — the "kick everyone out"
- * counterpart to `revokeSessionForUser`'s single-session scope. `resetPassword` (issue #142)
- * calls this so a session an attacker held before the reset doesn't outlive it.
- */
 export async function revokeAllSessionsForUser(client: Pool | PoolClient, userId: string): Promise<void> {
   const { rows } = await client.query<{ id: string }>(
     `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL RETURNING id`,
@@ -166,12 +147,7 @@ export async function revokeAllSessionsForUser(client: Pool | PoolClient, userId
   for (const row of rows) fireSessionRevoked(client, row.id);
 }
 
-/**
- * Revokes every still-active session of `userId` except `keepSessionId`, in one statement, and returns
- * the ids it revoked (issue #1650's "sign out all other devices"). Each revoked id fires the realtime
- * session-revocation event, deferred to the commit when `client` is a transaction client, so a rolled-back
- * call announces nothing. Already-revoked sessions and other users' sessions are never touched.
- */
+/** Returns the revoked ids. */
 export async function revokeOtherSessionsForUser(
   client: Pool | PoolClient,
   userId: string,
@@ -181,20 +157,14 @@ export async function revokeOtherSessionsForUser(
     `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL RETURNING id`,
     [userId, keepSessionId],
   );
-  // Zero rows is a legitimate outcome: the caller has no other active session.
   if ((result.rowCount ?? 0) === 0) return [];
   for (const row of result.rows) fireSessionRevoked(client, row.id);
   return result.rows.map((row) => row.id);
 }
 
 /**
- * Revokes every unrevoked session of `userId` that carries `deviceId`, except `exceptSessionId`, in one
- * statement, and returns the ids it revoked (issue #1687: a login replaces the earlier sessions of its
- * installation). `client` is the caller's `withTransaction` client: each revoked id's realtime
- * session-revocation event is registered with `runAfterCommit`, so a rolled-back call announces nothing.
- * Other users' sessions with the same `deviceId`, and sessions without one, are not matched. The statement
- * alone does not exclude a concurrent login of the same installation; `login` takes the lock recorded in
- * docs/adr/2026-11-10-login-replaces-the-sessions-of-its-installation.md before it creates its session.
+ * Returns the revoked ids. Does not by itself exclude a concurrent login of the same installation;
+ * `login` takes `lockSessionDevice` first.
  */
 export async function revokeSessionsForDevice(
   client: PoolClient,
@@ -208,18 +178,12 @@ export async function revokeSessionsForDevice(
      RETURNING id`,
     [userId, deviceId, exceptSessionId],
   );
-  // Zero rows is a legitimate outcome: the first login of an installation has nothing to replace.
   if ((result.rowCount ?? 0) === 0) return [];
   for (const row of result.rows) fireSessionRevoked(client, row.id);
   return result.rows.map((row) => row.id);
 }
 
-/**
- * Whether `id` is still an active session — neither revoked nor expired. `WS /api/sync`'s
- * heartbeat (issue #160) calls this as a fallback to the NOTIFY-driven close, for the case where
- * a socket's connection to the LISTEN channel missed the revocation event (e.g. a reconnect
- * window).
- */
+/** Heartbeat fallback for sockets whose LISTEN connection missed the revocation NOTIFY. */
 export async function isSessionActive(client: Pool | PoolClient, id: string): Promise<boolean> {
   const { rows } = await client.query(
     `SELECT 1 FROM sessions WHERE id = $1 AND revoked_at IS NULL AND expires_at > now()`,

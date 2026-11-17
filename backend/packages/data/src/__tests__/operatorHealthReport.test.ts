@@ -21,7 +21,6 @@ import { createUser } from "../auth/usersStore.js";
 
 let pool: Pool;
 
-/** Errored agent run inside one tenant, actor `userId`; `ageDays` moves its start time into the past. */
 async function seedErroredAgentRun(tenantId: string, userId: string, ageDays = 0): Promise<void> {
   await withTenantTransaction(pool, tenantId, async (client) => {
     const run = await createAgentRun(client, { triggeredBy: "user", task: "fixture", unit: "invocation", userId });
@@ -35,10 +34,7 @@ async function seedErroredAgentRun(tenantId: string, userId: string, ageDays = 0
   });
 }
 
-/**
- * Raw SQL: no production writer sets an `item_automation` error from a fixture item, and the
- * operator counts only read `status`, so a random item id is enough.
- */
+/** Raw SQL: no production writer sets an `item_automation` error from a fixture item. */
 async function seedAutomationError(tenantId: string): Promise<void> {
   await withTenantTransaction(pool, tenantId, (client) =>
     client.query(`INSERT INTO item_automation (tenant_id, item_id, status, error) VALUES ($1, $2, 'error', 'boom')`, [
@@ -48,7 +44,6 @@ async function seedAutomationError(tenantId: string): Promise<void> {
   );
 }
 
-/** Raw SQL: `tenant_observability_checks` has no production writer for an arbitrary check key here. */
 async function seedAlertingTenantCheck(tenantId: string): Promise<void> {
   await withTenantTransaction(pool, tenantId, (client) =>
     client.query(
@@ -57,10 +52,7 @@ async function seedAlertingTenantCheck(tenantId: string): Promise<void> {
   );
 }
 
-/**
- * Two tenants, each with one errored agent run in the last seven days, one `item_automation` error
- * and one alerting tenant check, plus one agent-run error older than seven days in the first.
- */
+/** Per tenant: one recent errored run, one `item_automation` error, one alerting check; plus one old run error in the first. */
 async function seedTwoTenantErrors(): Promise<void> {
   const tenantA = await createTestTenant(pool);
   const tenantB = await createTestTenant(pool);
@@ -108,8 +100,7 @@ describe("getOperatorHealthReport (issue #1038)", () => {
     const dataPool = await createRuntimeRolePool(pool, "semprec_data");
     let mailboxItemId: string;
     try {
-      // A live (non-deleted) Mailbox item with a sync-state row, so the tenant-visible process list
-      // would include its `mailsync:<id>` process.
+      // A live Mailbox with a sync-state row, so the process list includes `mailsync:<id>`.
       mailboxItemId = await runInTenant(getTenantZeroId(), async () => {
         const itemId = await createTestModuleItem(dataPool, MAILBOXES_MODULE_ID);
         await withTransaction(dataPool, (client) => ensureMailAccountSyncState(client, { itemId, syncMode: "imap" }));
@@ -133,8 +124,7 @@ describe("getOperatorHealthReport (issue #1038)", () => {
   it("counts queue jobs across every tenant and the system scope, never an in-flight final attempt as failed", async () => {
     const tenantA = await createTestTenant(pool);
     const tenantB = await createTestTenant(pool);
-    // Raw UPDATEs on graphile-worker's table: no public API backdates `run_at` or fakes a spent or
-    // in-flight attempt, which is the state each count's predicate distinguishes.
+    // Raw UPDATEs on graphile-worker's table: no public API backdates `run_at` or fakes attempts.
     await runInTenant(tenantA, async () => {
       await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "a-pending" });
       await enqueueJob(pool, "someUnregisteredTask", {}, { jobKey: "a-overdue" });
@@ -165,7 +155,6 @@ describe("getOperatorHealthReport (issue #1038)", () => {
 
     const report = await getOperatorHealthReport(pool);
 
-    // Tenant zero, re-created `active` by `resetDatabase`, is the one active tenant.
     expect(report.tenants).toEqual({ provisioning: 0, active: 1, suspended: 1, deleting: 1 });
   });
 
@@ -183,8 +172,7 @@ describe("getOperatorHealthReport (issue #1038)", () => {
 
   it("omits legacy per-mailbox global checks that carry a mailbox id and its lastError", async () => {
     const mailboxItemId = randomUUID();
-    // Raw SQL: no current writer produces these legacy global rows; they survive only until the
-    // check-system tick purges them, which is the window this test covers.
+    // Raw SQL: legacy global rows no writer produces; they survive until the check-system tick purges them.
     for (const checkKey of [`mail:${mailboxItemId}`, `process:mailsync:${mailboxItemId}`, "queue:backlog"]) {
       await pool.query(`INSERT INTO observability_checks (check_key, status, detail) VALUES ($1, 'alerting', $2)`, [
         checkKey,
@@ -235,7 +223,6 @@ describe("getOperatorHealthReport (issue #1038)", () => {
           expect(direct.rows, table).toEqual([{ count: "0" }]);
         }
 
-        // The whole report, as the admin route builds it: the semprec_data pool in system scope.
         const report = await getOperatorHealthReport(dataPool);
         expect(report.tenantAggregates).toEqual({
           agentRunErrors7d: 2,

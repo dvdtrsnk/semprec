@@ -11,32 +11,26 @@ import { deriveInboxCardKind } from "./inboxCardKind.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
 import { parseUserOverrides } from "./proposalOverrides.js";
 
-/**
- * What a proposal card's editor schema asks of its values (issue #1928): the one evaluation that confirm and the
- * values edit share. Split out of `proposalActions.ts` to keep that file under the ESLint line cap.
- */
+// What a proposal card's editor schema asks of its values: the one evaluation confirm and the values edit share.
 
-/** The editor schema of a card and the keys of it that the card's destination does not have as properties. */
 export interface CardEditorRules {
   schema: EditorSchemaDescriptor;
-  /** Editor fields that are no property of the destination (`allDay`, `followupTask`, `followDate`, `day`, ...): values for the editor only, never written to the created item. */
+  /** Editor-only fields that are not destination properties (`allDay`, `followDate`, `day`, ...); never written. */
   pseudoKeys: ReadonlySet<string>;
-  /** The keys the destination has as properties (for a Markdown `pageContent` envelope, the page-content keys and the envelope's own), which the schema's field keys are measured against. */
+  /** The keys the schema's field keys are measured against (for Markdown `pageContent`, the page-content keys). */
   destinationKeys: ReadonlySet<string>;
 }
 
-/** The keys of a v2 `pageContent` envelope, which an edit may set whether or not the assistant's envelope holds them yet. */
+/** The keys of a v2 `pageContent` envelope, which an edit may set even when the envelope does not hold them yet. */
 const PAGE_CONTENT_KEYS = ["markdown", "placement", "heading"];
 
-/** What the rules read from the module registry: the editor schemas the modules declare. */
 export type EditorSchemaSource = Pick<ModuleRegistry, "getEditorSchemas">;
 
 let moduleRegistryPromise: Promise<ModuleRegistry> | undefined;
 
 /**
- * The module registry the editor schemas are read from, loaded once per process by `loadFullModuleRegistry`. Confirm
- * and the values edit receive only a client, so they cannot take the composition root's registry. A failed load is
- * not cached, so the next call retries instead of failing until restart.
+ * Loaded once per process: confirm and the values edit receive only a client, not the composition root's registry. A
+ * failed load is not cached, so the next call retries.
  */
 function getModuleRegistry(): Promise<ModuleRegistry> {
   moduleRegistryPromise ??= loadFullModuleRegistry().catch((error: unknown) => {
@@ -47,12 +41,9 @@ function getModuleRegistry(): Promise<ModuleRegistry> {
 }
 
 /**
- * Whether the schema describes what the envelope writes. A `relation` envelope links an item and creates nothing; a
- * multi-step envelope whose primary step is an `update` or `link` edits an item that already has its values; and a
- * `pageContent` envelope without `markdown` is the legacy block shape, which the Markdown fields do not describe. A
- * `journalEntry` envelope is described by none: the `journal` schema declares the day and the entry of a page-content
- * proposal onto a Journal day (`day`, `markdown`), while the envelope carries `date` and `markdown` and is validated
- * by `assertValidJournalEntryEnvelope` (issue gh-1975), so applying the schema would call a complete card incomplete.
+ * Whether the schema describes what the envelope writes. Not for `relation` (creates nothing), multi-step envelopes
+ * whose primary step edits an existing item, legacy block `pageContent` without `markdown`, or `journalEntry` (its
+ * `date`/`markdown` shape differs from the `journal` schema's, so the schema would call a complete card incomplete).
  */
 function schemaDescribes(envelope: ProposalEnvelope): boolean {
   if (envelope.entityKind === "relation" || envelope.entityKind === "journalEntry") return false;
@@ -60,10 +51,7 @@ function schemaDescribes(envelope: ProposalEnvelope): boolean {
   return !envelope.operations || envelope.operations.find((step) => step.role === "primary")?.op === "create";
 }
 
-/**
- * The `databases.owner_module_id` of the envelope's destination: the target database, or the database of the target
- * page. `null` when the target is not an id (the envelope validation refuses that) or cannot be found.
- */
+/** The `owner_module_id` of the envelope's target database or target page's database; `null` when not found. */
 export async function destinationOwnerModuleId(client: PoolClient, envelope: ProposalEnvelope): Promise<string | null> {
   if (!UUID_RE.test(envelope.target)) return null;
   if (envelope.entityKind === "database")
@@ -73,12 +61,8 @@ export async function destinationOwnerModuleId(client: PoolClient, envelope: Pro
 }
 
 /**
- * The editor schema of the card that `envelope` belongs to, with its pseudo keys, or `null` when the card has
- * none to apply: the base kind has no declaration, or the schema does not describe what the envelope writes
- * (`schemaDescribes`). The base kind is the card's, as the card list derives it for a `proposed` card
- * (`deriveInboxCardKind`); `storedKind` is the card's stored `kind` (`inbox` or `transcript`). `registry` is the
- * source of the declarations: the process-wide module registry unless a caller passes another, so a test can
- * drive a base kind that no module declares.
+ * The card's editor schema with its pseudo keys, or `null` when the base kind has none or the schema does not
+ * describe what the envelope writes. `registry` defaults to the process-wide one; tests may pass another.
  */
 export async function loadCardEditorRules(
   client: PoolClient,
@@ -114,10 +98,8 @@ export async function loadCardEditorRules(
 }
 
 /**
- * Refuses a confirm while a visible required field of the card's editor schema has no value: a `ValidationError`
- * naming the first one in schema order as `details.field`, with `details.ref` for a card of several steps. A card
- * whose base kind has no schema passes. Call it before any destination write. `registry` is as in
- * `loadCardEditorRules`.
+ * Refuses a confirm while a visible required field of the card's editor schema has no value (`details.field` the
+ * first in schema order, plus `details.ref` for multi-step cards). Call before any destination write.
  */
 export async function assertRequiredFieldsHaveValues(
   client: PoolClient,

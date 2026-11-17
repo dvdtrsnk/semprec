@@ -27,13 +27,11 @@ const impactSchema = z
   .object({ eventCount: z.number(), recipientCount: z.number(), cancellationCount: z.number() })
   .strict();
 
-/** Parses the handler body at the boundary, as JSON carries it, so every assertion reads a checked shape. */
 function impactOf(result: { status: number; body: unknown }) {
   expect(result.status).toBe(200);
   return impactSchema.parse(JSON.parse(JSON.stringify(result.body)));
 }
 
-/** What a refused request tells the caller: its status, code, message and details. */
 async function refusalOf(request: Promise<unknown>) {
   const thrown = await request.then(
     () => undefined,
@@ -98,7 +96,6 @@ describe("GET /api/calendar/calendars/:id/cancellation-impact (issue gh-2003)", 
     await admin.end();
   });
 
-  /** The writes a fixture is built from, in the tenant in scope, all through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -122,7 +119,6 @@ describe("GET /api/calendar/calendars/:id/cancellation-impact (issue gh-2003)", 
     };
     const person = async (name: string) =>
       (await cp.createItem({ databaseId: peopleId, properties: { name } }, undefined, undefined, USER)).id;
-    /** A participant edge written by the user: no invitation. */
     const attend = (eventId: string, personId: string, metadata?: Record<string, unknown>) =>
       cp.createRelation(
         { relationPropertyId: eventsPeople.id, callerItemId: eventId, targetItemId: personId, metadata },
@@ -139,10 +135,8 @@ describe("GET /api/calendar/calendars/:id/cancellation-impact (issue gh-2003)", 
     const trashEvent = (eventId: string) => cp.softDeleteItem(eventsId, eventId, undefined, USER);
     const trashCalendar = (calendarId: string) => cp.softDeleteItem(calendarsId, calendarId, undefined, USER);
     const trashPerson = (personId: string) => cp.softDeleteItem(peopleId, personId, undefined, USER);
-    /**
-     * Gives a calendar another `kind`. An Event is created in an own calendar only, and the key is written by the
-     * calendar module alone, so the fixture fills the calendar first and stores the kind directly afterwards.
-     */
+    // Only the calendar module writes `kind` and an Event is created in an own calendar only, so the fixture
+    // fills the calendar first and stores the kind directly afterwards.
     const setKind = async (calendarId: string, kind: string) => {
       const result = await admin.query(
         "UPDATE items SET properties = properties || $3::jsonb WHERE tenant_id = $1 AND id = $2",
@@ -153,7 +147,6 @@ describe("GET /api/calendar/calendars/:id/cancellation-impact (issue gh-2003)", 
     return { event, calendar, person, attend, invite, trashEvent, trashCalendar, trashPerson, setKind };
   }
 
-  /** Calls the handler as the adapter does: inside the tenant's scope. */
   const route = (tenantId: string, id: string) =>
     runInTenant(tenantId, () => createCalendarCancellationImpactRouteHandler(runtime)({ params: { id } }));
 

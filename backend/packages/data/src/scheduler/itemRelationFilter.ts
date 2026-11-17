@@ -1,20 +1,16 @@
 import type { Pool } from "pg";
 
 /**
- * Gates a heartbeat action on the fired item's relation membership — e.g. "only run when the
- * Emails item is related (via `folder`) to a Folder whose `specialPurpose` is `inbox`, and none
- * of its related Folders are `junk`/`trash`." Generic (keyed only by relation property id and a
- * property name), so `core.agentRun`'s `actionConfig` can express this without any mail-specific
- * code in the scheduler (issue #99: "do not create a separate mail scheduler").
+ * Gates a heartbeat action on the fired item's relation membership, e.g. "the Emails item is related
+ * via `folder` to an `inbox` Folder and to no `junk`/`trash` one". Generic, so `core.agentRun` config
+ * expresses it without mail-specific scheduler code.
  */
 export interface ItemRelationFilterConfig {
-  /** The property id of the relation to follow from the fired item (either side of the reldef). */
+  /** Either side of the reldef. */
   relationPropertyId: string;
-  /** The property key read off each related item. */
   property: string;
-  /** At least one related item's `property` value must be in this set. */
   include: string[];
-  /** No related item's `property` value may be in this set — checked even if `include` also matches. */
+  /** Checked even if `include` also matches. */
   exclude: string[];
 }
 
@@ -33,20 +29,12 @@ export function parseItemRelationFilterConfig(raw: unknown): ItemRelationFilterC
 }
 
 /**
- * `items` is PARTITION BY LIST (database_id) (see 0001_core_schema.sql), so the lookup of
- * `related` must pin database_id — resolved here off the *other* side's property, via the
- * small unpartitioned `properties` table — or Postgres has to scan every partition instead
- * of pruning to the one the related item actually lives in. Pinning it in a plain join
- * condition is not enough (#1198): with fresh statistics on small partitions the planner
- * prefers hashing every partition and applying `database_id` as a join filter afterwards.
- * The lookup therefore sits in a LATERAL subquery that references `op.database_id`; `OFFSET 0`
- * stops Postgres from pulling it up into the outer join, so it can only run as the inner side
- * of a parameterized nested loop, where `database_id` is an executor parameter and the
- * Append prunes every other partition at run time whatever plan costs the statistics yield.
- * The primary key (database_id, id) admits at most one row per relation, as the former join
- * did. `deleted_at IS NULL` guards against a soft-deleted folder (e.g. a since-deleted Junk
- * folder) still counting toward `include`/`exclude`. Exported (rather than inlined below) so
- * tests can EXPLAIN the exact query plan `passesItemRelationFilter` runs.
+ * `items` is partitioned by `database_id`, so the related-item lookup must pin it (resolved from the
+ * other side's property) to prune partitions. A plain join condition is not enough: with fresh stats
+ * the planner hashes every partition and filters afterwards. The LATERAL subquery with `OFFSET 0`
+ * cannot be pulled up, so it runs as the inner side of a parameterized nested loop and the Append
+ * prunes at run time. `deleted_at IS NULL` keeps a soft-deleted folder from counting. Exported so
+ * tests can EXPLAIN it.
  */
 export const ITEM_RELATION_FILTER_QUERY = `
   SELECT related.properties ->> $2 AS value
@@ -66,10 +54,8 @@ export const ITEM_RELATION_FILTER_QUERY = `
 `;
 
 /**
- * Evaluated at heartbeat-fire time (after the enqueuing transaction has committed), not at
- * enqueue time: a message's folder-membership relation is written after the Emails item itself
- * within the same ingest transaction (mail/ingest.ts), so it would not yet exist if this were
- * checked at `triggerOnItemEventHeartbeats` time.
+ * Evaluated at fire time, not enqueue time: the folder relation is written after the Emails item in
+ * the same ingest transaction, so it would not exist yet at `triggerOnItemEventHeartbeats` time.
  */
 export async function passesItemRelationFilter(
   pool: Pool,

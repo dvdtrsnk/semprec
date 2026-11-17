@@ -151,7 +151,7 @@ describe("PostgreSQL 16 dump and later replay ledger", () => {
     }
     if (restoredCreated) {
       try {
-        // `pool.end()` can resolve before the sockets of its idle clients closed: wait for their backends to be gone.
+        // `pool.end()` can resolve before its idle clients' sockets closed: wait for their backends to be gone.
         await dropClosedDatabase(source, "restored_ledger");
         const absence = await source.query<{ present: boolean }>(
           "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = 'restored_ledger') AS present",

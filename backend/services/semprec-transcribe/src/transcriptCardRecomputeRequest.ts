@@ -2,10 +2,7 @@ import { z } from "zod";
 import type { AiGatewayCompletionInput } from "@semprec/shared";
 import type { TranscriptCardAnswer, TranscriptCardChoice, TranscriptCardRecomputeSnapshot } from "@semprec/data";
 
-/**
- * The model call of the `transcriptCardRecompute` task (issue gh-1940), without anything that reaches the database:
- * the gateway request for one instruction and the reading of its answer. The task is in `transcriptCardRecompute.ts`.
- */
+/** The database-free part of `transcriptCardRecompute`: building the request and reading the answer. */
 
 const TRANSCRIPT_CARD_RECOMPUTE_RESPONSE_SCHEMA = {
   type: "object",
@@ -39,13 +36,7 @@ function describeChoice(choice: TranscriptCardChoice): string {
   ].join("\n");
 }
 
-/**
- * The gateway request for one instruction. The model sees the user's instruction, the recording's display name and
- * meeting notes, the card's current proposal, the fields the user edited by hand and the targets it may choose
- * (the card's candidates and its current target). The system prompt confines the answer to a choice among those
- * targets or an edit of the card's current new-item proposal, and asks for the user's language in the reason
- * (`snapshot.locale`).
- */
+/** The answer is confined to the given targets or an edit of the card's new-item proposal. */
 export function buildTranscriptCardRecomputeRequest(
   snapshot: TranscriptCardRecomputeSnapshot,
 ): AiGatewayCompletionInput {
@@ -98,9 +89,8 @@ export function buildTranscriptCardRecomputeRequest(
 }
 
 /**
- * Reads the gateway's structured content, which crossed a process boundary. An answer that does not have the
- * expected shape, or that names one of `entityKind` and `target` without the other, is `null`: the write then
- * leaves the card as it is and says so, instead of paying for the same answer again on a retry.
+ * A malformed answer, or one with only one of `entityKind`/`target`, is `null`: the card is left as
+ * is rather than paying for the same answer again on a retry.
  */
 export function parseTranscriptCardRecomputeContent(content: unknown): TranscriptCardAnswer | null {
   const parsed = answerSchema.safeParse(content);

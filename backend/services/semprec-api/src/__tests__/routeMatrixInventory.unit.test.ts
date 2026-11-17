@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ROUTE_MATRIX, type RouteMatrixEntry } from "../routeMatrix.js";
 
-/** Every value of `key` that two or more of `entries` share, each reported once, in the order of its first repeat. */
+/** Each shared value reported once, in the order of its first repeat. */
 function sharedValues(entries: readonly RouteMatrixEntry[], key: (entry: RouteMatrixEntry) => string): string[] {
   const seen = new Set<string>();
   const shared = new Set<string>();

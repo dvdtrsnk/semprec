@@ -118,7 +118,6 @@ describe("transcript read tools for Semp (issue #1832)", () => {
     await admin.end();
   });
 
-  /** What one tenant's tests build on: its databases, a run, and the writes a transcript fixture needs. */
   async function setup(tenantId: string) {
     return runInTenant(tenantId, async () => {
       const cp = createChokePoint(runtime);
@@ -190,7 +189,7 @@ describe("transcript read tools for Semp (issue #1832)", () => {
     return errorSchema.parse(JSON.parse(result.result));
   }
 
-  /** Every observable row a read could change: the items with their versions, the edges and the runs. */
+  /** Every observable row a read could change. */
   async function digest(): Promise<string> {
     const { rows } = await admin.query<{ digest: string }>(
       `SELECT md5(
@@ -584,7 +583,6 @@ describe("transcript read tools for Semp (issue #1832)", () => {
       expect(failure(results[0]!)).toMatchObject({ error: "not_found" });
       expect(results[1]).toEqual(results[0]);
       expect(results[2]).toEqual(results[0]);
-      // The not-found answer of the two tools is the same too.
       expect(await get(tenant, f.runId, { transcriptId: theirs })).toEqual(results[0]);
     });
 
@@ -604,12 +602,11 @@ describe("transcript read tools for Semp (issue #1832)", () => {
   describe("a transcript linked to a sensitive record (issue #1999)", () => {
     const FORBIDDEN_ANSWER = { error: "forbidden", message: "The agent's project may not read this transcript" };
 
-    /** A linked and an unlinked transcript, and runs of projects with the given decision on Health records. */
     async function linkedSetup() {
       const f = await setup(tenant);
       const health = f.db("healthRecords");
-      // A fixture the API cannot produce: the schemas of the system databases are locked, and Transcripts has no
-      // relation to Health records yet. The superuser pool unlocks them so the relation is created as a user would.
+      // The API cannot produce this fixture: system database schemas are locked and Transcripts has no
+      // relation to Health records, so the superuser pool unlocks them.
       await admin.query("UPDATE databases SET schema_locked = false WHERE id = ANY($1::uuid[])", [
         [f.db("transcripts"), health],
       ]);
@@ -630,7 +627,7 @@ describe("transcript read tools for Semp (issue #1832)", () => {
           callerItemId: linked,
           targetItemId: record.id,
         });
-        /** A run of a fresh project; `access` is its decision on Health records, none stored when omitted. */
+        /** `access` is the project's decision on Health records; none stored when omitted. */
         const runOf = async (access?: AgentDatabaseAccess) => {
           const projectItemId = await createTestProjectItem(runtime);
           if (access !== undefined) {

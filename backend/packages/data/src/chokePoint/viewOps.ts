@@ -1,14 +1,5 @@
-// Owns views and curated view membership: view create/read/patch/delete, the transaction-scoped
-// `viewDeleteWithClient` the approved-operation executor runs, `view_items` add/remove/reorder/list,
-// and the one-way user adoption of agent-owned views those writes share. It does not own stored-view
-// queries (viewQueryOps.ts), the actor/ownership guards themselves (authorization.ts), or item writes
-// (itemWrites.ts).
-// Constrained by:
-// - docs/adr/2026-09-10-views-are-excluded-from-the-agent-proposal-flow.md
-// - docs/adr/2026-09-10-agent-identity-verified-against-projects-items.md
-// - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
-// - docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
-// - docs/adr/2026-11-13-a-view-system-key-is-unique-per-database-and-written-by-the-system-alone.md
+// Views and curated view membership: view CRUD, `viewDeleteWithClient` for the approved-operation
+// executor, `view_items` add/remove/reorder/list, and the one-way user adoption of agent-owned views.
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -28,17 +19,15 @@ import {
   type Actor,
 } from "./authorization.js";
 
-/** `view_items` carries no FK to `items` (partitioned, no single partition key) — this is the live existence check `addViewItem` runs in its place. */
+/** `view_items` has no FK to partitioned `items`; this is the existence check `addViewItem` runs instead. */
 async function assertItemExists(client: PoolClient, itemId: string): Promise<void> {
   const [item] = await itemsStore.getItemsByIds(client, [itemId]);
   if (!item) throw new NotFoundError(`Item ${itemId} not found`);
 }
 
 /**
- * One-way adoption (issue #87): a user's write — patch or curated-membership mutation — to an
- * agent-owned view flips it to 'user' and clears the creator identity, in the same transaction
- * as (and before) the mutation itself. A system view is never adopted: it never has
- * `createdBy === 'ai_agent'`, so the condition below is false for it by construction.
+ * A user's write to an agent-owned view flips it to 'user' and clears the creator identity in the
+ * same transaction, before the mutation. A system view never has `createdBy === 'ai_agent'`.
  */
 async function adoptIfUserWrite(
   client: PoolClient,
@@ -51,10 +40,7 @@ async function adoptIfUserWrite(
   }
 }
 
-/**
- * Transaction-scoped counterpart to `chokePoint.deleteView` (issue #89), factored out for the
- * same reason as `propertyDeleteWithClient` above.
- */
+/** Transaction-scoped counterpart to `chokePoint.deleteView`, for the approved-operation executor. */
 export async function viewDeleteWithClient(
   client: PoolClient,
   id: string,
@@ -76,15 +62,11 @@ export async function viewDeleteWithClient(
 export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegistry">) {
   const { pool, viewTypeRegistry } = deps;
   return {
-    // An agent write here is a direct write, not a proposal through the `confirm` flow — see
-    // [[2026-09-10-views-are-excluded-from-the-agent-proposal-flow]]. Issue #87 only tightens
-    // *which* agent may write to *which* view, it does not introduce agent direct-writes.
+    // An agent write here is a direct write, not a proposal through the `confirm` flow.
     /**
-     * `actor` (default `{ type: 'user' }`) governs `createdBy`/`creatorProjectItemId` — a
-     * caller never sets either directly. Creating as `type: 'ai_agent'` requires and stores
-     * `actor.agentProjectItemId` (issue #87); a 'user'/'system' actor stores no creator. An external client (a
-     * `reader`, issue #1998) needs `write` access to the database the view belongs to, checked first in this
-     * transaction; the views below that take a `reader` check the database of the view the same way.
+     * `actor` (default `{ type: 'user' }`) decides `createdBy`/`creatorProjectItemId`; an `ai_agent`
+     * stores `actor.agentProjectItemId`. A `reader` needs `write` on the view's database, checked first;
+     * the operations below that take a `reader` check the same way.
      */
     async createView(
       input: Omit<viewsStore.CreateViewInput, "createdBy" | "creatorProjectItemId">,
@@ -107,8 +89,7 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
           },
           viewTypeRegistry,
         );
-        // Curated views (databaseId === null) have no schema to invalidate — nothing else's REST
-        // fetch is keyed by one, so there is no client-visible "database changed" to signal here.
+        // Curated views have no schema whose clients need a "database changed" signal.
         if (view.databaseId !== null) {
           const databaseId = view.databaseId;
           runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId, userId: actingUserId }));
@@ -128,7 +109,6 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
       return withTransaction(pool, (client) => viewsStore.listViewsByDatabase(client, databaseId));
     },
 
-    /** Curated views have no `databaseId` of their own, so they're listed separately rather than scoped to one database. */
     async listCuratedViews(): Promise<ViewRow[]> {
       return withTransaction(pool, (client) => viewsStore.listCuratedViews(client));
     },
@@ -172,10 +152,8 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
     },
 
     /**
-     * Returns the row as it stood immediately before deletion (issue #219): fetched by this same
-     * transaction, not a caller-supplied snapshot from a separate `getView` call — a config change
-     * landing between a pre-check and this call could otherwise make a REST response describe a
-     * state the deleted row never actually had at the moment it was deleted.
+     * Returns the row as this transaction read it immediately before deletion, so a concurrent config
+     * change cannot make the response describe a state the deleted row never had.
      */
     async deleteView(input: {
       id: string;
@@ -190,9 +168,8 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
     },
 
     // ---- view_items (curated view membership) ----
-    // A curated view has no database, so an external client (a `reader`, issue #1998) is checked against the database
-    // of the member item instead (and the databases above it): a sensitive record is neither added to, moved in nor
-    // removed from a view by it.
+    // A curated view has no database, so a `reader` is checked against the member item's database (and
+    // those above it).
     async addViewItem(input: {
       viewId: string;
       itemId: string;

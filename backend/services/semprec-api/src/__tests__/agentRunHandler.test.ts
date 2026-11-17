@@ -34,13 +34,9 @@ const PASSWORD = "s3cret-password";
 
 let pool: Pool;
 
-/** Tenant zero's user, which `beforeEach` creates. */
 let tenantUser: { id: string; email: string };
 
-/**
- * Signs in tenant zero's user: a minted run's actor is the session user, and a run's actor must be
- * its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066).
- */
+/** A minted run's actor is the session user, and a run's actor must be its own tenant's user. */
 async function authHeader(): Promise<{ Authorization: string }> {
   const { token } = await login(pool, {
     email: tenantUser.email,
@@ -266,9 +262,8 @@ describe("createAgentRunRequestListener", () => {
       expect(run).toMatchObject({ id: body.runId, projectItemId, triggeredBy: "mcp", status: "running" });
     });
 
-    // Issue #1066: a run's actor must be its own tenant's user, and a tenant has exactly one user, so
-    // the session user and the `getTenantUserId` fallback can no longer differ. The test pins that
-    // the session's identity is what the run records.
+    // A run's actor must be its own tenant's user and a tenant has one user; this pins that the session's identity
+    // is what the run records.
     it("attributes the minted run's actor_user_id to the authenticated session user (issue #220, AC11)", async () => {
       const projectItemId = await createTestProjectItem(pool);
 
@@ -284,8 +279,8 @@ describe("createAgentRunRequestListener", () => {
       expect(run?.actorUserId).toBe(tenantUser.id);
     });
 
-    // Issue gh-1956: a credential's list is the upper bound of the module tools it exposes, so the mint accepts the
-    // capability ids of the active modules, and only when it knows the registry.
+    // A credential's list bounds the module tools it exposes, so the mint accepts active modules' capability ids,
+    // and only when it knows the registry.
     describe("module capability ids (issue gh-1956)", () => {
       let moduleServer: Server;
       let moduleBaseUrl: string;
@@ -421,7 +416,6 @@ describe("GET /api/agent-runs/:id usage under the runtime role (issue #1822)", (
     await adminPool?.end();
   });
 
-  /** A tenant with a user of the given locale, a run of that user with one settled diarization call, and the user's bearer header. */
   async function tenantWithRun(
     locale: string,
   ): Promise<{ tenant: string; runId: string; headers: { Authorization: string } }> {
@@ -544,7 +538,6 @@ describe("GET /api/agent-runs/:id errorCode and errorSummary under the runtime r
     await adminPool?.end();
   });
 
-  /** A tenant whose user has the given locale, with the user's bearer header. */
   async function tenantUser(
     locale: string,
   ): Promise<{ tenant: string; userId: string; headers: { Authorization: string } }> {
@@ -628,7 +621,7 @@ describe("GET /api/agent-runs/:id errorCode and errorSummary under the runtime r
   it("reads a failed row closed before the code existed as internal and still returns its legacy text", async () => {
     const user = await tenantUser("en");
     const runId = await startRun(user);
-    // Raw SQL: a close before issue #1446 stored free text and no code, which the close functions no longer write.
+    // Raw SQL: a close that stored free text and no code, which the close functions no longer write.
     await adminPool.query(
       "UPDATE agent_runs SET status = 'error', result = $2, error_code = NULL, finished_at = now() WHERE id = $1",
       [runId, "legacy provider text"],

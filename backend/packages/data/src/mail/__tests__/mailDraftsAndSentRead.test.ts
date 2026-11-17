@@ -2,7 +2,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createPool, requireSingleRow, withTransaction } from "../../db/pool.js";
-import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../../chokePoint/relationOps.js";
@@ -15,14 +14,12 @@ import { ensureFolderItem } from "../folderDiscovery.js";
 import { createEmailDraft } from "../draft.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS } from "../ingest.js";
 import { EMAILS_RELATION_CONTEXT } from "../emailsRelationContext.js";
-import { runMailDraftsAndSentReadBackfill } from "../mailDraftsAndSentReadBackfill.js";
 import { reindexItemSearch, searchItems } from "../search.js";
 
 let adminPool: Pool;
 /** Runtime role (semprec_data) pool: row-level security applies to every read and write in this file. */
 let dataPool: Pool;
 
-/** The Emails database, its folder relation and the Mailbox's three folders, read from the tenant's own seed. */
 interface MailFixture {
   emailsId: string;
   mailboxItemId: string;
@@ -42,7 +39,6 @@ async function seedTenant(tenantId: string): Promise<void> {
   await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
 }
 
-/** Creates one Mailbox with its INBOX, Sent and Drafts folders through the production writers. */
 async function setUpMail(tenantId: string): Promise<MailFixture> {
   return runInTenant(tenantId, () =>
     withTransaction(dataPool, async (client) => {
@@ -79,10 +75,7 @@ async function setUpMail(tenantId: string): Promise<MailFixture> {
   );
 }
 
-/**
- * A message as it was stored before issue #1461: the fields `createEmailDraft` writes, with no `read`
- * property at all. It is indexed for search, so the unread search can return it.
- */
+/** The fields `createEmailDraft` writes and no `read` property; indexed so the unread search can return it. */
 async function createMessageWithoutReadState(
   client: PoolClient,
   mail: MailFixture,
@@ -106,10 +99,7 @@ async function createMessageWithoutReadState(
   return item.id;
 }
 
-/**
- * The item ids the search returns for `query`, sorted, so the assertion does not depend on rank order.
- * The limit is raised above the search's default of 50 so a whole fixture is returned.
- */
+/** Sorted, so rank order does not matter; the limit is raised above the default of 50 so a whole fixture is returned. */
 async function searchIds(tenantId: string, mail: MailFixture, query: string): Promise<string[]> {
   return runInTenant(tenantId, () =>
     withTransaction(dataPool, async (client) => {
@@ -124,7 +114,6 @@ interface StoredMessage {
   updatedAt: string;
 }
 
-/** The stored `read` property (null when absent) and `updated_at` of one item, read through the runtime role. */
 async function storedMessage(tenantId: string, itemId: string): Promise<StoredMessage> {
   return runInTenant(tenantId, async () => {
     const { rows } = await dataPool.query<{ read_value: string | null; updated_at: Date }>(
@@ -133,17 +122,6 @@ async function storedMessage(tenantId: string, itemId: string): Promise<StoredMe
     );
     const row = requireSingleRow(rows, `item ${itemId}`);
     return { read: row.read_value, updatedAt: row.updated_at.toISOString() };
-  });
-}
-
-/** How many `mail_message_flag_sync_state` rows exist for these items. Zero means no provider write-back is queued. */
-async function flagSyncRowCount(tenantId: string, itemIds: string[]): Promise<number> {
-  return runInTenant(tenantId, async () => {
-    const { rows } = await dataPool.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM mail_message_flag_sync_state WHERE message_item_id = ANY($1::uuid[])`,
-      [itemIds],
-    );
-    return requireSingleRow(rows, "mail_message_flag_sync_state count").n;
   });
 }
 
@@ -243,92 +221,5 @@ describe("drafts and sent mail are read by definition (issue #1461)", () => {
     expect(await searchIds(zero, mail, "Sent unread")).toEqual([sent]);
     expect(await searchIds(zero, mail, "is:unread")).toEqual([inbox]);
     expect(await searchIds(zero, mail, "is:read")).toEqual([]);
-  });
-
-  it("the backfill marks old drafts and sent messages read, writes no flag-sync row and leaves unread Inbox mail alone", async () => {
-    const zero = getTenantZeroId();
-    await seedTenant(zero);
-    const mail = await setUpMail(zero);
-    const { draft, sent, inbox } = await runInTenant(zero, () =>
-      withTransaction(dataPool, async (client) => ({
-        draft: await createMessageWithoutReadState(client, mail, mail.draftsId, "Old draft"),
-        sent: await createMessageWithoutReadState(client, mail, mail.sentId, "Old sent"),
-        inbox: await createMessageWithoutReadState(client, mail, mail.inboxId, "Unread inbox"),
-      })),
-    );
-    const inboxBefore = await storedMessage(zero, inbox);
-
-    // The composition root that runs this backfill on every deploy, not the function alone.
-    await runTenantCutoverMigrations(dataPool);
-
-    expect((await storedMessage(zero, draft)).read).toBe("true");
-    expect((await storedMessage(zero, sent)).read).toBe("true");
-    expect(await storedMessage(zero, inbox)).toEqual(inboxBefore);
-    expect(await flagSyncRowCount(zero, [draft, sent, inbox])).toBe(0);
-    expect(await searchIds(zero, mail, "is:unread")).toEqual([inbox]);
-  });
-
-  it("a second run of the backfill changes no row", async () => {
-    const zero = getTenantZeroId();
-    await seedTenant(zero);
-    const mail = await setUpMail(zero);
-    const { draft, sent, inbox } = await runInTenant(zero, () =>
-      withTransaction(dataPool, async (client) => ({
-        draft: await createMessageWithoutReadState(client, mail, mail.draftsId, "Old draft"),
-        sent: await createMessageWithoutReadState(client, mail, mail.sentId, "Old sent"),
-        inbox: await createMessageWithoutReadState(client, mail, mail.inboxId, "Unread inbox"),
-      })),
-    );
-    await runTenantCutoverMigrations(dataPool);
-    const afterFirstRun = [
-      await storedMessage(zero, draft),
-      await storedMessage(zero, sent),
-      await storedMessage(zero, inbox),
-    ];
-
-    await runInTenant(zero, () => runMailDraftsAndSentReadBackfill(dataPool));
-
-    expect([
-      await storedMessage(zero, draft),
-      await storedMessage(zero, sent),
-      await storedMessage(zero, inbox),
-    ]).toEqual(afterFirstRun);
-    expect(await flagSyncRowCount(zero, [draft, sent, inbox])).toBe(0);
-  });
-
-  it("pages through more than one page of old drafts and marks every one read", async () => {
-    // 201 is one more than the backfill's page size of 200, so the second page is reached.
-    const pageSizePlusOne = 201;
-    const zero = getTenantZeroId();
-    await seedTenant(zero);
-    const mail = await setUpMail(zero);
-    const drafts = await runInTenant(zero, () =>
-      withTransaction(dataPool, async (client) => {
-        const ids: string[] = [];
-        for (let index = 0; index < pageSizePlusOne; index += 1) {
-          ids.push(await createMessageWithoutReadState(client, mail, mail.draftsId, `Old draft ${index}`));
-        }
-        return ids;
-      }),
-    );
-    expect(await searchIds(zero, mail, "is:read")).toEqual([]);
-
-    await runInTenant(zero, () => runMailDraftsAndSentReadBackfill(dataPool));
-
-    expect(await searchIds(zero, mail, "is:read")).toEqual([...drafts].sort());
-    expect(await flagSyncRowCount(zero, drafts)).toBe(0);
-  }, 120_000);
-
-  it("does nothing in a tenant without an Emails database", async () => {
-    // beforeEach leaves tenant zero unseeded, so it has no Emails database.
-    const zero = getTenantZeroId();
-
-    await expect(runInTenant(zero, () => runMailDraftsAndSentReadBackfill(dataPool))).resolves.toBeUndefined();
-
-    const databaseCount = await runInTenant(zero, async () => {
-      const { rows } = await dataPool.query<{ n: number }>(`SELECT count(*)::int AS n FROM databases`);
-      return requireSingleRow(rows, "databases count").n;
-    });
-    expect(databaseCount).toBe(0);
   });
 });

@@ -1,9 +1,5 @@
-// The `calendarSendEventInvitation` task (issue #1774): sends the iTIP messages about an Event, a `REQUEST` that
-// invites a person or updates the invitation and a `CANCEL` that withdraws it, from the mailbox the invitation
-// names, and records `invitation.sentAt` on the participant edge once a `REQUEST` left.
-// Constrained by: docs/adr/2026-11-12-module-queue-tasks-read-their-composition-root-dependencies-from-a-binding.md,
-// docs/adr/2026-11-11-event-participant-invitations-are-written-by-system-writers.md,
-// docs/adr/2026-09-10-side-effects-follow-the-commit.md
+// Task `calendarSendEventInvitation`: sends iTIP `REQUEST` and `CANCEL` messages about an Event from the mailbox
+// the invitation names, and records `invitation.sentAt` on the participant edge once a `REQUEST` left.
 import type { Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
 import { z } from "zod";
@@ -38,13 +34,11 @@ import { buildItipCancel, buildItipRequest, type ItipEventInput } from "./icalen
 import { EVENT_PEOPLE_PROPERTY_KEY, readEventParticipantMetadata } from "./eventParticipantEdgeHook.js";
 import { logger } from "./logger.js";
 
-/** The queue name of the task, as `calendarModuleManifest.ts` declares it. */
 export const CALENDAR_SEND_EVENT_INVITATION_TASK = "calendarSendEventInvitation";
 
 /**
- * What an outgoing `CANCEL` says about the Event, taken when the job is enqueued because the Event or the edge may
- * be gone when it runs. `start` and `end` are what the message carries (`ItipEventInput`): days for an all-day Event
- * (`end` the day after its last day), UTC instants otherwise.
+ * Taken at enqueue because the Event or edge may be gone when the job runs. `start`/`end` are days for an all-day
+ * Event (`end` the day after its last day), UTC instants otherwise.
  */
 const eventInvitationSnapshotSchema = z
   .object({
@@ -67,7 +61,7 @@ const invitationTarget = {
   attendeeEmail: z.string().min(1),
 };
 
-/** The payload of the task: a `REQUEST` reads the live Event, a `CANCEL` carries its snapshot. */
+/** A `REQUEST` reads the live Event; a `CANCEL` carries its snapshot. */
 export const calendarSendEventInvitationPayloadSchema = z.discriminatedUnion("method", [
   z.object({ method: z.literal("REQUEST"), ...invitationTarget }).strict(),
   z.object({ method: z.literal("CANCEL"), ...invitationTarget, snapshot: eventInvitationSnapshotSchema }).strict(),
@@ -85,21 +79,20 @@ interface InvitationTarget {
 export type EnqueueEventInvitationInput =
   | (InvitationTarget & {
       method: "REQUEST";
-      /** The Event's `icalSequence` at the change that queues the message; it keys the job and is not sent in the payload. */
+      /** Keys the job; not sent in the payload. */
       sequence: number;
     })
   | (InvitationTarget & { method: "CANCEL"; snapshot: EventInvitationSnapshot });
 
-/** `event-invitation:<eventId>:<personId>:<method>:<sequence>`; a `CANCEL` is keyed by the snapshot's sequence. */
+/** A `CANCEL` is keyed by the snapshot's sequence. */
 function eventInvitationJobKey(input: EnqueueEventInvitationInput): string {
   const sequence = input.method === "REQUEST" ? input.sequence : input.snapshot.sequence;
   return `event-invitation:${input.eventId}:${input.personId}:${input.method}:${sequence}`;
 }
 
 /**
- * Queues one invitation message in the caller's open transaction, so the job exists only when that transaction
- * commits and a rolled-back change sends nothing. A repeat under the same job key collapses onto the queued job.
- * The payload is validated before it is queued; an input that does not fit it throws and rolls the caller back.
+ * Queued in the caller's transaction, so a rolled-back change sends nothing. A repeat under the same key
+ * collapses onto the queued job.
  */
 export async function enqueueEventInvitation(client: PoolClient, input: EnqueueEventInvitationInput): Promise<void> {
   if (input.method === "REQUEST" && (!Number.isSafeInteger(input.sequence) || input.sequence < 0)) {
@@ -121,10 +114,8 @@ function text(value: unknown): string | null {
 }
 
 /**
- * What the message about an Event carries: the UID, the sequence, the title, the place and the times. An Event with
- * no `timeFrom` is all-day, with `DATE` values and the day after its last day as the end. A timed Event converts its
- * wall-clock start and end in the tenant zone to UTC instants; without a `timeTo` it ends at the midnight that ends
- * its last day. An Event without a UID or with an unreadable date or time is `validation_failed`.
+ * An Event without `timeFrom` is all-day. A timed Event converts its tenant-zone wall-clock times to UTC; without
+ * `timeTo` it ends at the midnight ending its last day. No UID or an unreadable date/time is `validation_failed`.
  */
 export function eventInvitationSnapshot(event: ItemRow, zone: string): EventInvitationSnapshot {
   const properties = event.properties;
@@ -157,9 +148,6 @@ export function eventInvitationSnapshot(event: ItemRow, zone: string): EventInvi
   return { ...base, allDay: false, start, end };
 }
 
-/**
- * The snapshot of the Event in the tenant's zone, for a `CANCEL` enqueued while the Event can still be read.
- */
 export async function readEventInvitationSnapshot(
   client: PoolClient,
   event: ItemRow,
@@ -167,26 +155,21 @@ export async function readEventInvitationSnapshot(
   return eventInvitationSnapshot(event, await getSystemTimezone(client));
 }
 
-/** What the task needs from the composition root that runs it. */
 export interface EventInvitationDelivery {
   pool: Pool;
   transports: MailTransportFactory;
-  /**
-   * The pauses, in milliseconds, between the attempts to record `sentAt` after a message left; one more attempt than
-   * entries. Defaults to `SENT_AT_RETRY_DELAYS_MS`; tests pass zeros.
-   */
+  /** One more attempt than entries. Tests pass zeros. */
   sentAtRetryDelaysMs?: readonly number[];
 }
 
-/** Two retries of the `sentAt` write, a short wait apart, for a lock timeout, a deadlock or a dropped connection. */
+/** Retries for a lock timeout, deadlock or dropped connection. */
 const SENT_AT_RETRY_DELAYS_MS: readonly number[] = [200, 1000];
 
 let delivery: EventInvitationDelivery | null = null;
 
 /**
- * Binds the dependencies the task handler uses to the process (`null` unbinds). The API queue runtime binds them
- * before it starts its runner, because a module task handler is an export of the manifest module and receives only
- * its payload.
+ * `null` unbinds. The API queue runtime binds before starting its runner, because a module task handler receives
+ * only its payload.
  */
 export function setEventInvitationDelivery(next: EventInvitationDelivery | null): void {
   delivery = next;
@@ -194,10 +177,7 @@ export function setEventInvitationDelivery(next: EventInvitationDelivery | null)
 
 const NO_ATTACHMENTS_MESSAGE = "An invitation message carries no attachment";
 
-/**
- * Attachment storage for `buildOutgoingMime`, which reads it only for an attachment; an invitation message and the
- * reply to one (`invitationReplyJob.ts`) have none.
- */
+/** `buildOutgoingMime` reads it only for an attachment; invitations and replies have none. */
 export const noAttachmentStorage: BlobStorageWriter = {
   writeStream: () => Promise.reject(new Error(NO_ATTACHMENTS_MESSAGE)),
   delete: () => Promise.reject(new Error(NO_ATTACHMENTS_MESSAGE)),
@@ -208,7 +188,7 @@ export const noAttachmentStorage: BlobStorageWriter = {
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
-/** Loaded once per process; a failed load is not cached, so the next job retries it. */
+/** A failed load is not cached, so the next job retries it. */
 export function getCatalogs(): Promise<ModuleCatalogs> {
   catalogsPromise ??= loadModuleCatalogs(import.meta.url).catch((error: unknown) => {
     catalogsPromise = undefined;
@@ -217,7 +197,7 @@ export function getCatalogs(): Promise<ModuleCatalogs> {
   return catalogsPromise;
 }
 
-/** The subject and the plain-text body of a message in the tenant user's language; the title stands in `{title}`. */
+/** In the tenant user's language. */
 async function renderInvitationText(
   method: EventInvitationPayload["method"],
   locale: string,
@@ -253,7 +233,7 @@ interface SendPlan {
 
 type Planned = { kind: "send"; plan: SendPlan } | { kind: "end"; reason: PermanentReason };
 
-/** Logs why a job ended without sending, by reason code and ids; the addresses and the title stay out of the log. */
+/** The addresses and the title stay out of the log. */
 function endWithoutSending(payload: EventInvitationPayload, reason: PermanentReason): void {
   logger.warn(
     {
@@ -268,9 +248,8 @@ function endWithoutSending(payload: EventInvitationPayload, reason: PermanentRea
 }
 
 /**
- * Reads, in one short transaction and before any network call, everything the message is made of: the live Event for
- * a `REQUEST` (the snapshot for a `CANCEL`), the mailbox with its first address and its sync mode, and the tenant
- * user's language. A missing or trashed Event, a missing or trashed mailbox and a mailbox with no address end the job.
+ * One short transaction before any network call. A missing or trashed Event or mailbox, or a mailbox without an
+ * address, ends the job.
  */
 async function planMessage(client: PoolClient, payload: EventInvitationPayload): Promise<Planned> {
   let snapshot: EventInvitationSnapshot;
@@ -293,7 +272,7 @@ async function planMessage(client: PoolClient, payload: EventInvitationPayload):
   if (mailbox === null || mailbox.deletedAt !== null) return { kind: "end", reason: "mailboxMissing" };
   const organizerEmail = parseAddressListProperty(mailbox.properties.addresses)[0];
   if (organizerEmail === undefined) return { kind: "end", reason: "noMailboxAddress" };
-  // A mailbox that has never synced has no sync-state row; it takes the default mode of its provider, as a send does.
+  // A never-synced mailbox has no sync-state row; it takes its provider's default mode, as a send does.
   const syncState = await getMailAccountSyncState(client, payload.mailboxId);
   const provider = typeof mailbox.properties.provider === "string" ? mailbox.properties.provider : "generic";
   return {
@@ -308,16 +287,12 @@ async function planMessage(client: PoolClient, payload: EventInvitationPayload):
 }
 
 /**
- * Sets `invitation.sentAt` on the participant edge, as the system writer, after a `REQUEST` left. It locks the Event
- * row first, as every participant edge write does, and replaces the stored metadata with itself plus the new `sentAt`,
- * so a reply recorded in between is kept. Returns `false` when the Event (or its trash) or the edge or its invitation is gone: the
- * message was sent and there is nothing to mark.
+ * Locks the Event row first, as every participant edge write does, and rewrites the stored metadata plus `sentAt`,
+ * so a reply recorded in between is kept. `false` when the Event, edge or invitation is gone.
  *
- * The message that left carried `sentSequence`. The Events update hook queues an updated `REQUEST` only for an edge
- * that already has `sentAt`, so an Event changed while this message was on its way queued nothing for this person. The
- * lock makes the check here atomic with every Event update: when the live Event has a higher `icalSequence`, the edge
- * had no `sentAt` before this write (so no hook queued the update) and the invitation is not declined, the updated
- * `REQUEST` is queued in this transaction. A trashed Event is `false` too: its delete hook queued the `CANCEL`.
+ * The update hook queues an updated `REQUEST` only for edges with `sentAt`, so a change while this message was in
+ * flight queued nothing for this person. Under the Event lock, a higher live `icalSequence` on a not-declined
+ * invitation queues the updated `REQUEST` in this transaction.
  */
 async function recordInvitationSent(
   pool: Pool,
@@ -329,7 +304,7 @@ async function recordInvitationSent(
     const events = await getDatabaseByModuleId(client, EVENTS_MODULE_ID);
     if (events === null) return false;
     const event = await lockItemById(client, events.id, payload.eventId);
-    // A trashed Event takes no edge write, and the delete hook queued the CANCEL: there is nothing to mark.
+    // The delete hook queued the CANCEL.
     if (event === null || event.deletedAt !== null) return false;
     const property = await getPropertyByKey(client, events.id, EVENT_PEOPLE_PROPERTY_KEY);
     const reldef = property === null ? null : await getRelationDefinitionByPropertyId(client, property.id);
@@ -373,13 +348,9 @@ const wait = (milliseconds: number): Promise<void> =>
   milliseconds > 0 ? new Promise((resolve) => setTimeout(resolve, milliseconds)) : Promise.resolve();
 
 /**
- * Records `sentAt` with the attempts `delaysMs` allows. Every failure is logged with its error name and the ids; the
- * last one is rethrown, so the job fails and the queue retries it rather than report a success that did not happen.
- *
- * A refusal that no retry can change (`ValidationError` or `NotFoundError` from the edge write: the person is in the
- * trash, a database is archived, the edge went away) is not retried and not rethrown. It is logged with its reason
- * and answered `false`, "nothing to mark": rethrowing it would make the queue send the same message again on every
- * attempt, each time to be refused again.
+ * Logs every failure and rethrows the last, so the queue retries rather than report a false success. A refusal no
+ * retry can change (`ValidationError`/`NotFoundError` from the edge write) is logged and answered `false`:
+ * rethrowing would resend the message on every attempt.
  */
 async function recordInvitationSentWithRetries(
   deps: EventInvitationDelivery,
@@ -424,23 +395,15 @@ async function recordInvitationSentWithRetries(
 }
 
 /**
- * Sends one invitation message and, for a `REQUEST`, records that it left.
+ * - Ends without sending, logging a reason code, when the Event or mailbox is unusable, the transport factory
+ *   refuses the mailbox (`validation_failed` or `MailTransportUnavailableError`), the builders refuse the message, or
+ *   the server refuses the recipient.
+ * - Rethrows any other factory, MIME or transport failure, so the queue retries and the invitation stays pending.
+ * - After the transport accepted, a failed `sentAt` write is retried and then rethrown. The resend carries the same
+ *   UID and SEQUENCE, which iTIP clients treat as the same invitation; reporting done instead would leave the edge
+ *   without `sentAt` and later Event changes would skip this person.
  *
- * - Ends without sending, logging a reason code: a `REQUEST` whose Event is missing, trashed or unreadable, a mailbox
- *   that is missing, trashed or has no address, a transport factory that refuses the mailbox as `validation_failed`
- *   (the way it refuses one with no SMTP settings) or as `MailTransportUnavailableError` (no OAuth client for the
- *   provider, no stored SMTP credential, a sync mode without a transport), a message the builders refuse, and a recipient the server refused.
- * - Rethrows every other failure of the factory (a read that failed, as opposed to a refusal), of the MIME build and
- *   of the transport, so the queue retries with backoff and the invitation stays `pending` without `sentAt`.
- * - Once the transport accepted the message, a failed `sentAt` write is attempted again a bounded number of times and
- *   logged each time; when the last attempt fails the error is rethrown and the queue retries the job. A refusal no
- *   retry can change (a trashed Person, an archived database) is logged and ends the job instead. A rethrow sends the
- *   message once more with the same UID and SEQUENCE, which an iTIP client treats as the same invitation, whereas a
- *   job reported as done would leave the edge without `sentAt` and every later change of the Event would skip this
- *   person.
- *
- * The job runs in the tenant scope of its envelope; the transaction that reads and the one that writes are separate
- * and no transaction is open while the message is built or sent.
+ * No transaction is open while the message is built or sent.
  */
 export async function sendEventInvitation(
   deps: EventInvitationDelivery,
@@ -514,11 +477,7 @@ export async function sendEventInvitation(
   }
 }
 
-/**
- * The handler the calendar manifest names for the `calendarSendEventInvitation` task. It runs `sendEventInvitation`
- * with the dependencies bound by `setEventInvitationDelivery`; with none bound it throws, and the queue retries the job
- * until a runtime that bound them runs it.
- */
+/** With no dependencies bound it throws, and the queue retries until a runtime that bound them runs it. */
 export async function handleCalendarSendEventInvitation(payload: unknown): Promise<void> {
   const parsed = calendarSendEventInvitationPayloadSchema.parse(payload);
   if (delivery === null) throw new Error("No event invitation delivery is configured for this composition root");

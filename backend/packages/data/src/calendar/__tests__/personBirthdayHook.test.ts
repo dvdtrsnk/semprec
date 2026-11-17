@@ -165,7 +165,7 @@ describe("People birthday write rule (issue #1795)", () => {
 
   it("lets a person be renamed while the stored birthday is unreadable", async () => {
     const person = await createPerson({ birthday: "2000-10-16" });
-    // Raw SQL: the API refuses to store an unreadable birthday, and this is the state an older write could have left.
+    // Raw SQL: the API refuses to store an unreadable birthday.
     await runInTenant(tenant, () =>
       withTransaction(pool, (client) =>
         client.query(`UPDATE items SET properties = properties || '{"birthday": "--10-16"}'::jsonb WHERE id = $1`, [

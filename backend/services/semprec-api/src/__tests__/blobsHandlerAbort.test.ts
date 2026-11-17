@@ -17,7 +17,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<v
   }
 }
 
-/** A `BlobStorageWriter` whose `readStream` hands back a `PassThrough` the test controls directly, so it can assert on `destroyed` once the client aborts. */
+/** The test controls the `PassThrough` directly, so it can assert `destroyed` once the client aborts. */
 class RecordingBlobStorage implements BlobStorageWriter {
   lastReadStream: PassThrough | undefined;
 
@@ -85,8 +85,8 @@ describe("GET /api/blobs/:id aborted download (issue #634)", () => {
 
   it("destroys the read stream when the client aborts after headers arrive", async () => {
     const headers = await authHeader();
-    // Larger than the single chunk written below: the download never completes, so the client
-    // aborting mid-stream is what triggers pipeline's premature-close handling, not a natural end.
+    // Larger than the single chunk written, so the client's mid-stream abort, not a natural end, triggers
+    // pipeline's premature-close handling.
     const blobId = await insertBlob(1024);
 
     const controller = new AbortController();
@@ -102,8 +102,7 @@ describe("GET /api/blobs/:id aborted download (issue #634)", () => {
 
   it("still ends the stream normally and serves the full body when the download completes", async () => {
     const headers = await authHeader();
-    // Content-Length must match the bytes actually written for the client to see a clean
-    // completion rather than a truncated response.
+    // Content-Length must match the bytes written for a clean completion.
     const blobId = await insertBlob(Buffer.byteLength("chunk-one"));
 
     const res = await fetch(`${baseUrl}/api/blobs/${blobId}`, { headers });

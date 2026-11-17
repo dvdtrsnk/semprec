@@ -13,10 +13,9 @@ function loadCatalogs(): Promise<ModuleCatalogs> {
 const PLACEHOLDER = /\{(\w+)\}/g;
 
 /**
- * A text of the pipeline's own catalog (`transcription/i18n/{cs,en}.json`) in the language of `locale`
- * (`resolveCatalogLabel`: that locale, then English, then the raw key). Each `{name}` in the text is
- * replaced by `values[name]`; a placeholder without a value is left as written. A catalog that fails to
- * load rejects this call and is loaded again by the next one.
+ * From `transcription/i18n/{cs,en}.json`: that locale, then English, then the raw key. A `{name}`
+ * placeholder without a value is left as written. A catalog that fails to load rejects this call and is
+ * loaded again by the next one.
  */
 export async function renderTranscriptionLabel(
   locale: string,

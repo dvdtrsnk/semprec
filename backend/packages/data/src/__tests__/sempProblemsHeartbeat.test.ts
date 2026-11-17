@@ -48,7 +48,6 @@ interface ProblemRow {
 
 const inA = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenantA, fn);
 
-/** The problem rows of `tenant`, read on the superuser pool so that a row in any tenant is seen. */
 async function problemsOf(tenant: string): Promise<ProblemRow[]> {
   const { rows } = await admin.query<ProblemRow>(
     `SELECT tenant_id, user_id, category, kind, severity, source_table, source_id, dedupe_key, project_item_id,
@@ -66,10 +65,7 @@ async function notificationKinds(): Promise<string[]> {
   return rows.map((row) => row.kind);
 }
 
-/**
- * Removes the item for good, as the trash purge does. Raw SQL on the superuser pool: the purge's own
- * `hardDeleteItem` needs the Projects database id and the state wanted is only the missing row.
- */
+/** Raw SQL on the superuser pool: `hardDeleteItem` needs the Projects database id; only the missing row matters. */
 async function purgeItem(itemId: string): Promise<void> {
   await admin.query("DELETE FROM items WHERE id = $1", [itemId]);
 }
@@ -96,14 +92,12 @@ async function makeHeartbeat(actionId: string): Promise<string> {
   return heartbeat.id;
 }
 
-/** The helpers a graphile-worker job hands its task: only the job's identity and attempt counters are read. */
 function jobHelpers(id: string, attempts: number, maxAttempts: number) {
   return { job: { id, attempts, max_attempts: maxAttempts } } as Parameters<
     ReturnType<typeof createHeartbeatFireAgentTask>
   >[1];
 }
 
-/** Fires the heartbeat's agent task once, as the queue does for an item-event fire, and expects it to fail. */
 async function failAgentFire(heartbeatId: string, jobId: string, attempts: number, maxAttempts: number) {
   const registry = createActionRegistry();
   registry.set(
@@ -120,7 +114,6 @@ async function failAgentFire(heartbeatId: string, jobId: string, attempts: numbe
   ).rejects.toThrow("agent failure");
 }
 
-/** Runs of the user's tenant; a run needs the tenant's user as its actor. */
 function newRun(input: Parameters<typeof createAgentRun>[1]) {
   return inA(() => createAgentRun(runtime, input));
 }
@@ -131,7 +124,6 @@ function closeWithError(runId: string) {
   );
 }
 
-/** A tool call of a tick reply: `failed` stores `details.error`, as a failed generic operation does. */
 async function storeToolCall(runId: string, toolCallId: string, failed: boolean): Promise<void> {
   await inA(async () => {
     await insertAgentRunEvent(runtime, runId, "tool_use", {
@@ -152,7 +144,6 @@ async function storeToolCall(runId: string, toolCallId: string, failed: boolean)
   });
 }
 
-/** A tick run with its thread, as the run action creates them, ready to be closed with a reply. */
 async function startTickRun(heartbeatId: string): Promise<{ thread: TickThreadRef; runId: string }> {
   return inA(() =>
     withTransaction(runtime, async (client) => {
@@ -267,8 +258,7 @@ describe("agents problems of heartbeat ticks and runs (issue #1911)", () => {
         throw new Error("handler failure");
       });
       const task = createHeartbeatFireCoreTask(runtime, registry);
-      // The raise is the last write of the transaction; a trigger makes it fail after the notification and
-      // the failure record were written, which is a failure only a real database error can produce.
+      // A trigger fails the raise, the transaction's last write, after the notification and failure record were written.
       await admin.query(
         `CREATE FUNCTION p1911_reject_problem() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected problem failure'; END $$`,
       );
@@ -297,7 +287,6 @@ describe("agents problems of heartbeat ticks and runs (issue #1911)", () => {
   });
 
   describe("the sweep reports a heartbeat recovery (issue #1915)", () => {
-    /** Fires a deterministic heartbeat once as the queue does for an item-event fire, with the given outcome. */
     async function fireNoop(
       heartbeatId: string,
       jobId: string,
@@ -447,7 +436,6 @@ describe("agents problems of heartbeat ticks and runs (issue #1911)", () => {
         source_id: heartbeatId,
         dedupe_key: `agents:heartbeat:${heartbeatId}`,
         project_item_id: null,
-        // the run's close and the sweep's failure record are two reports of the same tick
         occurrence_count: 2,
         resolved_at: null,
       });
@@ -514,8 +502,7 @@ describe("agents problems of heartbeat ticks and runs (issue #1911)", () => {
       const action = coreAgentRunAction(runtime, async () => {
         throw new Error("agent failure");
       });
-      // The message insert is the last write of the failure transaction; a trigger makes it fail after the
-      // run was closed, the notification written and the problem raised.
+      // A trigger fails the message insert, the failure transaction's last write, after everything else was written.
       await admin.query(
         `CREATE FUNCTION p1911_reject_message() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected message failure'; END $$`,
       );
@@ -713,7 +700,6 @@ describe("agents problems of heartbeat ticks and runs (issue #1911)", () => {
 
       await expect(firstOf(second.id)).resolves.toBe(first.id);
       await expect(firstOf(first.id)).resolves.toBe(first.id);
-      // another tenant's run is as unknown as a random id
       await expect(firstOf(second.id, tenantB)).rejects.toBeInstanceOf(NotFoundError);
     });
   });
@@ -727,7 +713,6 @@ describe("agents problems of heartbeat ticks and runs (issue #1911)", () => {
       await expect(finishTickDone(thread, runId)).resolves.toBe(true);
 
       expect(await runStatus(runId)).toBe("done");
-      // no agent_run_error: the run ended done
       expect(await notificationKinds()).toEqual([]);
       const problems = await problemsOf(tenantA);
       expect(problems).toHaveLength(1);

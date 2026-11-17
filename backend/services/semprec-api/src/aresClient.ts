@@ -4,25 +4,22 @@ import { createLogger } from "@semprec/shared";
 const logger = createLogger("ares-client");
 
 /**
- * The base URL of the public company register ARES (issue gh-1989). It is a constant of this service, never a setting
- * or user input, so the connect-time address check for URLs users store
- * (`docs/adr/2026-10-16-connect-time-outbound-address-checks.md`) is not applied to it. The host is a public one that
- * the egress filter lets through (`docs/adr/2026-10-03-host-egress-filtered-by-service-uid.md`).
+ * A constant, never a setting or user input, so the connect-time address check for user-stored URLs
+ * is not applied; the egress filter lets the public host through.
  */
 export const ARES_BASE_URL = "https://ares.gov.cz/ekonomicke-subjekty-v-be/rest";
 
-/** The deadline of one lookup, from the request until its body is read. */
+/** From the request until its body is read. */
 export const ARES_TIMEOUT_MS = 3000;
 
-/** The most response bytes read; an answer for one company is a few kilobytes. */
+/** An answer for one company is a few kilobytes. */
 export const ARES_MAX_RESPONSE_BYTES = 64 * 1024;
 
-/** The longest registered name taken over; ARES names are at most 255 characters. */
+/** ARES names are at most 255 characters. */
 const MAX_NAME_LENGTH = 500;
 
 const ICO_PATTERN = /^\d{8}$/;
 
-/** What the lookup returns for a company ARES knows: the number and the registered name. */
 export interface AresCompany {
   ico: string;
   name: string;
@@ -30,8 +27,8 @@ export interface AresCompany {
 
 export interface AresClient {
   /**
-   * The registered name of the company with `ico` (eight digits), or `null` when ARES does not know the number.
-   * Every other outcome throws an `AresLookupError`.
+   * `ico` is eight digits; `null` when ARES does not know the number. Every other outcome throws an
+   * `AresLookupError`.
    */
   lookupCompanyByIco(ico: string): Promise<AresCompany | null>;
 }
@@ -39,8 +36,8 @@ export interface AresClient {
 export type AresLookupFailure = "invalidIco" | "timeout" | "network" | "status" | "tooLarge" | "malformed";
 
 /**
- * Why a lookup failed. The message and the fields carry the reason and the HTTP status only, never the number or
- * anything the register answered, so a caller may log the error's reason as it is.
+ * The message and fields carry the reason and HTTP status only, never the number or anything the
+ * register answered, so the reason may be logged as is.
  */
 export class AresLookupError extends Error {
   readonly reason: AresLookupFailure;
@@ -54,10 +51,10 @@ export class AresLookupError extends Error {
   }
 }
 
-/** The fields the client reads from the answer; ARES sends many more. */
+/** ARES sends many more fields. */
 const aresAnswerSchema = z.object({ ico: z.string(), obchodniJmeno: z.string() });
 
-/** Cancels an unread stream so its connection is released; a cancel that fails is logged and dropped, never the failure that caused it. */
+/** A failing cancel is logged and dropped, never replacing the failure that caused it. */
 async function cancelQuietly(stream: { cancel(): Promise<void> }): Promise<void> {
   try {
     await stream.cancel();
@@ -67,9 +64,8 @@ async function cancelQuietly(stream: { cancel(): Promise<void> }): Promise<void>
 }
 
 /**
- * Reads the body of `response` up to `ARES_MAX_RESPONSE_BYTES`. A longer body is refused and its stream cancelled. The
- * read ends with the request's deadline: aborting the request's signal makes the stream fail, which is a timeout when
- * `deadline` has fired and a network failure otherwise.
+ * A longer body is refused and its stream cancelled. Aborting the request's signal fails the
+ * stream: a timeout when `deadline` has fired, a network failure otherwise.
  */
 async function readBoundedBody(response: Response, deadline: AbortSignal): Promise<string> {
   const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
@@ -111,10 +107,8 @@ function parseAnswer(text: string, ico: string): AresCompany {
 }
 
 /**
- * The HTTP `AresClient`: `GET <ARES_BASE_URL>/ekonomicke-subjekty/<ico>` with a deadline of `ARES_TIMEOUT_MS` for the
- * whole answer, a cap on the body, and no redirect followed. A 404 is `null`; a refusal of the number before the request,
- * any other status, a network failure, the deadline, an oversized body and an answer that does not match are each an
- * `AresLookupError` with its reason. `fetch` is injectable for tests.
+ * A deadline of `ARES_TIMEOUT_MS` for the whole answer, a body cap, and no redirect followed. A 404
+ * is `null`; every other failure is an `AresLookupError` with its reason.
  */
 export function createAresHttpClient({ fetch: fetchImpl }: { fetch?: typeof fetch } = {}): AresClient {
   return {

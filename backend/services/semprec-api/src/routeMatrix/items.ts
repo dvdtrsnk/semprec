@@ -2,10 +2,8 @@ import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
 /**
- * `ROUTE_MATRIX` slice for the `/api/items` path family, together with item creation under
- * `/api/databases/:id/items`, the two query entries the matrix order places among them
- * (`/api/databases/:id/query` and `/api/views/:id/query`) and the facets of a database's items
- * (`/api/databases/:id/facets`).
+ * Also item creation under `/api/databases/:id/items`, the two query entries
+ * (`/api/databases/:id/query`, `/api/views/:id/query`) and `/api/databases/:id/facets`.
  */
 export const ITEMS_ROUTES: RouteMatrixEntry[] = [
   {

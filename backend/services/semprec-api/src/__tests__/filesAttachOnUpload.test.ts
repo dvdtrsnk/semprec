@@ -31,9 +31,8 @@ import {
 import { createDispatcher } from "../app.js";
 
 /**
- * `POST /api/files` with `X-Attach-To-Item` and `X-Attach-Relation` (issue #1645), and tasks as an attach
- * target (issue #1654), through the real dispatcher on a `semprec_data` pool, so row-level security
- * applies, with two tenants. Every fixture write goes through the choke point.
+ * `POST /api/files` with `X-Attach-To-Item` and `X-Attach-Relation`, tasks included as targets, through the
+ * real dispatcher on a `semprec_data` pool so row-level security applies, with two tenants.
  */
 
 const PASSWORD = "s3cret-password";
@@ -41,30 +40,22 @@ const moduleRegistry = await loadFullModuleRegistry();
 
 let admin: Pool;
 let pool: Pool;
-/**
- * The dispatcher's own runtime-role pool; no other code borrows from it. Every client it opens is instrumented
- * by `instrumentReservations`.
- */
+/** The dispatcher's own runtime-role pool; every client it opens is instrumented by `instrumentReservations`. */
 let uploadPool: Pool;
 let chokePoint: ChokePoint;
 let server: Server;
 let baseUrl: string;
 let storageDir: string;
-/** Set by a test that needs to act while the upload body is streaming; released in that test's `finally`. */
 let streamingGate: { started: () => void; release: Promise<void> } | null = null;
 
-/** Armed by a test that pauses an upload at one attach reservation; one-shot, disarmed when it is reached. */
+/** One-shot: disarmed when reached. */
 let reservationBarrier: { itemId: string; reached: (pid: number) => void; release: Promise<void> } | null = null;
-/** The release of every barrier armed in the current test, called again by its teardown. */
 let barrierReleases: (() => void)[] = [];
-/** Every realtime invalidation this process emitted during the current test. */
 let invalidations: InvalidationEvent[] = [];
 
 /**
- * Test-local instrumentation of the dispatcher's own pool, installed on each client it opens. When the client is
- * about to run an attach reservation (`FOR UPDATE NOWAIT`) of the item an armed barrier names, it reports its
- * backend pid and waits for the barrier's release, then runs that same statement with the original receiver and
- * arguments; its result or error is the real one. Every other call is passed straight through.
+ * Before an attach reservation (`FOR UPDATE NOWAIT`) of the item an armed barrier names, reports the backend pid
+ * and waits for release, then runs the same statement with the original receiver and arguments.
  */
 function instrumentReservations(client: PoolClient): void {
   const original: unknown = Reflect.get(client, "query");
@@ -91,7 +82,6 @@ function instrumentReservations(client: PoolClient): void {
   if (!Reflect.set(client, "query", instrumented)) throw new Error("Could not instrument the pg client");
 }
 
-/** Arms a one-shot barrier at the next attach reservation of `itemId`; `reached` resolves with that backend's pid. */
 function pauseAtReservationOf(itemId: string): { reached: Promise<number>; release: () => void } {
   let reached: (pid: number) => void = () => {};
   const arrived = new Promise<number>((resolve) => {
@@ -118,7 +108,6 @@ interface TenantFixture {
 let a: TenantFixture;
 let b: TenantFixture;
 
-/** The real local storage, with a hook that lets a test hold the stream until it has acted. */
 function gatedStorage(real: BlobStorageWriter): BlobStorageWriter {
   return {
     async writeStream(storageKey: string, source: Readable, options) {
@@ -192,7 +181,6 @@ async function upload(tenant: TenantFixture, input: Upload): Promise<Answer> {
 const itemBody = z.object({ id: z.string(), properties: z.record(z.string(), z.unknown()) });
 const errorBody = z.object({ error: z.object({ code: z.string(), details: z.unknown().optional() }) });
 
-/** The live Files items of `tenant`, by id. */
 async function fileIds(tenant: TenantFixture): Promise<string[]> {
   return runInTenant(tenant.tenantId, async () => {
     const { rows } = await pool.query<{ id: string }>(
@@ -203,7 +191,6 @@ async function fileIds(tenant: TenantFixture): Promise<string[]> {
   });
 }
 
-/** Every stored byte file under the storage root, by path, with the SHA-256 of its content. */
 async function storedBytes(): Promise<Record<string, string>> {
   const entries = await readdir(storageDir, { recursive: true, withFileTypes: true });
   const paths = entries
@@ -218,7 +205,6 @@ async function storedBytes(): Promise<Record<string, string>> {
   return hashes;
 }
 
-/** The items `fileId`'s Files relation `relationKey` links to, read through the choke point's relation list. */
 async function linked(tenant: TenantFixture, fileId: string, relationKey: string): Promise<string[]> {
   return runInTenant(tenant.tenantId, async () => {
     const property = (await chokePoint.listProperties(tenant.filesId)).find((p) => p.key === relationKey);
@@ -230,9 +216,8 @@ async function linked(tenant: TenantFixture, fileId: string, relationKey: string
 }
 
 /**
- * The stored bytes once `ready` holds for them, read again for at most 5 s: a content-hash dedup hit removes
- * its streamed copy after the commit without the response waiting for it. Returns the last read either way, so
- * the caller's assertion reports any difference.
+ * A content-hash dedup hit removes its streamed copy after commit without the response waiting, so this rereads
+ * for up to 5 s and returns the last read either way.
  */
 async function storedBytesOnce(ready: (bytes: Record<string, string>) => boolean): Promise<Record<string, string>> {
   const deadline = Date.now() + 5_000;
@@ -243,11 +228,7 @@ async function storedBytesOnce(ready: (bytes: Record<string, string>) => boolean
   }
 }
 
-/**
- * Everything an upload could have stored in `tenant`, exactly: every Files item row (trashed ones included),
- * every blob row and every relation edge of the tenant as stored, and every stored byte file with the SHA-256
- * of its content. Read on the runtime pool in the tenant, so row-level security applies.
- */
+/** Every Files item (trashed included), blob row, relation edge and stored byte file, read under RLS. */
 async function storedState(tenant: TenantFixture) {
   const rows = (text: string, values: unknown[] = []) =>
     runInTenant(tenant.tenantId, async () => (await pool.query<{ row: unknown }>(text, values)).rows.map((r) => r.row));
@@ -261,7 +242,6 @@ async function storedState(tenant: TenantFixture) {
   };
 }
 
-/** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
 async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
@@ -274,10 +254,7 @@ async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T>
   }
 }
 
-/**
- * Rethrows the case's own failure first: alone, or inside an `AggregateError` with the cleanup failures after it.
- * A thrown falsy value counts, because `primary` wraps it.
- */
+/** Rethrows the case's own failure first, with cleanup failures after it; a thrown falsy value counts. */
 function settle(primary: { error: unknown } | undefined, cleanupFailures: unknown[]): void {
   if (primary && cleanupFailures.length > 0) {
     throw new AggregateError([primary.error, ...cleanupFailures], "The case and its cleanup failed", {
@@ -291,7 +268,7 @@ function settle(primary: { error: unknown } | undefined, cleanupFailures: unknow
 
 type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
-/** `work`'s outcome as a value, so a started request is observed from the start and read when the case is ready. */
+/** As a value, so a started request is observed from the start. */
 function outcomeOf<T>(work: Promise<T>): Promise<Outcome<T>> {
   return work.then(
     (value): Outcome<T> => ({ ok: true, value }),
@@ -299,12 +276,11 @@ function outcomeOf<T>(work: Promise<T>): Promise<Outcome<T>> {
   );
 }
 
-/** Awaits every started request with a bound, so none outlives the case; returns each one's outcome. */
+/** Bounded, so no request outlives the case. */
 async function settleRequests<T>(started: Promise<Outcome<T>>[], what: string): Promise<Outcome<T>[]> {
   return within(Promise.all(started), 10_000, what);
 }
 
-/** The pids that wait, directly or through another waiter, on the backend `holderPid`. */
 async function waitersOn(holderPid: number): Promise<Set<number>> {
   const { rows } = await admin.query<{ pid: number; blockers: number[] }>(
     "SELECT pid, pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0",
@@ -323,11 +299,7 @@ async function waitersOn(holderPid: number): Promise<Set<number>> {
   return waiting;
 }
 
-/**
- * One row of graphile-worker's public `jobs` view, every column it has (graphile-worker 0.17.3,
- * `sql/000017.sql`). `revision` and `updated_at` change when a keyed job is replaced. The view exposes no
- * payload, so payloads are not observed.
- */
+/** Every column of graphile-worker 0.17.3's public `jobs` view; it exposes no payload. */
 const queuedJobRow = z
   .object({
     id: z.string(),
@@ -349,7 +321,6 @@ const queuedJobRow = z
   .strict();
 type QueuedJob = z.infer<typeof queuedJobRow>;
 
-/** Every queued job, whole rows of graphile-worker's public `jobs` view, in id order. */
 async function queuedJobs(): Promise<QueuedJob[]> {
   const { rows } = await admin.query<Record<string, unknown>>(
     `SELECT id::text AS id, queue_name, task_identifier, priority, run_at, attempts, max_attempts, last_error,
@@ -360,9 +331,8 @@ async function queuedJobs(): Promise<QueuedJob[]> {
 }
 
 /**
- * The jobs `after` holds that `before` did not, or holds changed, as their content without identity and
- * timing (row id, timestamps, attempts), with each id of `names` replaced by its placeholder; sorted, so two
- * writers' deltas compare as multisets.
+ * New or changed jobs without identity and timing, ids replaced by placeholders; sorted so two writers' deltas
+ * compare as multisets.
  */
 function jobDelta(before: QueuedJob[], after: QueuedJob[], names: Record<string, string>): string[] {
   const earlier = new Map(before.map((job) => [job.id, JSON.stringify(job)]));
@@ -388,7 +358,6 @@ function jobDelta(before: QueuedJob[], after: QueuedJob[], names: Record<string,
     .sort();
 }
 
-/** `events` without their timing, with each id of `names` replaced by its placeholder; sorted. */
 function invalidationShape(events: InvalidationEvent[], names: Record<string, string>): string[] {
   return events
     .map((event) => {
@@ -399,7 +368,6 @@ function invalidationShape(events: InvalidationEvent[], names: Record<string, st
     .sort();
 }
 
-/** Reads `probe` until it returns a value, failing after 10 s. */
 async function pollFor<T>(probe: () => Promise<T | undefined>, what: string): Promise<T> {
   const deadline = Date.now() + 10_000;
   for (;;) {
@@ -410,7 +378,6 @@ async function pollFor<T>(probe: () => Promise<T | undefined>, what: string): Pr
   }
 }
 
-/** The id of `tenant`'s one blob; fails when it holds none or several. */
 async function onlyBlobId(tenant: TenantFixture): Promise<string> {
   const ids = await runInTenant(tenant.tenantId, async () =>
     (await pool.query<{ id: string }>("SELECT id FROM blobs")).rows.map((row) => row.id),
@@ -420,10 +387,7 @@ async function onlyBlobId(tenant: TenantFixture): Promise<string> {
   return id;
 }
 
-/**
- * The stored bytes `paused` holds beyond `preRequest`, the bytes stored before a paused upload started: exactly
- * one file, that upload's own streamed copy of `body`, with every other file as it was. Returns its key.
- */
+/** Exactly one new file, the paused upload's own streamed copy of `body`; returns its key. */
 function onlyInFlightCopy(preRequest: Record<string, string>, paused: Record<string, string>, body: Buffer): string {
   const extra = Object.keys(paused).filter((key) => !Object.hasOwn(preRequest, key));
   expect(extra).toHaveLength(1);
@@ -434,23 +398,19 @@ function onlyInFlightCopy(preRequest: Record<string, string>, paused: Record<str
   return key;
 }
 
-/** The ids of `tenant`'s blobs. */
 async function blobIdsOf(tenant: TenantFixture): Promise<string[]> {
   return runInTenant(tenant.tenantId, async () =>
     (await pool.query<{ id: string }>("SELECT id FROM blobs ORDER BY id")).rows.map((row) => row.id),
   );
 }
 
-/** The upload answer's error code, with the body checked to name none of `ids`. */
 function conflictCode(answer: Answer, ids: string[]): string {
   for (const id of ids) expect(answer.text).not.toContain(id);
   return errorBody.parse(JSON.parse(answer.text)).error.code;
 }
 
-/** Sets a relation definition of `tenant`'s Files relation `relationKey` to one-to-one. */
 async function makeOneToOne(tenant: TenantFixture, relationKey: string): Promise<void> {
-  // No writer changes a schema-locked system relation's cardinality, so the one-to-one shape a 409 needs is
-  // set directly on the tenant's definition of that Files relation.
+  // No writer changes a schema-locked system relation's cardinality, so it is set directly.
   const changed = await admin.query(
     `UPDATE relation_definitions SET cardinality = 'one_to_one'
      WHERE tenant_id = $1 AND (SELECT id FROM properties WHERE tenant_id = $1 AND database_id = $2 AND key = $3)
@@ -463,6 +423,131 @@ async function makeOneToOne(tenant: TenantFixture, relationKey: string): Promise
 const PDF = (marker: string) => Buffer.from(`%PDF-1.4\n% ${marker}\n%%EOF\n`, "latin1");
 const JPG = (marker: string) =>
   Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.from(`JFIF ${marker}`, "latin1")]);
+
+/** What a refused or rolled-back request must leave as it was. */
+async function mark(tenant: TenantFixture = a) {
+  return { state: await storedState(tenant), jobs: await queuedJobs(), invalidations: invalidations.length };
+}
+
+/** Asserts no row, byte file, job or invalidation changed since `since`; `bytes` overrides the stored bytes expected. */
+async function expectUnchangedSince(since: Awaited<ReturnType<typeof mark>>, bytes?: Record<string, string>) {
+  expect(await storedState(a)).toEqual(bytes ? { ...since.state, bytes } : since.state);
+  expect(await queuedJobs()).toEqual(since.jobs);
+  expect(invalidations.slice(since.invalidations)).toEqual([]);
+}
+
+function attach(body: Buffer, targetItemId: string, relationKey = "healthRecords"): Upload {
+  return { body, targetItemId, relationKey };
+}
+
+/** Uploads `input` to tenant A and returns the created or deduplicated Files item. */
+async function fileOf(input: Upload, status: number = 201) {
+  const answer = await upload(a, input);
+  expect(answer.status, answer.text).toBe(status);
+  return itemBody.parse(JSON.parse(answer.text));
+}
+
+function errorOf(answer: Answer) {
+  return errorBody.parse(JSON.parse(answer.text)).error;
+}
+
+/** Holds every body stream until `release`; `streaming` resolves once `count` uploads stream. */
+function gateStreams(count: number): { streaming: Promise<void>; release: () => void } {
+  let arrivals = 0;
+  let allStreaming: () => void = () => {};
+  const streaming = new Promise<void>((resolve) => {
+    allStreaming = resolve;
+  });
+  let release: () => void = () => {};
+  streamingGate = {
+    started: () => {
+      arrivals += 1;
+      if (arrivals === count) allStreaming();
+    },
+    release: new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+  };
+  return { streaming, release };
+}
+
+/** Settles `started` after the case's own steps, keeping its failure first, and returns their answers. */
+async function answersAfter(
+  primary: { error: unknown } | undefined,
+  started: Promise<Outcome<Answer>>[],
+  what: string,
+  failures: unknown[] = [],
+): Promise<Answer[]> {
+  let outcomes: Outcome<Answer>[] | undefined;
+  try {
+    outcomes = await settleRequests(started, what);
+  } catch (error) {
+    failures.push(error);
+  }
+  settle(primary, failures);
+  if (!outcomes) throw new Error(`${what} did not settle`);
+  return outcomes.map((outcome) => {
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  });
+}
+
+/**
+ * Pauses tenant A's upload of `input` at the reservation of `pauseAt`, runs `during` while it waits, then
+ * releases it. Work started through `track` is settled too, and the case's own failure stays first.
+ */
+async function withPausedUpload<T>(
+  pauseAt: string,
+  input: Upload,
+  during: (uploadPid: number, track: <R>(work: Promise<R>, what: string) => Promise<Outcome<R>>) => Promise<T>,
+): Promise<{ answer: Answer; value: T }> {
+  const gate = pauseAtReservationOf(pauseAt);
+  const uploading = outcomeOf(upload(a, input));
+  const tracked: Array<readonly [Promise<unknown>, string]> = [];
+  const track = <R>(work: Promise<R>, what: string) => {
+    const outcome = outcomeOf(work);
+    tracked.push([outcome, what]);
+    return outcome;
+  };
+  let primary: { error: unknown } | undefined;
+  let result: { value: T } | undefined;
+  let uploaded: Outcome<Answer> | undefined;
+  try {
+    const uploadPid = await within(gate.reached, 10_000, "The upload's reservation");
+    result = { value: await during(uploadPid, track) };
+    gate.release();
+    uploaded = await within(uploading, 10_000, "The paused upload");
+  } catch (error) {
+    primary = { error };
+  }
+  gate.release();
+  const failures: unknown[] = [];
+  for (const [started, what] of uploaded ? tracked : [[uploading, "The paused upload"] as const, ...tracked]) {
+    try {
+      await within(started, 10_000, what);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  settle(primary, failures);
+  if (!uploaded || !result) throw new Error("The paused upload did not settle");
+  if (!uploaded.ok) throw uploaded.error;
+  return { answer: uploaded.value, value: result.value };
+}
+
+/** Runs `act` while the upload is paused, then marks the state and the paused upload's one in-flight byte copy. */
+async function markAfter(
+  act: Promise<Outcome<unknown>>,
+  what: string,
+  preRequestBytes: Record<string, string>,
+  body: Buffer,
+) {
+  const done = await within(act, 10_000, what);
+  if (!done.ok) throw done.error;
+  const since = await mark();
+  onlyInFlightCopy(preRequestBytes, since.state.bytes, body);
+  return since;
+}
 
 beforeAll(async () => {
   admin = getTestPool();
@@ -499,7 +584,6 @@ beforeEach(async () => {
     barrierReleases = [];
     setInvalidationHook(() => {});
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    // This test's own storage root, created above.
     await rm(storageDir, { recursive: true, force: true });
   };
 });
@@ -510,59 +594,177 @@ afterAll(async () => {
   await admin?.end();
 });
 
-describe("attach an upload to an item in the same request (issue #1645)", () => {
-  it("links a new file to a health record (201), the same bytes to a second one (200), and repeats as a no-op", async () => {
-    const first = await createItem(a, a.healthRecordsId, "Blood test");
-    const second = await createItem(a, a.healthRecordsId, "Follow-up");
-    const bytes = PDF("lab result");
+const HOLD_ROW = {
+  items: "SELECT id FROM items WHERE id = $1 FOR UPDATE",
+  blobs: "SELECT id FROM blobs WHERE id = $1 FOR UPDATE",
+} as const;
 
-    const created = await upload(a, { body: bytes, targetItemId: first, relationKey: "healthRecords" });
-    expect(created.status, created.text).toBe(201);
-    const file = itemBody.parse(JSON.parse(created.text));
-    expect(await linked(a, file.id, "healthRecords")).toEqual([first]);
-
-    const again = await upload(a, { body: bytes, targetItemId: second, relationKey: "healthRecords" });
-    expect(again.status, again.text).toBe(200);
-    expect(itemBody.parse(JSON.parse(again.text)).id).toBe(file.id);
-    expect(await fileIds(a)).toEqual([file.id]);
-    expect(await linked(a, file.id, "healthRecords")).toEqual([first, second].sort());
-
-    const before = await storedState(a);
-    const repeat = await upload(a, { body: bytes, targetItemId: second, relationKey: "healthRecords" });
-    expect(repeat.status, repeat.text).toBe(200);
-    expect(await linked(a, file.id, "healthRecords")).toEqual([first, second].sort());
-    expect(await storedState(a)).toEqual(before);
-  });
-
-  it("answers an unknown, a trashed and another tenant's target with the same 404 and stores nothing", async () => {
-    const trashed = await createItem(a, a.healthRecordsId, "Old record");
-    await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.healthRecordsId, trashed));
-    const foreign = await createItem(b, b.healthRecordsId, "B's record");
-    const before = await storedState(a);
-    const answers: Answer[] = [];
-    for (const targetItemId of [randomUUID(), trashed, foreign]) {
-      answers.push(
-        await upload(a, { body: PDF(`missing ${targetItemId}`), targetItemId, relationKey: "healthRecords" }),
-      );
+async function holdRow(table: keyof typeof HOLD_ROW, id: string): Promise<{ end: () => Promise<void>; pid: number }> {
+  const holder = await admin.connect();
+  let open = false;
+  let pid: number | undefined;
+  try {
+    await holder.query("BEGIN");
+    open = true;
+    pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+    if (pid === undefined) throw new Error("no holder pid");
+    const held = await holder.query(HOLD_ROW[table], [id]);
+    expect(held.rowCount).toBe(1);
+  } catch (error) {
+    let destroyWith: Error | undefined;
+    if (open) {
+      try {
+        await holder.query("ROLLBACK");
+      } catch {
+        destroyWith = new Error("The holder's ROLLBACK failed; its connection is destroyed");
+      }
     }
-    expect(answers[0]?.status).toBe(404);
-    expect(errorBody.parse(JSON.parse(answers[0]?.text ?? "")).error.code).toBe("not_found");
-    expect(answers[1]).toEqual(answers[0]);
-    expect(answers[2]).toEqual(answers[0]);
-    expect(answers[0]?.text).not.toContain(foreign);
-    expect(await storedState(a)).toEqual(before);
+    holder.release(destroyWith);
+    throw error;
+  }
+  let ended = false;
+  return {
+    pid,
+    end: async () => {
+      if (ended) return;
+      ended = true;
+      try {
+        await holder.query("COMMIT");
+      } catch (error) {
+        holder.release(new Error("The holder's COMMIT failed; its connection is destroyed"));
+        throw error;
+      }
+      holder.release();
+    },
+  };
+}
+
+/**
+ * Uploads every input while `table`'s row `id` is held and runs `observe`, then ends the holder whatever
+ * `observe` did, so a waiting request can go on, and drains the requests. The case's own failure stays first.
+ */
+async function whileHeld<T>(
+  table: keyof typeof HOLD_ROW,
+  id: string,
+  inputs: Upload[],
+  observe: (requests: Promise<Outcome<Answer>>[], holderPid: number) => Promise<T>,
+): Promise<{ value: T; answers: Answer[] }> {
+  const holder = await holdRow(table, id);
+  // Observed before any await, so they are drained whatever happens while the row is held.
+  const requests = inputs.map((input) => outcomeOf(upload(a, input)));
+  let primary: { error: unknown } | undefined;
+  let result: { value: T } | undefined;
+  try {
+    result = { value: await observe(requests, holder.pid) };
+  } catch (error) {
+    primary = { error };
+  }
+  const failures: unknown[] = [];
+  try {
+    await holder.end();
+  } catch (error) {
+    failures.push(error);
+  }
+  const answers = await answersAfter(primary, requests, "The requests after their holder ended", failures);
+  if (!result) throw new Error("The held requests' observation returned nothing");
+  return { value: result.value, answers };
+}
+
+const TARGETS = [
+  { relationKey: "healthRecords", database: (tenant: TenantFixture) => tenant.healthRecordsId, bytes: PDF },
+  { relationKey: "tasks", database: (tenant: TenantFixture) => tenant.tasksId, bytes: JPG },
+] as const;
+
+describe("attach an upload to a health record or a task in the same request", () => {
+  it.each(TARGETS)(
+    "links a new file to one $relationKey target (201), the same bytes to a second (200), and repeats as a no-op",
+    async ({ relationKey, database, bytes: make }) => {
+      const first = await createItem(a, database(a), "First");
+      const second = await createItem(a, database(a), "Second");
+      const bytes = make("shared");
+      const file = await fileOf(attach(bytes, first, relationKey));
+      expect(await linked(a, file.id, relationKey)).toEqual([first]);
+      expect((await fileOf(attach(bytes, second, relationKey), 200)).id).toBe(file.id);
+      expect(await fileIds(a)).toEqual([file.id]);
+      expect(await linked(a, file.id, relationKey)).toEqual([first, second].sort());
+      const before = await storedState(a);
+      expect((await fileOf(attach(bytes, second, relationKey), 200)).id).toBe(file.id);
+      expect(await storedState(a)).toEqual(before);
+    },
+  );
+
+  it("links a JPG and a PDF to a task with Files.tasks edges and the type read from the bytes", async () => {
+    const task = await createItem(a, a.tasksId, "Renew passport");
+    const jpg = await fileOf({ ...attach(JPG("photo"), task, "tasks"), filename: "photo.jpg" });
+    const pdf = await fileOf({ ...attach(PDF("form"), task, "tasks"), filename: "form.pdf" });
+    expect([jpg.properties.type, pdf.properties.type]).toEqual(["jpg", "pdf"]);
+    expect(await linked(a, jpg.id, "tasks")).toEqual([task]);
+    expect(await linked(a, pdf.id, "tasks")).toEqual([task]);
   });
 
-  it("refuses a relation key that is not a Files relation, or leads elsewhere, with 400 on X-Attach-Relation", async () => {
+  it("without the headers stores the file unlinked, 201 then 200 for the same bytes, as before", async () => {
+    const bytes = PDF("plain");
+    const file = await fileOf({ body: bytes });
+    expect((await fileOf({ body: bytes }, 200)).id).toBe(file.id);
+    expect(await linked(a, file.id, "healthRecords")).toEqual([]);
+    expect(await fileIds(a)).toEqual([file.id]);
+  });
+
+  it("keeps an existing file's own project when the same bytes are attached to a task", async () => {
+    const project = await createItem(a, a.projectsId, "Own project");
+    const task = await createItem(a, a.tasksId, "Task");
+    const bytes = PDF("filed under a project");
+    const file = await fileOf(attach(bytes, project, "projects"));
+    await fileOf(attach(bytes, task, "tasks"), 200);
+    expect(await linked(a, file.id, "projects")).toEqual([project]);
+    expect(await linked(a, file.id, "tasks")).toEqual([task]);
+  });
+
+  it.each(TARGETS)(
+    "answers a missing, trashed or foreign $relationKey target with the same 404, for new and filed bytes, and stores nothing",
+    async ({ relationKey, database, bytes: make }) => {
+      const owner = await createItem(a, database(a), "Owner");
+      const filed = make("already filed");
+      await fileOf(attach(filed, owner, relationKey));
+      const trashed = await createItem(a, database(a), "Old");
+      await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(database(a), trashed));
+      const foreign = await createItem(b, database(b), "B's");
+      const before = await storedState(a);
+      for (const body of [make("new"), filed]) {
+        const answers: Answer[] = [];
+        for (const targetItemId of [randomUUID(), trashed, foreign]) {
+          answers.push(await upload(a, attach(body, targetItemId, relationKey)));
+        }
+        expect(answers[0]?.status).toBe(404);
+        expect(errorOf(answers[0]!).code).toBe("not_found");
+        expect(answers[1]).toEqual(answers[0]);
+        expect(answers[2]).toEqual(answers[0]);
+        expect(answers[0]?.text).not.toContain(foreign);
+      }
+      expect(await storedState(a)).toEqual(before);
+    },
+  );
+
+  it("refuses a relation that is not a Files relation, or leads elsewhere, with 400 on X-Attach-Relation, for new and filed bytes", async () => {
     const record = await createItem(a, a.healthRecordsId, "Record");
+    const task = await createItem(a, a.tasksId, "Task");
+    const filed = PDF("already filed");
+    await fileOf(attach(filed, record));
     const before = await storedState(a);
-    for (const relationKey of ["neznamy", "name", "projects"]) {
-      const answer = await upload(a, { body: PDF(relationKey), targetItemId: record, relationKey });
-      expect(answer.status, relationKey).toBe(400);
-      expect(errorBody.parse(JSON.parse(answer.text)).error).toMatchObject({
-        code: "validation_failed",
-        details: { field: "X-Attach-Relation" },
-      });
+    const cases: [string, string][] = [
+      [record, "neznamy"],
+      [record, "name"],
+      [record, "projects"],
+      [task, "attachments"],
+      // A tasks attach whose target is not a task.
+      [record, "tasks"],
+    ];
+    for (const [targetItemId, relationKey] of cases) {
+      for (const body of [PDF(`new ${relationKey}`), filed]) {
+        const answer = await upload(a, attach(body, targetItemId, relationKey));
+        expect(answer.status, relationKey).toBe(400);
+        expect(errorOf(answer)).toMatchObject({ code: "validation_failed", details: { field: "X-Attach-Relation" } });
+      }
     }
     expect(await storedState(a)).toEqual(before);
   });
@@ -573,122 +775,59 @@ describe("attach an upload to an item in the same request (issue #1645)", () => 
     const cases: [Upload, string][] = [
       [{ body: PDF("one"), targetItemId: record }, "X-Attach-Relation"],
       [{ body: PDF("two"), relationKey: "healthRecords" }, "X-Attach-To-Item"],
-      [{ body: PDF("three"), targetItemId: "not-an-id", relationKey: "healthRecords" }, "X-Attach-To-Item"],
+      [attach(PDF("three"), "not-an-id"), "X-Attach-To-Item"],
     ];
     for (const [input, field] of cases) {
       const answer = await upload(a, input);
       expect(answer.status, field).toBe(400);
-      expect(errorBody.parse(JSON.parse(answer.text)).error).toMatchObject({
-        code: "validation_failed",
-        details: { field },
-      });
+      expect(errorOf(answer)).toMatchObject({ code: "validation_failed", details: { field } });
     }
     expect(await storedState(a)).toEqual(before);
   });
 
-  it("without the headers stores the file unlinked, 201 then 200 for the same bytes, as before", async () => {
-    const bytes = PDF("plain");
-    const created = await upload(a, { body: bytes });
-    expect(created.status).toBe(201);
-    const file = itemBody.parse(JSON.parse(created.text));
-    const repeat = await upload(a, { body: bytes });
-    expect(repeat.status).toBe(200);
-    expect(itemBody.parse(JSON.parse(repeat.text)).id).toBe(file.id);
-    expect(await linked(a, file.id, "healthRecords")).toEqual([]);
-    expect(await fileIds(a)).toEqual([file.id]);
-  });
-
-  it("answers 404 and keeps nothing when the target is trashed while the body streams", async () => {
-    const record = await createItem(a, a.healthRecordsId, "Record");
-    const before = await storedState(a);
-    let started: () => void = () => {};
-    const streaming = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    let release: () => void = () => {};
-    streamingGate = {
-      started,
-      release: new Promise<void>((resolve) => {
-        release = resolve;
-      }),
-    };
-    const answer = upload(a, { body: PDF("raced"), targetItemId: record, relationKey: "healthRecords" });
-    // Observed at once, so a failed request cannot leave an unhandled rejection while the test waits.
-    const settled = answer.then(
-      (value) => ({ ok: true as const, value }),
-      (error: unknown) => ({ ok: false as const, error }),
-    );
-    let primary: { error: unknown } | undefined;
-    try {
-      await within(streaming, 10_000, "The upload's body stream");
-      await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.healthRecordsId, record));
-    } catch (error) {
-      primary = { error };
-    }
-    // The request settles before the case goes on or ends, whatever happened above.
-    release();
-    const failures: unknown[] = [];
-    let outcome: Awaited<typeof settled> | undefined;
-    try {
-      outcome = await within(settled, 10_000, "The raced upload");
-    } catch (error) {
-      failures.push(error);
-    }
-    settle(primary, failures);
-    if (!outcome) throw new Error("The raced upload did not settle");
-    if (!outcome.ok) throw outcome.error;
-    expect(outcome.value.status).toBe(404);
-    expect(errorBody.parse(JSON.parse(outcome.value.text)).error.code).toBe("not_found");
-    expect(await storedState(a)).toEqual(before);
-  });
-
-  it("keeps a cardinality violation's 409 and rolls the new file and its bytes back", async () => {
-    const record = await createItem(a, a.healthRecordsId, "Record");
-    expect((await upload(a, { body: PDF("first"), targetItemId: record, relationKey: "healthRecords" })).status).toBe(
-      201,
-    );
-    await makeOneToOne(a, "healthRecords");
-    const before = await storedState(a);
-    const answer = await upload(a, { body: PDF("second"), targetItemId: record, relationKey: "healthRecords" });
-    expect(answer.status, answer.text).toBe(409);
-    expect(await storedState(a)).toEqual(before);
-  });
-
-  it("refuses attaching bytes an existing file holds to a missing, trashed or foreign target, or through a wrong relation, leaving that file, its edges and its bytes as they were", async () => {
-    const owner = await createItem(a, a.healthRecordsId, "Owner");
-    const bytes = PDF("already filed");
-    expect((await upload(a, { body: bytes, targetItemId: owner, relationKey: "healthRecords" })).status).toBe(201);
-    const trashed = await createItem(a, a.healthRecordsId, "Old record");
-    await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.healthRecordsId, trashed));
-    const foreign = await createItem(b, b.healthRecordsId, "B's record");
-    const before = await storedState(a);
-    for (const targetItemId of [randomUUID(), trashed, foreign]) {
-      const answer = await upload(a, { body: bytes, targetItemId, relationKey: "healthRecords" });
-      expect(answer.status, targetItemId).toBe(404);
-      expect(errorBody.parse(JSON.parse(answer.text)).error.code).toBe("not_found");
-    }
-    for (const relationKey of ["projects", "name"]) {
-      const answer = await upload(a, { body: bytes, targetItemId: owner, relationKey });
-      expect(answer.status, relationKey).toBe(400);
-      expect(errorBody.parse(JSON.parse(answer.text)).error).toMatchObject({ details: { field: "X-Attach-Relation" } });
-    }
-    expect(await storedState(a)).toEqual(before);
-  });
+  it.each(TARGETS)(
+    "keeps a $relationKey cardinality violation's 409 and rolls the new file and its bytes back",
+    async ({ relationKey, database, bytes: make }) => {
+      const target = await createItem(a, database(a), "Target");
+      await fileOf(attach(make("first"), target, relationKey));
+      await makeOneToOne(a, relationKey);
+      const before = await storedState(a);
+      const answer = await upload(a, attach(make("second"), target, relationKey));
+      expect(answer.status, answer.text).toBe(409);
+      expect(await storedState(a)).toEqual(before);
+    },
+  );
 
   it("keeps an existing file's bytes and edges when attaching its bytes violates the cardinality (409)", async () => {
     await makeOneToOne(a, "healthRecords");
     const first = await createItem(a, a.healthRecordsId, "First");
     const second = await createItem(a, a.healthRecordsId, "Second");
     const firstBytes = PDF("first record's file");
-    expect((await upload(a, { body: firstBytes, targetItemId: first, relationKey: "healthRecords" })).status).toBe(201);
-    expect(
-      (await upload(a, { body: PDF("second record's file"), targetItemId: second, relationKey: "healthRecords" }))
-        .status,
-    ).toBe(201);
+    await fileOf(attach(firstBytes, first));
+    await fileOf(attach(PDF("second record's file"), second));
     const before = await storedState(a);
-    // The first file to the second record: both ends already hold their one edge.
-    const answer = await upload(a, { body: firstBytes, targetItemId: second, relationKey: "healthRecords" });
+    // Both ends already hold their one edge.
+    const answer = await upload(a, attach(firstBytes, second));
     expect(answer.status, answer.text).toBe(409);
+    expect(await storedState(a)).toEqual(before);
+  });
+
+  it("answers 404 and keeps nothing when the target is trashed while the body streams", async () => {
+    const record = await createItem(a, a.healthRecordsId, "Record");
+    const before = await storedState(a);
+    const gate = gateStreams(1);
+    const started = [outcomeOf(upload(a, attach(PDF("raced"), record)))];
+    let primary: { error: unknown } | undefined;
+    try {
+      await within(gate.streaming, 10_000, "The upload's body stream");
+      await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.healthRecordsId, record));
+    } catch (error) {
+      primary = { error };
+    }
+    gate.release();
+    const [answer] = await answersAfter(primary, started, "The raced upload");
+    expect(answer?.status).toBe(404);
+    expect(errorOf(answer!).code).toBe("not_found");
     expect(await storedState(a)).toEqual(before);
   });
 
@@ -701,72 +840,24 @@ describe("attach an upload to an item in the same request (issue #1645)", () => 
       const first = await createItem(a, a.healthRecordsId, "First");
       const second = twoTargets ? await createItem(a, a.healthRecordsId, "Second") : first;
       const bytes = PDF("filed under contention");
-      const filed = await upload(a, { body: bytes });
-      expect(filed.status).toBe(201);
-      const file = itemBody.parse(JSON.parse(filed.text));
+      const file = await fileOf({ body: bytes });
       const before = await storedState(a);
-      const blobIds = await runInTenant(a.tenantId, async () =>
-        (await pool.query<{ id: string }>("SELECT id FROM blobs")).rows.map((row) => row.id),
-      );
-      expect(blobIds).toHaveLength(1);
 
-      // A lock-only admin transaction holds the blob row both uploads file under.
-      const holder = await admin.connect();
-      let holding = false;
-      const started: Promise<Outcome<Answer>>[] = [];
-      let primary: { error: unknown } | undefined;
-      let answers: Outcome<Answer>[] | undefined;
-      try {
-        await holder.query("BEGIN");
-        holding = true;
-        const pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-        if (pid === undefined) throw new Error("no holder pid");
-        expect((await holder.query("SELECT id FROM blobs WHERE id = $1 FOR UPDATE", [blobIds[0]])).rowCount).toBe(1);
-        for (const targetItemId of [first, second]) {
-          started.push(outcomeOf(upload(a, { body: bytes, targetItemId, relationKey: "healthRecords" })));
-        }
-        // Both uploads wait on the held blob row: one on the holder, the other on it or on the first.
-        const deadline = Date.now() + 10_000;
-        while ((await waitersOn(pid)).size < 2) {
-          if (Date.now() >= deadline) throw new Error("The two uploads did not both wait on the held blob row");
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        await holder.query("COMMIT");
-        holding = false;
-        answers = await settleRequests(started, "The two contending uploads");
-      } catch (error) {
-        primary = { error };
-      }
-      const failures: unknown[] = [];
-      if (holding) {
-        try {
-          await holder.query("ROLLBACK");
-        } catch (error) {
-          failures.push(error);
-        }
-      }
-      holder.release(
-        failures.length > 0 ? new Error("The holder's ROLLBACK failed; its connection is destroyed") : undefined,
+      const { answers } = await whileHeld(
+        "blobs",
+        await onlyBlobId(a),
+        [first, second].map((targetItemId) => attach(bytes, targetItemId)),
+        (_requests, pid) =>
+          pollFor(
+            async () => ((await waitersOn(pid)).size >= 2 ? true : undefined),
+            "The two uploads waiting on the held blob row",
+          ),
       );
-      if (!answers) {
-        try {
-          await settleRequests(started, "The two contending uploads");
-        } catch (error) {
-          failures.push(error);
-        }
-      }
-      settle(primary, failures);
-      if (!answers) throw new Error("The contending uploads did not settle");
 
-      const values = answers.map((outcome) => {
-        if (!outcome.ok) throw outcome.error;
-        return outcome.value;
-      });
-      expect(values.map((answer) => answer.status)).toEqual([200, 200]);
-      for (const answer of values) expect(itemBody.parse(JSON.parse(answer.text)).id).toBe(file.id);
+      expect(answers.map((answer) => answer.status)).toEqual([200, 200]);
+      for (const answer of answers) expect(itemBody.parse(JSON.parse(answer.text)).id).toBe(file.id);
       const after = await storedState(a);
       expect(after.blobs).toEqual(before.blobs);
-      // Each upload's streamed copy is removed again: the stored bytes are the existing file's alone.
       expect(await storedBytesOnce((bytes) => isDeepStrictEqual(bytes, before.bytes))).toEqual(before.bytes);
       expect(await fileIds(a)).toEqual([file.id]);
       expect(await linked(a, file.id, "healthRecords")).toEqual([...new Set([first, second])].sort());
@@ -778,50 +869,21 @@ describe("attach an upload to an item in the same request (issue #1645)", () => 
     const record = await createItem(a, a.healthRecordsId, "Record");
     const bytes = PDF("new under contention");
     const before = await storedState(a);
-    let arrivals = 0;
-    let bothStreaming: () => void = () => {};
-    const streaming = new Promise<void>((resolve) => {
-      bothStreaming = resolve;
-    });
-    let release: () => void = () => {};
-    streamingGate = {
-      started: () => {
-        arrivals += 1;
-        if (arrivals === 2) bothStreaming();
-      },
-      release: new Promise<void>((resolve) => {
-        release = resolve;
-      }),
-    };
-    const started = [0, 1].map(() =>
-      outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" })),
-    );
+    const gate = gateStreams(2);
+    const started = [0, 1].map(() => outcomeOf(upload(a, attach(bytes, record))));
     let primary: { error: unknown } | undefined;
     try {
-      // Both bodies are in flight before either reaches its ingest transaction.
-      await within(streaming, 10_000, "Both upload streams");
+      await within(gate.streaming, 10_000, "Both upload streams");
     } catch (error) {
       primary = { error };
     }
-    release();
+    gate.release();
     streamingGate = null;
-    const failures: unknown[] = [];
-    let answers: Outcome<Answer>[] | undefined;
-    try {
-      answers = await settleRequests(started, "The two concurrent uploads");
-    } catch (error) {
-      failures.push(error);
-    }
-    settle(primary, failures);
-    if (!answers) throw new Error("The concurrent uploads did not settle");
+    const answers = await answersAfter(primary, started, "The two concurrent uploads");
 
-    const values = answers.map((outcome) => {
-      if (!outcome.ok) throw outcome.error;
-      return outcome.value;
-    });
-    expect(values.map((answer) => answer.status).sort()).toEqual([200, 201]);
-    const ids = values.map((answer) => itemBody.parse(JSON.parse(answer.text)).id);
-    expect(new Set(ids).size).toBe(1);
+    expect(answers.map((answer) => answer.status).sort()).toEqual([200, 201]);
+    const ids = new Set(answers.map((answer) => itemBody.parse(JSON.parse(answer.text)).id));
+    expect(ids.size).toBe(1);
     const [fileId] = ids;
     if (fileId === undefined) throw new Error("no file id");
     expect(await fileIds(a)).toEqual([fileId]);
@@ -829,7 +891,6 @@ describe("attach an upload to an item in the same request (issue #1645)", () => 
     const after = await storedState(a);
     expect(after.blobs).toHaveLength(before.blobs.length + 1);
     expect(after.edges).toHaveLength(before.edges.length + 1);
-    // One stored copy of the bytes: the second upload's streamed copy is removed again.
     const stored = await storedBytesOnce(
       (current) => Object.keys(current).length === Object.keys(before.bytes).length + 1,
     );
@@ -838,209 +899,11 @@ describe("attach an upload to an item in the same request (issue #1645)", () => 
   });
 });
 
-describe("attach uploads to a task through the shared upload headers (issue #1654)", () => {
-  it("links a JPG and a PDF to a task with Files.tasks edges and the type read from the bytes", async () => {
-    const task = await createItem(a, a.tasksId, "Renew passport");
-    const jpg = await upload(a, {
-      body: JPG("photo"),
-      filename: "photo.jpg",
-      targetItemId: task,
-      relationKey: "tasks",
-    });
-    const pdf = await upload(a, { body: PDF("form"), filename: "form.pdf", targetItemId: task, relationKey: "tasks" });
-    expect([jpg.status, pdf.status]).toEqual([201, 201]);
-    const jpgFile = itemBody.parse(JSON.parse(jpg.text));
-    const pdfFile = itemBody.parse(JSON.parse(pdf.text));
-    expect(jpgFile.properties.type).toBe("jpg");
-    expect(pdfFile.properties.type).toBe("pdf");
-    expect(await linked(a, jpgFile.id, "tasks")).toEqual([task]);
-    expect(await linked(a, pdfFile.id, "tasks")).toEqual([task]);
-  });
-
-  it("gives the same bytes uploaded to two tasks one Files item with two edges, the second answer 200", async () => {
-    const first = await createItem(a, a.tasksId, "First");
-    const second = await createItem(a, a.tasksId, "Second");
-    const bytes = JPG("shared");
-    expect((await upload(a, { body: bytes, targetItemId: first, relationKey: "tasks" })).status).toBe(201);
-    const again = await upload(a, { body: bytes, targetItemId: second, relationKey: "tasks" });
-    expect(again.status).toBe(200);
-    const file = itemBody.parse(JSON.parse(again.text));
-    expect(await fileIds(a)).toEqual([file.id]);
-    expect(await linked(a, file.id, "tasks")).toEqual([first, second].sort());
-  });
-
-  it("answers a missing, trashed or foreign task with 404 and stores no blob or Files item", async () => {
-    const trashed = await createItem(a, a.tasksId, "Done task");
-    await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.tasksId, trashed));
-    const foreign = await createItem(b, b.tasksId, "B's task");
-    const before = await storedState(a);
-    for (const targetItemId of [randomUUID(), trashed, foreign]) {
-      const answer = await upload(a, { body: JPG(targetItemId), targetItemId, relationKey: "tasks" });
-      expect(answer.status, targetItemId).toBe(404);
-    }
-    expect(await storedState(a)).toEqual(before);
-  });
-
-  it("refuses an X-Attach-Relation that is not a Files relation with 400 and creates nothing", async () => {
-    const task = await createItem(a, a.tasksId, "Task");
-    const before = await storedState(a);
-    const answer = await upload(a, { body: JPG("unknown"), targetItemId: task, relationKey: "attachments" });
-    expect(answer.status).toBe(400);
-    expect(errorBody.parse(JSON.parse(answer.text)).error).toMatchObject({ details: { field: "X-Attach-Relation" } });
-    expect(await storedState(a)).toEqual(before);
-  });
-
-  it("keeps an existing file's own project when the same bytes are attached to a task", async () => {
-    const project = await createItem(a, a.projectsId, "Own project");
-    const task = await createItem(a, a.tasksId, "Task");
-    const bytes = PDF("filed under a project");
-    const filed = await upload(a, { body: bytes, targetItemId: project, relationKey: "projects" });
-    expect(filed.status).toBe(201);
-    const file = itemBody.parse(JSON.parse(filed.text));
-    expect((await upload(a, { body: bytes, targetItemId: task, relationKey: "tasks" })).status).toBe(200);
-    expect(await linked(a, file.id, "projects")).toEqual([project]);
-    expect(await linked(a, file.id, "tasks")).toEqual([task]);
-  });
-
-  it("answers a tasks attach whose target is not a task with 400 on X-Attach-Relation, for new and for existing bytes, storing nothing", async () => {
-    const record = await createItem(a, a.healthRecordsId, "Not a task");
-    const existing = JPG("already filed");
-    expect((await upload(a, { body: existing })).status).toBe(201);
-    const before = await storedState(a);
-    for (const body of [JPG("new"), existing]) {
-      const answer = await upload(a, { body, targetItemId: record, relationKey: "tasks" });
-      expect(answer.status).toBe(400);
-      expect(errorBody.parse(JSON.parse(answer.text)).error).toMatchObject({
-        code: "validation_failed",
-        details: { field: "X-Attach-Relation" },
-      });
-    }
-    expect(await storedState(a)).toEqual(before);
-  });
-
-  it("keeps a task cardinality violation's 409 and rolls the new file and its bytes back", async () => {
-    await makeOneToOne(a, "tasks");
-    const task = await createItem(a, a.tasksId, "Task");
-    expect((await upload(a, { body: JPG("first"), targetItemId: task, relationKey: "tasks" })).status).toBe(201);
-    const before = await storedState(a);
-    const answer = await upload(a, { body: JPG("second"), targetItemId: task, relationKey: "tasks" });
-    expect(answer.status, answer.text).toBe(409);
-    expect(await storedState(a)).toEqual(before);
-  });
-});
-
-describe("attach reservations never wait while the upload holds its blob (batch 36 D1)", () => {
-  /** The lock-only statement for each table a holder may hold a row of; constant SQL, the id bound. */
-  const HOLD_ROW = {
-    items: "SELECT id FROM items WHERE id = $1 FOR UPDATE",
-    blobs: "SELECT id FROM blobs WHERE id = $1 FOR UPDATE",
-  } as const;
-
-  /** A lock-only admin transaction holding one item row `FOR UPDATE` until `end` commits it. */
-  async function holdItem(itemId: string): Promise<{ end: () => Promise<void>; pid: number }> {
-    return holdRow("items", itemId);
-  }
-
-  /** A lock-only admin transaction holding one row of `table` `FOR UPDATE` until `end` commits it. */
-  async function holdRow(table: keyof typeof HOLD_ROW, id: string): Promise<{ end: () => Promise<void>; pid: number }> {
-    const holder = await admin.connect();
-    let open = false;
-    let pid: number | undefined;
-    try {
-      await holder.query("BEGIN");
-      open = true;
-      pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      if (pid === undefined) throw new Error("no holder pid");
-      const held = await holder.query(HOLD_ROW[table], [id]);
-      expect(held.rowCount).toBe(1);
-    } catch (error) {
-      let destroyWith: Error | undefined;
-      if (open) {
-        try {
-          await holder.query("ROLLBACK");
-        } catch {
-          destroyWith = new Error("The holder's ROLLBACK failed; its connection is destroyed");
-        }
-      }
-      holder.release(destroyWith);
-      throw error;
-    }
-    let ended = false;
-    return {
-      pid,
-      end: async () => {
-        if (ended) return;
-        ended = true;
-        try {
-          await holder.query("COMMIT");
-        } catch (error) {
-          holder.release(new Error("The holder's COMMIT failed; its connection is destroyed"));
-          throw error;
-        }
-        holder.release();
-      },
-    };
-  }
-
-  /** How long a holder case waits for the refusal a NOWAIT reservation gives at once; well inside the case timeout. */
-  const REFUSAL_MS = 5_000;
-  /** How long a request is given to finish once its holder has ended. */
-  const DRAIN_MS = 10_000;
-
-  /**
-   * Runs `observe` on `request`, a request already observed (`outcomeOf`) and started while `holder` holds a row.
-   * Whatever `observe` does, the holder is ended first, so a request waiting on its row can go on, and the request
-   * is then drained within `DRAIN_MS`. The case's own failure stays first; holder and drain failures follow it.
-   */
-  async function whileHeld<T>(
-    holder: { end: () => Promise<void> },
-    request: Promise<Outcome<Answer>>,
-    observe: (request: Promise<Outcome<Answer>>) => Promise<T>,
-  ): Promise<T> {
-    let primary: { error: unknown } | undefined;
-    let result: { value: T } | undefined;
-    try {
-      result = { value: await observe(request) };
-    } catch (error) {
-      primary = { error };
-    }
-    const failures: unknown[] = [];
-    try {
-      await holder.end();
-    } catch (error) {
-      failures.push(error);
-    }
-    try {
-      const drained = await within(request, DRAIN_MS, "The request after its holder ended");
-      if (!drained.ok && !(primary && primary.error === drained.error)) failures.push(drained.error);
-    } catch (error) {
-      failures.push(error);
-    }
-    settle(primary, failures);
-    if (!result) throw new Error("The held request's observation returned nothing");
-    return result.value;
-  }
-
-  /** The answer of a request with no holder, observed at once and awaited within `DRAIN_MS`. */
-  async function answerOf(request: Promise<Answer>, what: string): Promise<Answer> {
-    const outcome = await within(outcomeOf(request), DRAIN_MS, what);
-    if (!outcome.ok) throw outcome.error;
-    return outcome.value;
-  }
-
-  /** The refusal a held reservation gives, awaited within `REFUSAL_MS`. */
-  async function refusal(request: Promise<Outcome<Answer>>): Promise<Answer> {
-    const outcome = await within(request, REFUSAL_MS, "The upload refused while its row is held");
-    if (!outcome.ok) throw outcome.error;
-    return outcome.value;
-  }
-
+describe("attach reservations never wait while the upload holds its blob", () => {
   it("answers 409 upload_attach_conflict and rolls back while a PATCH holds the Files item and waits on the upload's blob, then the PATCH commits", async () => {
     const record = await createItem(a, a.healthRecordsId, "Record");
     const bytes = PDF("patched while attaching");
-    const filed = await upload(a, { body: bytes });
-    expect(filed.status).toBe(201);
-    const file = itemBody.parse(JSON.parse(filed.text));
+    const file = await fileOf({ body: bytes });
     const blobId = await onlyBlobId(a);
     const patch = (itemId: string, fileBlobId: string) =>
       runInTenant(a.tenantId, () =>
@@ -1051,9 +914,8 @@ describe("attach reservations never wait while the upload holds its blob (batch 
         }),
       );
 
-    // The control: the same PATCH of another, uncontended Files item. Its jobs and invalidations are what the
-    // PATCH below may add; anything beyond them would be the upload's.
-    const control = itemBody.parse(JSON.parse((await upload(a, { body: PDF("control file") })).text));
+    // The control: the same PATCH of an uncontended Files item. Anything beyond its effects would be the upload's.
+    const control = await fileOf({ body: PDF("control file") });
     const controlBlobId = (await blobIdsOf(a)).find((id) => id !== blobId);
     if (!controlBlobId) throw new Error("no control blob");
     const controlJobsBefore = await queuedJobs();
@@ -1062,22 +924,13 @@ describe("attach reservations never wait while the upload holds its blob (batch 
     const controlNames = { [control.id]: "<file>", [controlBlobId]: "<blob>" };
     const controlJobs = jobDelta(controlJobsBefore, await queuedJobs(), controlNames);
     const controlInvalidations = invalidationShape(invalidations.slice(controlMarked), controlNames);
+    expect(controlInvalidations.length).toBeGreaterThan(0);
 
-    const before = await storedState(a);
-    const jobsBefore = await queuedJobs();
-    const marked = invalidations.length;
-
+    const before = await mark();
     // The upload pauses at its target reservation, after it has taken the blob `FOR UPDATE`.
-    const gate = pauseAtReservationOf(record);
-    const uploading = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
-    let patching: Promise<Outcome<unknown>> | undefined;
-    let primary: { error: unknown } | undefined;
-    let uploaded: Outcome<Answer> | undefined;
-    let patched: Outcome<unknown> | undefined;
-    try {
-      const uploadPid = await within(gate.reached, 10_000, "The upload's target reservation");
-      // The production PATCH owner on the runtime role: it takes the Files item, then its blob reference lock.
-      patching = outcomeOf(patch(file.id, blobId));
+    const { answer, value } = await withPausedUpload(record, attach(bytes, record), async (uploadPid, track) => {
+      // The production PATCH takes the Files item, then its blob reference lock.
+      const patching = track(patch(file.id, blobId), "The waiting PATCH");
       const waiting = await pollFor(async () => {
         const { rows } = await admin.query<{ pid: number; query: string }>(
           "SELECT pid, query FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
@@ -1085,386 +938,156 @@ describe("attach reservations never wait while the upload holds its blob (batch 
         );
         return rows.length > 0 ? rows : undefined;
       }, "The PATCH waiting on the upload's blob");
-      // Exactly one backend waits on the upload: the PATCH, at its blob reference statement.
       expect(waiting).toHaveLength(1);
       expect(waiting[0]?.query).toMatch(/FROM blobs .*FOR KEY SHARE/s);
-      gate.release();
-      uploaded = await within(uploading, 10_000, "The paused upload");
-      patched = await within(patching, 10_000, "The waiting PATCH");
-    } catch (error) {
-      primary = { error };
-    }
-    gate.release();
-    const failures: unknown[] = [];
-    for (const [started, what] of [
-      [uploaded ? undefined : uploading, "The paused upload"],
-      [patched ? undefined : patching, "The waiting PATCH"],
-    ] as const) {
-      if (!started) continue;
-      try {
-        await within(started, 10_000, what);
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    settle(primary, failures);
-    if (!uploaded || !patched) throw new Error("The upload or the PATCH did not settle");
-    if (!uploaded.ok) throw uploaded.error;
+      // Wrapped, so returning it does not wait for the PATCH, which waits on the paused upload.
+      return { patching };
+    });
+    const patched = await within(value.patching, 10_000, "The waiting PATCH");
     if (!patched.ok) throw patched.error;
 
-    expect(uploaded.value.status).toBe(409);
-    expect(conflictCode(uploaded.value, [file.id, record, blobId])).toBe("upload_attach_conflict");
+    expect(answer.status).toBe(409);
+    expect(conflictCode(answer, [file.id, record, blobId])).toBe("upload_attach_conflict");
     const after = await storedState(a);
-    // The upload committed nothing: no edge, no blob, and its streamed copy is gone; only the PATCH's write landed.
-    expect(after.edges).toEqual(before.edges);
-    expect(after.blobs).toEqual(before.blobs);
-    expect(after.bytes).toEqual(before.bytes);
+    expect({ ...after, files: [] }).toEqual({ ...before.state, files: [] });
     expect(await fileIds(a)).toEqual([control.id, file.id].sort());
     expect(await linked(a, file.id, "healthRecords")).toEqual([]);
     const patchedFile = await runInTenant(a.tenantId, () => chokePoint.getItem(a.filesId, file.id));
     expect(patchedFile?.properties).toMatchObject({ name: "Renamed while attaching", file: { blobId } });
-    // Exactly the control PATCH's effects, for this Files item: the upload added no job and no invalidation.
     const names = { [file.id]: "<file>", [blobId]: "<blob>" };
-    expect(jobDelta(jobsBefore, await queuedJobs(), names)).toEqual(controlJobs);
-    expect(invalidationShape(invalidations.slice(marked), names)).toEqual(controlInvalidations);
-    expect(controlInvalidations.length).toBeGreaterThan(0);
+    expect(jobDelta(before.jobs, await queuedJobs(), names)).toEqual(controlJobs);
+    expect(invalidationShape(invalidations.slice(before.invalidations), names)).toEqual(controlInvalidations);
   });
 
   it.each([
-    ["the target", true],
-    ["the deduplicated Files item", false],
+    { held: "the target", holdTarget: true, filed: true },
+    { held: "the deduplicated Files item", holdTarget: false, filed: true },
+    { held: "the target, for new bytes,", holdTarget: true, filed: false },
   ])(
-    "answers 409 upload_attach_conflict at once while another transaction holds %s, stores nothing, and a new request then succeeds",
-    async (_name, holdTarget) => {
+    "answers 409 upload_attach_conflict at once while another transaction holds $held stores nothing, and a new request then succeeds",
+    async ({ holdTarget, filed }) => {
       const record = await createItem(a, a.healthRecordsId, "Record");
-      const bytes = PDF(`held ${holdTarget ? "target" : "file"}`);
-      const filed = await upload(a, { body: bytes });
-      const file = itemBody.parse(JSON.parse(filed.text));
-      const before = await storedState(a);
-      const jobsBefore = await queuedJobs();
-      const marked = invalidations.length;
-
-      const holder = await holdItem(holdTarget ? record : file.id);
-      // Observed at once, before any await, so it is drained whatever happens while the row is held.
-      const request = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
-      const refused = await whileHeld(holder, request, refusal);
-
-      expect(refused.status).toBe(409);
-      expect(conflictCode(refused, [file.id, record])).toBe("upload_attach_conflict");
-      expect(await storedState(a)).toEqual(before);
-      expect(await queuedJobs()).toEqual(jobsBefore);
-      expect(invalidations.slice(marked)).toEqual([]);
-
-      // Not retried by the server: the caller's new, complete request is what succeeds.
-      const retried = await answerOf(
-        upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }),
-        "The new request after the holder ended",
+      const bytes = PDF(`held ${holdTarget ? "target" : "file"} ${String(filed)}`);
+      const file = filed ? await fileOf({ body: bytes }) : undefined;
+      const before = await mark();
+      const { value: refused } = await whileHeld(
+        "items",
+        holdTarget ? record : file!.id,
+        [attach(bytes, record)],
+        async ([request]) => {
+          const outcome = await within(request!, 5_000, "The upload refused while its row is held");
+          if (!outcome.ok) throw outcome.error;
+          return outcome.value;
+        },
       );
-      expect(retried.status, retried.text).toBe(200);
-      expect(itemBody.parse(JSON.parse(retried.text)).id).toBe(file.id);
-      expect(await linked(a, file.id, "healthRecords")).toEqual([record]);
+      expect(refused.status).toBe(409);
+      expect(conflictCode(refused, file ? [file.id, record] : [record])).toBe("upload_attach_conflict");
+      await expectUnchangedSince(before);
+
+      // Not retried by the server: the caller's new request is what succeeds.
+      const retried = await fileOf(attach(bytes, record), filed ? 200 : 201);
+      if (file) expect(retried.id).toBe(file.id);
+      expect(await linked(a, retried.id, "healthRecords")).toEqual([record]);
     },
   );
 
-  it("answers 409 upload_attach_conflict at once for new bytes to a held target, and the new request then answers 201", async () => {
-    const record = await createItem(a, a.healthRecordsId, "Record");
-    const before = await storedState(a);
-    const jobsBefore = await queuedJobs();
-    const holder = await holdItem(record);
-    // Observed at once, before any await, so it is drained whatever happens while the row is held.
-    const request = outcomeOf(
-      upload(a, { body: PDF("new to a held target"), targetItemId: record, relationKey: "healthRecords" }),
-    );
-    const refused = await whileHeld(holder, request, refusal);
-    expect(refused.status).toBe(409);
-    expect(conflictCode(refused, [record])).toBe("upload_attach_conflict");
-    // The new Files item and its blob rolled back, and its streamed bytes were deleted.
-    expect(await storedState(a)).toEqual(before);
-    expect(await queuedJobs()).toEqual(jobsBefore);
-
-    const retried = await answerOf(
-      upload(a, { body: PDF("new to a held target"), targetItemId: record, relationKey: "healthRecords" }),
-      "The new request after the holder ended",
-    );
-    expect(retried.status, retried.text).toBe(201);
-    expect(await linked(a, itemBody.parse(JSON.parse(retried.text)).id, "healthRecords")).toEqual([record]);
-  });
-
-  it("ends the holder and drains a request still waiting on the held row when the observation fails early, keeping that failure", async () => {
-    // A request that really waits: an upload of an existing file's bytes waits on that file's held blob row.
+  it("waits, rather than refusing, while another transaction holds the deduplicated blob, then links the file", async () => {
     const record = await createItem(a, a.healthRecordsId, "Record");
     const bytes = PDF("waits on a held blob");
-    const file = itemBody.parse(JSON.parse((await answerOf(upload(a, { body: bytes }), "The fixture upload")).text));
-    const holder = await holdRow("blobs", await onlyBlobId(a));
-    const request = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
-    let settledWhenHeld: boolean | undefined;
-    let settled = false;
-    // `request` never rejects (outcomeOf), so this observer cannot either; it is awaited below.
-    const marking = request.then(() => {
-      settled = true;
-    });
-    const early = new Error("The case's observation failed while the request was waiting");
-
-    const thrown = await whileHeld(holder, request, async () => {
-      // The request waits on the holder's row, correlated through pg_blocking_pids.
-      await pollFor(async () => ((await waitersOn(holder.pid)).size === 1 ? true : undefined), "The waiting upload");
-      settledWhenHeld = settled;
-      throw early;
-    }).then(
-      () => null,
-      (error: unknown) => error,
+    const file = await fileOf({ body: bytes });
+    const { answers } = await whileHeld("blobs", await onlyBlobId(a), [attach(bytes, record)], (_requests, pid) =>
+      pollFor(async () => ((await waitersOn(pid)).size === 1 ? true : undefined), "The waiting upload"),
     );
-    const settledWhenReturned = settled;
-    await marking;
-
-    // The case's own failure, as it was thrown, and nothing appended: the holder ended and the request drained.
-    expect(thrown).toBe(early);
-    expect(settledWhenHeld).toBe(false);
-    expect(settledWhenReturned).toBe(true);
-    expect((await waitersOn(holder.pid)).size).toBe(0);
-    const outcome = await request;
-    if (!outcome.ok) throw outcome.error;
-    // Released, the request completed as an ordinary deduplicated attach.
-    expect(outcome.value.status).toBe(200);
+    expect(answers.map((answer) => answer.status)).toEqual([200]);
     expect(await linked(a, file.id, "healthRecords")).toEqual([record]);
   });
 
   it.each([
-    ["a new edge", false],
-    ["an existing edge", true],
+    { change: "trashed", alreadyLinked: false },
+    { change: "trashed", alreadyLinked: true },
+    { change: "repointed from its blob to another by a PATCH", alreadyLinked: false },
+    { change: "repointed from its blob to another by a PATCH", alreadyLinked: true },
   ])(
-    "answers 409 upload_attach_conflict when the deduplicated Files item is trashed after the lookup, for %s, and stores nothing",
-    async (_name, alreadyLinked) => {
+    "answers 409 upload_attach_conflict when the deduplicated Files item is $change after the lookup, already linked: $alreadyLinked, and stores nothing",
+    async ({ change, alreadyLinked }) => {
       const record = await createItem(a, a.healthRecordsId, "Record");
-      const bytes = PDF(`trashed after lookup ${String(alreadyLinked)}`);
-      const filed = alreadyLinked
-        ? await upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" })
-        : await upload(a, { body: bytes });
-      expect(filed.status).toBe(201);
-      const file = itemBody.parse(JSON.parse(filed.text));
-
-      // The upload pauses at its Files item reservation: after the deduplicating lookup found the live item.
-      // Every stored byte file before the request starts, once all fixture uploads have finished.
-      const preRequestBytes = await storedBytes();
-      const gate = pauseAtReservationOf(file.id);
-      const uploading = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
-      let inFlightKey: string | undefined;
-      let primary: { error: unknown } | undefined;
-      let before: Awaited<ReturnType<typeof storedState>> | undefined;
-      let jobsBefore: unknown[] = [];
-      let marked = 0;
-      let uploaded: Outcome<Answer> | undefined;
-      let trashing: Promise<Outcome<unknown>> | undefined;
-      try {
-        await within(gate.reached, 10_000, "The upload's Files item reservation");
-        trashing = outcomeOf(runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.filesId, file.id)));
-        const trashed = await within(trashing, 10_000, "Trashing the Files item while the upload is paused");
-        if (!trashed.ok) throw trashed.error;
-        before = await storedState(a);
-        // The deliberate writer stored or removed no byte file; the one file beyond the pre-request bytes is the
-        // paused upload's own streamed copy.
-        inFlightKey = onlyInFlightCopy(preRequestBytes, before.bytes, bytes);
-        jobsBefore = await queuedJobs();
-        marked = invalidations.length;
-        gate.release();
-        uploaded = await within(uploading, 10_000, "The paused upload");
-      } catch (error) {
-        primary = { error };
-      }
-      gate.release();
-      const failures: unknown[] = [];
-      for (const [started, what] of [
-        [uploaded ? undefined : uploading, "The paused upload"],
-        [trashing, "Trashing the Files item"],
-      ] as const) {
-        if (!started) continue;
-        try {
-          await within(started, 10_000, what);
-        } catch (error) {
-          failures.push(error);
-        }
-      }
-      settle(primary, failures);
-      if (!uploaded || !before || inFlightKey === undefined) throw new Error("The paused upload did not settle");
-      if (!uploaded.ok) throw uploaded.error;
-
-      expect(uploaded.value.status).toBe(409);
-      expect(conflictCode(uploaded.value, [file.id, record])).toBe("upload_attach_conflict");
-      // The writer's rows with the pre-request bytes: the upload's streamed copy is gone, every other file intact.
-      const after = await storedState(a);
-      expect(after).toEqual({ ...before, bytes: preRequestBytes });
-      expect(Object.hasOwn(after.bytes, inFlightKey)).toBe(false);
-      expect(await queuedJobs()).toEqual(jobsBefore);
-      expect(invalidations.slice(marked)).toEqual([]);
-    },
-  );
-
-  it.each([
-    ["a new edge", false],
-    ["an existing edge", true],
-  ])(
-    "answers 409 upload_attach_conflict when a PATCH repoints the deduplicated Files item from its blob to another after the lookup, for %s, and stores nothing",
-    async (_name, alreadyLinked) => {
-      const record = await createItem(a, a.healthRecordsId, "Record");
-      const bytes = PDF(`repointed after lookup ${String(alreadyLinked)}`);
-      const filed = alreadyLinked
-        ? await upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" })
-        : await upload(a, { body: bytes });
-      expect(filed.status).toBe(201);
-      const file = itemBody.parse(JSON.parse(filed.text));
+      const bytes = PDF(`${change} after lookup ${String(alreadyLinked)}`);
+      const file = await fileOf(alreadyLinked ? attach(bytes, record) : { body: bytes });
       const uploadedBlobId = await onlyBlobId(a);
-      // Blob C: other bytes, stored through the standalone blob route, filed by no item.
-      const stored = await fetch(`${baseUrl}/api/blobs`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${a.token}`, "Content-Type": "application/pdf" },
-        body: PDF(`other bytes ${String(alreadyLinked)}`),
-      });
-      expect(stored.status).toBe(201);
-      const otherBlobId = z.object({ blobId: z.string() }).parse(await stored.json()).blobId;
-      expect(otherBlobId).not.toBe(uploadedBlobId);
-
-      // The upload pauses at its Files item reservation: after the deduplicating lookup found the item filing B.
-      // Every stored byte file before the request starts, once all fixture uploads have finished.
+      const repoint = change !== "trashed";
+      let otherBlobId: string | undefined;
+      if (repoint) {
+        const stored = await fetch(`${baseUrl}/api/blobs`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${a.token}`, "Content-Type": "application/pdf" },
+          body: PDF(`other bytes ${String(alreadyLinked)}`),
+        });
+        expect(stored.status).toBe(201);
+        otherBlobId = z.object({ blobId: z.string() }).parse(await stored.json()).blobId;
+        expect(otherBlobId).not.toBe(uploadedBlobId);
+      }
       const preRequestBytes = await storedBytes();
-      const gate = pauseAtReservationOf(file.id);
-      const uploading = outcomeOf(upload(a, { body: bytes, targetItemId: record, relationKey: "healthRecords" }));
-      let inFlightKey: string | undefined;
-      let primary: { error: unknown } | undefined;
-      let before: Awaited<ReturnType<typeof storedState>> | undefined;
-      let jobsBefore: QueuedJob[] = [];
-      let marked = 0;
-      let uploaded: Outcome<Answer> | undefined;
-      let patching: Promise<Outcome<unknown>> | undefined;
-      try {
-        await within(gate.reached, 10_000, "The upload's Files item reservation");
-        // The production PATCH owner repoints the item at C; it does not wait on the upload, which holds B.
-        patching = outcomeOf(
-          runInTenant(a.tenantId, () =>
-            chokePoint.updateItem({
-              databaseId: a.filesId,
-              itemId: file.id,
-              propertiesPatch: { file: { blobId: otherBlobId } },
-            }),
+      // Pauses at the Files item reservation, after the deduplicating lookup found the live item filing the bytes.
+      const { answer, value: before } = await withPausedUpload(file.id, attach(bytes, record), (_pid, track) =>
+        markAfter(
+          // The PATCH repoints the item at the other blob; it does not wait on the upload, which holds its own.
+          track(
+            runInTenant(a.tenantId, () =>
+              otherBlobId
+                ? chokePoint.updateItem({
+                    databaseId: a.filesId,
+                    itemId: file.id,
+                    propertiesPatch: { file: { blobId: otherBlobId } },
+                  })
+                : chokePoint.softDeleteItem(a.filesId, file.id),
+            ),
+            `The Files item ${change} while the upload is paused`,
           ),
-        );
-        const patched = await within(patching, 10_000, "Repointing the Files item while the upload is paused");
-        if (!patched.ok) throw patched.error;
-        before = await storedState(a);
-        // The deliberate writer stored or removed no byte file; the one file beyond the pre-request bytes is the
-        // paused upload's own streamed copy.
-        inFlightKey = onlyInFlightCopy(preRequestBytes, before.bytes, bytes);
-        jobsBefore = await queuedJobs();
-        marked = invalidations.length;
-        gate.release();
-        uploaded = await within(uploading, 10_000, "The paused upload");
-      } catch (error) {
-        primary = { error };
-      }
-      gate.release();
-      const failures: unknown[] = [];
-      for (const [started, what] of [
-        [uploaded ? undefined : uploading, "The paused upload"],
-        [patching, "Repointing the Files item"],
-      ] as const) {
-        if (!started) continue;
-        try {
-          await within(started, 10_000, what);
-        } catch (error) {
-          failures.push(error);
-        }
-      }
-      settle(primary, failures);
-      if (!uploaded || !before || inFlightKey === undefined) throw new Error("The paused upload did not settle");
-      if (!uploaded.ok) throw uploaded.error;
-
-      expect(uploaded.value.status).toBe(409);
-      expect(conflictCode(uploaded.value, [file.id, record, uploadedBlobId, otherBlobId])).toBe(
+          `The Files item ${change} while the upload is paused`,
+          preRequestBytes,
+          bytes,
+        ),
+      );
+      expect(answer.status).toBe(409);
+      expect(conflictCode(answer, [file.id, record, uploadedBlobId, ...(otherBlobId ? [otherBlobId] : [])])).toBe(
         "upload_attach_conflict",
       );
-      // Exactly the rows the PATCH left, with the pre-request bytes: the item still files C, no edge was added or
-      // changed, and the upload's streamed copy of B's bytes is gone again while B's own bytes stay.
-      const after = await storedState(a);
-      expect(after).toEqual({ ...before, bytes: preRequestBytes });
-      expect(Object.hasOwn(after.bytes, inFlightKey)).toBe(false);
-      expect(await queuedJobs()).toEqual(jobsBefore);
-      expect(invalidations.slice(marked)).toEqual([]);
-      const repointed = await runInTenant(a.tenantId, () => chokePoint.getItem(a.filesId, file.id));
-      expect(repointed?.properties).toMatchObject({ file: { blobId: otherBlobId } });
-      expect(await linked(a, file.id, "healthRecords")).toEqual(alreadyLinked ? [record] : []);
+      await expectUnchangedSince(before, preRequestBytes);
+      if (otherBlobId) {
+        const repointed = await runInTenant(a.tenantId, () => chokePoint.getItem(a.filesId, file.id));
+        expect(repointed?.properties).toMatchObject({ file: { blobId: otherBlobId } });
+        expect(await linked(a, file.id, "healthRecords")).toEqual(alreadyLinked ? [record] : []);
+      }
     },
   );
 
   it("answers the same 404 when the target is trashed after the pre-check and before its reservation, and stores nothing", async () => {
     const record = await createItem(a, a.healthRecordsId, "Record");
     const body = PDF("target trashed");
-    // Every stored byte file before the request starts.
     const preRequestBytes = await storedBytes();
-    const gate = pauseAtReservationOf(record);
-    const uploading = outcomeOf(upload(a, { body, targetItemId: record, relationKey: "healthRecords" }));
-    let inFlightKey: string | undefined;
-    let primary: { error: unknown } | undefined;
-    let before: Awaited<ReturnType<typeof storedState>> | undefined;
-    let jobsBefore: unknown[] = [];
-    let marked = 0;
-    let uploaded: Outcome<Answer> | undefined;
-    let trashing: Promise<Outcome<unknown>> | undefined;
-    try {
-      await within(gate.reached, 10_000, "The upload's target reservation");
-      trashing = outcomeOf(runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.healthRecordsId, record)));
-      const trashed = await within(trashing, 10_000, "Trashing the target while the upload is paused");
-      if (!trashed.ok) throw trashed.error;
-      before = await storedState(a);
-      // The trash stored or removed no byte file; the one file beyond the pre-request bytes is the paused upload's
-      // own streamed copy.
-      inFlightKey = onlyInFlightCopy(preRequestBytes, before.bytes, body);
-      jobsBefore = await queuedJobs();
-      marked = invalidations.length;
-      gate.release();
-      uploaded = await within(uploading, 10_000, "The paused upload");
-    } catch (error) {
-      primary = { error };
-    }
-    gate.release();
-    const failures: unknown[] = [];
-    for (const [started, what] of [
-      [uploaded ? undefined : uploading, "The paused upload"],
-      [trashing, "Trashing the target"],
-    ] as const) {
-      if (!started) continue;
-      try {
-        await within(started, 10_000, what);
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    settle(primary, failures);
-    if (!uploaded || !before || inFlightKey === undefined) throw new Error("The paused upload did not settle");
-    if (!uploaded.ok) throw uploaded.error;
-
-    expect(uploaded.value.status).toBe(404);
-    expect(conflictCode(uploaded.value, [record])).toBe("not_found");
-    const unknown = await upload(a, {
-      body: PDF("unknown target"),
-      targetItemId: randomUUID(),
-      relationKey: "healthRecords",
-    });
-    expect(uploaded.value).toEqual(unknown);
-    // The trash's rows with the pre-request bytes: the new file, its blob and its streamed bytes are gone.
-    const after = await storedState(a);
-    expect(after).toEqual({ ...before, bytes: preRequestBytes });
-    expect(Object.hasOwn(after.bytes, inFlightKey)).toBe(false);
-    expect(await queuedJobs()).toEqual(jobsBefore);
-    expect(invalidations.slice(marked)).toEqual([]);
+    const { answer, value: before } = await withPausedUpload(record, attach(body, record), (_pid, track) =>
+      markAfter(
+        track(
+          runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.healthRecordsId, record)),
+          "Trashing the target",
+        ),
+        "Trashing the target while the upload is paused",
+        preRequestBytes,
+        body,
+      ),
+    );
+    expect(answer.status).toBe(404);
+    expect(conflictCode(answer, [record])).toBe("not_found");
+    expect(answer).toEqual(await upload(a, attach(PDF("unknown target"), randomUUID())));
+    await expectUnchangedSince(before, preRequestBytes);
   });
 
   it("marks the upload rollback-only, so a caller that catches the attach conflict still commits nothing", async () => {
     const record = await createItem(a, a.healthRecordsId, "Record");
-    const gone = itemBody.parse(JSON.parse((await upload(a, { body: PDF("gone") })).text)).id;
+    const gone = (await fileOf({ body: PDF("gone") })).id;
     const goneBlobId = await onlyBlobId(a);
     await runInTenant(a.tenantId, () => chokePoint.softDeleteItem(a.filesId, gone));
-    const before = await storedState(a);
-    const jobsBefore = await queuedJobs();
-    const marked = invalidations.length;
+    const before = await mark();
     const caught: unknown[] = [];
 
     const failure = await runInTenant(a.tenantId, async () => {
@@ -1487,7 +1110,6 @@ describe("attach reservations never wait while the upload holds its blob (batch 
           storage: new LocalFsBlobStorageWriter(storageDir),
         },
         async (client) => {
-          // The trashed Files item as the attach source: the conflict is caught here and not rethrown.
           try {
             await attachUploadedFileWithClient(client, target, gone, goneBlobId);
           } catch (error) {
@@ -1502,10 +1124,7 @@ describe("attach reservations never wait while the upload holds its blob (batch 
 
     expect(caught).toHaveLength(1);
     expect(caught[0]).toMatchObject({ status: 409, code: "upload_attach_conflict" });
-    // The managed transaction rethrows that same error at its end instead of committing.
     expect(failure).toBe(caught[0]);
-    expect(await storedState(a)).toEqual(before);
-    expect(await queuedJobs()).toEqual(jobsBefore);
-    expect(invalidations.slice(marked)).toEqual([]);
+    await expectUnchangedSince(before);
   });
 });

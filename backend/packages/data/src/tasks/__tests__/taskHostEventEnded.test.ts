@@ -25,12 +25,10 @@ import {
 } from "../taskHostEventState.js";
 
 /**
- * Issue #1782: the job that recomputes a task's host state when the last Event it sits in ends. Every write goes
- * through the routes of issue #1764 or the choke point on a `semprec_data` pool, so row-level security applies. The
- * job runs through the production `createCoreTaskList` handler drained with `runOnce`. Only `Date` is faked, to
- * move the server clock; graphile-worker compares a job's `run_at` with the database clock, which is later than every
- * date used here, so a job is always due when it is drained and the tests decide by the fake clock what its
- * recomputation finds.
+ * The job recomputing host state when the last Event ends. Writes go through the routes or the choke point on a
+ * `semprec_data` pool, so RLS applies, and the job runs via the production handler drained with `runOnce`. Only
+ * `Date` is faked: graphile-worker compares `run_at` with the later database clock, so jobs are always due and
+ * the fake clock decides what the recomputation finds.
  */
 
 interface SeededTenant {
@@ -112,7 +110,6 @@ async function stored(databaseId: string, itemId: string, tenant: SeededTenant =
   return item;
 }
 
-/** `hiddenUntil` and `effectiveDate` of a task as stored, and the version of the row. */
 async function hostState(taskId: string, tenant: SeededTenant = home) {
   const item = await stored(tenant.tasksId, taskId, tenant);
   return {
@@ -126,7 +123,6 @@ function setClock(iso: string): void {
   vi.setSystemTime(new Date(iso));
 }
 
-/** The queued `taskHostEventEnded` jobs, read through graphile-worker's public `jobs` view. */
 async function pendingJobs(): Promise<PendingJob[]> {
   const { rows } = await admin.query<PendingJob>(
     `SELECT id::text, key, run_at, attempts, last_error
@@ -136,24 +132,19 @@ async function pendingJobs(): Promise<PendingJob[]> {
   return rows;
 }
 
-/** Completes every queued job without running it, through graphile-worker's public `complete_jobs`. */
 async function discardQueuedJobs(): Promise<void> {
   await admin.query(
     "SELECT graphile_worker.complete_jobs(ARRAY(SELECT id FROM graphile_worker.jobs WHERE locked_at IS NULL))",
   );
 }
 
-/** Drains the queue once with the production handler of `taskHostEventEnded`; nothing else runs. */
 async function runJobs(): Promise<void> {
   await runOnce({ pgPool: admin, taskList });
 }
 
 /**
- * Runs the job of `taskId` once, as the queue does: its pending row is consumed first and the production handler runs
- * in the task's tenant. A job that queues itself again is therefore seen as a new pending row. `runJobs` cannot stand
- * in for it here: graphile-worker compares `run_at` with the database clock, which is past every fake date, so a job
- * that queues itself again is due at once and a drain would run it again for as long as the fake clock stays before
- * the end.
+ * Consumes the pending row first, then runs the handler in the task's tenant, so a self-requeue shows as a new
+ * row. `runJobs` cannot do this: a requeued job is due at once against the database clock and would loop.
  */
 async function runRunningJob(taskId: string, tenant: SeededTenant = home): Promise<void> {
   await admin.query(
@@ -163,7 +154,6 @@ async function runRunningJob(taskId: string, tenant: SeededTenant = home): Promi
   await runInTenant(tenant.id, () => handleTaskHostEventEndedTask(pool, { taskId }));
 }
 
-/** Runs `work` and returns the realtime frames announced while it ran. */
 async function framesOf(work: () => Promise<unknown>): Promise<InvalidationEvent[]> {
   const frames: InvalidationEvent[] = [];
   setInvalidationHook((frame) => frames.push(frame));
@@ -371,7 +361,7 @@ describe("the job recomputes from the current edges and events and never clears 
 
   it("moves hiddenUntil to the new end and runs again when the event was extended by a write that queued nothing", async () => {
     const { taskId, eventId } = await hiddenTask();
-    // A writer outside the triggers (an older release): production code cannot move an Event end without them.
+    // A writer outside the triggers: production code cannot move an Event end without them.
     await runInTenant(home.id, () =>
       pool.query("UPDATE items SET properties = properties || $2::jsonb WHERE id = $1", [
         eventId,

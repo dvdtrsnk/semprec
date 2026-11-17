@@ -68,7 +68,6 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
     await rm(storageRoot, { recursive: true, force: true });
   });
 
-  /** Two mailboxes with their Inbox, Sent and Drafts folders, and an ingest through the sync writer. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -149,9 +148,9 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
   }
 
   /**
-   * The conversation "Re: Nabídka na web": the user's sent offer, an incoming reply that was also delivered to
-   * a second mailbox, the user's sent answer and a last incoming reply. Both of Petr's messages are incoming.
-   * A message named in `flagged` is synced with its provider flag set.
+   * The conversation "Re: Nabídka na web": the user's sent offer, an incoming reply also delivered to a
+   * second mailbox, the user's answer and a last incoming reply. A message named in `flagged` is synced with
+   * its provider flag set.
    */
   async function offerThread(flagged: readonly ("offer" | "reply1" | "reply1Copy" | "answer" | "reply3")[] = []) {
     const f = await setup();
@@ -204,7 +203,6 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
     return threadId;
   }
 
-  /** The `flagged` property of each item (`null` when the item has none) and the time of its last update. */
   async function stateOf(itemIds: string[]): Promise<Map<string, { flagged: boolean | null; updatedAt: string }>> {
     const { rows } = await runtime.query<{ id: string; flagged: boolean | null; updated_at: string }>(
       `SELECT id, (properties->'flagged')::boolean AS flagged, updated_at::text AS updated_at
@@ -219,7 +217,7 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
     return itemIds.map((id) => state.get(id)?.flagged ?? null);
   }
 
-  /** The `flagged` rows of the flag write-back table: one per message whose flag was written by a user or an agent. */
+  /** The `flagged` rows of the flag write-back table: one per message whose flag a user or agent wrote. */
   async function desiredFlagStates(): Promise<{ itemId: string; desired: boolean }[]> {
     const { rows } = await runtime.query<{ item_id: string; desired_state: boolean }>(
       `SELECT message_item_id AS item_id, desired_state FROM mail_message_flag_sync_state
@@ -228,7 +226,6 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
     return rows.map((row) => ({ itemId: row.item_id, desired: row.desired_state }));
   }
 
-  /** The thread ids of `box=flagged`, as the thread list answers them. */
   async function flaggedBox(): Promise<string[]> {
     const { body } = await runInTenant(tenant, () =>
       createMailThreadListRouteHandler(runtime)({ req: { url: "/api/mail/threads?box=flagged" } }),
@@ -236,7 +233,6 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
     return body.threads.map((thread) => thread.threadId);
   }
 
-  /** Calls the route handler as the session user, in the tenant of the session. */
   function post(threadId: string, body: unknown, inTenant = tenant) {
     return runInTenant(inTenant, () =>
       createMailThreadFlagRouteHandler(runtime)({
@@ -247,7 +243,7 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
     );
   }
 
-  /** From here on the fixture is built, so only the announcements of the call under test are recorded. */
+  /** The fixture is built, so only announcements of the call under test are recorded from here on. */
   function recordThreadAnnouncements(): void {
     events = [];
     setInvalidationHook((event) => {
@@ -434,9 +430,8 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
       const highestHeld = new Promise<void>((resolve) => {
         passHoldsHighest = resolve;
       });
-      // A reconcile pass: the guard first, then the copy with the highest id, and the one with the lowest id only
-      // once the route is waiting. Without the guard in the route, the route holds the lowest copy by then and the
-      // two wait for each other (40P01).
+      // A reconcile pass takes the guard, then the highest-id copy, and the lowest only once the route waits.
+      // Without the guard in the route, the two would deadlock (40P01).
       const pass = withTransaction(runtime, async (client) => {
         await lockMailThreadMutation(client);
         await applyObservedMailMessageFlags(client, flagged(highest));
@@ -514,7 +509,7 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
       const desiredBefore = await desiredFlagStates();
       recordThreadAnnouncements();
 
-      // A trigger is the only way to fail the second write of the call; no production code exposes that seam.
+      // A trigger is the only way to fail the second write of the call.
       await admin.query(`CREATE FUNCTION test_mail_thread_flag_fail() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
           IF NEW.desired_state = false AND NEW.message_item_id::text = (SELECT max(message_item_id::text) FROM mail_message_flag_sync_state WHERE desired_state) THEN

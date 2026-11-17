@@ -53,72 +53,44 @@ import { INBOX_ITEMS_ROUTES } from "./routeMatrix/inboxItems.js";
 import { MCP_SERVERS_ROUTES } from "./routeMatrix/mcpServers.js";
 
 /**
- * The single documented artifact issue #143 asks for: every route delivered through auth-v1,
- * HTTP or client-side view, and whether it is reachable without a session.
- * `__tests__/routeMatrix.test.ts` drives every `surface: "api"` entry end to end against the
- * real dispatcher (`app.ts`'s `createDispatcher`) — an entry with `public: false` that a handler
- * doesn't actually gate behind `authenticateRequest` fails that test with a non-401 response.
- * A mounted route without an entry fails `__tests__/routeMatrixCoverage.unit.test.ts`, which
- * compares every module custom route and every resource route of `app.ts`'s
- * `createResourceRouteDefinitions` with the `surface: "api"` entries here, so adding a route always
- * means adding (and justifying) an entry. The paths `createDispatcher` routes by prefix in its
- * listener chain (`/mcp`, `/api/auth/`, `/api/files` and the rest) are not definitions and are
- * still covered only by their own entries. `surface: "view"` entries have no backend of their own
- * to fetch-test — this service doesn't serve the SPA — so they're listed for the record only;
- * the "documents a reason for every public entry" test still covers them.
+ * Every route (HTTP, WS or client-side view) and whether it is reachable without a session.
+ * `__tests__/routeMatrix.test.ts` drives every `surface: "api"` entry against the real dispatcher,
+ * so a `public: false` entry whose handler does not authenticate fails with a non-401.
+ * `__tests__/routeMatrixCoverage.unit.test.ts` compares every custom and resource route definition
+ * with these entries, so adding a route means adding (and justifying) an entry; prefix-routed paths
+ * (`/mcp`, `/api/auth/`, `/api/files`, ...) are covered only by their own entries.
  *
- * The entries live in the slice modules under `routeMatrix/`, which `ROUTE_MATRIX` below
- * concatenates: a new entry goes at the end of the slice of its path family, or in a new slice
- * appended to the concatenation when no slice fits.
+ * `"view"` and `"ws"` entries are listed for the record and not fetch-tested: this service does not
+ * serve the SPA, and a plain fetch without `Upgrade` never reaches `syncHandler.ts`'s
+ * authentication (its handshake refusal is tested in `syncHandler`'s own tests).
  *
- * `surface: "ws"` (issue #160's `WS /api/sync`) is listed for the same documentation purpose as
- * `"view"`, but isn't fetch-tested here either — a plain HTTP fetch with no `Upgrade` header never
- * reaches `syncHandler.ts`'s authentication at all, it just falls through this dispatcher's normal
- * 404. Its "invalid credential never completes the handshake" behavior is covered instead by a
- * real WS-upgrade test in `syncHandler`'s own test file.
+ * Entries live in the slice modules under `routeMatrix/`: a new one goes at the end of its path
+ * family's slice, or in a new slice appended to `ROUTE_MATRIX`.
  *
- * Non-HTTP surfaces inventoried for issue #143 and found not to apply, so they have no entries
- * below:
- * - Module routes: `ModuleRegistry` (`backend/packages/module-registry`) is in-process only —
- *   `loadModule()` does a plain dynamic `import()` of caller-supplied file paths, and every
- *   other method returns typed data to other backend code. It never opens a socket.
- * - Other view paths: the web client (`web/`) has no router and no login page yet — every page
- *   is a query-param-selected React component with no per-view auth guard. The only view path
- *   auth-v1 actually delivered is the setup wizard in `routeMatrix/auth.ts` (issue #234). Gating the client's other
- *   views is a follow-up for whichever issue adds a login page; this service's routes are what
- *   auth-v1 #143 can enforce today, and every read/write those views depend on is in the table.
- * - Health-style probes: `GET /healthz` (issue #168) is the one probe this service serves; see
- *   its entry in `routeMatrix/healthz.ts`.
+ * `ModuleRegistry` is in-process only and opens no socket, so it has no entries.
  */
 export interface RouteMatrixEntry {
-  /** For docs/failure messages only — matching is driven by `method` + `path` below. */
+  /** For docs/failure messages only; matching uses `method` + `path`. */
   name: string;
   method: string;
-  /** A concrete, requestable path — any `:id`-style segment is filled with a syntactically valid but nonexistent id. */
+  /** Any `:id`-style segment is filled with a valid but nonexistent id. */
   path: string;
-  /**
-   * `"api"` entries are fetch-tested against this service's real dispatcher. `"view"` entries
-   * are client-side-only paths this backend doesn't serve, kept here for the documented
-   * exceptions list but not fetch-tested — there's no server for `routeMatrix.test.ts` to hit.
-   * `"ws"` is the one WS-upgrade route (issue #160); see this file's top comment for why it isn't
-   * fetch-tested here either.
-   */
+  /** Only `"api"` entries are fetch-tested; see the interface comment for `"view"` and `"ws"`. */
   surface: "api" | "view" | "ws";
-  /** `false` (the default expectation) means an unauthenticated request must get a 401. */
+  /** `false` means an unauthenticated request must get a 401. */
   public: boolean;
-  /** Required when `public` is true — why this route is one of the documented exceptions. */
+  /** Required when `public` is true. */
   publicReason?: string;
-  /** `true` for a route only an `admin` may call: a member gets 403 `admin_required`. */
+  /** A member gets 403 `admin_required`. */
   admin?: boolean;
   /**
-   * Whose data the route reaches (issue #1053); `__tests__/tenantIsolationRoutes.test.ts` runs
-   * each `surface: "api"` entry through its class's two-tenant case:
-   * - `anonymous` — reachable without a session (`public: true`).
-   * - `admin` — an entry with `admin: true` (#1037).
-   * - `account` — reads or writes only the caller's own rows in global identity tables (logout,
-   *   current session, revoke session, register/revoke push subscription).
-   * - `tenant` — everything else, including `/mcp`, `/api/sync` and the account export/deletion
-   *   routes.
+   * Whose data the route reaches; `__tests__/tenantIsolationRoutes.test.ts` runs each `"api"` entry
+   * through its class's two-tenant case:
+   * - `anonymous`: reachable without a session (`public: true`).
+   * - `admin`: an entry with `admin: true`.
+   * - `account`: only the caller's own rows in global identity tables (logout, current session,
+   * revoke session, push subscriptions).
+   * - `tenant`: everything else, including `/mcp`, `/api/sync` and account export/deletion.
    */
   tenancy: RouteTenancy;
 }

@@ -75,13 +75,10 @@ const ITEM_THREAD_OPERATIONS = [
 const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
 const SEMP_MESSAGE_ID_HEADER = "x-semprec-semp-message-id";
 
-/**
- * Accepts any JSON object as tool arguments: an MCP tool's synchronized schema is validated by
- * `resolveMcpInvocation` against the registration itself, on every call.
- */
+/** `resolveMcpInvocation` validates against the registration's schema on every call. */
 const MCP_TOOL_PARAMETERS = Type.Object({}, { additionalProperties: true });
 
-/** Same, for an approval-gated MCP tool: the free-form arguments plus the reserved optional reason (issue #1420). */
+/** Plus the optional `reason` for an approval-gated tool. */
 const APPROVAL_GATED_MCP_TOOL_PARAMETERS = Type.Object(
   { semprecReason: Type.Optional(Type.String({ maxLength: APPROVAL_REQUEST_REASON_MAX_LENGTH })) },
   { additionalProperties: true },
@@ -90,10 +87,6 @@ const APPROVAL_GATED_MCP_TOOL_PARAMETERS = Type.Object(
 /** The optional argument an approval-gated generic operation's tool schema adds; it never reaches the operation input. */
 const GENERIC_OPERATION_REASON_KEY = "reason";
 
-/**
- * The tool schema for one generic operation: the operation's own strict input schema, plus the
- * optional agent-only `reason` when the operation is approval-gated (issue #1420).
- */
 function genericOperationToolSchema(operation: GenericOperationName): Record<string, unknown> {
   const schema =
     operation === "database.query" || operation === "view.query"
@@ -127,19 +120,12 @@ function splitGenericOperationReason(operation: GenericOperationName, params: un
   return { ok: true, args, reason: raw };
 }
 
-/**
- * Model providers accept only `[A-Za-z0-9_-]{1,64}` as a tool name, so a generic operation's dotted
- * name (`item.create`) and an MCP server's free-form tool name are both mapped onto that alphabet.
- */
+/** Providers accept only `[A-Za-z0-9_-]{1,64}` as a tool name. */
 function toModelToolName(name: string): string {
   return name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
 }
 
-/**
- * Model-facing name of an MCP tool: `mcp_<tool>_<first 8 hex of the server item id>`. The immutable
- * server id (not its renameable name) keeps the name stable and separates servers that expose the
- * same tool name; the tool part is sanitized and cut so the whole name stays within 64 characters.
- */
+/** `mcp_<tool>_<first 8 hex of the server id>`: the immutable id keeps it stable across renames. */
 export function mcpModelToolName(toolName: string, mcpServerItemId: string): string {
   const suffix = mcpServerItemId
     .replace(/-/g, "")
@@ -182,7 +168,7 @@ async function createModuleTools(
             return { content: [{ type: "text", text: "Invalid tool arguments." }], details: { error: true } };
           try {
             if (definition.requiresApproval) {
-              // Nothing runs here: the handler runs only after a person approves the request (issue #1791).
+              // The handler runs only after a person approves the request.
               if (!isArgumentsObject(params))
                 return {
                   content: [{ type: "text", text: "Tool arguments must be a JSON object." }],
@@ -334,12 +320,7 @@ export function withUniqueNames<T extends AgentTool>(tools: T[]): T[] {
   });
 }
 
-/**
- * Composes one run's `CreateAgentSession` (issue #647): the generic-operation tools the run's
- * project is granted, plus — for a run with a project — one tool per granted MCP registration
- * (each approval-gated), the project's own guidance appended to the base system prompt, and a
- * `streamFn` that tags every gateway request with this run's id.
- */
+/** Granted generic-operation tools, approval-gated MCP tools, project guidance, and a run-tagged `streamFn`. */
 export async function createAgentSessionFactoryForRun(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
@@ -358,7 +339,7 @@ export async function createAgentSessionFactoryForRun(
         if (!thread) throw new Error("Semp thread not found for run");
         const schema = await generateSchemaProjection(client, moduleRegistry, {
           locale: toManifestLocale(locale ?? "en"),
-          // The prompt lists only the databases the run's project may read (issue #1810).
+          // Only the databases the run's project may read.
           ...(run.projectItemId ? { agentProjectItemId: run.projectItemId } : {}),
         });
         const turn =

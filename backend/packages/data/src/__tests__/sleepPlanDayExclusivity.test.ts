@@ -21,7 +21,6 @@ interface PlanTenant {
 interface StoredPlan {
   id: string;
   wakeDays: unknown;
-  /** The seconds since the epoch of the row's `updated_at`. */
   updatedAt: number;
 }
 
@@ -53,7 +52,7 @@ function deferred(): Deferred {
   return { promise, resolve };
 }
 
-/** A new tenant seeded as production seeds one: a weekday plan (mon to fri) and a weekend plan (sat, sun). */
+/** Seeded as production does: a weekday plan (mon-fri) and a weekend plan (sat, sun). */
 async function seededTenant(): Promise<PlanTenant> {
   const tenantId = await createTestTenant(adminPool);
   await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
@@ -84,12 +83,10 @@ function chokePoint(t: PlanTenant) {
   };
 }
 
-/** A plan with the two required times; `position` is left to the caller's `extra`. */
 function planProperties(name: string, wakeDays: string[], extra: Record<string, unknown> = {}) {
   return { name, wakeDays, bedTime: "23:00", wakeTime: "07:00", alarm: true, ...extra };
 }
 
-/** Every plan of the database, trashed ones included, by id. */
 async function storedPlans(t: PlanTenant): Promise<StoredPlan[]> {
   return inTenant(t.tenantId, async (client) => {
     const { rows } = await client.query<PlanRow>(
@@ -107,7 +104,6 @@ async function plan(t: PlanTenant, planId: string): Promise<StoredPlan> {
   return found;
 }
 
-/** The seeded plan that holds the day. */
 async function seededPlanHolding(t: PlanTenant, day: string): Promise<StoredPlan> {
   const found = (await storedPlans(t)).find(
     (candidate) => Array.isArray(candidate.wakeDays) && candidate.wakeDays.includes(day),
@@ -116,7 +112,6 @@ async function seededPlanHolding(t: PlanTenant, day: string): Promise<StoredPlan
   return found;
 }
 
-/** The ids of the live plans that hold the day. */
 async function plansHolding(t: PlanTenant, day: string): Promise<string[]> {
   return inTenant(t.tenantId, async (client) => {
     const { rows } = await client.query<{ id: string }>(
@@ -127,10 +122,7 @@ async function plansHolding(t: PlanTenant, day: string): Promise<string[]> {
   });
 }
 
-/**
- * Writes the plan through the choke point's update inside a transaction that stays open until `release` is called:
- * `written` resolves once the write and its hooks ran, `done` settles when the transaction has ended.
- */
+/** The update runs in a transaction held open until `release`: `written` after the write and hooks, `done` at the end. */
 function holdPlanWriteOpen(t: PlanTenant, planId: string, wakeDays: string[]) {
   const written = deferred();
   const released = deferred();
@@ -146,10 +138,7 @@ function holdPlanWriteOpen(t: PlanTenant, planId: string, wakeDays: string[]) {
   return { written: written.promise, release: released.resolve, done };
 }
 
-/**
- * Waits until a transaction waits for a row lock. `pg_locks` is the server's own view of that wait, so no timing
- * guess stands in for it.
- */
+/** Waits on `pg_locks`, not a timing guess. */
 async function waitForRowLockWaiter(): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -162,10 +151,7 @@ async function waitForRowLockWaiter(): Promise<void> {
   throw new Error("No transaction waited for a row lock");
 }
 
-/**
- * Waits until a backend waits for a lock and returns the statements of all backends that wait. `pg_stat_activity`
- * is the server's own view of that wait, so no timing guess stands in for it.
- */
+/** Waits on `pg_stat_activity`, not a timing guess, and returns the waiting statements. */
 async function waitingStatements(): Promise<string[]> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -243,7 +229,6 @@ describe("a wake day is in at most one sleep plan (issue gh-1799)", () => {
           [weekday.id],
         );
         expect(rows).toEqual([{ wake_days: ["mon", "tue", "wed", "thu"] }]);
-        // Another connection does not see the removal before the commit.
         expect(
           (
             await adminPool.query<{ wake_days: unknown }>(
@@ -348,8 +333,7 @@ describe("a wake day is in at most one sleep plan (issue gh-1799)", () => {
     const weekend = await seededPlanHolding(tenant, "sat");
     const taker = await chokePoint(tenant).create(planProperties("Taker", []));
     const loser = await chokePoint(tenant).create(planProperties("Loser", []));
-    // A restore from the trash can leave one day in two plans, which no write produces (the issue's decision): the
-    // loser holds mon and sat, and sat is also held by the weekend plan.
+    // Only a restore from the trash leaves one day in two plans.
     await inTenant(tenant.tenantId, (client) =>
       client.query("UPDATE items SET properties = jsonb_set(properties, '{wakeDays}', $2::jsonb) WHERE id = $1", [
         loser.id,
@@ -399,8 +383,7 @@ describe("a wake day is in at most one sleep plan: concurrent writes (issue gh-1
       await firstWrite.done;
       await secondWrite;
 
-      // The first write committed sat into its plan after the second one's statement began, so the second one had
-      // to look again to take it from there.
+      // The first write committed sat after the second one's statement began, so the second had to look again.
       expect(await plansHolding(tenant, "sat")).toEqual([second.id]);
       expect((await plan(tenant, first.id)).wakeDays).toEqual([]);
       expect((await plan(tenant, weekend.id)).wakeDays).toEqual(["sun"]);
@@ -416,8 +399,7 @@ describe("a wake day is in at most one sleep plan: concurrent writes (issue gh-1
     const right = await chokePoint(tenant).create(planProperties("Right", ["tue"]));
     const leftLocked = deferred();
     const rightLocked = deferred();
-    // Each move first holds its own plan's row lock (the update takes it too) and writes only when the other one
-    // holds its own, so the two statements that lock the other's plan wait for each other.
+    // Each move holds its own plan's row lock and writes only when the other holds its own, so they wait for each other.
     const move = (ownId: string, own: Deferred, otherSide: Deferred, wakeDays: string[]) =>
       inTenant(tenant.tenantId, async (client) => {
         await client.query<{ id: string }>("SELECT id FROM items WHERE id = $1 FOR UPDATE", [ownId]);
@@ -448,7 +430,6 @@ describe("a wake day is in at most one sleep plan: concurrent writes (issue gh-1
     expect((await plan(tenant, loserId)).wakeDays).toEqual([]);
     expect((await plan(tenant, weekday.id)).wakeDays).toEqual(["wed", "thu", "fri"]);
 
-    // The same request, repeated, now succeeds and takes both days back.
     await chokePoint(tenant).patch(loserId, { wakeDays: ["mon", "tue"] });
 
     expect((await plan(tenant, loserId)).wakeDays).toEqual(["mon", "tue"]);
@@ -467,8 +448,7 @@ describe("a wake day is in at most one sleep plan: concurrent writes (issue gh-1
     try {
       await firstMove.written;
 
-      // The two moves touch different plans, so the second one waits for no plan row and for no day. The one lock
-      // it waits for is the tenant's single `sleep.resync` job (issue gh-1838), which the open transaction enqueued.
+      // The moves touch different plans; the only lock the second waits for is the tenant's single `sleep.resync` job.
       secondMove = chokePoint(tenant).patch(fromWeekend.id, { wakeDays: ["sat"] });
       expect(await waitingStatements()).toEqual([expect.stringContaining("graphile_worker.add_job")]);
       firstMove.release();

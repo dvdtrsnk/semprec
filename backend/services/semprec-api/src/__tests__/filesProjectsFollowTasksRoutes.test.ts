@@ -22,9 +22,7 @@ import {
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 
-// The HTTP surface of the attachment-project rule `fileProjectsFromTasks` (issue gh-1702): the `links` of a file, a
-// user's write of `Files.projects`, `link.unlink`, `link.relink` and the answer for a file that has no link. The
-// behaviour of the rule itself is proved through the choke point in
+// The HTTP surface of the `fileProjectsFromTasks` rule; the rule itself is proved through the choke point in
 // `packages/data/src/tasks/__tests__/attachmentProjectInheritance.test.ts`.
 
 const PASSWORD = "s3cret-password";
@@ -63,7 +61,6 @@ async function seedWorld(): Promise<World> {
   });
 }
 
-/** One authenticated request; `body` is sent as JSON. */
 async function request(
   method: string,
   path: string,
@@ -81,13 +78,12 @@ async function createItem(databaseId: string, name: string): Promise<string> {
   return (await inTenant(() => cp.createItem({ databaseId, properties: { name } }))).id;
 }
 
-/** Sets the task's single project over HTTP (`relation.set`), or clears it for `null`. */
 async function setTaskProject(taskId: string, projectId: string | null): Promise<void> {
   const response = await request("PUT", `/api/items/${taskId}/relations/project`, { targetItemId: projectId });
   expect(response.status).toBe(200);
 }
 
-/** Attaches a file to a task over HTTP, as the attach of an upload does: an edge of `Tasks.files`. */
+/** As an upload's attach does: an edge of `Tasks.files`. */
 async function attach(taskId: string, fileId: string): Promise<void> {
   expect((await request("PUT", `/api/items/${taskId}/relations/files/${fileId}`)).status).toBe(200);
 }
@@ -104,7 +100,6 @@ async function linksOf(fileId: string): Promise<Record<string, unknown>> {
   return response.body.links as Record<string, unknown>;
 }
 
-/** Runs the queued value-link propagation jobs until none is left. */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
   const handler = createCoreTaskList(runtime, createActionRegistry())[taskName];
@@ -180,7 +175,7 @@ describe("a file's project follows its task over HTTP (issue gh-1702)", () => {
       },
     });
 
-    // A user's write of `Files.projects` ends the following, and the task's next change leaves the file alone.
+    // A user's write of `Files.projects` ends the following, so the task's next change leaves the file alone.
     expect((await request("PUT", `/api/items/${file}/relations/projects/${world.beta}`)).status).toBe(200);
     expect(await linksOf(file)).toMatchObject({ projects: { valueKind: "inheritedBroken", brokenBy: "user" } });
     await setTaskProject(task, world.gamma);

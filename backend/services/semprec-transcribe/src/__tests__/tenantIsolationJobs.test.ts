@@ -66,13 +66,7 @@ import type {
 } from "../audioGatewayClient.js";
 import { FIXTURE_CREATION_TIME, generateImageFixture, generateMp4Fixture } from "./fixtures/mediaFixtures.js";
 
-/**
- * Two-tenant proof that every task of the `transcribe` affinity set keeps its data, notifications
- * and side effects inside the tenant it runs for (issue #1056). The task list is composed as
- * `createTranscribeQueueRuntime` composes it, over a `semprec_data` pool, with fake audio and
- * summary gateways like the other transcribe tests; jobs are enqueued with `enqueueJob` and drained
- * with `runOnce`, under strict tenant-scope enforcement.
- */
+/** Every `transcribe` task keeps its effects inside its tenant, under strict tenant-scope enforcement. */
 
 interface Tenant {
   tenantId: string;
@@ -91,7 +85,6 @@ interface TenantTaskCase {
 
 type TaskCase = TenantTaskCase;
 
-/** One table's share of a tenant fingerprint. */
 interface TableFingerprint {
   count: number;
   md5: string;
@@ -142,7 +135,7 @@ async function loadTenantTables(): Promise<string[]> {
   return rows.map((row) => row.relname);
 }
 
-/** `tenant`'s fingerprint: per tenant table, read inside `runInTenant(tenant)`, its row count and an md5 over its ordered row texts. */
+/** Per tenant table: row count and an md5 over the ordered row texts. */
 async function fingerprint(tenant: Tenant): Promise<Fingerprint> {
   return runInTenant(tenant.tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -163,7 +156,6 @@ async function fingerprint(tenant: Tenant): Promise<Fingerprint> {
   );
 }
 
-/** Ids of every notification visible inside `tenant`, with the user each is addressed to. */
 async function notifications(tenant: Tenant): Promise<Map<string, string>> {
   return runInTenant(tenant.tenantId, async () => {
     const { rows } = await pool.query<{ id: string; user_id: string }>("SELECT id, user_id FROM notifications");
@@ -178,7 +170,6 @@ async function expectNewNotificationsAddressedTo(tenant: Tenant, before: Map<str
   expect(added.filter((userId) => userId !== tenant.userId)).toEqual([]);
 }
 
-/** The job's final state, read through graphile-worker's public `jobs` view. */
 async function jobOutcome(jobKey: string): Promise<JobOutcome> {
   const { rows } = await adminPool.query<{ attempts: number; last_error: string | null }>(
     "SELECT attempts, last_error FROM graphile_worker.jobs WHERE key = $1",
@@ -194,10 +185,7 @@ async function removeJob(jobKey: string): Promise<void> {
   await adminPool.query("SELECT graphile_worker.remove_job($1)", [jobKey]);
 }
 
-/**
- * What a run may change: the tenant's fingerprint and notifications, and the queued jobs of the whole
- * queue — the `jobs` view carries no tenant, so a job any run enqueued anywhere counts.
- */
+/** The `jobs` view carries no tenant, so queued jobs are compared across the whole queue. */
 interface SideEffectSnapshot {
   fingerprint: Fingerprint;
   notificationIds: ReadonlySet<string>;
@@ -206,11 +194,9 @@ interface SideEffectSnapshot {
 
 /** What one run changed, stated without ids so two runs naming different ids compare equal. */
 interface SideEffects {
-  /** Tables whose row count changed, with the change. */
   rowCountDeltas: Record<string, number>;
   /** Tables whose content changed, including rows updated in place, sorted. */
   changedTables: string[];
-  /** Kinds of the notifications the run wrote, sorted. */
   notificationKinds: string[];
   /** Task identifiers of the jobs the run left queued anywhere in the queue (its own job excluded), sorted. */
   queuedJobs: string[];
@@ -250,7 +236,6 @@ async function sideEffectsSince(tenant: Tenant, before: SideEffectSnapshot, ownJ
   return { rowCountDeltas, changedTables, notificationKinds, queuedJobs };
 }
 
-/** Runs `name` in B with `payload` and returns how the job ended and what it changed in B and the queue. */
 async function runInBObserved(name: string, payload: Payload): Promise<{ outcome: JobOutcome; effects: SideEffects }> {
   const before = await sideEffectSnapshot(tenantB);
   const jobKey = await runJobIn(tenantB, name, payload);
@@ -260,7 +245,6 @@ async function runInBObserved(name: string, payload: Payload): Promise<{ outcome
   return { outcome, effects };
 }
 
-/** Enqueues `name` inside `tenant` under a fresh job key, drains the queue once and returns the key. */
 async function runJobIn(tenant: Tenant, name: string, payload: Payload): Promise<string> {
   const jobKey = randomUUID();
   await runInTenant(tenant.tenantId, () => enqueueJob(pool, name, payload, { jobKey }));
@@ -346,11 +330,7 @@ function requirePayloadString(payload: Payload, field: string): string {
   return value;
 }
 
-/**
- * A transcript of `tenant` that two Events overlap, with its Event card (a new-meeting proposal), and the user's
- * instruction recorded in the card's history the way a revise records it, without the job that revise enqueues
- * (it would run in this case's drain, under the tenant it was written in).
- */
+/** The revise instruction is recorded without its job, which would otherwise run in this case's drain. */
 async function seedTranscriptCardInstruction(tenant: Tenant): Promise<Payload> {
   return runInTenant(tenant.tenantId, async () => {
     const database = async (moduleId: string) => {
@@ -468,10 +448,7 @@ async function seedInboxPhotoAttachment(tenant: Tenant): Promise<Payload> {
   });
 }
 
-/**
- * An Inbox item of `tenant` with one 40-second voice note attached, its metadata recorded as the metadata job leaves it,
- * so the transcription job has a voice note to read. The bytes are placeholders: the fake gateway ignores them.
- */
+/** The bytes are placeholders: the fake gateway ignores them. */
 async function seedInboxVoiceNote(tenant: Tenant): Promise<Payload> {
   const bytes = Buffer.from("voice note bytes");
   return runInTenant(tenant.tenantId, async () => {

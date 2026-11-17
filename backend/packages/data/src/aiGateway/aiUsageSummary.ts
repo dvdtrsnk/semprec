@@ -3,40 +3,27 @@ import { getSystemTimezone } from "../systemSettings.js";
 import { getGatewaySpend, type GatewaySpend } from "./aiGatewayCallsStore.js";
 import { getCurrentTenantAiBudget, type TenantAiBudget } from "./tenantAiBudgetsStore.js";
 
-/** A window whose own per-tenant cap spend has reached. `monthly` wins when both are, because it blocks for longer. */
+/** `monthly` wins when both caps are reached, because it blocks for longer. */
 export type AiUsageExhaustedWindow = "daily" | "monthly";
 
 /**
- * The caller's tenant's spend against its own caps (issue gh-1456). The spend is the figure
- * `getGatewaySpend` returns, the one the gateway refuses with; the caps are the tenant's
- * `tenant_ai_budgets` row. Operator-wide safety caps are never reported here.
+ * The tenant's spend (as `getGatewaySpend` computes it for refusals) against its own caps.
+ * Operator-wide safety caps are never reported here.
  */
 export interface AiUsageSummary {
-  /** `false` when the tenant has no budget row: the gateway refuses every call then, and both caps are null. */
+  /** `false` when the tenant has no budget row: the gateway then refuses every call. */
   hasBudget: boolean;
   spentTodayUsd: number;
   spentMonthUsd: number;
-  /** `null` when the daily window has no per-tenant cap. Never 0 for "no cap". */
+  /** `null` means no cap, never 0. */
   dailyCapUsd: number | null;
-  /** `null` when the monthly window has no per-tenant cap. Never 0 for "no cap". */
   monthlyCapUsd: number | null;
-  /** The window whose cap is reached (`spent >= cap`, the gateway's comparison), or null. */
   exhausted: AiUsageExhaustedWindow | null;
-  /**
-   * ISO 8601 instant at which the exhausted window resets: the next local midnight for `daily`, the
-   * first instant of the next month for `monthly`, both in the tenant's timezone. Null unless
-   * `exhausted` is set.
-   */
+  /** Next local day/month boundary in the tenant's timezone; null unless `exhausted` is set. */
   resetsAt: string | null;
 }
 
-/**
- * The summary the usage screen and the account profile show. The budget row is selected by the
- * ambient tenant (`app_tenant_default()`), and the spend is read with `getGatewaySpend` under
- * row-level security, so another tenant's spend never appears. The spend uses the gateway's windows:
- * a reservation counts at its estimate, and a day or month starts at local midnight of the tenant's
- * timezone.
- */
+/** Budget row and spend are both read under the ambient tenant and RLS. */
 export async function getAiUsageSummary(client: Queryable): Promise<AiUsageSummary> {
   const budget = await getCurrentTenantAiBudget(client);
   const timezone = await getSystemTimezone(client);
@@ -53,11 +40,7 @@ export async function getAiUsageSummary(client: Queryable): Promise<AiUsageSumma
   };
 }
 
-/**
- * The gateway's comparison, `spent >= cap`, per window. A null cap is no cap, so it never counts as
- * reached, whatever the spend. No budget row means no window is reported as exhausted: the caps are
- * absent, not reached.
- */
+/** The gateway's `spent >= cap` comparison; a null cap or missing budget row is never exhausted. */
 export function findExhaustedWindow(budget: TenantAiBudget | null, spend: GatewaySpend): AiUsageExhaustedWindow | null {
   if (budget === null) return null;
   if (budget.monthlyCapUsd !== null && spend.spentMonth >= budget.monthlyCapUsd) return "monthly";
@@ -65,12 +48,7 @@ export function findExhaustedWindow(budget: TenantAiBudget | null, spend: Gatewa
   return null;
 }
 
-/**
- * The instant the window resets, truncated the same way `getGatewaySpend` truncates the window
- * itself: `now() AT TIME ZONE timezone` puts "now" on the tenant's wall clock, `date_trunc` and
- * `+ interval` move it to the next day or month boundary there, and the second `AT TIME ZONE`
- * converts that local wall-clock midnight back into an instant.
- */
+/** Truncates on the tenant's wall clock exactly as `getGatewaySpend` does, then converts back to an instant. */
 export async function getAiWindowResetInstant(
   client: Queryable,
   timezone: string,

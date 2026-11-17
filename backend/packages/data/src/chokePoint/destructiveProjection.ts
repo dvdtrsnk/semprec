@@ -4,14 +4,10 @@ import {
   readItemDeleteImpact,
   runItemDeletePreLockHooks,
 } from "./hooks.js";
-// Owns the single authorize-and-project call for approved destructive operations: the read-only
-// projection and `resource_snapshot` hash of the resource each approval-gated destructive kind targets,
-// with the exact domain error the matching mutation would throw. `page_restore`, `page_replace`, `page_convert` and `journal_merge` are the kinds
-// this file does not project: `docs/docPageRestore.ts`, `docs/pageReplaceApproval.ts`, `docs/pageConvertApproval.ts` and
-// `journal/journalMergeApproval.ts` do, because `chokePoint/` may not import `docs/` or `journal/`.
-// Nothing that performs a write, and no mutation logic of the destructive operations themselves,
-// belongs here.
-// Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
+// The single authorize-and-project call for approved destructive operations: the read-only projection
+// and `resource_snapshot` hash of each approval-gated kind's resource, with the exact domain error the
+// matching mutation would throw. `page_restore`, `page_replace`, `page_convert` and `journal_merge` are
+// projected in `docs/` and `journal/`, which `chokePoint/` may not import. Nothing here writes.
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError, type PoolClient } from "pg";
@@ -35,7 +31,7 @@ import { reserveBreakingLinks, reserveEdgeLinks, type BreakingValueLinks } from 
 import { assertWriterDatabaseAccess, readerOfWriter } from "../agentGrants/agentDatabaseAccess.js";
 import { assertWriterDeleteCascadeAccess } from "./itemSubtreeAccess.js";
 
-/** The approval-gated destructive kinds a `resource_snapshot` can carry (issue #89; `page_restore` is issue #1617's, computed in `docs/docPageRestore.ts`, `page_replace` is issue #1844's, in `docs/pageReplaceApproval.ts`, `page_convert` is issue #1876's, in `docs/pageConvertApproval.ts`, and `journal_merge` is issue #2017's, in `journal/journalMergeApproval.ts`). */
+/** The approval-gated destructive kinds a `resource_snapshot` can carry; the `page_*` and `journal_merge` kinds are computed outside the choke point. */
 export type ResourceSnapshotKind =
   | "database_archive"
   | "property_delete"
@@ -51,26 +47,25 @@ export type ResourceSnapshotKind =
   | "relation_set"
   | "link_unlink";
 
-/** Persisted alongside every new destructive approval request, and re-derived at execution time to detect a resource that changed since approval was granted. */
+/** Persisted with every destructive approval request and re-derived at execution to detect a resource that changed since approval. */
 export interface ResourceSnapshot {
   kind: ResourceSnapshotKind;
   resourceId: string;
   sha256: string;
 }
 
-/** The read-only projection a `ResourceSnapshot` is hashed from, kept alongside it so a conflict result can report the resource's actual current shape. */
+/** Kept alongside the snapshot so a conflict can report the resource's current shape. */
 export interface DestructiveResourceProjection {
   snapshot: ResourceSnapshot;
   currentResource: unknown;
   /**
-   * The active value links the operation would end (issue #1758); absent when it ends none. For
-   * `item.patch`, `relation.put`, `relation.set` and `link.unlink` they are part of `snapshot`;
-   * for `relation.delete` they are reported only, and its snapshot does not cover them.
+   * The active value links the operation would end; absent when none. Part of `snapshot` for
+   * `item.patch`, `relation.put`, `relation.set` and `link.unlink`; reported only for `relation.delete`.
    */
   valueLinks?: BreakingValueLinks;
 }
 
-/** Hashes one projection into a `ResourceSnapshot`; exported so a destructive kind computed outside the choke point hashes the same way. */
+/** Exported so a destructive kind computed outside the choke point hashes the same way. */
 export function buildResourceSnapshot(
   kind: ResourceSnapshotKind,
   resourceId: string,
@@ -79,12 +74,12 @@ export function buildResourceSnapshot(
   return { kind, resourceId, sha256: createHash("sha256").update(canonicalizeJson(projection), "utf8").digest("hex") };
 }
 
-/** Widens a caught `ChokePointError`'s `unknown` `details` back to a spreadable object, so a rethrow can add `currentResource` alongside whatever the original error already carried. */
+/** Widens a caught error's `details` so a rethrow can add `currentResource`. */
 function detailsObject(details: unknown): Record<string, unknown> {
   return typeof details === "object" && details !== null ? (details as Record<string, unknown>) : {};
 }
 
-/** The one authorize-and-project call `DestructiveApprovalPreflight` and `ApprovedOperationExecutor` both make (issue #89) — never mutates, and throws the exact domain error the matching `*WithClient` mutation would throw for the same input, so a rejection here means the mutation would also reject it. */
+/** Made by both `DestructiveApprovalPreflight` and `ApprovedOperationExecutor`. Never mutates, and throws the exact error the matching `*WithClient` mutation would, so a rejection here means the mutation would reject too. */
 export type DestructiveOperationCheck =
   | { operation: "database.archive"; input: { databaseId: string } }
   | { operation: "property.delete"; input: { propertyId: string } }
@@ -92,7 +87,7 @@ export type DestructiveOperationCheck =
   | {
       operation: "item.delete";
       input: { itemId: string };
-      /** The agent's project: its `write` access to the item's database and to every database its cascade reaches is checked as `itemDeleteWithClient` does (issue #1810). */
+      /** Checked for `write` on the item's database and every database its cascade reaches, as `itemDeleteWithClient` does. */
       agentProjectItemId?: string;
     }
   | { operation: "item.patch"; input: { itemId: string; properties?: Record<string, unknown>; ifVersion?: string } }
@@ -104,20 +99,20 @@ export type DestructiveOperationCheck =
   | {
       operation: "relation.delete";
       input: { relationPropertyId: string; callerItemId: string; targetItemId: string };
-      /** The agent's project: its `write` access to both endpoint databases is checked as `deleteRelationWithClient` does (issue #1810). */
+      /** Checked for `write` on both endpoint databases, as `deleteRelationWithClient` does. */
       agentProjectItemId?: string;
     }
   | {
       operation: "link.unlink";
       input: { itemId: string; propertyKey: string };
-      /** The agent's project: its `write` access to the item's database is checked as `changeValueLinkWithClient` does (issue #1810). */
+      /** Checked for `write` on the item's database, as `changeValueLinkWithClient` does. */
       agentProjectItemId?: string;
     };
 
 /**
- * Reserves the live item of an approval check for the rest of the transaction. It requires a tenant-scoped
- * READ COMMITTED transaction and a visible item, share-locks the item's database and then locks the item row,
- * both without waiting (a held lock is `ApprovalResourceBusyError`). `subject` only words the scope errors.
+ * Reserves the live item for the rest of the transaction. Requires a tenant-scoped READ COMMITTED
+ * transaction; share-locks the database then the item row, both NOWAIT (held = `ApprovalResourceBusyError`).
+ * `subject` only words the scope errors.
  */
 async function reserveItemForApproval(client: PoolClient, itemId: string, subject: string) {
   requireManagedTransaction(client);
@@ -147,11 +142,11 @@ async function reserveItemForApproval(client: PoolClient, itemId: string, subjec
 }
 
 /**
- * Locks the item rows at the two ends of a relation edge without waiting, in the order of database id and then item
- * id that the `relation.put` and `relation.set` check locks its rows in, so the check of a `relation.delete` holds
- * the endpoint rows before it share-locks a value link row (docs/adr/2026-11-15-the-approval-check-of-a-relation-delete-locks-the-edges-endpoint-rows-before-it-reserves-its-value-links.md).
- * A row that does not exist is skipped, as an edge to a purged item can still exist. A held row is
- * `ApprovalResourceBusyError`, and the transaction can then only roll back; any other error propagates.
+ * Locks the item rows at both ends of an edge NOWAIT, in (database id, item id) order like the
+ * `relation.put`/`relation.set` check, so a `relation.delete` check holds the endpoints before it
+ * share-locks a value link (docs/architecture/agents-approvals-and-ai.md#snapshots-and-reservations).
+ * A missing row is skipped (an edge to a purged item can exist). A held row is
+ * `ApprovalResourceBusyError` and the transaction can only roll back.
  */
 async function lockEdgeEndpointRowsNowait(
   client: PoolClient,
@@ -187,7 +182,7 @@ export async function computeDestructiveResourceProjection(
         database.ownerModuleId && check.input.properties
           ? await getItemPatchApprovalContribution(database.ownerModuleId)?.(client, item, check.input.properties)
           : null;
-      if (contribution && check.input.ifVersion !== undefined && check.input.ifVersion !== item.updatedAt) {
+      if (contribution && check.input.ifVersion !== undefined && check.input.ifVersion !== item.version) {
         throw new ConflictError("Item was modified since ifVersion was read", { current: item });
       }
       // The properties this patch changes are the ones `updateItemWithClient` ends links for.
@@ -206,7 +201,7 @@ export async function computeDestructiveResourceProjection(
           currentResource: { ...projected, approvalDescription: contribution?.description },
         };
       }
-      // Replaces the item version: the request stands while the links and the linked values stay as they were.
+      // The request stands while the links and linked values stay as they were.
       const covered = {
         ...(contribution ? projected : { databaseArchivedAt: database.archivedAt }),
         valueLinks: valueLinks.links,
@@ -296,8 +291,8 @@ export async function computeDestructiveResourceProjection(
         if (failure instanceof ApprovalResourceBusyError) markManagedTransactionRollbackOnly(client, failure);
         throw failure;
       }
-      // The edges this write adds or removes decide which links it ends. A `relation.set` onto an empty
-      // relation removes nothing, so it ends none that a request would be asked for.
+      // The edges this write adds or removes decide which links it ends; a `relation.set` onto an empty
+      // relation removes nothing.
       const heldTargets = new Set(edges.map((edge) => relationsStore.otherSide(edge, caller.id)));
       const added =
         targetId && !heldTargets.has(targetId)
@@ -336,9 +331,8 @@ export async function computeDestructiveResourceProjection(
     case "property.delete": {
       const property = await propertiesStore.getProperty(client, check.input.propertyId);
       if (!property) throw new NotFoundError(`Property ${check.input.propertyId} not found`);
-      // Loaded before the relation-type checks below (unlike `propertyDeleteWithClient`, which
-      // never reads the database at all) purely so a rejection here can report `currentResource` —
-      // safe because the real mutation's own check order never depends on this lookup.
+      // Loaded before the relation-type checks only so a rejection can report `currentResource`; the real
+      // mutation's check order does not depend on it.
       const database = await databasesStore.getDatabase(client, property.databaseId);
       if (!database) throw new NotFoundError(`Database ${property.databaseId} not found`);
       const projected = {
@@ -384,31 +378,24 @@ export async function computeDestructiveResourceProjection(
       return { snapshot: buildResourceSnapshot("view_delete", view.id, view), currentResource: view };
     }
     case "item.delete": {
-      // `...IncludingDeleted` (not the live-only lookup) so an already-deleted item can be told
-      // apart from one that never existed — both are rejected here as `not_found`. A direct call
-      // to `itemDeleteWithClient` treats an already-deleted item as an idempotent no-op, but an
-      // *approval request* must not be created against (or later replayed as) deleting a
-      // resource that is already gone.
+      // Including deleted items so an already-deleted one is still `not_found` here: a direct
+      // `itemDeleteWithClient` treats it as a no-op, but an approval must not be created for (or replayed
+      // as) deleting a resource that is already gone.
       const [unlocked] = await itemsStore.getItemsByIdsIncludingDeleted(client, [check.input.itemId]);
       if (!unlocked || unlocked.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
       await assertWriterDatabaseAccess(client, check, unlocked.databaseId, "write", unlocked.id);
       await assertWriterDeleteCascadeAccess(client, check, unlocked);
       const database = await databasesStore.getDatabase(client, unlocked.databaseId);
       if (!database) throw new NotFoundError(`Database ${unlocked.databaseId} not found`);
-      // The owning module's locks come first, as they do in `itemDeleteWithClient`, and are held to the end of the
-      // transaction, which also runs the delete of an approved request: what the module's writers add after this point
-      // waits for the delete, so the item and the impact read below are the state the delete finds. Without them an
-      // instance stored between this read and the delete's own locks would be trashed under a snapshot that did not
-      // count it (issue gh-1882).
+      // The owning module's locks come first, as in `itemDeleteWithClient`, and are held through the
+      // approved delete in this transaction, so the item and impact read below are what the delete finds.
       if (database.ownerModuleId !== null) {
         await runItemDeletePreLockHooks(database.ownerModuleId, { client, database, itemId: unlocked.id });
       }
       const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [unlocked.id]);
       if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
-      // The module's impact of the delete is part of the snapshot (issue gh-1882): an approval granted for one impact is
-      // not executed once its counts changed, and the conflict reports the current ones. The counts are those the
-      // writer's reader may see, as in the preview. An item whose module reports none leaves the projection, and so its
-      // snapshot, as it was.
+      // The module's delete impact is part of the snapshot: an approval is not executed once its counts
+      // changed. The counts are those the writer's reader may see, as in the preview.
       const impact = await readItemDeleteImpact({ client, database, item, reader: readerOfWriter(check) });
       const projected = {
         id: item.id,
@@ -431,21 +418,16 @@ export async function computeDestructiveResourceProjection(
           currentResource: projected,
         });
       }
-      // The cascade's delete hooks run after the soft delete, so they cannot be run here. The owning
-      // module's guard states the refusal one of them answers an agent's trash of this item with; it
-      // comes last, as the hooks do in `itemDeleteWithClient`.
+      // The cascade's delete hooks run after the soft delete and cannot run here. The module's guard states
+      // the refusal one of them would answer an agent with; it comes last, as the hooks do.
       const guard = database.ownerModuleId ? getItemDeleteApprovalGuard(database.ownerModuleId) : undefined;
       const refusal = guard ? await guard({ client, database, item }) : null;
       if (refusal !== null) throw new ForbiddenError(refusal, { currentResource: projected });
       return { snapshot: buildResourceSnapshot("item_delete", item.id, projected), currentResource: projected };
     }
     case "relation.delete": {
-      // Unlike the other four kinds, `currentResource` stays absent from `assertRelationDatabasesNotArchived`/
-      // `assertRelationPropertyWritable` failures here: this check order is the exact order
-      // `deleteRelationWithClient` itself enforces, and the edge this function would report as
-      // `currentResource` isn't loaded until after both of those checks in the real mutation too —
-      // loading it earlier just to attach it to a rejection would risk diverging from the
-      // mutation's own error precedence, which this function's docstring promises to preserve.
+      // `currentResource` stays absent from these failures: this is `deleteRelationWithClient`'s exact
+      // check order, and loading the edge earlier could diverge from its error precedence.
       const edgeContext = await loadRelationEdgeContext(client, check.input.relationPropertyId);
       await assertWriterDatabaseAccess(client, check, edgeContext.property.databaseId, "write");
       await assertWriterDatabaseAccess(client, check, edgeContext.targetDatabaseId, "write");
@@ -476,8 +458,8 @@ export async function computeDestructiveResourceProjection(
           locked: property.locked,
         },
       };
-      // The endpoint rows come before the links, as in the `relation.put`/`relation.set` check: the write that follows
-      // locks the rule's target row with a wait, and a held link lock before that wait can close a cycle.
+      // Endpoint rows before links, as in the `relation.put`/`relation.set` check: the following write waits
+      // on the rule's target row, and a held link lock before that wait could close a cycle.
       await lockEdgeEndpointRowsNowait(client, [
         { databaseId: edgeContext.property.databaseId, itemId: check.input.callerItemId.toLowerCase() },
         { databaseId: edgeContext.targetDatabaseId, itemId: check.input.targetItemId.toLowerCase() },

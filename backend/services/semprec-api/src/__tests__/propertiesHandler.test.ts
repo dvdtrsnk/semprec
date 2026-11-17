@@ -44,10 +44,7 @@ async function authHeader(): Promise<{ Authorization: string }> {
   return { Authorization: `Bearer ${token}` };
 }
 
-/**
- * `graphile_worker.jobs` (000017's view) no longer projects `payload` — this reads the
- * underlying `_private_jobs` table it's built on, joined to `_private_tasks` for the identifier.
- */
+/** graphile-worker's public `jobs` view does not project `payload`, so this reads `_private_jobs` and `_private_tasks`. */
 async function countPropertyTypeMigrationJobs(propertyId: string): Promise<number> {
   const { rows } = await pool.query<{ count: string }>(
     `SELECT count(*)::text AS count
@@ -461,7 +458,6 @@ describe("property routes (issue #240)", () => {
       ),
     });
 
-    /** A session of tenant zero's user, whose tenant `seedSystem` gave the system databases. */
     async function sessionHeaders(locale: "cs" | "en" = "en"): Promise<Record<string, string>> {
       const user = await createUser(pool, {
         tenantId: await tenantForNextTestUser(pool),
@@ -482,7 +478,6 @@ describe("property routes (issue #240)", () => {
       return property;
     }
 
-    /** The Health records `tags` options as `GET /api/schema` shows them to the caller. */
     async function schemaTags(headers: Record<string, string>): Promise<z.infer<typeof optionShape>[]> {
       const res = await fetch(`${baseUrl}/api/schema`, { headers });
       expect(res.status).toBe(200);
@@ -626,7 +621,6 @@ describe("property routes (issue #240)", () => {
     it("stores a label whose surrogates are all paired, on an add and on a rename of 60 UTF-16 code units", async () => {
       const headers = await sessionHeaders();
       const tags = await healthProperty("tags");
-      // U+1F48A, one character outside the Basic Multilingual Plane: a high surrogate followed by its low surrogate.
       const pill = String.fromCodePoint(0x1f48a);
       const longest = pill.repeat(30);
       expect(longest).toHaveLength(60);
@@ -731,10 +725,7 @@ describe("property routes (issue #240)", () => {
       expect((await chokePoint.getProperty(tags.id))?.config).toEqual(tags.config);
     });
 
-    /**
-     * A select property of a database the caller creates, holding `key` and then `other` as options without labels.
-     * Both are written through REST, as a client stores an option key that is not URL-safe.
-     */
+    /** Both option keys are written through REST, as a client stores a key that is not URL-safe. */
     async function propertyWithOptionKey(headers: Record<string, string>, key: string): Promise<string> {
       const idShape = z.object({ id: z.string() });
       const database = await send("/api/databases", "POST", headers, { name: "Tasks of the test" });

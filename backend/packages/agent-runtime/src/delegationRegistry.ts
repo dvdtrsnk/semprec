@@ -26,21 +26,17 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 export const BUSY_ERROR_MESSAGE = "this project is already handling another request from this run, retry next turn";
 
 /**
- * One answer for every refusal of a new delegated session: a random id, another tenant's
- * project, a trashed project, a non-Projects item, or a supervisor run this tenant cannot see.
- * Identical wording keeps the model from learning which ids exist elsewhere.
- * Validation applies only when creating a session; an existing session is reused without
- * rechecking project liveness, until its registry entry expires.
+ * One answer for every refusal of a new delegated session (unknown id, another tenant's or a trashed project, a
+ * non-Projects item, an invisible supervisor run), so the model cannot learn which ids exist elsewhere. Only checked
+ * when creating a session; an existing session is reused without rechecking until its entry expires.
  */
 export const UNKNOWN_DELEGATION_TARGET_MESSAGE = "targetProjectItemId does not name a project this run can delegate to";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Wake-time inheritance port for a delegated session, the same job `sempConversation.ts`'s
- * `ReconstructConversationHistory` does for Semp's own conversation — a delegated one is keyed
- * by `(supervisorRunId, targetProjectItemId)` rather than a fixed project item id, so this seam
- * takes both. Defaults to the always-empty stub, matching pre-#119 behavior.
+ * Wake-time inheritance port for a delegated session, keyed by `(supervisorRunId, targetProjectItemId)`. Defaults to
+ * the always-empty stub.
  */
 export type ReconstructDelegatedHistory = (
   pool: Pool,
@@ -50,7 +46,7 @@ export type ReconstructDelegatedHistory = (
 
 const stubReconstructDelegatedHistory: ReconstructDelegatedHistory = async () => null;
 
-/** #119's real `ReconstructDelegatedHistory`: closes over a `CompactionAdapter` so `DelegateInput` only needs the plain three-arg seam shape every caller (and every existing test) already expects. */
+/** Closes over a `CompactionAdapter` so `DelegateInput` keeps the plain three-arg seam shape. */
 export function createReconstructDelegatedHistory(compaction: CompactionAdapter): ReconstructDelegatedHistory {
   return (pool, targetProjectItemId, supervisorRunId) =>
     reconstructHistoryEntries(
@@ -61,12 +57,11 @@ export function createReconstructDelegatedHistory(compaction: CompactionAdapter)
 }
 
 export interface DelegateInput {
-  /** Seam for the real `pi-agent-core` `createAgentSession` (or a fake, in tests). */
   createAgentSession: CreateAgentSession;
   supervisorRunId: string;
   targetProjectItemId: string;
   task: string;
-  /** Defaults to the always-empty stub; pass `createReconstructDelegatedHistory(compactionAdapter)` for the real #119 reconstruction. */
+  /** Defaults to the always-empty stub. */
   reconstructHistory?: ReconstructDelegatedHistory;
 }
 
@@ -76,7 +71,7 @@ interface RegistryEntry {
   agentRunId: string;
   session: AgentSession;
   busy: boolean;
-  /** Issue #229 names this as one of the entry's required fields; `ttlTimer` is its live enforcement, this is the observable value behind it. */
+  /** Observable value behind `ttlTimer`. */
   lastActivityAt: number;
   ttlTimer: ReturnType<typeof setTimeout>;
 }
@@ -86,10 +81,8 @@ function key(supervisorRunId: string, targetProjectItemId: string): string {
 }
 
 /**
- * Best-effort: matches `runAgentSession`'s error handling in `lifecycleAdapter.ts` so a failed
- * turn never leaves an `agent_runs` row stuck at `running` forever. Closing the run and writing
- * its `agent_run_error` notification (issue #149) run in one transaction, so a crash between the
- * two never leaves one without the other.
+ * Best-effort, like `runAgentSession`, so a failed turn never leaves a run stuck `running`. Closing the run and writing
+ * its `agent_run_error` notification share one transaction.
  */
 async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<void> {
   const errorCode = agentRunErrorCodeOf(err);
@@ -97,8 +90,8 @@ async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<vo
     await withTransaction(pool, (client) => finishAgentRunWithErrorNotification(client, agentRunId, errorCode));
     await pushRunStatus(pool, agentRunId, "error");
   } catch (closeErr) {
-    // The run's code and the close error's name only: a Postgres error's detail can carry the failing
-    // row, whose `task` is the user's prompt, and logs are not tenant-scoped.
+    // Code and error name only: a Postgres error's detail can carry the row, whose `task` is the user's prompt, and
+    // logs are not tenant-scoped.
     logger.error(
       { errorName: closeErr instanceof Error ? closeErr.name : typeof closeErr, errorCode, agentRunId },
       "DelegationRegistry: failed to close errored run",
@@ -107,25 +100,18 @@ async function failRun(pool: Pool, agentRunId: string, err: unknown): Promise<vo
 }
 
 /**
- * Process-memory registry of open supervisor->project-agent delegated sessions (#229's
- * delegation tool, `agentTool.delegate`, is the only intended caller). Entries are keyed by
- * `(supervisorRunId, targetProjectItemId)` so two unrelated supervisor runs delegating to the
- * same project never share a target session, while a further delegation from the *same*
- * supervisor run onto the *same* project reuses the still-open `AgentSession` as a new turn
- * in the same conversation.
+ * Process-memory registry of open supervisor->project-agent delegated sessions, used by `agentTool.delegate`. Keyed by
+ * `(supervisorRunId, targetProjectItemId)`: unrelated supervisors never share a session, while a repeat delegation from
+ * the same supervisor to the same project continues the open session.
  *
- * One instance must be shared across every delegate call in a process — a fresh instance per
- * call defeats both the busy check and the TTL reuse this exists for. There is deliberately
- * no persisted table backing this: a process restart abandons every entry, which is exactly
- * what `repairInterruptedRuns` (#117) already sweeps up on the next startup.
+ * One instance must be shared per process, or the busy check and TTL reuse are defeated. Nothing is persisted: a
+ * restart abandons every entry and `repairInterruptedRuns` sweeps them up on the next startup.
  */
 export class DelegationRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
   /**
-   * Keys with a create-in-flight but not yet in `entries`. A brand-new key's busy check and
-   * its first `await` (creating the `agent_runs` row) must be atomic from a concurrent
-   * caller's point of view, otherwise two calls arriving before either finishes creating
-   * would both see "no entry" and each create their own session for the same target.
+   * Keys with a create in flight. A new key's busy check and its first `await` must be atomic to a concurrent caller,
+   * or two calls would each create a session for the same target.
    */
   private readonly pendingKeys = new Set<string>();
 
@@ -134,7 +120,7 @@ export class DelegationRegistry {
     private readonly ttlMs: number = DEFAULT_TTL_MS,
   ) {}
 
-  /** Test/shutdown seam: cancels every pending TTL timer so a process can exit cleanly. */
+  /** Test/shutdown seam: cancels every pending TTL timer so the process can exit. */
   clear(): void {
     for (const entry of this.entries.values()) clearTimeout(entry.ttlTimer);
     this.entries.clear();
@@ -142,10 +128,8 @@ export class DelegationRegistry {
   }
 
   async delegate(input: DelegateInput): Promise<DelegateResult> {
-    // `targetProjectItemId` comes from the model's own tool-call arguments — untrusted input
-    // that must not reach `createAgentRun`'s SQL unvalidated. This format guard runs first;
-    // new sessions also require a visible supervisor and a live Projects item in this tenant.
-    // Per-project permission manifests remain the future composition root's responsibility.
+    // `targetProjectItemId` is untrusted model input and must not reach SQL unvalidated. New sessions also require a
+    // visible supervisor and a live Projects item in this tenant.
     if (!UUID_PATTERN.test(input.targetProjectItemId)) {
       return { ok: false, error: `targetProjectItemId "${input.targetProjectItemId}" is not a well-formed UUID` };
     }
@@ -153,9 +137,8 @@ export class DelegationRegistry {
     const entryKey = key(input.supervisorRunId, input.targetProjectItemId);
     const existing = this.entries.get(entryKey);
 
-    // Busy check and reservation happen synchronously, before any `await` below, so a
-    // concurrent call onto the same key — new or existing — always observes one of these
-    // and is rejected rather than racing to dispatch or create alongside it.
+    // Busy check and reservation happen synchronously, before any `await`, so a concurrent call on the same key is
+    // rejected instead of racing.
     if (existing?.busy || this.pendingKeys.has(entryKey)) {
       return { ok: false, error: BUSY_ERROR_MESSAGE };
     }
@@ -170,10 +153,7 @@ export class DelegationRegistry {
           }
           lastMessage = await runAgentTurn(this.pool, existing.agentRunId, existing.session.send(input.task));
         } catch (err) {
-          // A broken turn (including a session that can't be continued at all) leaves the
-          // underlying AgentSession in an unknown state — close the run as error and drop the
-          // entry rather than leaving a busy-cleared but unusable session in the registry for
-          // the next delegation to reuse.
+          // A broken turn leaves the session in an unknown state: close the run as error and drop the entry.
           this.entries.delete(entryKey);
           clearTimeout(existing.ttlTimer);
           await failRun(this.pool, existing.agentRunId, err);
@@ -188,12 +168,11 @@ export class DelegationRegistry {
 
     this.pendingKeys.add(entryKey);
     try {
-      // Refuse invalid targets before reconstructing history, which may call the model.
-      // Revalidate under row locks in the write transaction after reconstruction below.
+      // Refuse invalid targets before reconstruction (which may call the model); revalidated under row locks in the
+      // write transaction below.
       const targetIsDelegable = await withTransaction(this.pool, async (client) => {
         const supervisor = await getAgentRun(client, input.supervisorRunId);
-        // A missing Projects database is a seeding/infrastructure failure, not an unknown target —
-        // throw so it is not reported to the model as a refusal.
+        // A missing Projects database is an infrastructure failure, not a refusal to report to the model.
         const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
         if (!projects) {
           throw new Error(`Projects module database not found for module ${PROJECTS_MODULE_ID}`);
@@ -231,9 +210,7 @@ export class DelegationRegistry {
       }
       await pushRunStatus(this.pool, run.id, "running");
 
-      // The compacted continuation replaces the raw history it was derived from — persisted
-      // here, on the run it seeds, so a later restart's reconstruction resumes from this
-      // checkpoint instead of re-deriving (and potentially re-compacting) it all over again.
+      // Persisted on the run it seeds, so a later restart resumes from this checkpoint instead of re-compacting.
       if (priorHistory?.compacted) {
         await persistCompaction(this.pool, run.id, priorHistory.entries);
       }
@@ -284,30 +261,15 @@ export class DelegationRegistry {
   }
 
   /**
-   * 24 hours of inactivity (default) closes an idle delegated session: dropped from memory
-   * and its `agent_runs` row finished as `done`, so `agent_runs` doesn't accumulate rows the
-   * in-memory registry has already forgotten about.
+   * Inactivity (default 24h) drops an idle session from memory and finishes its run as `done`.
    *
-   * Claims the entry as `busy` synchronously, before its first `await` — the same invariant
-   * `delegate()`'s own busy check relies on — so a `delegate()` arriving mid-expiry never
-   * reuses a session whose run this is in the middle of finishing as `done`; it observes
-   * `busy` and is rejected with `BUSY_ERROR_MESSAGE` instead, same as if a turn were in flight.
+   * Claims the entry as `busy` synchronously, before the first `await`, so a `delegate()` arriving mid-expiry is
+   * rejected with `BUSY_ERROR_MESSAGE` instead of reusing a session being finished.
    *
-   * The entry is removed from `entries` as soon as the row is confirmed closed/terminal —
-   * before the subsequent `pushRunStatus` call, which can still throw. That ordering matters:
-   * once the row is terminal in the DB, leaving the entry behind with `busy` reset would let a
-   * `delegate()` arriving after a `pushRunStatus` failure reuse a session whose run is already
-   * closed, the exact race this method's `busy` claim exists to prevent. Only a failure *before*
-   * the row is confirmed terminal (`finishAgentRun` returning `true`, meaning this call closed
-   * it, or a `finishAgentRun` call that itself throws or never resolves) resets `busy` and
-   * reschedules another attempt on the same cadence — that failure leaves the row genuinely
-   * still open, so the entry must stay around to retry closing it. Once `finishAgentRun` returns
-   * `false` — another writer already finished the row — the row is terminal regardless of what
-   * happens next, so a subsequent `getAgentRun` failure still drops the entry instead of
-   * retrying: there is no open run left to retry closing. A run another writer already finished
-   * is logged and still dropped from memory: its row is terminal either way, and its run_status
-   * event records the status that writer stored (read back after the lost close, since it may
-   * have been `error`) rather than `done`.
+   * The entry is removed as soon as the row is confirmed terminal, before `pushRunStatus` (which can throw): a
+   * busy-reset entry pointing at a closed run would let `delegate()` reuse it. Only a failure before the row is
+   * confirmed terminal resets `busy` and reschedules. When another writer already finished the row, the entry is
+   * dropped even if reading back that writer's status fails, and the run_status event records that writer's status.
    */
   private async expire(entryKey: string): Promise<void> {
     const entry = this.entries.get(entryKey);
@@ -329,28 +291,20 @@ export class DelegationRegistry {
         if (!finished) throw new Error(`agent run ${entry.agentRunId} vanished after finishing`);
         status = finished.status;
       }
-      // The row is confirmed closed/terminal at this point — drop the entry now, before the
-      // `pushRunStatus` call below that can still throw, so a failure there can't leave a
-      // busy=false entry in `entries` pointing at an already-terminal run.
+      // Row is terminal: drop the entry before `pushRunStatus`, which can still throw.
       this.entries.delete(entryKey);
       clearTimeout(entry.ttlTimer);
       await pushRunStatus(this.pool, entry.agentRunId, status);
     } catch (err) {
-      // Compare identity, not just key presence: if this failure happened after the row was
-      // confirmed terminal and `entries.delete` already ran, a concurrent `delegate()` could
-      // have inserted a brand-new entry under the same key in the meantime. `entries.get(...) ===
-      // entry` tells the stale entry this call is holding apart from that new one, so retrying
-      // never mutates or reschedules a TTL timer for someone else's live session.
+      // Compare identity, not key presence: a concurrent `delegate()` may have inserted a new entry under the same key,
+      // and retrying must never touch someone else's live session.
       if (this.entries.get(entryKey) === entry && !rowConfirmedTerminal) {
         logger.error({ err, entryKey }, "DelegationRegistry: failed to close expired session, will retry");
         entry.busy = false;
         entry.ttlTimer = this.scheduleTtl(entryKey);
       } else {
-        // Either a concurrent delegate() replaced this stale entry, or `finishAgentRun` already
-        // confirmed the row terminal before this failure (a `getAgentRun` throw reading back the
-        // other writer's status) — either way there is no open run left to retry closing, so
-        // drop the entry rather than leaving a busy=false entry pointing at an already-terminal
-        // run. If a concurrent delegate() already replaced it, leave that new entry alone.
+        // A replaced entry, or a row already confirmed terminal: nothing to retry. Drop the stale entry only if it is
+        // still the current one.
         if (this.entries.get(entryKey) === entry) {
           this.entries.delete(entryKey);
           clearTimeout(entry.ttlTimer);

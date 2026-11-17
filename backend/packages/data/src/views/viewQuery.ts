@@ -28,10 +28,7 @@ import { excludeInheritedSensitiveItems } from "../agentGrants/agentDatabaseAcce
 import { andItemSearchMatch } from "../search/itemSearchMatch.js";
 import { assertNoSortOverClosedRollup } from "../agentGrants/closedSensitiveAggregationAccess.js";
 
-/**
- * The `users.locale` of a user, or `undefined` when the user row is not visible to the caller. It lives
- * here, not behind `auth/usersStore.ts`, because the choke point must not import a domain folder.
- */
+/** `undefined` when the user row is not visible. Lives here because the choke point must not import a domain folder. */
 export async function findUserLocale(client: PoolClient, userId: string): Promise<string | undefined> {
   const { rows } = await client.query<{ locale: string }>(`SELECT locale FROM users WHERE id = $1`, [userId]);
   return rows[0]?.locale;
@@ -40,36 +37,30 @@ export async function findUserLocale(client: PoolClient, userId: string): Promis
 export interface QueryViewOptions {
   limit?: number;
   /**
-   * For a filtered view without sort/groupBy: the last item id seen (`id > cursor`). With a
-   * sort/groupBy: the opaque composite keyset token a previous page returned as `nextCursor`
-   * (issue #664). For a curated view: the last `position` seen (as a string), resuming with
-   * items whose position is strictly greater.
+   * Unsorted filtered view: the last item id seen. Sorted/grouped: the opaque keyset token from `nextCursor`.
+   * Curated view: the last `position` seen, as a string.
    */
   cursor?: string;
-  /** Excludes soft-deleted rows unless `true` (issue #157's `inTrash`). */
   includeDeleted?: boolean;
-  /** Also returns `totalCount`: the number of items matching the filter, ignoring cursor, limit and sort. */
+  /** Number of items matching the filter, ignoring cursor, limit and sort. */
   includeCount?: boolean;
-  /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
   now?: Date;
-  /** The caller's `users.locale`, choosing the text-sort collation (`cs` is Czech, anything else or absent is neutral). */
+  /** Chooses the text-sort collation (`cs` is Czech, anything else is neutral). */
   locale?: string;
   /**
-   * The databases whose items a curated view's page, cursor and `totalCount` leave out: the ones an agent's project may
-   * not read (issue #1810). Set by the choke point, never read from a request. A filtered view is guarded by its database.
+   * Databases an agent's project may not read, left out of a curated view's page, cursor and `totalCount`. Set by the
+   * choke point, never from a request. A filtered view is guarded by its database.
    */
   excludeDatabaseIds?: ReadonlySet<string>;
   /**
-   * The Projects item of an agent's run (issue #1999): the items of a database that inherits sensitivity which are
-   * linked to a sensitive database the project may not read are left out of the page, its cursor and `totalCount`.
-   * Set by the choke point, never read from a request.
+   * An agent run's Projects item: items of a sensitivity-inheriting database linked to a sensitive database the
+   * project may not read are left out of the page, cursor and `totalCount`. Set by the choke point.
    */
   excludeInheritedSensitiveFor?: string;
   /**
-   * The sensitive databases an agent's project may not read (issue #2000): a filter condition on a relation property
-   * into one of them or on a rollup that aggregates one, and a sort by such a rollup, is refused with a
-   * `ForbiddenError`, in a stored view's own filter and sort as in a request's. Set by the choke point, never read
-   * from a request; absent for a person.
+   * Sensitive databases an agent's project may not read: filtering on a relation into one or on a rollup aggregating
+   * one, or sorting by such a rollup, is refused with `ForbiddenError` (stored and request config alike). Absent for
+   * a person.
    */
   closedDatabaseIds?: ReadonlySet<string>;
 }
@@ -77,7 +68,6 @@ export interface QueryViewOptions {
 export interface QueryViewResult {
   items: ItemRow[];
   nextCursor: string | null;
-  /** Present only when `includeCount` was requested. */
   totalCount?: number;
 }
 
@@ -95,10 +85,8 @@ function buildSortSpecs(config: ViewConfig): SortSpec[] {
 }
 
 /**
- * A sorted page's `nextCursor` (issue #664): `base64url(JSON.stringify({ v, id }))`, where `v`
- * holds the last row's value for each sort key, in sort order, and `id` its item id — the full
- * tuple `compileSortKeyset` resumes after. A rollup key's value is read from `computed`, the
- * column its sort expression reads.
+ * `base64url(JSON.stringify({ v, id }))`: `v` is the last row's value per sort key and `id` its item id, the full
+ * tuple `compileSortKeyset` resumes after. A rollup value is read from `computed`.
  */
 function encodeSortCursor(
   sortSpecs: SortSpec[],
@@ -108,10 +96,10 @@ function encodeSortCursor(
   groupDirection: GroupDirection,
 ): string {
   const payload = {
-    // Written only for `desc`, so tokens issued before `groupDirection` existed stay valid under the default.
+    // Written only for `desc`, so tokens without `g` stay valid under the default.
     ...(groupDirection === "desc" ? { g: groupDirection } : {}),
     v: sortSpecs.map((sort) => {
-      // A system key's value is the row's timestamp at full precision, the value its sort expression orders by.
+      // A system key's value is the timestamp at full precision, as its sort expression orders by.
       if (sort.system !== undefined) return sort.system === "createdAt" ? exact.createdAt : exact.updatedAt;
       const source = properties.get(sort.property)?.type === "rollup" ? item.computed : item.properties;
       return source[sort.property] ?? null;
@@ -124,12 +112,9 @@ function encodeSortCursor(
 const NUMERIC_TEXT_RE = /^\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?\s*$/;
 
 /**
- * Whether a decoded cursor value survives the sort key's `::numeric`/`::timestamptz` cast, so a
- * foreign value is a 400 here rather than a cast failure inside the query. Every other key sorts
- * by the uncast `properties ->> key` text, and item property values are not type-checked on write
- * (a `select` row can hold `42`, a `checkbox` row holds `true`, a `json` row an object), so any
- * JSON value is a cursor `encodeSortCursor` can legitimately produce — narrowing it would reject
- * real pages, and whatever text it binds is compared exactly as a stored value would be.
+ * Whether a cursor value survives the key's `::numeric`/`::timestamptz` cast, so a foreign value is a 400 rather
+ * than a cast failure in the query. Other keys sort by uncast `properties ->> key` text and property values are not
+ * type-checked on write, so any JSON value is a legitimate cursor value there.
  */
 function castableTo(cast: ReturnType<typeof sortKeyCast>, value: unknown): boolean {
   if (value === null) return true;
@@ -146,9 +131,8 @@ function castableTo(cast: ReturnType<typeof sortKeyCast>, value: unknown): boole
 const SYSTEM_CURSOR_VALUE_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d{3}Z$/;
 
 /**
- * Whether a decoded cursor value is one `encodeSortCursor` can produce for a system key: UTC text with
- * exactly six fractional digits (`listItems`' exact projection) naming a real calendar instant, checked on
- * its whole-millisecond prefix with `Date#toISOString`. The column is `NOT NULL`, so `null` is foreign too.
+ * UTC text with exactly six fractional digits naming a real instant (checked on its millisecond prefix). The column
+ * is `NOT NULL`, so `null` is foreign.
  */
 function isSystemCursorValue(value: unknown): boolean {
   if (typeof value !== "string") return false;
@@ -159,7 +143,7 @@ function isSystemCursorValue(value: unknown): boolean {
   return !Number.isNaN(instant.getTime()) && instant.toISOString() === millisecond;
 }
 
-/** Decodes and validates a sorted query's cursor — the decode is the validation, so anything that is not a token `encodeSortCursor` could have produced for these sort keys is rejected. */
+/** The decode is the validation: anything `encodeSortCursor` could not have produced for these keys is rejected. */
 function decodeSortCursor(
   raw: string,
   sortSpecs: SortSpec[],
@@ -188,11 +172,7 @@ function decodeSortCursor(
   return { values: v, id };
 }
 
-/**
- * Appends the database's title property as a last ascending sort key when a sort exists and the
- * title is not already one, so rows equal on every key order by title (then by id). The title is
- * part of the sort tuple, hence of the keyset cursor.
- */
+/** Appends the title as a last ascending key so ties order by title, then id; it is part of the keyset cursor. */
 function withTitleTieBreak(sortSpecs: SortSpec[], properties: PropertyRow[]): SortSpec[] {
   if (sortSpecs.length === 0) return sortSpecs;
   const title = properties.find((p) => p.type === "title");
@@ -203,21 +183,13 @@ function withTitleTieBreak(sortSpecs: SortSpec[], properties: PropertyRow[]): So
 interface QueryItemsCoreOptions extends QueryViewOptions {
   filterNode?: FilterNode;
   sortSpecs?: SortSpec[];
-  /** The direction `sortSpecs`' leading group key was built with; the cursor carries it. */
+  /** The direction of the leading group key; the cursor carries it. */
   groupDirection?: GroupDirection;
-  /**
-   * Free text (issue #1857): the page and its cursor keep only the items of this database whose search index row
-   * matches it, ANDed with the filter. `totalCount` ignores it, so it stays the filter-only count.
-   */
+  /** Free text that narrows the page and cursor via the search index; `totalCount` stays the filter-only count. */
   q?: string;
 }
 
-/**
- * The one item-query engine a filter/sort tree ever compiles down to — shared by
- * `queryFilteredView` (a stored view's own config) and `queryDatabaseItems` (issue #157's
- * ad-hoc `POST /api/databases/:id/query`), so the two can never drift into producing
- * different pages for equivalent input.
- */
+/** The one engine shared by stored views and ad-hoc database queries, so equivalent input yields the same page. */
 async function queryItemsCore(
   client: PoolClient,
   databaseId: string,
@@ -246,7 +218,6 @@ async function queryItemsCore(
     options.excludeInheritedSensitiveFor !== undefined
       ? excludeInheritedSensitiveItems(compiledFilterSql, options.excludeInheritedSensitiveFor)
       : compiledFilterSql;
-  // `q` narrows the page only: the count below keeps the filter-only `buildFilterSql`.
   const buildPageFilterSql =
     options.q !== undefined ? andItemSearchMatch(buildFilterSql, databaseId, options.q) : buildFilterSql;
 
@@ -287,9 +258,8 @@ async function queryFilteredView(
 }
 
 /**
- * A curated view has no single owning database (its members can come from several),
- * so `propertyOrder`/`visibility` — which assume one shared property schema — are not
- * applied here; items are returned with their full, unprojected properties.
+ * A curated view's members can come from several databases, so `propertyOrder`/`visibility` are not applied and
+ * items are returned unprojected.
  */
 async function queryCuratedView(
   client: PoolClient,
@@ -300,9 +270,7 @@ async function queryCuratedView(
   let cursorPosition: number | undefined;
   if (options.cursor !== undefined) {
     cursorPosition = Number(options.cursor);
-    // A non-numeric cursor must fail loudly: `m.position > NaN` is always false, which
-    // would otherwise silently return zero items — indistinguishable from a genuinely
-    // empty page — instead of surfacing the tampered/misrouted cursor as an error.
+    // `m.position > NaN` is always false and would silently return an empty page; fail instead.
     if (Number.isNaN(cursorPosition)) {
       throw new ValidationError(`Invalid cursor: '${options.cursor}'`, { field: "cursor" });
     }
@@ -367,7 +335,7 @@ export async function queryView(
   return queryFilteredView(client, view.databaseId, config, options);
 }
 
-/** Same safe-parse-then-wrap pattern as `parseFilterNode`/`parseViewConfig` — `sortSpec.ts`'s own `parseSortConfig` uses the throwing `.parse()` and is only safe against an already-validated stored `ViewConfig`, never against raw request input. */
+/** `parseSortConfig` throws and is only safe on a validated stored `ViewConfig`, never on raw request input. */
 function parseSortConfigInput(raw: unknown): SortSpec[] {
   const result = sortConfigSchema.safeParse(raw);
   if (!result.success) {
@@ -384,7 +352,7 @@ function parseLimitInput(raw: unknown): number | undefined {
   return raw;
 }
 
-/** `usedForIdPaging` mirrors `queryItemsCore`'s own rule: a cursor only feeds `id > $cursor` SQL when no custom sort is in play, so only then must it look like an item id — a sorted query's opaque cursor is validated by `decodeSortCursor` instead. */
+/** Only an unsorted query feeds its cursor to `id > $cursor`, so only then must it look like an item id. */
 function parseCursorInput(raw: unknown, usedForIdPaging: boolean): string | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== "string" || raw.length === 0) {
@@ -404,7 +372,7 @@ function parseInTrashInput(raw: unknown): boolean {
   return raw;
 }
 
-/** The `q` of a raw request: absent, or text of 1 to 200 characters. The refusal never repeats the text. */
+/** Absent, or 1 to 200 characters. The refusal never repeats the text. */
 function parseSearchTextInput(raw: unknown): string | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== "string" || raw.length === 0 || raw.length > SEARCH_MAX_QUERY_LENGTH) {
@@ -428,25 +396,18 @@ export interface DatabaseQueryInput {
   limit?: unknown;
   inTrash?: unknown;
   includeCount?: unknown;
-  /** Free text that narrows the page together with the filter (issue #1857); `totalCount` ignores it. */
+  /** Narrows the page with the filter; `totalCount` ignores it. */
   q?: unknown;
-  /** Set by the application layer from the actor's `users.locale`; never read from the request body. */
+  /** From the actor's `users.locale`; never read from the request body. */
   locale?: string;
 }
 
-/**
- * `POST /api/databases/:id/query` (issue #157): the ad-hoc counterpart to a stored view's own
- * query, validating raw request input the same way a stored `ViewConfig` is validated at write
- * time, then running it through the exact same `queryItemsCore` a stored view's filter/sort
- * compiles down to — so a database query and an equivalent view query can never disagree.
- */
+/** `POST /api/databases/:id/query`: validates raw input like a stored `ViewConfig`, then runs `queryItemsCore`. */
 export async function queryDatabaseItems(
   client: PoolClient,
   databaseId: string,
   input: DatabaseQueryInput,
-  /** See `QueryViewOptions.excludeInheritedSensitiveFor`. */
   excludeInheritedSensitiveFor?: string,
-  /** See `QueryViewOptions.closedDatabaseIds`. */
   closedDatabaseIds?: ReadonlySet<string>,
 ): Promise<QueryViewResult> {
   const filterNode = input.filter !== undefined ? parseFilterNode(input.filter) : undefined;
@@ -478,31 +439,24 @@ export interface ViewQueryInput {
   limit?: unknown;
   inTrash?: unknown;
   includeCount?: unknown;
-  /** Free text that narrows the page together with the filter (issue #1857); `totalCount` ignores it. A curated view refuses it. */
+  /** Narrows the page with the filter; `totalCount` ignores it. A curated view refuses it. */
   q?: unknown;
-  /** Set by the application layer from the actor's `users.locale`; never read from the request body. */
+  /** From the actor's `users.locale`; never read from the request body. */
   locale?: string;
 }
 
 /**
- * `POST /api/views/:id/query` (issue #157): same request shape as `queryDatabaseItems`, but
- * resolved against a stored view. A filtered/linked view (`databaseId` set) accepts an ad-hoc
- * `filter`/`sort` override in the request the same way the database route does — falling back to
- * the view's own stored `config.filter`/`config.sort` when the caller omits them — so sending the
- * exact filter/sort a view already stores produces an identical page to querying its database
- * directly. A curated view (`databaseId === null`) has no filter/sort tree of its own (membership
- * is manual, not query-derived), so a `filter`/`sort` in the request is rejected rather than
- * silently ignored.
+ * `POST /api/views/:id/query`. A filtered view accepts a `filter`/`sort` override, falling back to its stored
+ * config, so sending the stored config equals querying the database. A curated view has no filter/sort, so one in
+ * the request is rejected rather than ignored.
  */
 export async function queryViewItems(
   client: PoolClient,
   viewId: string,
   input: ViewQueryInput,
-  /** See `QueryViewOptions.excludeDatabaseIds`; only a curated view reads it. */
+  /** Only a curated view reads it. */
   excludeDatabaseIds?: ReadonlySet<string>,
-  /** See `QueryViewOptions.excludeInheritedSensitiveFor`. */
   excludeInheritedSensitiveFor?: string,
-  /** See `QueryViewOptions.closedDatabaseIds`; a curated view has no filter or sort to refuse. */
   closedDatabaseIds?: ReadonlySet<string>,
 ): Promise<QueryViewResult> {
   const view = await viewsStore.getView(client, viewId);
@@ -519,7 +473,7 @@ export async function queryViewItems(
         field: "filter",
       });
     }
-    // The text match is restricted to one database, and a curated view has none.
+    // Text match is restricted to one database, and a curated view has none.
     if (q !== undefined) {
       throw new ValidationError("A curated view has no single database to search; omit 'q'", { field: "q" });
     }

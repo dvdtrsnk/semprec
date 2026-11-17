@@ -45,12 +45,7 @@ vi.mock("@semprec/agent-runtime", async (importOriginal) => {
   };
 });
 
-/**
- * The turn of a retried Semp reply (issue gh-1926), through the real turn handler, the real queue runtime, the real
- * history reconstruction and the real agent session; only the model is a faux provider and the MCP call is a call
- * that waits for its abort. The retry is queued by `retrySempReply`, the store function behind the route
- * (`sempRetry.test.ts` of `semprec-api` covers the route). Everything runs on the runtime role pool.
- */
+/** Only the model and the MCP call are fakes; the retry is queued by `retrySempReply`. Runtime role pool. */
 
 /** The text `pairDanglingToolCalls` stores as the result of a call that a cancelled turn left without one. */
 const PAIRED_RESULT_TEXT = "Turn cancelled before this tool call completed.";
@@ -181,8 +176,7 @@ describe("the turn of a retried Semp reply", () => {
     };
     const fixture = await createMcpFixture("events");
     const retryContexts: string[] = [];
-    // The aborted turn may ask the model once more before it notices the abort, so every later call is answered by the
-    // same step, and only the calls of the retry are recorded: they are the ones whose history holds the synthetic result.
+    // The aborted turn may call the model once more; only the retry's calls (with the synthetic result) are recorded.
     const answer: FauxResponseStep = (context) => {
       const serialized = JSON.stringify(context.messages);
       if (serialized.includes(PAIRED_RESULT_TEXT)) retryContexts.push(serialized);

@@ -9,15 +9,17 @@ type CoalescedFrame = ItemInvalidateFrame | RelationInvalidateFrame;
 const DEFAULT_DRAIN_POLL_INTERVAL_MS = 250;
 
 /**
- * Per-socket coalescing queue for item-scope invalidations (issue #242's Task): while a client is
- * behind, a burst of updates to the same (databaseId, itemId) collapses to the one frame carrying
- * the newest updatedAt instead of piling up one entry per NOTIFY, so memory stays bounded
- * regardless of how many redundant invalidations arrive before the client drains.
+ * Per-socket coalescing for item-scope invalidations: while a client is behind, updates to the same (databaseId,
+ * itemId) collapse to one frame with the newest updatedAt, so memory stays bounded however many redundant invalidations
+ * arrive.
  */
 export interface InvalidationCoalescer {
-  /** Sends immediately when drained; otherwise replaces pending item frames by (databaseId, itemId) and relation frames by (itemId, propertyKey), including null. */
+  /**
+   * Sends immediately when drained; otherwise replaces pending item frames by (databaseId, itemId) and relation frames
+   * by (itemId, propertyKey), null included.
+   */
   enqueue(client: WebSocket, frame: CoalescedFrame): void;
-  /** Drops `client`'s queue and stops polling it — called from the socket's own `close` handler. */
+  /** Called from the socket's `close` handler. */
   discard(client: WebSocket): void;
 }
 
@@ -25,9 +27,8 @@ export function createInvalidationCoalescer(
   drainPollIntervalMs = DEFAULT_DRAIN_POLL_INTERVAL_MS,
 ): InvalidationCoalescer {
   const pendingByClient = new WeakMap<WebSocket, Map<string, CoalescedFrame>>();
-  // `ws`'s `WebSocket` has no public `'drain'` event — only its internal `Receiver` (inbound
-  // decoding) does — so a queued client is polled for `bufferedAmount === 0` instead of waiting on
-  // an event that would never fire. One timer per socket, cleared as soon as its queue empties.
+  // `ws` exposes no public `'drain'` event, so a queued client is polled for `bufferedAmount === 0`. One timer per
+  // socket, cleared once its queue empties.
   const drainPollers = new Map<WebSocket, NodeJS.Timeout>();
 
   function flush(client: WebSocket): void {
@@ -49,7 +50,6 @@ export function createInvalidationCoalescer(
   return {
     enqueue(client, frame) {
       let pending = pendingByClient.get(client);
-      // Nothing queued yet and the socket has fully drained: send immediately, the common case.
       if ((!pending || pending.size === 0) && client.bufferedAmount === 0) {
         sendWithBackpressure(client, JSON.stringify(frame));
         return;

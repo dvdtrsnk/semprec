@@ -296,9 +296,7 @@ describe("relation edge contract", () => {
     });
     await chokePoint.softDeleteItem(participants.id, person.id);
 
-    // Cleanup callers (e.g. inboxTypesStore's deleteInboxTypeWithClient, the Gmail/Graph/IMAP
-    // reconcilers) routinely delete an edge whose endpoint was already soft-deleted — this must
-    // never fail validation, only create/update endpoint validity.
+    // Cleanup callers routinely delete an edge whose endpoint was already soft-deleted; that must never fail validation.
     const deleted = await chokePoint.deleteRelation({
       relationPropertyId: assignedTo.id,
       callerItemId: task.id,
@@ -344,8 +342,7 @@ describe("relation edge contract", () => {
 
   it("rejects a reversed endpoint: caller and target items swapped across the two databases", async () => {
     const { assignedTo, task, person } = await makeParticipantsAndTasks();
-    // `person` belongs to the target database, `task` to the source — swapping them means
-    // the caller-side lookup runs against the source database for a target-database item.
+    // Swapped endpoints: the caller-side lookup runs against the source database for a target-database item.
     await expect(
       chokePoint.createRelation({ relationPropertyId: assignedTo.id, callerItemId: person.id, targetItemId: task.id }),
     ).rejects.toBeInstanceOf(ValidationError);
@@ -518,7 +515,6 @@ describe("relation edge contract", () => {
       const sourceItem = await chokePoint.createItem({ databaseId: source.id, properties: {} });
       const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
 
-      // Public caller writing through the user-owned side succeeds with no context.
       const edge = await chokePoint.createRelation({
         relationPropertyId: property.id,
         callerItemId: sourceItem.id,
@@ -535,7 +531,6 @@ describe("relation edge contract", () => {
         }),
       );
 
-      // ...and for a system caller whose context doesn't match...
       await withTransaction(pool, (client) =>
         assertOwnerViolation(
           createRelationWithClient(
@@ -546,7 +541,6 @@ describe("relation edge contract", () => {
         ),
       );
 
-      // ...but succeeds for the matching system caller.
       const viaInverse = await withTransaction(pool, (client) =>
         createRelationWithClient(
           client,

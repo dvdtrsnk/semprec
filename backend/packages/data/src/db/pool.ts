@@ -1,4 +1,4 @@
-import { Client, Pool, type ClientConfig, type PoolClient } from "pg";
+import { Client, DatabaseError, Pool, type ClientConfig, type PoolClient } from "pg";
 import {
   enforceTenantScope,
   runDetachedAsSystem,
@@ -14,7 +14,6 @@ import {
 import { logger } from "./logger.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
-/** Anything a query can run against: a pool, or a client already inside a transaction. */
 export type Queryable = Pool | PoolClient;
 
 interface TransactionOwner {
@@ -22,19 +21,13 @@ interface TransactionOwner {
   active: boolean;
   failure?: { error: unknown };
   keyedCallbacks: Map<symbol, Map<string, { callback: () => void }>>;
-  /** The tenant of the scope this invocation was opened in; `null` for a system or unscoped one. */
+  /** `null` for a system or unscoped invocation. */
   tenantId: string | null;
   /** Search-lane enqueues registered while the body ran, in registration order. */
   searchJobs: PreparedJob[];
 }
 
-/**
- * The two-key advisory lock classes of the search flush (docs/adr/2026-11-08-search-lane-enqueues-flush-in-order-under-a-tenant-lock-before-commit.md):
- * a tenant's flush locks `(SEARCH_FLUSH_TENANT_LOCK_CLASS, hashtext(tenant id))`, a system one
- * `(SEARCH_FLUSH_SYSTEM_LOCK_CLASS, 0)`. The other two-key classes are 2331 in `seedSystem.ts` and 2334
- * in `auth/sessionDeviceLock.ts`; PostgreSQL keeps two-key advisory locks apart from the single-key ones
- * the other owners take.
- */
+/** Two-key advisory lock classes of the search flush. Others: 2331 (`seedSystem.ts`), 2334 (`auth/sessionDeviceLock.ts`). */
 export const SEARCH_FLUSH_TENANT_LOCK_CLASS = 2332;
 export const SEARCH_FLUSH_SYSTEM_LOCK_CLASS = 2333;
 
@@ -42,19 +35,41 @@ const SEARCH_IDENTIFIERS: ReadonlySet<string> = new Set<string>(SEARCH_TASK_IDEN
 
 const transactionOwner = new AsyncLocalStorage<TransactionOwner>();
 
-/** Internal ownership check for protected operations on supplied clients. */
 export function requireManagedTransaction(client: PoolClient): void {
   const owner = transactionOwner.getStore();
   if (!owner?.active || owner.client !== client)
     throw new Error("Protected relation requires an active managed transaction");
 }
 
-/** Internal rollback-only state belongs to the invocation, not a PostgreSQL savepoint. */
+/** The rollback-only state belongs to the invocation, not to a PostgreSQL savepoint. */
 export function markManagedTransactionRollbackOnly(client: PoolClient, error: unknown): void {
   requireManagedTransaction(client);
   const owner = transactionOwner.getStore();
   if (!owner) throw new Error("Protected relation requires an active managed transaction");
   owner.failure ??= { error };
+}
+
+/**
+ * One module's state for the active `withTransaction` invocation of a client: created by `init` on first use and
+ * keyed on the invocation, so it is unreachable once the invocation ends and nothing in it reaches another
+ * transaction (a retry included). A savepoint rollback does not reset it, so it may only hold facts that stay safe to
+ * act on after one.
+ */
+export class TransactionLocal<T> {
+  private readonly values = new WeakMap<TransactionOwner, T>();
+
+  constructor(private readonly init: () => T) {}
+
+  /** `undefined` when `client` is not the client of the active invocation. */
+  get(client: Queryable): T | undefined {
+    const owner = transactionOwner.getStore();
+    if (!owner?.active || owner.client !== client) return undefined;
+    const existing = this.values.get(owner);
+    if (existing !== undefined) return existing;
+    const created = this.init();
+    this.values.set(owner, created);
+    return created;
+  }
 }
 
 export function assertManagedTransactionCommittable(client: PoolClient): void {
@@ -63,27 +78,20 @@ export function assertManagedTransactionCommittable(client: PoolClient): void {
   if (owner?.failure) throw owner.failure.error;
 }
 
-/** How long `pool.connect()` waits for a connection before rejecting. */
 export const CONNECTION_TIMEOUT_MS = 10_000;
 
-/** Default per-connection `statement_timeout`, in milliseconds. */
 export const STATEMENT_TIMEOUT_MS = 60_000;
 
 export interface CreatePoolOptions {
-  /** Per-connection `statement_timeout`; defaults to STATEMENT_TIMEOUT_MS; `0` disables it (the migrations CLI, whose contract-step cutovers may run longer). */
+  /** Per-connection `statement_timeout`; `0` disables it (the migrations CLI). */
   statementTimeoutMs?: number;
-  /**
-   * Makes every connection of the pool run as this role (pg startup option `-c role=...`), so a CLI
-   * connected as the migrating role can do tenant work under row-level security, which applies to
-   * the role but not to the table owner it logged in as.
-   */
+  /** `-c role=...`, so a CLI logged in as the table owner still works under row-level security. */
   role?: "semprec_data";
 }
 
 /**
- * Opens every physical connection in a detached system scope. A socket's event callbacks (a LISTEN
- * `notification`, an `error`) run in the async context that opened it, so a connection first opened
- * inside one request's tenant would otherwise deliver events in that tenant for the rest of its life.
+ * Socket callbacks (LISTEN `notification`, `error`) run in the async context that opened the connection, so
+ * it is opened in a detached system scope instead of the first request's tenant.
  */
 class DetachedScopeClient extends Client {
   constructor(config?: ClientConfig) {
@@ -94,7 +102,7 @@ class DetachedScopeClient extends Client {
   }
 }
 
-/** Value of the `app.tenant_id` GUC for a scope: the tenant id, or `''` (reads as NULL) for system. */
+/** `''` (reads as NULL) for a system scope. */
 function scopeGucValue(scope: TenantScope): string {
   return scope.kind === "tenant" ? scope.tenantId : "";
 }
@@ -121,7 +129,7 @@ function releaseTransactionClient(
   }
 }
 
-/** Acquires a client from a `createPool` pool without the session-level tenant hook; plain pools connect normally. */
+/** Raw `connect` of a `createPool` pool, bypassing the session-level tenant hook. */
 const rawConnectors = new WeakMap<Pool, () => Promise<PoolClient>>();
 
 function connectWithoutScopeHook(pool: Pool): Promise<PoolClient> {
@@ -129,11 +137,8 @@ function connectWithoutScopeHook(pool: Pool): Promise<PoolClient> {
 }
 
 /**
- * Returns a pool that applies the active tenant scope (`app.tenant_id`) to every checkout, see
- * `docs/adr/2026-10-05-tenant-scope-propagation.md`:
- * - `connect()` sets the GUC for the session and resets it on `release()`;
- * - a scoped `query()` runs as a one-statement transaction with a transaction-local GUC;
- * - connections are opened detached from the caller's scope.
+ * Applies the active tenant scope (`app.tenant_id`): `connect()` sets it for the session and resets it on
+ * `release()`; a scoped `query()` runs as a one-statement transaction with a local GUC.
  */
 export function createPool(connectionString: string, options: CreatePoolOptions = {}): Pool {
   const statementTimeoutMs = options.statementTimeoutMs ?? STATEMENT_TIMEOUT_MS;
@@ -141,16 +146,12 @@ export function createPool(connectionString: string, options: CreatePoolOptions 
     connectionString,
     connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
     Client: DetachedScopeClient,
-    // A startup option holds for every pooled connection from its first statement, so a
-    // `timestamptz` cast of an offset-less string never depends on the server's configured zone.
+    // Fixed UTC so a `timestamptz` cast of an offset-less string never depends on the server zone.
     options: options.role ? `-c TimeZone=UTC -c role=${options.role}` : "-c TimeZone=UTC",
     ...(statementTimeoutMs > 0 ? { statement_timeout: statementTimeoutMs } : {}),
   });
-  // pg's Pool emits 'error' when an idle client is dropped by the server (restart,
-  // container recreate, idle_session_timeout, a network reset). An EventEmitter 'error'
-  // with no listener throws, which installFatalHandlers turns into an uncaughtException
-  // that exits the process. pg has already discarded the failed client from the pool by
-  // the time this fires, so nothing else needs to happen here.
+  // pg emits 'error' when the server drops an idle client; without a listener that would become an
+  // uncaughtException and exit the process. pg has already discarded the client.
   pool.on("error", (err) => {
     logger.error({ err }, "Idle pool client errored; the client was discarded");
   });
@@ -173,9 +174,8 @@ function installTenantScope(pool: Pool): void {
   const rawConnect = (cb?: ConnectCallback): Promise<PoolClient> | void => protoConnect.call(pool, cb);
   rawConnectors.set(pool, () => protoConnect.call(pool) as Promise<PoolClient>);
 
-  // pg-pool's own `query` acquires through `this.connect`, which is overridden below. A
-  // pass-through query sets this for the synchronous `this.connect` call it makes, so that call
-  // does not enforce a second time.
+  // pg-pool's `query` acquires through the overridden `this.connect`; this flag stops that inner call
+  // from enforcing the scope a second time.
   let skipNextConnectEnforcement = false;
 
   async function checkoutWithSession(scope: TenantScope): Promise<PoolClient> {
@@ -188,8 +188,7 @@ function installTenantScope(pool: Pool): void {
     }
     const poolRelease = (client as { release: (err?: Error | boolean) => void }).release;
     let released = false;
-    // The caller's `release()` returns immediately and never throws; the GUC is reset first so a
-    // connection never returns to the pool carrying this checkout's tenant.
+    // The GUC is reset before the connection goes back to the pool, so it never carries this tenant.
     client.release = (err?: Error | boolean): void => {
       if (released) return;
       released = true;
@@ -253,8 +252,7 @@ function installTenantScope(pool: Pool): void {
   (pool as unknown as { query: unknown }).query = (...args: unknown[]): unknown => {
     const isCallbackForm = args.some((arg) => typeof arg === "function");
     if (isCallbackForm) {
-      // Callback forms are not scoped per statement; their checkout goes through `connect` above,
-      // which enforces and applies the scope for the session.
+      // Callback forms are scoped per session through `connect` above, not per statement.
       return protoQuery.apply(pool, args);
     }
     let scope: TenantScope | undefined;
@@ -277,14 +275,7 @@ function installTenantScope(pool: Pool): void {
 
 const afterCommitCallbacks = new WeakMap<PoolClient, Array<() => void>>();
 
-/**
- * Registers `callback` to run only once the enclosing `withTransaction` call's `COMMIT`
- * has actually succeeded — never on a rolled-back transaction. For an effect a rollback
- * must not have already made visible to the outside world (e.g. `docPersistence.ts`'s
- * realtime `notifyDocUpdate`, issue #105's confirm/reject/revise review fix): firing it
- * eagerly, before the surrounding transaction commits, would let a subscriber observe a
- * `doc_updates` row that a later failure in the same transaction then discards.
- */
+/** Runs only after the enclosing `withTransaction` commits, never on rollback. */
 export function runAfterCommit(client: PoolClient, callback: () => void): void {
   const existing = afterCommitCallbacks.get(client);
   if (existing) {
@@ -294,7 +285,6 @@ export function runAfterCommit(client: PoolClient, callback: () => void): void {
   }
 }
 
-/** Registers one replaceable callback slot owned by the active managed transaction. */
 export function runAfterCommitKeyed(client: PoolClient, namespace: symbol, key: string, callback: () => void): void {
   requireManagedTransaction(client);
   const owner = transactionOwner.getStore();
@@ -315,12 +305,8 @@ export function runAfterCommitKeyed(client: PoolClient, namespace: symbol, key: 
 }
 
 /**
- * Registers one search-lane enqueue on the active managed transaction of `client`; the job is added
- * at that transaction's pre-commit flush, after its body succeeded. Refused, before anything is
- * registered: a client that is not the active owner's (an unmanaged client, another transaction's,
- * a body that already returned, work started from it after it returned, an after-commit callback),
- * a task outside `SEARCH_TASK_IDENTIFIERS`, a job stamped with another tenant than the
- * transaction's, and a key already registered for another task.
+ * Added at the pre-commit flush. Refused before registering: a client not owned by the active transaction,
+ * an unknown task, another tenant's job, or a key already used by another task.
  */
 export function registerSearchJob(client: PoolClient, job: PreparedJob): void {
   const owner = transactionOwner.getStore();
@@ -339,12 +325,7 @@ function compareCodeUnits(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/**
- * The pre-commit flush: checks that the search task identifiers are registered, takes the
- * transaction's tenant lock, then adds the registered jobs grouped by job key, groups in
- * (identifier, key) order and each group's calls in registration order. It runs only these
- * statements.
- */
+/** Takes the tenant lock, then adds jobs in (identifier, key) order, each group in registration order. */
 async function flushSearchJobs(client: PoolClient, owner: TransactionOwner): Promise<void> {
   const jobs = owner.searchJobs.splice(0);
   if (jobs.length === 0) return;
@@ -370,35 +351,59 @@ async function flushSearchJobs(client: PoolClient, owner: TransactionOwner): Pro
 }
 
 export interface WithTransactionOptions {
-  /** Defaults to READ COMMITTED (a plain `BEGIN`) when omitted. */
+  /** Defaults to READ COMMITTED. */
   isolation?: TransactionIsolationLevel;
 }
 
+/** Attempts of one READ COMMITTED transaction inside `retryingTransientConflicts`, the first included. */
+export const TRANSIENT_CONFLICT_ATTEMPTS = 3;
+
+/** `true` inside `retryingTransientConflicts`; `false` inside a transaction body it is retrying. */
+const transientConflictRetry = new AsyncLocalStorage<boolean>();
+
+/** A serialization failure (`40001`) or a detected deadlock (`40P01`): the same work in a fresh transaction may pass. */
+export function isTransientConflict(err: unknown): err is DatabaseError {
+  return err instanceof DatabaseError && (err.code === "40001" || err.code === "40P01");
+}
+
 /**
- * Runs `fn` inside a single transaction on a dedicated client, committing on success and rolling back on error.
- *
- * This is the only sanctioned way to open a transaction on a pooled client: `runAfterCommit`
- * keys its callbacks on the `PoolClient`, and only this function drains and fires them after
- * its own `COMMIT` (or discards them on rollback). A hand-rolled `BEGIN`/`COMMIT` leaves those
- * callbacks parked on the client, where the next `withTransaction` call that happens to acquire
- * the same client from the pool fires or discards them instead — attached to an unrelated
- * transaction.
- *
- * With a tenant scope active (`runInTenant`/`runAsSystem`) it sets the transaction-local
- * `app.tenant_id` right after `BEGIN`; see `docs/adr/2026-10-05-tenant-scope-propagation.md`.
- *
- * Search-lane enqueues registered in `fn` (`registerSearchJob`) are added after `fn` succeeded and
- * no rollback-only failure was recorded, right before `COMMIT`; a failure of that flush rolls the
- * transaction back like a failure of `fn`.
- *
- * On failure (from `fn` or from `COMMIT`) the original error is what propagates, even when the
- * `ROLLBACK` itself fails. A connection whose `ROLLBACK` failed is in an unknown state, so it is
- * released with that error — which makes `pg` destroy it — and never goes back into the pool.
+ * Inside `fn`, a READ COMMITTED `withTransaction` that fails with a transient conflict is rolled back and its body
+ * run again in a fresh transaction, up to `TRANSIENT_CONFLICT_ATTEMPTS` attempts; after the last one the conflict
+ * propagates. A transaction opened inside a body that is being retried is not retried on its own, so the outer
+ * transaction is retried as a whole. Explicit isolation levels are never retried: their callers handle conflicts.
+ */
+export function retryingTransientConflicts<T>(fn: () => Promise<T>): Promise<T> {
+  return transientConflictRetry.run(true, fn);
+}
+
+/**
+ * The only sanctioned way to open a transaction: `runAfterCommit` callbacks are keyed on the client and only
+ * this fires or discards them. Sets `app.tenant_id` locally after `BEGIN` and flushes search jobs before
+ * `COMMIT`. The original error propagates even if `ROLLBACK` fails; such a client is destroyed, not pooled.
+ * Retries transient conflicts only inside `retryingTransientConflicts`.
  */
 export async function withTransaction<T>(
   pool: Pool,
   fn: (client: PoolClient) => Promise<T>,
   options: WithTransactionOptions = {},
+): Promise<T> {
+  if (options.isolation !== undefined || transientConflictRetry.getStore() !== true) {
+    return runTransaction(pool, fn, options);
+  }
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await transientConflictRetry.run(false, () => runTransaction(pool, fn, options));
+    } catch (err) {
+      if (!isTransientConflict(err) || attempt >= TRANSIENT_CONFLICT_ATTEMPTS) throw err;
+      logger.warn({ sqlState: err.code, attempt }, "withTransaction: retrying after a transient conflict");
+    }
+  }
+}
+
+async function runTransaction<T>(
+  pool: Pool,
+  fn: (client: PoolClient) => Promise<T>,
+  options: WithTransactionOptions,
 ): Promise<T> {
   const scope = enforceTenantScope("withTransaction");
   const client = await connectWithoutScopeHook(pool);
@@ -435,10 +440,7 @@ export async function withTransaction<T>(
       const callbacks = afterCommitCallbacks.get(client);
       afterCommitCallbacks.delete(client);
       if (callbacks) {
-        // The transaction has already committed at this point — a callback throwing must
-        // never surface as if this call had failed (the caller would see an error for an
-        // operation that actually succeeded), and one callback's failure must not skip the
-        // rest of the list.
+        // Already committed: a throwing callback must not surface as a failure of this call, nor skip the rest.
         for (const callback of callbacks) {
           try {
             callback();
@@ -469,10 +471,7 @@ export async function withTransaction<T>(
   }
 }
 
-/**
- * What `withSavepoint` records when it starts and gives back when its body fails: how many after-commit callbacks
- * and search-lane jobs the transaction had queued, and the callback of each keyed slot that existed.
- */
+/** Queue lengths and keyed-slot callbacks at savepoint start, restored if its body fails. */
 interface SavepointMark {
   callbackCount: number;
   searchJobCount: number;
@@ -491,12 +490,7 @@ function markSavepoint(client: PoolClient, owner: TransactionOwner): SavepointMa
   };
 }
 
-/**
- * Drops what the transaction queued since `mark`: the after-commit callbacks, the search-lane jobs and the keyed slots
- * registered since (a slot that already existed gets its earlier callback back). A keyed slot is dropped together with
- * the callback that wraps it, so a later registration under the same key queues a fresh one instead of replacing a
- * callback that no longer runs.
- */
+/** Drops what was queued since `mark`; a pre-existing keyed slot gets its earlier callback back. */
 function discardSinceSavepoint(client: PoolClient, owner: TransactionOwner, mark: SavepointMark): void {
   afterCommitCallbacks.get(client)?.splice(mark.callbackCount);
   owner.searchJobs.splice(mark.searchJobCount);
@@ -509,29 +503,19 @@ function discardSinceSavepoint(client: PoolClient, owner: TransactionOwner, mark
   }
 }
 
-/** Names the savepoints of this process; a name never repeats, so a savepoint inside a savepoint cannot shadow its parent. */
+/** Never repeats, so a nested savepoint cannot shadow its parent. */
 let savepointSequence = 0;
 
 /**
- * Runs `fn` as one step of the active managed transaction of `client` (the `withTransaction` body that is running):
- * between `SAVEPOINT` and `RELEASE SAVEPOINT`. When `fn` throws, the transaction goes back to the savepoint, so the
- * writes of `fn` are gone and the transaction goes on, and the after-commit callbacks, search-lane jobs and keyed
- * callbacks that were queued since the savepoint began are discarded, so the step announces nothing once the
- * transaction commits. What was queued before the savepoint stays. The error `fn` threw is rethrown unchanged; the
- * caller decides which errors are a refusal of this step and which are not, and rethrows the rest, which fails the
- * whole transaction as any other error of its body.
- *
- * A rollback-only mark (`markManagedTransactionRollbackOnly`) belongs to the whole transaction and is not undone by
- * the savepoint: a step whose failure marked it makes the transaction fail at its end, whatever the caller does with
- * the error. When going back to the savepoint itself fails the connection is in an unknown state, so the transaction
- * is marked rollback-only with the error of `fn` (which is the one rethrown) and the failed cleanup is logged.
- * Docs: docs/adr/2026-11-14-a-savepoint-step-discards-what-it-queued-for-after-the-commit.md.
+ * One savepoint step of the active managed transaction. If `fn` throws, its writes and after-commit queue
+ * are discarded and the error is rethrown unchanged. A rollback-only mark survives the savepoint; a failed
+ * rollback-to-savepoint marks the transaction rollback-only.
  */
 export async function withSavepoint<T>(client: PoolClient, fn: () => Promise<T>): Promise<T> {
   const owner = transactionOwner.getStore();
   if (!owner?.active || owner.client !== client)
     throw new Error("A savepoint requires the active managed transaction of its client");
-  // The name is built here from a counter and is never taken from input, so it cannot inject.
+  // Counter-built name, never from input.
   const name = `semprec_savepoint_${++savepointSequence}`;
   const mark = markSavepoint(client, owner);
   await client.query(`SAVEPOINT ${name}`);
@@ -556,13 +540,7 @@ export async function withSavepoint<T>(client: PoolClient, fn: () => Promise<T>)
   return result;
 }
 
-/**
- * Unwraps the single row of a query that returns exactly one by construction — an aggregate
- * with no GROUP BY, a `SELECT format(...)`, a `RETURNING` on a row just written. Postgres
- * guarantees the row; `noUncheckedIndexedAccess` cannot see that, and `rows[0]!` would silently
- * hand a downstream `undefined` to whatever reads a column off it if the invariant ever broke.
- * `context` names the query so the resulting error is diagnosable.
- */
+/** For a query that returns exactly one row by construction; throws instead of passing `undefined` on. */
 export function requireSingleRow<T>(rows: T[], context: string): T {
   const row = rows[0];
   if (row === undefined) {
@@ -571,14 +549,7 @@ export function requireSingleRow<T>(rows: T[], context: string): T {
   return row;
 }
 
-/**
- * Unwraps the affected-row count of a `DELETE`/`UPDATE` that is expected to hit a row by
- * construction — a delete keyed on an id just read back, an update guarded by a prior
- * existence check. A `rowCount` of `0` (the row was already gone, e.g. deleted by a
- * concurrent request) or `null` (the driver couldn't report a count) both mean the write
- * never happened; treating either as success is how a no-op write gets reported upstream as
- * having succeeded. `context` names the query so the resulting error is diagnosable.
- */
+/** For a write expected to hit a row: `0` or `null` means it did not happen and throws. */
 export function requireAffectedRows(result: { rowCount: number | null }, context: string): number {
   const { rowCount } = result;
   if (rowCount === null || rowCount === 0) {
@@ -587,7 +558,7 @@ export function requireAffectedRows(result: { rowCount: number | null }, context
   return rowCount;
 }
 
-/** Runs `fn` on a dedicated client, releasing it in a `finally` so a throw between acquire and the first query cannot leak a pool connection. The non-transactional sibling of `withTransaction` — use this for a handful of related statements against one connection that don't need to be atomic. Not a fit for a client that must outlive `fn` itself, such as a `LISTEN` held open for a connection's lifetime and released from a separate code path. */
+/** Released in `finally`. Not for a client that must outlive `fn`, such as a long-held `LISTEN`. */
 export async function withClient<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {

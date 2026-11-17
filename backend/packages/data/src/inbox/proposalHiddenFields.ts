@@ -12,22 +12,15 @@ import { destinationOwnerModuleId, loadCardEditorRules, type EditorSchemaSource 
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
 import { parseUserOverrides } from "./proposalOverrides.js";
 
-/**
- * What confirm writes is what the card's editor shows (issue #1934): the properties of fields the editor schema
- * hides are left out of the created item, and an MCP server card is written as the connection it declares. Split out
- * of `proposalActions.ts` to keep that file under the ESLint line cap.
- */
+// Confirm writes what the card's editor shows: hidden fields are left out, and an MCP server card is written as the
+// connection it declares.
 
-/** A stored `connectionConfig` whose transport is `stdio`. */
 const stdioConnectionSchema = z.object({ transport: z.literal("stdio") });
 
 /**
- * Refuses an MCP server card whose connection is `stdio` with a `ValidationError` on `transport`, before the
- * envelope validation, so that the answer names the card's transport and not the stored `connectionConfig`. A
- * model-authored host command never becomes a card, but a card stored before that rule, or by another writer, may
- * hold one (`docs/adr/2026-10-16-stdio-mcp-confined-to-admin-tenants.md`). Any other card, an envelope that is not a
- * database one and an envelope for another destination pass: a `connectionConfig` on another destination is the
- * unknown property that the envelope validation refuses.
+ * Refuses an MCP server card with a `stdio` connection (`ValidationError` on `transport`), before envelope validation
+ * so the answer names the transport. The model cannot author host commands, but a card from another writer may hold
+ * one.
  */
 export async function assertCardIsNotStdioMcpServer(client: PoolClient, envelope: ProposalEnvelope): Promise<void> {
   if (envelope.entityKind !== "database") return;
@@ -36,7 +29,6 @@ export async function assertCardIsNotStdioMcpServer(client: PoolClient, envelope
   throw new ValidationError("A stdio MCP server cannot be created from a proposal", { field: "transport" });
 }
 
-/** The envelope with `normalize` applied to the properties of its primary step: the top-level ones, which mirror that step, and the step's own. */
 function normalizePrimary(
   envelope: ProposalEnvelope,
   normalize: (properties: Record<string, unknown>) => Record<string, unknown>,
@@ -55,15 +47,10 @@ function normalizePrimary(
 }
 
 /**
- * The envelope a confirm writes, for a `database` envelope: the properties of the primary step without the fields
- * the card's editor schema hides for its effective values (`normalizeHiddenFields`, which also takes the time of
- * day off the date of an all-day card, in the tenant zone when it is an instant), and an MCP server card's
- * connection as `normalizeMcpServerProperties` stores it. `targetDatabase` is the envelope's target as the envelope
- * validation resolved it. A card of another entity kind, and a card with no editor schema (`loadCardEditorRules`)
- * that is not an MCP server, come back as they are. An MCP server card is judged by its destination, not by its
- * schema: no module maps that destination to a card kind yet, so its editor schema is not applied
- * (`deriveInboxCardKind`). A secondary step is not normalized. Call it after the required-field check and before
- * any destination write; `registry` is as in `loadCardEditorRules`.
+ * The envelope a confirm writes for a `database` envelope: the primary step's properties without fields the editor
+ * schema hides (all-day dates lose their time, in the tenant zone), and an MCP server card's connection normalized.
+ * Other kinds, and cards without an editor schema that are not MCP servers, return unchanged. An MCP server card is
+ * judged by its destination since no module maps it to a card kind. Secondary steps are not normalized.
  */
 export async function normalizeEnvelopeForWrite(
   client: PoolClient,
@@ -80,8 +67,7 @@ export async function normalizeEnvelopeForWrite(
   if (!rules) return envelope;
   const values = buildEditorValues(envelope, parseUserOverrides(proposal.properties.userOverrides, proposal.id));
   const hiddenTimeIsNull = targetDatabase?.ownerModuleId === EVENTS_MODULE_ID;
-  // The tenant zone is read, as every proposal preparation reads it, only when a date field that can hide its time
-  // carries an instant, which is the one value that is converted in the zone.
+  // Read the tenant zone only when a time-hiding date field carries an instant, the one value converted in the zone.
   const timeFieldKeys = rules.schema.groups
     .flatMap((group) => group.fields)
     .filter((field) => field.timeHiddenWhen !== undefined)

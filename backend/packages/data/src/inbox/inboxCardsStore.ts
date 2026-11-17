@@ -26,17 +26,15 @@ import {
 import { describeUpdateSteps, type ProposalChange } from "./proposalChanges.js";
 import { selectActiveSteps } from "./proposalStepGraph.js";
 
-/** The most cards `GET /api/inbox/cards` returns; `total` still counts every open card. */
+/** `total` still counts every open card. */
 export const INBOX_CARDS_LIMIT = 200;
 
-/** The kinds of source whose pending approval requests are cards (chat approvals are not). */
 const APPROVAL_CARD_SOURCE_KINDS: readonly ApprovalRequestSourceKind[] = ["tick", "mcp"];
 
-/** The stored statuses of an open Processing proposals card: not confirmed, rejected or deleted. */
 const OPEN_CARD_STATUSES = ["proposed", "computing", "computeFailed", "needsClarification", "invalid"] as const;
 type OpenCardStatus = (typeof OPEN_CARD_STATUSES)[number];
 
-/** Cards in these states are listed but not counted in `total`: they have no proposal to decide yet. */
+/** Listed but not counted in `total`: they have no proposal to decide yet. */
 const UNCOUNTED_STATUSES: readonly OpenCardStatus[] = ["computing", "computeFailed"];
 const COUNTED_STATUSES: readonly OpenCardStatus[] = OPEN_CARD_STATUSES.filter(
   (status) => !UNCOUNTED_STATUSES.includes(status),
@@ -44,22 +42,14 @@ const COUNTED_STATUSES: readonly OpenCardStatus[] = OPEN_CARD_STATUSES.filter(
 
 const CARD_KINDS = ["inbox", "transcript"] as const;
 
-/**
- * How long a card may stay `computing` before the list reports it as failed (issue gh-2026): 10 minutes, a constant and
- * no setting. Nothing is written when it passes; see `isComputingTimedOut`.
- */
+/** Nothing is written when it passes; the list only reports the card as failed (`isComputingTimedOut`). */
 export const COMPUTING_TIMEOUT_MS = 10 * 60 * 1000;
 
-/**
- * True when the card's stored status is `computing` and its `updatedAt` is older than `COMPUTING_TIMEOUT_MS` at `now`.
- * A card that is `computing` for exactly the timeout is not timed out yet, and an `updatedAt` that is no timestamp never
- * times a card out. A card with any other status is never timed out.
- */
+/** Exactly at the timeout is not timed out; an unparseable `updatedAt` never times out. */
 export function isComputingTimedOut(card: Pick<ItemRow, "properties" | "updatedAt">, now: Date): boolean {
   return card.properties.status === "computing" && Date.parse(card.updatedAt) < now.getTime() - COMPUTING_TIMEOUT_MS;
 }
 
-/** The card kinds whose targets carry a label, one catalog entry `card.target.<baseKind>` each. */
 export const INBOX_CARD_TARGET_LABEL_KINDS: readonly InboxCardKind[] = [
   "task",
   "event",
@@ -81,10 +71,8 @@ export interface InboxCardType {
 }
 
 /**
- * What a card was made from. `inboxItem` is the capture of an Inbox card (also when the item is in the
- * Trash, because the card of a deleted source is `invalid` and still names it), `transcript` the source of
- * a transcript card, `run` the run that raised an approval request. A source that cannot be read (a hard
- * deleted item) is `null` on the card.
+ * `inboxItem` includes trashed items, because the card of a deleted source is `invalid` and still names it. A
+ * hard-deleted source is `null`.
  */
 export type InboxCardResolvedSource =
   | {
@@ -99,7 +87,6 @@ export type InboxCardResolvedSource =
       kind: "transcript";
       id: string;
       name: string | null;
-      /** The transcript's `date` until the transcript has a finish time of its own. */
       completedAt: string | null;
     }
   | {
@@ -113,17 +100,11 @@ export type InboxCardResolvedSource =
     };
 
 export interface InboxCardTarget {
-  /** The `databases.key` of the database the card writes or edits. */
   databaseKey: string;
-  /** The label of the target's kind (not a database name for a page or a speaker) in the caller's locale. */
   label: string;
 }
 
-/**
- * Why an `invalid` card cannot be confirmed (issue #2027). `code`, `field`, `itemId` and `label` are the stored
- * reason; a card with no readable stored reason has the code `unknown`, an empty `field` and `label` and a null
- * `itemId`. `text` is the sentence for that code in the caller's locale.
- */
+/** A card with no readable stored reason gets code `unknown`, empty `field`/`label` and null `itemId`. */
 export interface InboxCardInvalidReason {
   code: InvalidReason["code"] | "unknown";
   field: string;
@@ -133,32 +114,22 @@ export interface InboxCardInvalidReason {
 }
 
 export interface InboxCard {
-  /** The Processing proposals item id of a proposal card, the approval request id of an approval card. */
   cardId: string;
   source: "proposal" | "approval";
   cardKind: InboxCardKind;
   baseKind: InboxCardKind;
-  /**
-   * The stored proposal status, or `pending` for an approval request. A card stored as `computing` for longer than
-   * `COMPUTING_TIMEOUT_MS` is listed as `computeFailed` (issue gh-2026), with `computeTimedOut` set.
-   */
+  /** `pending` for an approval request. A timed-out `computing` card is listed as `computeFailed`. */
   status: string;
-  /** `true` on a card that is listed as `computeFailed` because it has been `computing` past the timeout; absent on every other card. */
   computeTimedOut?: true;
-  /** The item's `updatedAt`, usable as `ifVersion`; `null` for an approval request, which has no item. */
+  /** Usable as `ifVersion`; `null` for an approval request. */
   version: string | null;
   resolvedSource: InboxCardResolvedSource | null;
-  /** The card's `context` property as stored (producer-written, opaque here); `null` when unset. */
+  /** Producer-written and opaque here. */
   context: unknown;
   targets: InboxCardTarget[];
-  /** The effective envelope (the stored `proposal`); `null` before one was computed and for an approval. */
   envelope: ProposalEnvelope | UnknownKindProposalEnvelope | null;
-  /** Present on a card whose status is `invalid` and absent on every other card. */
   invalidReason?: InboxCardInvalidReason;
-  /**
-   * What the active `update` steps of the envelope change, one entry per changed key, labelled in the caller's locale
-   * (issue #2028). Absent on a card that has no active `update` step. Resolved on read, never stored.
-   */
+  /** Absent without an active `update` step. Resolved on read, never stored. */
   changes?: ProposalChange[];
 }
 
@@ -169,7 +140,6 @@ export interface InboxCardList {
 
 export interface ListInboxCardsInput {
   ownerUserId: string;
-  /** The caller's `users.locale`; labels are resolved in it, English is the fallback. */
   locale: string;
 }
 
@@ -191,17 +161,13 @@ interface Candidate {
   group: number;
   inboxItemId: string | null;
   transcriptItemId: string | null;
-  /** `YYYY-MM-DD` and `HH:MM` as the Inbox item stores them; `null` sorts last. */
+  /** `null` sorts last. */
   captureDate: string | null;
   captureTime: string | null;
-  /** The transcript's date as an instant; `null` (also for a value that is no date) sorts last. */
+  /** `null` (also for a value that is no date) sorts last. */
   transcriptInstant: number | null;
 }
 
-/**
- * The group of a card in the stack: proposed (with `computing` and `computeFailed`), invalid,
- * needsClarification, and last every transcript card. Approvals come before all of them.
- */
 function groupOf(kind: Candidate["kind"], status: OpenCardStatus): number {
   if (kind === "transcript") return 4;
   switch (status) {
@@ -223,7 +189,6 @@ function compareNullable<T extends string | number>(a: T | null, b: T | null): n
   return a < b ? -1 : 1;
 }
 
-/** Group, then capture time (Inbox `date` and `time`, the transcript's date for a transcript card), then id. */
 function compareCandidates(a: Candidate, b: Candidate): number {
   return (
     a.group - b.group ||
@@ -252,11 +217,7 @@ function toCandidate(row: CandidateRow): Candidate {
 }
 
 /**
- * The rows of the Processing proposals database that are open cards of the Inbox: not in the Trash, of a card kind
- * the Inbox lists, in one of `statuses`. The list (`listCandidates`) and the count (`countOpenInboxCards`) both
- * build their WHERE clause from this predicate, so the filter cannot drift between them; the count passes only the
- * counted statuses. The arguments are the SQL placeholders of the proposals database id (a uuid), the kinds and
- * the statuses (text arrays).
+ * Shared by the list and the count so the filter cannot drift between them. The arguments are SQL placeholders.
  */
 function openProposalCardsPredicate(database: string, kinds: string, statuses: string): string {
   return `p.database_id = ${database}::uuid AND p.deleted_at IS NULL
@@ -264,7 +225,6 @@ function openProposalCardsPredicate(database: string, kinds: string, statuses: s
         AND p.properties ->> 'status' = ANY(${statuses}::text[])`;
 }
 
-/** The relation definition behind `propertyKey` of `databaseId`, or `null` when the property or its relation is missing. */
 async function relationDefinitionId(
   client: PoolClient,
   databaseId: string,
@@ -276,10 +236,8 @@ async function relationDefinitionId(
 }
 
 /**
- * Every open card with just what orders it: its group and the date and time of its source. The
- * source is the Inbox item a `sourceInbox` edge points at (a trashed one included) and the transcript
- * a `sourceTranscript` edge points at; a card with several edges takes the one with the lowest id.
- * Nothing else is read here, so the whole open set is cheap to order before the page is cut.
+ * Reads only what orders the cards, so the whole open set is cheap to order before the page is cut. A card with
+ * several source edges takes the one with the lowest id.
  */
 async function listCandidates(
   client: PoolClient,
@@ -332,7 +290,6 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-/** Databases by id and by key, each read once however many cards name it. */
 class DatabaseLookup {
   private readonly byId = new Map<string, DatabaseRow | null>();
   private readonly byKey = new Map<string, DatabaseRow | null>();
@@ -352,21 +309,16 @@ class DatabaseLookup {
 
 type CardEnvelope = ProposalEnvelope | UnknownKindProposalEnvelope | null;
 
-/** The active steps of a multi-step envelope; `null` for a single-step envelope, an unknown kind and no envelope. */
 function activeStepsOf(envelope: CardEnvelope): ProposalStep[] | null {
   if (!envelope || "unknownKind" in envelope || !envelope.operations) return null;
   return selectActiveSteps(envelope.operations);
 }
 
-/**
- * The item an envelope's `target` is read from: the target itself, except that the synthetic id of an occurrence that
- * has no item yet (issue gh-1850) is read from its series Event, which is in the same database.
- */
+/** A synthetic occurrence id with no item yet is read from its series Event, which is in the same database. */
 function targetItemIdOf(target: string): string {
   return parseOccurrenceId(target)?.seriesId ?? target;
 }
 
-/** The item ids whose database an envelope's kind or targets depend on. */
 function targetItemIdsOf(envelope: CardEnvelope, steps: ProposalStep[] | null): string[] {
   if (!envelope || "unknownKind" in envelope) return [];
   const ids = envelope.entityKind === "database" ? [] : [targetItemIdOf(envelope.target)];
@@ -376,7 +328,6 @@ function targetItemIdsOf(envelope: CardEnvelope, steps: ProposalStep[] | null): 
 
 interface PageContext {
   databases: DatabaseLookup;
-  /** The live items an envelope points at, by id. */
   targetItems: Map<string, ItemRow>;
   catalogs: ModuleCatalogs;
   locale: ManifestLocale;
@@ -386,7 +337,6 @@ function targetLabel(context: PageContext, kind: InboxCardKind): string {
   return resolveCatalogLabel(null, context.catalogs[context.locale], context.catalogs.en, `card.target.${kind}`);
 }
 
-/** The kind of a database as a target: the kind of the module that owns it, a page for any other. */
 function databaseTargetKind(database: DatabaseRow): InboxCardKind {
   return deriveInboxCardKind({
     kind: "inbox",
@@ -403,11 +353,7 @@ async function stepDatabase(context: PageContext, step: ProposalStep): Promise<D
   return item ? context.databases.id(item.databaseId) : null;
 }
 
-/**
- * The databases a card writes or edits, each once, the primary one first. A multi-step envelope names
- * one per active step; a single-step envelope names its own target, labelled by the card's `baseKind`.
- * A database without a `key` (a user database) has no `databaseKey` to name and is left out.
- */
+/** Primary first. A database without a `key` (a user database) is left out. */
 async function buildTargets(
   context: PageContext,
   baseKind: InboxCardKind,
@@ -427,7 +373,6 @@ async function buildTargets(
       add(database, database ? databaseTargetKind(database) : baseKind);
     }
   } else if (envelope.entityKind === "database" || envelope.entityKind === "journalEntry") {
-    // The target of a `journalEntry` envelope is the Journal database, as a `database` envelope's is its database.
     add(await context.databases.id(envelope.target), baseKind);
   } else {
     const item = context.targetItems.get(targetItemIdOf(envelope.target));
@@ -436,7 +381,6 @@ async function buildTargets(
   return [...targets].map(([databaseKey, label]) => ({ databaseKey, label }));
 }
 
-/** `databases.owner_module_id` of the envelope's target, the input `deriveInboxCardKind` documents; `null` when unknown. */
 async function ownerModuleIdOf(context: PageContext, envelope: CardEnvelope): Promise<string | null> {
   if (!envelope || "unknownKind" in envelope) return null;
   if (envelope.entityKind === "database") return (await context.databases.id(envelope.target))?.ownerModuleId ?? null;
@@ -447,7 +391,7 @@ async function ownerModuleIdOf(context: PageContext, envelope: CardEnvelope): Pr
   return null;
 }
 
-/** The Inbox item types of `inboxItems`, by Inbox item id: one edge read and one item read for the whole page. */
+/** One edge read and one item read for the whole page. */
 export async function loadItemTypes(
   client: PoolClient,
   inboxDatabaseId: string,
@@ -480,18 +424,14 @@ export async function loadItemTypes(
   return typeByInboxItemId;
 }
 
-/**
- * The reason of an `invalid` card with its sentence in `locale`. A stored reason is read through the schema of
- * issue #1482. A card without one (written before the reason existed) and a stored value that does not parse
- * both give the `unknown` reason: the card is still listed, with the generic sentence.
- */
+/** A missing or unparseable stored reason gives `unknown`: the card is still listed with the generic sentence. */
 async function buildInvalidReason(stored: unknown, locale: string): Promise<InboxCardInvalidReason> {
   const parsed = invalidReasonSchema.safeParse(stored);
   const reason = parsed.success ? parsed.data : { code: "unknown" as const, field: "", itemId: null, label: "" };
   return { ...reason, text: await renderInvalidReason(reason, locale) };
 }
 
-/** Builds the cards of one page of candidates. A card trashed after the candidates were read is left out. */
+/** A card trashed after the candidates were read is left out. */
 async function buildProposalCards(
   client: PoolClient,
   candidates: Candidate[],
@@ -582,7 +522,7 @@ async function buildProposalCards(
       baseKind,
       status: timedOut ? "computeFailed" : candidate.status,
       ...(timedOut ? { computeTimedOut: true as const } : {}),
-      version: item.updatedAt,
+      version: item.version,
       resolvedSource,
       context: item.properties.context ?? null,
       targets: await buildTargets(context, baseKind, envelope, steps),
@@ -596,11 +536,7 @@ async function buildProposalCards(
   return cards;
 }
 
-/**
- * The first `INBOX_CARDS_LIMIT` pending approval requests whose source is a tick or MCP, oldest first, through
- * the resolver of `GET /api/approval-requests?status=pending&source=tick,mcp`, so both lists agree. A delegated
- * run is resolved to the source of its root run there.
- */
+/** Uses the resolver of `GET /api/approval-requests` so both lists agree. */
 async function listApprovalCards(client: PoolClient, input: ListInboxCardsInput): Promise<InboxCard[]> {
   const page = await listApprovalRequestsQueuePage(client, {
     ownerUserId: input.ownerUserId,
@@ -636,17 +572,12 @@ async function listApprovalCards(client: PoolClient, input: ListInboxCardsInput)
 }
 
 export interface CountOpenInboxCardsInput {
-  /** The user whose pending approvals are counted. */
   ownerUserId: string;
 }
 
 /**
- * The number of open Inbox items: the one definition of the word, used by `GET /api/inbox/cards` for its
- * `total` and by `GET /api/inbox/cards/count`, so no other caller re-implements it. It is the pending approval
- * requests of ticks and MCP clients that `ownerUserId` is the actor of, plus the open Processing proposals cards
- * of kind `inbox` and `transcript` in any open status except `computing` and `computeFailed`, which are listed
- * but not counted because they have no proposal to decide yet. A tenant without the Inbox or the Processing
- * proposals database has no cards to count. The caller owns the tenant transaction.
+ * The single definition of the open Inbox count: pending tick/MCP approvals of `ownerUserId` plus open `inbox` and
+ * `transcript` cards, excluding `computing` and `computeFailed`. The caller owns the tenant transaction.
  */
 export async function countOpenInboxCards(client: PoolClient, input: CountOpenInboxCardsInput): Promise<number> {
   const approvals = await countPendingApprovalRequests(client, {
@@ -665,15 +596,9 @@ export async function countOpenInboxCards(client: PoolClient, input: CountOpenIn
 }
 
 /**
- * The Inbox stack: pending approvals of ticks and MCP clients, then the open Processing proposals cards
- * of kind `inbox` and `transcript`, in the order approval, proposed (`computing` and `computeFailed`
- * included), invalid, needsClarification, transcript. Inside a group the order is chronological by capture
- * time (an approval by `requested_at`, a transcript card by its transcript's date), then by id. At most
- * `INBOX_CARDS_LIMIT` cards are returned. `total` is `countOpenInboxCards`: every open card of the set except
- * those in `computing` and `computeFailed`, which are listed but not counted. A card stored as `computing` that
- * `isComputingTimedOut` is listed as `computeFailed` with `computeTimedOut` set, in the group of its stored status and
- * uncounted like every `computing` card; the stored card is not changed. The caller owns the tenant transaction, and
- * `ownerUserId` decides whose approvals are read.
+ * Order: approvals, proposed (incl. `computing`/`computeFailed`), invalid, needsClarification, transcript; within a
+ * group by capture time, then id. A timed-out `computing` card is listed as `computeFailed` in its stored group and
+ * stays uncounted; the stored card is not changed. The caller owns the tenant transaction.
  */
 export async function listInboxCards(client: PoolClient, input: ListInboxCardsInput): Promise<InboxCardList> {
   const approvalCards = await listApprovalCards(client, input);

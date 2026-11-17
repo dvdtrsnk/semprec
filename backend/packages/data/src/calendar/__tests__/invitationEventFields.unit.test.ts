@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { invitationEventFields } from "../invitationEventFields.js";
 
-/** The mapping of an invitation to the properties of its Event (issues gh-1944 and gh-2007). */
-
 /** "Sprint review", Thursday 22 Oct 2026, 13:00-14:00 in Europe/Prague (UTC+2 until 25 Oct). */
 const SPRINT_REVIEW = {
   title: "Sprint review",

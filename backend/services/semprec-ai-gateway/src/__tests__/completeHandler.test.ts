@@ -69,7 +69,7 @@ class FakeProvider implements StructuredCompletionProvider {
   failure: Error | null = null;
   /** When set, the call never resolves and rejects only once `request.signal` aborts, as a real adapter's `fetch` would. */
   gatedUntilAbort = false;
-  /** Captures the trace context active while the provider call runs, for issue #167's assertions. */
+  /** Captures the trace context active while the provider call runs. */
   observedTraceIds: (string | undefined)[] = [];
 
   async complete(request: StructuredCompletionRequest) {
@@ -118,7 +118,7 @@ function post(
     headers: {
       "content-type": "application/json",
       ...(token ? { authorization: `Bearer ${token}` } : {}),
-      // Every caller names its tenant: since the strict switch (#1067) a header-less call has none.
+      // Under strict scope a header-less call has no tenant.
       "x-semprec-tenant-id": getTenantZeroId(),
       ...extraHeaders,
     },

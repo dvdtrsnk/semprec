@@ -14,32 +14,21 @@ import { inboxAttachmentMetadataSchema, type InboxAttachmentMetadata } from "./i
 import { lockInboxSource, lockInboxSourceIfPresent } from "./inboxSourceGuard.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 
-// Owns the `inbox_attachments` table: the files an Inbox item carries (issue #1564). Moving them into
-// Files on confirm is issue #1703, and is not done here. Each row names one `blobs` row, and
-// `deleteBlobIfUnreferenced` counts these rows, so the bytes of a blob stay while any attachment names it. A row also
-// holds the facts `semprec-transcribe` computed for it (issue gh-1965): `metadata` and the two derived images of a
-// photo, `thumbnail_blob_id` and `reduced_blob_id`, which are counted references to `blobs` as well. `extraction` is
-// the document data the assistant read off a photo (issue gh-1970), written once by the API runtime.
+// `deleteBlobIfUnreferenced` counts these rows (and the derived `thumbnail_blob_id`/`reduced_blob_id`), so a blob's
+// bytes stay while any attachment names it.
 
-/** Where an attachment was taken from; the table's CHECK constraint accepts exactly these values. */
+/** Must match the table's CHECK constraint. */
 export type InboxAttachmentSource = "camera" | "scan" | "photoLibrary" | "files" | "share";
 
-/** One attachment to append to an Inbox item: the uploaded blob it names and where it came from. */
 export interface NewInboxAttachment {
   blobId: string;
   source: InboxAttachmentSource;
 }
 
 /**
- * An attachment joined with the blob it names. `mimeType` is the type the blob has as an attachment
- * (`effectiveBlobMimeTypeSql`); `byteSize` is a string, as `BlobRow.byteSize` is. `metadata` is what the metadata job
- * found, and `null` until it has run; `thumbnailBlobId` and `reducedBlobId` are the derived images of a photo the job
- * could read, and `null` otherwise. `extraction` is what the assistant read off the reduced copy, `null` until the
- * proposal computation stored it. `name` is the file name an upload recorded in the blob's storage key
- * (`filenameFromStorageKey`), and `null` for a blob stored without one: no attachment row has a name of its own. Only a
- * Files upload (`ingestUploadedFile`) writes a key with a file name. A blob made by `POST /api/blobs`
- * (`ingestUploadedBlob`), which is what a capture attaches, has a bare uuid key, so the `name` of every attachment
- * captured that way is `null` today.
+ * `mimeType` is the effective attachment type (`effectiveBlobMimeTypeSql`); `byteSize` is a string as on `BlobRow`.
+ * `name` comes from the blob's storage key; only Files uploads write a key with a file name, so captured attachments
+ * (bare uuid keys from `POST /api/blobs`) have `name: null`.
  */
 export interface InboxAttachmentRow {
   attachmentId: string;
@@ -95,12 +84,9 @@ function mapAttachmentRow(row: InboxAttachmentDbRow): InboxAttachmentRow {
 }
 
 /**
- * Appends `attachments` to an Inbox item in the order given, after the item's highest position (the
- * first one takes 0). The source lock serializes appenders and the position is read afterward.
- * A blob of another tenant is refused by the composite foreign key to `blobs`. Returns the ids of the new rows,
- * which a caller enqueueing work per attachment needs (the order is not that of `attachments`). When rows were added, the
- * recompute of the Journal day that lists the Inbox item is enqueued in the same transaction (issue gh-1969), so the
- * day's summary shows the new attachments; an empty list adds no row and enqueues nothing.
+ * The source lock serializes appenders and the position is read afterward. Another tenant's blob is refused by the
+ * composite foreign key. The returned ids are not in the order of `attachments`. When rows were added, the Journal day
+ * recompute is enqueued in the same transaction.
  */
 export async function insertInboxAttachments(
   client: PoolClient,
@@ -127,7 +113,6 @@ export async function insertInboxAttachments(
   return rows.map((row) => row.attachment_id);
 }
 
-/** The attachments of the given Inbox items, joined with their blobs, ordered by item and then position. */
 export async function listInboxAttachments(client: Queryable, inboxItemIds: string[]): Promise<InboxAttachmentRow[]> {
   const { rows } = await client.query<InboxAttachmentDbRow>(
     `${ATTACHMENT_SELECT} WHERE a.inbox_item_id = ANY($1::uuid[]) ORDER BY a.inbox_item_id, a.position`,
@@ -136,7 +121,6 @@ export async function listInboxAttachments(client: Queryable, inboxItemIds: stri
   return rows.map(mapAttachmentRow);
 }
 
-/** One attachment by id, joined with its blob, or null when this tenant has no such row. */
 export async function getInboxAttachment(client: Queryable, attachmentId: string): Promise<InboxAttachmentRow | null> {
   const { rows } = await client.query<InboxAttachmentDbRow>(`${ATTACHMENT_SELECT} WHERE a.attachment_id = $1`, [
     attachmentId,
@@ -144,22 +128,17 @@ export async function getInboxAttachment(client: Queryable, attachmentId: string
   return rows[0] ? mapAttachmentRow(rows[0]) : null;
 }
 
-/** What `deleteInboxAttachment` did: whether the row existed, and the bytes of the derived images it freed. */
 export interface DeletedInboxAttachment {
   deleted: boolean;
-  /** `storage_key` of every derived blob (preview, reduced copy) that nothing references any more, to remove after the commit. */
+  /** Derived blobs nothing references any more, to remove after the commit. */
   releasedStorageKeys: string[];
 }
 
 /**
- * Removes one attachment row and reports whether it existed. The blob it named is left alone: a caller
- * that drops the last reference to a blob releases its bytes through `deleteBlobIfUnreferenced`. The derived images of
- * the row (`thumbnail_blob_id`, `reduced_blob_id`) are released here, in the caller's transaction, through
- * `deleteBlobIfUnreferenced`, so a derived blob another attachment still names stays. Their `storage_key`s are returned
- * for the caller to remove after the commit (`2026-09-28-blob-bytes-deleted-best-effort-after-the-commit`). A derived
- * blob that is the attachment's own blob (identical bytes deduplicated onto it) is not released. When the row existed, the
- * recompute of the Journal day that lists the Inbox item is enqueued in the same transaction (issue gh-1969), so the day's
- * summary drops the attachment, whether it was removed or moved into Files.
+ * The named blob is left to the caller. The derived images are released here through `deleteBlobIfUnreferenced`, so
+ * one another attachment still names stays; their keys are returned for best-effort removal after the commit. A
+ * derived blob deduplicated onto the attachment's own blob is not released. Enqueues the Journal day recompute when the
+ * row existed.
  */
 export async function deleteInboxAttachment(client: PoolClient, attachmentId: string): Promise<DeletedInboxAttachment> {
   const found = await client.query<{ inbox_item_id: string }>(
@@ -190,11 +169,7 @@ export async function deleteInboxAttachment(client: PoolClient, attachmentId: st
   return { deleted: true, releasedStorageKeys };
 }
 
-/**
- * Removes every attachment row of a permanently deleted Inbox item and returns the blob ids those rows
- * named, the derived images included. `deleteItemDependents` runs it before releasing those blobs, because a row still
- * present would keep its blob referenced.
- */
+/** Runs before the blobs are released, because a row still present would keep its blob referenced. */
 export async function deleteInboxAttachmentsForItem(client: PoolClient, inboxItemId: string): Promise<string[]> {
   await lockInboxSourceIfPresent(client, inboxItemId, true);
   const result = await client.query<{
@@ -204,24 +179,20 @@ export async function deleteInboxAttachmentsForItem(client: PoolClient, inboxIte
   }>("DELETE FROM inbox_attachments WHERE inbox_item_id = $1 RETURNING blob_id, thumbnail_blob_id, reduced_blob_id", [
     inboxItemId,
   ]);
-  // An item with no attachments is the common case, not a failed delete.
   if (result.rowCount === 0) return [];
   return result.rows.flatMap((row) =>
     [row.blob_id, row.thumbnail_blob_id, row.reduced_blob_id].filter((id): id is string => id !== null),
   );
 }
 
-/** An attachment the metadata job may still compute the facts of: its blob's location and effective type. */
 export interface InboxAttachmentMetadataSource {
   attachmentId: string;
-  /** The type the blob has as an attachment (`effectiveBlobMimeTypeSql`). */
   mimeType: string;
   storageKey: string;
-  /** Whether `metadata` is already written, which a later run leaves alone. */
+  /** A later run leaves written metadata alone. */
   metadataRecorded: boolean;
 }
 
-/** The attachment `attachmentId` names, as the metadata job needs it, or null when this tenant has no such row. */
 export async function readInboxAttachmentForMetadata(
   client: Queryable,
   attachmentId: string,
@@ -248,7 +219,6 @@ export async function readInboxAttachmentForMetadata(
   };
 }
 
-/** A derived image whose bytes the caller already wrote to blob storage under `storageKey`. */
 export interface DerivedImageBlob {
   mimeType: string;
   byteSize: number;
@@ -264,10 +234,9 @@ export interface RecordInboxAttachmentMetadataInput {
 }
 
 /**
- * What `recordInboxAttachmentMetadata` did. `recorded: false` means this call wrote nothing: the attachment is gone, its
- * Inbox item is gone, or another run already wrote its metadata. `unusedStorageKeys` are keys of the input's derived images
- * that no `blobs` row this call kept points at (identical bytes already stored under another key), for the caller to
- * remove; when nothing was recorded they are the keys of both images.
+ * `recorded: false`: the attachment or item is gone, or another run already wrote metadata. `unusedStorageKeys` are
+ * input keys no kept `blobs` row points at (deduplicated bytes), for the caller to remove; both keys when nothing was
+ * recorded.
  */
 export interface RecordedInboxAttachmentMetadata {
   recorded: boolean;
@@ -275,17 +244,10 @@ export interface RecordedInboxAttachmentMetadata {
 }
 
 /**
- * Writes the facts of one attachment, once, in the caller's transaction (issue gh-1965): `metadata` and the two derived
- * image blobs, and then announces the update of the source Inbox item to its `onItemEvent` heartbeats
- * (`triggerOnItemEventHeartbeats`, event `update`), so a card computed before the facts is computed again with them. The
- * heartbeats are not triggered for an Inbox item in the Trash, which no tick processes. The source item is locked first,
- * as `deleteInboxAttachment` does, and then the row, so `metadata IS NULL` is read under a lock and the update that
- * follows cannot overwrite a concurrent run's. An attachment whose row or item is gone, and one that already has
- * `metadata`, write nothing.
- * The recompute of the Journal day that lists the Inbox item is enqueued in the same transaction (issue gh-1969), so the
- * day's summary shows the page count and the preview without another edit; nothing is enqueued when nothing was recorded.
- * The derived blobs are created with `findOrCreateBlob`: bytes the tenant already stores keep their existing blob, the
- * input's key is then reported unused, and the row names the existing blob.
+ * Writes once, then fires the source item's `onItemEvent` `update` heartbeats so a card computed before the facts is
+ * recomputed (not for a trashed item). The source item is locked before the row, as in `deleteInboxAttachment`, so
+ * `metadata IS NULL` is read under a lock and a concurrent run cannot be overwritten. Enqueues the Journal day
+ * recompute when something was recorded. Derived blobs go through `findOrCreateBlob`, so existing bytes keep their blob.
  */
 export async function recordInboxAttachmentMetadata(
   client: PoolClient,
@@ -334,11 +296,7 @@ export async function recordInboxAttachmentMetadata(
   return { recorded: true, unusedStorageKeys };
 }
 
-/**
- * Whether an image attachment of the Inbox item is still waiting for its metadata job (`classifyForExtraction`). The
- * Inbox tick does not start for such an item, because its reduced copy does not exist yet; the job announces its write to
- * the item's heartbeats, which starts the tick again.
- */
+/** The tick waits for such an item; the metadata job's heartbeat starts it again. */
 export async function hasAttachmentAwaitingMetadata(client: Queryable, inboxItemId: string): Promise<boolean> {
   const attachments = await listInboxAttachments(client, [inboxItemId]);
   return attachments.some((attachment) => classifyForExtraction(attachment) === "awaitingMetadata");
@@ -346,17 +304,14 @@ export async function hasAttachmentAwaitingMetadata(client: Queryable, inboxItem
 
 export interface RecordInboxAttachmentExtractionInput {
   attachmentId: string;
-  /** The Inbox item the attachment must belong to; a row of another item is not written. */
+  /** A row of another item is not written. */
   inboxItemId: string;
   extraction: AttachmentExtraction;
 }
 
 /**
- * Stores the extraction of one attachment, once, and returns the extraction the row holds afterwards (issue gh-1970).
- * The write is one `UPDATE ... WHERE extraction IS NULL`, so two runs that started together store one value: the loser
- * matches no row and returns the winner's. The row must belong to `inboxItemId` in the tenant in scope. `null` means
- * there is no such row any more (the attachment was deleted while the model was reading it), and nothing is written.
- * Only the API runtime's proposal computation calls it, with an answer of its own gateway call.
+ * One `UPDATE ... WHERE extraction IS NULL`, so of two concurrent runs the loser matches no row and returns the
+ * winner's value. `null` when the row is gone (deleted while the model was reading).
  */
 export async function recordInboxAttachmentExtraction(
   client: Queryable,

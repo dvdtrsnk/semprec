@@ -65,8 +65,8 @@ async function authHeader(): Promise<{ Authorization: string }> {
 }
 
 /**
- * Tenant zero's user, created on first use. A minted credential's run names its actor, and a run's
- * actor must be its own tenant's user (`agent_runs_actor_user_id_tenant_fkey`, issue #1066).
+ * Created on first use. A run's actor must be a user of its own tenant
+ * (`agent_runs_actor_user_id_tenant_fkey`).
  */
 async function tenantZeroUserId(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
@@ -244,7 +244,7 @@ describe("createMcpRequestListener (issue #220)", () => {
       expect(afterHuman.users).toEqual(before.users);
       expect(afterHuman.runs).toEqual(before.runs);
       expect(JSON.stringify(afterHuman.credentials) === JSON.stringify(before.credentials)).toBe(true);
-      // Authentication is allowed to touch the caller's session timestamps and no other fields.
+      // Authentication may touch the caller's session timestamps and no other fields.
       const stableSessions = (value: unknown): unknown => {
         if (!Array.isArray(value)) throw new Error("Expected session snapshot array");
         return value.map((row: unknown) => {
@@ -258,7 +258,7 @@ describe("createMcpRequestListener (issue #220)", () => {
       expect(
         JSON.stringify(stableSessions(afterHuman.sessions)) === JSON.stringify(stableSessions(before.sessions)),
       ).toBe(true);
-      // The run credential's client named its own run (issue #1788); nothing else changed.
+      // The run credential's client named its own run; nothing else changed.
       const withClientName = (value: unknown): unknown => {
         if (!Array.isArray(value)) throw new Error("Expected run snapshot array");
         return value.map((row: unknown) => {
@@ -714,7 +714,6 @@ describe("createMcpRequestListener (issue #220)", () => {
     });
 
     describe("tenant resolution", () => {
-      /** Mints a credential for tenant zero's user and returns the token plus its run id. */
       async function mintCredential(): Promise<{ token: string; runId: string }> {
         const userId = await tenantZeroUserId();
         const projectItemId = await createTestProjectItem(pool);

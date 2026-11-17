@@ -3,7 +3,7 @@ import { NotFoundError } from "./errors.js";
 import { assertShape } from "./dbRowValidation.js";
 import type { Queryable } from "./db/pool.js";
 
-/** Stable identifier for the singleton "System settings" database — see seed/seedSystem.ts. */
+/** The singleton "System settings" database (seed/seedSystem.ts). */
 export const SYSTEM_SETTINGS_MODULE_ID = "systemSettings";
 export const DEFAULT_TIMEZONE = "Europe/Prague";
 
@@ -42,10 +42,7 @@ export async function getSystemTimezone(client: Queryable): Promise<string> {
 
 type SettingsProperties = { timezone?: string };
 
-/**
- * Validates the settings row's JSONB `properties` at the read boundary instead of trusting the row
- * type: `timezone` is narrowed to a string, and a present value that is not a string throws.
- */
+/** Validates the JSONB at the read boundary: a present non-string `timezone` throws. */
 function toSettingsProperties(raw: Record<string, unknown>): SettingsProperties {
   const timezone = typeof raw.timezone === "string" ? raw.timezone : undefined;
   assertShape(timezone === raw.timezone, "system settings properties");

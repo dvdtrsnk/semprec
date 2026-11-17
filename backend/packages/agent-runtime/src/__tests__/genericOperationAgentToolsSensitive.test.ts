@@ -64,7 +64,7 @@ async function systemDatabase(moduleId: string): Promise<DatabaseRow> {
   return database;
 }
 
-/** The tools bound to the runtime pool; built after a gateway stub so the stub is the gateway they use. */
+/** Built after a gateway stub, so the stub is the gateway they use. */
 function tools(): ReturnType<typeof createGenericOperationAgentTools> {
   return createGenericOperationAgentTools(runtime, registry, metadataResolver);
 }
@@ -76,7 +76,7 @@ async function newAgent(
   const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
   const run = await createAgentRun(runtime, { projectItemId: project.id, triggeredBy: "user", task: "sensitive" });
   for (const { database, access } of grants) {
-    // The user-only admin store is not exported from `@semprec/data`, so a fixture writes the decision directly.
+    // The user-only admin store is not exported from `@semprec/data`, so the decision is written directly.
     await withTransaction(runtime, (client) =>
       client.query("INSERT INTO agent_database_grants (project_item_id, database_id, access) VALUES ($1, $2, $3)", [
         project.id,
@@ -105,7 +105,7 @@ function newNight() {
   });
 }
 
-/** Replaces what the gateway answers, for the cases a real operation cannot produce; the tools still resolve the run for real. */
+/** For answers a real operation cannot produce; the run is still resolved for real. */
 function stubGatewayAnswer(answer: unknown): void {
   const originalFactory = application.createGenericOperationGateway;
   vi.spyOn(application, "createGenericOperationGateway").mockImplementation((...args) => {
@@ -138,7 +138,7 @@ describe("marking the answers of sensitive databases in the generic operation Ag
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    // Test teardown on the superuser pool: the two sensitive system databases are shared, so a test starts from none of their items.
+    // The two sensitive system databases are shared, so each test starts from none of their items.
     await admin.query("DELETE FROM items WHERE database_id = ANY($1::uuid[])", [[health.id, sleepNights.id]]);
   });
 
@@ -281,14 +281,14 @@ describe("marking the answers of sensitive databases in the generic operation Ag
         });
         expect(created.error).toBe(false);
         expect(created.sensitive).toBe(true);
-        const createdItem = JSON.parse(created.result) as { id: string; updatedAt: string };
-        // The id of the new item is kept for the run history, which stores the result text redacted (issue #1885).
+        const createdItem = JSON.parse(created.result) as { id: string; updatedAt: string; version: string };
+        // Kept for the run history, which stores the result text redacted.
         expect(created.createdItemId).toBe(createdItem.id);
 
         const patched = await tools()["item.patch"](agent.runId, {
           itemId: createdItem.id,
           properties: { name: "Renamed diagnosis" },
-          ifVersion: createdItem.updatedAt,
+          ifVersion: createdItem.version,
         });
         expect(patched.error).toBe(false);
         expect(patched.sensitive).toBe(true);
@@ -313,12 +313,12 @@ describe("marking the answers of sensitive databases in the generic operation Ag
         });
         expect(created.error).toBe(false);
         expect(created).not.toHaveProperty("sensitive");
-        const createdItem = JSON.parse(created.result) as { id: string; updatedAt: string };
+        const createdItem = JSON.parse(created.result) as { id: string; updatedAt: string; version: string };
         expect(created.createdItemId).toBe(createdItem.id);
         const patched = await tools()["item.patch"](agent.runId, {
           itemId: createdItem.id,
           properties: { name: "Renamed note" },
-          ifVersion: createdItem.updatedAt,
+          ifVersion: createdItem.version,
         });
         expect(patched.error).toBe(false);
         expect(patched).not.toHaveProperty("sensitive");

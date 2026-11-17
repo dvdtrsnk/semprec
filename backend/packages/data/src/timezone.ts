@@ -2,11 +2,8 @@ import { DateTime } from "luxon";
 import { ValidationError } from "./errors.js";
 
 /**
- * Luxon accepts any string and silently produces an invalid `DateTime` for an unrecognized
- * IANA zone rather than throwing — every caller that takes a caller-supplied timezone and
- * feeds it into date arithmetic must validate up front, or an invalid zone surfaces much
- * later as a corrupted value (e.g. a Postgres "Invalid time value", or `toISODate()`
- * returning `null` and silently stringifying to `"null"`).
+ * Luxon silently yields an invalid `DateTime` for an unknown IANA zone instead of throwing, so caller-supplied zones
+ * must be validated up front or they surface later as corrupt values (e.g. `toISODate()` stringifying to `"null"`).
  */
 export function assertValidTimezone(timezone: string): void {
   if (!DateTime.local().setZone(timezone).isValid) {
@@ -19,14 +16,13 @@ const WALL_CLOCK_TIME_PATTERN = /^(\d{1,2}):(\d{2})$/;
 export interface WallClockTimeOptions {
   /** Accepts `24:00`, the end of the day. Only an end time may use it. */
   allow2400?: boolean;
-  /** The property the `ValidationError` names when the value is rejected. */
+  /** The property the `ValidationError` names. */
   field: string;
 }
 
 /**
- * Normalizes a caller-supplied wall-clock time to the zero-padded `HH:MM` form. Accepts `H:MM` and `HH:MM`.
- * `""`, `null` and `undefined` mean no time and return `null`. `24:00` is accepted only when `allow2400` is
- * true. Any other value, including `25:99` and `abc`, throws `ValidationError` naming `options.field`.
+ * Normalizes `H:MM`/`HH:MM` to zero-padded `HH:MM`. Empty, `null` and `undefined` return `null`; `24:00` only with
+ * `allow2400`. Anything else throws `ValidationError` naming `options.field`.
  */
 export function normalizeWallClockTime(value: unknown, options: WallClockTimeOptions): string | null {
   if (value === null || value === undefined || value === "") return null;

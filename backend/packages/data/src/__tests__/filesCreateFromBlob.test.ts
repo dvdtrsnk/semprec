@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { DateTime } from "luxon";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import "../domainWriteHooks.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -15,7 +15,6 @@ import { findOrCreateBlob, recordDetectedBlobMimeType } from "../blobs/blobsStor
 import { sweepUnreferencedBlobs } from "../blobs/unreferencedBlobSweep.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 
 class MemoryStorage implements BlobStorageWriter {
   readonly bytes = new Map<string, Buffer>();
@@ -143,7 +142,7 @@ describe("Files creation from standalone blobs", () => {
         properties: { name: "Existing", file: { blobId: uploaded.blob.id }, type: "jpg" },
         relations: [{ kind: "resolved", relationPropertyId: property.id, targetItemIds: [project.id] }],
       });
-      // Historical fixture: legacy MIME could have come from the upload header, before verified detection existed.
+      // Historical fixture: legacy MIME taken from the upload header.
       const changed = await runtime.query(
         "UPDATE blobs SET mime_type = $1, detected_mime_type = NULL WHERE tenant_id = $2 AND id = $3",
         ["image/png", owner, uploaded.blob.id],
@@ -178,8 +177,8 @@ describe("Files creation from standalone blobs", () => {
   });
 
   it("leaves an unknown detected type unset and preserves an explicit type", async () => {
-    // `POST /api/blobs` no longer stores bytes of an unknown type; the blobs that hold such bytes (an earlier upload,
-    // a mail attachment) are written here through the blob store, with the classification an upload recorded.
+    // `POST /api/blobs` refuses bytes of an unknown type; blobs holding such bytes (a mail attachment) are
+    // written here through the blob store, with the classification an upload records.
     const unknownBlob = await runInTenant(owner, () =>
       withTransaction(runtime, async (client) => {
         const blob = await findOrCreateBlob(client, {
@@ -216,7 +215,7 @@ describe("Files creation from standalone blobs", () => {
       const files = await db("files");
       const property = (await api.listProperties(files.id)).find((entry) => entry.key === "type");
       if (!property) throw new Error("Files type property missing");
-      // Model a historical schema whose locked select did not yet contain the PDF option.
+      // A locked select without the PDF option.
       const changed = await withTransaction(runtime, (client) =>
         client.query(
           "UPDATE properties SET config = jsonb_set(config, '{options}', $1::jsonb) WHERE tenant_id = $2 AND id = $3",
@@ -433,32 +432,5 @@ describe("Files creation from standalone blobs", () => {
       expect(failures[0]).toEqual(failures[1]);
       expect((await api.listItems(files.id)).items).toEqual([]);
     });
-  });
-
-  it("installs the Files date default through the registered populated-tenant runner", async () => {
-    const files = await runInTenant(owner, () => db("files"));
-    await runInTenant(owner, () =>
-      withTransaction(runtime, async (client) => {
-        // Recreate the older Files schema without the default.
-        await client.query(
-          "UPDATE properties SET config = config - 'default' WHERE database_id = $1 AND key = 'date'",
-          [files.id],
-        );
-      }),
-    );
-    const run = () => runAsSystem("test Files default cutover", () => runTenantCutoverMigrations(runtime));
-    await run();
-    const read = () =>
-      runInTenant(owner, () =>
-        runtime.query<{ config: unknown; xmin: string }>(
-          "SELECT config, xmin::text FROM properties WHERE database_id = $1 AND key = 'date'",
-          [files.id],
-        ),
-      );
-    const first = await read();
-    expect(first.rows).toHaveLength(1);
-    expect(first.rows[0]?.config).toMatchObject({ default: "today" });
-    await run();
-    expect((await read()).rows).toEqual(first.rows);
   });
 });

@@ -38,13 +38,12 @@ let pool: Pool;
 let cp: ChokePoint;
 let tenant: string;
 let foreign: string;
-/** The tenant the helpers act in. The queue runs outside any tenant scope, between such steps. */
+/** The queue runs outside any tenant scope, between helper steps. */
 let scope: string;
 
 const REINDEX = CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS;
 const BACKFILL = CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL;
 const PAGE_TEXT = CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT;
-/** The Inbox owner's recompute of a Journal day's cached entries (inbox/journalInboxCompute.ts). */
 const RECOMPUTE = CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE;
 const envelope = z.object({ payload: z.record(z.string(), z.unknown()) });
 
@@ -60,7 +59,7 @@ async function db(key: string): Promise<string> {
 
 async function item(moduleId: string, name: string): Promise<string> {
   const databaseId = await db(moduleId);
-  // An Event's create requires a date (issue #1663); Events search documents do not include it.
+  // An Event's create requires a date; Events search documents do not include it.
   const properties = moduleId === "events" ? { name, date: "2026-10-16" } : { name };
   return (await inTenant(() => cp.createItem({ databaseId, properties }))).id;
 }
@@ -91,7 +90,6 @@ async function rename(moduleId: string, itemId: string, name: string): Promise<v
   await inTenant(() => cp.updateItem({ databaseId, itemId, propertiesPatch: { name } }));
 }
 
-/** Whether the item's search document contains the exact word. */
 async function contains(itemId: string, word: string): Promise<boolean> {
   const { rows } = await inTenant(() =>
     pool.query<{ matches: boolean }>(
@@ -109,7 +107,6 @@ async function indexedAt(itemId: string): Promise<string | undefined> {
   return rows[0]?.updated_at;
 }
 
-/** The queued payloads of a task, read through the queue's test observation helper. */
 async function queued(identifier: string): Promise<Record<string, unknown>[]> {
   return (await readJobPayloadsByIdentifier(admin, identifier)).map((raw) => envelope.parse(raw).payload);
 }
@@ -125,7 +122,6 @@ function searchHandlers() {
   return { reindex, backfill, recompute, pageText };
 }
 
-/** The keys of the queued reindex jobs, sorted, read through graphile-worker's public `jobs` view. */
 async function reindexKeys(): Promise<string[]> {
   const { rows } = await admin.query<{ key: string | null }>(
     "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -134,7 +130,6 @@ async function reindexKeys(): Promise<string[]> {
   return rows.flatMap((row) => (row.key === null ? [] : [row.key]));
 }
 
-/** Every queued job, as identifier and key, read through graphile-worker's public `jobs` view. */
 async function allJobs(): Promise<Array<{ task_identifier: string; key: string | null }>> {
   const { rows } = await admin.query<{ task_identifier: string; key: string | null }>(
     "SELECT task_identifier, key FROM graphile_worker.jobs ORDER BY id",
@@ -146,7 +141,6 @@ const itemKey = (itemId: string) => `item-search-reindex:item:${itemId}`;
 
 const cachedEntries = z.array(z.object({ text: z.string().nullable() })).nullable();
 
-/** The texts of a Journal day's cached Inbox entries (`computed.inboxItems`), or null without a cache. */
 async function cachedTexts(dayId: string): Promise<Array<string | null> | null> {
   const { rows } = await inTenant(() =>
     pool.query<{ entries: unknown }>("SELECT computed->'inboxItems' AS entries FROM items WHERE id = $1", [dayId]),
@@ -154,7 +148,7 @@ async function cachedTexts(dayId: string): Promise<Array<string | null> | null> 
   return cachedEntries.parse(rows[0]?.entries ?? null)?.map((entry) => entry.text) ?? null;
 }
 
-/** A test-owned barrier. The first `open` decides whether the waiting actor proceeds or aborts. */
+/** The first `open` decides whether the waiting actor proceeds or aborts. */
 function gate() {
   let open!: (decision?: "proceed" | "abort") => void;
   const opened = new Promise<"proceed" | "abort">((resolve) => {
@@ -163,11 +157,10 @@ function gate() {
   return { open, opened };
 }
 
-/** What an actor throws when a harness failure opened its gate with `abort`, so its transaction rolls back. */
 const ABORTED = new Error("aborted by the test after a harness failure");
 
 type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
-/** Observes `promise` at once, so a started actor's rejection is never unhandled and can always be awaited. */
+/** Observed at once, so a started actor's rejection is never unhandled. */
 const settle = <T>(promise: Promise<T>): Promise<Outcome<T>> =>
   promise.then(
     (value) => ({ ok: true as const, value }),
@@ -179,19 +172,14 @@ function throwFailure(error: unknown): never {
   throw error;
 }
 
-/**
- * A started database actor: its settlement exists from the moment it starts, and `pid` names its own
- * backend once known, the only handle the harness may cancel.
- */
+/** `pid` is the actor's own backend once known, the only handle the harness may cancel. */
 interface Actor {
   name: string;
   settled: Promise<Outcome<unknown>>;
   pid: () => number | undefined;
-  /** An error this actor is expected to end with (its own scripted failure, or `ABORTED`). */
   expected?: (error: unknown) => boolean;
 }
 
-/** Waits for `signal`; fails with the actor's own error if it ends first, or after the bound. */
 async function ready(signal: Promise<unknown>, actor: Actor, label: string): Promise<void> {
   const ended = actor.settled.then((outcome) => {
     if (!outcome.ok) throwFailure(outcome.error);
@@ -217,29 +205,21 @@ async function within<T>(promise: Promise<T>, milliseconds: number): Promise<T |
 
 const cancelRow = z.object({ cancelled: z.boolean() });
 
-/** Sends a cancel signal to an actor's own backend; resolves whether Postgres sent it. */
 async function cancelBackend(pid: number): Promise<boolean> {
   const { rows } = await admin.query<{ cancelled: unknown }>("SELECT pg_cancel_backend($1::int) AS cancelled", [pid]);
   return cancelRow.parse(rows[0]).cancelled;
 }
 
 interface SettleOptions {
-  /** Receives `settled:<name>` for each actor, once it has settled. */
   order?: string[];
-  /** How long the first wait lasts before the cancel signal; only the cancellation-failure control shortens it. */
   cancelAfterMs?: number;
-  /** The cancellation attempt; only the cancellation-failure control replaces it. */
   cancel?: (pid: number) => Promise<boolean>;
 }
 
 /**
- * Awaits every started actor, in order (callers open all their gates first). A timeout is not treated as
- * settlement: an actor still running after `cancelAfterMs` gets a cancel signal for its own backend and is
- * awaited again for up to 10 s. A cancel signal sent is not settlement either, and a failed cancellation
- * attempt is recorded as a cleanup error at its actor's place; the second wait and every later actor's
- * settlement still happen. An actor that still does not settle is reported as unsettled, and the caller
- * must then not restore shared state. Returns the cancellation failures and the actors' unexpected errors
- * in actor order, without the primary failure itself.
+ * Awaits every actor in order. A timeout is not settlement: a still-running actor gets a cancel signal and is
+ * awaited again for up to 10 s; a failed cancel is recorded as a cleanup error. An actor that still does not
+ * settle is reported unsettled and the caller must not restore shared state.
  */
 async function settleActors(actors: Actor[], primary: { error: unknown } | undefined, options: SettleOptions = {}) {
   const { order, cancelAfterMs = 10_000, cancel = cancelBackend } = options;
@@ -250,8 +230,7 @@ async function settleActors(actors: Actor[], primary: { error: unknown } | undef
     if (outcome === UNSETTLED) {
       const pid = actor.pid();
       if (pid !== undefined) {
-        // Whether the signal was sent does not decide anything: only the second wait shows settlement. The
-        // attempt runs inside `then`, so a synchronous throw is recorded like a rejection.
+        // Only the second wait shows settlement. Inside `then`, so a synchronous throw is recorded like a rejection.
         const cancellation = await settle(Promise.resolve().then(() => cancel(pid)));
         if (!cancellation.ok) errors.push(cancellation.error);
       }
@@ -269,7 +248,6 @@ async function settleActors(actors: Actor[], primary: { error: unknown } | undef
   return { errors, unsettled };
 }
 
-/** The primary failure with every cleanup error after it, or the primary failure itself when there is none. */
 function failureOf(primary: { error: unknown }, cleanup: unknown[], message: string): unknown {
   return cleanup.length
     ? new AggregateError([primary.error, ...cleanup], message, { cause: primary.error })
@@ -290,7 +268,7 @@ async function bounded<T>(promise: Promise<T>, label: string, milliseconds = 10_
   }
 }
 
-/** Polls until `waiterPid` is blocked by `holderPid` (observation only; locks create the order). */
+/** Observation only; locks create the order. */
 async function waitBlocked(holderPid: number, waiterPid: number): Promise<void> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
@@ -312,10 +290,9 @@ async function backendPid(client: PoolClient): Promise<number> {
 }
 
 /**
- * Scratch barrier (R1 D1): a dedicated system transaction holds the tenant's search-flush advisory lock, so a
- * writer that reached its pre-commit flush waits there, observably, until `release`. It returns at once, with
- * the release gate and the settlement, so no wait for `held` can hide the holder; the caller opens the gate
- * and settles the holder on every path. `failBeforeLock` makes the holder fail before it locks (a control).
+ * A dedicated system transaction holds the tenant's search-flush advisory lock, so a writer reaching its
+ * pre-commit flush waits there observably until `release`. The caller opens the gate and settles the holder on
+ * every path. `failBeforeLock` makes the holder fail before it locks (a control).
  */
 function startFlushLockHolder(tenantId: string, failBeforeLock?: { value: unknown }) {
   const held = gate();
@@ -342,12 +319,7 @@ function startFlushLockHolder(tenantId: string, failBeforeLock?: { value: unknow
   return { actor, held: held.opened, release: () => release.open() };
 }
 
-/**
- * A named system transaction on the admin pool, the pool the flush lock holder uses, held open from
- * `opened` until `end` commits it (`proceed`) or rolls it back (`abort`); the actor of the observer's
- * positive control and of the cancellation-failure control (R2-1). It returns at once with its
- * settlement; the caller ends and settles it on every path.
- */
+/** A named system transaction on the admin pool, held open from `opened` until `end` commits or rolls it back. */
 function startHeldTransaction(name: string) {
   const opened = gate();
   const end = gate();
@@ -369,18 +341,14 @@ function startHeldTransaction(name: string) {
   return { actor, opened: opened.opened, end: end.open };
 }
 
-/** A dedicated admin connection that observes the actors' backends, and its own backend pid. */
 interface Observer {
   client: PoolClient;
   pid: number;
 }
 
 /**
- * Runs `observe` with an observation connection checked out first. The observed actors start inside
- * `observe` and are settled there, before its state assertions. While it runs, no actor can be given the
- * observer's backend, and no observation can borrow a backend an actor released to the pool, as
- * `admin.query` could. The observer is released once `observe` ended. A failure of `observe` keeps its
- * identity (a falsy one too), followed by a release failure.
+ * A dedicated observation connection, so no actor can be given the observer's backend and no observation can
+ * borrow a backend an actor released (as `admin.query` could).
  */
 async function withObserver(observe: (observer: Observer) => Promise<void>): Promise<void> {
   const client = await admin.connect();
@@ -401,11 +369,8 @@ async function withObserver(observe: (observer: Observer) => Promise<void>): Pro
 }
 
 /**
- * Whether the actor backend `pid` has an open transaction. An actor that has not settled keeps one.
- * The observer asserts first that `pid` is not its own backend. It then reads `pg_stat_activity` on
- * its own connection, and that statement reports the observer's pid as well. Each call is its own
- * autocommit statement, so it reads a fresh activity snapshot; Postgres holds one until the end of the
- * transaction that took it.
+ * Each call is its own autocommit statement so it reads a fresh `pg_stat_activity` snapshot (Postgres holds one
+ * per transaction).
  */
 async function inTransaction(observer: Observer, pid: number): Promise<boolean> {
   expect(pid).not.toBe(observer.pid);
@@ -427,11 +392,8 @@ const workerUtilsShape = z.object({
 });
 
 /**
- * graphile-worker 0.17.3's public garbage collection (`WorkerUtils.cleanup`): `GC_TASK_IDENTIFIERS` deletes task
- * identifier rows and `GC_JOB_QUEUES` queue rows that no job references. Resolved from the queue package, which
- * depends on graphile-worker; this package does not. The caller drains the queue first, and every test that
- * collects identifiers restores the search ones through the production bootstrap (`ensureQueueSchema`) before
- * it ends. Test files run one at a time, so no other test shares the state in between.
+ * graphile-worker's public GC (`WorkerUtils.cleanup`), resolved from the queue package since this package does not
+ * depend on graphile-worker. Callers drain the queue first and restore search identifiers via `ensureQueueSchema`.
  */
 async function collectUnusedQueueMetadata(tasks: Array<"GC_TASK_IDENTIFIERS" | "GC_JOB_QUEUES">): Promise<void> {
   const requireFromQueue = createRequire(fileURLToPath(new URL("../../../../queue/package.json", import.meta.url)));
@@ -446,7 +408,6 @@ async function collectUnusedQueueMetadata(tasks: Array<"GC_TASK_IDENTIFIERS" | "
   }
 }
 
-/** Two databases joined by four distinct relation definitions, and two target items A and B. */
 async function relationNodes() {
   const source = await inTenant(() => cp.createDatabase({ name: "Uzly" }));
   const target = await inTenant(() => cp.createDatabase({ name: "Cíle" }));
@@ -470,15 +431,10 @@ async function relationNodes() {
   return { source: source.id, a, b, first, second, third, fourth };
 }
 
-/**
- * Runs the queued reindex, backfill and Journal recompute jobs with the production API task list's
- * own handlers until none is left, so jobs a running job queues (continuations, an area's project
- * items) run too.
- */
+/** Runs queued jobs with the production API task list until none is left, including jobs they queue. */
 async function runQueued(): Promise<void> {
   const { reindex, backfill, recompute } = searchHandlers();
-  // One run may leave jobs of the serialized tenant lane for the next one, so it repeats while it
-  // makes progress.
+  // One run may leave jobs of the serialized tenant lane for the next one.
   let remaining = Number.POSITIVE_INFINITY;
   for (;;) {
     await runOnce({ pgPool: admin }, { [REINDEX]: reindex, [BACKFILL]: backfill, [RECOMPUTE]: recompute });
@@ -494,7 +450,6 @@ async function runQueued(): Promise<void> {
   }
 }
 
-/** A Journal day and one Inbox entry on it, written through the Inbox capture write. */
 async function journalEntry(text: string) {
   const journal = await db("journal");
   const inbox = await db("inbox");
@@ -512,11 +467,8 @@ async function journalEntry(text: string) {
 }
 
 /**
- * Fault injection (R1 P2, parent D5): makes the search-index write of exactly one item fail, which no
- * production input can do on demand. The item id reaches the trigger's WHEN clause as a literal quoted
- * by Postgres (`format('%L')` in a DO block, read from a session setting), never interpolated here.
- * Cleanup runs after `run` settled, on the same dedicated client; a failed cleanup discards that
- * client, and a primary failure and a cleanup failure are reported together.
+ * Makes the search-index write of exactly one item fail. The item id reaches the trigger's WHEN clause as a
+ * `format('%L')` literal from a session setting, never interpolated here. A failed cleanup discards the client.
  */
 async function withIndexWriteFault(itemId: string, run: () => Promise<void>): Promise<void> {
   const client = await admin.connect();
@@ -611,7 +563,6 @@ describe("search reindex fan-out (issue #1652)", () => {
     await link("tasks", "project", task, project);
     await runQueued();
     await rename("areas", area, "Sad");
-    // The write queues only the area's referrers; its projects are found when that job runs.
     expect((await queued(REINDEX)).filter((payload) => payload.kind === "projectItems")).toEqual([]);
     expect(await queued(REINDEX)).toContainEqual({ kind: "referrers", itemId: area });
     await runQueued();
@@ -649,14 +600,13 @@ describe("search reindex fan-out (issue #1652)", () => {
 
   it("puts an Inbox entry's new text into its Journal day's cache and document and drops the old one, through the cache owner (R1 F2)", async () => {
     const { inbox, day, entry } = await journalEntry("Mléko");
-    // The create queues the day's document (through the new journalDay edge) and the owner's own recompute.
     expect(await queued(REINDEX)).toContainEqual({ kind: "item", itemId: day.id });
     expect(await queued(RECOMPUTE)).toContainEqual({ journalDayItemId: day.id });
     await runQueued();
     expect(await cachedTexts(day.id)).toEqual(["Mléko"]);
     expect(await contains(day.id, "mléko")).toBe(true);
     await inTenant(() => cp.updateItem({ databaseId: inbox, itemId: entry.id, propertiesPatch: { text: "Chléb" } }));
-    // The update queues the day's document job, which runs the owner's recompute; no recompute job of its own.
+    // The update's document job runs the owner's recompute; no recompute job of its own.
     expect((await queued(REINDEX)).filter((payload) => payload.itemId === day.id)).toEqual([
       { kind: "item", itemId: day.id },
     ]);
@@ -690,7 +640,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     const { day } = await journalEntry("Rohlík");
     const event = await item("events", "Snídaně");
     await runQueued();
-    // A value written past the owner (no write path changes another owner's cache), so the job's recompute shows.
+    // Written past the owner (no write path changes another owner's cache), so the job's recompute shows.
     await inTenant(() =>
       withTransaction(pool, (client) =>
         client.query(
@@ -745,7 +695,7 @@ describe("search reindex fan-out (issue #1652)", () => {
   it("queues the database's backfill for a property patch and for a property delete, each on its own, and each job rewrites the item's document (R1 P2, R2-4)", async () => {
     const collection = await inTenant(() => cp.createDatabase({ name: "Archiv" }));
     await inTenant(() => cp.createProperty({ databaseId: collection.id, key: "name", name: "Name", type: "title" }));
-    // A select's document text is its option's label; patching the label keeps the stored option key.
+    // A select's document text is its option's label; patching the label keeps the option key.
     const property = await inTenant(() =>
       cp.createProperty({
         databaseId: collection.id,
@@ -767,7 +717,6 @@ describe("search reindex fan-out (issue #1652)", () => {
       cp.updateProperty(property.id, { config: { options: [{ key: "draft", label: "Fialovočervený" }] } }),
     );
     expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
-    // Until the patch's job runs the document still quotes the old label.
     expect(await contains(entry.id, "fialovočervený")).toBe(false);
     await runQueued();
     expect(await backfills()).toEqual([]);
@@ -779,7 +728,6 @@ describe("search reindex fan-out (issue #1652)", () => {
     await runQueued();
     expect(await backfills()).toEqual([]);
     expect(await contains(entry.id, "fialovočervený")).toBe(false);
-    // The retained title property is still in the document.
     expect(await contains(entry.id, "exponát")).toBe(true);
   });
 
@@ -810,8 +758,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     }
     await runQueued();
     await rename("projects", project, "Spytihněv");
-    // The production handler is called directly, chunk by chunk, so each chunk's commit is observable.
-    // Chunks follow the referrers' id order.
+    // Called chunk by chunk (in referrer id order) so each chunk's commit is observable.
     const ordered = [...tasks].sort();
     const boundary = ordered[99];
     const last = ordered[100];
@@ -829,7 +776,6 @@ describe("search reindex fan-out (issue #1652)", () => {
         ),
       ).rejects.toThrow("test index write failure");
     });
-    // The first chunk stays committed; the failed chunk wrote nothing.
     const lostFirst: string[] = [];
     for (const task of ordered.slice(0, 100)) if (!(await contains(task, "spytihněv"))) lostFirst.push(task);
     expect(lostFirst).toEqual([]);
@@ -843,8 +789,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     await inTenant(() => cp.createProperty({ databaseId: collection.id, key: "name", name: "Name", type: "title" }));
     const entry = await inTenant(() => cp.createItem({ databaseId: collection.id, properties: { name: "Exponát" } }));
     await runQueued();
-    // A value stored before its property existed (as imported data can be): no write path stores an
-    // undeclared key, so the fixture writes it directly in the tenant's scope.
+    // No write path stores an undeclared key, so the fixture writes it directly.
     await inTenant(() =>
       withTransaction(pool, (client) =>
         client.query(
@@ -921,27 +866,18 @@ describe("search reindex fan-out (issue #1652)", () => {
   });
 
   /*
-   * R1 F3: X links A then B while Y links B then A, each edge through its own relation definition, interleaved
-   * edge by edge. Queued inline, each transaction held its first edge's job rows when it reached the other's,
-   * a lock cycle. The jobs are now added at each transaction's pre-commit flush under the tenant's flush lock;
-   * a scratch holder of that lock makes both writers wait observably at their flush before either commits.
+   * X links A then B while Y links B then A, interleaved edge by edge. Jobs are added at each transaction's
+   * pre-commit flush under the tenant's flush lock, so there is no lock cycle; a scratch holder of that lock makes
+   * both writers wait observably at their flush.
    */
   interface CrossedOptions {
-    /** X throws its own failure after its first edge (the rollback control). */
     xFails?: boolean;
-    /** The harness fails, with this exact value, once both writers wait at their gates (a settlement control). */
     failObservation?: { value: unknown };
-    /** The lock holder fails before it locks (a settlement control). */
     holderFails?: { value: unknown };
-    /** Filled before the call returns or throws: each settled actor in order, and every backend the actors used. */
     trace?: { order: string[]; pids: number[] };
   }
 
-  /**
-   * Runs the crossed schedule. Every actor is settled before this returns or throws: on a harness failure the
-   * writers' gates open with `abort`, so their transactions roll back, the holder is released, and the primary
-   * failure is rethrown with its identity (cleanup errors after it). `actors` lists every actor started.
-   */
+  /** Every actor is settled before this returns or throws; on a harness failure the writers roll back. */
   async function crossedWrites(nodes: Awaited<ReturnType<typeof relationNodes>>, options: CrossedOptions = {}) {
     const holder = startFlushLockHolder(tenant, options.holderFails);
     const actors: Actor[] = [holder.actor];
@@ -1019,7 +955,6 @@ describe("search reindex fan-out (issue #1652)", () => {
     } catch (error) {
       primary = { error };
     }
-    // A writer still at its gate aborts after a harness failure; one already released goes on.
     xContinue.open(primary ? "abort" : "proceed");
     yContinue.open(primary ? "abort" : "proceed");
     holder.release();
@@ -1039,7 +974,6 @@ describe("search reindex fan-out (issue #1652)", () => {
     async (lane) => {
       const nodes = await relationNodes();
       await runQueued();
-      // A cold lane: graphile-worker's public GC removes the drained tenant lane's queue row.
       if (lane === "cold") await collectUnusedQueueMetadata(["GC_JOB_QUEUES"]);
       const { x, y } = await crossedWrites(nodes);
       if (!x.ok) throw x.error;
@@ -1071,7 +1005,6 @@ describe("search reindex fan-out (issue #1652)", () => {
     for (const id of announced) expect([nodes.a, nodes.b, y]).toContain(id);
   });
 
-  /** The source database's items, read in the tenant. */
   async function sourceItems(source: string): Promise<string[]> {
     const { rows } = await inTenant(() =>
       pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [source]),
@@ -1118,8 +1051,7 @@ describe("search reindex fan-out (issue #1652)", () => {
       const harnessFailure = new Error("harness failed while both transactions were held");
       const cancelFault = new Error("cancellation attempt failed (test fault)");
       const attempts: Array<{ pid: number; open: boolean }> = [];
-      // The labelled fault takes the place of exactly the cancellation query. It records whether the stuck actor
-      // is still in its transaction, opens its gate so it really rolls back during the second wait, and rejects.
+      // The fault replaces exactly the cancellation query and opens the stuck actor's gate so it rolls back.
       const cancel = async (pid: number): Promise<boolean> => {
         attempts.push({ pid, open: await inTransaction(observer, pid) });
         stuck.end("abort");
@@ -1127,8 +1059,6 @@ describe("search reindex fan-out (issue #1652)", () => {
       };
       const order: string[] = [];
       let settlement: Settlement | undefined;
-      // The harnesses' failure path: the primary failure, every reachable gate opened, every actor settled,
-      // then the primary failure with the cleanup errors after it.
       async function harness(): Promise<void> {
         let primary: { error: unknown } | undefined;
         try {
@@ -1140,11 +1070,10 @@ describe("search reindex fan-out (issue #1652)", () => {
         }
         let result: Settlement;
         try {
-          // The stuck actor's gate stays shut here; only the faulted cancellation opens it.
           later.end("abort");
           result = await settleActors([stuck.actor, later.actor], primary, { order, cancelAfterMs: 500, cancel });
         } finally {
-          // Every gate is open on every path, whatever the helper did; a gate keeps its first decision.
+          // A gate keeps its first decision.
           stuck.end("abort");
           later.end("abort");
         }
@@ -1162,7 +1091,6 @@ describe("search reindex fan-out (issue #1652)", () => {
       expect(failures[0]).toBe(harnessFailure);
       expect(failures[1]).toBe(cancelFault);
       expect(outcome.error.cause).toBe(harnessFailure);
-      // Both actors settled inside the helper: the stuck one after its cancellation failed, the later one after it.
       expect(order).toEqual(["settled:stuck transaction", "settled:later transaction"]);
       expect(settlement).toEqual({ errors: [cancelFault], unsettled: false });
       expect(settlement?.errors[0]).toBe(cancelFault);
@@ -1254,18 +1182,9 @@ describe("search reindex fan-out (issue #1652)", () => {
   });
 
   /*
-   * R1 D1 (the parent's cold counterexample): a writer holds a fresh, uncommitted inline task identifier row while
-   * a worker's own registration of its task list (search identifiers first, the fresh one last) waits on it.
-   * With the search identifiers registered by the bootstrap, the registration holds none of the writer's flush
-   * rows, so the writer's flush adds its job and commits, and the registration then settles. Without them, the
-   * registration holds its own uncommitted search identifier rows while it waits; the writer's flush does not
-   * see them registered and refuses before any add_job instead of waiting on them.
-   */
-  /**
-   * Runs the mixed schedule. The writer and the native worker are settled before the bootstrap restores the
-   * search identifiers, on every path; after a harness failure the writer's gate opens with `abort`, so its
-   * transaction rolls back, and the failure is rethrown with its identity (cleanup errors after it). `order`
-   * records each settlement and the restoration.
+   * A writer holds a fresh uncommitted inline task identifier row while a worker's own task list registration waits
+   * on it. With search identifiers bootstrapped, the writer's flush commits and registration settles. Without them,
+   * the writer's flush refuses before any add_job instead of waiting on the registration's uncommitted rows.
    */
   async function mixedRegistration(
     state: "registered" | "unregistered",
@@ -1341,7 +1260,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     release.open(primary ? "abort" : "proceed");
     const settlement = await settleActors(actors, primary, { order });
     if (writerPid !== undefined) options.trace?.pids.push(writerPid);
-    // The identifiers are restored only once every actor settled; an unsettled one keeps the state as it is.
+    // Restored only once every actor settled; an unsettled one keeps the state as it is.
     if (!settlement.unsettled) {
       const restored = await settle(ensureQueueSchema(admin));
       order.push("restored");
@@ -1357,7 +1276,6 @@ describe("search reindex fan-out (issue #1652)", () => {
     async (state) => {
       const { writer, ran, probe, order, otherJobs } = await mixedRegistration(state);
       expect(order).toEqual(["settled:writer", "settled:worker", "restored"]);
-      // The worker ran the writer's probe and search jobs, or the writer's rollback left none.
       expect(await allJobs()).toEqual(otherJobs);
       if (state === "registered") {
         expect(writer).toEqual({ ok: true, value: undefined });
@@ -1379,8 +1297,6 @@ describe("search reindex fan-out (issue #1652)", () => {
       expect(outcome.ok).toBe(false);
       if (outcome.ok) throw new Error("Expected the observation failure");
       expect(outcome.error).toBe(failure);
-      // Both actors settled before the identifiers were restored, and the aborted writer (which writes only
-      // jobs) left none.
       expect(trace.order).toEqual(["settled:writer", "settled:worker", "restored"]);
       expect(trace.pids).toHaveLength(1);
       for (const pid of trace.pids) expect(await inTransaction(observer, pid)).toBe(false);

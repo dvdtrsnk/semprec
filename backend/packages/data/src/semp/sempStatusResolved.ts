@@ -5,16 +5,12 @@ import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { renderResolutionTitle, type ResolutionTitleParams } from "./sempResolutionTitles.js";
 import type { SempProblemCategory } from "./sempProblemsStore.js";
 
-/** A resolved problem stays in `resolvedRecent` for this many days (issue gh-1919). */
+/** How long a resolved problem stays in `resolvedRecent`. */
 export const SEMP_RESOLVED_RECENT_DAYS = 7;
 
-/** `resolvedRecent` lists at most this many problems, the newest first. */
 export const SEMP_RESOLVED_RECENT_LIMIT = 100;
 
-/**
- * Resolution kind that `resolvedRecent` leaves out: the source of the problem was deleted, so there was
- * no recovery to report.
- */
+/** Left out of `resolvedRecent`: the source was deleted, so there was no recovery to report. */
 const SOURCE_DELETED_RESOLUTION_KIND = "sourceDeleted";
 
 const categories = [
@@ -61,17 +57,12 @@ function keyedId(key: string, prefix: string): string | null {
 }
 
 /**
- * `resolvedRecent` of the Semp status report (issue gh-1919): the problems of the current tenant resolved in
- * the last `SEMP_RESOLVED_RECENT_DAYS` days, newest first, at most `SEMP_RESOLVED_RECENT_LIMIT`, without the
- * problems closed because their source was deleted. A problem that was resolved and raised again is listed
- * under the id of its resolved row and is also an active problem under another id.
+ * The tenant's recently resolved problems, newest first, without `sourceDeleted` ones. A problem resolved and
+ * raised again appears here under its resolved row's id and as an active problem under another.
  *
- * The titles are rendered here, at read time, from the kind of the problem, its resolution kind and the names
- * read from the source, so the database stores no user text. The names of all rows are read in batches: one
- * statement for the problems, the items lookup of the choke point's store, and one statement for each of
- * heartbeats, reply threads, databases and guidance findings, each of those run only when a listed problem
- * needs it. The number of statements therefore has an upper bound that does not depend on the number of
- * problems. A source that no longer exists has no name and the title carries the neutral word instead.
+ * Titles are rendered at read time from kinds and source names, so no user text is stored. Names are read in
+ * batches per source type, only when needed, so the statement count is bounded independent of the problem
+ * count. A vanished source gets the neutral word.
  */
 export async function readSempResolvedRecent(client: PoolClient, catalogs: ModuleCatalogs, locale: "cs" | "en") {
   const { rows: rawRows } = await client.query<Record<string, unknown>>(

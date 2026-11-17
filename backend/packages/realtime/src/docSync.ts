@@ -11,54 +11,32 @@ import { sendWithBackpressure } from "./backpressure.js";
 import { logger } from "./logger.js";
 
 /**
- * Every update accepted over `WS /api/sync`'s binary channel is attributed to this fixed
- * `created_by` value, not to anything the client's message itself claims — the "authenticated
- * origin" the issue's Task asks for is the socket's verified identity (it got this far only
- * because `SyncServerOptions.authenticate` accepted it), never client-supplied data. Agent- or
- * system-originated doc writes go through `createDocStore`'s own `origin` parameter directly,
- * not this WS path.
+ * Updates accepted over the binary channel are attributed to this fixed value, never to anything the client claims; the
+ * authenticated origin is the socket's verified identity. Agent and system doc writes go through `createDocStore`'s
+ * `origin` parameter instead.
  */
 const DOC_SYNC_CREATED_BY: CreatedBy = "user";
 
 /**
- * Per-socket cap on accepted SyncStep2/Update frames: a legitimately authenticated socket
- * could otherwise send updates fast enough to monopolize the Postgres connection pool with
- * `mutateYDoc` transactions, degrading every other document on this process. A frame beyond
- * the cap is dropped (never queued or buffered) — the client's own Yjs state is untouched, so
- * a later accepted update still carries everything a dropped one would have.
+ * Per-socket cap on accepted SyncStep2/Update frames, so one socket cannot monopolize the pool with `mutateYDoc`
+ * transactions. Extra frames are dropped; the client's Yjs state is untouched, so a later update carries their content.
  */
 const MAX_UPDATES_PER_WINDOW = 50;
 const RATE_LIMIT_WINDOW_MS = 1000;
 
-/**
- * Per-connection cap on distinct open documents (issue #242's Task): a client that opened this
- * many documents already gets no more subscriptions from this socket until it closes one. Kept
- * deliberately low relative to any real editor's working set, since it exists only to bound one
- * connection's fan-out membership, not to reflect an expected usage pattern.
- */
+/** Bounds one connection's fan-out membership; deliberately low, not a usage expectation. */
 const MAX_OPEN_DOCS_PER_CONNECTION = 32;
 
 /**
- * Per-process registry of which open `WS /api/sync` sockets have which documents open
- * (issue #162's `doc:open`/`doc:close` subscription state) plus the y-protocols/sync
- * handshake and update persistence those subscriptions ride on.
- *
- * Deliberately holds no `Y.Doc` cache: every open/update/fan-out below reconstructs the
- * document fresh from `doc_snapshots`/`doc_updates` via `loadYDoc`/`mutateYDoc` (the same
- * primitives `createDocStore` uses), the same "no server-side cache, Postgres is the only
- * source of truth" discipline the rest of the doc-persistence layer already follows — this
- * also means correctness never depends on which of several API processes a socket landed on.
+ * Per-process registry of `doc:open`/`doc:close` subscriptions plus the y-protocols/sync handshake and update
+ * persistence. Holds no `Y.Doc` cache: every operation reconstructs from `doc_snapshots`/`doc_updates`, so Postgres is
+ * the only source of truth and correctness never depends on which API process a socket landed on.
  */
 export interface DocSyncRegistry {
-  /** A client of `tenantId` opened `docId`: subscribes the socket and sends it the server's SyncStep1. */
   handleOpen(ws: WebSocket, tenantId: string, docId: string): Promise<void>;
-  /** A client closed `docId`: unsubscribes the socket from just that document. */
   handleClose(ws: WebSocket, docId: string): void;
-  /** The socket itself closed: unsubscribes it from every document it had open. */
   handleSocketClosed(ws: WebSocket): void;
-  /** A binary frame for `docId` arrived from `ws`: parses and acts on its y-protocols/sync message. */
   handleBinaryFrame(ws: WebSocket, tenantId: string, docId: string, payload: Buffer): Promise<void>;
-  /** A `doc_update` NOTIFY was received for `docId`/`updateId`: fans it out to every open subscriber. */
   fanOutDocUpdate(tenantId: string, docId: string, updateId: string): Promise<void>;
 }
 
@@ -74,8 +52,8 @@ function sendFrame(ws: WebSocket, docId: string, payload: Uint8Array): void {
 export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
   const subscribersByDoc = new Map<string, Set<WebSocket>>();
   const openDocsByClient = new WeakMap<WebSocket, Set<string>>();
-  // A socket is authenticated in exactly one tenant for its whole life; recorded on first open so
-  // `handleClose`/`handleSocketClosed` (which take no tenant) find the subscription key.
+  // A socket stays in one tenant for life; recorded on first open so `handleClose`/`handleSocketClosed` can find the
+  // key.
   const tenantByClient = new WeakMap<WebSocket, string>();
   const updateRateByClient = new WeakMap<WebSocket, { count: number; windowStart: number }>();
 
@@ -122,13 +100,10 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
   }
 
   /**
-   * Reserves `docId` against the per-connection cap synchronously, before any `await` — a burst
-   * of concurrent `doc:open` frames dispatches each one's async body without waiting for the
-   * previous to finish, so checking the cap only after `getDocById` resolves would let every
-   * frame in the burst read the same stale (pre-mutation) count and all pass it. Returns `false`
-   * (cap already hit) or `true` (already open, or newly reserved) — the caller must undo a fresh
-   * reservation if the doc turns out not to exist. A reservation only counts against the cap; it
-   * authorizes nothing — `handleBinaryFrame` accepts frames only once `subscribe` has run.
+   * Reserves `docId` against the cap synchronously: concurrent `doc:open` frames would otherwise all read the same
+   * stale count after `getDocById`. Returns `false` when the cap is hit; the caller must undo a fresh reservation if
+   * the doc does not exist. A reservation authorizes nothing; `handleBinaryFrame` accepts frames only after
+   * `subscribe`.
    */
   function reserveOpenSlot(ws: WebSocket, docId: string): boolean {
     let openDocs = openDocsByClient.get(ws);
@@ -144,31 +119,21 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
 
   return {
     async handleOpen(ws, tenantId, docId) {
-      // The per-connection subscription cap (issue #242's Task) is enforced synchronously,
-      // before any `await` below, precisely so a burst of concurrent `doc:open` frames for
-      // distinct docs can't all read the same stale count and land at 33 (see
-      // `reserveOpenSlot`'s doc comment).
+      // Enforced before any `await`; see `reserveOpenSlot`.
       if (!reserveOpenSlot(ws, docId)) {
         logger.warn("Sync server rejected doc:open: socket exceeded the per-connection subscription limit");
         return;
       }
 
-      // A docId naming no real `docs` row (deleted, never existed, malformed-but-UUID-shaped)
-      // is dropped rather than opened — there is nothing to sync and no snapshot to read. The
-      // reservation above is released so a bad docId never permanently occupies a cap slot.
-      // Resolved inside the socket's tenant: another tenant's doc is invisible under RLS, so it
-      // takes this same path as a nonexistent id.
+      // An unknown docId (or another tenant's, invisible under RLS) is dropped and its reservation released.
       const doc = await runInTenant(tenantId, () => getDocById(pool, docId));
       if (!doc) {
         openDocsByClient.get(ws)?.delete(docId);
         return;
       }
 
-      // The socket may have closed while the query above was in flight — its own `close`
-      // handler already ran `handleSocketClosed`, which found no subscription yet and did
-      // nothing. Subscribing now, after that, would leave a dead socket permanently held by
-      // `subscribersByDoc` with no future close event left to clean it up. No `await` follows
-      // this check before `subscribe`, so nothing can close the socket in between.
+      // The socket may have closed during the query, after its `handleSocketClosed` found nothing to clean up;
+      // subscribing now would leak it in `subscribersByDoc`. No `await` follows before `subscribe`.
       if (ws.readyState !== ws.OPEN) {
         openDocsByClient.get(ws)?.delete(docId);
         return;
@@ -177,13 +142,8 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       tenantByClient.set(ws, tenantId);
       subscribe(ws, tenantId, docId);
 
-      // Same handshake `y-websocket`'s reference server implementation uses: send this
-      // process's own SyncStep1 (its current state vector, reconstructed from
-      // `doc_snapshots` + any still-pending `doc_updates`) immediately on open/reconnect,
-      // rather than waiting for the client's own SyncStep1 first. A client with edits made
-      // while offline replies with SyncStep2 carrying only what this server is missing —
-      // the "reconnect after offline edits exchanges only the necessary Yjs diff" acceptance
-      // criterion — and a client with nothing new simply has nothing to reply with.
+      // As y-websocket's reference server: send our SyncStep1 immediately on open, so a client with offline edits
+      // replies with a SyncStep2 carrying only what the server is missing.
       const ydoc = await runInTenant(tenantId, () => loadYDoc(pool, docId));
       const encoder = encoding.createEncoder();
       syncProtocol.writeSyncStep1(encoder, ydoc);
@@ -197,10 +157,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
     handleSocketClosed(ws) {
       const openDocs = openDocsByClient.get(ws);
       if (!openDocs) return;
-      // `unsubscribe` (not an inline delete) so an emptied `subscribersByDoc` entry is dropped
-      // here exactly as it is on an explicit `doc:close` — otherwise a doc whose last subscriber
-      // disconnects via socket close, rather than `doc:close`, leaves a permanently empty `Set`
-      // behind. Copy `openDocs` first: `unsubscribe` mutates the very set being iterated.
+      // `unsubscribe` drops emptied `subscribersByDoc` entries; copy `openDocs` first because it mutates the set.
       for (const docId of [...openDocs]) {
         unsubscribe(ws, docId);
       }
@@ -208,16 +165,10 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
     },
 
     async handleBinaryFrame(ws, tenantId, docId, payload) {
-      // A socket must have opened this document before this server accepts binary frames for
-      // it — mirrors the closed-catalog validation the rest of protocol-v1 already applies,
-      // and is what makes "an unsubscribed client receives none" also true for what this
-      // server is willing to persist, not just what it forwards. The gate is the subscription
-      // under `tenantId`, not the `openDocsByClient` reservation: a reservation is taken before
-      // `handleOpen`'s tenant-scoped `getDocById` resolves, so a frame sent while that lookup is
-      // still pending (e.g. right after a `doc:open` for another tenant's doc) would otherwise be
-      // accepted for a doc the socket's tenant cannot see. Such an early frame is dropped; the
-      // client's own Yjs state keeps its content, and its reply to the SyncStep1 `handleOpen`
-      // sends once the open is confirmed carries it.
+      // Binary frames are accepted only for a document subscribed under `tenantId`, not merely reserved: a reservation
+      // is taken before the tenant-scoped `getDocById` resolves, so a frame sent meanwhile could target a doc the
+      // tenant cannot see. The dropped frame's content reaches the server through the client's reply to the later
+      // SyncStep1.
       if (!subscribersByDoc.get(subscriptionKey(tenantId, docId))?.has(ws)) return;
 
       let decoder: decoding.Decoder;
@@ -237,10 +188,8 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
           } catch {
             return;
           }
-          // Diffed against the full current doc (`doc_snapshots` merged with any still-pending
-          // `doc_updates`) — a client's state vector always yields a correct SyncStep2 diff
-          // against this, regardless of how stale it is or how many compactions have run since,
-          // because compaction only ever merges retained content forward, never discards it.
+          // Compaction only merges content forward, so any client state vector yields a correct diff against the full
+          // doc.
           const ydoc = await runInTenant(tenantId, () => loadYDoc(pool, docId));
           const encoder = encoding.createEncoder();
           syncProtocol.writeSyncStep2(encoder, ydoc, clientStateVector);
@@ -256,24 +205,17 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
           } catch {
             return;
           }
-          // Optional trailing correlation id; absent or invalid means the update is stored but
-          // never acknowledged.
+          // Absent or invalid means stored but never acknowledged.
           const clientUpdateId = readClientUpdateId(decoder);
-          // `mutateYDoc` loads the current doc, applies `update` inside a transaction, and
-          // persists the resulting diff as a new `doc_updates` row (mirrored into
-          // `doc_history_updates`) before firing the after-commit NOTIFY this same registry's
-          // `fanOutDocUpdate` reacts to — the "persist before transactional NOTIFY" ordering the
-          // issue's Task asks for is inherited from that existing write path rather than
-          // reimplemented here. An already-known or no-op update produces no new row and no
-          // NOTIFY, preserving idempotence for a duplicate or replayed frame.
+          // `mutateYDoc` persists the diff as a `doc_updates` row before the after-commit NOTIFY that `fanOutDocUpdate`
+          // reacts to. A known or no-op update writes no row and no NOTIFY, so duplicates are idempotent.
           await runInTenant(tenantId, () =>
             mutateYDoc(pool, docId, DOC_SYNC_CREATED_BY, (ydoc) => {
               Y.applyUpdate(ydoc, update, DOC_SYNC_CREATED_BY);
             }),
           );
-          // Reached only once `mutateYDoc` resolved (its transaction committed); a throw
-          // propagates to the caller and sends no ack. A replay that added nothing is still
-          // durable, so it is acknowledged too. `sendWithBackpressure` skips a closed socket.
+          // Reached only after the transaction committed; a replay that added nothing is durable too, so it is
+          // acknowledged.
           if (clientUpdateId !== null) {
             const ack: OutboundFrame = { type: "doc:ack", docId, clientUpdateId };
             sendWithBackpressure(ws, JSON.stringify(ack));
@@ -281,8 +223,7 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
           return;
         }
         default:
-          // Outside the closed y-protocols/sync catalog (e.g. an awareness message riding the
-          // wrong channel) — dropped, never crashing this connection or any other client's.
+          // Outside the y-protocols/sync catalog (e.g. awareness on the wrong channel): dropped.
           return;
       }
     },
@@ -296,14 +237,8 @@ export function createDocSyncRegistry(pool: Pool): DocSyncRegistry {
       if (updateBytes) {
         syncProtocol.writeUpdate(encoder, updateBytes);
       } else {
-        // The referenced `doc_updates` row is already gone — a concurrent compaction merged it
-        // into `doc_snapshots` and deleted it before this fetch ran. Recovering by sending the
-        // full current state (a SyncStep2 diff against an empty state vector) rather than
-        // dropping the frame is exactly the retained-snapshot recovery the issue's Task asks
-        // for: `doc_snapshots` still holds everything the deleted row contributed, so no
-        // subscriber silently misses the change — it just receives it folded into a full resync
-        // instead of as one incremental update. Yjs's update application is idempotent, so a
-        // subscriber that already had this content applies a no-op.
+        // A concurrent compaction already merged and deleted the row. `doc_snapshots` still holds its content, so send
+        // a full resync instead; applying it is a no-op for a subscriber that already had it.
         const ydoc = await runInTenant(tenantId, () => loadYDoc(pool, docId));
         syncProtocol.writeSyncStep2(encoder, ydoc);
       }

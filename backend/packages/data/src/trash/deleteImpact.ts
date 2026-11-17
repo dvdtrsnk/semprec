@@ -1,10 +1,5 @@
-// Owns the read of what deleting one item would reach (issue #1856): the connected records per
-// collection, the records inside the item's inline databases, the pages nested below it, and the places that take a
-// value over from it. It composes reads the other owners already expose, writes nothing and knows nothing about which
-// transport asked. It lives beside the trash purge, not in `chokePoint/`, because it reads the page tree of `docs/`,
-// which `chokepoint-knows-no-domain` keeps the choke point from importing.
-// Constrained by: docs/adr/2026-11-12-per-database-agent-grants.md
-// and, for the module counts, docs/adr/2026-11-14-a-recurring-task-series-is-trashed-and-restored-as-one-cascade.md
+// What deleting one item would reach, composed from reads other owners expose; writes nothing. Lives here, not in
+// `chokePoint/`, because it reads the `docs/` page tree, which the choke point may not import.
 import type { PoolClient } from "pg";
 import { listUnreadableDatabaseIds, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 import { collectSubpageTree } from "../docs/pageTrash.js";
@@ -15,40 +10,32 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { listRelatedWithClient, type RelatedResolver } from "../chokePoint/relatedOps.js";
 import { listValueLinksBySourceItem } from "../chokePoint/valueLinksStore.js";
 
-/** One collection of connected records, as `relation.related` counts it. */
 export interface DeleteImpactRelated {
   databaseKey: string | null;
   count: number;
 }
 
-/**
- * A link with an item source naming the deleted item, in any link state: the item that holds the link and the property
- * key the link covers.
- */
+/** A link whose item source names the deleted item, in any link state. */
 export interface DeleteImpactLink {
   itemId: string;
   propertyKey: string;
 }
 
 /**
- * What deleting one item would reach. Besides the four parts below, `seriesInstanceCount`, `attachmentCount` and
- * `hostEventCount` (issue gh-1882) are counted by the module that owns the item's database and are 0 for an item of a
- * database whose module counts none: the live instances of the item's recurring task series, itself included (0 for a
- * task without a series), the live attachments (`Files.tasks` edges) and the live host events (`Tasks.hostEvents`
- * edges).
+ * `seriesInstanceCount` (itself included), `attachmentCount` and `hostEventCount` are counted by the module owning
+ * the item's database; 0 when that module counts none.
  */
 export interface DeleteImpact extends ItemDeleteImpact {
-  /** The counts of `relation.related`, in its order: the connected live records per collection the caller may read. */
+  /** `relation.related` order: connected live records per collection the caller may read. */
   related: DeleteImpactRelated[];
-  /** The live records inside the inline databases of the item, recursively, the item itself not counted. */
+  /** Live records in the item's inline databases, recursively, excluding the item. */
   subtreeItemCount: number;
-  /** The live pages below the item at any depth, the item itself not counted. */
+  /** Live pages below the item at any depth, excluding the item. */
   subtreePageCount: number;
-  /** The live items of readable databases whose value, in any link state, is taken over from the item. */
+  /** Live items of readable databases whose value is taken over from the item. */
   linksToOwn: DeleteImpactLink[];
 }
 
-/** `resolver` with the `omit` list of every declared related order dropped; the declared `order` is kept. */
 function withoutRelatedOmit(resolver: RelatedResolver): RelatedResolver {
   return {
     ...resolver,
@@ -60,27 +47,11 @@ function withoutRelatedOmit(resolver: RelatedResolver): RelatedResolver {
 }
 
 /**
- * What deleting `itemId` would reach, read in the caller's transaction; `null` when the item does not exist, is in the
- * Trash, or belongs to another tenant (the three answer alike). It changes nothing. The parts are separate statements,
- * so the caller opens the transaction at `repeatable_read` for them to describe one state.
- *
- * - `related` is the result of `listRelatedWithClient`, reduced to the database key and the count. The related panel of
- *   a record leaves out the collections its manifest declares in `omit` (Tasks for a project, Journal for an area)
- *   because the screen shows them elsewhere; a confirmation of a delete states every connected collection, so the
- *   read keeps the declared order and drops the omit list.
- * - `subtreeItemCount` is the number of live rows in the walk of `collectItemSubtree`, which also walks through a
- *   trashed row, as the cascade of a delete does. A row of a database the `reader` may not read is not counted.
- * - `subtreePageCount` is the length of `collectSubpageTree`. The Pages database is a non-sensitive system database,
- *   which every reader may read, so no page is left out for a reader.
- * - `linksToOwn` lists each link that has an item source naming the item, once, as the item that holds the link and the
- *   property it covers. A holder in the Trash or in a database the `reader` may not read is left out.
- *
- * - `seriesInstanceCount`, `attachmentCount` and `hostEventCount` come from the delete impact reader of the module that
- *   owns the item's database (`readItemDeleteImpact`), which is given the `reader` and counts nothing the reader may not
- *   read; an item of a database without one has none of them.
- *
- * A `reader` (an agent's project, issue #1810, or an external client, issue #1998) needs `read` access to the database
- * of the item, else the read is refused as `forbidden`. A read without a reader, as a person's, sees every database.
+ * `null` when the item does not exist, is trashed, or belongs to another tenant (all answer alike). The parts are
+ * separate statements, so the caller opens a `repeatable_read` transaction. `related` drops the manifest `omit`
+ * lists, since a delete confirmation states every connected collection. The subtree walk passes through trashed rows
+ * like the delete cascade. Anything the `reader` may not read is left out; a `reader` without `read` access to the
+ * item's database is refused as `forbidden`. No reader (a person) sees every database.
  */
 export async function computeDeleteImpact(
   client: PoolClient,

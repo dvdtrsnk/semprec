@@ -1,11 +1,8 @@
 /**
- * The closed 51-operation catalog (issues #252, #1404, #1617, #1587, #1615, #1616, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017, #1842, #1839, #1876). Every other file in `genericOperations` is
- * keyed off this exact list — adding or removing an operation means touching this array and
- * letting the compile-time exhaustiveness checks in `schemas.ts`, `port.ts`, `capabilities.ts`,
- * and `bindings.ts` point at whatever is now missing or extra.
- *
- * #220 uses these names verbatim as AgentTool names, and prefixed `semprec.` as MCP names, except for
- * `REST_ONLY_OPERATION_NAMES` below.
+ * The closed generic-operation catalog. Every other file in `genericOperations` is keyed off this list; compile-time
+ * exhaustiveness checks in `schemas.ts`, `port.ts`, `capabilities.ts` and `bindings.ts` point at anything missing or
+ * extra. The names are used verbatim as AgentTool names and prefixed `semprec.` as MCP names, except
+ * `REST_ONLY_OPERATION_NAMES`.
  */
 export const GENERIC_OPERATION_NAMES = [
   "database.list",
@@ -64,12 +61,10 @@ export const GENERIC_OPERATION_NAMES = [
 export type GenericOperationName = (typeof GENERIC_OPERATION_NAMES)[number];
 
 /**
- * The catalog operations that REST alone dispatches: `GenericOperationGateway`, through which the AgentTool and MCP
- * transports list and call operations, neither lists nor dispatches them.
- * - `property.option.add` and `property.option.update` (issue #1699,
- *   docs/adr/2026-11-10-select-options-change-on-a-schema-locked-database.md): an option changes the schema of a
- *   database, so the assistant gets no tool for it; it will propose a new option on an Inbox proposal that a person
- *   confirms (#1994).
+ * Operations only REST dispatches; `GenericOperationGateway` (used by AgentTool and MCP) neither lists nor dispatches
+ * them.
+ * - `property.option.add` / `property.option.update`: an option changes a database's schema, so the assistant gets no
+ *   tool for it.
  */
 export const REST_ONLY_OPERATION_NAMES = [
   "property.option.add",

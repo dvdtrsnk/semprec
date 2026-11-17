@@ -5,11 +5,11 @@ import { getSystemTimezone } from "../systemSettings.js";
 import { assertValidTimezone, normalizeWallClockTime } from "../timezone.js";
 import { deriveTaskTime } from "../tasks/deriveTaskTime.js";
 
-/** The Events keys whose change recomputes the time properties on an update. */
+/** A change of these keys recomputes the time properties on an update. */
 const TIME_INPUT_KEYS = ["date", "endDate", "timeFrom", "timeTo"] as const;
 
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-/** A date with a time of day, optionally with seconds and an offset (`Z`, `+02:00`, `+0200`, `+02`). */
+/** Optional seconds and offset (`Z`, `+02:00`, `+0200`, `+02`). */
 const DATE_TIME_PATTERN = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}(?::?\d{2})?)?$/i;
 
 type ReadDate =
@@ -26,17 +26,16 @@ function readEventDate(value: string): ReadDate {
     return DateTime.fromISO(value, { setZone: true }).isValid ? { kind: "instant", value } : { kind: "unreadable" };
   }
   const [, date, hours, minutes] = match;
-  // Without an offset the value is a wall-clock time in the tenant zone; only its validity is checked here,
-  // on the whole value with any seconds and fraction (`T` stands in for a space separator), so a value with
-  // unreadable seconds is left unchanged rather than truncated into a valid-looking time.
+  // Without an offset it is wall-clock in the tenant zone; validity is checked on the whole value so unreadable
+  // seconds leave it unchanged rather than truncated into a valid-looking time.
   if (!DateTime.fromISO(`${date}T${value.slice(11)}`, { zone: "utc" }).isValid) return { kind: "unreadable" };
   return { kind: "wallClock", date: date!, time: `${hours}:${minutes}` };
 }
 
-/** `HH:MM`, or `null` for no value; `undefined` when the value is present but unreadable. */
+/** `null` for no value; `undefined` when present but unreadable. */
 export function readTime(value: unknown, field: "timeFrom" | "timeTo"): string | null | undefined {
   try {
-    // Only an end time may be `24:00` (`normalizeWallClockTime`'s own contract, gh-1536).
+    // Only an end time may be `24:00`.
     return normalizeWallClockTime(value, { field, allow2400: field === "timeTo" });
   } catch (error) {
     if (error instanceof ValidationError) return undefined;
@@ -48,7 +47,7 @@ function isUnset(value: unknown): boolean {
   return value === undefined || value === null || value === "";
 }
 
-/** `time` plus one hour, clipped to the end of the day. */
+/** Clipped to the end of the day. */
 function oneHourLater(time: string): string {
   const [hours, minutes] = time.split(":").map(Number);
   const total = hours! * 60 + minutes! + 60;
@@ -57,25 +56,17 @@ function oneHourLater(time: string): string {
 }
 
 /**
- * The Events time rules of issue #1598 as a pure function: the properties a create (`stored` null) or
- * update should store, given the stored properties, the patch and the tenant time zone. On an update
- * that names none of `date`, `endDate`, `timeFrom` and `timeTo`, the patch is returned unchanged.
- * Otherwise, on the merged state (stored properties plus patch):
+ * Pure Events time rules for a create (`stored` null) or update. An update naming none of `date`, `endDate`,
+ * `timeFrom`, `timeTo` returns the patch unchanged. Otherwise, on stored plus patch:
  *
- * - A patched `date` that carries an offset or `Z` is converted in `zone` to `date` (`YYYY-MM-DD`)
- *   plus `timeFrom`; one with a time but no offset is read as wall-clock the same way. A date-only or
- *   unreadable `date` is left unchanged; a value is unreadable when any part of it, seconds included,
- *   is not a valid date and time.
- * - `timeFrom` and `timeTo` in the result are normalized (`9:00` becomes `09:00`); an unreadable value
- *   is left unchanged for issue #1663 to reject.
- * - A single-day Event (`endDate` unset or equal to `date`) with `timeFrom` and no `timeTo` gets
- *   `timeTo` one hour later, clipped to `24:00`.
- * - `time` is derived as `HH:MM–HH:MM` (the format of `Tasks.time`). It is `null` without `timeFrom`,
- *   even when `timeTo` is unreadable; it is left as stored while `timeFrom` is unreadable, or while
- *   `timeFrom` is set and `timeTo` is unreadable.
+ * - A patched `date` with a time (offset/`Z` converted in `zone`, otherwise wall-clock) becomes `date` plus
+ *   `timeFrom`; a date-only or unreadable `date` is left unchanged.
+ * - `timeFrom`/`timeTo` are normalized; an unreadable value is left for validation to reject.
+ * - A single-day Event with `timeFrom` and no `timeTo` gets `timeTo` one hour later, clipped to `24:00`.
+ * - `time` is `HH:MM–HH:MM` (as `Tasks.time`); `null` without `timeFrom`, left as stored while either time is
+ *   unreadable.
  *
- * `zone` is needed only to convert an instant; without it such a `date` cannot be predicted and is
- * refused with a 400 on `date` (a proposal preparation whose caller supplied no tenant zone).
+ * Without `zone` an instant `date` is refused with a 400 (a proposal preparation without a tenant zone).
  */
 export function deriveEventTimeProperties(
   stored: Record<string, unknown> | null,
@@ -110,7 +101,7 @@ export function deriveEventTimeProperties(
 
   const merged = { ...(stored ?? {}), ...output };
   const timeFrom = readTime(merged.timeFrom, "timeFrom");
-  // Without a start there is no time, whatever the end holds; an unreadable end is still left as it is.
+  // Without a start there is no time; an unreadable end is still left as it is.
   if (timeFrom === null) {
     output.time = null;
     return output;
@@ -127,17 +118,14 @@ export function deriveEventTimeProperties(
   return output;
 }
 
-/** Whether `date` is an instant (it carries an offset or `Z`), the one form that is converted in the tenant zone. */
+/** The one form converted in the tenant zone. */
 export function eventDateIsInstant(date: unknown): boolean {
   return typeof date === "string" && readEventDate(date).kind === "instant";
 }
 
 /**
- * The calendar date (`YYYY-MM-DD`) of an Event `date` value with its time of day taken off: a date-only value is
- * returned as it is, a wall-clock one (no offset) keeps its own date, and an instant (an offset or `Z`) is the date
- * in `zone`, the same reading `deriveEventTimeProperties` makes before it stores the time. `undefined` for a value
- * that is unreadable, which is left for the validation of #1663. An instant without a `zone` is refused with a 400
- * on `field`, as the transform refuses it.
+ * Date-only as is, wall-clock keeps its date, an instant is its date in `zone` (as `deriveEventTimeProperties`).
+ * `undefined` when unreadable. An instant without `zone` is a 400 on `field`.
  */
 export function dateWithoutTimeOfDay(value: string, zone: string | undefined, field = "date"): string | undefined {
   const read = readEventDate(value);
@@ -154,11 +142,7 @@ function patchNeedsZone(patch: Record<string, unknown>): boolean {
   return eventDateIsInstant(patch.date);
 }
 
-/**
- * The Events time transform, registered under `EVENTS_MODULE_ID` by `../domainWriteHooks.ts`, so every
- * create and update of an Event runs it before the row is written, whichever entry point made the write
- * (REST, agent tools, MCP, Inbox). It reads the tenant zone only when the patch carries an instant.
- */
+/** Runs before every Event create and update, whichever entry point. Reads the tenant zone only for an instant. */
 export const eventTimePreWriteTransform: ItemPreWriteTransform = async ({ client, stored, patch }) => {
   let zone: string | undefined;
   if (patchNeedsZone(patch)) {
@@ -169,9 +153,8 @@ export const eventTimePreWriteTransform: ItemPreWriteTransform = async ({ client
 };
 
 /**
- * The read-only preparation of `eventTimePreWriteTransform` for proposal validation. It converts an instant
- * with the tenant zone its managed caller supplies, exactly as the write would; without a zone it refuses
- * such a `date` rather than guess one.
+ * Converts an instant with the caller-supplied zone exactly as the write would; without one it refuses rather
+ * than guess.
  */
 export const prepareEventTime: ItemPreWritePreparation = async ({ stored, patch, timezone }) => ({
   patch: deriveEventTimeProperties(stored?.properties ?? null, patch, timezone),

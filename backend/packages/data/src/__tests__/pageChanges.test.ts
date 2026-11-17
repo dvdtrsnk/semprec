@@ -40,7 +40,6 @@ function inTenant<T>(fn: () => Promise<T>): Promise<T> {
   return runInTenant(tenant, fn);
 }
 
-/** A page document of a fresh item, plus the database clock read after the document exists (the instant to list since). */
 async function page(): Promise<{ docId: string; itemId: string; since: Date }> {
   return inTenant(async () => {
     const database = await cp.createDatabase({ name: `Pages ${Math.random()}` });
@@ -97,7 +96,7 @@ describe("listPageChanges (issue #1680)", () => {
     const { docId, itemId, since } = await page();
     await write(docId, "ai_agent", (doc) => insertBlocks(doc, null, [{ id: "mine", type: "text", text: "Semp" }]));
     await write(docId, "user", (doc) => insertBlocks(doc, "mine", [{ id: "typed", type: "text", text: "User" }]));
-    // The confirm path writes the proposal's block with the confirming user's origin (the gh-1681 switch); this is its call.
+    // The confirm path writes the proposal's block with the confirming user's origin.
     await inTenant(() =>
       withTransaction(pool, (client) =>
         putBlockWithClient(
@@ -205,7 +204,6 @@ describe("listPageChanges (issue #1680)", () => {
   });
 });
 
-/** One stored history row to insert: the update bytes, its stored author and its stored timestamp. */
 interface HistoryRow {
   update: Uint8Array;
   by: CreatedBy;
@@ -213,9 +211,8 @@ interface HistoryRow {
 }
 
 /**
- * Appends rows to a document's history as the superuser. The API cannot produce these shapes: rows whose `created_at`
- * order differs from their `update_id` order, rows older than a retention sweep's cutoff, or a payload of any size.
- * The statement is parameterized, and the rows get the document's own tenant and ids after the document's last one.
+ * Superuser insert for shapes the API cannot produce: `created_at` out of `update_id` order, rows past the
+ * retention cutoff, payloads of any size.
  */
 async function insertHistory(docId: string, rows: HistoryRow[]): Promise<void> {
   await admin.query(
@@ -227,7 +224,6 @@ async function insertHistory(docId: string, rows: HistoryRow[]): Promise<void> {
   );
 }
 
-/** The updates a scripted edit of a scratch document makes, in order: what a client would have sent. */
 function scriptedUpdates(edit: (doc: Y.Doc, step: (fn: () => void) => void) => void): Uint8Array[] {
   const doc = new Y.Doc();
   const updates: Uint8Array[] = [];
@@ -282,9 +278,8 @@ describe("listPageChanges replay (issue #1680 repair)", () => {
       { kind: "insert", blockIds: ["b"] },
     ];
 
-    // The sweep (7-day retention: it folds both rows into a new baseline and deletes them and the old checkpoint) runs
-    // once, right after the reader's checkpoint statement finished, on another connection. The hook disarms itself
-    // before the sweep, so the sweep's own statements are never intercepted.
+    // The 7-day retention sweep runs once on another connection right after the reader's checkpoint statement;
+    // the hook disarms itself first so the sweep is never intercepted.
     let swept = false;
     // Called back with the receiving client below, so the unbound reference is safe.
     // eslint-disable-next-line @typescript-eslint/unbound-method
@@ -319,7 +314,6 @@ describe("listPageChanges replay (issue #1680 repair)", () => {
   });
 
   describe("fixed replay budget", () => {
-    /** Valid tiny updates that edit one text block, all stored at or before `since` (silently replayed). */
     function silentEdits(count: number, at: Date): HistoryRow[] {
       const updates = scriptedUpdates((doc, step) => {
         step(() => writeBlock(doc, { id: "a", type: "text", text: "" }));
@@ -372,7 +366,7 @@ describe("listPageChanges replay (issue #1680 repair)", () => {
     describe("one update against the 4 MiB fetch group", () => {
       const FETCH_GROUP_BYTES = 4 * 1024 * 1024;
 
-      /** A valid Yjs update of exactly `bytes` bytes: one text insert whose length is tuned for the encoding overhead. */
+      /** A valid Yjs update of exactly `bytes` bytes. */
       function updateOfSize(bytes: number): Uint8Array {
         let overhead = 16;
         for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -425,7 +419,7 @@ describe("listPageChanges replay (issue #1680 repair)", () => {
 
     it("refuses an update larger than the byte budget before fetching it, and an oversized checkpoint before decoding it", async () => {
       const { docId, since } = await page();
-      // Not a Yjs update: if the size were read after the fetch or decode, this would fail as a decode error instead.
+      // Not a Yjs update: a size check after fetch or decode would fail as a decode error instead.
       await admin.query(
         `INSERT INTO doc_history_updates (update_id, doc_id, update, created_by, created_at, expires_at, tenant_id)
          SELECT 1, $1, convert_to(repeat('a', $2::int), 'UTF8'), 'user', now() - interval '1 minute',

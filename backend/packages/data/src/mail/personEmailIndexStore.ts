@@ -4,11 +4,7 @@ export function normalizeEmailAddress(address: string): string {
   return address.trim().toLowerCase();
 }
 
-/**
- * Resolves a normalized address to the Person that owns it. Reads are confined to the
- * caller's tenant by row-level security, so the same address can belong to different
- * Persons in different tenants; within one tenant an address never belongs to two people.
- */
+/** RLS confines reads to the tenant; within one tenant an address never belongs to two people. */
 export async function lookupPersonIdByEmail(client: Queryable, address: string): Promise<string | null> {
   const { rows } = await client.query<{ item_id: string }>(`SELECT item_id FROM person_email_index WHERE email = $1`, [
     normalizeEmailAddress(address),
@@ -17,20 +13,14 @@ export async function lookupPersonIdByEmail(client: Queryable, address: string):
 }
 
 export interface ReindexPersonEmailsResult {
-  /** Addresses this person's `emails` property lists but that `person_email_index` already maps to a *different* Person — left untouched (first writer keeps the address), not silently reassigned. */
+  /** Addresses already mapped to a different Person: the first writer keeps them. */
   conflicts: string[];
 }
 
 /**
- * Full reindex for one Person from their current `People.emails` value: releases every
- * address this Person no longer claims (frees it for someone else), claims every new one
- * that isn't already owned by a different Person, and reports the ones it couldn't claim.
- * "One address never belongs to two people" holds within a tenant (row-level security
- * confines the reads and the release to the caller's tenant). It is enforced by the
- * tenant-leading primary key `(tenant_id, email)`, which makes it a real fact rather than a
- * race-prone read-then-write. The claim uses
- * `ON CONFLICT DO NOTHING` with no target so every unique index arbitrates: two concurrent
- * claims of one address leave the first writer's row and neither rejects.
+ * Releases addresses the Person no longer claims and claims new ones not owned by someone else. The
+ * tenant-leading primary key `(tenant_id, email)` enforces uniqueness; the claim's targetless
+ * `ON CONFLICT DO NOTHING` lets two concurrent claims leave the first writer's row without rejecting.
  */
 export async function reindexPersonEmails(
   client: Queryable,
@@ -80,14 +70,9 @@ export interface MailContact {
 }
 
 /**
- * People-only suggestions; every item/database read is confined by the caller's tenant scope.
- *
- * `query` is matched as a substring of a person's name or address through `unaccent` and `ILIKE`.
- * It is a bound parameter and the pattern is built from it in the statement: the text is folded
- * with `unaccent` first, and a backslash, `%` and `_` in the folded text are escaped after that, so
- * each matches only itself. The order matters because folding itself produces these three
- * characters, for example `%` from a fullwidth percent sign. A text of which folding leaves
- * nothing, such as a lone combining mark, returns no contacts.
+ * `query` is folded with `unaccent` before `\`, `%` and `_` are escaped, because folding itself can
+ * produce those characters (e.g. `%` from a fullwidth percent sign). A text that folds to nothing
+ * returns no contacts.
  */
 export async function searchMailContacts(
   client: Queryable,

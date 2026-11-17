@@ -32,7 +32,7 @@ export async function verifyMailCredentials(input: VerifyMailCredentialsInput): 
   return verifyMailCredentialsWithOptions(input);
 }
 
-/** Test-only port and trust roots preserve the production policy and endpoint selection. */
+/** Test port and trust roots; policy and endpoint selection stay as in production. */
 export async function verifyMailCredentialsForTests(
   input: VerifyMailCredentialsInput,
   options: VerificationTestOptions,

@@ -36,9 +36,8 @@ async function link(moduleId: string, key: string, from: string, to: string): Pr
 }
 
 /**
- * The file's inherited `projects` link, written through the links store: no shipped link rule writes a
- * `projects` link (the shipped fileCompaniesFromProjects of issue #1653 writes the file's `companies`), so the
- * store's own insert stands in for such a rule's producer. The file's edge itself is the value the link inherited.
+ * No shipped link rule writes a `projects` link, so the links store's own insert stands in for one. The file's
+ * edge is the inherited value.
  */
 async function inheritProjects(file: string, sources: string[], sourcePropertyKey = "project"): Promise<string> {
   const { link: created } = await withTransaction(pool, (client) =>
@@ -74,7 +73,6 @@ async function linksOf(itemId: string) {
   return (await withTransaction(pool, (client) => getValueLinksForItems(client, [itemId]))).get(itemId) ?? {};
 }
 
-/** The targets of the file's `projects` edges: the inherited value, which a detach never touches. */
 async function projectEdgeTargets(file: string): Promise<string[]> {
   const files = await db("files");
   return withTransaction(pool, async (client) => {
@@ -87,7 +85,6 @@ async function projectEdgeTargets(file: string): Promise<string[]> {
 
 const FAR_FUTURE = new Date("2999-01-01T00:00:00Z");
 
-/** Rows in the order `linkRows` reads them: by link id, then by source item id (UUIDs of equal length). */
 function ordered(rows: Awaited<ReturnType<typeof linkRows>>): Awaited<ReturnType<typeof linkRows>> {
   const byKey =
     <T>(key: (row: T) => string) =>
@@ -140,7 +137,7 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       const file = await item("files", "nabidka.pdf");
       await link("tasks", "project", task, project);
       await link("files", "projects", file, project);
-      // The production rule fileCompaniesFromProjects (issue #1653) links the file's companies to its project.
+      // The production rule fileCompaniesFromProjects links the file's companies to its project.
       const production = await linkRows();
       expect(production).toEqual({
         links: [{ id: expect.any(String), item_id: file, state: "on" }],
@@ -161,7 +158,6 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       expect(await projectEdgeTargets(file)).toEqual([project]);
       expect(events.some((event) => event.scope === "item" && event.itemId === file)).toBe(true);
 
-      // Restoring the source relinks nothing: the value stays the file's own.
       await cp.restoreItem(await db("tasks"), task);
       expect(await linkRows()).toEqual(production);
       expect(await projectEdgeTargets(file)).toEqual([project]);
@@ -175,7 +171,7 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       const file = await item("files", "smlouva.pdf");
       await link("files", "projects", file, first);
       await link("files", "projects", file, second);
-      // The production rule fileCompaniesFromProjects (issue #1653) links the file's companies to both projects.
+      // The production rule fileCompaniesFromProjects links the file's companies to both projects.
       const production = await linkRows();
       const productionId = production.links[0]?.id ?? "";
       expect(production).toEqual(
@@ -188,7 +184,6 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
 
       await cp.softDeleteItem(await db("projects"), first);
 
-      // Both links stay on with the other source; the trashed project is gone from each link's sources.
       expect(await linkRows()).toEqual(
         ordered({
           links: [
@@ -231,8 +226,7 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       const lonely = await item("files", "a.pdf");
       const shared = await item("files", "b.pdf");
       await cp.softDeleteItem(await db("tasks"), task);
-      // Links naming an already-trashed source, as a link created before this cleanup existed would:
-      // the store's insert does not check the source, so the fixture uses it after the trash.
+      // Links naming an already-trashed source; the store's insert does not check the source.
       const lonelyLink = await inheritProjects(lonely, [task]);
       const sharedLink = await inheritProjects(shared, [task, keptSource]);
 
@@ -247,7 +241,6 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       expect(rows.links.map((row) => row.id)).toEqual([sharedLink]);
       expect(rows.links.map((row) => row.id)).not.toContain(lonelyLink);
       expect(rows.sources).toEqual([{ link_id: sharedLink, source_item_id: keptSource }]);
-      // R1 P6: both items that lost a source are told to refetch their links once the purge committed.
       for (const itemId of [lonely, shared])
         expect(events.some((event) => event.scope === "item" && event.itemId === itemId)).toBe(true);
     });
@@ -259,7 +252,6 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       const file = await item("files", "dedic.pdf");
       const linkId = await inheritProjects(file, [task]);
       await cp.softDeleteItem(await db("files"), file);
-      // The inheriting item's own link survives its soft delete: only a source's trash detaches links.
       expect((await linkRows()).links.map((row) => row.id)).toEqual([linkId]);
 
       await cp.purgeExpiredTrashSubtree(file, FAR_FUTURE);
@@ -273,7 +265,7 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       const task = await item("tasks", "Nesmazatelný");
       const file = await item("files", "c.pdf");
       const linkId = await inheritProjects(file, [task]);
-      // Fault injection inside the cleanup's own DELETE: no production input can make it fail.
+      // No production input can make the cleanup's own DELETE fail.
       await admin.query(`CREATE FUNCTION fail_value_link_cleanup_test() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'value link cleanup failure'; END $$`);
       await admin.query(`CREATE TRIGGER fail_value_link_cleanup_test BEFORE DELETE ON value_link_sources
@@ -297,8 +289,7 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       const child = await cp.createItem({ databaseId: inline.id, properties: {} });
       const file = await item("files", "d.pdf");
       const linkId = await inheritProjects(file, [root.id]);
-      // The child's soft delete, after the root's cleanup already ran, fails. The failing id is passed
-      // to the trigger through a scratch table, not interpolated into its body.
+      // The child's soft delete fails after the root's cleanup ran; the id reaches the trigger through a scratch table.
       await admin.query("CREATE TABLE fail_item_trash_test_ids (id uuid PRIMARY KEY)");
       await admin.query("INSERT INTO fail_item_trash_test_ids (id) VALUES ($1)", [child.id]);
       await admin.query("GRANT SELECT ON fail_item_trash_test_ids TO PUBLIC");
@@ -329,7 +320,6 @@ describe("value links detach when their source is deleted (issue #1656)", () => 
       await inheritProjects(file, [task]);
       return task;
     });
-    // Another tenant's link whose source id happens to equal this tenant's task id.
     const foreignLink = await runInTenant(foreign, async () => {
       const file = await item("files", "cizi.pdf");
       return inheritProjects(file, [own]);

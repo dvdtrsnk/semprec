@@ -40,30 +40,22 @@ import { createApiQueueRuntime } from "./queueRuntime.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
 import { logger } from "./logger.js";
 
-// Installed before anything else runs: an uncaught exception or unhandled rejection during
-// startup (the env-var checks below, pool creation, module-registry load) must still log
-// fatally and exit non-zero rather than crash silently or hang.
+// Installed first, so a startup failure still logs fatally and exits non-zero rather than crash
+// silently or hang.
 installFatalHandlers(logger);
 
-// SEMPREC_API_DATABASE_URL is this process's own key in the single shared `/opt/semprec/shared/.env`
-// (issue #175) — semprec-api is the only process authenticating as the `semprec_data` role (see
-// docs/operations/database-roles.md), so it cannot share one `DATABASE_URL` name with the
-// `semprec_side` processes that read the same file. `DATABASE_URL` remains the fallback for local
-// development, where a developer runs this service alone against its own per-service `.env`.
+// semprec-api is the only process authenticating as `semprec_data`, so it has its own key in the
+// shared `.env` rather than the `DATABASE_URL` the `semprec_side` processes read. `DATABASE_URL` is
+// the fallback for local development.
 const connectionString = process.env.SEMPREC_API_DATABASE_URL ?? process.env.DATABASE_URL;
 if (!connectionString) throw new Error("SEMPREC_API_DATABASE_URL (or DATABASE_URL) is not set");
 
-// Issue #216: DOC_HISTORY_RETENTION_DAYS must be a positive integer when set. Called eagerly
-// here (its result discarded — request-time call sites re-read the same env var themselves)
-// so a misconfigured value fails startup instead of being discovered lazily on the first doc
+// Called eagerly (result discarded) so a misconfigured value fails startup instead of the first doc
 // read/write.
 resolveDocHistoryRetentionDays();
 
-// One-time bootstrap secret for `POST /api/setup` (#233): a shared secret file, provisioned by
-// the operations batch this issue's Task calls out of scope, whose contents this process reads
-// into `SETUP_TOKEN`. Required at startup — there is no supported way to run this service
-// without a value, since the setup route's entire safety rests on comparing the caller's token
-// against this one.
+// One-time bootstrap secret for `POST /api/setup`. Required at startup: the setup route's safety
+// rests entirely on comparing the caller's token with it.
 const setupToken = process.env.SETUP_TOKEN;
 if (!setupToken) throw new Error("SETUP_TOKEN is not set");
 
@@ -72,29 +64,24 @@ const port = Number(rawPort);
 if (!Number.isInteger(port) || port <= 0 || port > 65535)
   throw new Error(`PORT is not a valid port number: ${rawPort}`);
 
-// `APP_BASE_URL` and `SMTP_*` back issue #142's password-reset emails. Both are optional at
-// startup — a deployment that hasn't configured outbound SMTP yet still boots, and only the
-// password-reset request route fails (via `noopPasswordResetMailer`) if it's ever hit.
+// Optional at startup: without SMTP the service boots and only the password-reset request route
+// fails.
 const appBaseUrl = process.env.APP_BASE_URL ?? "http://localhost:3000";
 
 /**
- * One provider's OAuth client, read with the same keys and rules `createMailSyncAdapters` applies.
- * An unset or empty key leaves the client out, so a route that needs it fails with a configuration
- * error when it runs (`requireCustomRouteDependency`), not at startup.
+ * Same keys and rules as `createMailSyncAdapters`. An unset or empty key leaves the client out, so
+ * a route needing it fails when it runs, not at startup.
  */
 function optionalOAuthClient(idKey: string, secretKey: string): CustomRouteOAuthClient | undefined {
   const client = readOAuthClient(process.env, idKey, secretKey);
   return "missingEnv" in client ? undefined : client;
 }
 
-// The mail live-sync root is created further down, after the dispatcher, and is bound to this
-// control there. Its `restartAccount` (issue gh-1742) and `stopMailbox` (issue gh-2030) then forward
-// to the root; `startMailbox` has nothing to forward to and refuses with a configuration error that
-// names it.
+// The live-sync root is created after the dispatcher and bound to this control there.
 const mailLiveSyncControl = createMailLiveSyncControl();
 
 const customRouteDependencies: CustomRouteDependencies = {
-  // The password connect route (issue gh-1736) verifies a login through this member and has no other way to.
+  // The password connect route verifies a login only through this member.
   mailServerClients: { verifyPassword: verifyMailCredentials },
   oauth: {
     gmail: optionalOAuthClient("GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"),
@@ -102,13 +89,13 @@ const customRouteDependencies: CustomRouteDependencies = {
     redirectBaseUrl: appBaseUrl,
   },
   mailLiveSync: mailLiveSyncControl.control,
-  // The thread task route (issue gh-1900) names a task without a name through the gateway and has no other way to.
+  // The thread task route names an unnamed task only through the gateway.
   aiGateway: createAiGatewayClientForApi(),
 };
 
 /**
- * The SMTP transport and sender address the transactional mailers share, or `null` when SMTP is not
- * configured. A set `SMTP_HOST` with an invalid `SMTP_PORT` throws at startup.
+ * `null` when SMTP is not configured. A set `SMTP_HOST` with an invalid `SMTP_PORT` throws at
+ * startup.
  */
 function buildSmtpTransport(): { transporter: Transporter; from: string } | null {
   const host = process.env.SMTP_HOST;
@@ -133,31 +120,29 @@ const smtp = buildSmtpTransport();
 const passwordResetMailer: PasswordResetMailer = smtp
   ? new NodemailerPasswordResetMailer(smtp.transporter, smtp.from)
   : noopPasswordResetMailer;
-// Issue #1040: an absent invite mailer means no invitation mail is sent; the invite and its link still work.
+// Absent means no invitation mail is sent; the invite and its link still work.
 const inviteMailer: InviteMailer | undefined = smtp
   ? new NodemailerInviteMailer(smtp.transporter, smtp.from)
   : undefined;
 
-// Issue #158: `POST /api/files`'s hard streamed-upload cap, and where `LocalFsBlobStorageWriter`
-// keeps uploaded bytes on disk — resolved like `MAIL_ATTACHMENTS_DIR` (worker.ts): required outside tests.
-// The agent forward of mail reads the same limit through the same reader (`readMaxFileSizeBytes`).
+// Required outside tests. The agent mail forward reads the same limit through
+// `readMaxFileSizeBytes`.
 const maxFileSizeBytes = readMaxFileSizeBytes();
 const blobStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
 const mailAttachmentStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"));
 const speechGatewayToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
 if (!speechGatewayToken) throw new Error("AI_GATEWAY_INTERNAL_TOKEN is not set");
 
-// Issue #635: this process sits behind Caddy on loopback, so the socket peer is always 127.0.0.1.
-// Only the exact string "1" trusts the proxy's `X-Forwarded-For`; any other value, or unset, is false.
+// Behind Caddy on loopback the socket peer is always 127.0.0.1. Only the exact string "1" trusts
+// `X-Forwarded-For`.
 const trustProxy = process.env.TRUST_PROXY === "1";
 
 const pool = createPool(connectionString);
 await assertRuntimeRole(pool);
 wireRealtimeHooks(pool);
 
-// Issue #168: this process's own `process_heartbeats` row, re-UPSERTed every 15 seconds for as
-// long as this process is up — `GET /healthz` (and any future observability surface) reads it
-// back through `process_heartbeats`, never through this in-memory handle.
+// Re-UPSERTed every 15 seconds; `GET /healthz` reads it back from `process_heartbeats`, never from
+// this handle.
 startProcessHeartbeat(
   pool,
   { process: "api", pid: process.pid, version: process.env.APP_VERSION ?? "0.0.0" },
@@ -188,16 +173,13 @@ const voiceServer = createVoiceChannel(pool, {
   ),
 });
 
-// Issue #91: this process is one of the queue's two composition roots — the one that installs
-// `CORE_CRONTAB` and hosts every `queueAffinity: 'api'` task handler, over this same pool.
+// The queue root that installs `CORE_CRONTAB` and hosts every `queueAffinity: 'api'` handler.
 const queueRuntime = await createApiQueueRuntime(pool, moduleRegistry);
 
-// Issue #650: this long-lived process hosts the one mail live-sync root that
-// `createMailLiveSyncRoot`'s contract requires. The root discovers each active tenant's
-// Mailboxes database itself. IMAP accounts get the IDLE lifecycle (issue #1550), Gmail accounts the
-// watch lifecycle (issue #1739) and Graph accounts the subscription lifecycle (issue #1745) when their
-// configuration is complete; otherwise, and for every other sync mode, the noop lifecycle, whose
-// `start()` enqueues one immediate `mailAccountSync` and leaves the account to the periodic sweep.
+// This process hosts the one mail live-sync root, which discovers each active tenant's Mailboxes
+// database itself. IMAP accounts get the IDLE lifecycle, Gmail the watch lifecycle and Graph the
+// subscription lifecycle when configured; otherwise the noop lifecycle, which enqueues one
+// `mailAccountSync` and leaves the account to the periodic sweep.
 const gmailWatch = await resolveGmailWatchHosting(pool, process.env);
 const graphSubscriptions = resolveGraphSubscriptionHosting(pool, process.env, appBaseUrl);
 const mailLiveSync = createMailLiveSyncRoot(
@@ -220,13 +202,13 @@ const mailLiveSync = createMailLiveSyncRoot(
 mailLiveSyncControl.bind(mailLiveSync);
 await mailLiveSync.start();
 
-// Issue #1739: the one puller of the deployment's Gmail Pub/Sub subscription, started after the root
-// and stopped before it (docs/adr/2026-10-29-gmail-pubsub-dispatcher-stops-before-the-mail-live-sync-root.md).
+// The one puller of the deployment's Gmail Pub/Sub subscription, started after the root and stopped
+// before it.
 const gmailPubSubDispatcher = gmailWatch ? createGmailPubSubDispatcherFor(pool, gmailWatch) : undefined;
 await gmailPubSubDispatcher?.start();
 
-// Issue #1042: a tenant leaving `active` ends its sockets and its hosted mailbox lifecycles in this
-// process at once, instead of on the next session check or discovery pass.
+// A tenant leaving `active` ends its sockets and hosted mailbox lifecycles at once, not on the next
+// session check or discovery pass.
 const tenantDeactivationListener = await startTenantDeactivationListener(pool, async (tenantId) => {
   syncServer.closeTenant(tenantId);
   voiceServer.closeTenant(tenantId);
@@ -248,8 +230,8 @@ const shutdown = createGracefulShutdown({
 });
 registerShutdownSignals(shutdown);
 
-// The sync and voice handlers own the supported WS upgrade routes; anything else
-// requesting a protocol upgrade gets its socket destroyed rather than silently ignored.
+// Any upgrade request outside the sync and voice routes gets its socket destroyed rather than
+// silently ignored.
 server.on("upgrade", (req, socket, head) => {
   withTraceContext({}, () => {
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -265,8 +247,7 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
-// Issue #174: bound to loopback explicitly — the only public entry point is the Caddy reverse
-// proxy on the same host (`deploy/Caddyfile`), never this process's own listener directly.
+// Loopback only: the Caddy reverse proxy on the same host is the only public entry point.
 server.listen(port, "127.0.0.1", () => {
   logger.info({ port }, "semprec-api listening");
 });

@@ -1,9 +1,6 @@
-// The choke point's item-create hook for the Inbox database (registered by `../domainWriteHooks.ts`):
-// every Inbox item, whichever writer creates it, must carry a calendar `date` and a 24-hour `time`
-// as the user's wall clock, and is linked to the Journal day of that date. The hook runs inside the
-// create's transaction after the insert, so a refusal rolls the row back, and it does not run on an
-// idempotency replay, so a replayed create keeps the one edge it already has.
-// See docs/adr/2026-10-09-item-create-domain-hooks.md.
+// Every Inbox item, whichever writer creates it, must carry a calendar `date` and a 24-hour `time` (the user's wall
+// clock) and is linked to that Journal day. Runs in the create's transaction after the insert, so a refusal rolls the
+// row back; not run on an idempotency replay, so a replay keeps its one edge.
 import { DateTime } from "luxon";
 import type { ItemCreateHook } from "../chokePoint/hooks.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -22,11 +19,10 @@ const INBOX_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: INBOX
 
 /** `YYYY-MM-DD` only: Luxon also parses `2026` and `2026-W35`, which are not a capture date. */
 const CALENDAR_DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
-/** `HH:mm` on a 24-hour clock, `00:00` to `23:59`. */
 const WALL_CLOCK_TIME_FORMAT = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 function isCalendarDate(value: unknown): value is string {
-  // Validity is checked in UTC: whether `2026-02-30` exists does not depend on the zone.
+  // Whether `2026-02-30` exists does not depend on the zone.
   return (
     typeof value === "string" && CALENDAR_DATE_FORMAT.test(value) && DateTime.fromISO(value, { zone: "utc" }).isValid
   );
@@ -62,6 +58,6 @@ export const inboxItemCreateHook: ItemCreateHook = async ({ client, database, it
     { relationPropertyId: journalDayProperty.id, callerItemId: item.id, targetItemId: journalDay.id },
     INBOX_RELATION_CONTEXT,
   );
-  // Issue #106: a capture is one of the triggers that invalidates the day's cached Inbox-item list.
+  // A capture invalidates the day's cached Inbox-item list.
   await enqueueJournalInboxRecompute(client, journalDay.id);
 };

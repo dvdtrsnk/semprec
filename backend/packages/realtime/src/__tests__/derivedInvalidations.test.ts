@@ -78,7 +78,6 @@ async function notifyEnvelope(tenantId: string, message: unknown): Promise<void>
   await pool.query("SELECT pg_notify($1, $2)", ["semprec_events", JSON.stringify({ tenantId, message })]);
 }
 
-/** The frames one socket received, parsed. */
 interface Inbox {
   frames: Array<Record<string, unknown>>;
 }
@@ -100,7 +99,6 @@ describe("derived realtime invalidations (issues #1863, #1866, #1868, #1918, #19
     return user.id;
   }
 
-  /** Opens a socket for `identity` and records every frame it receives. */
   async function connect(token: string, identity: SyncIdentity): Promise<Inbox> {
     identityByToken.set(token, identity);
     const socket = new WebSocket(`ws://127.0.0.1:${port}/api/sync?token=${token}`);
@@ -148,8 +146,8 @@ describe("derived realtime invalidations (issues #1863, #1866, #1868, #1918, #19
 
   describe("agentRuns scope (issue #1863)", () => {
     /**
-     * Three sockets: the run's actor (tenant zero's user), another user of the same tenant, and a socket of
-     * another tenant that carries the actor's user id. Only the first may receive the run's frames.
+     * The run's actor, another user of the same tenant, and another tenant's socket carrying the actor's user id. Only
+     * the first may receive the run's frames.
      */
     async function connectActorPeerAndForeign() {
       const actorId = await createTestUser();
@@ -260,7 +258,7 @@ describe("derived realtime invalidations (issues #1863, #1866, #1868, #1918, #19
         scope: "approvalRequest",
         approvalRequestId: request.id,
       });
-      // The decision also changes the actor's pending-decision count (issue #1918).
+      // The decision also changes the actor's pending-decision count.
       expect(actor.frames).toContainEqual({ type: "invalidate", scope: "badgeCounts" });
       expect(actor.frames).toContainEqual({
         type: "invalidate",
@@ -461,7 +459,7 @@ describe("derived realtime invalidations (issues #1863, #1866, #1868, #1918, #19
       };
     }
 
-    /** The frames of the sempStatus scope a socket received (the problem also writes a notification, which is not one). */
+    /** The problem also writes a notification, which is not a sempStatus frame. */
     const statusFrames = (inbox: Inbox) => inbox.frames.filter((frame) => frame.scope === "sempStatus");
 
     const raiseInTenantZero = (userId: string, rollBack = false) =>
@@ -554,7 +552,7 @@ describe("derived realtime invalidations (issues #1863, #1866, #1868, #1918, #19
         }),
       );
 
-    /** A pending approval request on a new run whose actor is `userId`, created without announcing anything. */
+    /** Created without announcing anything. */
     async function createRequestFor(userId: string, toolCallId: string | null = null) {
       const run = await runInTenant(getTenantZeroId(), () =>
         createAgentRun(pool, { triggeredBy: "user", task: "needs approval", userId }),
@@ -808,8 +806,8 @@ describe("derived realtime invalidations (issues #1863, #1866, #1868, #1918, #19
     }
 
     /**
-     * Runs the nightly rollover for tenant zero over a Tasks database that holds no task (an id no database has), so
-     * that nothing moves and the frame is the whole of what the run announces.
+     * Runs the rollover over a Tasks database id that names no database, so nothing moves and the frame is all it
+     * announces.
      */
     const runRolloverInTenantZero = () =>
       runInTenant(getTenantZeroId(), () =>
@@ -936,12 +934,11 @@ describe("derived realtime invalidations (issues #1863, #1866, #1868, #1918, #19
     });
 
     /**
-     * The hooks are wired to the runtime-role pool: it carries the tenant scope of the writing code to the NOTIFY
-     * (the superuser test pool always answers tenant zero), which is what puts a frame on a tenant's sockets.
+     * The hooks use the runtime-role pool, which carries the writer's tenant scope to the NOTIFY (the superuser pool
+     * always answers tenant zero).
      *
-     * A provisioned tenant with its one user on two devices, a project that has a grant on a registered tool of the
-     * MCP server it holds, and a socket of another tenant. The grant is written before the hooks are wired, so the
-     * `projectAgent` frame it announces is not part of what a test looks at.
+     * A provisioned tenant with one user on two devices, a project granted a tool of its MCP server, and another
+     * tenant's socket. The grant is written before the hooks are wired, so its `projectAgent` frame is not observed.
      */
     async function connectTenantWithGrantedServer(config?: unknown) {
       const tenantId = await createTestTenant(pool);
@@ -964,8 +961,7 @@ describe("derived realtime invalidations (issues #1863, #1866, #1868, #1918, #19
             connectionConfig: { transport: "http", url: "https://mcp.example.test/mcp" },
           },
         });
-        // The write hook refuses a loopback URL, which is where a contract server listens: this state is only
-        // reachable by writing the stored config directly.
+        // The write hook refuses loopback URLs, where the contract server listens, so the config is written directly.
         if (config !== undefined) {
           await pool.query(
             "UPDATE items SET properties = properties || jsonb_build_object('connectionConfig', $2::jsonb) WHERE id = $1",

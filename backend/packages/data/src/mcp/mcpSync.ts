@@ -21,34 +21,23 @@ import { assertAcceptableMcpToolSchema } from "./mcpToolSchemaPolicy.js";
 import { logger } from "./logger.js";
 
 /**
- * The "Synchronize tools" action (issue #125), run by a human or, once a human confirmed an MCP server card, by its
- * queued `mcpServerSync` job (issue gh-1976, `handleMcpServerSyncTask` below): opens a connection through the
- * factory from #231, calls MCP `tools/list`, strictly validates the response, and
- * transactionally materializes registrations (`mcpToolRegistrationsStore.ts`, issue #124).
+ * "Synchronize tools": run by a human, or by the `mcpServerSync` job a human's card confirmation queued. Lists
+ * the tools, validates strictly, and materializes registrations in one transaction.
  *
- * Deliberately reactive to nothing: this module registers no `notifications/tools/list_changed`
- * handler of its own (the connection factory already registers none — see
- * mcpConnectionFactory.ts) and exposes no AgentTool/MCP operation that could call
- * `syncMcpServerTools` — only an authenticated human-facing caller is meant to invoke it. It IS
- * exported from this package's public `index.ts` surface (unlike `mcpGrantsAdminStore.ts`'s
- * mutations): reconciling `mcp_tool_registrations.active`/schema is the sync-facing write
- * and doing so here doesn't touch the `granted` or `display_label` columns that issue #124 carves out as user-only.
- * It writes `risk_class`/`requires_approval` only for a registration whose `classification_source` is `annotation`,
- * through `upsertClassifiedMcpToolRegistration`, which is imported here by its relative path and is not on the
- * package's public surface; the exported `upsertMcpToolRegistration` has no way to write them
- * ([[2026-11-14-mcp-tool-classification-is-owned-by-the-annotation-sync-until-a-person-sets-it]]).
+ * Reactive to nothing: no `tools/list_changed` handler, and no agent/MCP operation can call it. It is publicly
+ * exported because it never writes the user-only `granted`/`display_label` columns; it writes
+ * `risk_class`/`requires_approval` only while `classification_source` is `annotation`, through the
+ * non-exported `upsertClassifiedMcpToolRegistration`.
  */
 
-/** The only keys this action is allowed to write on an `mcpServers` item — all three are `owner: 'system'`, and this sync action is their declared owning process (seedMcpModule.ts). */
+/** All three are `owner: 'system'` keys owned by this action. */
 const MCP_SERVER_SYNC_ALLOWED_KEYS = ["syncStatus", "lastSynced", "syncError"] as const;
 
 export interface SyncMcpServerToolsOptions {
-  /** Forwarded to `connectMcpServer`'s `credential_access_log.actor_id`. */
   actorId?: string;
 }
 
 export interface SyncMcpServerToolsResult {
-  /** How many tools the server advertised (and were upserted as active) this pass. */
   toolCount: number;
 }
 
@@ -56,7 +45,7 @@ interface ParsedListedTool {
   name: string;
   description: string | null;
   inputSchema: unknown;
-  /** The annotation hints the server advertised, or null when it advertised no annotations object. */
+  /** `null` when no annotations object was advertised. */
   annotationHints: McpToolAnnotationHints | null;
 }
 
@@ -67,14 +56,10 @@ interface RawListedTool {
   annotations?: unknown;
 }
 
-/** Guards against a misbehaving server whose `nextCursor` never terminates — comfortably above any real tool catalog. */
+/** Stops a server whose `nextCursor` never terminates. */
 const MAX_LIST_TOOLS_PAGES = 1_000;
 
-/**
- * `tools/list` may paginate (`nextCursor` in the response) — fetches every page before
- * validating/materializing anything, so a paginated first page alone never causes
- * `deactivateMcpToolRegistrationsNotIn` to deactivate tools that only appear on a later page.
- */
+/** Fetches every page before anything is materialized, so tools on later pages are never deactivated. */
 export async function listAllTools(client: McpClientHandle["client"]): Promise<RawListedTool[]> {
   const tools: RawListedTool[] = [];
   let cursor: string | undefined;
@@ -88,9 +73,8 @@ export async function listAllTools(client: McpClientHandle["client"]): Promise<R
 }
 
 /**
- * Keeps the three boolean hints of a listed tool's `annotations` and drops everything else, including a hint that is
- * not a boolean. Anything that is not an object is no annotations at all (null), which is not the same as an empty
- * object: a present object with no hint of its own still takes the MCP defaults in `classifyMcpToolFromAnnotations`.
+ * Keeps only boolean hints. A non-object is `null`, which differs from `{}`: a present empty object still takes
+ * the MCP defaults.
  */
 function pickAnnotationHints(annotations: unknown): McpToolAnnotationHints | null {
   if (typeof annotations !== "object" || annotations === null || Array.isArray(annotations)) return null;
@@ -109,20 +93,10 @@ function pickAnnotationHints(annotations: unknown): McpToolAnnotationHints | nul
 }
 
 /**
- * The MCP SDK's `Client.listTools()` already parses the response against its own `tools/list`
- * Zod schema (rejecting a structurally malformed response before this ever runs), but that
- * schema alone doesn't rule out a response that's well-formed yet still nonsensical for this
- * table's `(mcp_server_item_id, tool_name)` identity: a blank name, or the same name listed
- * twice in one response (which `upsertMcpToolRegistration`'s `ON CONFLICT` would otherwise
- * silently collapse into whichever entry it processes last). Both fail the whole sync before
- * anything is written, with a fixed, secret-free message — never the response's own tool
- * name/description content, which originates from the (not fully trusted) server.
- *
- * Also applies `assertAcceptableMcpToolSchema` (issue #696) to each tool's `inputSchema` before
- * anything is written: a schema over 64 KiB, carrying a remote `$ref`, or carrying a `pattern`/
- * `patternProperties` regex that isn't provably safe from catastrophic backtracking fails the
- * whole sync exactly like a duplicate name does, since `mcpInvokeTool.ts` compiles and evaluates
- * this same schema against untrusted-adjacent model-supplied arguments on every future invocation.
+ * The SDK already parses the response shape; this rejects what the table's `(mcp_server_item_id, tool_name)`
+ * identity cannot hold: a blank or duplicate name (`ON CONFLICT` would silently collapse it). It also applies
+ * `assertAcceptableMcpToolSchema`, since the schema is later compiled against model-supplied arguments. Any failure
+ * fails the whole sync before a write, with a fixed message that never echoes server-supplied text.
  */
 function validateListedTools(tools: readonly RawListedTool[]): ParsedListedTool[] {
   const seenNames = new Set<string>();
@@ -148,38 +122,25 @@ function validateListedTools(tools: readonly RawListedTool[]): ParsedListedTool[
 }
 
 /**
- * Maps whatever `syncMcpServerTools` caught to the text persisted in `syncError`: `McpConnectionError`
- * (#231) and the strict-validation `ValidationError` above are both already built from fixed
- * wording plus non-secret identifiers only, so their `message` is safe to store verbatim. Anything
- * else (a bug, a transient failure this function didn't anticipate) gets a fixed generic message
- * instead of that error's own possibly-unsafe `message`.
+ * `McpConnectionError` and the validation errors above carry only fixed wording and non-secret ids, so they are
+ * stored verbatim; anything else gets a generic message.
  */
 function safeSyncErrorMessage(err: unknown): string {
   if (err instanceof McpConnectionError || err instanceof ValidationError) return err.message;
   return "MCP tool sync failed for an unexpected reason";
 }
 
-/** Locks the server item and returns whether it exists and is not in the Trash, in the caller's transaction. */
 async function lockLiveServer(client: PoolClient, mcpServersDatabaseId: string, mcpServerItemId: string) {
   const server = await lockItemById(client, mcpServersDatabaseId, mcpServerItemId);
   return server !== null && server.deletedAt === null;
 }
 
 /**
- * Runs one sync pass for `mcpServerItemId`, started by a human through the sync route or by the
- * `mcpServerSync` job a human's confirmation queued: connects (#231), calls
- * `tools/list`, validates it, then in a single transaction upserts every advertised tool
- * (`requires_approval`/`risk_class` come from the tool's annotations, `classifyMcpToolFromAnnotations`; an existing
- * tool whose classification a person set keeps it — see `upsertClassifiedMcpToolRegistration`), deactivates any previously-active registration the server no
- * longer advertises (`deactivateMcpToolRegistrationsNotIn` — audit identity survives, only
- * `active` flips), and records `syncStatus: 'ok'`/`lastSynced`/`syncError: null` on the server
- * item. A connection or validation failure instead records `syncStatus: 'error'` with a safe
- * message and leaves `mcp_tool_registrations` exactly as it was — prior registrations remain
- * authoritative. A server item that is gone or in the Trash raises `NotFoundError` before the connection is made, and again
- * when the registrations would be written if it went to the Trash while the tools were being listed; nothing is written
- * for it then, and no status is recorded on it. A successful pass announces one `mcpServers` invalidation once its transaction has
- * committed (`publishMcpServersInvalidation`); a failed one announces nothing. The connection is always
- * closed, on both the success and failure path.
+ * On success, upserts every advertised tool (annotation-derived classification unless a person set it), deactivates
+ * registrations no longer advertised (only `active` flips; audit identity survives), records `syncStatus: 'ok'` and
+ * announces after commit. On failure, records `syncStatus: 'error'` with a safe message and leaves registrations
+ * untouched. A gone or trashed server raises `NotFoundError` before connecting, and again before writing if it was
+ * trashed meanwhile; nothing is recorded then. The connection is always closed.
  */
 export async function syncMcpServerTools(
   pool: Pool,
@@ -204,8 +165,8 @@ export async function syncMcpServerTools(
     const parsedTools = validateListedTools(tools);
 
     await withTransaction(pool, async (client) => {
-      // The connection was made and the tools were listed outside any transaction: the server item can have gone to
-      // the Trash meanwhile (the undo of its confirmation, gh-1984). Nothing is written for it then.
+      // Connecting and listing ran outside any transaction, so the item may have been trashed meanwhile (undo of its
+      // confirmation).
       if (!(await lockLiveServer(client, mcpServersDatabaseId, mcpServerItemId))) {
         throw new NotFoundError(`No MCP server item '${mcpServerItemId}'`);
       }
@@ -233,8 +194,7 @@ export async function syncMcpServerTools(
         },
         { allowedSystemKeys: MCP_SERVER_SYNC_ALLOWED_KEYS },
       );
-      // The registrations changed, and with them the effective tools of every project that has grants on the
-      // server: one announcement for the tenant, in this transaction. The failure path below writes none.
+      // Effective tools of every project with grants on this server changed; the failure path announces nothing.
       publishMcpServersInvalidation(client);
     });
 
@@ -256,8 +216,7 @@ export async function syncMcpServerTools(
         );
       });
     } catch (recordingErr) {
-      // The original sync failure (`err`, thrown below) is what the caller needs to see — a
-      // secondary failure while merely trying to *record* it must never replace or hide it.
+      // A failure while recording must never replace the original `err`.
       logger.error(
         { err: recordingErr, mcpServerItemId },
         "syncMcpServerTools: failed to record syncStatus:'error' after a sync failure",
@@ -266,37 +225,31 @@ export async function syncMcpServerTools(
     try {
       await handle?.close();
     } catch (closeErr) {
-      // Same discipline as the recordingErr handling above: `err` is what the caller needs to
-      // see, so a secondary failure while merely closing the connection must never replace it.
+      // A close failure must never replace the original `err`.
       logger.error({ err: closeErr, mcpServerItemId }, "syncMcpServerTools: failed to close the MCP client handle");
     }
     throw err;
   }
 
-  // No error is in flight here — a close failure is the only failure and must propagate as-is,
-  // exactly as it did before this connection was ever wrapped in error-recording logic.
+  // No error in flight, so a close failure propagates as-is.
   await handle.close();
   return { toolCount };
 }
 
-/** The stable job key of the sync of one MCP server item: a second enqueue for the same server collapses onto the pending job. */
+/** A second enqueue for the same server collapses onto the pending job. */
 export function mcpServerSyncJobKey(mcpServerItemId: string): string {
   return `mcp-server-sync-${mcpServerItemId}`;
 }
 
-/**
- * The payload of an `mcpServerSync` job: the server item and the user whose confirmation created it, who is the
- * `actorId` of the sync's connection. It carries no credential: the sync reads the stored one at connect time.
- */
+/** The confirming user is the connection's `actorId`. No credential: the sync reads the stored one at connect time. */
 export interface McpServerSyncPayload {
   mcpServerItemId: string;
   actingUserId: string;
 }
 
 /**
- * Enqueues the `mcpServerSync` job of one MCP server item on the caller's open transaction, so the job exists exactly
- * when that transaction commits and a rollback leaves none. `maxAttempts: 1`: a failed sync is recorded on the item
- * (`syncStatus: error`) and the user retries it through `POST /api/mcp-servers/:id/sync`, so the queue does not.
+ * On the caller's transaction, so the job exists exactly when it commits. `maxAttempts: 1`: a failure is recorded on
+ * the item and the user retries through `POST /api/mcp-servers/:id/sync`.
  */
 export async function enqueueMcpServerSync(client: PoolClient, payload: McpServerSyncPayload): Promise<void> {
   await enqueueJob(
@@ -308,19 +261,16 @@ export async function enqueueMcpServerSync(client: PoolClient, payload: McpServe
 }
 
 /**
- * The inverse of `enqueueMcpServerSync` (issue gh-1984), on the caller's open transaction: removes the pending sync job of
- * the server item, so the removal commits or rolls back with that transaction. A job no worker has started is deleted; one
- * a worker is running is detached from its key and not retried (`cancelJob`), and its run ends as a no-op once it finds
- * the server item in the Trash (`syncMcpServerTools`). A server item that has no job removes nothing.
+ * On the caller's transaction. An unstarted job is deleted; a running one is detached and not retried
+ * (`cancelJob`), and ends as a no-op once it finds the item trashed.
  */
 export async function cancelMcpServerSync(client: PoolClient, mcpServerItemId: string): Promise<void> {
   await cancelJob(client, mcpServerSyncJobKey(mcpServerItemId));
 }
 
 /**
- * The enqueue of a confirm: queues the sync of `itemId` when `targetDatabase` is the MCP servers database and the confirm
- * has an acting user (the job's payload requires one, as nobody else could be named as the actor of the connection), and
- * returns the id of the queued item, or null when nothing was queued.
+ * Requires an acting user, the only one who can be named as the connection's actor. Returns the queued item id or
+ * null.
  */
 export async function enqueueMcpServerSyncForConfirm(
   client: PoolClient,
@@ -334,13 +284,9 @@ export async function enqueueMcpServerSyncForConfirm(
 }
 
 /**
- * The handler of the `mcpServerSync` job: runs `syncMcpServerTools` for the server as `actingUserId`, and after a sync
- * that succeeded asks `gateway` for labels of the tools that have none (`suggestMcpToolLabels`, issue gh-1983), which
- * never fails the job; without a `gateway` that step is skipped. A sync that
- * failed with an `McpConnectionError` or a tool-list `ValidationError` has tried to record `syncStatus: error` and a
- * safe `syncError` on the item (a failure of that write is logged by the sync), so the job ends normally and is not
- * retried, and no label is suggested. A `NotFoundError`, which the sync raises for a server item that does not exist or
- * is in the Trash, is a no-op. Any other error is unexpected and reaches the queue.
+ * After a successful sync, asks `gateway` for labels of unlabeled tools (never fails the job; skipped without a
+ * gateway). `McpConnectionError` or a tool-list `ValidationError` was already recorded on the item, so the job ends
+ * normally without retry or labels. `NotFoundError` (gone or trashed) is a no-op. Anything else reaches the queue.
  */
 export async function handleMcpServerSyncTask(
   pool: Pool,

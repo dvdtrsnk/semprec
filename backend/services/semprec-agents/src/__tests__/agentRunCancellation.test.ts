@@ -28,8 +28,7 @@ const sessionsByRunId = new Map<string, CreateAgentSession>();
 let composedRunIds: string[] = [];
 const compositionGates = new Map<string, Promise<void>>();
 
-// The session composition needs a gateway and tool wiring that cancellation does not exercise: the
-// factory is replaced with one that hands out the test's own fake session per run.
+// The session factory is replaced with one that hands out a fake session per run.
 vi.mock("../agentSessionComposition.js", () => ({
   createAgentSessionFactoryForRun: async (
     _pool: Pool,

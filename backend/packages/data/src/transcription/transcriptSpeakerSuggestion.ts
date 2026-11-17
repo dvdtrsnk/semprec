@@ -30,7 +30,6 @@ import type { ItemRow } from "../types.js";
 import { PROCESSING_PROPOSALS_RELATION_CONTEXT } from "./transcriptEventMatch.js";
 import { listTranscriptSpeakers, TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "./transcriptionSpeakerEdges.js";
 
-/** A participant of the transcript's Event a speaker key may be proposed for. */
 export interface SpeakerSuggestionCandidate {
   id: string;
   name: string;
@@ -38,9 +37,8 @@ export interface SpeakerSuggestionCandidate {
   invitationStatus: TranscriptSpeakerCardContext["alternatives"][number]["invitationStatus"];
 }
 
-/** What the speaker-suggestion step asks the model about: the still-unmapped keys and the not-yet-mapped participants. */
 export interface SpeakerSuggestionContext {
-  /** The live Event the transcript is linked to, `null` without one; with `candidates` it is what a suggestion is asked for (`speakerSuggestionBinding`). */
+  /** `null` without a live Event; with `candidates` it is what a suggestion is asked for (`speakerSuggestionBinding`). */
   eventId: string | null;
   unmappedSpeakers: string[];
   locale: string;
@@ -74,12 +72,11 @@ async function requireRelationDefinitionId(client: PoolClient, databaseId: strin
   return relationDefinition.id;
 }
 
-/** The idempotency key of the one card proposing a mapping for `speaker`: a re-run never proposes the same key twice. */
+/** A re-run never proposes the same key twice. */
 export function speakerSuggestionIdempotencyKey(transcriptId: string, speaker: string): string {
   return `transcript-speaker-suggestion:${transcriptId}:${speaker}`;
 }
 
-/** Reads unmapped speakers, eligible participants and the tenant's own person. */
 export async function readSpeakerSuggestionContext(
   client: PoolClient,
   transcriptId: string,
@@ -160,7 +157,7 @@ export async function readSpeakerSuggestionContext(
   };
 }
 
-/** Whether the card's history holds an entry by the user, or is not a readable history: either way the user may have touched the card. */
+/** An unreadable history counts as touched too. */
 function historyHasUserEntry(history: unknown): boolean {
   if (history === undefined || history === null) return false;
   const parsed = z.array(z.looseObject({ author: z.string() })).safeParse(history);
@@ -168,13 +165,11 @@ function historyHasUserEntry(history: unknown): boolean {
 }
 
 /**
- * Refreshes a speaker card that still asks for clarification with what the transcript's Event offers now (issue
- * gh-1942): its `context` (`alternatives`, `reason`) and, when the model is now confident (`envelope`), its
- * `proposal` and `aiProposal` (one `aiVersion` up) and the status `proposed`, with one `recompute` history entry. Nothing
- * is written when the new context equals the stored one and there is no new proposal. The card is taken with
- * `NOWAIT` after the transcript, which the caller holds: a confirm locks the card first and then the transcript, so
- * waiting here could deadlock with it. A card that is busy, gone, in the Trash, no longer `needsClarification` or
- * touched by the user (a history entry by the user) is left as it is. Returns whether the card was written.
+ * Refreshes an untouched `needsClarification` speaker card with what the Event offers now (context,
+ * and on a confident answer the proposal, `aiVersion` + 1 and status `proposed`), with one `recompute`
+ * history entry; nothing is written when nothing changed. The card is taken with `NOWAIT` after the
+ * transcript the caller holds: a confirm locks card then transcript, so waiting could deadlock. A busy,
+ * gone, trashed, settled or user-touched card is left as it is. Returns whether it wrote.
  */
 async function refreshClarificationCard(
   client: PoolClient,
@@ -231,14 +226,11 @@ async function refreshClarificationCard(
 }
 
 /**
- * Creates a card for every still-unmapped speaker. Eligible model matches become relation
- * proposals; missing, repeated or no-longer-eligible matches become clarification cards.
- * The source transcript is locked and eligibility is re-read in the supplied transaction.
- * Existing idempotency keys suppress duplicate cards, regardless of their status, and the returned
- * keys are those that got a new card. A card that exists and is `needsClarification` with no user
- * entry in its history is refreshed (`refreshClarificationCard`, issue gh-1942); a card of any other
- * status, or one the user touched, is left as it is. No speaker mapping is written until a user
- * confirms a proposal.
+ * Creates a card for every still-unmapped speaker: eligible matches become relation proposals, the
+ * rest clarification cards. Locks the source transcript and re-reads eligibility in the transaction.
+ * Existing idempotency keys suppress duplicates whatever their status; an untouched
+ * `needsClarification` card is refreshed instead. Returns the keys that got a new card. No speaker
+ * mapping is written until a user confirms.
  */
 export async function proposeSpeakerMappings(
   client: PoolClient,
@@ -272,7 +264,6 @@ export async function proposeSpeakerMappings(
   for (const detail of context.details) {
     const idempotencyKey = speakerSuggestionIdempotencyKey(input.transcriptId, detail.speaker);
     const existing = await itemsStore.findIdempotentReplay(client, processingProposalsDatabaseId, idempotencyKey);
-    // A card that exists stays as it is, unless it still asks for clarification and nobody has touched it.
     if (existing && (existing.deletedAt !== null || existing.properties.status !== "needsClarification")) continue;
     const suggestion = input.suggestions.find((entry) => entry.speaker === detail.speaker);
     const personId = suggestion?.personId && candidateIds.has(suggestion.personId) ? suggestion.personId : null;
@@ -339,9 +330,8 @@ export async function proposeSpeakerMappings(
 }
 
 /**
- * What the `suggestSpeakers` checkpoint on the source Files item holds (issue gh-1942): the keys that got a card, and
- * what the suggestion was asked for, the Event the transcript was linked to and the sorted ids of the candidate people
- * (`speakerSuggestionBinding`). A checkpoint written before the binding existed has neither field.
+ * The `suggestSpeakers` checkpoint on the source Files item: keys that got a card and the binding the
+ * suggestion was asked for. A checkpoint written before the binding existed has neither field.
  */
 export const speakerSuggestionCheckpointSchema = z.object({
   proposedSpeakers: z.array(z.string()),
@@ -349,16 +339,12 @@ export const speakerSuggestionCheckpointSchema = z.object({
   candidateIds: z.array(z.string()).optional(),
 });
 
-/** What a suggestion is asked for: the transcript's live Event and the sorted ids of the people it may map to. */
+/** The transcript's live Event and the sorted ids of the people it may map to. */
 export function speakerSuggestionBinding(context: Pick<SpeakerSuggestionContext, "eventId" | "candidates">) {
   return { eventId: context.eventId, candidateIds: context.candidates.map((candidate) => candidate.id).sort() };
 }
 
-/**
- * Whether the checkpoint was written for what `context` asks now, so the model need not be asked again: it has both
- * fields of the binding and they equal the current Event and candidates. An absent checkpoint, an old one without the
- * binding and one that cannot be read count as different.
- */
+/** A missing, binding-less or unreadable checkpoint counts as different, so the model is asked again. */
 export function isSpeakerSuggestionCurrent(
   checkpoint: unknown,
   context: Pick<SpeakerSuggestionContext, "eventId" | "candidates">,
@@ -369,7 +355,7 @@ export function isSpeakerSuggestionCurrent(
   return parsed.data.eventId === binding.eventId && isDeepStrictEqual(parsed.data.candidateIds, binding.candidateIds);
 }
 
-/** The checkpoint to write after a run that created cards for `created`: the binding of `context` and every key that got a card, this run's and an earlier checkpoint's. */
+/** Keys accumulate across runs: this run's and the earlier checkpoint's. */
 export function buildSpeakerSuggestionCheckpoint(
   context: Pick<SpeakerSuggestionContext, "eventId" | "candidates">,
   previous: unknown,
@@ -380,7 +366,6 @@ export function buildSpeakerSuggestionCheckpoint(
   return { proposedSpeakers, ...speakerSuggestionBinding(context) };
 }
 
-/** The payload of a `transcriptSpeakerSuggestion` job (issue gh-1942): the transcript to ask the speakers of. */
 export const transcriptSpeakerSuggestionPayloadSchema = z.object({ transcriptId: z.uuid() });
 export type TranscriptSpeakerSuggestionPayload = z.infer<typeof transcriptSpeakerSuggestionPayloadSchema>;
 
@@ -389,7 +374,6 @@ export function transcriptSpeakerSuggestionJobKey(transcriptId: string): string 
   return `transcript-speaker-suggestion:${transcriptId}`;
 }
 
-/** Enqueues the speaker suggestion of one transcript on the caller's transaction, under the tenant's lane (`maxAttempts: 3`). */
 export async function enqueueTranscriptSpeakerSuggestion(
   client: PoolClient,
   input: TranscriptSpeakerSuggestionPayload,
@@ -412,13 +396,10 @@ const edgeKindRowSchema = z.object({
 });
 
 /**
- * Asks the speakers of a transcript again when what a suggestion is asked for may have changed (issue gh-1942), after
- * an edge write of the issue #1530 hook: the edge of the Transcripts `event` property that was created or deleted
- * (the edge's transcript), and the Events `people` edge that was created or deleted (every live transcript linked to the
- * edge's Event). It enqueues the `transcriptSpeakerSuggestion` job of each transcript in the writing transaction and does
- * nothing for an update of an edge, another relation or a transcript in the Trash. Registered in `../domainWriteHooks.ts`.
- * The changed-edge hook never runs for the dry-run validation of `assertRelationCreatableWithClient`, so a revise of a
- * card that is not confirmed enqueues nothing.
+ * Re-asks the speakers when the suggestion's binding may have changed: a created or deleted Transcripts
+ * `event` edge (that transcript) or Events `people` edge (every live transcript of that Event). Enqueues
+ * in the writing transaction; ignores updates, other relations and trashed transcripts. This hook
+ * never runs for the dry-run validation, so revising an unconfirmed card enqueues nothing.
  */
 export const transcriptSpeakerSuggestionEdgeChangedHook: RelationEdgeChangedHook = async (context) => {
   if (context.op === "update") return;
@@ -465,11 +446,7 @@ export const transcriptSpeakerSuggestionEdgeChangedHook: RelationEdgeChangedHook
     await enqueueTranscriptSpeakerSuggestion(client, { transcriptId });
 };
 
-/**
- * Where the speaker suggestion of a transcript keeps its checkpoint (issue gh-1942): the Transcripts and Files
- * databases and the Files item the transcript was made from, read from the transcript's `link`. `null` for a
- * transcript that is gone, in the Trash or has no source link; the task then has nothing to ask.
- */
+/** `null` for a transcript that is gone, trashed or has no source link; the task then has nothing to ask. */
 export async function readSpeakerSuggestionSource(
   client: PoolClient,
   transcriptId: string,

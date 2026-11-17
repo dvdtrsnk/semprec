@@ -2,20 +2,13 @@ import { z } from "zod";
 import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
 
 /**
- * Which long-lived runtime (issue #91's two graphile-worker composition roots) a module task
- * runs under: `'api'` for deterministic/data/mail/library-style handlers, `'agents'` only for a
- * handler that starts or continues an agent session. Mirrors `@semprec/queue`'s own
- * `TaskAffinity` values — kept as a local literal type rather than an import so this package
- * doesn't gain a dependency on `@semprec/queue` just for one string union.
+ * The runtime a module task runs under: `'agents'` only for a handler that starts or continues an
+ * agent session. Mirrors `@semprec/queue`'s `TaskAffinity`, kept local to avoid that dependency.
  */
 export const MODULE_TASK_AFFINITIES = ["api", "agents", "transcribe"] as const;
 export type ModuleTaskAffinity = (typeof MODULE_TASK_AFFINITIES)[number];
 
-/**
- * A single scheduled/queued unit of work a module contributes (issue #108). `queueAffinity`
- * (issue #221) is mandatory for every active module task — it names which runtime may run it;
- * actually registering it with the queue is a later composition-root concern (#91).
- */
+/** A queued unit of work a module contributes; `queueAffinity` names the runtime that may run it. */
 export interface ModuleTaskDescriptor {
   name: string;
   payloadSchemaExport: string;
@@ -29,10 +22,8 @@ export interface ModuleWorkerDescriptor {
 }
 
 /**
- * Lets a module add its own heartbeat trigger kind (issue #109) without patching core's
- * `heartbeatRuleSchema` discriminated union: `schemaExport` validates a rule of this kind's
- * shape, `nextFireAtExport` computes its next occurrence — both dispatched to by core's
- * scheduler once the kind's owning module is active.
+ * Lets a module add its own heartbeat trigger kind without patching core's `heartbeatRuleSchema`:
+ * `schemaExport` validates a rule of this kind, `nextFireAtExport` computes its next occurrence.
  */
 export interface ModuleHeartbeatRuleKindDescriptor {
   kind: string;
@@ -51,10 +42,9 @@ export interface AreaFilterAreaValue {
 }
 
 /**
- * How one database's items are filtered by an area (issue #1597), declared as data: a filter-tree
- * template over the relation conditions an area filter needs, with `{ areaValue: true }` in every value
- * position that takes the area id. A client substitutes the id and sends the resulting tree as an
- * ordinary filter; `expandAreaFilter` in `@semprec/data` does the same on the server.
+ * How one database's items are filtered by an area, declared as data: a filter-tree template with
+ * `{ areaValue: true }` wherever the area id goes. A client substitutes the id and sends the tree as
+ * an ordinary filter; `expandAreaFilter` in `@semprec/data` does the same on the server.
  */
 export type AreaFilterTemplate =
   | { type: "relation_contains"; property: string; value: AreaFilterAreaValue }
@@ -63,11 +53,7 @@ export type AreaFilterTemplate =
   | { type: "and"; nodes: AreaFilterTemplate[] }
   | { type: "or"; nodes: AreaFilterTemplate[] };
 
-/**
- * `defaultViewType`, when present, names the view type a database's default (system-created)
- * view uses instead of the generic `"table"` type — e.g. Journal's `temporal-switcher`
- * (issue #24). Absent means the database's default view is a plain table.
- */
+/** `defaultViewType` names the view type of the database's default view (e.g. Journal's `temporal-switcher`); absent means `"table"`. */
 export interface ModuleDatabaseDescriptor {
   key: string;
   name: string;
@@ -86,26 +72,25 @@ export interface ModuleDatabaseDescriptor {
   switcherOrder?: number | null;
   /** Shows a database in neither list to clients anyway; only `true` has an effect. */
   clientVisible?: boolean;
-  /** Lets the user hide this database from the client overview (issue #2002); only `true` has an effect. */
+  /** Lets the user hide this database from the client overview; only `true` has an effect. */
   overviewHideable?: boolean;
   /** How this database's items are filtered by an area; absent means the database is not area-filterable. */
   areaFilter?: AreaFilterTemplate;
-  /** The collection screen's quick-filter chips, in display order (issue #1647); absent means none. */
+  /** The collection screen's quick-filter chips, in display order; absent means none. */
   quickFilters?: ModuleQuickFilterDescriptor[];
-  /** The order a collection opens with when no chip sorts it (issue #1647). */
+  /** The order a collection opens with when no chip sorts it. */
   defaultSort?: ModuleSortDescriptor;
-  /** Catalog keys of the labels a date-grouped collection shows for past and undated items (issue #1647). */
+  /** Catalog keys of the labels a date-grouped collection shows for past and undated items. */
   dateLabels?: { pastLabelKey: string; noDateLabelKey: string };
-  /** The items that belong in the collection; an opaque filter tree the data package parses (issue #1647). */
+  /** The items that belong in the collection; an opaque filter tree the data package parses. */
   collectionFilter?: ModuleOpaqueFilter;
-  /** The items a picker for this database offers by default; an opaque filter tree (issue #1647). */
+  /** The items a picker for this database offers by default; an opaque filter tree. */
   pickerFilter?: ModuleOpaqueFilter;
 }
 
 /**
- * A filter tree declared by a manifest. The filter grammar belongs to the data package, so this package
- * only requires a bounded JSON object (`isOpaqueJsonObject`) and never interprets it; the data package's
- * own tests parse every declaration with its filter schema (issue #1647).
+ * A filter tree declared by a manifest. Its grammar belongs to the data package, so this package
+ * only requires a bounded JSON object (`isOpaqueJsonObject`) and never interprets it.
  */
 export type ModuleOpaqueFilter = Record<string, unknown>;
 
@@ -116,9 +101,9 @@ export interface ModuleSortDescriptor {
 }
 
 /**
- * One quick-filter chip (issue #1647). `labelKey` is a catalog key of the owning module; `filter` absent
- * means the chip shows every item ("All"); `sort` absent leaves the database's order. At most one chip of a
- * database is `isDefault`, and keys are unique within the database.
+ * One quick-filter chip. `labelKey` is a catalog key of the owning module; no `filter` shows every
+ * item, no `sort` keeps the database's order. At most one chip per database is `isDefault`; keys
+ * are unique within the database.
  */
 export interface ModuleQuickFilterDescriptor {
   key: string;
@@ -128,26 +113,7 @@ export interface ModuleQuickFilterDescriptor {
   isDefault?: boolean;
 }
 
-/**
- * A manifest-declared resumable data migration (issue #111) for one `from_version` ->
- * `to_version` transition of `databaseKey`'s items, distinct from the plain-string
- * `migrations` field above (that one names the module's own structural/DDL files applied
- * by the forward-only runner, issue #224). `converterExport` names a `ModuleDataMigrationConverter`
- * (`registry.ts`) of shape `(properties, context) => properties` that the module data migration
- * runner calls once per item; a converter that needs no context may declare only `properties`.
- */
-export interface ModuleDataMigrationDescriptor {
-  databaseKey: string;
-  fromVersion: string;
-  toVersion: string;
-  converterExport: string;
-}
-
-/**
- * `capability`, when present, names an entry that must be granted at runtime (see
- * `ModuleRegistry.getAgentTools`) for the tool to appear in a projection at all — an
- * ungranted tool is absent, never present-but-denied.
- */
+/** An ungranted `capability` (see `ModuleRegistry.getAgentTools`) makes the tool absent from a projection, never present-but-denied. */
 export interface ModuleAgentToolDescriptor {
   name: string;
   handlerExport: string;
@@ -172,28 +138,23 @@ export interface ModuleAgentToolDescriptor {
    */
   snapshotExport?: string;
   /**
-   * Present when the tool is also offered on `POST /mcp` although its capability is a module's own and not one of the
-   * core capability ids (issue gh-1956); a tool without it is offered there only when it has no capability or a core one,
-   * and only to a run credential. The tool is then offered to a run credential whose project holds the capability and whose
-   * own list names it, and to a human session whenever its module is active. `humanHandlerExport` names an export of the module file: a factory
-   * `(pool, dependencies)` that returns `(userId, args)`, the handler a human session runs as that user, with the same
-   * result shape as `handlerExport`'s handler. `dependencies` is the container the composition root hands the module's
-   * custom routes. Allowed only for a tool with a capability that is either `approval: "none"` without `requiresApproval`,
-   * or declared with `requiresApproval` (issue gh-1957): a run credential's call of that one files a `moduleTool` approval
-   * request, and a human session runs its human handler as the user without one.
+   * Offers the tool on `POST /mcp` although its capability is a module's own rather than a core
+   * one; without it, only tools with no or a core capability are offered there, and only to a run
+   * credential. With it, the tool is offered to a run credential whose project holds the capability
+   * and whose own list names it, and to a human session whenever its module is active.
+   * `humanHandlerExport` is a factory `(pool, dependencies)` returning `(userId, args)`, the handler
+   * a human session runs, with `handlerExport`'s result shape; `dependencies` is the container given
+   * to custom routes. Allowed only for a capability tool that is `approval: "none"` without
+   * `requiresApproval`, or that has `requiresApproval`: then a run credential's call files a
+   * `moduleTool` approval request while a human session runs the human handler directly.
    */
   mcp?: { humanHandlerExport: string };
 }
 
 /**
- * The two, and only two, reasons a custom route (issue #239) is allowed to exist outside the
- * generic REST surface: `transactional-semantics` covers an action with its own transactional
- * shape a generic item write/read can't express (a cross-database write in one transaction, an
- * aggregate read outside the item model, a binary upload); `single-consumer-read` covers a read
- * shortcut shaped for exactly one consumer. Never CRUD over module data — that always goes
- * through the generic resource endpoints instead. `moduleManifestSchema` rejects any entry
- * missing one of these two values, satisfying the issue's "every manifest entry must state which
- * justification applies" rule structurally, with no extra runtime check needed.
+ * The only two reasons a custom route may exist outside the generic REST surface:
+ * `transactional-semantics` (a transactional shape a generic item write/read cannot express) and
+ * `single-consumer-read` (a read shortcut for exactly one consumer). Never CRUD over module data.
  */
 export const CUSTOM_ROUTE_JUSTIFICATIONS = ["transactional-semantics", "single-consumer-read"] as const;
 export type CustomRouteJustification = (typeof CUSTOM_ROUTE_JUSTIFICATIONS)[number];
@@ -202,11 +163,9 @@ export const CUSTOM_ROUTE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as
 export type CustomRouteMethod = (typeof CUSTOM_ROUTE_METHODS)[number];
 
 /**
- * A named custom route (issue #239) a module mounts into the flat `/api` namespace at startup,
- * through the `semprec-api` REST adapter (#238) — shared auth, validation, status mapping, and
- * serialization, with no private auth or error path of its own. `path` is matched exactly
- * (`:param`-style segments become path parameters); `handlerExport` names an export of this same
- * module file, resolved by the registry the same way every other manifest export is.
+ * A custom route a module mounts into the flat `/api` namespace through the `semprec-api` REST
+ * adapter (shared auth, validation, status mapping and serialization). `path` is matched exactly,
+ * with `:param` segments as path parameters; `handlerExport` names an export of the module file.
  */
 export interface ModuleCustomRouteDescriptor {
   name: string;
@@ -255,9 +214,9 @@ export interface ModuleResolverLinkRuleDescriptor {
 }
 
 /**
- * The controls a card editor field may declare. The server owns the editor schema so that
- * required-ness and conditions can be enforced on confirm (#1928, #1934) with the same rules the
- * client renders (`docs/adr/2026-10-25-server-driven-inbox-editor-schema.md`).
+ * The controls a card editor field may declare. The server owns the editor schema so required-ness
+ * and conditions are enforced on confirm with the rules the client renders
+ * (docs/architecture/domain-mail-and-inbox.md#editor-schemas).
  */
 export const EDITOR_FIELD_CONTROLS = [
   "text",
@@ -284,10 +243,8 @@ export type EditorFieldInputType = (typeof EDITOR_FIELD_INPUT_TYPES)[number];
 export type EditorFieldValue = string | number | boolean;
 
 /**
- * `{ field, equals }` or `{ field, notEquals }`: holds when the named field of the same card has
- * (or does not have) the value. `when` declares the condition under which a field applies, and
- * `timeHiddenWhen` the one under which only the time part of a `datetime` field is hidden. Nothing
- * evaluates either until #1928 and #1934.
+ * `{ field, equals }` or `{ field, notEquals }` over another field of the same card. `when` gates
+ * whether a field applies; `timeHiddenWhen` hides only the time part of a `datetime` field.
  */
 export type EditorFieldCondition =
   { field: string; equals: EditorFieldValue } | { field: string; notEquals: EditorFieldValue };
@@ -337,7 +294,6 @@ export interface ModuleManifest {
   taskNames?: ModuleTaskDescriptor[];
   workers?: ModuleWorkerDescriptor[];
   migrations?: string[];
-  dataMigrations?: ModuleDataMigrationDescriptor[];
   customRoutes?: ModuleCustomRouteDescriptor[];
   linkRules?: Array<ModuleLinkRuleDescriptor | ModuleResolverLinkRuleDescriptor>;
   /**
@@ -392,10 +348,7 @@ const MAX_AREA_FILTER_NODES_PER_LEVEL = 8;
 const areaFilterPropertyKey = z.string().min(1);
 const areaFilterAreaValueSchema = z.strictObject({ areaValue: z.literal(true) });
 
-/**
- * Strict at every level, so a misspelled field is rejected rather than ignored, and a
- * `relation_path_contains` path is exactly two non-empty property keys (the two-hop condition of #1363).
- */
+/** Strict at every level, so a misspelled field is rejected; a `relation_path_contains` path is exactly two keys. */
 function buildAreaFilterTemplateSchema(remainingDepth: number): z.ZodType<AreaFilterTemplate> {
   const relationContains = z.strictObject({
     type: z.literal("relation_contains"),
@@ -443,11 +396,10 @@ function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The values held by a JSON container, or `undefined` when `container` is not one: a plain object (prototype
- * `Object.prototype` or `null`) with only string-keyed, enumerable data properties, or an array with the
- * `Array` prototype, no holes and no property other than its indices and `length`. Property descriptors are
- * read, never the properties themselves, so no accessor runs. `budget` is the number of values the caller can
- * still accept; a container holding more is refused before any of its descriptors is read.
+ * The values of a JSON container, or `undefined` when `container` is not one: a plain object with
+ * only string-keyed enumerable data properties, or a hole-free array with no extra properties.
+ * Only descriptors are read, so no accessor runs. A container holding more than `budget` values is
+ * refused before its descriptors are read.
  */
 function jsonContainerValues(container: object, budget: number): unknown[] | undefined {
   const keys = Reflect.ownKeys(container);
@@ -475,13 +427,10 @@ function jsonContainerValues(container: object, budget: number): unknown[] | und
 }
 
 /**
- * Whether `root` is a JSON object this package can hold as an opaque filter (issue #1647): a plain object
- * (`isPlainJsonObject`) holding only plain objects, arrays, strings, booleans, `null` and finite numbers
- * (`jsonContainerValues`). `undefined`, functions, symbols, bigints, non-finite numbers, class instances such
- * as a `Date`, and accessors are refused. A container reached again inside itself (a cycle) is refused; the
- * same acyclic value reached on two paths is accepted and counted on each. Nesting deeper than
- * `MAX_OPAQUE_FILTER_DEPTH` containers or holding more than `MAX_OPAQUE_FILTER_VALUES` values is refused. The
- * walk is iterative, so these bounds, not the call stack, are what stop it.
+ * Whether `root` is a plain JSON object holding only plain objects, arrays, strings, booleans,
+ * `null` and finite numbers. Cycles are refused (a shared acyclic value is counted per path), as
+ * is anything beyond `MAX_OPAQUE_FILTER_DEPTH` or `MAX_OPAQUE_FILTER_VALUES`. Iterative, so these
+ * bounds rather than the stack stop the walk.
  */
 function isOpaqueJsonObject(root: unknown): root is ModuleOpaqueFilter {
   if (!isPlainJsonObject(root)) return false;
@@ -578,13 +527,6 @@ const moduleDatabaseDescriptorSchema = z
     }
   });
 
-const moduleDataMigrationDescriptorSchema = z.object({
-  databaseKey: z.string().min(1),
-  fromVersion: z.string().min(1),
-  toVersion: z.string().min(1),
-  converterExport: z.string().min(1),
-});
-
 const moduleAgentToolDescriptorSchema = z
   .object({
     name: z.string().min(1),
@@ -624,7 +566,7 @@ const moduleAgentToolDescriptorSchema = z
       ctx.addIssue({ code: "custom", message: "Project permission is required", path: ["projectPermission"] });
   });
 
-/** `path` must live under the flat `/api` namespace the issue's Task requires every custom route to mount into. */
+/** `path` must live under the flat `/api` namespace. */
 const moduleCustomRouteDescriptorSchema = z.object({
   name: z.string().min(1),
   method: z.enum(CUSTOM_ROUTE_METHODS),
@@ -660,10 +602,8 @@ export const editorConditionSchema = z.union([
 ]);
 
 /**
- * An attribute that applies to one control only (`timeHiddenWhen` on `datetime`, `inputType` on
- * `text`, `options` on `seg`), and the `infoKey` every `info` row needs, are checked here, so a
- * declaration that pairs an attribute with a control it does not apply to, or an `info` row without
- * `infoKey`, fails at load time.
+ * Control-specific attributes (`timeHiddenWhen` on `datetime`, `inputType` on `text`, `options` on
+ * `seg`) and the `infoKey` every `info` row needs are checked here, so a mismatch fails at load.
  */
 export const editorFieldDescriptorSchema = z
   .strictObject({
@@ -723,7 +663,6 @@ export const moduleManifestSchema = z.object({
   taskNames: z.array(moduleTaskDescriptorSchema).optional(),
   workers: z.array(moduleWorkerDescriptorSchema).optional(),
   migrations: z.array(z.string().min(1)).optional(),
-  dataMigrations: z.array(moduleDataMigrationDescriptorSchema).optional(),
   customRoutes: z.array(moduleCustomRouteDescriptorSchema).optional(),
   linkRules: z.array(z.union([moduleLinkRuleDescriptorSchema, moduleResolverLinkRuleDescriptorSchema])).optional(),
   editorSchemas: z.record(z.string().min(1), editorSchemaDescriptorSchema).optional(),

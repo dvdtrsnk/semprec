@@ -42,13 +42,12 @@ const SAMPLE_ITEM: ItemRow = {
   createdAt: "2026-09-11T00:00:00.000Z",
   updatedAt: "2026-09-11T00:00:00.000Z",
   deletedAt: null,
+  version: "1",
 };
 
 /**
- * Issue #238's acceptance criterion: every one of the nine error codes produces its documented
- * status and `{ error: { code, details } }` body. Each entry here is a fixture error a future
- * route handler could plausibly throw, not a live call site — this adapter's job is the mapping,
- * not the business logic that decides when to throw.
+ * Every error code produces its documented status and `{ error: { code, details } }` body. The
+ * errors are fixtures; the adapter's job is the mapping.
  */
 const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointError }> = [
   {

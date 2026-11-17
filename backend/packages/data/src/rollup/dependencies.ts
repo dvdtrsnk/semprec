@@ -8,7 +8,6 @@ export interface RollupDependencyRow {
   sourcePropertyKey: string | null;
 }
 
-/** The raw `rollup_dependencies` row shape this module reads back from Postgres. */
 type RollupDependencyDbRow = {
   rollup_property_id: string;
   relation_definition_id: string;
@@ -73,6 +72,25 @@ export async function findDependenciesBySource(
   return rows.map(mapRow);
 }
 
+/**
+ * `findDependenciesBySource` for several keys of one database in one statement: the rows of each key in the order
+ * of `sourcePropertyKeys`.
+ */
+export async function findDependenciesBySources(
+  client: PoolClient,
+  sourceDatabaseId: string,
+  sourcePropertyKeys: readonly string[],
+): Promise<RollupDependencyRow[]> {
+  if (sourcePropertyKeys.length === 0) return [];
+  const { rows } = await client.query<RollupDependencyDbRow>(
+    `SELECT rollup_property_id, relation_definition_id, source_database_id, source_property_key
+     FROM rollup_dependencies WHERE source_database_id = $1 AND source_property_key = ANY($2::text[])
+     ORDER BY array_position($2::text[], source_property_key), rollup_property_id`,
+    [sourceDatabaseId, sourcePropertyKeys],
+  );
+  return rows.map(mapRow);
+}
+
 /** Archive and restore of a database: which rollups aggregate its items. Zero rows is the common case. */
 export async function findDependenciesBySourceDatabase(
   client: PoolClient,
@@ -98,11 +116,7 @@ export async function getRollupDependency(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * Removes every dependency whose source is `sourceDatabaseId` — used by the trash purge (issue #675)
- * when it drops an emptied inline database, in that purge's own transaction. Zero rows is valid: most
- * databases are no rollup's source.
- */
+/** For the trash purge dropping an emptied inline database. Zero rows is valid. */
 export async function deleteRollupDependenciesBySourceDatabase(
   client: PoolClient,
   sourceDatabaseId: string,

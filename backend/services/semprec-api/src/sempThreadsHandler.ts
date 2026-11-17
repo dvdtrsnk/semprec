@@ -35,8 +35,8 @@ const messageRunSchema = z
   .nullable();
 
 /**
- * The tick-thread fields of `GET /api/semp/threads/:id` (issue #1562), checked before they are sent: the
- * stored rule is JSONB and the header joins two other tables. Only a tick thread carries the two keys.
+ * Checked before they are sent: the stored rule is JSONB and the header joins two other tables.
+ * Only a tick thread carries the two keys.
  */
 const tickThreadHeaderSchema = z.strictObject({
   heartbeat: z
@@ -100,10 +100,9 @@ function parseCursor(value: string | null): { createdAt: string; id: string } | 
   }
 }
 
-/** The kinds `GET /api/semp/threads` returns when the request names none: chats and Inbox item threads. */
+/** Used when the request names none: chats and Inbox item threads. */
 const DEFAULT_LIST_KINDS: readonly SempThreadKind[] = ["chat", "item"];
 
-/** The value of a query parameter that may be given at most once; null when it is absent. */
 function singleQueryValue(query: URLSearchParams, name: string): string | null {
   const values = query.getAll(name);
   if (values.length > 1) throw new ValidationError(`'${name}' must be given at most once`, { field: name });
@@ -122,10 +121,9 @@ function parseListKinds(value: string): SempThreadKind[] {
   return [...kinds];
 }
 
-/** Longest search text `GET /api/semp/threads` takes in `q`, in Unicode code points. */
+/** In Unicode code points. */
 const MAX_SEARCH_CODE_POINTS = 100;
 
-/** The validated query of `GET /api/semp/threads` (issues #1729 and #1737). */
 function parseThreadListQuery(query: URLSearchParams) {
   const rawKind = singleQueryValue(query, "kind");
   const rawSubject = singleQueryValue(query, "subjectInboxItemId");
@@ -133,8 +131,8 @@ function parseThreadListQuery(query: URLSearchParams) {
   if (rawLimit !== null && (!/^[1-9]\d*$/.test(rawLimit) || Number(rawLimit) > 100))
     throw new ValidationError("'limit' must be an integer between 1 and 100", { field: "limit" });
   const rawCursor = singleQueryValue(query, "cursor");
-  // Trimmed first: only the text that is searched counts against the cap, and a blank `q` is no filter.
-  // Postgres refuses a NUL character in a text value, so one is refused here.
+  // Trimmed first, so only searched text counts against the cap and a blank `q` is no filter.
+  // Postgres refuses a NUL in a text value.
   const search = singleQueryValue(query, "q")?.trim() ?? "";
   if (search.includes("\u0000") || Array.from(search).length > MAX_SEARCH_CODE_POINTS)
     throw new ValidationError(`'q' must be at most ${MAX_SEARCH_CODE_POINTS} characters without a NUL character`, {
@@ -149,7 +147,7 @@ function parseThreadListQuery(query: URLSearchParams) {
   };
 }
 
-/** `heartbeatRuleKinds` resolves the active modules' rule kinds per request (`resolveModuleRuleKinds`). */
+/** `heartbeatRuleKinds` resolves the active modules' rule kinds per request. */
 export function createSempThreadRoutes(
   pool: Pool,
   heartbeatRuleKinds: () => Promise<HeartbeatRuleKindRegistry>,

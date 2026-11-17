@@ -16,6 +16,7 @@ import { NotFoundError, ValidationError } from "../errors.js";
 import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { describeJournalPeriods, JOURNAL_PERIOD_TYPES, parseJournalPeriodKey, weeksOfMonth } from "./journalPeriods.js";
+import type { CustomRouteResult, RouteParams } from "../customRoute.js";
 
 interface JournalPeriodEntry {
   item: ItemRow;
@@ -85,7 +86,6 @@ function pageMarkdown(page: PageStateRead): string {
   return result;
 }
 
-/** One of the day's events in the Journal day response (issue #1721): these fields of its calendar timeline item. */
 type JournalDayEvent = Pick<
   CalendarTimelineItem,
   | "id"
@@ -102,18 +102,14 @@ type JournalDayEvent = Pick<
   | "transcript"
 >;
 
-/** One of the day's birthdays in the Journal day response (issue #2015): these fields of its calendar timeline item. */
 type JournalDayBirthday = Pick<
   CalendarBirthdayTimelineItem,
   "id" | "personId" | "personName" | "title" | "date" | "calendarId"
 >;
 
 /**
- * The events (issue #1721) and the birthdays (issue #2015) of `day` for the Journal day response, both taken from
- * one read of the calendar timeline for the range from `day` to `day`, in the timeline's order. `events` holds
- * the items of kind `event`, all-day Events included; `birthdays` holds the items of kind `birthday`, so a
- * birthday is never an event. Which of them belong to the day is the timeline's decision; any other kind, a
- * public holiday among them, is in neither list.
+ * One timeline read for `day`, in timeline order. Which items belong to the day is the timeline's decision; kinds
+ * other than `event` and `birthday` (public holidays, for example) are in neither list.
  */
 async function readJournalDayTimeline(
   client: PoolClient,
@@ -135,12 +131,8 @@ async function readJournalDayTimeline(
 }
 
 const periodType = z.enum(JOURNAL_PERIOD_TYPES);
-interface Context {
-  params: Record<string, string>;
-}
-
 export function createJournalPeriodReadRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; body: unknown }> => {
+  return async (ctx: RouteParams): Promise<CustomRouteResult> => {
     const type = periodType.safeParse(ctx.params.type);
     if (!type.success) throw new ValidationError("Invalid journal period type", { field: "type" });
     const key = ctx.params.period;
@@ -204,7 +196,7 @@ export function createJournalPeriodReadRouteHandler(pool: Pool) {
 }
 
 export function createJournalPeriodEnsureRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; body: unknown }> => {
+  return async (ctx: RouteParams): Promise<CustomRouteResult> => {
     const type = periodType.safeParse(ctx.params.type);
     if (!type.success) throw new ValidationError("Invalid journal period type", { field: "type" });
     const key = ctx.params.period;

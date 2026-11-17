@@ -52,10 +52,7 @@ function toPropertyCatalogEntry(
   };
 }
 
-/**
- * The default view type each active module's manifest declares for one of its databases, by database key
- * (issue #1707). A database whose descriptor declares none has no entry.
- */
+/** A database whose descriptor declares none has no entry. */
 async function declaredDefaultViewTypes(moduleRegistry: ModuleRegistry): Promise<ReadonlyMap<string, string>> {
   const declared = new Map<string, string>();
   for (const descriptor of await moduleRegistry.getDatabases()) {
@@ -65,12 +62,9 @@ async function declaredDefaultViewTypes(moduleRegistry: ModuleRegistry): Promise
 }
 
 /**
- * Resolves `database`'s display name through issue #35's localized-metadata catalog and projects
- * it onto the #240 wire envelope — the one place every database route (list/create/detail/patch/
- * archive/restore) turns a generic-catalog `Database` into its response body, so a system
- * database's `name: null` override slot is never sent to a REST caller as a literal `null`.
- * `defaultViewTypes` is the map of `declaredDefaultViewTypes`; only a system database has a key, so
- * a user-created database never takes a declared type.
+ * The one place a database route turns a `Database` into its response body, so a system database's
+ * `name: null` override slot is never sent as `null`. Only a system database has a key, so a
+ * user-created database never takes a declared view type.
  */
 async function resolvedDatabaseBody(
   catalogResolver: CatalogResolver,
@@ -92,7 +86,7 @@ async function resolvedDatabaseBody(
 const DATABASE_LIST_PAGE_SIZE = 200;
 const DEFAULT_LIST_LIMIT = 50;
 
-/** Encodes the sort tuple of the last returned row, so a cursor stays valid after that row is archived. */
+/** Encodes the last row's sort tuple, so a cursor stays valid after that row is archived. */
 function encodeListCursor(row: OrderableCollection): string {
   const tuple = [row.switcherOrder, row.overviewOrder, row.name, row.id];
   return Buffer.from(JSON.stringify(tuple), "utf8").toString("base64url");
@@ -121,7 +115,7 @@ function decodeListCursor(raw: string): OrderableCollection {
   return { switcherOrder, overviewOrder, name, id };
 }
 
-/** Reads every page of `database.list`; the new order cannot be expressed by that operation's id-keyed cursor. */
+/** The new order cannot be expressed by `database.list`'s id-keyed cursor. */
 async function listAllDatabases(service: GenericApplicationPort, userId: string): Promise<Database[]> {
   const all: Database[] = [];
   let cursor: string | undefined;
@@ -136,7 +130,7 @@ async function listAllDatabases(service: GenericApplicationPort, userId: string)
   return all;
 }
 
-/** `limit` keeps the `database.list` range: 1 to 200, default 50. */
+/** 1 to 200, default 50, as `database.list`. */
 function optionalLimit(query: URLSearchParams): number {
   const raw = query.get("limit");
   if (raw === null) return DEFAULT_LIST_LIMIT;
@@ -152,14 +146,10 @@ function requestUrl(rawUrl: string | undefined): URL {
 }
 
 /**
- * The database endpoint family (issue #240, rebased onto the generic-operation bindings by issue
- * #219): `GET/POST /api/databases`, `GET/PATCH/DELETE/POST .../restore /api/databases/:id`, and
- * `GET/POST /api/databases/:id/properties`. Every route assembles a canonical command object,
- * validates and dispatches it through `dispatchGenericOperation` against the one
- * `GenericApplicationPort` instance the composition root (`app.ts`) injects — no route constructs
- * its own `createChokePoint(pool)`. `GET /api/databases/:id/properties` is the sole exception to
- * "response mirrors the binding output verbatim": it keeps its established localized
- * `PropertyCatalogEntry[]` shape, since the web frontend's `listProperties` client consumes it.
+ * Every route dispatches through `dispatchGenericOperation` against the injected
+ * `GenericApplicationPort`. `GET /api/databases/:id/properties` alone keeps its localized
+ * `PropertyCatalogEntry[]` shape instead of the binding output, because the web client's
+ * `listProperties` consumes it.
  */
 export function createDatabaseRoutes(
   service: GenericApplicationPort,

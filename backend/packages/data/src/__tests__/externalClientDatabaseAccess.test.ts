@@ -39,7 +39,6 @@ import {
 } from "../testSupport/testDb.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
-// Seeding the system databases of one tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 120_000;
 const FORBIDDEN = { status: 403, code: "forbidden" };
 const EXTERNAL: DatabaseReader = { externalClient: true };
@@ -59,14 +58,12 @@ function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return inTenant(() => withTransaction(dataPool, fn));
 }
 
-/** The writer `writerIdentityOf` derives for an `/mcp` call on a human token. */
 const externalWriter = (): WriterIdentity => ({
   writerKind: "agent",
   onBehalfOfUserId: randomUUID(),
   externalClient: true,
 });
 
-/** A user-created database with a title property. */
 async function newUserDatabase(name = "Notes"): Promise<DatabaseRow> {
   return inTenant(async () => {
     const database = await cp.createDatabase({ name });
@@ -291,7 +288,6 @@ describe("an external client's access to databases (issue #1998)", () => {
         for (const itemId of [openItem.id, openSubpage]) {
           await pageAccess(EXTERNAL, itemId, access);
         }
-        // A person and the system carry no reader and are not checked.
         await pageAccess(undefined, record.id, access);
       }
     });

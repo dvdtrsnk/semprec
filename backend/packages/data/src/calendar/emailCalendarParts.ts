@@ -1,5 +1,4 @@
-// Reads the calendar parts of a stored email (issue gh-1929): the `text/calendar` and `application/ics` attachments
-// that mail ingest wrote to blob storage and recorded in `mail_attachments`.
+// Reads the `text/calendar` and `application/ics` attachments that mail ingest wrote to blob storage.
 import type { Readable } from "node:stream";
 import type { Queryable } from "../db/pool.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
@@ -10,10 +9,7 @@ interface CalendarPartRow {
   storage_key: string;
 }
 
-/**
- * The bytes of `stream`, or `null` once they exceed `maxBytes`. The stream is destroyed on every path out, so an
- * oversize part is not read to its end.
- */
+/** Destroys the stream on every exit, so an oversize part is not read to its end. */
 async function readCapped(stream: Readable, maxBytes: number): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -33,14 +29,9 @@ async function readCapped(stream: Readable, maxBytes: number): Promise<Buffer | 
 }
 
 /**
- * The text of every calendar part of the Emails item `emailItemId`: each `mail_attachments` row of the message whose
- * `content_type` is `text/calendar` or `application/ics` (any letter case) and whose recorded `byte_size` is within
- * the parser's limit (`ICALENDAR_MAX_BYTES`), read through `storage.readStream` by the `storage_key` of its blob and
- * decoded as UTF-8. A part whose bytes turn out to exceed the limit although its row said otherwise is skipped, with
- * a log line that names the email and a reason code only. A message without such a part gives an empty list.
- *
- * Reads the caller's tenant's rows (row-level security, and `tenant_id = app_tenant_default()` on both tables); a
- * storage read that fails rejects with its own error.
+ * Parts whose recorded `byte_size` is within `ICALENDAR_MAX_BYTES`, decoded as UTF-8. A part that turns out
+ * larger is skipped with a log line naming only the email and a reason code. Reads the caller's tenant's rows
+ * (RLS plus `tenant_id = app_tenant_default()`); a failed storage read rejects with its own error.
  */
 export async function readCalendarPartsOfEmail(
   client: Queryable,

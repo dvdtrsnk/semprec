@@ -26,11 +26,7 @@ import { recomputeJournalInboxDay } from "../inbox/journalInboxCompute.js";
 import { reindexItemSearch } from "../mail/search.js";
 import { indexItem } from "../search/itemSearchIndexer.js";
 import { buildItemSearchQuery } from "../search/itemSearchQuery.js";
-import {
-  enqueueItemSearchBackfill,
-  handleItemSearchBackfillTask,
-  runItemSearchBackfillCutover,
-} from "../search/itemSearchBackfill.js";
+import { enqueueItemSearchBackfill, handleItemSearchBackfillTask } from "../search/itemSearchBackfill.js";
 import { createApiCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { manifest } from "../seed/systemDatabasesModuleManifest.js";
@@ -84,14 +80,13 @@ async function task(title = "Invoice"): Promise<{ id: string; databaseId: string
   return cp.createItem({ databaseId: await db("tasks"), properties: { name: title } });
 }
 async function removeIndex(itemIds: string[]): Promise<void> {
-  // Simulates pre-deploy items: the public write path now always creates their index rows.
+  // Simulates unindexed items: the public write path always creates their index rows.
   await withTransaction(pool, (client) =>
     client.query("DELETE FROM item_search_index WHERE item_id = ANY($1::uuid[])", [itemIds]),
   );
 }
 async function rejectIndexWrites(onlyMarked = false): Promise<void> {
-  // Fault injection is database-only; no production API can make an index upsert fail on demand.
-  // The interpolated fragment is one of two closed SQL constants, never fixture content.
+  // No production API makes an index upsert fail; the fragment is one of two closed SQL constants.
   const whenClause = onlyMarked ? "WHEN (NEW.search_vector @@ plainto_tsquery('czech', 'rejectChunk'))" : "";
   await admin.query(`CREATE FUNCTION reject_item_search_test() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN RAISE EXCEPTION 'test index failure'; END $$;
@@ -282,7 +277,7 @@ describe("item search create/update hooks", () => {
       const item = await task();
       await link(item.databaseId, "project", item.id, project.id);
       expect(await has(item.id, "Billing")).toBe(false);
-      // Edge fan-out is deferred to #1652; the next item update runs the indexing hook.
+      // The next item update runs the indexing hook.
       await cp.updateItem({ databaseId: item.databaseId, itemId: item.id, propertiesPatch: { name: "Invoice" } });
       expect(await has(item.id, "Invoice Billing Finance")).toBe(true);
     });
@@ -503,7 +498,7 @@ describe("item search create/update hooks", () => {
           });
         }
         if (descriptor.key === "events") {
-          // The identity of a materialized occurrence (issue gh-1843): written only by the calendar module.
+          // The identity of a materialized occurrence, written only by the calendar module.
           expect(props.rows.find((property) => property.key === "seriesId")).toEqual({
             key: "seriesId",
             type: "text",
@@ -519,10 +514,9 @@ describe("item search create/update hooks", () => {
           if (descriptor.key === "tasks" && property.key === "seriesId") {
             continue;
           }
-          // An event's seriesId is the system-owned identity of a materialized occurrence (issue gh-1843), not searchable
-          // text (asserted below); its occurrenceDate is a date property and is not selected here.
+          // An event's seriesId is the system-owned occurrence identity, not searchable text (asserted below).
           if (descriptor.key === "events" && property.key === "seriesId") continue;
-          // An event's iCalendar UID is a system identifier (issue #1599), not searchable text (asserted below).
+          // An event's iCalendar UID is a system identifier, not searchable text (asserted below).
           if (descriptor.key === "events" && property.key === "icalUid") continue;
           expect(descriptor.searchFields).toContain(property.key);
         }
@@ -562,31 +556,6 @@ describe("tenant item search backfill task", () => {
     expect(await readJobPayloadsByIdentifier(admin, taskName)).toEqual([]);
   });
 
-  it("deploy fills every live non-Emails item, including legacy seed data, and repeat deploy leaves index rows unchanged", async () => {
-    await runInTenant(tenant, async () => {
-      const live = await task();
-      const trashed = await task("Trashed");
-      await cp.softDeleteItem(trashed.databaseId, trashed.id);
-      await cp.createItem({ databaseId: await db("emails"), properties: {} });
-      await removeIndex([live.id, trashed.id]);
-    });
-    await runAsSystem("test deploy", () => runItemSearchBackfillCutover(pool));
-    await runQueuedBackfill();
-    const before = await runInTenant(tenant, async () => {
-      const eligible = await pool.query<{ id: string; database_id: string }>(
-        `SELECT i.id, i.database_id FROM items i JOIN databases d ON d.id = i.database_id
-         WHERE i.deleted_at IS NULL AND d.owner_module_id IS DISTINCT FROM $1 ORDER BY i.id`,
-        ["emails"],
-      );
-      const indexed = await rows();
-      expect(indexed.map((row) => ({ id: row.item_id, database_id: row.database_id }))).toEqual(eligible.rows);
-      return indexed;
-    });
-    await runAsSystem("test repeat deploy", () => runItemSearchBackfillCutover(pool));
-    await runQueuedBackfill();
-    expect(await runInTenant(tenant, rows)).toEqual(before);
-  });
-
   it("registers the task in the API affinity and tenant tenancy catalogs", () => {
     expect(taskName).toBe("itemSearchBackfill");
     expect(CORE_TASK_AFFINITY[taskName]).toBe("api");
@@ -594,7 +563,7 @@ describe("tenant item search backfill task", () => {
     expect(createApiCoreTaskList(pool, createActionRegistry())[taskName]).toBeTypeOf("function");
   });
 
-  it("backfills legacy items across committed chunks, queues a distinct cursor on the tenant lane, and preserves existing rows on repeat deploy", async () => {
+  it("backfills unindexed items across committed chunks, queues a distinct cursor on the tenant lane, and preserves existing rows on a repeat run", async () => {
     const items: string[] = [];
     let databaseId = "";
     await runInTenant(tenant, async () => {
@@ -614,7 +583,7 @@ describe("tenant item search backfill task", () => {
          JOIN graphile_worker._private_job_queues q ON q.id = j.job_queue_id WHERE t.identifier = $1 ORDER BY j.key`,
         [taskName],
       );
-      // Graphile Worker 0.17.3: queue name is only exposed by its private queue table.
+      // The queue name is only exposed by graphile-worker's private queue table.
       expect(jobs.rows).toHaveLength(2);
       expect(new Set(jobs.rows.map((row) => row.key)).size).toBe(2);
       expect(jobs.rows.every((row) => row.queue_name === `item-search-index:${tenant}`)).toBe(true);
@@ -687,8 +656,7 @@ describe("tenant item search backfill task", () => {
         let appearing: IndexRow | undefined;
         await overlapBackfill(item.databaseId, true, finish, async (client) => {
           await indexItem(client, item.id);
-          // An intentionally different document makes overwriting the winning row observable
-          // independently of timestamps; the public item API cannot supply an arbitrary vector.
+          // A different document makes overwriting the winning row observable; the item API cannot supply an arbitrary vector.
           await reindexItemSearch(client, {
             itemId: item.id,
             databaseId: item.databaseId,
@@ -745,8 +713,7 @@ describe("tenant item search backfill task", () => {
       foreignId = item.id;
       foreignDb = database.id;
     });
-    // Issue #1652: the title property queued the other tenant's own backfill of its collection. Run it
-    // before simulating a pre-deploy item, so only this tenant's jobs run below.
+    // The title property queued the other tenant's own backfill; run it first so only this tenant's jobs run below.
     await runQueuedBackfill();
     await runInTenant(other, () => removeIndex([foreignId]));
     await runInTenant(tenant, async () => {
@@ -795,14 +762,7 @@ describe("tenant item search backfill task", () => {
     });
   });
 
-  it("refuses an owner pool for the deploy cutover before enqueuing", async () => {
-    await expect(runAsSystem("test cutover", () => runItemSearchBackfillCutover(admin))).rejects.toThrow(
-      /row-level security/,
-    );
-    expect(await readJobPayloadsByIdentifier(admin, taskName)).toEqual([]);
-  });
-
-  it("full and missing-only deploy jobs retain distinct keys and preserve stored page text", async () => {
+  it("full and missing-only jobs retain distinct keys and preserve stored page text", async () => {
     const item = await runInTenant(tenant, async () => {
       const created = await task("Rebuild target");
       await withTransaction(pool, (client) => indexItem(client, created.id, { pageText: "Retained page projection" }));
@@ -811,8 +771,10 @@ describe("tenant item search backfill task", () => {
       );
       return created;
     });
-    await runAsSystem("test missing-only enqueue", () => runItemSearchBackfillCutover(pool));
-    await runAsSystem("test full enqueue", () => runItemSearchBackfillCutover(pool, false));
+    await runInTenant(tenant, async () => {
+      await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: true }));
+      await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: false }));
+    });
     const jobs = await readJobPayloadsByIdentifier(admin, taskName);
     expect(jobs).toHaveLength(2);
     expect(jobs).toEqual(
@@ -837,7 +799,7 @@ describe("tenant item search backfill task", () => {
     });
   });
 
-  it("retains distinct legacy body and page projections during a full queued rebuild", async () => {
+  it("retains distinct body and page projections during a full queued rebuild", async () => {
     const fixtures = await runInTenant(tenant, async () => {
       const withPage = await task("With page");
       const withoutPage = await task("Without page");
@@ -856,7 +818,9 @@ describe("tenant item search backfill task", () => {
       }
       return { withPage, withoutPage };
     });
-    await runAsSystem("test full legacy rebuild", () => runItemSearchBackfillCutover(pool, false));
+    await runInTenant(tenant, () =>
+      withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: false })),
+    );
     await runQueuedBackfill();
     await runInTenant(tenant, async () => {
       for (const [item, body, page] of [
@@ -873,21 +837,6 @@ describe("tenant item search backfill task", () => {
         expect(await has(item.id, body)).toBe(true);
       }
     });
-  });
-
-  it("enqueues once per maintained tenant on each deploy and preserves the missing-only contract", async () => {
-    const statuses = ["provisioning", "suspended", "deleting"] as const;
-    const ids: string[] = [tenant];
-    for (const status of statuses) ids.push(await createTestTenant(admin, { status }));
-    await runAsSystem("test deploy", () => runItemSearchBackfillCutover(pool));
-    await runAsSystem("test repeat deploy", () => runItemSearchBackfillCutover(pool));
-    const payloads = await readJobPayloadsByIdentifier(admin, taskName);
-    expect(payloads).toHaveLength(3);
-    expect(payloads).toEqual(
-      expect.arrayContaining(
-        ids.slice(0, 3).map((tenantId) => expect.objectContaining({ tenantId, payload: { onlyMissing: true } })),
-      ),
-    );
   });
 
   it("rolls back a failing chunk and leaves no continuation or partial index rows", async () => {

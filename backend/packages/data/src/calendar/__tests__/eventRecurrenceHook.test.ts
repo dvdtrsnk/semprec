@@ -13,7 +13,6 @@ const INVALID = { status: 400, code: "validation_failed", details: { field: "rec
 
 let pool: Pool;
 
-/** The error a write was refused with, or `undefined` when it was stored. */
 function refusal(write: Promise<unknown>): Promise<unknown> {
   return write.then(
     () => undefined,

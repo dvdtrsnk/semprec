@@ -5,9 +5,8 @@ import type { Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 
 /**
- * One-time OAuth states for connecting a Gmail or Outlook mailbox (issue #1483). The `state` sent to
- * the provider is a random opaque token of which only the SHA-256 hash is stored; the PKCE code
- * verifier is sealed under the tenant data key and is never returned by `createMailOauthState`.
+ * One-time OAuth states for connecting a mailbox. Only the SHA-256 hash of the opaque `state` is stored; the PKCE
+ * verifier is sealed under the tenant data key and never returned.
  */
 export const MAIL_OAUTH_PROVIDERS = ["gmail", "outlook"] as const;
 export type MailOauthProvider = (typeof MAIL_OAUTH_PROVIDERS)[number];
@@ -31,17 +30,11 @@ export interface CreateMailOauthStateInput {
 }
 
 export interface CreatedMailOauthState {
-  /** The opaque value to send to the provider as `state`. */
   state: string;
-  /** The S256 PKCE challenge derived from the stored verifier. */
   codeChallenge: string;
 }
 
-/**
- * Generates the state and PKCE verifier, seals the verifier under the current tenant's data key
- * (created on first use) and inserts the row, valid for 10 minutes. Inside a transaction a newly
- * created tenant key rolls back with the caller.
- */
+/** The row is valid for 10 minutes. Inside a transaction a newly created tenant key rolls back with the caller. */
 export async function createMailOauthState(
   client: Queryable,
   input: CreateMailOauthStateInput,
@@ -72,10 +65,9 @@ export interface ConsumedMailOauthState {
 }
 
 /**
- * Consumes a state in one statement: the row is marked used only when its hash matches, it belongs
- * to `userId`, it has not expired and it is unused, so two racing calls succeed at most once. Returns
- * `null` in every other case without saying which condition failed. A verifier that cannot be opened
- * throws; the caller's transaction then rolls the consumption back.
+ * Consumes a state in one guarded statement (hash, `userId`, unexpired, unused), so two racing calls succeed at most
+ * once. Returns `null` without saying which condition failed. A verifier that cannot be opened throws, and the
+ * caller's rollback undoes the consumption.
  */
 export async function consumeMailOauthState(
   client: Queryable,

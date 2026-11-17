@@ -4,16 +4,14 @@ import { createPool } from "../../db/pool.js";
 
 declare module "vitest" {
   interface ProvidedContext {
-    /** `SEMPREC_TENANT_SCOPE` as the vitest process was started with it, `null` when it was not set. */
+    /** `null` when the vitest process was started without `SEMPREC_TENANT_SCOPE`. */
     explicitTenantScopeMode: string | null;
   }
 }
 
 /**
- * Probe of the integration tier's default tenant-scope mode (`tenantScopeMode.ts`). This file is not on
- * `tenantScopeWarnFiles.json`, so it runs under `strict`; against a `globalSetup` that still defaulted the whole
- * tier to `warn` both strict-mode cases fail. A `SEMPREC_TENANT_SCOPE` that the vitest process was started with
- * is a developer override of every file, so these cases skip with that reason instead of asserting the default.
+ * Probes the integration tier's default mode: this file is not on the warn list, so it must run `strict`. A value the
+ * vitest process was started with is a developer override, so the cases skip instead of asserting the default.
  */
 
 const connectionString = process.env.TEST_DATABASE_URL;

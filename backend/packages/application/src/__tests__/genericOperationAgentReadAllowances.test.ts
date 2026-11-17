@@ -145,7 +145,7 @@ describe("one-turn read allowances through the generic operation gateway (issue 
         gateway().invoke("item.patch", agent.actor, ALL_CAPABILITIES, {
           itemId: attached.id,
           properties: { name: "After" },
-          ifVersion: attached.updatedAt,
+          ifVersion: attached.version,
         });
 
       await expect(patch()).rejects.toMatchObject(FORBIDDEN);

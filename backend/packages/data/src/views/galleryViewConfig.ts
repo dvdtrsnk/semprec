@@ -1,10 +1,8 @@
 import { z } from "zod";
 
 /**
- * Config of the built-in `gallery` view type. `columns` and `aspect` are required; `coverKey`
- * (the property key whose image is the tile photo) is optional and, like `library-grid`'s keys,
- * is not checked against the database's properties. Not strict: the common view-config fields
- * (filter, sort, groupBy, visibility, ...) stay allowed.
+ * `coverKey` is not checked against the database's properties (like `library-grid`'s keys). Not strict, so the
+ * common view-config fields stay allowed.
  */
 export const galleryViewConfigSchema = z.object({
   columns: z.union([z.literal(2), z.literal(3)]),

@@ -10,6 +10,7 @@ const stored: ItemRow = {
   createdAt: "2026-10-13T00:00:00.000Z",
   updatedAt: "2026-10-13T00:00:00.000Z",
   deletedAt: null,
+  version: "1",
 };
 
 describe("Tasks schedule preparation", () => {

@@ -14,54 +14,28 @@ import { isDeliveryStatusReport } from "./dsn.js";
 import type { WritableImapFlag } from "./messageFlags.js";
 import { logger } from "./logger.js";
 
-// This is deliberately the same order of magnitude as imapflow's default download chunk.
-// The fallback makes at most MAX_ATTACHMENT_BYTES / IMAP_PARTIAL_FETCH_BYTES requests, plus
-// one EOF probe at the cap, so neither a broken server nor a failed stream can create an
-// unbounded retry loop.
+// The fallback makes at most MAX_ATTACHMENT_BYTES / IMAP_PARTIAL_FETCH_BYTES requests plus one
+// EOF probe, so a broken server cannot cause an unbounded retry loop.
 const IMAP_PARTIAL_FETCH_BYTES = 64 * 1024;
 
-// imapflow's FetchOptions has no per-call timeout/signal of its own (unlike the REST adapters'
-// fetch() calls elsewhere in this module, which pass AbortSignal.timeout()), so the bounded
-// partial-fetch loop below races each fetchOne() against this timer itself — otherwise a server
-// that stops responding mid-response, rather than closing the socket, could hang the sync
-// worker indefinitely on this one request.
+// imapflow's fetch has no timeout/signal, so each fetchOne() is raced against this timer; a
+// server that stalls mid-response would otherwise hang the sync worker.
 const IMAP_PARTIAL_FETCH_TIMEOUT_MS = 30_000;
 
-// Without CONDSTORE, fetchFlagsChangedSince below has no server-side way to scope itself to
-// "what changed" and fetches every UID in the mailbox — this bounds how much of that response
-// it will hold in memory at once, the same backstop role MAX_ATTACHMENT_BYTES plays for a
-// single part. Chosen generously above any real mailbox's message count.
+// Without CONDSTORE the flag fetch covers every UID; this bounds the result held in memory.
 const MAX_FLAG_FETCH_RESULTS = 100_000;
 
-// close() waits this long for the server to answer LOGOUT, then releases the socket without it, so a
-// server that stops responding cannot hold a finished sync pass open.
+// A silent server cannot hold a finished pass open waiting for LOGOUT.
 const IMAP_LOGOUT_TIMEOUT_MS = 10_000;
 
-// Same rationale as IMAP_PARTIAL_FETCH_TIMEOUT_MS above, applied per iteration step of the
-// flag-fetch response stream rather than to a single fetchOne() call, since a full-mailbox
-// flag fetch is itself a long-lived `for await` rather than one bounded request.
+// Per step of the long-lived flag-fetch stream, for the same reason as above.
 const IMAP_FLAG_FETCH_STEP_TIMEOUT_MS = 30_000;
 
-// APPEND sends a whole message in one command. A minute is twice the SMTP send deadline (smtpClient.ts), and it bounds a
-// copy of a sent message that a server never acknowledges (issue #1641).
+// APPEND sends a whole message in one command; bounds a Sent copy the server never acknowledges.
 const IMAP_APPEND_TIMEOUT_MS = 60_000;
 
-/**
- * `MAX_ATTACHMENT_BYTES` (providerTypes.ts, shared with the Gmail/Graph adapters) is passed to
- * `download()`'s own `maxBytes` below, enforced by the streaming decoder pipeline itself (not
- * a post-hoc buffer check) — a pathological or malicious part can never grow the process's
- * memory past this regardless of what the server claims its size is.
- *
- * iCloud Mail Drop (issue #26: "the attachment is then sent as a download link, not a real
- * MIME part") needs no special-case detection here: Mail Drop is Apple Mail's own client-side
- * substitution — the message iCloud's IMAP server actually stores and serves to any client
- * (Mail.app included) already has the large file replaced by a normal, small download-link
- * body; there is no oversized or placeholder MIME part on the wire for a generic IMAP client
- * to mistakenly try to fetch. `walkBodyStructure` below only ever downloads a part BODYSTRUCTURE
- * actually reports, so "try to download a non-existent attachment" cannot happen by
- * construction. `MAX_ATTACHMENT_BYTES` is a separate, general safety net (any
- * oversized/malicious part, not specifically Mail Drop).
- */
+// iCloud Mail Drop needs no special case: the server already stores a small download-link body,
+// with no placeholder MIME part to fetch.
 
 function toEnvelopeAddress(value: MessageAddressObject | undefined): MailEnvelopeAddress | undefined {
   return value?.address ? { name: value.name || undefined, address: value.address } : undefined;
@@ -75,13 +49,7 @@ function toEnvelopeAddressList(list: MessageAddressObject[] | undefined): MailEn
   return (list ?? []).map(toEnvelopeAddress).filter((a): a is MailEnvelopeAddress => Boolean(a));
 }
 
-/**
- * Unfolds and splits a raw multi-header-name Buffer (imapflow's `headers: [...]` fetch
- * concatenates every requested header's raw lines into one Buffer, in the message's own
- * top-to-bottom order) into individual `{name, value}` lines, preserving every repeated
- * occurrence — needed for "highest Delivered-To occurrence" (mail/deliveredTo.ts), since a
- * forwarded/relayed message can carry several.
- */
+/** Unfolds imapflow's concatenated header buffer into lines, keeping order and repeats (Delivered-To needs them). */
 export function parseHeaderBlock(headerBuffer: Buffer | undefined): Array<{ name: string; value: string }> {
   if (!headerBuffer) return [];
   const lines = headerBuffer.toString("utf8").replace(/\r\n/g, "\n").split("\n");
@@ -106,7 +74,7 @@ export function headerValues(headers: Array<{ name: string; value: string }>, na
   return headers.filter((h) => h.name.toLowerCase() === name.toLowerCase()).map((h) => h.value.trim());
 }
 
-/** Every `<...>` token across every `References:` occurrence — the ancestor chain, order preserved, same as mailparser's own splitting rule. */
+/** Every `<...>` token across all `References:` headers, in order. */
 function parseReferences(headers: Array<{ name: string; value: string }>): string[] {
   return headerValues(headers, "references").flatMap((value) => value.match(/<[^<>]+>/g) ?? []);
 }
@@ -118,18 +86,9 @@ export interface MimeTree {
 }
 
 /**
- * Walks BODYSTRUCTURE to find the message's body parts and candidate attachment parts —
- * without ever fetching a part's actual bytes. This is the load-bearing reason
- * `fetchMessagesSince` below never does a `source: true`/whole-message fetch: imapflow types
- * that field as a fully-materialized `Buffer` (attachments included), which is exactly the
- * OOM risk the issue names ("a large attachment entirely into memory before writing it to
- * disk"). BODYSTRUCTURE + ENVELOPE + a small headers fetch are all bounded by header/structure
- * size, never by attachment size — only the two text-body leaves and the surviving attachment
- * leaves are ever downloaded, each through its own streamed `download()` call.
- * multipart/alternative and multipart/related both fall out of plain recursion (no special
- * case needed): a related part's inline image leaves are simply non-text leaves like any
- * other, and an alternative's text/plain + text/html leaves are captured by type as they're
- * visited, wherever they are nested.
+ * Finds body and attachment parts from BODYSTRUCTURE without fetching bytes. This is why messages
+ * are never fetched with `source: true`, which would buffer the whole message (attachments
+ * included); each needed part is streamed separately via `download()`.
  */
 export function walkBodyStructure(root: MessageStructureObject): MimeTree {
   const tree: MimeTree = { attachmentParts: [] };
@@ -153,10 +112,7 @@ export function walkBodyStructure(root: MessageStructureObject): MimeTree {
   return tree;
 }
 
-/**
- * `ImapMailClient` (imapReconcile.ts) backed by `imapflow`; the production composition root
- * supplies this client after opening a policy-checked connection.
- */
+/** `ImapMailClient` over an already-opened, policy-checked `imapflow` connection. */
 export class ImapFlowMailClient implements ImapMailClient {
   private readonly moveObserved: unknown[] = [];
   private moveConnectionUsed = false;
@@ -329,7 +285,6 @@ export class ImapFlowMailClient implements ImapMailClient {
     };
   }
 
-  /** Decoded (transfer-encoding + charset, per `download()`'s own pipeline) text content of one bounded body part — never the attachment path, so never subject to `MAX_ATTACHMENT_BYTES`. */
   private async downloadText(uid: number, part: string): Promise<string> {
     const { content } = await this.providerCall(() => this.client.download(String(uid), part, { uid: true }));
     const chunks: Buffer[] = [];
@@ -338,10 +293,8 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   /**
-   * Streams a body part through imapflow's normal decoder first. If that stream fails after
-   * yielding bytes, continue at that decoded-byte offset with bounded BINARY body ranges. A
-   * BINARY range is already transfer-decoded by the server, so it can join the normal decoded
-   * stream without changing the attachment bytes seen by storage.
+   * If the normal decoded stream fails midway, resumes at that offset with bounded BINARY ranges,
+   * which the server already transfer-decodes, so storage sees identical bytes.
    */
   private openAttachmentStream(uid: number, part: string): Readable {
     return Readable.from(this.streamAttachment(uid, part));
@@ -369,9 +322,7 @@ export class ImapFlowMailClient implements ImapMailClient {
       return;
     } catch (err) {
       observed.push(err);
-      // A cap violation is a policy decision already made by nextAttachmentOffset, not a
-      // stream failure — rethrow it so it reaches the caller instead of being masked by the
-      // fallback below, which would silently re-run into the very same cap.
+      // A cap violation is rethrown, not retried by the fallback (it would hit the same cap).
       let capExceeded = false;
       try {
         capExceeded = err instanceof AttachmentCapExceededError;
@@ -383,10 +334,8 @@ export class ImapFlowMailClient implements ImapMailClient {
         primary = { value: err };
         throw err;
       }
-      // A replacement source below is the specified recovery path. The original stream is
-      // destroyed in finally so a failed or abandoned download cannot keep its socket alive.
-      // Logged here (not just swallowed) since this is the only place that ever sees the
-      // original stream failure — the fallback path below has no way to report it itself.
+      // The original stream is destroyed in finally so it cannot keep its socket alive. Logged
+      // here because only this point sees the original failure.
       imapDiagnostic("attachment_fallback", observed);
     } finally {
       if (!completed && content !== undefined && !content.destroyed) {
@@ -416,7 +365,6 @@ export class ImapFlowMailClient implements ImapMailClient {
     return offset + length;
   }
 
-  /** Races a single `fetchOne()` call against a timer, since imapflow's `FetchOptions` has no timeout/signal of its own — see `IMAP_PARTIAL_FETCH_TIMEOUT_MS`'s comment. */
   private async fetchOneWithTimeout(...args: Parameters<ImapFlow["fetchOne"]>): ReturnType<ImapFlow["fetchOne"]> {
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -480,15 +428,11 @@ export class ImapFlowMailClient implements ImapMailClient {
         contentType: node.type,
         contentId,
         disposition,
-        // Lazy: bytes only flow once `ingestAttachments` (mail/attachments.ts) actually calls
-        // this, streamed straight from the socket through `download()`'s decoder pipeline into
-        // `blobStorage.ts`'s `pipeline()` — never buffered whole in between.
+        // Lazy and streamed from the socket into storage, never buffered whole.
         openStream: () => this.openAttachmentStream(uid, partId),
       };
     });
-    // An inline part actually referenced via `cid:` inside the HTML body is a rendering asset
-    // (a signature logo), not a document — excluded here, same rule the other two adapters
-    // apply over their own provider-specific part trees (see attachments.ts's header note).
+    // An inline part referenced via cid: in the HTML is a rendering asset, not a document.
     return candidates.filter(
       (a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))),
     );
@@ -501,9 +445,7 @@ export class ImapFlowMailClient implements ImapMailClient {
       : { attachmentParts: [] as MessageStructureObject[] };
     const headerList = parseHeaderBlock(raw.headers);
 
-    // A single-part message's root BODYSTRUCTURE node sometimes carries no `.part` of its
-    // own — `download()` special-cases part id "1" (checking bodyStructure.childNodes itself
-    // to pick TEXT vs part 1), so "1" is always a safe fallback for a body leaf we found.
+    // A single-part root may have no `.part`; `download()` special-cases "1" for that.
     const bodyText = tree.textPlainPart ? await this.downloadText(raw.uid, tree.textPlainPart.part ?? "1") : undefined;
     const bodyHtml = tree.textHtmlPart ? await this.downloadText(raw.uid, tree.textHtmlPart.part ?? "1") : undefined;
 
@@ -523,8 +465,6 @@ export class ImapFlowMailClient implements ImapMailClient {
       bodyHtml,
       date: envelope?.date,
       attachments: this.classifyAttachmentParts(raw.uid, tree.attachmentParts, bodyHtml),
-      // Both undefined on any server that doesn't advertise X-GM-EXT-1 (every non-Gmail
-      // server) — imapReconcile.ts only acts on `gmailLabels` when it's actually present.
       providerMessageId: raw.emailId ?? null,
       gmailLabels: raw.labels ? [...raw.labels] : undefined,
       deliveredToHeaders: headerValues(headerList, "delivered-to"),
@@ -537,8 +477,6 @@ export class ImapFlowMailClient implements ImapMailClient {
         autoSubmitted: headerValues(headerList, "auto-submitted")[0] ?? null,
       },
       isDsn: isDeliveryStatusReport(raw.bodyStructure?.type, raw.bodyStructure?.parameters),
-      // The `\Seen`/`\Flagged` state a message already has on the server — mail/ingest.ts
-      // seeds a newly ingested message's read/flag properties from it (mail/messageFlags.ts).
       flags: raw.flags ? [...raw.flags] : undefined,
     };
   }
@@ -546,13 +484,8 @@ export class ImapFlowMailClient implements ImapMailClient {
   async fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]> {
     await this.providerCall(() => this.client.mailboxOpen(path));
     const raws: FetchMessageObject[] = [];
-    // Deliberately no `source: true`: that field is a fully-materialized `Buffer` of the whole
-    // raw message, attachments included — see walkBodyStructure's header note. BODYSTRUCTURE +
-    // ENVELOPE + a handful of cheap headers are all bounded fetches; the actual body/
-    // attachment bytes are fetched separately, lazily, per part. `labels: true` is a no-op on
-    // a non-Gmail server (imapReconcile.ts's "Gmail in IMAP fallback mode" support) and costs
-    // nothing extra on one that doesn't support X-GM-EXT-1. `delivered-to`/`x-original-to`/
-    // `envelope-to` feed deliveredToAddress's precedence rule (mail/deliveredTo.ts, issue #93).
+    // No `source: true` (see walkBodyStructure); only bounded metadata is fetched here.
+    // `labels: true` is a no-op on non-Gmail servers.
     for await (const raw of this.providerStream(() =>
       this.client.fetch(
         `${sinceUid}:*`,
@@ -579,9 +512,8 @@ export class ImapFlowMailClient implements ImapMailClient {
       if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
       raws.push(raw);
     }
-    // Parsed only once the FETCH has ended (issue #1510). imapflow keeps a FETCH command open until its consumer has
-    // read every untagged response, so a body download issued inside the loop above queued behind that command and
-    // never ran. The raw responses hold no body bytes (see above), so buffering them adds only header-sized memory.
+    // Parsed after the FETCH ends: imapflow keeps it open until every response is read, so a
+    // body download inside the loop would queue behind it forever. Buffered responses are small.
     const results: ImapFetchedMessage[] = [];
     for (const raw of raws) results.push({ uid: raw.uid, message: await this.parseFetchedMessage(raw) });
     return results;
@@ -596,14 +528,11 @@ export class ImapFlowMailClient implements ImapMailClient {
     };
     this.client.on("expunge", onExpunge);
     try {
-      // A QRESYNC-enabled fetch with changedSince surfaces VANISHED via the 'expunge' event,
-      // not as a return value — this drains that event stream for the duration of the call.
-      // Flag changes on UIDs that didn't vanish are not picked up here; they are a known-UID
-      // reconcile concern handled separately by fetchFlagsChangedSince below.
+      // QRESYNC reports VANISHED via 'expunge' events; the fetch is drained only to collect them.
       for await (const _raw of this.providerStream(() =>
         this.client.fetch("1:*", { uid: true }, { uid: true, changedSince: BigInt(sinceModSeq) }),
       )) {
-        // draining only — see fetchFlagsChangedSince for the flags themselves.
+        // draining only
       }
     } finally {
       this.client.off("expunge", onExpunge);
@@ -617,13 +546,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     return uids === false ? [] : uids;
   }
 
-  /**
-   * Peek-only flag re-fetch for UIDs the folder already knows about (imapReconcile.ts's
-   * known-UID pass) — the same bounded `fetch` call `fetchMessagesSince`/`fetchVanishedSince`
-   * already make, just for `flags` instead of envelope/body data. `sinceModSeq` given (CONDSTORE
-   * and a stored modseq) scopes the fetch with `changedSince`; `null` (no CONDSTORE, or the
-   * first pass after a UIDVALIDITY reset) fetches every UID's current flags.
-   */
+  /** Peek-only; `sinceModSeq` scopes via `changedSince`, `null` fetches every UID's flags. */
   async fetchFlagsChangedSince(
     path: string,
     sinceModSeq: number | null,
@@ -639,9 +562,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     )[Symbol.asyncIterator]();
     let primary: { value: unknown } | undefined;
     try {
-      // A manual `.next()` loop, not `for await`, so a step that never resolves (a server
-      // that stops responding mid-stream) can be raced against a timer the same way
-      // fetchOneWithTimeout races a single fetchOne() — a bare `for await` has no such hook.
+      // Manual `.next()` so each step can be raced against a timer.
       for (;;) {
         let timer: NodeJS.Timeout | undefined;
         let step: IteratorResult<FetchMessageObject>;
@@ -668,9 +589,7 @@ export class ImapFlowMailClient implements ImapMailClient {
       primary = { value: error };
       throw error;
     } finally {
-      // Best-effort close on the cap/timeout/error paths above — imapflow has no abort signal
-      // for an in-flight fetch (see FetchOptions), so this only stops local consumption of
-      // whatever the server keeps streaming, same limitation fetchOneWithTimeout has.
+      // Best effort: with no abort signal this only stops local consumption.
       try {
         await iterator.return?.(undefined);
       } catch (error) {
@@ -683,13 +602,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     return results;
   }
 
-  /**
-   * `STORE ... +FLAGS/-FLAGS (<flag>)` — the only call anywhere in this class that writes a
-   * flag, and in particular the only one that can mark a message read; every fetch/download
-   * above is peek-only (imapflow builds `BODY.PEEK[...]` internally and has no non-peek
-   * option). The flags the mailbox actually sets are `\Seen` and `\Flagged`
-   * (mail/messageFlags.ts).
-   */
+  /** The only flag write in this class; every fetch/download uses `BODY.PEEK`, so reads never mark mail read. */
   async setMessageFlag(path: string, uid: number, flag: WritableImapFlag, value: boolean): Promise<void> {
     await this.providerCall(() => this.client.mailboxOpen(path));
     if (value) await this.providerCall(() => this.client.messageFlagsAdd(String(uid), [flag], { uid: true }));
@@ -697,10 +610,8 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   /**
-   * IMAP APPEND of one complete message with its flags (issue #1641): the copy of a sent message that mailTransport.ts
-   * keeps in the Sent folder. The whole message travels in one command, so the call races a timer, the same way
-   * `fetchOneWithTimeout` does. A timeout rejects while the command may still be in flight on the socket; the caller's
-   * `close()` ends it. An unknown server refusal rejects with a fixed safe provider error.
+   * Keeps a sent message's copy in Sent. Raced against a timer; on timeout the command may still be
+   * in flight until the caller's `close()`. Unknown refusals become a fixed safe error.
    */
   async appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
@@ -723,10 +634,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     }
   }
 
-  /**
-   * Logs out and requests socket closure. Existing read callers retain their fixed diagnostic
-   * behavior; a move-owned connection joins logout and reports cleanup failure with a safe error.
-   */
+  /** A move-owned connection awaits logout and reports cleanup failure with a safe error. */
   async close(): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     const observed: unknown[] = this.moveObserved;
@@ -809,20 +717,10 @@ const CONNECTION_LIMIT_ERROR_CODES = new Set(["ClosedAfterConnectTLS", "ClosedAf
 const CONNECTION_LIMIT_REASON_PATTERN = /too many (simultaneous|concurrent) connections|connection limit exceeded/i;
 
 /**
- * Detects a provider's simultaneous-connection rejection (Gmail: "Too many simultaneous
- * connections", similar wording from other IMAP servers) from imapflow's `connect()`-failure
- * shape — an untagged `BYE` closing the socket before/without ever reaching login, not an
- * ordinary network error. The composition root's `createImapClient` (mailSyncJob.ts's
- * `MailSyncAdapterFactory`) is expected to catch its own `ImapFlow.connect()` rejection, check
- * this, and throw `MailConnectionLimitError` (providerTypes.ts) instead when it matches, so
- * mailSyncJob.ts backs off rather than retrying immediately.
- *
- * The reason text must match (imapflow's `ClosedAfterConnectTLS`/`ClosedAfterConnectText`
- * codes cover *any* pre-auth server closure — a TLS certificate failure or a suspended-account
- * BYE included — so the code alone would misclassify those as connection-limit contention);
- * `code`, when present, only narrows further to imapflow's own connect-failure codes rather
- * than matching on message text from some other, later failure that happens to reuse the word
- * "connections".
+ * Detects a pre-login `BYE` for too many simultaneous connections, so callers can throw
+ * `MailConnectionLimitError` and back off. The reason text must match because imapflow's
+ * `ClosedAfterConnect*` codes cover any pre-auth closure (TLS failure, suspended account);
+ * `code`, when present, only narrows the match.
  */
 export function isImapConnectionLimitError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;

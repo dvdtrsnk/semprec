@@ -29,19 +29,15 @@ export interface SyncIdentity {
 
 export interface SyncServerOptions {
   /**
-   * Authenticates the HTTP upgrade request the same way any other route does — the web session
-   * cookie or a native client's `Authorization: Bearer` token. Returns `null` for missing,
-   * invalid, expired, or revoked credentials; `handleUpgrade` then responds 401 on the raw socket
-   * and never completes the WS handshake, so no socket is ever created for a bad credential.
+   * Authenticates the upgrade request like any other route (session cookie or `Authorization: Bearer`). On `null`,
+   * `handleUpgrade` responds 401 on the raw socket, so no socket ever exists for a bad credential.
    */
   authenticate: (req: IncomingMessage) => Promise<SyncIdentity | null>;
   /**
-   * Re-checks that a connection's session is still active. Called on every heartbeat tick as a
-   * fallback to the NOTIFY-driven close below, for a socket whose process missed (or connected
-   * around) the `session_revoked` notification for its own session.
+   * Called on every heartbeat tick as a fallback for a socket whose process missed its `session_revoked` notification.
    */
   revalidateSession: (sessionId: string) => Promise<boolean>;
-  /** How often each socket's session is revalidated. Defaults to 30 seconds. */
+  /** Defaults to 30 seconds. */
   heartbeatIntervalMs?: number;
 }
 
@@ -50,16 +46,14 @@ export interface SyncServer {
   /** Wire this to the underlying `http.Server`'s `'upgrade'` event for the `/api/sync` path. */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
-   * Closes every open socket authenticated in `tenantId` with 4401 and reason
-   * `"account deactivated"`, leaving every other tenant's sockets open. An upgrade of that tenant
-   * that began authenticating before this call is closed the same way once it attaches. A second
-   * call finds no open socket of that tenant and does nothing.
+   * Closes every open socket of `tenantId` with 4401 `"account deactivated"`. An upgrade of that tenant that began
+   * authenticating before this call is closed the same way once it attaches.
    */
   closeTenant(tenantId: string): void;
   close(): Promise<void>;
 }
 
-/** Every message `type` either channel's catalog defines; the only `type` values a drop warning names. */
+/** The only `type` values a drop warning may name. */
 const KNOWN_MESSAGE_TYPES: ReadonlySet<string> = new Set<RealtimeMessage["type"] | AgentStreamMessage["type"]>([
   "invalidation",
   "doc_update",
@@ -72,26 +66,19 @@ const KNOWN_MESSAGE_TYPES: ReadonlySet<string> = new Set<RealtimeMessage["type"]
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 
-/** WS close code for "your session was revoked" (issue #160's Task; outside the standard 1000-1015 range reserved for the protocol itself, so it can't collide with one). */
+/** Outside the 1000-1015 range reserved by the protocol. */
 export const SESSION_REVOKED_CLOSE_CODE = 4401;
 
 /**
- * RFC 6455 close code 1012 ("Service Restart"), used for both a LISTEN-connection outage and a
- * controlled process shutdown (issue #242's Task). Neither case has anything to replay — NOTIFY
- * is never persisted — so every affected client is forced through its own resume path rather than
- * left holding a socket this process can no longer serve.
+ * RFC 6455 1012 ("Service Restart"), for both a LISTEN-connection outage and a controlled shutdown. NOTIFY is never
+ * persisted, so there is nothing to replay: every client is forced through its own resume path.
  */
 const SERVICE_RESTART_CLOSE_CODE = 1012;
 
-/**
- * Caps every inbound frame at 2 MB (issue #242's Task). `ws`'s own `maxPayload` enforcement closes
- * an over-limit connection automatically (close code 1009) before the frame ever reaches this
- * server's message handler, so one authenticated client can't hold the process's memory hostage
- * with an oversized frame.
- */
+/** `ws`'s `maxPayload` closes an over-limit connection (1009) before the frame reaches the handler. */
 const MAX_INBOUND_FRAME_BYTES = 2_000_000;
 
-/** Ping cadence and missed-pong budget (issue #242's Task): closed within ~90s of going unresponsive. */
+/** An unresponsive socket is closed within ~90s. */
 const MAX_MISSED_PONGS = 2;
 
 /** Base and cap for the LISTEN-connection reconnect backoff after an outage. */
@@ -104,64 +91,29 @@ function rawDataToBuffer(data: RawData): Buffer {
   return Buffer.from(data);
 }
 
-/** Rejects an upgrade before any WS handshake starts — the request never becomes a socket. */
 function rejectUpgrade(socket: Duplex): void {
   socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
   socket.destroy();
 }
 
 /**
- * `WS /api/sync` (issue #160/#161/#162): the one authenticated, multiplexed connection every
- * realtime stream rides — one socket per client, associated with a verified user/session identity
- * for its whole lifetime. Owns this process's single dedicated Postgres LISTEN connection on
- * `REALTIME_CHANNEL` and acts on five message kinds from it. Every payload is a
- * `{ tenantId, message }` envelope built by Postgres; one that does not parse is dropped and logged,
- * and a valid one is handled inside `runInTenant(envelope.tenantId)`. Invalidations, notifications
- * and session revocations are delivered only to sockets authenticated in that tenant; agent-stream
- * deltas still reach a run's authorized watchers by run id alone until watchers are checked against
- * the message's tenant (issue #1027).
+ * `WS /api/sync`: the one authenticated, multiplexed connection per client, bound to a verified user/session for its
+ * whole lifetime. Owns this process's single LISTEN connection on `REALTIME_CHANNEL`. Every payload is a `{ tenantId,
+ * message }` envelope; an unparseable one is dropped and logged, a valid one is handled inside
+ * `runInTenant(envelope.tenantId)`, and nothing is ever delivered to another tenant's sockets.
  *
- * - `session_revoked` closes every socket authenticated as that exact session with 4401, leaving
- *   every other session's sockets untouched.
- * - `invalidation` (item- or schema-scoped) sends a thin `invalidate` frame only to the sockets of
- *   the user whose write caused it, when the underlying event identifies one. A system/background
- *   write carries no single acting user, so it reaches every socket of the envelope's tenant — and
- *   never another tenant's. Every client refetches the referenced row itself over REST and a client
- *   with nothing cached for it just ignores the frame.
- * - `invalidation` with `scope: "sempThread"` sends a thin frame naming the thread to every socket
- *   of the envelope's tenant, best effort and without replay.
- * - `invalidation` with `scope: "approvalRequest"` sends a thin frame naming the request only to the
- *   sockets of the owner it names inside the envelope's tenant; a message without an owner is dropped.
- * - `invalidation` with `scope: "mailThread"` sends a thin frame naming the thread to every socket of the
- *   envelope's tenant, narrowed to one user's sockets when the message names one.
- * - `invalidation` with `scope: "agentRuns"` sends a thin frame naming the run and its project only to the
- *   sockets of the run's actor user inside the envelope's tenant; a message without a user is dropped.
- * - `invalidation` with `scope: "projectAgent"` sends a thin frame naming the project to every socket of the
- *   envelope's tenant.
- * - `invalidation` with `scope: "sempStatus"` sends a frame with no field but its scope to every socket of
- *   the envelope's tenant.
- * - `invalidation` with `scope: "notificationPreferences"`, `"badgeCounts"` or `"account"` sends a frame with no
- *   field but its scope only to the sockets of the user the message names inside the envelope's tenant.
- * - `invalidation` with `scope: "overview"` sends a frame with no field but its scope to every socket of the
- *   envelope's tenant.
- * - `invalidation` with `scope: "mcpServers"` sends a frame with no field but its scope to every socket of the
- *   envelope's tenant.
- * - `invalidation` with `scope: "inboxCards"` sends a thin frame naming the card and the operation to
- *   every socket of the envelope's tenant, narrowed to one user's sockets when the message names one.
- * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
- *   complete state via `getNotificationById` and broadcast a `notification` frame only to sockets
- *   authenticated as that notification's own `userId` — the one place this server sends a full row
- *   rather than a thin reference (a notification's `title` is pre-rendered text with no second
- *   enforcement layer to fall back on).
- * - `doc_update` fans out to `docSync`, which fetches the referenced `doc_updates` row by primary
- *   key and forwards it only to sockets that have that document open (see `docSync.ts`).
+ * - `session_revoked` closes every socket of that exact session with 4401.
+ * - `invalidation` sends a thin frame; the client refetches over REST. Item/schema invalidations go to the acting
+ *   user's sockets, or the whole tenant for a system write. Owner/actor-scoped invalidations (`approvalRequest`,
+ *   `agentRuns`, `notificationPreferences`, `badgeCounts`, `account`) go only to the named user and are dropped when no
+ *   user is named; the other scopes go tenant-wide, narrowed to one user when the message names one.
+ * - `notification_created` / `notification_read_state` fetch the current row and send it only to its own `userId`:
+ *   the one place a full row is sent, because a notification's pre-rendered `title` has no second enforcement layer.
+ * - `doc_update` fans out to `docSync`, which forwards it only to sockets that have that document open.
  *
- * `agent:watch` creates an authorized, cursor-backed subscription: durable events are replayed
- * from `agent_run_events`, then the same subscription receives its thin live references without
- * a handoff gap. Ephemeral typing deltas arrive over the distinct `AGENT_STREAM_CHANNEL` and are
- * sent only to those authorized watchers.
- * `doc:open`/`doc:close` text frames and binary y-protocols/sync frames are also handled here, via
- * `docSync` (issue #162).
+ * `agent:watch` creates an authorized, cursor-backed subscription: durable events are replayed from `agent_run_events`
+ * and live references follow without a gap. Typing deltas arrive on `AGENT_STREAM_CHANNEL` and reach only those
+ * watchers. `doc:open`/`doc:close` and binary sync frames are handled through `docSync`.
  */
 export async function createSyncServer(pool: Pool, options: SyncServerOptions): Promise<SyncServer> {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_FRAME_BYTES });
@@ -170,8 +122,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   const agentRunWatch = createAgentRunWatchRegistry(pool);
   const docSync = createDocSyncRegistry(pool);
   let closed = false;
-  // `closeTenant` bumps `tenantCloseCount` and records it per tenant, so an upgrade can tell
-  // whether its tenant was closed after it began authenticating. One entry per closed tenant.
+  // Per-tenant close counter, so an upgrade can tell whether its tenant was closed after it began authenticating.
   let tenantCloseCount = 0;
   const lastTenantClose = new Map<string, number>();
 
@@ -188,17 +139,13 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   function attachClient(ws: WebSocket, identity: SyncIdentity): void {
     identityByClient.set(ws, identity);
 
-    // `ws` already closes the connection itself for a protocol-level fault (e.g. a frame over
-    // `maxPayload`) before emitting this — but it emits it regardless, and an `EventEmitter`
-    // with no `'error'` listener throws it as an uncaught exception, which would crash this
-    // whole process over one client's malformed frame. Logging here is purely to observe it.
+    // `ws` emits protocol faults (e.g. a frame over `maxPayload`) after closing the connection itself; without an
+    // `'error'` listener the emitter would throw and crash the process over one client's bad frame.
     ws.on("error", (err: unknown) => {
       logger.error({ err }, "Sync server client socket error");
     });
 
-    // Protocol-v1 frame validation: anything outside the closed catalog is dropped, never
-    // crashing this connection or any other client's. Binary sync-protocol frames are dispatched
-    // to `docSync`; agent frames are dispatched to the run-watch registry below.
+    // Frames outside the protocol-v1 catalog are dropped without affecting this or any other connection.
     ws.on("message", (data: RawData, isBinary: boolean) => {
       if (isBinary) {
         const frame = parseBinaryFrame(rawDataToBuffer(data));
@@ -236,11 +183,8 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       }
     });
 
-    // RFC 6455 protocol-level ping (issue #242's Task): a control frame, not an application
-    // message, so a browser or `URLSession` peer answers it on their own without any client-side
-    // code. `missedPongs` resets on every pong; a connection that fails to answer this many
-    // consecutive pings is presumed dead and dropped without waiting on a close handshake it has
-    // already shown it won't complete.
+    // RFC 6455 control-frame ping, answered by browsers and `URLSession` without client code. A connection that misses
+    // `MAX_MISSED_PONGS` consecutive pongs is dropped without waiting for a close handshake.
     let missedPongs = 0;
     ws.on("pong", () => {
       missedPongs = 0;
@@ -255,7 +199,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       missedPongs += 1;
       if (ws.readyState === ws.OPEN) ws.ping();
 
-      // The fallback for a lost `session_revoked` NOTIFY (issue #160) rides this same tick.
+      // Fallback for a lost `session_revoked` NOTIFY.
       runAsSystem("realtime:revalidate", () => options.revalidateSession(identity.sessionId))
         .then((active) => {
           if (!active && ws.readyState === ws.OPEN) ws.close(SESSION_REVOKED_CLOSE_CODE, "session revoked");
@@ -289,8 +233,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   }
 
   let listenClient: PoolClient = await connectListenClient();
-  // Guards against detaching/releasing the same client twice — `onError` and `close()` can both
-  // race to clean up the same broken connection.
+  // `onError` and `close()` can race to release the same broken connection.
   let listenClientActive = true;
 
   /** Sends to the open sockets of `tenantId`, narrowed to one user's sockets when `userId` is given. */
@@ -328,28 +271,18 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     () => logger.error({ stage: "doc_invalidation" }, "Sync server failed to invalidate a document"),
   );
 
-  /** Closes every currently connected socket with `code`/`reason` — never a per-stream drop. */
   function closeAll(code: number, reason: string): void {
     for (const client of wss.clients) {
       if (client.readyState === client.OPEN) client.close(code, reason);
     }
   }
 
-  /**
-   * Fetches the current full row for `notificationId` and broadcasts it to `userId`'s sockets —
-   * shared by `notification_created` and `notification_read_state`, since both ultimately need the
-   * same "here is this notification's current state" frame (a read-state change just carries a
-   * non-null `readAt` back).
-   */
+  /** Shared by `notification_created` and `notification_read_state`: both send the notification's current state. */
   async function forwardNotification(tenantId: string, userId: string, notificationId: string): Promise<void> {
     const notification = await getNotificationById(pool, notificationId);
-    // Already deleted, or the fetch lost a race with a much later state — the next unread-fetch
-    // (or active-view refetch) on reconnect still converges the client, so dropping this frame is
-    // safe rather than sending a stale/missing row.
+    // Deleted, or the fetch lost a race: the client converges on its next refetch, so dropping is safe.
     if (!notification) return;
-    // Re-check ownership against the fetched row rather than trusting the NOTIFY payload's userId
-    // outright — a malformed or tampered payload with a mismatched userId/notificationId pair must
-    // never cause cross-user delivery, the same invariant `invalidation`'s actingUserId upholds.
+    // Ownership is re-checked against the fetched row: a mismatched payload must never cause cross-user delivery.
     if (notification.userId !== userId) return;
     sendToTenant(tenantId, { type: "notification", notification }, userId);
   }
@@ -362,8 +295,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
     entry.promise = preceding
       .then(() => agentRunWatch.forwardEvent(tenantId, runId, eventId))
       .catch((err: unknown) => {
-        // Keep this run's delivery queue usable after a failed row fetch, without delaying a
-        // different run's events or pretending the original infrastructure fault was forwarded.
+        // Keeps this run's delivery queue usable without delaying other runs or pretending the fault was forwarded.
         logger.error({ err }, "Sync server failed to forward an agent run event");
       })
       .then(() => {
@@ -373,9 +305,8 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   }
 
   /**
-   * Logs a dropped envelope naming only its channel and inner `type`. `raw` is the already-parsed
-   * payload (`undefined` when it was not JSON); the type is logged only when it is one of the
-   * catalog's own literals, so a payload that failed validation cannot put arbitrary text in the log.
+   * Logs a dropped envelope by channel and inner `type`; the type is logged only when it is a catalog literal, so an
+   * invalid payload cannot put arbitrary text in the log.
    */
   function dropWithoutTenant(channel: string, raw: unknown): void {
     let type: unknown;
@@ -408,7 +339,6 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         dropWithoutTenant(msg.channel, rawParsed);
         return;
       }
-      // `forwardDelta` reads no row; it sends only to the envelope tenant's watchers of the run.
       agentRunWatch.forwardDelta(envelope.tenantId, envelope.message);
       return;
     }
@@ -438,13 +368,11 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
         }
         case "invalidation": {
           if (parsed.scope === "sempThread") {
-            // Tenant-wide, best effort, no replay: the client refetches the thread.
             sendToTenant(tenantId, { type: "invalidate", scope: "sempThread", threadId: parsed.threadId });
             return;
           }
           if (parsed.scope === "approvalRequest") {
-            // Owner-only: a message that names no owner has no socket it may go to, so it is
-            // dropped rather than widened to the tenant.
+            // Owner-only: a message without an owner is dropped, never widened to the tenant.
             if (parsed.userId === undefined) {
               logger.warn({ type: parsed.type, scope: parsed.scope }, "realtime_approval_request_without_owner");
               return;
@@ -465,8 +393,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
             return;
           }
           if (parsed.scope === "agentRuns") {
-            // Actor-only: a message that names no user has no socket it may go to, so it is dropped
-            // rather than widened to the tenant.
+            // Actor-only: a message without a user is dropped, never widened to the tenant.
             if (parsed.userId === undefined) {
               logger.warn({ type: parsed.type, scope: parsed.scope }, "realtime_agent_runs_without_user");
               return;
@@ -545,8 +472,6 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
                   updatedAt: parsed.updatedAt,
                 }
               : { type: "invalidate", scope: "schema", databaseId: parsed.databaseId };
-          // Narrowed to the acting user's sockets when the write identifies one; a write with no
-          // acting user reaches the tenant's sockets only, never another tenant's.
           sendToTenant(tenantId, frame, parsed.userId);
           return;
         }
@@ -589,10 +514,8 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
   }
 
   /**
-   * Retries `connectListenClient` with capped exponential backoff until it succeeds or `close()`
-   * runs. On success, every connected socket is closed with 1012 exactly as it was when the
-   * outage began — a socket that connected during the gap has no way to tell it missed anything,
-   * so it goes through the same blunt, uniform resume path as one that was already open.
+   * Retries with capped exponential backoff until success or `close()`. On success every socket is closed with 1012, as
+   * at the outage start: one that connected during the gap cannot tell what it missed.
    */
   async function reconnectListen(): Promise<void> {
     let delay = LISTEN_RECONNECT_BASE_DELAY_MS;
@@ -600,8 +523,7 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       try {
         const client = await connectListenClient();
         if (closed) {
-          // `close()` ran while this attempt was in flight — this client must not become the
-          // active `listenClient` after the server already considers itself closed.
+          // `close()` ran while this attempt was in flight; the client must not become the active `listenClient`.
           client.release(true);
           return;
         }
@@ -621,10 +543,8 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
 
   listenClient.on("notification", onNotification);
 
-  // The dedicated LISTEN connection carries no replayable state — NOTIFY is never persisted — so
-  // losing it forces every connected socket through its own resume path (issue #242's Task)
-  // rather than leaving them attached to a process that can no longer fan anything out to them.
-  // An unhandled 'error' here would otherwise crash the whole process on a dropped connection.
+  // Losing the LISTEN connection loses NOTIFYs that are never persisted, so every socket is forced to resume. Without
+  // this handler a dropped connection would crash the process.
   const onError = (err: unknown) => {
     logger.error({ err }, "Sync server LISTEN connection error");
     detachListenClient();
@@ -651,17 +571,15 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
             rejectUpgrade(socket);
             return;
           }
-          // `close()` may have run while this authentication was in flight (a graceful shutdown
-          // race): its close-frame loop has already finished, so a client attached now would
-          // never receive one, and `wss.close()` would wait on it forever.
+          // `close()` may have run during authentication: its close-frame loop is done, so an attached client would
+          // never get a close frame and `wss.close()` would wait forever.
           if (closed) {
             rejectUpgrade(socket);
             return;
           }
           wss.handleUpgrade(req, socket, head, (ws) => {
             attachClient(ws, identity);
-            // `closeTenant` may have run for this tenant while the upgrade authenticated against
-            // the session it read before the deactivation: it never saw this socket, so close it now.
+            // `closeTenant` ran for this tenant during authentication and never saw this socket.
             if ((lastTenantClose.get(identity.tenantId) ?? 0) > closesBefore) {
               ws.close(SESSION_REVOKED_CLOSE_CODE, "account deactivated");
             }
@@ -687,12 +605,8 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
       agentRunWatch.close();
       const docInvalidationsClosed = docInvalidations.close();
       detachListenClient();
-      // A controlled (deploy) shutdown (issue #242's Task) sends every client a real 1012 close
-      // frame rather than `terminate()`ing them: the whole point is telling each one "reconnect
-      // elsewhere," which only a delivered close code does. This `wss` was created with
-      // `noServer: true` and never attached to an `http.Server`, so `wss.close()` below does not
-      // wait on these clients finishing their handshake — an unresponsive one is hard-dropped by
-      // `ws`'s own close timeout rather than hanging this method.
+      // A delivered 1012 close frame (not `terminate()`) tells each client to reconnect elsewhere. The `noServer` `wss`
+      // does not wait on handshakes, so an unresponsive client is dropped by `ws`'s close timeout instead of hanging.
       closeAll(SERVICE_RESTART_CLOSE_CODE, "server shutting down");
       const results = await Promise.allSettled([
         new Promise<void>((resolve, reject) => wss.close((err) => (err ? reject(err) : resolve()))),

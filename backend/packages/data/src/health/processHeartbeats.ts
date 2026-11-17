@@ -3,17 +3,12 @@ import { runAsSystem } from "@semprec/shared";
 import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import type { Queryable } from "../db/pool.js";
 
-/** How often a running process re-UPSERTs its own identity row (issue #168's Task). */
 export const PROCESS_HEARTBEAT_INTERVAL_MS = 15_000;
 
-/** A row older than this is stale — used both by `GET /healthz` and by the expected-rows derivation. */
+/** Used by `GET /healthz` and the expected-rows derivation. */
 export const PROCESS_HEARTBEAT_STALE_AFTER_MS = 60_000;
 
-/**
- * The four process types that exist independently of any per-item activity. `mailsync:<id>`
- * rows are derived instead, one per row in `mail_account_sync_state` (issue #168's Task:
- * "Derive expected rows as four fixed processes plus active mailboxes").
- */
+/** Processes independent of per-item activity; `mailsync:<id>` rows are derived per active mailbox. */
 export const FIXED_PROCESS_NAMES = ["api", "agents", "transcribe", "ai-gateway"] as const;
 
 export function mailSyncProcessName(mailboxItemId: string): string {
@@ -26,12 +21,7 @@ export interface ProcessHeartbeatIdentity {
   version: string;
 }
 
-/**
- * UPSERTs one process's identity row. `startedAt` is passed in rather than computed here so a
- * running process's repeated ticks (`startProcessHeartbeat`) keep reporting the same
- * `started_at` across the whole time it stays up — a fresh `started_at` on every tick would make
- * a long-lived process look like it keeps restarting.
- */
+/** `startedAt` is passed in so repeated ticks keep one `started_at`; otherwise the process would look like it keeps restarting. */
 export async function upsertProcessHeartbeat(
   client: Queryable,
   identity: ProcessHeartbeatIdentity,
@@ -51,7 +41,7 @@ export async function upsertProcessHeartbeat(
 
 export interface ProcessHeartbeatOptions {
   intervalMs?: number;
-  /** Called when a tick's UPSERT fails; a transient DB error must not throw out of the interval and crash the process. */
+  /** A transient DB error must not throw out of the interval and crash the process. */
   onError?: (err: unknown) => void;
 }
 
@@ -59,13 +49,7 @@ export interface ProcessHeartbeatHandle {
   stop(): void;
 }
 
-/**
- * Starts a process's own 15-second UPSERT loop against its identity row (issue #168's Task:
- * "Each process UPSERTs every 15 seconds from its event loop"). Ticks immediately so the row
- * exists as soon as the process is up, then on `intervalMs`. The returned handle's `stop()`
- * only clears the timer — it deliberately never deletes the row, so the last-known `beat_at`
- * simply goes stale rather than the process disappearing from the expected set entirely.
- */
+/** Ticks immediately, then on `intervalMs`. `stop()` never deletes the row, so `beat_at` simply goes stale. */
 export function startProcessHeartbeat(
   pool: Pool,
   identity: ProcessHeartbeatIdentity,
@@ -75,8 +59,7 @@ export function startProcessHeartbeat(
   const startedAt = new Date();
 
   function tick(): void {
-    // `process_heartbeats` is a global table, so the UPSERT runs in a system scope. Entering the
-    // scope can throw synchronously; that must reach `onError`, never escape the timer callback.
+    // Global table, so a system scope. Entering the scope can throw synchronously; that must reach `onError`.
     try {
       runAsSystem("processHeartbeat", () => upsertProcessHeartbeat(pool, identity, startedAt)).catch((err: unknown) => {
         options.onError?.(err);
@@ -97,13 +80,7 @@ export function startProcessHeartbeat(
   };
 }
 
-/**
- * One row per mailbox the live-sync root actually hosts (`mailLiveSyncRoot.ts`): a
- * `mail_account_sync_state` row whose Mailbox item is still active (non-deleted). A
- * soft-deleted Mailbox's sync-state row is never cleaned up, so without the join it would stay
- * in the expected set — and therefore alert as `process_stale` — forever after its lifecycle
- * stopped.
- */
+/** Joins live Mailbox items: a soft-deleted Mailbox's sync-state row is never cleaned up and would alert forever. */
 export async function getActiveMailSyncProcessNames(client: Queryable): Promise<string[]> {
   const result = await client.query<{ item_id: string }>(
     `SELECT s.item_id FROM mail_account_sync_state s
@@ -114,7 +91,6 @@ export async function getActiveMailSyncProcessNames(client: Queryable): Promise<
   return result.rows.map((row) => mailSyncProcessName(row.item_id));
 }
 
-/** The four fixed processes plus one `mailsync:<id>` per currently-active mailbox. */
 export async function getExpectedProcessNames(client: Queryable): Promise<string[]> {
   const mailSyncNames = await getActiveMailSyncProcessNames(client);
   return [...FIXED_PROCESS_NAMES, ...mailSyncNames];
@@ -122,19 +98,12 @@ export async function getExpectedProcessNames(client: Queryable): Promise<string
 
 export interface ProcessHeartbeatStatus {
   process: string;
-  /** false when no row exists yet for a process the current state expects to be beating. */
   present: boolean;
-  /** true when `present` is false, or the row's `beat_at` is older than the stale threshold. */
   stale: boolean;
   beatAt: string | null;
 }
 
-/**
- * One status per currently-expected process (`getExpectedProcessNames`), joined against whatever
- * rows actually exist. A mailbox that was deactivated since its last beat is simply absent from
- * this list — its old row, if any, is never reported as missing or stale because it is no longer
- * expected.
- */
+/** A mailbox deactivated since its last beat is no longer expected, so its old row is not reported. */
 export async function getExpectedProcessHeartbeatStatuses(
   client: Queryable,
   options: { staleAfterMs?: number } = {},
@@ -157,7 +126,6 @@ export async function getExpectedProcessHeartbeatStatuses(
   });
 }
 
-/** `GET /healthz`'s freshness check for whichever process name it's given: a fresh row means one exists and beat within the stale threshold. */
 export async function isProcessHeartbeatFresh(
   client: Queryable,
   process: string,

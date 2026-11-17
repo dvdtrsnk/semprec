@@ -30,7 +30,6 @@ let foreign: string;
 
 const envelopeSchema = z.object({ tenantId: z.string(), payload: z.record(z.string(), z.unknown()) });
 
-/** The keys of the queued invitation jobs, from the queue's public view. */
 async function queuedKeys(): Promise<string[]> {
   const { rows } = await admin.query<{ key: string | null }>(
     "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -39,7 +38,6 @@ async function queuedKeys(): Promise<string[]> {
   return rows.map((row) => row.key ?? "");
 }
 
-/** The envelopes (tenant and payload) of the queued invitation jobs, through the queue's test support. */
 async function queuedEnvelopes() {
   return (await readJobPayloadsByIdentifier(admin, CALENDAR_SEND_EVENT_INVITATION_TASK)).map((raw) =>
     envelopeSchema.parse(raw),
@@ -59,7 +57,6 @@ const participantBodySchema = z.object({
 });
 const replaceBodySchema = participantBodySchema.extend({ invited: z.number(), linkedOnly: z.number() });
 
-/** Fixture rows of the tenant in scope, all built through production writes. */
 async function setup() {
   const cp = createChokePoint(runtime);
   const databases = await cp.listDatabases();
@@ -93,13 +90,11 @@ async function setup() {
       });
       return item.id;
     });
-  /** A plain edge, the way the generic edge `PUT` of a user writes it. */
   const link = (eventId: string, personId: string, metadata?: Record<string, unknown>) =>
     cp.createRelation(
       { relationPropertyId: eventsPeople.id, callerItemId: eventId, targetItemId: personId, metadata },
       USER,
     );
-  /** An edge with an invitation, written with the system writer kind as the invitation code writes it. */
   const invite = (eventId: string, personId: string, invitation: Record<string, unknown>) =>
     cp.createRelation({
       relationPropertyId: eventsPeople.id,
@@ -107,7 +102,6 @@ async function setup() {
       targetItemId: personId,
       metadata: { invitation },
     });
-  /** The stored edges of the Event by person id, with their metadata. */
   const edges = async (eventId: string) =>
     new Map(
       ((await cp.listItemRelations(eventId, eventsPeople.id)) ?? []).map((entry) => [
@@ -148,7 +142,6 @@ const wanted = (ids: string[], sendInvites: boolean, mailboxId?: string) => ({
   ...(mailboxId === undefined ? {} : { mailboxId }),
 });
 
-/** The error a call throws, so a test asserts its status, code and details together. */
 async function failure(call: Promise<unknown>) {
   try {
     await call;
@@ -177,7 +170,6 @@ describe("PUT /api/events/:id/people and POST /api/events/:id/people/:personId/i
     await admin.end();
   });
 
-  /** Runs `body` in the tenant with the fixture, a self person, a mailbox and an Event. */
   async function withMeeting<T>(
     body: (f: Fixture, ids: { meeting: string; me: string; mailbox: string }) => Promise<T>,
     options: { selfPerson?: boolean } = {},
@@ -758,7 +750,6 @@ describe("PUT /api/events/:id/people and POST /api/events/:id/people/:personId/i
         expect(await f.edges(meeting)).toEqual(new Map([[me, { role: "attendee" }]]));
         expect(await queuedKeys()).toEqual([]);
 
-        // An organizer edge to another person exists (written while the user was linked to them).
         const other = await f.person({ name: "Other", emails: "other@example.com" });
         await f.setSelf(other);
         await f.link(meeting, other, { role: "organizer" });

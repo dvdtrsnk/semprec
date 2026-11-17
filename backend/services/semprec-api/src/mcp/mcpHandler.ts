@@ -32,10 +32,9 @@ import { authenticateRequest } from "../authHandler.js";
 import { resolveRunCredentialCaller } from "./callerActor.js";
 import { logger } from "../logger.js";
 
-/** MCP protocol revisions `initialize` can agree on, newest first; the first is the fallback. */
+/** Newest first; the first is the fallback. */
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
 
-/** The API service's own package version, reported as `serverInfo.version`. */
 const SERVER_VERSION = (() => {
   const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
     version?: unknown;
@@ -51,8 +50,8 @@ function isArgumentsObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The module tools a caller may list and call, by the kind of caller: the tools of a run credential's run, which can be
- * approval-gated and are bound to the run, and the tools of a human session, which run as its user.
+ * A run credential's tools can be approval-gated and are bound to the run; a human session's run as
+ * its user.
  */
 type CallerModuleTools =
   | { kind: "run"; runId: string; tools: ResolvedModuleAgentTool[] }
@@ -87,7 +86,6 @@ interface JsonRpcRequestBody {
   params?: unknown;
 }
 
-/** The `name` of an `initialize` request's `clientInfo` when it is a string, otherwise `null`. */
 function readClientName(clientInfo: unknown): string | null {
   if (typeof clientInfo !== "object" || clientInfo === null) return null;
   const name: unknown = "name" in clientInfo ? clientInfo.name : undefined;
@@ -95,45 +93,30 @@ function readClientName(clientInfo: unknown): string | null {
 }
 
 /**
- * The authenticated MCP JSON-RPC endpoint (issue #220): `POST /mcp`, `initialize`, `tools/list` and
- * `tools/call` over the same 44-operation generic catalog REST (#219) and the AgentTool
- * composition root (`packages/agent-runtime/src/tools/generic`) dispatch through — MCP names are
- * the operation names prefixed `semprec.` (`fromMcpToolName`/`toMcpToolName`). The gateway neither
- * lists nor calls the catalog's REST-only operations (`REST_ONLY_OPERATION_NAMES`, issue #1699) for a
- * caller of this endpoint; the assistant will propose a new select option on an Inbox proposal
- * instead (#1994).
+ * `initialize`, `tools/list` and `tools/call` over the generic catalog shared with REST and
+ * AgentTool; MCP names are operation names prefixed `semprec.`. REST-only operations
+ * (`REST_ONLY_OPERATION_NAMES`) are neither listed nor callable here.
  *
- * A request with no bearer token is rejected with `UnauthorizedError` before any session lookup
- * runs — the web session cookie is never consulted, even though `authenticateRequest` would
- * otherwise accept it (`extractBearerToken`'s docstring).
+ * A request without a bearer token is rejected before any session lookup; the web session cookie is
+ * never consulted.
  *
- * Given a bearer token, the actor is derived one of two ways, tried in this order (AC34/44/47):
- *  1. A restricted MCP run-credential (`resolveMcpRunCredential`, minted via
- *     `POST /api/agent-runs/mcp-credentials`): resolves to `{ userId, runId, agentProjectItemId }`,
- *     so `gateway.invoke`'s approval gate actually applies, and the operations it can see are
- *     further restricted to the credential's own granted capability subset.
- *  2. `authenticateRequest`'s verified human session/Bearer identity: `{ userId, externalClient: true }`, no
- *     `runId`, so the approval gate stays a no-op for it, same as REST. The marker is an external AI client
- *     (issue #1998): the data layer refuses it every sensitive database, which a REST call of the same user
- *     still reads.
- * Module tools (issue #1580, gh-1956) follow the same two ways. A run credential sees the tools of the modules its run's
- * project holds the grants of and its own list names, among them those a module declares with `mcp`, whose capability
- * is a module capability id the mint accepted into the list (`resolveModuleAgentToolsForRun`). A human session has no
- * run and no project: it sees the tools declared with `mcp` of the active modules, and each runs as the session's user without an approval
- * (`resolveModuleAgentToolsForUser`); `moduleToolDependencies` is what their handlers are built with.
- * Either way, an ungranted or unknown tool name resolve to the same JSON-RPC "method not found"
- * rather than a distinguishable error, per the issue's "never present-but-forbidden" requirement.
+ * The actor is derived, in order, from:
+ * 1. A restricted run credential (minted via `POST /api/agent-runs/mcp-credentials`): `{ userId,
+ * runId, agentProjectItemId }`, so the approval gate applies and operations are restricted to its
+ * capability subset.
+ * 2. A human session: `{ userId, externalClient: true }` with no `runId`, so the approval gate is a
+ * no-op as on REST. `externalClient` makes the data layer refuse every sensitive database, which a
+ * REST call of the same user still reads.
+ * Module tools follow the same split: a run credential sees `mcp`-declared tools of modules its
+ * project holds grants for and its list names; a human session sees the `mcp`-declared tools of the
+ * active modules, each running as its user without approval. An ungranted and an unknown tool name
+ * get the same "method not found", never a distinguishable error.
  *
- * A tool a run credential reaches that is declared with `requiresApproval` (the calendar write tools, issue gh-1957) does not
- * run on `tools/call`: the call files the `moduleTool` approval request an agent session files and answers the
- * approval-required error (-32001), and the handler runs once the owner approved the request. A human session's call of
- * the same tool has no run to file a request for and runs as the user, like its mail send
- * (docs/adr/2026-11-14-calendar-tools-over-mcp-are-gated-for-a-run-credential-and-run-as-the-user-for-a-session.md).
+ * A run credential's call of a `requiresApproval` tool files a `moduleTool` approval request and
+ * answers -32001; the handler runs once the owner approves. A session's call runs as the user.
  *
- * `grantedCapabilities` is fixed per process (the schema core module's own registered
- * capabilities — see `schemaCoreModuleManifest.ts`); a restricted credential's own capability list
- * is intersected against it, so a credential can only ever narrow what a process already grants,
- * never widen it.
+ * `grantedCapabilities` is fixed per process; a credential's list is intersected with it, so it can
+ * only narrow, never widen.
  */
 export async function createMcpRequestListener(
   pool: Pool,
@@ -166,10 +149,7 @@ export async function createMcpRequestListener(
     };
   }
 
-  /**
-   * The module tools the caller may list and call: those of its run's project that its credential's list also holds,
-   * approval-gated ones included (a call files their request), or of its session's user.
-   */
+  /** Approval-gated ones included (a call files their request). */
   async function resolveModuleTools(
     actor: AuthenticatedActor,
     capabilities: ReadonlySet<CapabilityId>,
@@ -243,7 +223,7 @@ export async function createMcpRequestListener(
             sendJson(res, 200, rpcError(rpcId, -32602, "initialize requires params.protocolVersion"));
             return;
           }
-          // A run credential's client names itself on its own run (issue #1788); a session names nothing.
+          // A run credential's client names itself on its own run; a session names nothing.
           const runId = actor.runId;
           const clientName = readClientName(params.clientInfo);
           if (runId !== undefined && clientName !== null) {
@@ -296,10 +276,11 @@ export async function createMcpRequestListener(
                 return;
               }
               const args = params?.arguments ?? {};
-              // Only a run's tool can be gated: a session has no run to file the request for (issue gh-1957).
+              // Only a run's tool can be gated: a session has no run to file the request for.
               const gated = modules.kind === "run" ? modules.tools.find((entry) => entry === tool) : undefined;
               if (modules.kind === "run" && gated?.requiresApproval) {
-                // The handler runs only after the owner approved the request, as in an agent session.
+                // The handler runs only after the owner approved the request, as in an agent
+                // session.
                 if (!gated.acceptsArguments(args) || !isArgumentsObject(args)) {
                   throw new ValidationError("Invalid tool arguments.");
                 }

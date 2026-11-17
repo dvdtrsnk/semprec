@@ -8,25 +8,19 @@ import { assertDocVersionReadable, readCheckpointHeadAtOrBefore, readCheckpointS
 
 export type PageChangeKind = "insert" | "update" | "delete";
 
-/** One change a stored update made to the blocks of a page. */
 export interface PageChange {
-  /** When the update was stored (ISO 8601). */
   at: string;
-  /** The blocks the change touched, in document order (a deleted block in the order it had before the update). */
+  /** Document order; deleted blocks in their order before the update. */
   blockIds: string[];
   kind: PageChangeKind;
 }
 
 export interface ListPageChangesOptions {
-  /** Only updates stored after this instant are reported. */
   since: Date;
-  /** Only updates stored with this author are reported. */
   by: CreatedBy;
-  /** The most entries returned, oldest first. */
   limit: number;
 }
 
-/** A block's content as one comparable string: every field of its map, a text with its inline attributes. */
 function blockSignature(block: Y.Map<unknown>): string {
   const entries = [...block.keys()].sort().map((key): [string, unknown] => {
     const value = block.get(key);
@@ -39,7 +33,7 @@ function blockSignature(block: Y.Map<unknown>): string {
 
 interface BlockSnapshot {
   signatures: Map<string, string>;
-  /** The block ids of the document order that exist, then any block missing from it. */
+  /** Document order, then blocks missing from it. */
   order: string[];
 }
 
@@ -55,7 +49,6 @@ function snapshotOf(doc: Y.Doc): BlockSnapshot {
   return { signatures, order: [...order, ...missing] };
 }
 
-/** `ids` in the order of `order`; an id the order does not hold sorts last, by id. */
 function inOrder(ids: string[], order: readonly string[]): string[] {
   const rank = (id: string): number => {
     const index = order.indexOf(id);
@@ -64,7 +57,7 @@ function inOrder(ids: string[], order: readonly string[]): string[] {
   return [...ids].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
 }
 
-/** The changes between two snapshots of one page: inserted, updated and deleted blocks, in that order, one entry per kind present. */
+/** One entry per kind present: insert, update, delete. */
 function diffSnapshots(before: BlockSnapshot, after: BlockSnapshot, at: string): PageChange[] {
   const inserted = [...after.signatures.keys()].filter((id) => !before.signatures.has(id));
   const deleted = [...before.signatures.keys()].filter((id) => !after.signatures.has(id));
@@ -78,13 +71,12 @@ function diffSnapshots(before: BlockSnapshot, after: BlockSnapshot, at: string):
   return changes;
 }
 
-/** The most history updates one request replays, silent ones included. */
+/** Replayed updates per request, unreported ones included. */
 export const PAGE_CHANGES_MAX_UPDATES = 5_000;
-/** The most serialized bytes one request replays: the checkpoint state plus every replayed update. */
+/** Checkpoint state plus every replayed update. */
 export const PAGE_CHANGES_MAX_BYTES = 16 * 1024 * 1024;
-/** Rows whose sizes one metadata query reads. */
 const METADATA_ROWS = 200;
-/** The most update bytes one fetch reads; an update larger than this is never fetched, so no group exceeds it. */
+/** An update larger than this is never fetched. */
 const FETCH_BYTES = 4 * 1024 * 1024;
 
 function historyWindowTooLarge(): ValidationError {
@@ -95,29 +87,14 @@ function historyWindowTooLarge(): ValidationError {
 }
 
 /**
- * The block changes stored updates made to the page document `docId` since `since` (issue #1680), computed by
- * replaying its history: the nearest checkpoint at or before `since`, then the retained `doc_history_updates` strictly
- * in `update_id` order. An update stored at or before `since` (by `created_at`) is applied without being reported;
- * each later update with the requested author is reported from the difference of the block maps before and after it:
- * a new id is an `insert`, a removed id a `delete`, a block whose fields or text changed an `update`. Timestamps only
- * decide what is reported, not the replay order, so an update is applied after the updates stored before it, including
- * the ones it was written on top of. Changes of different updates are never merged; one update that does more than one of these yields one
- * entry per kind, with the same `at` and that kind's block ids. Only the update's author decides which are listed: a
- * block written by a user-confirmed proposal is stored with author `user` and so is not an `ai_agent` change. Moving a
- * block changes the order, not the block, and is not reported.
+ * Replays history from the checkpoint at or before `since` in `update_id` order (timestamps decide only what is
+ * reported, not replay order) and diffs the block maps around each reported update. Only the stored author counts: a
+ * user-confirmed agent proposal is stored as `user`. Moves change order only and are not reported.
  *
- * The whole read is one `REPEATABLE READ` transaction that takes no lock: the checkpoint, the document row and every
- * history page come from one snapshot, so a retention sweep that commits meanwhile cannot remove rows the checkpoint
- * relies on. Work is bounded by a fixed budget of `PAGE_CHANGES_MAX_UPDATES` updates and `PAGE_CHANGES_MAX_BYTES`
- * serialized bytes (the checkpoint state counts; its size is read before the state is fetched). Sizes are read in
- * pages of at most `METADATA_ROWS` rows and update bytes are fetched in groups of at most `FETCH_BYTES`; one update
- * larger than `FETCH_BYTES` cannot be fetched at all and makes the window too large when the replay reaches it. The replay
- * stops after the group that fills `limit`, so the rest of the history is not read; a replay that
- * needs more than the budget before that is a `ValidationError` on `since` with reason `history_window_too_large`.
- * The byte budget bounds what is read, not the memory a decoded Yjs state takes.
- *
- * `since` in the future is a `ValidationError`, one before the retained history a `HistoryNotRetainedError`
- * (`history_not_retained`), an unknown doc a `NotFoundError`.
+ * One lock-free REPEATABLE READ snapshot, so a concurrent retention sweep cannot remove rows the checkpoint relies on.
+ * Work is bounded by `PAGE_CHANGES_MAX_UPDATES` and `PAGE_CHANGES_MAX_BYTES` (checkpoint size read before its state);
+ * exceeding the budget before `limit` is filled is `history_window_too_large`. The byte budget bounds what is read,
+ * not decoded Yjs memory.
  */
 export async function listPageChanges(
   pool: Pool,
@@ -148,9 +125,7 @@ export async function listPageChanges(
           const ids: string[] = [];
           let groupBytes = 0;
           for (const row of sizes) {
-            // A row that does not fit the budget, or is larger than one fetch group, ends the group. Only when it is the
-            // first row of the group does the replay need it now and refuse, before any of its bytes are read; after a
-            // valid prefix the prefix is replayed first and may already fill `limit`.
+            // A non-fitting row ends the group; refuse only if it is first; a replayed prefix may already fill `limit`.
             const selectable =
               usedUpdates + ids.length < PAGE_CHANGES_MAX_UPDATES &&
               usedBytes + groupBytes + row.size <= PAGE_CHANGES_MAX_BYTES &&

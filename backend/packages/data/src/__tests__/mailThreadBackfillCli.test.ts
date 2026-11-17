@@ -60,12 +60,11 @@ async function runCli(databaseUrl: string): Promise<void> {
   });
 }
 
-/** The error code of a client whose backend the server terminated (`pg_terminate_backend`, a database drop). */
 const ADMIN_SHUTDOWN_CODE = "57P01";
 
 /**
- * `DROP DATABASE` waits for the other backends of the database to leave and ends with a checkpoint, so on a loaded
- * host it takes longer than the 10 s the fixture's other statements are given.
+ * `DROP DATABASE` waits for the database's other backends and ends with a checkpoint, so on a loaded host
+ * it takes longer than the fixture's 10 s statement bound.
  */
 const DROP_STATEMENT_TIMEOUT_MS = 60_000;
 
@@ -88,8 +87,8 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
     throw new Error("Build backend artifacts before this test");
   const poolOptions = { max: 1, connectionTimeoutMillis: 5_000, statement_timeout: 10_000, query_timeout: 12_000 };
   const cleanup: unknown[] = [];
-  // Every pool has an error handler: an idle client the server drops would otherwise be an uncaught exception.
-  // The error is kept for the cleanup report unless `tolerate` says the scenario itself caused it.
+  // Every pool has an error handler: an idle client the server drops would otherwise be an uncaught
+  // exception. The error is kept for the cleanup report unless `tolerate` says the scenario caused it.
   const watch = (pool: Pool, tolerate: (error: unknown) => boolean = () => false): Pool => {
     pool.on("error", (error) => {
       if (!tolerate(error)) cleanup.push(error);
@@ -157,8 +156,8 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
     creatorSettled = true;
     const url = new URL(baseUrl);
     url.pathname = `/${name}`;
-    // After the pool is ended, the backend of an idle client may still be there when the database is removed, and
-    // the scenario terminates it: that termination is expected, any other error of the pool is not.
+    // After the pool ends, an idle client's backend may outlive it and be terminated by the drop: that error
+    // is expected, any other is not.
     database = watch(
       new Pool({ connectionString: url.toString(), ...poolOptions }),
       (error) => databasePoolEnding && isAdminShutdown(error),
@@ -176,11 +175,11 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await runCli(url.toString());
-      const { rows } = await database.query<{ key: string | null; max_attempts: number }>(
-        "SELECT key, max_attempts FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
-        ["mailThreadBackfill"],
+      // The deploy CLI only runs the SQL migrations and the queue schema: it queues no job.
+      const { rows } = await database.query<{ task_identifier: string }>(
+        "SELECT task_identifier FROM graphile_worker.jobs ORDER BY task_identifier",
       );
-      expect(rows).toEqual([{ key: "mail-thread-backfill", max_attempts: 3 }]);
+      expect(rows).toEqual([]);
     }
   } catch (error) {
     primary = { value: error };
@@ -224,8 +223,8 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
       );
       if (!identity.rows[0]) throw new Error("Could not identify the owned database remover");
       removalIdentity = identity.rows[0];
-      // `pool.end()` returns before the sockets of its idle clients closed, so a backend of the fixture database can
-      // outlive the pool and keep the drop waiting. Only backends of this fixture database are terminated.
+      // `pool.end()` returns before its idle clients' sockets closed, so a backend can outlive the pool and
+      // keep the drop waiting. Only backends of this fixture database are terminated.
       await removalClient.query(
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
         [name],
@@ -290,7 +289,7 @@ it("reaches application configuration refusal without a loader", () => {
   expect(result.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
 });
 
-it("runs the compiled migration root twice and queues one keyed mail-thread backfill", async () => {
+it("runs the compiled migration root twice and queues no job", async () => {
   const result = await runScenario(false);
   if (result.failure) throw result.failure.value;
   expect(result.creatorSettled).toBe(true);

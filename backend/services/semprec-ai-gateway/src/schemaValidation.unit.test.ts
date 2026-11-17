@@ -3,12 +3,8 @@ import { describe, expect, it } from "vitest";
 import { compileResponseSchema } from "./schemaValidation.js";
 
 /**
- * A test-only copy of the meetingNotes `responseSchema` that semprec-transcribe's
- * `buildMeetingNotesRequest` sends (issue #1695); its production owner is
- * `services/semprec-transcribe/src/transcriptSummary.ts`. This process cannot import that service, so
- * identity is checked by digest: the transcribe test asserts the same SHA-256 for the schema its
- * request builder actually sends. This is the gateway compiler's acceptance of those bytes, not an
- * HTTP or live-provider check.
+ * Copy of the schema owned by `services/semprec-transcribe/src/transcriptSummary.ts`, which cannot be
+ * imported here; identity is checked by digest, asserted on both sides.
  */
 const MEETING_NOTES_RESPONSE_SCHEMA = {
   type: "object",

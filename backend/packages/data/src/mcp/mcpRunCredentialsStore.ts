@@ -4,7 +4,7 @@ import { requireSingleRow } from "../db/pool.js";
 export interface CreateMcpRunCredentialInput {
   agentRunId: string;
   tokenHash: string;
-  /** Core capability ids and module capability ids; the mint action validates them, readers intersect them with what is granted. */
+  /** Validated by the mint action; readers intersect them with what is granted. */
   capabilities: readonly string[];
   expiresAt: Date;
 }
@@ -33,9 +33,8 @@ function mapRow(row: McpRunCredentialDbRow): McpRunCredentialRow {
 }
 
 /**
- * Throws (unique violation) if `agentRunId` already has a credential — one credential per run, by design.
- * The credential's tenant is copied from its run in the same statement; a run invisible to the caller
- * inserts nothing and fails `requireSingleRow`.
+ * One credential per run (unique violation otherwise). The tenant is copied from the run in the same statement; an
+ * invisible run inserts nothing and fails `requireSingleRow`.
  */
 export async function createMcpRunCredential(
   client: Pool | PoolClient,
@@ -55,18 +54,14 @@ export interface ActiveMcpRunCredential {
   runId: string;
   agentProjectItemId: string;
   actorUserId: string;
-  /** What the mint action stored: core ids and module capability ids. A reader keeps the ones it knows and that are granted. */
+  /** A reader keeps only the ids it knows and that are granted. */
   capabilities: string[];
 }
 
 /**
- * Must run inside the tenant `getMcpRunCredentialTenantByTokenHash` returned, so `agent_runs` is read
- * under RLS. Resolves a presented token to the run it authenticates, or `null` if the token is unknown,
- * expired, or its run is no longer `running` — the same "credential still live" bar
- * `getActiveSessionByTokenHash` applies to a session, plus the owning run's own status.
- * `agent_runs.project_item_id` is nullable in general, but the mint action always supplies one for
- * a credentialed run; a `NULL` here would mean the schema was reached from outside that action, so
- * it is treated the same as "no credential" rather than trusted.
+ * Must run inside the tenant `getMcpRunCredentialTenantByTokenHash` returned, so `agent_runs` is read under RLS.
+ * `null` when unknown, expired, or the run is no longer `running`. A `NULL` project is treated as no credential
+ * rather than trusted, since the mint action always sets one.
  */
 export async function getActiveMcpRunCredentialByTokenHash(
   client: Pool | PoolClient,
@@ -96,11 +91,7 @@ export async function getActiveMcpRunCredentialByTokenHash(
   };
 }
 
-/**
- * Global-plane read: the tenant a presented token belongs to, or `null` if the token is unknown,
- * expired, or its tenant is not `active`. Runs before any tenant is known, so it must be called
- * from system scope; it reads only the global `agent_run_mcp_credentials` and `tenants` tables.
- */
+/** Global-plane read before any tenant is known, so it must run in system scope. */
 export async function getMcpRunCredentialTenantByTokenHash(
   client: Pool | PoolClient,
   tokenHash: string,

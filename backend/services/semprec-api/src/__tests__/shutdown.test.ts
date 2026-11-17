@@ -41,10 +41,7 @@ function createCapturingLogger(): { logger: Logger; lines: CapturedLine[] } {
   return { logger, lines };
 }
 
-/**
- * Builds the same HTTP + `WS /api/sync` wiring `serve.ts` does, over `pool`, bound to an ephemeral
- * port, with the tenant deactivation listener started after the sync server.
- */
+/** The wiring `serve.ts` builds, on an ephemeral port, with the deactivation listener started after the sync server. */
 async function startServer(pool: Pool): Promise<{
   server: Server;
   syncServer: SyncServer;
@@ -104,7 +101,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
   beforeEach(async () => {
     sharedPool ??= getTestPool();
     await resetDatabase(sharedPool);
-    // The shutdown under test ends the pool it is given; a separate pool keeps the shared test pool alive.
+    // The shutdown ends the pool it is given; a separate pool keeps the shared test pool alive.
     dedicatedPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   });
 
@@ -189,7 +186,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       tenantDeactivationListener,
     } = await startServer(dedicatedPool);
     const closeError = new Error("sync close failed");
-    // Releases the real server's LISTEN client first so the pool can still end within its bound, then rejects.
+    // Releases the real LISTEN client first so the pool can still end within its bound.
     const syncServer = {
       close: vi.fn(async () => {
         await realSyncServer.close();
@@ -283,7 +280,6 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
     const syncServer = {
       close: async () => {
         order.push("syncServer.close");
-        // The sync server still holds its own LISTEN client; the listener's is already gone.
         clientsWhenSyncCloses = dedicatedPool.totalCount;
         await realSyncServer.close();
       },
@@ -326,10 +322,7 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     await sharedPool?.end();
   });
 
-  /**
-   * A Pub/Sub transport that keeps every notification until it is acknowledged, as Pub/Sub redelivers an
-   * unacknowledged one. While `hold` is set, the next pull stays in flight until the test releases it.
-   */
+  /** Keeps every notification until acknowledged, as Pub/Sub redelivers; while `hold` is set, the next pull stays in flight. */
   function fakePubSub() {
     const unacknowledged = new Map([
       ["ack-held", { ackId: "ack-held", emailAddress: "nobody@example.com", historyId: "1" }],
@@ -370,7 +363,6 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
   it("awaits the dispatcher's stop after the drain and before the mail root and the pool, leaving a pulled notification unacknowledged", async () => {
     const started = await startServer(dedicatedPool);
     const server = started.server;
-    // The shutdown and the fallback close each resource through its owned close, which knows whether it closed.
     const syncServer = ownedClose(started.syncServer);
     const voiceServer = ownedClose(started.voiceServer);
     const tenantDeactivationListener = ownedClose(started.tenantDeactivationListener);
@@ -410,7 +402,7 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
             order.push("gmailPubSubDispatcher.stop");
             listeningAtDispatcherStop = server.listening;
             const stopping = dispatcher.stop();
-            // The pull in flight returns after the stop was requested, as one would at its request timeout.
+            // Returns after the stop was requested, as a pull would at its request timeout.
             releasePull();
             await stopping;
             order.push("gmailPubSubDispatcher.stopped");
@@ -441,17 +433,14 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     await settleAll(primary, [
       () => releasePull(),
       () => dispatcher.stop(),
-      // Each resource whose own close did not fulfil (never called, rejected or still pending) is closed again, each
-      // on its own. A returned shutdown does not prove any of them closed: it only logs a rejected close.
+      // A returned shutdown does not prove any resource closed: it only logs a rejected close.
       ...fallbackCloses({ server, syncServer, voiceServer, tenantDeactivationListener }),
     ]);
-    // Pulled, never dispatched, never acknowledged: Pub/Sub still holds it.
     expect(pubSub.pulls()).toBe(1);
     expect(pubSub.acknowledged).toEqual([]);
     expect([...pubSub.unacknowledged.keys()]).toEqual(["ack-held"]);
 
-    // The next process's dispatcher receives it again and, once handed off (no mailbox watches the
-    // address), acknowledges it.
+    // The next process receives it again and, once handed off (no mailbox watches the address), acknowledges it.
     const next = createGmailPubSubDispatcher(sharedPool, pubSub.transport, { pullEmptyBackoffMs: 10 });
     let nextPrimary: { error: unknown } | undefined;
     try {
@@ -474,7 +463,6 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
       releaseFirstListenerClose = resolve;
     });
     let listenerCloses = 0;
-    // Scripted resources of this test alone; no production seam. Each records the receiver its close ran on.
     const sync = {
       close(): Promise<void> {
         attempted.push("syncServer");
@@ -494,7 +482,7 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
         attempted.push("tenantDeactivationListener");
         receivers.push(this);
         listenerCloses += 1;
-        // The first close stays pending, as one past the shutdown's listener bound does.
+        // Pending, as a close past the shutdown's listener bound is.
         return listenerCloses === 1 ? firstListenerClose : Promise.resolve();
       },
     };
@@ -510,11 +498,9 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
       voiceServer: ownedClose(voice),
       tenantDeactivationListener: ownedClose(listener),
     };
-    // The voice server closed before the failure, through its owned close, which returned the resource's own result.
     const voiceResult = owned.voiceServer.close();
     expect(voiceResult).toBe(voiceReturned);
     await voiceResult;
-    // The listener's close was started and is still pending.
     const listenerClosing = owned.tenantDeactivationListener.close();
     const early = new Error("The case failed before its resources were closed");
     expect(receivers).toHaveLength(2);
@@ -527,9 +513,8 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
       () => null,
       (error: unknown) => error,
     );
-    // The first listener close, left pending, is released before any assertion and awaited at the end.
     releaseFirstListenerClose();
-    // The sync server's rejection skipped no sibling, and only the voice server, which closed, was skipped.
+    // The sync server's rejection skipped no sibling; only the already-closed voice server was skipped.
     expect(attempted).toEqual(["syncServer", "tenantDeactivationListener", "server"]);
     expect(receivers).toHaveLength(2);
     expect(receivers[0]).toBe(sync);
@@ -551,7 +536,6 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
     const attempted: string[] = [];
     const first = new Error("The sync server's close failed");
     let syncCloses = 0;
-    // Scripted closes of this test alone around the real graceful shutdown, a real HTTP server and this case's pool.
     const syncServer = ownedClose({
       close: async () => {
         attempted.push("syncServer");
@@ -584,7 +568,6 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
         pool: dedicatedPool,
         logger,
       })("SIGTERM");
-      // The shutdown returned although the sync server's close rejected: it logged that failure and moved on.
       const errors = lines.filter((line) => line.level === "error");
       expect(errors.map((line) => line.msg)).toEqual(["syncServer.close() failed"]);
       expect(errors[0]?.obj).toEqual({ err: first, signal: "SIGTERM" });
@@ -605,21 +588,16 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
   });
 });
 
-/** One resource's close, owned by a case; see `ownedClose`. */
 interface OwnedClose {
   close(): Promise<void>;
   /** True once one call of `close` has fulfilled. */
   closed(): boolean;
-  /** Every error a call of `close` rejected with, in order. */
   readonly rejections: unknown[];
 }
 
 /**
- * Owns the close of `resource` for a case. `close()` calls the resource's own `close()` on the resource itself, with
- * no arguments as the interface takes none, and returns that call's own promise, so its caller sees exactly the result
- * or error the resource gave. Only a call whose promise fulfils marks the resource closed. A close that rejected, or
- * one still pending, leaves it open: the graceful shutdown logs a rejected close and moves on, and moves past a
- * listener close still pending at its bound, so its return proves neither closed.
+ * `close()` returns the resource's own promise; only a fulfilled call marks it closed. The graceful shutdown logs
+ * a rejected close and moves past a listener close pending at its bound, so its return proves neither closed.
  */
 function ownedClose(resource: { close(): Promise<void> }): OwnedClose {
   let fulfilled = false;
@@ -643,9 +621,8 @@ function ownedClose(resource: { close(): Promise<void> }): OwnedClose {
 }
 
 /**
- * The fallback closes of `startServer`'s resources, one independently attempted cleanup each, in the order the
- * graceful shutdown closes them, so one rejecting close does not skip the others. Each owned resource is closed
- * again unless one of its own closes fulfilled, and the HTTP server whenever it still listens.
+ * One independent cleanup per resource in the graceful shutdown's order, so one rejecting close skips no other.
+ * Each owned resource is closed again unless one of its closes fulfilled; the HTTP server whenever it listens.
  */
 function fallbackCloses(resources: {
   syncServer: OwnedClose;
@@ -669,7 +646,6 @@ function fallbackCloses(resources: {
   ];
 }
 
-/** Rejects naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
 async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
@@ -682,11 +658,7 @@ async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T>
   }
 }
 
-/**
- * Runs every cleanup even when one fails. The case's own failure, `primary`, stays first: it is rethrown, or,
- * when a cleanup failed too, rethrown inside an `AggregateError` with the cleanup failures after it. A thrown
- * falsy value counts as a failure because `primary` wraps it.
- */
+/** Runs every cleanup even when one fails; `primary` stays first, cleanup failures after it in an `AggregateError`. */
 async function settleAll(primary: { error: unknown } | undefined, cleanups: (() => unknown)[]): Promise<void> {
   const failures: unknown[] = [];
   for (const cleanup of cleanups) {

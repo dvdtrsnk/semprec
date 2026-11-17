@@ -15,11 +15,9 @@ import { getValueLinksForItems } from "../chokePoint/valueLinkReads.js";
 import { insertValueLink } from "../chokePoint/valueLinksStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
-/** Issue #1403: the batched read behind `include=links`. */
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-/** A database with a `title` property; `moduleId` makes it a system database whose `owner_module_id` is the source's `databaseKey`. */
 async function makeDatabase(name: string, moduleId?: string, cp: ChokePoint = chokePoint): Promise<DatabaseRow> {
   const database = await cp.createDatabase({ name, ownerModuleId: moduleId, system: moduleId !== undefined });
   await cp.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });

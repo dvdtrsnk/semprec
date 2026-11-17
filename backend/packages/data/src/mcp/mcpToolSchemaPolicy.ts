@@ -1,18 +1,12 @@
 import safeRegex from "safe-regex";
 import { ValidationError } from "../errors.js";
 
-/**
- * Issue #696: an MCP server's `tools/list` `inputSchema` is untrusted input — the AI gateway
- * applies the same bound to its own caller-supplied schemas (`schemaValidation.ts`,
- * `MAX_RESPONSE_SCHEMA_BYTES`).
- */
+/** The AI gateway applies the same bound to its own caller-supplied schemas. */
 export const MAX_MCP_TOOL_SCHEMA_BYTES = 64 * 1024;
 
 /**
- * Far above any legitimate JSON Schema's nesting depth, but well short of the V8 call-stack
- * ceiling — bounds `assertNoRemoteRef`/`assertPatternsSafe` recursion so a maximally nested
- * schema within `MAX_MCP_TOOL_SCHEMA_BYTES` (e.g. `{"a":{"a":{...}}}`, ~10 900 levels) throws a
- * catchable `ValidationError` instead of a `RangeError: Maximum call stack size exceeded`.
+ * Far above legitimate nesting but below the V8 stack ceiling, so a maximally nested schema within the byte cap
+ * throws a catchable `ValidationError` instead of a `RangeError`.
  */
 const MAX_SCHEMA_DEPTH = 64;
 
@@ -34,7 +28,7 @@ function assertNoRemoteRef(node: unknown, path: string, depth = 0): void {
   }
 }
 
-/** Ajv's own recommendation for untrusted schemas: reject a `pattern`/`patternProperties` regex that isn't provably safe from catastrophic backtracking. */
+/** Ajv's recommendation for untrusted schemas. */
 function assertPatternsSafe(node: unknown, depth = 0): void {
   if (depth > MAX_SCHEMA_DEPTH) {
     throw new ValidationError("MCP tool schema is nested too deeply");
@@ -71,21 +65,11 @@ function assertSafePattern(pattern: string): void {
 }
 
 /**
- * Sync-time gate (issue #696) on a remote MCP server's advertised `inputSchema`, called by
- * `mcpSync.ts`'s `validateListedTools` before any registration is written. Throws
- * `ValidationError` with a fixed, secret-free message — never echoing the schema itself, which
- * originates from a not-fully-trusted server — when the schema:
- *
- * - is not a plain object;
- * - serializes to more than `MAX_MCP_TOOL_SCHEMA_BYTES`;
- * - contains a `$ref` anywhere that does not resolve locally (does not start with `#`);
- * - contains a `pattern` or `patternProperties` key whose regular expression is invalid or not
- *   provably safe from catastrophic backtracking (`safe-regex`);
- * - nests more than `MAX_SCHEMA_DEPTH` levels deep.
- *
- * A schema that fails any of these checks would otherwise let a compile or a validate call hang
- * the agents process (`mcpInvokeTool.ts`'s `validateArguments`) or make Ajv attempt to resolve an
- * attacker-controlled remote reference.
+ * Sync-time gate on an advertised `inputSchema`, before any registration is written. Rejects, with a fixed message
+ * that never echoes the schema: a non-object, over `MAX_MCP_TOOL_SCHEMA_BYTES`, any non-local ``, a
+ * `pattern`/`patternProperties` regex that is invalid or not provably backtracking-safe (`safe-regex`), or nesting
+ * beyond `MAX_SCHEMA_DEPTH`. Otherwise a compile or validate could hang the agents process or make Ajv fetch an
+ * attacker-controlled reference.
  */
 export function assertAcceptableMcpToolSchema(schema: unknown): void {
   if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {

@@ -21,7 +21,6 @@ import { describeBreakingLinks } from "../mcp/approvalBreaksLink.js";
 import { withTransaction } from "../db/pool.js";
 import { ApprovalRequiredForWrite, ApprovalResourceBusyError, ConflictError } from "../errors.js";
 
-/** Issue #1758: an agent under a run asks for approval before a write ends a value link. */
 const USER_ID = "00000000-0000-4000-8000-000000000003";
 const RUN_WRITER = {
   writerKind: "agent",
@@ -46,7 +45,6 @@ async function setup(client: ChokePoint = cp) {
   await client.createProperty({ databaseId: files.id, key: "name", name: "Name", type: "text" });
   await client.createProperty({ databaseId: files.id, key: "title", name: "Title", type: "text" });
   await client.createProperty({ databaseId: files.id, key: "note", name: "Note", type: "text" });
-  // Projects.files is the many side, Files.project the single-valued side.
   const { property: filesProperty, inverseProperty } = await client.createRelationProperty({
     sourceDatabaseId: projects.id,
     key: "files",

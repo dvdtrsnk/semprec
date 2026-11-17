@@ -7,12 +7,9 @@ import { guidanceReferenceStore, projectAgentGuidanceStore } from "../projectAge
 import { agentGuidanceDriftFindingsStore } from "./agentGuidanceDriftFindingsStore.js";
 import { resolveGuidanceDriftFinding } from "./resolveGuidanceDriftFinding.js";
 import { loadGuidanceSections } from "../projectAgentGuidance/projectAgentGuidanceSections.js";
+import type { RouteParams } from "../customRoute.js";
 
-interface Context {
-  params: Record<string, string>;
-}
-
-/** One active drift finding as the AGENT page's drift cards read it (issue #1630). */
+/** One active drift finding as the AGENT page's drift cards read it. */
 interface ProjectGuidanceDriftFindingView {
   id: string;
   kind: "permission" | "behavior";
@@ -36,7 +33,6 @@ function toView(finding: GuidanceDriftFinding): ProjectGuidanceDriftFindingView 
       suggestedNotAllowedLine: payload.suggestedNotAllowedLine,
     };
   }
-  // No suggestion is generated for a permission finding.
   return {
     ...common,
     kind: "permission",
@@ -47,9 +43,8 @@ function toView(finding: GuidanceDriftFinding): ProjectGuidanceDriftFindingView 
 }
 
 /**
- * Oldest first: `firstSeenAt`, then `id`. `firstSeenAt` is the fixed-width UTC ISO form of the
- * column, which `upsertActive` writes only from a JS `Date` (millisecond precision), so comparing
- * the strings orders exactly like the column; lowercase UUID text compares like the `uuid` order.
+ * Oldest first, then by id. Comparing strings is exact: `firstSeenAt` is fixed-width UTC ISO with millisecond
+ * precision, and lowercase UUID text sorts like `uuid`.
  */
 function compareFindings(left: GuidanceDriftFinding, right: GuidanceDriftFinding): number {
   if (left.firstSeenAt !== right.firstSeenAt) return left.firstSeenAt < right.firstSeenAt ? -1 : 1;
@@ -65,10 +60,8 @@ async function readDrift(tx: PoolClient, projectItemId: string) {
     throw error;
   }
   const guidance = await projectAgentGuidanceStore.load(tx, projectItemId);
-  // A project without guidance has nothing its findings could be resolved against, so it answers an
-  // empty list even when an active finding row exists (gh-1630: "no guidance or no finding").
+  // Without guidance there is nothing to resolve findings against: empty list even if active rows exist.
   if (!guidance) return { guidanceUpdatedAt: null, findings: [] };
-  // `listActive` returns only `status = 'active'` rows, so a resolved finding is never listed.
   const findings = await agentGuidanceDriftFindingsStore.listActive(tx, projectItemId);
   return {
     guidanceUpdatedAt: guidance.updatedAt,
@@ -77,14 +70,12 @@ async function readDrift(tx: PoolClient, projectItemId: string) {
 }
 
 /**
- * `GET /api/projects/:id/agent-guidance/drift` (issue #1630): the project's active drift findings
- * and the guidance `updatedAt` the client passes back when it resolves one; without guidance, an
- * empty list and `null`. The project check, the guidance read and the findings read share one
- * REPEATABLE READ transaction, so the version and the list come from the same snapshot. Another
- * tenant's project is invisible under row-level security and answers the same 404 as an unknown id.
+ * `GET /api/projects/:id/agent-guidance/drift`: active findings plus the guidance `updatedAt` the client passes back
+ * to resolve one. One REPEATABLE READ transaction, so version and list come from the same snapshot. A foreign project
+ * is invisible under RLS and answers the same 404.
  */
 export function createProjectGuidanceDriftReadRouteHandler(pool: Pool) {
-  return async (ctx: Context) => {
+  return async (ctx: RouteParams) => {
     const parsed = z.string().uuid().safeParse(ctx.params.id);
     if (!parsed.success) throw new ValidationError("Project id must be a UUID", { field: "id" });
     const body = await withTransaction(pool, (tx) => readDrift(tx, parsed.data), { isolation: "repeatable_read" });
@@ -100,7 +91,7 @@ const decisionSchema = z
   .strict();
 
 export function createResolveGuidanceDriftFindingRouteHandler(pool: Pool) {
-  return async (ctx: Context & { body: unknown; identity: { user: { id: string } } }) => {
+  return async (ctx: RouteParams & { body: unknown; identity: { user: { id: string } } }) => {
     const id = z.string().uuid().safeParse(ctx.params.id);
     const decision = decisionSchema.safeParse(ctx.body);
     if (!id.success) throw new ValidationError("Finding id must be a UUID", { field: "id" });

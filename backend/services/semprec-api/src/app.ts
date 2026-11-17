@@ -56,38 +56,34 @@ import { createClientIpThrottle } from "./clientIpThrottle.js";
 import { isAllowedOrigin } from "./originCheck.js";
 import { logger } from "./logger.js";
 
-/** Methods a browser sends without a same-origin check: they cannot change state (issue #1044). */
+/** Methods a browser sends without a same-origin check: they cannot change state. */
 const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export interface AppOptions {
   passwordResetMailer: PasswordResetMailer;
-  /** Issue #1040: absent when SMTP is not configured — invitations are still issued, but no mail is sent. */
+  /** Absent when SMTP is not configured: invitations are still issued, but no mail is sent. */
   inviteMailer?: InviteMailer;
   appBaseUrl: string;
   setupToken: string;
-  /** Backs `GET /api/schema` (issue #147) — every active module's manifest loaded once at startup. */
+  /** Every active module's manifest, loaded once at startup. */
   moduleRegistry: Awaited<ReturnType<typeof loadFullModuleRegistry>>;
-  /** Backs `POST /api/files` and `GET /api/blobs/:id` (issue #158). */
   blobStorage: BlobStorageWriter;
-  /** Where synced mail attachments are stored; `GET /api/blobs/:id` also reads from it. Defaults to `blobStorage`. */
+  /** `GET /api/blobs/:id` also reads from it. Defaults to `blobStorage`. */
   mailAttachmentStorage?: BlobStorageWriter;
   speechGateway?: HttpAiGatewayClientConfig;
-  /** Issue #158's `maxFileSizeMb`, already resolved to bytes. */
   maxFileSizeBytes: number;
-  /** Issue #635: forwarded to `createAuthRequestListener` — login throttling keys on the last `X-Forwarded-For` hop. */
+  /** Login throttling keys on the last `X-Forwarded-For` hop. */
   trustProxy?: boolean;
   /**
-   * Issue gh-1460: the composition root's dependencies, handed to every module custom route's factory.
-   * Absent means the empty container, so a caller that mounts no route needing a member passes nothing.
-   * `createDispatcher` adds its registry provider, and a `throttle` when the container carries none.
+   * Absent means the empty container. `createDispatcher` adds its registry provider, and a
+   * `throttle` when the container carries none.
    */
   customRouteDependencies?: CustomRouteDependencies;
 }
 
 /**
- * Every resource route this service mounts through `mountRoutes`, in mount order: the account, Semp thread, admin,
- * database, property, view, item, page-changes and search families. `createDispatcher` mounts the result, and
- * `__tests__/routeMatrixCoverage.unit.test.ts` reads it to check that each route has a `ROUTE_MATRIX` entry.
+ * In mount order. `__tests__/routeMatrixCoverage.unit.test.ts` reads it to check each route has a
+ * `ROUTE_MATRIX` entry.
  */
 export function createResourceRouteDefinitions(
   pool: Pool,
@@ -110,20 +106,11 @@ export function createResourceRouteDefinitions(
 }
 
 /**
- * The full request dispatcher: `serve.ts` calls this to get the listener it hands to
- * `http.createServer`, and `__tests__/routeMatrix.test.ts` (issue #143) calls it the same way to
- * drive `routeMatrix.ts`'s inventory against a real in-memory server, with no process/port of
- * its own to manage.
+ * `serve.ts` hands the result to `http.createServer`; the route-matrix tests drive it the same way
+ * in-process.
  *
- * Routes by path prefix; a module's custom route (issue #239 — `POST /api/proposals/:id/confirm`,
- * `GET /api/inbox-types`, `POST /api/push-subscriptions`, `POST /api/push-subscriptions/:id/revoke`,
- * `GET /api/ai-usage`) is tried first through `mountCustomRoutes`, then the generic database/property/
- * view/item resource routes (issue #240 — `/api/databases`, `/api/properties/:id`; issue #155 —
- * `/api/views/:id`, `/api/views/:id/items/:itemId`; issue #241 — `/api/databases/:id/items`,
- * `/api/items/:id`; issue #156 — `DELETE /api/items/:id`, `POST /api/items/:id/restore`) through
- * `mountRoutes`, since
- * none of those paths are exact prefixes this function otherwise routes; `mcpAgentPageListener` still
- * answers 404 itself for anything left unmatched.
+ * Module custom routes are tried first, then the generic resource routes through `mountRoutes`;
+ * `mcpAgentPageListener` answers 404 for anything left unmatched.
  */
 export async function createDispatcher(
   pool: Pool,
@@ -133,20 +120,19 @@ export async function createDispatcher(
   // Resolved per call, so a module activated or deactivated since the last request is reflected.
   const heartbeatRuleKinds = () => resolveModuleRuleKinds(options.moduleRegistry);
   const callerDependencies = options.customRouteDependencies ?? createCustomRouteDependencies();
-  // Issue gh-1956: the container the custom routes get is also what the module tools of a human `/mcp` session are built
-  // with, so the draft send tool sends through the transports of the send route.
+  // The custom routes' container also builds the module tools of a human `/mcp` session, so the
+  // draft send tool sends through the send route's transports.
   const routeDependencies: CustomRouteDependencies = {
     ...callerDependencies,
     heartbeatRuleKinds,
-    // Issue gh-1750: one limiter for as long as this dispatcher serves, so every request of the password
-    // connect route is counted in the same windows. A caller's own instance is kept.
+    // One limiter for this dispatcher's lifetime, so every password connect request counts in the
+    // same windows. A caller's own instance is kept.
     throttle: callerDependencies.throttle ?? createClientIpThrottle(),
-    // Issue gh-1895: the limit the draft attachment route applies to a mailbox without a provider limit is the upload
-    // cap of this dispatcher, whatever the caller's container carries.
+    // The draft attachment limit of a mailbox without a provider limit is this dispatcher's upload
+    // cap, whatever the container carries.
     maxFileSizeBytes: options.maxFileSizeBytes,
-    // Issue gh-1896: the send route sends through the transports of the mailbox's sync mode, which this root builds
-    // from the OAuth clients the container carries, and reads attachment bytes from the storage it was given. A
-    // caller's own `send` is kept.
+    // Transports of the mailbox's sync mode, built from the container's OAuth clients. A caller's
+    // own `send` is kept.
     mailServerClients: {
       ...callerDependencies.mailServerClients,
       send: callerDependencies.mailServerClients?.send ?? {
@@ -163,9 +149,8 @@ export async function createDispatcher(
     },
   };
   const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions, routeDependencies);
-  // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
-  // injected `Pool`, threaded into every generic resource route family below so there is no
-  // second write path — a route never constructs its own `createChokePoint(pool)`.
+  // The one `GenericApplicationPort` per pool, shared by every generic resource route so there is
+  // no second write path.
   const collectionMetadataResolver = await createCollectionMetadataResolver(options.moduleRegistry);
   const genericApplicationService = createGenericApplicationService(pool, collectionMetadataResolver);
   const dispatchResourceRoute = mountRoutes(
@@ -178,12 +163,9 @@ export async function createDispatcher(
       collectionMetadataResolver,
     ),
   );
-  // Issue #220's own composition root over the same generic catalog: a second
-  // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with
-  // the REST `genericApplicationService` above beyond the `Pool` itself (#219's ADR — REST and
-  // MCP each own their own instance). `grantedCapabilities` is the schema core module's own
-  // registered capabilities (an authenticated MCP session has no project to compute a per-run
-  // manifest against, unlike an AgentTool run).
+  // A separate `GenericOperationGateway` for MCP over the same pool, sharing no state with the REST
+  // service. `grantedCapabilities` is the schema core module's own: an authenticated MCP session
+  // has no project to compute a per-run manifest against.
   const mcpGateway = createGenericOperationGateway(pool, collectionMetadataResolver);
   const registeredModuleCapabilities = await options.moduleRegistry.getCapabilities();
   const mcpGrantedCapabilities = new Set(CAPABILITY_IDS.filter((id) => registeredModuleCapabilities.includes(id)));
@@ -194,7 +176,7 @@ export async function createDispatcher(
     options.moduleRegistry,
     routeDependencies,
   );
-  // `page.insert` over HTTP also accepts a scoped run credential, through the same gateway and capability set as `/mcp`.
+  // Also accepts a scoped run credential, through the same gateway and capability set as `/mcp`.
   const pageInsertListener = createPageInsertRequestListener(
     pool,
     genericApplicationService,
@@ -243,13 +225,11 @@ export async function createDispatcher(
   const mailOauthCallbackListener = createMailOauthCallbackRequestListener();
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
 
-  // Issue #167's HTTP entry point: every request mints its own trace id, carried through
-  // whichever async work the matched route kicks off (nothing below awaits `dispatch` itself, but
-  // `AsyncLocalStorage` context follows the promise chains those routes start from inside this
-  // synchronous call).
+  // Every request mints its own trace id; `AsyncLocalStorage` carries it through the promise chains
+  // the matched route starts.
   function dispatch(req: IncomingMessage, res: ServerResponse): void {
-    // Issue #1044: a browser page on another origin can send an unsafe request with the session
-    // cookie attached, so every such request is checked before routing. Safe methods are not.
+    // A page on another origin can send an unsafe request with the session cookie attached, so
+    // every such request is checked before routing.
     if (!SAFE_METHODS.has(req.method ?? "") && !isAllowedOrigin(req)) {
       const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
       logger.warn({ method: req.method, path: pathname }, "origin_not_allowed");
@@ -344,7 +324,7 @@ export async function createDispatcher(
       void graphWebhookListener(req, res);
       return;
     }
-    // Issue gh-1686: the provider's redirect target, served without a session.
+    // The provider's redirect target, served without a session.
     if (pathname === MAIL_OAUTH_CALLBACK_PATH && req.method === "GET") {
       mailOauthCallbackListener(req, res);
       return;

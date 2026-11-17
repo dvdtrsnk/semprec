@@ -38,17 +38,16 @@ const PERSISTED_EVENT_KINDS: ReadonlySet<string> = new Set<AgentRunEventKind>([
 const ABORTED = Symbol("aborted");
 
 export interface RunAgentSessionInput {
-  /** Seam for the real `pi-agent-core` `createAgentSession` (or a fake, in tests). */
   createAgentSession: CreateAgentSession;
   task: string;
   triggeredBy: TriggeredBy;
-  /** Defaults to 'invocation'; #118 passes 'session' for managed conversations. */
+  /** Defaults to 'invocation'; managed conversations pass 'session'. */
   unit?: AgentRunUnit;
   projectItemId?: string | null;
   parentRunId?: string | null;
   heartbeatId?: string | null;
   systemPromptOverride?: (defaultPrompt: string) => string;
-  /** Extra observer for every message, persisted or not (e.g. #118's session bookkeeping). */
+  /** Observer for every message, persisted or not. */
   onEvent?: (message: AgentMessage) => void;
   /** Aborting it stops the turn and closes the run as `error` with an `AgentRunCancelledError`. */
   signal?: AbortSignal;
@@ -71,10 +70,7 @@ export function extractResultSnapshot(lastMessage: AgentMessage | null): string 
   return typeof text === "string" ? text : JSON.stringify(lastMessage);
 }
 
-/**
- * Appends a recovery event first, then delegates its post-commit thin-reference announcement to
- * the data layer that owns both the row and the after-commit hook.
- */
+/** Appends the event, then lets the data layer announce its thin reference after commit. */
 async function recordPersistentEvent(
   client: Pool | PoolClient,
   agentRunId: string,
@@ -109,23 +105,17 @@ export async function pushRunStatus(
 }
 
 /**
- * Drives one turn's message stream to completion against an already-open `agent_runs` row:
- * pushes `message_update` deltas through the ephemeral stream (never persisted) and appends the
- * persisted-kind ones to `agent_run_events` in arrival order before announcing thin references.
- * A `tool_result` that carries the sensitive mark is stored redacted (issue #1827), and so are, from then on in
- * this call, the arguments of every `tool_use` and the content of every assistant `message`; a `tool_use` of a
- * content-bearing write to a sensitive database is stored with redacted arguments from the start (issue #2001,
- * `createSensitiveTurnRedactor`). `onEvent` still receives every message unchanged. Returns the turn's last
- * `message`-kind event as the session produced it (the live one), or null if it never produced one. An aborted `signal` (already aborted, or
- * aborting while the loop waits for or records a message) ends the session through its iterator's
- * `return()` and throws `AgentRunCancelledError`. `onFirstEvent` is awaited once, with the row id
- * of the first event this call stores, right after its insert; a throw there ends the turn like
- * any failed step.
+ * Drives one turn's message stream against an already-open `agent_runs` row: `message_update` deltas go to the
+ * ephemeral stream (never persisted); persisted kinds are appended to `agent_run_events` in arrival order before their
+ * thin references are announced.
  *
- * Shared by `runAgentSession` (one turn, closing the run immediately after) and the
- * delegation registry (#229: many turns reusing one long-lived `agent_runs` row that only
- * closes on TTL expiry) — both need identical event bookkeeping, just different lifecycle
- * bookends around it.
+ * Once a `tool_result` with the sensitive mark is stored redacted, every later `tool_use` argument and assistant
+ * `message` of this call is redacted too; a content-bearing write to a sensitive database is redacted from the start
+ * (`createSensitiveTurnRedactor`). `onEvent` still sees every message unchanged.
+ *
+ * Returns the last live `message`, or null. An aborted `signal` ends the session through its iterator's `return()` and
+ * throws `AgentRunCancelledError`. `onFirstEvent` is awaited once with the first stored event's row id; a throw ends
+ * the turn. Shared by `runAgentSession` (one turn) and the delegation registry (many turns on one long-lived run).
  */
 export async function runAgentTurn(
   client: Pool | PoolClient,
@@ -140,22 +130,17 @@ export async function runAgentTurn(
     .lastMessage;
 }
 
-/** What `runAgentTurnWithStoredForm` returns: the last `message` as the session produced it and as it was stored. */
 export interface AgentTurnOutcome {
-  /** The live last `message`, or null; what `runAgentTurn` returns. */
+  /** What `runAgentTurn` returns. */
   lastMessage: AgentMessage | null;
   /**
-   * The last `message` in the form written to `agent_run_events` (issue #2001): the marker as its text when the call
-   * had already stored a sensitive result. Whatever persists the turn's outcome elsewhere, such as
-   * `agent_runs.result`, derives it from this form. Null when there was no `message`.
+   * The last `message` as written to `agent_run_events` (the marker text once a sensitive result was stored). Anything
+   * persisting the outcome elsewhere, such as `agent_runs.result`, must derive it from this form.
    */
   storedLastMessage: AgentMessage | null;
 }
 
-/**
- * `runAgentTurn` that also returns the stored form of the last `message` (`AgentTurnOutcome`), for the callers that
- * write the turn's outcome into a row other readers, other agents included, read back.
- */
+/** For callers that write the outcome into a row other readers, other agents included, read back. */
 export async function runAgentTurnWithStoredForm(
   client: Pool | PoolClient,
   agentRunId: string,
@@ -209,8 +194,7 @@ export async function runAgentTurnWithStoredForm(
       const { value: message } = step;
       onEvent?.(message);
 
-      // A watcher missing a live update for a persisted kind catches up from `agent_run_events`;
-      // a missed message_update is deliberately lost, same as a dropped WS typing frame.
+      // Watchers catch up on persisted kinds from `agent_run_events`; a missed message_update is deliberately lost.
       if (message.kind === "message_update") {
         deltaSequence++;
         await pushLiveDelta(
@@ -251,10 +235,9 @@ export async function runAgentTurnWithStoredForm(
 }
 
 /**
- * Ends an unfinished session through the iterator's `return()`, as leaving a `for await` early
- * would. A generator queues `return()` behind a `next()` it is still awaiting, so on cancellation
- * it is not awaited: the run must close now, and the session ends when its pending step settles.
- * A failing `return()` is logged and never replaces the turn's own outcome.
+ * Ends an unfinished session through `return()`, as leaving `for await` early would. A generator queues `return()`
+ * behind a pending `next()`, so on cancellation it is not awaited: the run closes now and the session ends when its
+ * step settles. A failing `return()` is logged and never replaces the turn's outcome.
  */
 async function closeSession(
   iterator: AsyncIterator<AgentMessage>,
@@ -278,10 +261,8 @@ async function closeSession(
 }
 
 /**
- * Runs one agent session end to end, mapping pi-agent-core's lifecycle onto `agent_runs`
- * (`agent_start`/`agent_end`) and the turn-level `agent_run_events` log (everything between).
- * Durable events are announced as thin post-commit references; `message_update` typing deltas
- * use the separate ephemeral stream and are never persisted to Postgres.
+ * Maps pi-agent-core's lifecycle onto `agent_runs` (`agent_start`/`agent_end`) and `agent_run_events` (everything
+ * between).
  */
 export async function runAgentSession(client: Pool | PoolClient, input: RunAgentSessionInput): Promise<AgentRunRow> {
   const run = await createAgentRun(client, {
@@ -338,21 +319,15 @@ export async function closeFailedAgentRun(
   }
 }
 
-/**
- * Runs `close` atomically: a bare `Pool` gets one transaction for the whole close, while a
- * caller-supplied `PoolClient` is reused as is, so the caller's own transaction decides.
- */
+/** A bare `Pool` gets one transaction; a supplied `PoolClient` is reused, so the caller's transaction decides. */
 function closeAtomically(client: Pool | PoolClient, close: (c: PoolClient) => Promise<void>): Promise<void> {
   if (client instanceof Pool) return withTransaction(client, close);
   return close(client);
 }
 
 /**
- * `runAgentSession` without the `createAgentRun`: drives one session for an `agent_runs` row
- * someone else already opened (issue #647's queued `agentRun`/`delegatedAgentRun` jobs), with the
- * row's own `task`, and closes it exactly as `runAgentSession` does. The caller records the run's
- * `running` status first, so it can do that in the same transaction as its own check that the row
- * is still `running`.
+ * `runAgentSession` for a run someone else already opened (queued `agentRun`/`delegatedAgentRun` jobs), using the row's
+ * `task`. The caller records `running` first, in the same transaction as its check that the row is still `running`.
  */
 export async function runAgentSessionForRun(
   client: Pool | PoolClient,
@@ -367,7 +342,7 @@ export async function runAgentSessionForRun(
         systemPromptOverride: input.systemPromptOverride,
         signal: input.signal,
       });
-      // The run row keeps the stored form of the last message, not the live reply (issue #2001).
+      // The run row keeps the stored form of the last message, not the live reply.
       const { storedLastMessage } = await runAgentTurnWithStoredForm(
         client,
         run.id,
@@ -375,9 +350,8 @@ export async function runAgentSessionForRun(
         input.onEvent,
         input.signal,
       );
-      // The row's terminal status and its `run_status` event commit together, so a poller never
-      // sees the row closed before the event exists, and a failed close leaves neither behind —
-      // the catch below then writes the only terminal state, `error`.
+      // Terminal status and its `run_status` event commit together: a poller never sees one without the other, and the
+      // catch below writes the only terminal state, `error`.
       await closeAtomically(client, async (c) => {
         if (!(await finishAgentRun(c, run.id, "done", extractResultSnapshot(storedLastMessage)))) return;
         await pushRunStatus(c, run.id, "done");

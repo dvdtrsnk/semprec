@@ -21,9 +21,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 /**
- * The ICS feed import (issue gh-2004) on the runtime role pool, in tenants of their own. Each case uses a subscription
- * calendar of its own, so the cases do not depend on each other or on their order. Tenant A keeps the default time
- * zone `Europe/Prague`; tenant B is in `Asia/Tokyo` and is also the other tenant of the isolation cases.
+ * The ICS feed import on the runtime role pool. Each case uses its own subscription calendar so cases are
+ * order-independent. Tenant A is in `Europe/Prague`; tenant B in `Asia/Tokyo` and is the isolation peer.
  */
 
 const USER = { writerKind: "user" } as const;
@@ -49,7 +48,6 @@ const storedRow = z.object({
 });
 type StoredRow = z.infer<typeof storedRow>;
 
-/** A feed of the events in `vevents` (each the text between BEGIN:VEVENT and END:VEVENT, without those lines). */
 function feed(...vevents: string[]): string {
   const body = vevents.map((lines) => `BEGIN:VEVENT\r\n${lines}\r\nEND:VEVENT\r\n`).join("");
   return `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n${body}END:VCALENDAR\r\n`;
@@ -70,7 +68,7 @@ async function seededTenant(timeZone: string | null): Promise<Tenant> {
   });
   await runInTenant(id, () => seedSystem(runtime));
   if (timeZone !== null) {
-    // Raw SQL as the superuser: the tenant's zone is a setting row the test needs set, not a write it examines.
+    // Raw SQL: the tenant's zone is setup, not the write under test.
     await admin.query(
       `UPDATE items SET properties = properties || jsonb_build_object('timezone', $2::text)
         WHERE tenant_id = $1 AND database_id = (SELECT id FROM databases WHERE tenant_id = $1 AND owner_module_id = 'systemSettings')`,
@@ -84,10 +82,7 @@ async function seededTenant(timeZone: string | null): Promise<Tenant> {
   return { id, calendarsId: calendars.id, subscribedEventsId: subscribedEvents.id };
 }
 
-/**
- * A subscription calendar without an address, written as the calendar module writes it (only that owner process may
- * write `kind`). The sweep requests no calendar without an address, so only the case that sets one is requested.
- */
+/** Written as the calendar module (only it may write `kind`); without an address, the sweep never requests it. */
 async function subscription(tenant: Tenant): Promise<string> {
   const item = await runInTenant(tenant.id, () =>
     withTransaction(runtime, (client) =>
@@ -114,7 +109,6 @@ function runImport(tenant: Tenant, calendarItemId: string, body: string) {
   );
 }
 
-/** Every subscribed event of the calendar, trashed ones included, keyed by its `uid`; each uid has one row unless a case says otherwise. */
 async function storedEvents(tenant: Tenant, calendarItemId: string): Promise<Map<string, StoredRow>> {
   const { rows } = await runInTenant(tenant.id, () =>
     withTransaction(runtime, (client) =>
@@ -150,8 +144,7 @@ describe("the ICS feed import (issue gh-2004)", () => {
     tenantA = await seededTenant(null);
     tenantB = await seededTenant("Asia/Tokyo");
     tenantWithoutDatabase = await seededTenant(null);
-    // Raw SQL as the superuser: the schema has no write path that removes a system database, and the case needs
-    // the state of a tenant that the cutover of issue gh-1962 has not reached.
+    // Raw SQL: no write path removes a system database; this is a tenant without a subscribed-events module database.
     await admin.query("UPDATE databases SET owner_module_id = NULL WHERE id = $1", [
       tenantWithoutDatabase.subscribedEventsId,
     ]);
@@ -180,7 +173,6 @@ describe("the ICS feed import (issue gh-2004)", () => {
         allDay: false,
       });
       expect(propertiesOf(rows, "lunch@example.test")).toMatchObject({ title: "Lunch", place: "Canteen" });
-      // The edge is the calendar's: the `Calendars.subscribedEvents` side lists both items.
       const { rows: edges } = await runInTenant(tenantA.id, () =>
         withTransaction(runtime, (client) =>
           client.query("SELECT count(*)::int AS n FROM item_relations WHERE item_a = $1", [calendarId]),
@@ -334,7 +326,6 @@ describe("the ICS feed import (issue gh-2004)", () => {
       expect(live(trashed)).toEqual(["team-meeting@example.test"]);
       expect(trashed.get("team-meeting@example.test")?.deleted_at).toBeNull();
 
-      // Restorable from the Trash, as any trashed item is, with its values.
       const restored = await runInTenant(tenantA.id, () =>
         cp.restoreItem(tenantA.subscribedEventsId, lunchId, undefined, USER),
       );
@@ -394,7 +385,6 @@ describe("the ICS feed import (issue gh-2004)", () => {
         calendarId,
         feed("UID:utc@example.test\r\nDTSTART:20261020T130000Z\r\nDTEND:20261020T140000Z"),
       );
-      // 13:00 UTC is 22:00 in Asia/Tokyo.
       expect(propertiesOf(await storedEvents(tenantB, calendarId), "utc@example.test")).toMatchObject({
         startsAt: "2026-10-20T22:00",
         endsAt: "2026-10-20T23:00",
@@ -589,10 +579,8 @@ describe("the ICS feed import (issue gh-2004)", () => {
 
   describe("the work a feed costs", () => {
     it("parses thousands of events and RECURRENCE-ID overrides in time linear in the feed, not quadratic", async () => {
-      // `new ICAL.Event(component)` relates every override of the feed to every event, so this feed (8000 events,
-      // 8000 overrides) took over ten seconds of one synchronous call before the importer stopped that. Neither the
-      // events nor the overrides have a start, so they are counted and not stored: the case measures the parse and
-      // writes one item only.
+      // `new ICAL.Event(component)` relates every override to every event, which made this feed take over ten seconds
+      // in one synchronous call. None has a start, so they are counted, not stored: the case measures the parse.
       const count = 8000;
       const events = Array.from({ length: count }, (_, index) => `UID:bare-${index}@example.test\r\nSUMMARY:Bare`);
       const overrides = Array.from(
@@ -623,7 +611,7 @@ describe("the ICS feed import (issue gh-2004)", () => {
 
     it("fails for a trashed calendar, and writes nothing", async () => {
       const calendarId = await subscription(tenantA);
-      // Raw SQL as the superuser: the calendar module refuses to trash a subscription calendar through the choke point.
+      // Raw SQL: the calendar module refuses to trash a subscription calendar through the choke point.
       await admin.query("UPDATE items SET deleted_at = now() WHERE id = $1", [calendarId]);
       await expect(runImport(tenantA, calendarId, feed(TEAM_MEETING))).rejects.toThrow("not a live calendar");
       expect((await storedEvents(tenantA, calendarId)).size).toBe(0);
@@ -697,7 +685,7 @@ describe("the ICS feed import (issue gh-2004)", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     });
 
-    /** Points the calendar at the local server: raw SQL, because the write rule refuses an address with a port. */
+    /** Raw SQL: the write rule refuses an address with a port. */
     async function pointAtServer(calendarId: string): Promise<void> {
       const address = server.address();
       if (typeof address !== "object" || address === null) throw new Error("The feed server has no port");

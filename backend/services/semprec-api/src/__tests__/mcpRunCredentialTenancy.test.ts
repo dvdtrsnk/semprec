@@ -195,8 +195,8 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     }
     const validType = await runInTenant(tenantA, () =>
       withTransaction(pool, async (client) => {
-        const { rows } = await client.query<{ id: string; updated_at: Date }>(
-          "SELECT id, updated_at FROM items WHERE database_id = $1 AND properties->>'name' = $2",
+        const { rows } = await client.query<{ id: string; version: string }>(
+          "SELECT id, version FROM items WHERE database_id = $1 AND properties->>'name' = $2",
           [databases.types, "Valid"],
         );
         if (!rows[0]) throw new Error("Missing valid Inbox type");
@@ -207,7 +207,7 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
       const rejected = await callTool(credential.token, "semprec.item.patch", {
         itemId: validType.id,
         properties: { targetDatabase },
-        ifVersion: validType.updated_at.toISOString(),
+        ifVersion: validType.version,
       });
       expect(rejected.status).toBe(200);
       expect(rejected.body).toMatchObject({ error: { code: -32602, data: { field: "targetDatabase" } } });
@@ -391,21 +391,21 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     const foreign = await makeItem(tenantB);
     const patch = (itemId: string, color: unknown, ifVersion: string) =>
       callTool(credential.token, "semprec.item.patch", { itemId, properties: { color }, ifVersion });
-    const invalid = await patch(own.id, "red", own.updatedAt);
+    const invalid = await patch(own.id, "red", own.version);
     expect(invalid.status).toBe(200);
     expect(invalid.body).toMatchObject({ error: { code: -32602, data: { field: "color" } } });
     expect((await runInTenant(tenantA, () => cp.getItem(own.databaseId, own.id)))?.properties.color).toBe("#FF3B30");
-    const foreignResult = await patch(foreign.id, "#ff3b30", foreign.updatedAt);
-    expect(foreignResult).toEqual(await patch(randomUUID(), "#ff3b30", foreign.updatedAt));
+    const foreignResult = await patch(foreign.id, "#ff3b30", foreign.version);
+    expect(foreignResult).toEqual(await patch(randomUUID(), "#ff3b30", foreign.version));
     expect((await runInTenant(tenantB, () => cp.getItem(foreign.databaseId, foreign.id)))?.properties.color).toBe(
       "#FF3B30",
     );
-    const valid = await patch(own.id, "#ff3b30", own.updatedAt);
+    const valid = await patch(own.id, "#ff3b30", own.version);
     expect(valid.body).not.toHaveProperty("error");
     const changed = await runInTenant(tenantA, () => cp.getItem(own.databaseId, own.id));
     expect(changed?.properties.color).toBe("#ff3b30");
     if (!changed) throw new Error("Missing updated item");
-    const cleared = await patch(own.id, null, changed.updatedAt);
+    const cleared = await patch(own.id, null, changed.version);
     expect(cleared.body).not.toHaveProperty("error");
     expect((await runInTenant(tenantA, () => cp.getItem(own.databaseId, own.id)))?.properties.color ?? null).toBeNull();
   });
@@ -538,7 +538,7 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
       callTool(credential.token, "semprec.item.patch", {
         itemId,
         properties: { note: "forbidden" },
-        ifVersion: foreign.updatedAt,
+        ifVersion: foreign.version,
       });
     const foreignAttempt = await patchOther(foreign.id);
     const missingAttempt = await patchOther(randomUUID());
@@ -547,7 +547,7 @@ describe("MCP run credentials across two tenants (issue #994)", () => {
     const patched = await callTool(credential.token, "semprec.item.patch", {
       itemId: own.id,
       properties: { note: "after" },
-      ifVersion: own.updatedAt,
+      ifVersion: own.version,
     });
     expect(patched.status).toBe(200);
     expect(patched.body).toMatchObject({ error: { code: -32001 } });

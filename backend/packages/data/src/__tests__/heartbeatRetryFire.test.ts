@@ -32,8 +32,8 @@ interface QueuedJob {
 }
 
 /**
- * The jobs queued under a key with the task and queue they run on and the payload the task will read,
- * from graphile-worker 0.17.3's private tables: the public `jobs` view has no payload and no queue name.
+ * The jobs queued under a key with their task, queue and payload, from graphile-worker's private tables:
+ * the public `jobs` view has no payload and no queue name.
  */
 async function jobsByKey(key: string): Promise<QueuedJob[]> {
   const { rows } = await pool.query<{
@@ -58,7 +58,7 @@ async function jobsByKey(key: string): Promise<QueuedJob[]> {
   }));
 }
 
-/** The job's own payload inside graphile-worker's `{ traceId, payload }` envelope (issue #167), as the task receives it. */
+/** The job's own payload inside graphile-worker's `{ traceId, payload }` envelope. */
 function innerPayloadOf(envelope: unknown): unknown {
   if (typeof envelope !== "object" || envelope === null || !("payload" in envelope)) {
     throw new Error("queued job has no envelope");
@@ -84,7 +84,6 @@ async function createAgentHeartbeat(): Promise<{ heartbeatId: string; projectIte
   return { heartbeatId: heartbeat.id, projectItemId };
 }
 
-/** The failed run of a new occurrence: raw SQL for the occurrence, because only the sweep inserts one and it needs a due rule. */
 async function failedRunOfOccurrence(
   heartbeatId: string,
   projectItemId: string,

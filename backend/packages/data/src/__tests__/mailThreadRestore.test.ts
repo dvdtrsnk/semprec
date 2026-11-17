@@ -70,7 +70,6 @@ describe("POST /api/mail/threads/:threadId/restore (issue gh-2033)", () => {
   const moveRows = () => moveFixtureMoveRows(runtime);
   const accountSyncJobs = () => moveFixtureAccountSyncJobs(admin);
 
-  /** A Gmail API mailbox of the user and an IMAP mailbox, each without the folders named in its `omit`. */
   async function mailboxes(omit: { gmail?: readonly MoveFolderKey[]; imap?: readonly MoveFolderKey[] } = {}) {
     const gmail = await createMoveFixtureMailbox(runtime, {
       name: "Personal",
@@ -83,7 +82,6 @@ describe("POST /api/mail/threads/:threadId/restore (issue gh-2033)", () => {
     return { gmail, imap, ingest };
   }
 
-  /** An incoming message in the Archive folder of both mailboxes, the IMAP copy with UID 21. */
   async function archivedThread(omit: Parameters<typeof mailboxes>[0] = {}) {
     const m = await mailboxes(omit);
     const gmailCopy = await m.ingest({ id: FIRST, day: 1, mailbox: m.gmail, folders: ["archive"] });
@@ -92,8 +90,8 @@ describe("POST /api/mail/threads/:threadId/restore (issue gh-2033)", () => {
   }
 
   /**
-   * A trashed conversation: an incoming message in the Trash of both mailboxes (the IMAP copy with UID 22) and the
-   * user's own reply in the Trash of the Gmail mailbox.
+   * A trashed conversation: an incoming message in the Trash of both mailboxes (IMAP UID 22) and the user's
+   * reply in the Gmail Trash.
    */
   async function trashedThread(omit: Parameters<typeof mailboxes>[0] = {}) {
     const m = await mailboxes(omit);
@@ -118,7 +116,6 @@ describe("POST /api/mail/threads/:threadId/restore (issue gh-2033)", () => {
     return (await edgesOf(itemId)).map((edge) => edge.purpose).sort();
   }
 
-  /** The thread ids of `box=inbox`, as the thread list answers them. */
   async function inboxBox(): Promise<string[]> {
     const { body } = await runInTenant(tenant, () =>
       createMailThreadListRouteHandler(runtime)({ req: { url: "/api/mail/threads?box=inbox" } }),
@@ -126,12 +123,11 @@ describe("POST /api/mail/threads/:threadId/restore (issue gh-2033)", () => {
     return body.threads.map((thread) => thread.threadId);
   }
 
-  /** Calls the restore route handler in the tenant of the session. */
   function restore(threadId: string, inTenant = tenant) {
     return runInTenant(inTenant, () => createMailThreadRestoreRouteHandler(runtime)({ params: { threadId } }));
   }
 
-  /** From here on the fixture is built, so only the announcements of the call under test are recorded. */
+  /** The fixture is built, so only announcements of the call under test are recorded from here on. */
   function recordThreadAnnouncements(): void {
     events = [];
     setInvalidationHook((event) => {
@@ -139,7 +135,6 @@ describe("POST /api/mail/threads/:threadId/restore (issue gh-2033)", () => {
     });
   }
 
-  /** Expects the call to be refused with a 409 of `code`, and every table the route writes to to be as it was. */
   async function expectRefusedUnchanged(threadId: string, code: string, itemIds: readonly string[]): Promise<void> {
     const edgesBefore = await snapshotOf(itemIds);
     const movesBefore = await moveRows();

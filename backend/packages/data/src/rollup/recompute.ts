@@ -1,8 +1,4 @@
-// Owns rollup recompute scheduling and execution: the job keys, enqueuing per-cell and backfill
-// recomputes (including the per-relation-edge fan-out), and the task handlers that recompute a cell.
-// Rollup config parsing, dependency bookkeeping, and the state writes that trigger a recompute do not
-// belong here.
-// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md
+// Rollup recompute scheduling and execution: job keys, per-cell/backfill/per-edge enqueues, and the task handlers.
 import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { runAfterCommit, withTransaction, type Queryable } from "../db/pool.js";
@@ -44,7 +40,6 @@ export async function enqueueRollupRecompute(
   );
 }
 
-/** Enqueues the backfill job (walks all parent rows and enqueues a per-cell job for each). */
 export async function enqueueRollupBackfill(client: Queryable, rollupPropertyId: string): Promise<void> {
   await enqueueJob(
     client,
@@ -58,9 +53,7 @@ export async function enqueueRollupBackfill(client: Queryable, rollupPropertyId:
   );
 }
 
-// An ISO 8601 date or date-time. Like a garbage number for `sum`, a garbage date (a `date` property
-// is a plain JSON string that nothing validates at write time) contributes nothing to
-// `earliest`/`latest` instead of failing the whole job on the `::timestamptz` cast.
+// `date` values are unvalidated JSON strings; a garbage one is skipped rather than failing the `::timestamptz` cast.
 const ISO_DATE_PATTERN = "'^\\d{4}-\\d{2}-\\d{2}(T[\\d:.+\\-Z]*)?$'";
 const GUARDED_TIMESTAMP = `(CASE WHEN (t.properties ->> $3) ~ ${ISO_DATE_PATTERN} THEN (t.properties ->> $3)::timestamptz END)`;
 
@@ -94,8 +87,7 @@ function aggregationSql(aggregation: RollupAggregation): { select: string } {
       // Defensive: skip values that aren't well-formed numbers instead of failing the whole job on bad data.
       const numeric = `NULLIF(t.properties ->> $3, '') `;
       const filtered = `(CASE WHEN ${numeric}~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${numeric})::numeric END)`;
-      // ::float8, not the bare numeric sum/avg/min/max — node-pg returns `numeric` as a
-      // string (to avoid silent precision loss), but a number-typed property needs a JS number.
+      // node-pg returns `numeric` as a string; a number property needs a JS number.
       return { select: `${aggregation}(${filtered})::float8` };
     }
     case "earliest":
@@ -106,10 +98,8 @@ function aggregationSql(aggregation: RollupAggregation): { select: string } {
 }
 
 /**
- * The actual aggregation: one SQL query over item_relations JOIN items, always a full recompute of
- * one cell. Runs in one transaction holding `FOR UPDATE` on the target item, so two overlapping jobs
- * for the same cell serialise: the later one blocks until the earlier commits, then aggregates the
- * current source state — the last committed value is always computed from the newest source state.
+ * Always a full recompute of one cell, holding `FOR UPDATE` on the target item so overlapping jobs for a cell
+ * serialize and the last committed value reflects the newest source state.
  */
 export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, itemId: string): Promise<void> {
   await withTransaction(pool, async (client) => {
@@ -126,11 +116,8 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
     const config = parseRollupConfig(rollupProperty.config);
     const { select } = aggregationSql(config.aggregation);
 
-    // $3 (targetPropertyKey) is always bound, even when `select` doesn't use it (e.g.
-    // 'count') — Postgres infers a placeholder's type from where it's referenced in the
-    // query text, and errors ("could not determine data type of parameter $3") if a
-    // later placeholder ($4) is used but $3 never appears at all. The tautological
-    // `$3::text IS NULL OR $3::text IS NOT NULL` gives it an explicit, harmless context.
+    // $3 must appear in the text even when `select` ignores it, or Postgres cannot infer its type while $4 is used;
+    // the tautology gives it a harmless context.
     const { rows } = await client.query<{ value: unknown }>(
       `SELECT ${select} AS value
        FROM item_relations ir
@@ -143,8 +130,7 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
 
     const value = rows[0]?.value ?? (config.aggregation === "count" ? 0 : null);
     await writeComputed(client, rollupProperty.databaseId, itemId, rollupProperty.key, value);
-    // `writeComputed` never advances `updated_at`, so the locked row's value is the one to announce;
-    // announced only once the write is committed and visible to whoever refetches.
+    // `writeComputed` never advances `updated_at`, so announce the locked row's value, after commit.
     runAfterCommit(client, () =>
       notifyInvalidation({
         scope: "item",
@@ -158,12 +144,8 @@ export async function recomputeRollupCell(pool: Pool, rollupPropertyId: string, 
 }
 
 /**
- * Backfill: never writes cells itself — walks all non-deleted parent rows and enqueues a
- * per-cell job for each. Deliberately does NOT hold one connection for the whole walk:
- * on a large table this can run for minutes and enqueue hundreds of thousands of jobs,
- * and a held connection for that long starves the pool for concurrent requests. Each
- * page's SELECT and each enqueue call instead goes through `pool` directly, so node-pg
- * checks a connection out and back in per call.
+ * Only enqueues per-cell jobs. Deliberately holds no connection across the walk, which can run for minutes and would
+ * starve the pool; each query checks a connection out and back in.
  */
 export async function backfillRollup(pool: Pool, rollupPropertyId: string): Promise<void> {
   const bootstrapClient = await pool.connect();
@@ -183,8 +165,7 @@ export async function backfillRollup(pool: Pool, rollupPropertyId: string): Prom
        ORDER BY id ASC LIMIT $2`,
       cursor ? [rollupProperty.databaseId, pageSize, cursor] : [rollupProperty.databaseId, pageSize],
     );
-    // Annotated because `cursor` is assigned from it below and read by the query above, which
-    // otherwise makes the inference cycle back on itself (TS7022).
+    // Annotated to break an inference cycle with `cursor` (TS7022).
     const lastRow: { id: string } | undefined = rows[rows.length - 1];
     if (lastRow === undefined) break;
     for (const row of rows) {
@@ -230,7 +211,7 @@ async function resolveRollupRecomputeTargets(
   return targets;
 }
 
-/** Exported so a module-specific delete that unlinks relations outside `softDeleteItem` (e.g. inbox/inboxTypesStore.ts's `deleteInboxTypeWithClient`) can enqueue the same rollup recompute per edge it removes. */
+/** For deletes that unlink relations outside `softDeleteItem`. */
 export async function enqueueRollupRecomputeForEdge(
   client: PoolClient,
   edge: { relationDefinitionId: string; itemA: string; itemB: string },

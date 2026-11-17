@@ -4,8 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Pool, type PoolClient } from "pg";
-import { WebSocket, WebSocketServer, type RawData } from "ws";
+import type { Pool, PoolClient } from "pg";
+import { WebSocket, type RawData } from "ws";
 import * as Y from "yjs";
 import {
   createAgentRun,
@@ -80,41 +80,33 @@ import {
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
-import * as adapterRouteModule from "../adapter/adapterRoute.js";
 import * as itemRoutesModule from "../itemsHandler.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
 
 /**
- * Two-tenant proof of the realtime surface (`WS /api/sync`): every NOTIFY message type, every
- * inbound and outbound frame type and binary doc frames, over the same composition `serve.ts`
- * builds, on runtime-role pools with strict tenant-scope enforcement.
+ * Two-tenant proof of the realtime surface (`WS /api/sync`) over the composition `serve.ts` builds, on
+ * runtime-role pools with strict tenant-scope enforcement.
  *
- * Absence is proven without sleeping: after the event under test reached the socket that should
- * receive it, a sentinel event is published in the checked socket's own tenant. NOTIFYs are
- * delivered over the server's single LISTEN connection in commit order, so everything a NOTIFY
- * made the checked socket receive arrives before the sentinel. The one frame that is not made by a
- * NOTIFY of its own is the doc invalidation, which the server sends after it read the doc again, up
- * to a second after the write; `TestSocket.drainUntil` and the strict consumers `openDoc` and `watchRun`
- * set aside such a frame of the socket's own tenant (`nextSettingAsideOwnDocEcho`) and return one of any
- * other tenant.
+ * Absence is proven without sleeping: a sentinel event is published in the checked socket's own tenant, and
+ * NOTIFYs arrive over the single LISTEN connection in commit order, so anything a NOTIFY caused arrives first.
+ * The doc invalidation is the exception (sent after the server re-reads the doc, up to a second late), so
+ * consumers set aside such a frame of the socket's own tenant (`nextSettingAsideOwnDocEcho`).
  *
- * Frames a socket sends are not ordered against that connection. For those, the foreign frame is
- * sent before a request of B1's own whose reply is awaited, and the handlers do the same work in
- * the same order, so a leaked reply has been produced before the own reply is. A binary frame is
- * additionally decided synchronously at dispatch: `docSync.handleBinaryFrame` checks the socket's
- * subscription before its first `await`, and a frame it admits writes a row that fans out to A1.
+ * Frames a socket sends are not ordered against that connection: the foreign frame is sent before an own
+ * request whose reply is awaited, so a leaked reply is produced first. `docSync.handleBinaryFrame` checks
+ * the subscription before its first `await`, so a binary frame is decided synchronously at dispatch.
  */
 
 const PASSWORD = "s3cret-password";
 const FRAME_TIMEOUT_MS = 5_000;
 const YJS_UPDATE_MESSAGE = 2;
+const ROLLBACK = "rolled back by the test";
 
 const noopMailer: PasswordResetMailer = {
   async sendPasswordResetEmail() {},
 };
 
-/** What a case saw arrive at the socket that should receive its event. */
 type Observed = OutboundFrame["type"] | "binary";
 type Scenario = () => Promise<readonly Observed[]>;
 interface Case {
@@ -166,7 +158,6 @@ function parseFrame(data: RawData, isBinary: boolean): Frame {
 
 const ownedSockets = new Set<TestSocket>();
 
-/** A WebSocket that queues every frame it receives so a test consumes them in arrival order. */
 class TestSocket {
   private readonly queue: Frame[] = [];
   private wake: (() => void) | null = null;
@@ -174,9 +165,7 @@ class TestSocket {
   private readonly onError = (error: Error) => {
     this.errors.push(error);
   };
-  closeCode: number | undefined;
   readonly closed: Promise<number>;
-  /** The tenant this socket is authenticated in, when the test knows it; `drainUntil` reads it. */
   ownTenantId: string | undefined;
 
   private constructor(private readonly ws: WebSocket) {
@@ -187,79 +176,39 @@ class TestSocket {
     });
     this.closed = new Promise<number>((resolve) => {
       ws.once("close", (code: number) => {
-        this.closeCode = code;
         resolve(code);
         this.wake?.();
       });
     });
   }
 
-  static async connect(
-    url: string,
-    headers: Record<string, string>,
-    owner = ownedSockets,
-    afterTerminate?: (socket: WebSocket) => void,
-  ): Promise<TestSocket> {
+  /** The socket is owned by `ownedSockets` once open; a refused handshake is closed here and rethrown. */
+  static async connect(url: string, headers: Record<string, string>): Promise<TestSocket> {
     const ws = new WebSocket(url, { headers });
     const socket = new TestSocket(ws);
-    owner.add(socket);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let handshakeFailure: Error | undefined;
     try {
       await new Promise<void>((resolve, reject) => {
-        const onOpen = () => {
-          clearTimeout(timer);
-          ws.removeListener("error", onError);
-          resolve();
-        };
-        const onError = (error: Error) => {
-          handshakeFailure = error;
-          clearTimeout(timer);
-          ws.removeListener("open", onOpen);
-          reject(error);
-        };
-        ws.once("open", onOpen);
-        ws.once("error", onError);
+        ws.once("open", resolve);
+        ws.once("error", reject);
         timer = setTimeout(() => ws.terminate(), FRAME_TIMEOUT_MS);
       });
-      return socket;
     } catch (error) {
-      const cleanupFailures: unknown[] = [];
-      // The exact handshake event is carried as the rejected connect outcome.
-      if (handshakeFailure && handshakeFailure === error) {
-        const index = socket.errors.indexOf(handshakeFailure);
-        if (index < 0) cleanupFailures.push(new Error("Missing observed handshake failure", { cause: error }));
-        else socket.errors.splice(index, 1);
-      }
-      try {
-        await socket.dispose(afterTerminate);
-      } catch (cleanup) {
-        cleanupFailures.push(cleanup);
-      } finally {
-        owner.delete(socket);
-      }
-      if (cleanupFailures.length) {
-        throw new AggregateError([error, ...cleanupFailures], "Socket open and cleanup failed", { cause: error });
-      }
+      ws.terminate();
+      await socket.closed;
       throw error;
     } finally {
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
     }
+    ownedSockets.add(socket);
+    return socket;
   }
 
-  async dispose(afterTerminate?: (socket: WebSocket) => void): Promise<void> {
+  async dispose(): Promise<void> {
     if (this.ws.readyState !== WebSocket.CLOSED) this.ws.terminate();
-    let callbackFailure: { error: unknown } | undefined;
-    try {
-      afterTerminate?.(this.ws);
-    } catch (error) {
-      callbackFailure = { error };
-    }
     await this.closed;
     this.ws.removeListener("error", this.onError);
-    const errors: unknown[] = [...this.errors];
-    if (callbackFailure) errors.push(callbackFailure.error);
-    if (errors.length) throw new AggregateError(errors, "Owned socket failed", { cause: errors[0] });
+    if (this.errors.length) throw new AggregateError(this.errors, "Owned socket failed", { cause: this.errors[0] });
   }
 
   get isOpen(): boolean {
@@ -272,10 +221,6 @@ class TestSocket {
 
   sendBinary(data: Buffer): void {
     this.ws.send(data);
-  }
-
-  close(): void {
-    this.ws.close();
   }
 
   async next(): Promise<Frame> {
@@ -296,7 +241,6 @@ class TestSocket {
     }
   }
 
-  /** Consumes frames until one matches, discarding the ones before it; returns the match. */
   async nextMatching(predicate: (frame: Frame) => boolean): Promise<Frame> {
     for (;;) {
       const frame = await this.next();
@@ -305,15 +249,9 @@ class TestSocket {
   }
 
   /**
-   * The next frame, with the doc invalidation of an earlier write of the socket's own tenant set aside.
-   *
-   * A socket that knows its tenant (`ownTenantId`) can still receive the doc invalidation of an earlier write of that
-   * tenant, and nothing orders that frame against a sentinel or against the reply to a request: the writer announces
-   * a doc update after its commit, through a pooled connection of its own and without being awaited, and the server
-   * then reads the doc before it sends the frame, which it does again a second later when the doc was written twice
-   * within that second. That frame is the echo of an earlier case, not of the event the caller checks, so it is not
-   * returned. It is dropped only after the admin pool confirmed that the item it names belongs to the socket's
-   * tenant: a doc invalidation of any other tenant is returned like every other frame.
+   * The writer announces a doc update after commit without being awaited, so an earlier case's echo is not
+   * ordered against a sentinel or reply. It is dropped only after the admin pool confirms the item belongs to
+   * the socket's tenant; another tenant's doc invalidation is returned like every other frame.
    */
   async nextSettingAsideOwnDocEcho(): Promise<Frame> {
     for (;;) {
@@ -329,11 +267,7 @@ class TestSocket {
     }
   }
 
-  /**
-   * Consumes frames up to and including the first match; returns the frames that arrived before it. A doc
-   * invalidation of the socket's own tenant is set aside (`nextSettingAsideOwnDocEcho`), any other frame, a doc
-   * invalidation of another tenant included, is returned and fails a drain that expects an empty list.
-   */
+  /** Returns the frames before the first match; own-tenant doc echoes are set aside. */
   async drainUntil(predicate: (frame: Frame) => boolean): Promise<Frame[]> {
     const before: Frame[] = [];
     for (;;) {
@@ -344,28 +278,35 @@ class TestSocket {
   }
 }
 
-function invalidation(databaseId: string): RealtimeMessage {
-  return { type: "invalidation", scope: "schema", databaseId };
+function matches(body: Record<string, unknown>, expected: Record<string, unknown>): boolean {
+  return Object.entries(expected).every(([key, value]) => body[key] === value);
+}
+
+function isInvalidate(match: Record<string, unknown>): (frame: Frame) => boolean {
+  return (frame) => frame.kind === "text" && frame.type === "invalidate" && matches(frame.body, match);
 }
 
 function isSentinel(databaseId: string): (frame: Frame) => boolean {
-  return (frame) =>
-    frame.kind === "text" &&
-    frame.type === "invalidate" &&
-    frame.body.scope === "schema" &&
-    frame.body.databaseId === databaseId;
+  return isInvalidate({ scope: "schema", databaseId });
 }
 
 function isDocFrame(docId: string): (frame: Frame) => boolean {
   return (frame) => frame.kind === "binary" && frame.docId === docId;
 }
 
-/** The doc invalidation (`scope: "doc"`) the server sends to every socket of the tenant that wrote a doc. */
 function isDocInvalidation(frame: Frame): boolean {
-  return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "doc";
+  return isInvalidate({ scope: "doc" })(frame);
 }
 
-/** Whether the item `frame` names belongs to `tenantId`, read by the admin pool, which no tenant scope narrows. */
+function isNotification(notificationId?: string): (frame: Frame) => boolean {
+  return (frame) =>
+    frame.kind === "text" &&
+    frame.type === "notification" &&
+    (notificationId === undefined ||
+      (isRecord(frame.body.notification) && frame.body.notification.id === notificationId));
+}
+
+/** Read by the admin pool, which no tenant scope narrows. */
 async function isItemOfTenant(frame: Frame, tenantId: string): Promise<boolean> {
   const itemId = frame.kind === "text" ? frame.body.itemId : undefined;
   if (typeof itemId !== "string") return false;
@@ -377,7 +318,6 @@ function isAgentEvent(runId: string): (frame: Frame) => boolean {
   return (frame) => frame.kind === "text" && frame.type === "agent:event" && frame.body.agentRunId === runId;
 }
 
-/** A minimal Yjs update message (`messageYjsUpdate` + length-prefixed update) for a binary doc frame. */
 function yjsUpdateMessage(text: string): Buffer {
   const ydoc = new Y.Doc();
   let update: Uint8Array | null = null;
@@ -403,9 +343,7 @@ interface TenantFixture {
   itemId: string;
   docId: string;
   runId: string;
-  /** An unread notification for the tenant's user, written when the fixture is built. */
   notificationId: string;
-  /** Events already on the run when the fixture is built. */
   runEventCount: number;
 }
 
@@ -429,6 +367,24 @@ let a1Cookie: string;
 let a2SessionId: string;
 
 const moduleRegistry = await loadFullModuleRegistry();
+
+function dispatcherOptions() {
+  return {
+    passwordResetMailer: noopMailer,
+    appBaseUrl: "http://localhost",
+    setupToken: "unused-setup-token",
+    moduleRegistry,
+    blobStorage: new LocalFsBlobStorageWriter(blobDir ?? tmpdir()),
+    maxFileSizeBytes: 10 * 1024 * 1024,
+  };
+}
+
+async function listen(target: Server): Promise<string> {
+  await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+  const address = target.address();
+  if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+  return `127.0.0.1:${address.port}`;
+}
 
 async function buildTenantFixture(tenantId: string): Promise<TenantFixture> {
   await provisionTenant(pool, tenantId);
@@ -459,80 +415,9 @@ async function buildTenantFixture(tenantId: string): Promise<TenantFixture> {
   });
 }
 
-/** Owns this test's one LISTEN checkout, including a checkout delivered after closing starts. */
-function ownRealtimeListener(configure?: (owned: Pool, onCancel: (cancel: () => void) => void) => void) {
-  const owned = new Pool({
-    ...adminPool.options,
-    max: 1,
-    connectionTimeoutMillis: 2500,
-    statement_timeout: 5000,
-    query_timeout: 7000,
-  });
-  let closing = false;
-  let cancelPending = () => {};
-  let client: PoolClient | undefined;
-  let opening: Promise<PoolClient> | undefined;
-  const clientErrors: Error[] = [];
-  const onError = (error: Error) => clientErrors.push(error);
-  configure?.(owned, (cancel) => {
-    cancelPending = cancel;
-  });
-  const open = (): Promise<PoolClient> => {
-    if (opening || closing) throw new Error("Listener admission closed");
-    opening = (async () => {
-      const acquired = await owned.connect();
-      client = acquired;
-      acquired.on("error", onError);
-      if (closing) throw new Error("Listener closed during acquisition");
-      await acquired.query("LISTEN semprec_events");
-      if (closing) throw new Error("Listener closed during setup");
-      return acquired;
-    })();
-    return opening;
-  };
-  const close = async (): Promise<void> => {
-    closing = true;
-    const errors: unknown[] = [];
-    try {
-      cancelPending();
-    } catch (error) {
-      errors.push(error);
-    }
-    if (opening) {
-      const outcome = await opening.then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error }),
-      );
-      if ("error" in outcome) errors.push(outcome.error);
-    }
-    if (client) {
-      try {
-        client.release(true);
-      } catch (error) {
-        errors.push(error);
-      }
-      client.removeListener("error", onError);
-      client = undefined;
-    }
-    try {
-      await owned.end();
-    } catch (error) {
-      errors.push(error);
-    }
-    errors.push(...clientErrors);
-    if (errors.length) throw new AggregateError(errors, "Listener cleanup failed", { cause: errors[0] });
-  };
-  return { open, close, owned, hasOwnedClient: () => client !== undefined };
-}
-
-/** Each request owns its abort timer and consumes the response before returning. */
-async function ownedPut(
-  url: string,
-  headers: Record<string, string>,
-  timeoutMs = FRAME_TIMEOUT_MS,
-  controller = new AbortController(),
-): Promise<number> {
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+/** A PUT with a deadline; the request is aborted once it settles or `controller` aborts. */
+async function put(url: string, headers: Record<string, string>, controller = new AbortController()): Promise<number> {
+  const timer = setTimeout(() => controller.abort(), FRAME_TIMEOUT_MS);
   try {
     const response = await fetch(url, { method: "PUT", headers, signal: controller.signal });
     await response.arrayBuffer();
@@ -543,7 +428,6 @@ async function ownedPut(
   }
 }
 
-/** A fresh web session for `fixture`'s user, presented as the cookie the browser would send. */
 async function openSession(fixture: TenantFixture): Promise<{ cookie: string; sessionId: string }> {
   // Sessions belong to the global identity tables, so they are issued as system work.
   const result = await runAsSystem("test:issue-session", () =>
@@ -552,96 +436,73 @@ async function openSession(fixture: TenantFixture): Promise<{ cookie: string; se
   return { cookie: `${SESSION_COOKIE_NAME}=${result.token}`, sessionId: result.session.id };
 }
 
-async function connect(cookie: string): Promise<TestSocket> {
-  return TestSocket.connect(wsUrl, { Cookie: cookie, Origin: baseUrl });
+async function connect(cookie: string, fixture: TenantFixture): Promise<TestSocket> {
+  const socket = await TestSocket.connect(wsUrl, { Cookie: cookie, Origin: baseUrl });
+  socket.ownTenantId = fixture.tenantId;
+  return socket;
 }
 
-async function disposeSockets(owner = ownedSockets): Promise<void> {
-  const sockets = [...owner];
+async function disposeSockets(): Promise<void> {
+  const sockets = [...ownedSockets];
+  ownedSockets.clear();
   const results = await Promise.allSettled(sockets.map((socket) => socket.dispose()));
-  for (const socket of sockets) owner.delete(socket);
   const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
   if (errors.length) throw new AggregateError(errors, "Socket cleanup failed");
 }
 
-async function joinSessionAttempts(
-  starts: readonly [
-    () => Promise<{ cookie: string; sessionId: string }>,
-    () => Promise<{ cookie: string; sessionId: string }>,
-    () => Promise<{ cookie: string; sessionId: string }>,
-  ],
-): Promise<
-  [{ cookie: string; sessionId: string }, { cookie: string; sessionId: string }, { cookie: string; sessionId: string }]
-> {
-  const attempts = starts.map((start) => Promise.resolve().then(start));
-  let first: { index: number; error: unknown } | undefined;
-  attempts.forEach((attempt, index) => {
-    void attempt.catch((error: unknown) => {
-      first ??= { index, error };
-    });
-  });
-  try {
-    const sessions = await Promise.all(attempts);
-    if (sessions.length !== 3) throw new Error("Expected three owned sessions");
-    const [a, b, c] = sessions;
-    if (!a || !b || !c) throw new Error("Missing owned session");
-    return [a, b, c];
-  } catch (error) {
-    const outcomes = await Promise.allSettled(attempts);
-    if (!first || first.error !== error) throw new Error("Missing first session failure", { cause: error });
-    const later = outcomes.flatMap((outcome, index) =>
-      outcome.status === "rejected" && index !== first?.index ? [outcome.reason] : [],
-    );
-    if (later.length) throw new AggregateError([error, ...later], "Session setup failed", { cause: error });
-    throw error;
-  }
+/** Settles every attempt before returning, so a failure leaves nothing in flight. */
+async function settleAll<T>(attempts: readonly Promise<T>[]): Promise<T[]> {
+  const results = await Promise.allSettled(attempts);
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
+  return results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
 }
 
-/** Closes the current sockets and opens A's two sessions and B's one anew, each with a fresh queue. */
+/** Runs `cleanup` after `body`; a cleanup failure never replaces the body's own failure. */
+async function withCleanup(body: () => Promise<void>, cleanup: () => Promise<void>): Promise<void> {
+  let failure: { error: unknown } | undefined;
+  try {
+    await body();
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupFailure = await cleanup().then(
+    () => undefined,
+    (error: unknown) => ({ error }),
+  );
+  if (failure && cleanupFailure) {
+    throw new AggregateError([failure.error, cleanupFailure.error], "Test body and cleanup failed", {
+      cause: failure.error,
+    });
+  }
+  const only = failure ?? cleanupFailure;
+  if (only) throw only.error;
+}
+
+/** Drains A's sockets up to a sentinel, consuming the frames a fixture write caused. */
+async function drainA(): Promise<void> {
+  const sentinel = await publishSentinel(tenantA.tenantId);
+  await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(sentinel))));
+}
+
 async function reconnectAll(): Promise<void> {
   await disposeSockets();
-  const [sessionA1, sessionA2, sessionB1] = await joinSessionAttempts([
-    () => openSession(tenantA),
-    () => openSession(tenantA),
-    () => openSession(tenantB),
+  const [sessionA1, sessionA2, sessionB1] = await settleAll([
+    openSession(tenantA),
+    openSession(tenantA),
+    openSession(tenantB),
   ]);
+  if (!sessionA1 || !sessionA2 || !sessionB1) throw new Error("Missing session");
   a1Cookie = sessionA1.cookie;
   a2SessionId = sessionA2.sessionId;
-  const attempts = [connect(sessionA1.cookie), connect(sessionA2.cookie), connect(sessionB1.cookie)] as const;
-  [a1, a2, b1] = await joinSocketAttempts(attempts, ownedSockets);
-  a1.ownTenantId = tenantA.tenantId;
-  a2.ownTenantId = tenantA.tenantId;
-  b1.ownTenantId = tenantB.tenantId;
-}
-
-async function joinSocketAttempts<T extends readonly Promise<TestSocket>[]>(
-  attempts: T,
-  owner: Set<TestSocket>,
-): Promise<{ -readonly [K in keyof T]: TestSocket }> {
-  let first: { index: number; error: unknown } | undefined;
-  attempts.forEach((attempt, index) => {
-    void attempt.catch((error: unknown) => {
-      first ??= { index, error };
-    });
-  });
-  try {
-    return await Promise.all(attempts);
-  } catch (error) {
-    const failures: unknown[] = [];
-    try {
-      await disposeSockets(owner);
-    } catch (cleanup) {
-      failures.push(cleanup);
-    }
-    const results = await Promise.allSettled(attempts);
-    if (!first || first.error !== error) throw new Error("Missing first socket failure", { cause: error });
-    results.forEach((result, index) => {
-      if (result.status === "rejected" && index !== first?.index) failures.push(result.reason);
-    });
-    if (failures.length)
-      throw new AggregateError([error, ...failures], "Socket setup and cleanup failed", { cause: error });
-    throw error;
-  }
+  const sockets = await settleAll([
+    connect(sessionA1.cookie, tenantA),
+    connect(sessionA2.cookie, tenantA),
+    connect(sessionB1.cookie, tenantB),
+  ]);
+  const [first, second, third] = sockets;
+  if (!first || !second || !third) throw new Error("Missing socket");
+  [a1, a2, b1] = [first, second, third];
 }
 
 async function restPost(cookie: string, path: string, body: unknown): Promise<Response> {
@@ -652,43 +513,29 @@ async function restPost(cookie: string, path: string, body: unknown): Promise<Re
   });
 }
 
-async function restGet(cookie: string, path: string): Promise<Response> {
-  return fetch(`${baseUrl}${path}`, { headers: { Cookie: cookie, Origin: baseUrl } });
-}
-
-/** The `total` of `GET /api/inbox/cards`, which the count of the Inbox stack is read from. */
 async function inboxCardsTotal(cookie: string): Promise<number> {
-  const response = await restGet(cookie, "/api/inbox/cards");
+  const response = await fetch(`${baseUrl}/api/inbox/cards`, { headers: { Cookie: cookie, Origin: baseUrl } });
   expect(response.status).toBe(200);
   const body: unknown = await response.json();
   if (!isRecord(body) || typeof body.total !== "number") throw new Error("Expected an inbox card list with a total");
   return body.total;
 }
 
-function isInboxCardFrame(op: string, cardId?: string): (frame: Frame) => boolean {
-  return (frame) =>
-    frame.kind === "text" &&
-    frame.type === "invalidate" &&
-    frame.body.scope === "inboxCards" &&
-    frame.body.op === op &&
-    (cardId === undefined || frame.body.cardId === cardId);
+async function seededDatabaseIds(): Promise<(moduleId: string) => string> {
+  const { rows } = await pool.query<{ id: string; owner_module_id: string }>(
+    "SELECT id, owner_module_id FROM databases WHERE owner_module_id IS NOT NULL",
+  );
+  return (moduleId) => {
+    const row = rows.find((candidate) => candidate.owner_module_id === moduleId);
+    if (!row) throw new Error(`Database '${moduleId}' was not seeded`);
+    return row.id;
+  };
 }
 
-/**
- * A `proposed` Processing proposals card in `tenantId`, made by the tick over the runtime pool (issue #1811): a
- * typed Inbox item and a tick with a stubbed computation. Returns the Inbox item id.
- */
-async function createProposedCard(tenantId: string): Promise<string> {
-  return runInTenant(tenantId, async () => {
-    const databases = await pool.query<{ id: string; owner_module_id: string }>(
-      "SELECT id, owner_module_id FROM databases WHERE owner_module_id = ANY($1::text[])",
-      [["inbox", "inboxItemTypes", "processingProposals"]],
-    );
-    const idOf = (moduleId: string): string => {
-      const row = databases.rows.find((candidate) => candidate.owner_module_id === moduleId);
-      if (!row) throw new Error(`Database '${moduleId}' was not seeded`);
-      return row.id;
-    };
+/** A `proposed` Processing proposals card made by the tick with a stubbed computation. */
+async function createProposedCard(tenantId: string): Promise<void> {
+  await runInTenant(tenantId, async () => {
+    const idOf = await seededDatabaseIds();
     const type = await chokePoint.createItem({
       databaseId: idOf("inboxItemTypes"),
       properties: { name: "Task", emoji: "T", processingMethod: "database", targetDatabase: "tasks" },
@@ -710,23 +557,15 @@ async function createProposedCard(tenantId: string): Promise<string> {
       },
       { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
     );
-    return item.id;
   });
 }
 
-/**
- * Ingests one new message into a folder of a new mailbox of `tenantId` over the runtime pool (issue #1816); returns
- * the id of the mail thread the message joined.
- */
+/** Returns the new message's thread id. */
 async function ingestMessageIn(tenantId: string): Promise<string> {
   return runInTenant(tenantId, async () => {
-    const { rows: mailboxDatabases } = await pool.query<{ id: string }>(
-      "SELECT id FROM databases WHERE owner_module_id = 'mailboxes'",
-    );
-    const mailboxesDatabaseId = mailboxDatabases[0]?.id;
-    if (!mailboxesDatabaseId) throw new Error("Mailboxes database was not seeded");
+    const idOf = await seededDatabaseIds();
     const mailbox = await chokePoint.createItem({
-      databaseId: mailboxesDatabaseId,
+      databaseId: idOf("mailboxes"),
       properties: { name: `Mailbox ${randomUUID()}`, provider: "generic" },
     });
     const messageItemId = await withTransaction(pool, async (client) => {
@@ -770,15 +609,7 @@ async function ingestMessageIn(tenantId: string): Promise<string> {
   });
 }
 
-function isMailThreadFrame(threadId?: string): (frame: Frame) => boolean {
-  return (frame) =>
-    frame.kind === "text" &&
-    frame.type === "invalidate" &&
-    frame.body.scope === "mailThread" &&
-    (threadId === undefined || frame.body.threadId === threadId);
-}
-
-/** Publishes a schema invalidation in `tenantId` that reaches all of its sockets; returns its marker. */
+/** A schema invalidation that reaches all of the tenant's sockets. */
 async function publishSentinel(tenantId: string): Promise<string> {
   const databaseId = randomUUID();
   await runInTenant(tenantId, () =>
@@ -787,10 +618,33 @@ async function publishSentinel(tenantId: string): Promise<string> {
   return databaseId;
 }
 
-/** Proves `socket` (authenticated in `tenantId`) received nothing since the last time its queue was drained. */
-async function expectNothingReceived(socket: TestSocket, tenantId: string): Promise<void> {
-  const sentinel = await publishSentinel(tenantId);
-  expect(await socket.drainUntil(isSentinel(sentinel))).toEqual([]);
+/** One sentinel of `fixture`'s tenant reaches each socket; none of them got a matching frame before it. */
+async function expectSilence(
+  sockets: readonly TestSocket[],
+  fixture: TenantFixture,
+  predicate: (frame: Frame) => boolean = () => true,
+): Promise<void> {
+  const sentinel = await publishSentinel(fixture.tenantId);
+  for (const socket of sockets) expect((await socket.drainUntil(isSentinel(sentinel))).filter(predicate)).toEqual([]);
+}
+
+async function expectNothingReceived(socket: TestSocket, fixture: TenantFixture): Promise<void> {
+  await expectSilence([socket], fixture);
+}
+
+/** Runs `write` in one transaction of `fixture`'s tenant, rolled back afterwards when `rollBack` is set. */
+async function inTenantTransaction<T>(
+  fixture: TenantFixture,
+  rollBack: boolean,
+  write: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  return runInTenant(fixture.tenantId, () =>
+    withTransaction(pool, async (client) => {
+      const result = await write(client);
+      if (rollBack) throw new Error(ROLLBACK);
+      return result;
+    }),
+  );
 }
 
 async function writeNotificationFor(userId: string): Promise<string> {
@@ -807,11 +661,6 @@ async function writeNotificationFor(userId: string): Promise<string> {
   );
 }
 
-async function writeNotificationInA(): Promise<string> {
-  return runInTenant(tenantA.tenantId, () => writeNotificationFor(tenantA.userId));
-}
-
-/** Writes one more block to `fixture`'s doc, which publishes a `doc_update`. */
 async function touchDoc(fixture: TenantFixture): Promise<void> {
   await runInTenant(fixture.tenantId, () =>
     docStore.putBlock(fixture.itemId, { id: randomUUID(), flavour: "page" }, "user"),
@@ -836,28 +685,23 @@ async function countDocUpdates(fixture: TenantFixture, docId: string): Promise<n
   });
 }
 
-async function waitForDocUpdateCount(fixture: TenantFixture, docId: string, expected: number): Promise<void> {
+async function waitUntil(condition: () => Promise<boolean>, what: string): Promise<void> {
   const deadline = Date.now() + FRAME_TIMEOUT_MS;
-  while ((await countDocUpdates(fixture, docId)) < expected) {
-    if (Date.now() > deadline) throw new Error(`doc ${docId} never reached ${expected} updates`);
+  while (!(await condition())) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting until ${what}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
 
-/**
- * Opens `docId` on `socket`; the very next frame must be the server's SyncStep1 for that doc. A late doc invalidation
- * of the socket's own tenant, the echo of an earlier case's write, is not that frame and is set aside; a frame of any
- * other tenant is.
- */
+/** The very next frame must be the server's SyncStep1 for `docId`; own-tenant doc echoes are set aside. */
 async function openDoc(socket: TestSocket, docId: string): Promise<void> {
   socket.sendJson({ type: "doc:open", docId });
   expect(await socket.nextSettingAsideOwnDocEcho()).toMatchObject({ kind: "binary", docId });
 }
 
 /**
- * Watches `fixture`'s run from the start; the next frames must be exactly its replayed events. Once
- * they arrived the live subscription is registered, so no later event can be missed. A late doc invalidation of the
- * socket's own tenant is set aside like in `openDoc`; a frame of any other tenant is not.
+ * The next frames must be exactly the replayed events; once they arrived the live subscription is registered,
+ * so no later event can be missed.
  */
 async function watchRun(socket: TestSocket, fixture: TenantFixture): Promise<void> {
   socket.sendJson({ type: "agent:watch", runId: fixture.runId, afterEventId: "0" });
@@ -874,27 +718,35 @@ function observedTypes(frames: readonly Frame[]): Observed[] {
   return frames.map((frame) => (frame.kind === "text" ? frame.type : "binary"));
 }
 
-/** Both of A's sockets receive the invalidation, B1 receives nothing. */
+async function nextOnA(predicate: (frame: Frame) => boolean): Promise<Frame[]> {
+  return Promise.all([a1, a2].map((socket) => socket.nextMatching(predicate)));
+}
+
+/** Both of A's sockets receive a matching invalidation and B1 receives nothing. */
 async function expectInvalidationInA(match: Record<string, unknown>): Promise<readonly Observed[]> {
-  const frames = await Promise.all(
-    [a1, a2].map((socket) =>
-      socket.nextMatching(
-        (frame) => frame.kind === "text" && frame.type === "invalidate" && matches(frame.body, match),
-      ),
-    ),
-  );
-  await expectNothingReceived(b1, tenantB.tenantId);
+  const frames = await nextOnA(isInvalidate(match));
+  await expectNothingReceived(b1, tenantB);
   return observedTypes(frames);
 }
 
-function matches(body: Record<string, unknown>, expected: Record<string, unknown>): boolean {
-  return Object.entries(expected).every(([key, value]) => body[key] === value);
+/** Both of A's sockets receive exactly one invalidation with exactly `match`'s fields; B1 receives nothing. */
+async function expectOnceToAOnly(match: Record<string, unknown>): Promise<readonly Observed[]> {
+  const frames = await nextOnA(isInvalidate(match));
+  for (const frame of frames) {
+    expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["type", ...Object.keys(match)].sort());
+  }
+  await expectSilence([a1, a2], tenantA, isInvalidate({ scope: match.scope }));
+  await expectNothingReceived(b1, tenantB);
+  return observedTypes(frames);
 }
 
-/**
- * What B1 observes after an inbound frame it just sent, followed by opening its own doc: the first
- * frame must be its own doc's SyncStep1, and nothing else may precede the sentinel.
- */
+async function expectOnlyToB(match: Record<string, unknown>): Promise<readonly Observed[]> {
+  const frame = await b1.nextMatching(isInvalidate(match));
+  await expectSilence([a1, a2], tenantA);
+  return observedTypes([frame]);
+}
+
+/** After an inbound frame, the first frame must be B1's own doc's SyncStep1 and nothing else may precede the sentinel. */
 async function observeB1AfterOpeningOwnDoc(): Promise<string[]> {
   await openDoc(b1, tenantB.docId);
   const sentinel = await publishSentinel(tenantB.tenantId);
@@ -902,7 +754,6 @@ async function observeB1AfterOpeningOwnDoc(): Promise<string[]> {
   return ["binary:own-doc", ...rest.map((frame) => frame.kind)];
 }
 
-/** One run of `fixture`'s user in its tenant, on a fresh Semp chat thread. */
 async function createRunOnThread(
   fixture: TenantFixture,
   sockets: readonly TestSocket[],
@@ -917,67 +768,11 @@ async function createRunOnThread(
     });
     return { runId: run.id, threadId };
   });
-  // The creation of the run is itself announced to its actor (issue #1863); consuming it keeps the frames a
-  // test looks at afterwards to the ones it caused.
-  await Promise.all(sockets.map((socket) => socket.nextMatching(isAgentRunsFrame(created.runId))));
-  return created;
-}
-
-function isProjectAgentFrame(projectItemId?: string): (frame: Frame) => boolean {
-  return (frame) =>
-    frame.kind === "text" &&
-    frame.type === "invalidate" &&
-    frame.body.scope === "projectAgent" &&
-    (projectItemId === undefined || frame.body.projectItemId === projectItemId);
-}
-
-/** Toggles a tool grant of `projectItemId` in `tenantId` through the runtime role, rolling the transaction back on request. */
-async function grantToolIn(tenantId: string, projectItemId: string, rollBack = false): Promise<void> {
-  await runInTenant(tenantId, async () => {
-    const registration = await upsertMcpToolRegistration(pool, {
-      mcpServerItemId: randomUUID(),
-      toolName: "search_web",
-      toolSchema: {},
-    });
-    await withTransaction(pool, async (client) => {
-      await setProjectMcpGrantForAgentPage(client, {
-        projectItemId,
-        mcpToolRegistrationId: registration.id,
-        granted: true,
-      });
-      if (rollBack) throw new Error("rollback projectAgent announcement");
-    });
-  });
-}
-
-function isSempStatusFrame(): (frame: Frame) => boolean {
-  return (frame) => frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "sempStatus";
-}
-
-/** Raises a Semp problem for `fixture`'s user in its tenant through the runtime role, rolling back on request. */
-async function raiseProblemIn(fixture: TenantFixture, rollBack = false): Promise<void> {
-  await runInTenant(fixture.tenantId, () =>
-    withTransaction(pool, async (client) => {
-      await raiseProblem(client, {
-        userId: fixture.userId,
-        category: "mail",
-        kind: "mailSyncFailed",
-        severity: "warning",
-        sourceTable: "mail_account_sync_state",
-        sourceId: randomUUID(),
-        dedupeKey: `mail:sync:${randomUUID()}`,
-      });
-      if (rollBack) throw new Error("rollback sempStatus announcement");
-    }),
+  // The run's creation is announced to its actor; consuming it keeps later frames to the ones the test caused.
+  await Promise.all(
+    sockets.map((socket) => socket.nextMatching(isInvalidate({ scope: "agentRuns", agentRunId: created.runId }))),
   );
-}
-
-function isAgentRunsFrame(agentRunId?: string): (frame: Frame) => boolean {
-  return (frame) =>
-    frame.kind === "text" &&
-    frame.type === "invalidate" &&
-    frame.body.scope === "agentRuns" &&
-    (agentRunId === undefined || frame.body.agentRunId === agentRunId);
+  return created;
 }
 
 function pendingApprovalInput(agentRunId: string) {
@@ -990,416 +785,284 @@ function pendingApprovalInput(agentRunId: string) {
   } as const;
 }
 
-function isUserScopedFrame(scope: "notificationPreferences" | "badgeCounts" | "account"): (frame: Frame) => boolean {
-  return (frame) => frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === scope;
-}
-
-/** Changes the notification preferences of `fixture`'s user in its tenant through the runtime role, rolling back on request. */
-async function patchPreferencesIn(fixture: TenantFixture, rollBack = false): Promise<void> {
-  await runInTenant(fixture.tenantId, () =>
-    withTransaction(pool, async (client) => {
-      await patchNotificationPreferences(client, fixture.userId, { reminders: false });
-      if (rollBack) throw new Error("rollback notificationPreferences announcement");
-    }),
-  );
-}
-
-function isMcpServersFrame(frame: Frame): boolean {
-  return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "mcpServers";
-}
-
-/**
- * Creates an MCP server item in `tenantId` and switches it off through the choke point of the runtime role, the write
- * that announces the tenant's `mcpServers` scope. Its creation announces nothing of that scope.
- */
-async function switchMcpServerOffIn(tenantId: string): Promise<void> {
-  await runInTenant(tenantId, async () => {
-    const database = (await chokePoint.listDatabases()).find((entry) => entry.ownerModuleId === "mcpServers");
-    if (!database) throw new Error("The mcpServers database was not provisioned");
-    const server = await chokePoint.createItem({
-      databaseId: database.id,
-      properties: {
-        name: "Isolation server",
-        connectionConfig: { transport: "http", url: "https://mcp.example.test/mcp" },
-      },
-    });
-    await chokePoint.updateItem({ databaseId: database.id, itemId: server.id, propertiesPatch: { active: false } });
-  });
-}
-
-function isOverviewFrame(frame: Frame): boolean {
-  return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "overview";
-}
-
-/**
- * Runs the nightly rollover of `fixture`'s tenant through the runtime role, over the tenant's fixture database (which
- * holds no task) so that nothing moves. The action's own transactions commit before it announces the day.
- */
-async function runRolloverIn(fixture: TenantFixture): Promise<void> {
-  await runInTenant(fixture.tenantId, () =>
-    createTasksDayRolloverAction(pool)(
-      { tasksDatabaseId: fixture.databaseId },
-      { heartbeatId: randomUUID(), projectItemId: randomUUID() },
-    ),
-  );
-}
-
-/** Publishes the account invalidation of `fixture`'s user in its tenant through the runtime role, rolling back on request. */
-async function publishAccountIn(fixture: TenantFixture, rollBack = false): Promise<void> {
-  await runInTenant(fixture.tenantId, () =>
-    withTransaction(pool, async (client) => {
-      publishAccountInvalidation(client, fixture.userId);
-      if (rollBack) throw new Error("rollback account announcement");
-    }),
-  );
-}
-
-/**
- * Every socket in `sockets` receives the approval request invalidation, the agent run invalidation, the badge
- * count invalidation of the run's owner and the Semp thread invalidation paired with it. They are published over
- * separate connections, so they may arrive in any order. The run was created before (`createRunOnThread` consumed
- * that announcement), its project is null and its actor is the fixture's user.
- */
+/** These invalidations are published over separate connections, so they may arrive in any order. */
 async function expectRequestAndThreadInvalidations(
   sockets: readonly TestSocket[],
   approvalRequestId: string,
   threadId: string,
   agentRunId: string,
 ): Promise<void> {
+  const expected = [
+    { scope: "approvalRequest", approvalRequestId },
+    { scope: "sempThread", threadId },
+    { scope: "agentRuns", agentRunId, projectItemId: null },
+    { scope: "badgeCounts" },
+  ];
   await Promise.all(
     sockets.map(async (socket) => {
-      const pending = new Set(["approvalRequest", "sempThread", "agentRuns", "badgeCounts"]);
+      const pending = new Set(expected);
       while (pending.size > 0) {
         const frame = await socket.next();
-        if (frame.kind !== "text" || frame.type !== "invalidate") continue;
-        if (matches(frame.body, { scope: "approvalRequest", approvalRequestId })) pending.delete("approvalRequest");
-        if (matches(frame.body, { scope: "sempThread", threadId })) pending.delete("sempThread");
-        if (matches(frame.body, { scope: "agentRuns", agentRunId, projectItemId: null })) pending.delete("agentRuns");
-        if (matches(frame.body, { scope: "badgeCounts" })) pending.delete("badgeCounts");
+        for (const match of pending) if (isInvalidate(match)(frame)) pending.delete(match);
       }
     }),
   );
 }
 
+/**
+ * Records the `semprec_events` publications made through the runtime pool. The realtime hooks publish from the
+ * after-commit callback without awaiting, so `settle` awaits them before a sentinel is ordered after them.
+ */
+function recordPublications() {
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const original = pool.query;
+  const recorded: Array<{ message: Record<string, unknown>; done: unknown }> = [];
+  pool.query = new Proxy(original, {
+    apply(target, receiver, args: unknown[]) {
+      const result: unknown = Reflect.apply(target, receiver, args);
+      const [sql, values] = args;
+      if (typeof sql === "string" && sql.includes("pg_notify") && Array.isArray(values)) {
+        const [channel, payload]: unknown[] = values;
+        if (channel === "semprec_events" && typeof payload === "string") {
+          const message: unknown = JSON.parse(payload);
+          if (!isRecord(message)) throw new Error("Invalid realtime publication");
+          recorded.push({ message, done: result });
+        }
+      }
+      return result;
+    },
+  });
+  return {
+    of: (match: Record<string, unknown>) =>
+      recorded.map((entry) => entry.message).filter((message) => matches(message, match)),
+    settle: async () => {
+      await Promise.all(recorded.map((entry) => entry.done));
+    },
+    clear: () => {
+      recorded.length = 0;
+    },
+    restore: () => {
+      pool.query = original;
+    },
+  };
+}
+
+/**
+ * A write that announces one invalidation scope to the writer's tenant. `write` performs it in `fixture`'s
+ * tenant and returns the frame's fields besides `type` and `scope`; with `rollBack`, the write is rolled back.
+ */
+interface ScopeWrite {
+  scope: string;
+  from: string;
+  rollBack: boolean;
+  write: (fixture: TenantFixture, rollBack: boolean) => Promise<Record<string, unknown>>;
+}
+
+const scopeWrites: ScopeWrite[] = [
+  {
+    scope: "mailThread",
+    from: "the ingest of a new message",
+    rollBack: false,
+    write: async (fixture) => ({ threadId: await ingestMessageIn(fixture.tenantId) }),
+  },
+  {
+    scope: "projectAgent",
+    from: "a tool grant of the tenant's project",
+    rollBack: true,
+    write: async (fixture, rollBack) => {
+      const projectItemId = randomUUID();
+      const registration = await runInTenant(fixture.tenantId, () =>
+        upsertMcpToolRegistration(pool, { mcpServerItemId: randomUUID(), toolName: "search_web", toolSchema: {} }),
+      );
+      await inTenantTransaction(fixture, rollBack, (client) =>
+        setProjectMcpGrantForAgentPage(client, {
+          projectItemId,
+          mcpToolRegistrationId: registration.id,
+          granted: true,
+        }),
+      );
+      return { projectItemId };
+    },
+  },
+  {
+    scope: "sempStatus",
+    from: "a problem raised",
+    rollBack: true,
+    write: async (fixture, rollBack) => {
+      await inTenantTransaction(fixture, rollBack, (client) =>
+        raiseProblem(client, {
+          userId: fixture.userId,
+          category: "mail",
+          kind: "mailSyncFailed",
+          severity: "warning",
+          sourceTable: "mail_account_sync_state",
+          sourceId: randomUUID(),
+          dedupeKey: `mail:sync:${randomUUID()}`,
+        }),
+      );
+      return {};
+    },
+  },
+  {
+    scope: "notificationPreferences",
+    from: "a preference change of the tenant's user",
+    rollBack: true,
+    write: async (fixture, rollBack) => {
+      await inTenantTransaction(fixture, rollBack, (client) =>
+        patchNotificationPreferences(client, fixture.userId, { reminders: false }),
+      );
+      return {};
+    },
+  },
+  {
+    scope: "account",
+    from: "a profile change of the tenant's user",
+    rollBack: true,
+    write: async (fixture, rollBack) => {
+      await inTenantTransaction(fixture, rollBack, async (client) => {
+        publishAccountInvalidation(client, fixture.userId);
+      });
+      return {};
+    },
+  },
+  {
+    scope: "sempThread",
+    from: "a committed thread invalidation",
+    rollBack: true,
+    write: async (fixture, rollBack) => {
+      const threadId = randomUUID();
+      await inTenantTransaction(fixture, rollBack, async (client) => {
+        publishSempThreadInvalidation(client, fixture.tenantId, threadId);
+      });
+      return { threadId };
+    },
+  },
+  {
+    // Only the switch-off announces the tenant's `mcpServers` scope; creation does not.
+    scope: "mcpServers",
+    from: "switching an MCP server off",
+    rollBack: false,
+    write: async (fixture) => {
+      await runInTenant(fixture.tenantId, async () => {
+        const database = (await chokePoint.listDatabases()).find((entry) => entry.ownerModuleId === "mcpServers");
+        if (!database) throw new Error("The mcpServers database was not provisioned");
+        const mcpServer = await chokePoint.createItem({
+          databaseId: database.id,
+          properties: {
+            name: "Isolation server",
+            connectionConfig: { transport: "http", url: "https://mcp.example.test/mcp" },
+          },
+        });
+        await chokePoint.updateItem({
+          databaseId: database.id,
+          itemId: mcpServer.id,
+          propertiesPatch: { active: false },
+        });
+      });
+      return {};
+    },
+  },
+  {
+    // Over the fixture database, which holds no task, so nothing moves.
+    scope: "overview",
+    from: "the end of a rollover",
+    rollBack: false,
+    write: async (fixture) => {
+      await runInTenant(fixture.tenantId, () =>
+        createTasksDayRolloverAction(pool)(
+          { tasksDatabaseId: fixture.databaseId },
+          { heartbeatId: randomUUID(), projectItemId: randomUUID() },
+        ),
+      );
+      return {};
+    },
+  },
+];
+
+const scopeScenarios: Record<string, Scenario> = Object.fromEntries(
+  scopeWrites.flatMap(({ scope, from, rollBack, write }): Array<[string, Scenario]> => [
+    [
+      `${scope} scope, from ${from} in A, once to both of A's sockets and not to B1${rollBack ? ", with nothing for a rolled-back one" : ""}`,
+      async () => {
+        if (rollBack) {
+          await expect(write(tenantA, true)).rejects.toThrow(ROLLBACK);
+          await expectSilence([a1, a2], tenantA, isInvalidate({ scope }));
+          await expectNothingReceived(b1, tenantB);
+        }
+        return expectOnceToAOnly({ scope, ...(await write(tenantA, false)) });
+      },
+    ],
+    [
+      `${scope} scope, from ${from} in B, which reaches B1 only`,
+      async () => expectOnlyToB({ scope, ...(await write(tenantB, false)) }),
+    ],
+  ]),
+);
+
 const notifyCases = {
   invalidation: {
     scenarios: {
+      ...scopeScenarios,
       "inboxCards scope, from the tick creating A's card and the confirm of it on A1": async () => {
         const total = await inboxCardsTotal(a1Cookie);
         await createProposedCard(tenantA.tenantId);
-        const created = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isInboxCardFrame("created"))));
+        const created = await nextOnA(isInvalidate({ scope: "inboxCards", op: "created" }));
         const cardId = created[0]?.kind === "text" ? created[0].body.cardId : undefined;
         if (typeof cardId !== "string") throw new Error("Expected the created frame to name the card");
-        expect(created.map((frame) => (frame.kind === "text" ? frame.body.cardId : undefined))).toEqual([
-          cardId,
-          cardId,
-        ]);
-        expect(created.map((frame) => (frame.kind === "text" ? Object.keys(frame.body).sort() : []))).toEqual([
-          ["cardId", "op", "scope", "type"],
-          ["cardId", "op", "scope", "type"],
-        ]);
-        await expectNothingReceived(b1, tenantB.tenantId);
+        for (const frame of created) {
+          expect(frame).toMatchObject({ kind: "text", body: { cardId } });
+          expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual([
+            "cardId",
+            "op",
+            "scope",
+            "type",
+          ]);
+        }
+        await expectNothingReceived(b1, tenantB);
         expect(await inboxCardsTotal(a1Cookie)).toBe(total + 1);
 
-        const confirmed = await restPost(a1Cookie, `/api/proposals/${cardId}/confirm`, {});
-        expect(confirmed.status).toBe(200);
-
-        // Device A1 confirmed and device A2 is the other device of the same tenant: both are told it closed.
-        await Promise.all([a1, a2].map((socket) => socket.nextMatching(isInboxCardFrame("closed", cardId))));
-        await expectNothingReceived(b1, tenantB.tenantId);
+        expect((await restPost(a1Cookie, `/api/proposals/${cardId}/confirm`, {})).status).toBe(200);
+        await expectInvalidationInA({ scope: "inboxCards", op: "closed", cardId });
         expect(await inboxCardsTotal(a1Cookie)).toBe(total);
-        return ["invalidate"];
-      },
-      "mailThread scope, from the ingest of a new message in A, once to both of A's sockets and not to B1":
-        async () => {
-          const threadId = await ingestMessageIn(tenantA.tenantId);
-
-          const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isMailThreadFrame(threadId))));
-          for (const frame of frames) {
-            expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "mailThread", threadId } });
-            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "threadId", "type"]);
-          }
-          // One sentinel reaches both of A's sockets; nothing about the thread arrived before it a second time.
-          const sentinel = await publishSentinel(tenantA.tenantId);
-          for (const socket of [a1, a2]) {
-            expect((await socket.drainUntil(isSentinel(sentinel))).filter(isMailThreadFrame())).toEqual([]);
-          }
-          await expectNothingReceived(b1, tenantB.tenantId);
-          return ["invalidate"];
-        },
-      "mailThread scope, from the ingest of a new message in B, which reaches B1 only": async () => {
-        const threadId = await ingestMessageIn(tenantB.tenantId);
-
-        await b1.nextMatching(isMailThreadFrame(threadId));
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
         return ["invalidate"];
       },
       "inboxCards scope, from the tick creating B's card, which reaches B1 only": async () => {
         await createProposedCard(tenantB.tenantId);
-
-        await b1.nextMatching(isInboxCardFrame("created"));
-        // One sentinel reaches both of A's sockets, so each is drained up to it.
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
-        return ["invalidate"];
+        return expectOnlyToB({ scope: "inboxCards", op: "created" });
       },
       "agentRuns scope, from the creation and the close of A's run, once each to both of A's sockets and not to B1":
         async () => {
           const run = await runInTenant(tenantA.tenantId, () =>
             createAgentRun(pool, { triggeredBy: "user", task: "private task", userId: tenantA.userId }),
           );
-          const expected = { type: "invalidate", scope: "agentRuns", projectItemId: null, agentRunId: run.id };
-          const created = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isAgentRunsFrame(run.id))));
-          for (const frame of created) {
-            expect(frame).toMatchObject({ kind: "text", body: expected });
-            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual([
-              "agentRunId",
-              "projectItemId",
-              "scope",
-              "type",
-            ]);
-          }
+          const match = { scope: "agentRuns", projectItemId: null, agentRunId: run.id };
+          await expectOnceToAOnly(match);
           await runInTenant(tenantA.tenantId, () => finishAgentRun(pool, run.id, "done", "private result"));
-          const closed = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isAgentRunsFrame(run.id))));
-          for (const frame of closed) expect(frame).toMatchObject({ kind: "text", body: expected });
-          // One sentinel reaches both of A's sockets; nothing about the run arrived before it a third time.
-          const sentinel = await publishSentinel(tenantA.tenantId);
-          for (const socket of [a1, a2]) {
-            expect((await socket.drainUntil(isSentinel(sentinel))).filter(isAgentRunsFrame())).toEqual([]);
-          }
-          await expectNothingReceived(b1, tenantB.tenantId);
-          return ["invalidate"];
+          return expectOnceToAOnly(match);
         },
-      "projectAgent scope, from a tool grant of A's project, once to both of A's sockets and not to B1, with nothing for a rolled-back one":
-        async () => {
-          const projectItemId = randomUUID();
-          await expect(grantToolIn(tenantA.tenantId, projectItemId, true)).rejects.toThrow(
-            "rollback projectAgent announcement",
-          );
-          const rollbackSentinel = await publishSentinel(tenantA.tenantId);
-          for (const socket of [a1, a2]) {
-            expect((await socket.drainUntil(isSentinel(rollbackSentinel))).filter(isProjectAgentFrame())).toEqual([]);
-          }
-
-          await grantToolIn(tenantA.tenantId, projectItemId);
-          const frames = await Promise.all(
-            [a1, a2].map((socket) => socket.nextMatching(isProjectAgentFrame(projectItemId))),
-          );
-          for (const frame of frames) {
-            expect(frame).toMatchObject({
-              kind: "text",
-              body: { type: "invalidate", scope: "projectAgent", projectItemId },
-            });
-            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual([
-              "projectItemId",
-              "scope",
-              "type",
-            ]);
-          }
-          await expectNothingReceived(b1, tenantB.tenantId);
-          return ["invalidate"];
-        },
-      "projectAgent scope, from a tool grant of B's project, which reaches B1 only": async () => {
-        const projectItemId = randomUUID();
-        await grantToolIn(tenantB.tenantId, projectItemId);
-
-        await b1.nextMatching(isProjectAgentFrame(projectItemId));
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
-        return ["invalidate"];
-      },
-      "sempStatus scope, from a problem raised in A, once to both of A's sockets and not to B1, with nothing for a rolled-back one":
-        async () => {
-          await expect(raiseProblemIn(tenantA, true)).rejects.toThrow("rollback sempStatus announcement");
-          const rollbackSentinel = await publishSentinel(tenantA.tenantId);
-          for (const socket of [a1, a2]) {
-            expect((await socket.drainUntil(isSentinel(rollbackSentinel))).filter(isSempStatusFrame())).toEqual([]);
-          }
-
-          await raiseProblemIn(tenantA);
-          const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isSempStatusFrame())));
-          for (const frame of frames) {
-            expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "sempStatus" } });
-            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
-          }
-          const sentinel = await publishSentinel(tenantA.tenantId);
-          for (const socket of [a1, a2]) {
-            expect((await socket.drainUntil(isSentinel(sentinel))).filter(isSempStatusFrame())).toEqual([]);
-          }
-          await expectNothingReceived(b1, tenantB.tenantId);
-          return ["invalidate"];
-        },
-      "sempStatus scope, from a problem raised in B, which reaches B1 only": async () => {
-        await raiseProblemIn(tenantB);
-
-        await b1.nextMatching(isSempStatusFrame());
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
-        return ["invalidate"];
-      },
-      "notificationPreferences scope, from a preference change of A's user, once to both of A's sockets and not to B1, with nothing for a rolled-back one":
-        async () => {
-          await expect(patchPreferencesIn(tenantA, true)).rejects.toThrow(
-            "rollback notificationPreferences announcement",
-          );
-          const rollbackSentinel = await publishSentinel(tenantA.tenantId);
-          for (const socket of [a1, a2]) {
-            expect(
-              (await socket.drainUntil(isSentinel(rollbackSentinel))).filter(
-                isUserScopedFrame("notificationPreferences"),
-              ),
-            ).toEqual([]);
-          }
-
-          await patchPreferencesIn(tenantA);
-          const frames = await Promise.all(
-            [a1, a2].map((socket) => socket.nextMatching(isUserScopedFrame("notificationPreferences"))),
-          );
-          for (const frame of frames) {
-            expect(frame).toMatchObject({
-              kind: "text",
-              body: { type: "invalidate", scope: "notificationPreferences" },
-            });
-            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
-          }
-          const sentinel = await publishSentinel(tenantA.tenantId);
-          for (const socket of [a1, a2]) {
-            expect(
-              (await socket.drainUntil(isSentinel(sentinel))).filter(isUserScopedFrame("notificationPreferences")),
-            ).toEqual([]);
-          }
-          await expectNothingReceived(b1, tenantB.tenantId);
-          return ["invalidate"];
-        },
-      "notificationPreferences scope, from a preference change of B's user, which reaches B1 only": async () => {
-        await patchPreferencesIn(tenantB);
-
-        await b1.nextMatching(isUserScopedFrame("notificationPreferences"));
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
-        return ["invalidate"];
-      },
-      "mcpServers scope, from switching A's MCP server off, once to both of A's sockets and not to B1": async () => {
-        await switchMcpServerOffIn(tenantA.tenantId);
-
-        const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isMcpServersFrame)));
-        for (const frame of frames) {
-          expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "mcpServers" } });
-          expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
-        }
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        for (const socket of [a1, a2]) {
-          expect((await socket.drainUntil(isSentinel(sentinel))).filter(isMcpServersFrame)).toEqual([]);
-        }
-        await expectNothingReceived(b1, tenantB.tenantId);
-        return ["invalidate"];
-      },
-      "mcpServers scope, from switching B's MCP server off, which reaches B1 only": async () => {
-        await switchMcpServerOffIn(tenantB.tenantId);
-
-        await b1.nextMatching(isMcpServersFrame);
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
-        return ["invalidate"];
-      },
-      "overview scope, from the end of A's rollover, once to both of A's sockets and not to B1": async () => {
-        await runRolloverIn(tenantA);
-
-        const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isOverviewFrame)));
-        for (const frame of frames) {
-          expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "overview" } });
-          expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
-        }
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        for (const socket of [a1, a2]) {
-          expect((await socket.drainUntil(isSentinel(sentinel))).filter(isOverviewFrame)).toEqual([]);
-        }
-        await expectNothingReceived(b1, tenantB.tenantId);
-        return ["invalidate"];
-      },
-      "overview scope, from the end of B's rollover, which reaches B1 only": async () => {
-        await runRolloverIn(tenantB);
-
-        await b1.nextMatching(isOverviewFrame);
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
-        return ["invalidate"];
-      },
-      "account scope, from a profile change of A's user, once to both of A's sockets and not to B1, with nothing for a rolled-back one":
-        async () => {
-          await expect(publishAccountIn(tenantA, true)).rejects.toThrow("rollback account announcement");
-          const rollbackSentinel = await publishSentinel(tenantA.tenantId);
-          for (const socket of [a1, a2]) {
-            expect(
-              (await socket.drainUntil(isSentinel(rollbackSentinel))).filter(isUserScopedFrame("account")),
-            ).toEqual([]);
-          }
-
-          await publishAccountIn(tenantA);
-          const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isUserScopedFrame("account"))));
-          for (const frame of frames) {
-            expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "account" } });
-            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
-          }
-          const sentinel = await publishSentinel(tenantA.tenantId);
-          for (const socket of [a1, a2]) {
-            expect((await socket.drainUntil(isSentinel(sentinel))).filter(isUserScopedFrame("account"))).toEqual([]);
-          }
-          await expectNothingReceived(b1, tenantB.tenantId);
-          return ["invalidate"];
-        },
-      "account scope, from a profile change of B's user, which reaches B1 only": async () => {
-        await publishAccountIn(tenantB);
-
-        await b1.nextMatching(isUserScopedFrame("account"));
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
-        return ["invalidate"];
-      },
-      "badgeCounts scope, from a decision request of B's run, which reaches B1 only": async () => {
-        const { runId } = await createRunOnThread(tenantB, [b1]);
-        await runInTenant(tenantB.tenantId, () =>
-          withTransaction(pool, (client) =>
-            createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runId)),
-          ),
-        );
-
-        const frame = await b1.nextMatching(isUserScopedFrame("badgeCounts"));
-        expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
-        return ["invalidate"];
-      },
       "agentRuns scope, from the creation of B's run, which reaches B1 only": async () => {
         const run = await runInTenant(tenantB.tenantId, () =>
           createAgentRun(pool, { triggeredBy: "user", task: "private task", userId: tenantB.userId }),
         );
-
-        await b1.nextMatching(isAgentRunsFrame(run.id));
-        const sentinel = await publishSentinel(tenantA.tenantId);
-        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
-        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return expectOnlyToB({ scope: "agentRuns", agentRunId: run.id });
+      },
+      "badgeCounts scope, from a decision request of B's run, which reaches B1 only": async () => {
+        const { runId } = await createRunOnThread(tenantB, [b1]);
+        await inTenantTransaction(tenantB, false, (client) =>
+          createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runId)),
+        );
+        const frame = await b1.nextMatching(isInvalidate({ scope: "badgeCounts" }));
+        expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
+        await expectSilence([a1, a2], tenantA);
         return ["invalidate"];
       },
       "approvalRequest scope, from the creation of a request on A's run with a thread": async () => {
         const { runId, threadId } = await createRunOnThread(tenantA, [a1, a2]);
-        const request = await runInTenant(tenantA.tenantId, () =>
-          withTransaction(pool, (client) =>
-            createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runId)),
-          ),
+        const request = await inTenantTransaction(tenantA, false, (client) =>
+          createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runId)),
         );
         await expectRequestAndThreadInvalidations([a1, a2], request.id, threadId, runId);
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return ["invalidate"];
       },
       "approvalRequest scope, from the decision of A's user on a request": async () => {
@@ -1407,18 +1070,16 @@ const notifyCases = {
         const request = await runInTenant(tenantA.tenantId, () =>
           createPendingApprovalRequest(pool, pendingApprovalInput(runId)),
         );
-        const decided = await runInTenant(tenantA.tenantId, () =>
-          withTransaction(pool, (client) =>
-            decideAndEnqueueApprovalRequest(client, {
-              approvalRequestId: request.id,
-              decision: "rejected",
-              decidedByUserId: tenantA.userId,
-            }),
-          ),
+        const decided = await inTenantTransaction(tenantA, false, (client) =>
+          decideAndEnqueueApprovalRequest(client, {
+            approvalRequestId: request.id,
+            decision: "rejected",
+            decidedByUserId: tenantA.userId,
+          }),
         );
         expect(decided?.outcome).toBe("decided");
         await expectRequestAndThreadInvalidations([a1, a2], request.id, threadId, runId);
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return ["invalidate"];
       },
       "item scope, from a REST write by A's user": async () => {
@@ -1462,7 +1123,7 @@ const notifyCases = {
         await openDoc(a1, tenantA.docId);
         await touchDoc(tenantA);
         const update = await a1.nextMatching(isDocFrame(tenantA.docId));
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return observedTypes([update]);
       },
     },
@@ -1474,7 +1135,7 @@ const notifyCases = {
         const eventId = await appendRunEvent(tenantA);
         const frame = await a1.nextMatching(isAgentEvent(tenantA.runId));
         expect(frame).toMatchObject({ kind: "text", body: { event: { id: eventId } } });
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return observedTypes([frame]);
       },
     },
@@ -1482,18 +1143,12 @@ const notifyCases = {
   notification_created: {
     scenarios: {
       "A's notification": async () => {
-        const notificationId = await writeNotificationInA();
-        const frames = await Promise.all(
-          [a1, a2].map((socket) =>
-            socket.nextMatching((frame) => frame.kind === "text" && frame.type === "notification"),
-          ),
-        );
+        const notificationId = await runInTenant(tenantA.tenantId, () => writeNotificationFor(tenantA.userId));
+        const frames = await nextOnA(isNotification());
         for (const frame of frames) {
-          expect(frame).toMatchObject({
-            body: { notification: { id: notificationId, userId: tenantA.userId } },
-          });
+          expect(frame).toMatchObject({ body: { notification: { id: notificationId, userId: tenantA.userId } } });
         }
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return observedTypes(frames);
       },
     },
@@ -1505,17 +1160,11 @@ const notifyCases = {
         await runInTenant(tenantA.tenantId, () =>
           withTransaction(pool, (client) => visitNotification(client, tenantA.userId, notificationId)),
         );
-        const frames = await Promise.all(
-          [a1, a2].map((socket) =>
-            socket.nextMatching((frame) => frame.kind === "text" && frame.type === "notification"),
-          ),
-        );
+        const frames = await nextOnA(isNotification());
         for (const frame of frames) {
-          expect(frame).toMatchObject({ body: { notification: { id: notificationId } } });
-          const notification = frame.kind === "text" ? frame.body.notification : null;
-          expect(isRecord(notification) && notification.readAt !== null).toBe(true);
+          expect(frame).toMatchObject({ body: { notification: { id: notificationId, readAt: expect.any(String) } } });
         }
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return observedTypes(frames);
       },
     },
@@ -1526,8 +1175,8 @@ const notifyCases = {
         const response = await restPost(a1Cookie, `/api/auth/sessions/${a2SessionId}/revoke`, {});
         expect(response.status).toBe(200);
         expect(await a2.closed).toBe(4401);
-        await expectNothingReceived(a1, tenantA.tenantId);
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(a1, tenantA);
+        await expectNothingReceived(b1, tenantB);
         expect(a1.isOpen).toBe(true);
         expect(b1.isOpen).toBe(true);
         return [];
@@ -1546,14 +1195,14 @@ const streamCases = {
           (candidate) => candidate.kind === "text" && candidate.type === "agent:delta",
         );
         expect(frame).toMatchObject({ body: { agentRunId: tenantA.runId, delta: { text: "typing" } } });
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return observedTypes([frame]);
       },
     },
   },
 } satisfies Record<AgentStreamMessage["type"], Case>;
 
-/** Sends `frame` as B1, then opens B1's own doc, and summarizes what B1 received; naming A's id must summarize like a random id. */
+/** Naming A's id must summarize like a random id. */
 async function b1AfterForeignDocFrame(frame: InboundFrame): Promise<string[]> {
   b1.sendJson(frame);
   return observeB1AfterOpeningOwnDoc();
@@ -1567,11 +1216,10 @@ const inboundCases = {
         const random = await b1AfterForeignDocFrame({ type: "doc:open", docId: randomUUID() });
         expect(foreign).toEqual(random);
 
-        // B1 never became a subscriber of A's doc: A's next update reaches A1 and not B1.
         await openDoc(a1, tenantA.docId);
         await touchDoc(tenantA);
         const update = await a1.nextMatching(isDocFrame(tenantA.docId));
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return observedTypes([update]);
       },
     },
@@ -1584,7 +1232,7 @@ const inboundCases = {
         await openDoc(b1, tenantB.docId);
         await touchDoc(tenantA);
         const update = await a1.nextMatching(isDocFrame(tenantA.docId));
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return observedTypes([update]);
       },
     },
@@ -1604,11 +1252,10 @@ const inboundCases = {
         expect(foreign).toEqual(random);
         expect(foreign).toEqual([]);
 
-        // B1 is not a watcher of A's run: A's next event reaches A1 only.
         await watchRun(a1, tenantA);
         await appendRunEvent(tenantA);
         const event = await a1.nextMatching(isAgentEvent(tenantA.runId));
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return observedTypes([event]);
       },
     },
@@ -1623,25 +1270,30 @@ const inboundCases = {
         const eventId = await appendRunEvent(tenantA);
         const event = await a1.nextMatching(isAgentEvent(tenantA.runId));
         expect(event).toMatchObject({ body: { event: { id: eventId } } });
-        await expectNothingReceived(b1, tenantB.tenantId);
+        await expectNothingReceived(b1, tenantB);
         return observedTypes([event]);
       },
     },
   },
 } satisfies Record<InboundFrame["type"], Case>;
 
-/** The text `docId` currently holds in its `body` Yjs text, read inside `fixture`'s tenant. */
 async function docBodyText(fixture: TenantFixture, docId: string): Promise<string> {
   const ydoc = await runInTenant(fixture.tenantId, () => loadYDoc(pool, docId));
   return ydoc.getText("body").toJSON();
 }
 
+/** A1's update for A's doc is stored as exactly one more doc update. */
+async function sendOwnUpdate(message: Parameters<typeof buildBinaryFrame>[1]): Promise<void> {
+  await openDoc(a1, tenantA.docId);
+  const before = await countDocUpdates(tenantA, tenantA.docId);
+  a1.sendBinary(buildBinaryFrame(tenantA.docId, message));
+  await waitUntil(async () => (await countDocUpdates(tenantA, tenantA.docId)) >= before + 1, "A1's update is stored");
+}
+
 /**
- * With A1 subscribed to A's doc, B1 sends a Yjs update prefixed with A's doc id and A1 then sends
- * a control update for the same doc. The foreign frame is refused or admitted when it is
- * dispatched, before any await in `handleBinaryFrame`, and was sent before the control through the
- * same handler, so an admitted frame is queued ahead of the control's write on the same doc. Once
- * the control's text is stored, A's doc must hold the control's row and none from the foreign frame.
+ * The foreign frame is decided at dispatch, before any await in `handleBinaryFrame`, and was sent before A1's
+ * control update, so an admitted frame would be written first. Once the control is stored, A's doc must hold
+ * nothing from the foreign frame.
  */
 async function foreignBinaryFrameWritesNothing(): Promise<void> {
   await openDoc(a1, tenantA.docId);
@@ -1649,26 +1301,20 @@ async function foreignBinaryFrameWritesNothing(): Promise<void> {
 
   b1.sendBinary(buildBinaryFrame(tenantA.docId, yjsUpdateMessage("foreign")));
   a1.sendBinary(buildBinaryFrame(tenantA.docId, yjsUpdateMessage("control")));
-  const deadline = Date.now() + FRAME_TIMEOUT_MS;
-  while (!(await docBodyText(tenantA, tenantA.docId)).includes("control")) {
-    if (Date.now() > deadline) throw new Error("the control update was never stored");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  await waitUntil(
+    async () => (await docBodyText(tenantA, tenantA.docId)).includes("control"),
+    "the control update is stored",
+  );
 
   expect(await docBodyText(tenantA, tenantA.docId)).not.toContain("foreign");
   expect(await countDocUpdates(tenantA, tenantA.docId)).toBe(before + 1);
-  const sentinelB = await publishSentinel(tenantB.tenantId);
-  const receivedByB1 = await b1.drainUntil(isSentinel(sentinelB));
-  expect(receivedByB1.filter(isDocFrame(tenantA.docId))).toEqual([]);
+  await expectSilence([b1], tenantB, isDocFrame(tenantA.docId));
 }
 
 const binaryCase = {
   scenarios: {
     "A1's own frame for A's doc is stored (control for the foreign cases)": async () => {
-      await openDoc(a1, tenantA.docId);
-      const before = await countDocUpdates(tenantA, tenantA.docId);
-      a1.sendBinary(buildBinaryFrame(tenantA.docId, yjsUpdateMessage("control")));
-      await waitForDocUpdateCount(tenantA, tenantA.docId, before + 1);
+      await sendOwnUpdate(yjsUpdateMessage("control"));
       return [];
     },
     "B1's frame prefixed with A's doc id, sent without doc:open": async () => {
@@ -1677,8 +1323,8 @@ const binaryCase = {
     },
     "B1's frame prefixed with A's doc id, sent after a refused doc:open": async () => {
       b1.sendJson({ type: "doc:open", docId: tenantA.docId });
-      // B's own open is answered only after the refused one was handled, so the binary frame below
-      // meets a socket whose open of A's doc is finished, not one still pending its lookup.
+      // B's own open is answered only after the refused one was handled, so the binary frame below meets a
+      // finished open, not one still pending its lookup.
       await openDoc(b1, tenantB.docId);
       await foreignBinaryFrameWritesNothing();
       return [];
@@ -1686,7 +1332,6 @@ const binaryCase = {
   },
 } satisfies Case;
 
-/** A case whose single scenario runs every scenario of `producing` and requires a `type` frame among what they delivered. */
 function producedBy(type: OutboundFrame["type"], producing: Case): Case {
   return {
     scenarios: {
@@ -1703,7 +1348,6 @@ function producedBy(type: OutboundFrame["type"], producing: Case): Case {
   };
 }
 
-/** Each outbound frame type, mapped to the case whose scenarios produce it. */
 const outboundCases = {
   invalidate: producedBy("invalidate", notifyCases.invalidation),
   notification: producedBy("notification", notifyCases.notification_created),
@@ -1712,16 +1356,11 @@ const outboundCases = {
   "doc:ack": {
     scenarios: {
       "A1's stored update is acknowledged to A1 only, never to B1": async () => {
-        await openDoc(a1, tenantA.docId);
-        const before = await countDocUpdates(tenantA, tenantA.docId);
-        a1.sendBinary(buildBinaryFrame(tenantA.docId, appendClientUpdateId(yjsUpdateMessage("acked"), "ack-1")));
-        await waitForDocUpdateCount(tenantA, tenantA.docId, before + 1);
-        const ackSeen = (frame: Frame): boolean =>
-          frame.kind === "text" && frame.type === "doc:ack" && frame.body.clientUpdateId === "ack-1";
-        await a1.drainUntil(ackSeen);
-        const sentinelB = await publishSentinel(tenantB.tenantId);
-        const receivedByB1 = await b1.drainUntil(isSentinel(sentinelB));
-        expect(receivedByB1.filter((frame) => frame.kind === "text" && frame.type === "doc:ack")).toEqual([]);
+        await sendOwnUpdate(appendClientUpdateId(yjsUpdateMessage("acked"), "ack-1"));
+        await a1.drainUntil(
+          (frame) => frame.kind === "text" && frame.type === "doc:ack" && frame.body.clientUpdateId === "ack-1",
+        );
+        await expectSilence([b1], tenantB, (frame) => frame.kind === "text" && frame.type === "doc:ack");
         return ["doc:ack"];
       },
     },
@@ -1734,13 +1373,7 @@ function scenariosOf(table: Record<string, Case>): Array<[string, string, Scenar
   );
 }
 
-const notifyTable: Record<string, Case> = notifyCases;
-const streamTable: Record<string, Case> = streamCases;
-const inboundTable: Record<string, Case> = inboundCases;
-const binaryTable: Record<string, Case> = { "binary doc frame": binaryCase };
-const outboundTable: Record<string, Case> = outboundCases;
-
-describe("realtime isolation across two tenants (issue #1054)", () => {
+describe("realtime isolation across two tenants", () => {
   beforeAll(async () => {
     previousScope = process.env.SEMPREC_TENANT_SCOPE;
     process.env.SEMPREC_TENANT_SCOPE = "strict";
@@ -1756,15 +1389,8 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     tenantA = await buildTenantFixture(await createTestTenant(adminPool));
     tenantB = await buildTenantFixture(await createTestTenant(adminPool));
 
-    // Composed as serve.ts composes them: the dispatcher and the sync upgrade handler over one pool.
-    const dispatch = await createDispatcher(pool, {
-      passwordResetMailer: noopMailer,
-      appBaseUrl: "http://localhost",
-      setupToken: "unused-setup-token",
-      moduleRegistry,
-      blobStorage: new LocalFsBlobStorageWriter(blobDir),
-      maxFileSizeBytes: 10 * 1024 * 1024,
-    });
+    // Composed as serve.ts composes them.
+    const dispatch = await createDispatcher(pool, dispatcherOptions());
     syncServer = await createSyncUpgradeHandler(pool);
     server = createServer(dispatch);
     server.on("upgrade", (req, socket, head) => {
@@ -1775,11 +1401,9 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       }
       socket.destroy();
     });
-    await new Promise<void>((resolve) => server.listen(0, resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
-    baseUrl = `http://127.0.0.1:${address.port}`;
-    wsUrl = `ws://127.0.0.1:${address.port}/api/sync`;
+    const host = await listen(server);
+    baseUrl = `http://${host}`;
+    wsUrl = `ws://${host}/api/sync`;
   });
 
   afterAll(async () => {
@@ -1787,7 +1411,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
     await pool?.end();
     await adminPool?.end();
-    // The hooks are module-global; leave none bound to the pool that was just ended.
+    // The hooks are module-global; leave none bound to the ended pool.
     setInvalidationHook(() => {});
     setDocUpdateHook(() => {});
     setAgentRunEventHook(() => {});
@@ -1801,7 +1425,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     else process.env.SEMPREC_TENANT_SCOPE = previousScope;
   });
 
-  // Fresh sessions and sockets per test: the revocation case ends A's second session for good.
+  // Fresh sessions per test: the revocation case ends A's second session for good.
   beforeEach(async () => {
     await reconnectAll();
   });
@@ -1826,90 +1450,32 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
     const docId = body.docId;
     const before = await countDocUpdates(tenantA, docId);
     // The PUT may have emitted its item invalidation before the doc-open response.
-    const sentinel = await publishSentinel(tenantA.tenantId);
-    await a1.drainUntil(isSentinel(sentinel));
+    await drainA();
     await openDoc(a1, docId);
     const foreign = await b1AfterForeignDocFrame({ type: "doc:open", docId });
     const random = await b1AfterForeignDocFrame({ type: "doc:open", docId: randomUUID() });
     expect(foreign).toEqual(random);
     b1.sendBinary(buildBinaryFrame(docId, yjsUpdateMessage("foreign")));
-    await expectNothingReceived(b1, tenantB.tenantId);
+    await expectNothingReceived(b1, tenantB);
     expect(await countDocUpdates(tenantA, docId)).toBe(before);
-  });
-
-  it("publishes committed thread invalidations only to the writer's tenant and suppresses rolled-back ones", async () => {
-    const rolledBack = randomUUID();
-    await expect(
-      runInTenant(tenantA.tenantId, () =>
-        withTransaction(pool, async (client) => {
-          publishSempThreadInvalidation(client, tenantA.tenantId, rolledBack);
-          throw new Error("rollback thread invalidation");
-        }),
-      ),
-    ).rejects.toThrow("rollback thread invalidation");
-    const rollbackSentinel = await publishSentinel(tenantA.tenantId);
-    expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(rollbackSentinel))))).toEqual([
-      [],
-      [],
-    ]);
-    await expectNothingReceived(b1, tenantB.tenantId);
-
-    const threadId = randomUUID();
-    await runInTenant(tenantA.tenantId, () =>
-      withTransaction(pool, async (client) => {
-        publishSempThreadInvalidation(client, tenantA.tenantId, threadId);
-      }),
-    );
-    await expectInvalidationInA({ scope: "sempThread", threadId });
-
-    const threadB = randomUUID();
-    await runInTenant(tenantB.tenantId, () =>
-      withTransaction(pool, async (client) => {
-        publishSempThreadInvalidation(client, tenantB.tenantId, threadB);
-      }),
-    );
-    await b1.nextMatching(
-      (frame) =>
-        frame.kind === "text" &&
-        frame.type === "invalidate" &&
-        matches(frame.body, { scope: "sempThread", threadId: threadB }),
-    );
-    const foreignSentinel = await publishSentinel(tenantA.tenantId);
-    expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(foreignSentinel))))).toEqual([
-      [],
-      [],
-    ]);
   });
 
   it("publishes committed approval request invalidations only to the owner's tenant and suppresses rolled-back ones", async () => {
     const runA = await createRunOnThread(tenantA, [a1, a2]);
     await expect(
-      runInTenant(tenantA.tenantId, () =>
-        withTransaction(pool, async (client) => {
-          await createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runA.runId));
-          throw new Error("rollback approval request announcement");
-        }),
+      inTenantTransaction(tenantA, true, (client) =>
+        createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runA.runId)),
       ),
-    ).rejects.toThrow("rollback approval request announcement");
-    const rollbackSentinel = await publishSentinel(tenantA.tenantId);
-    expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(rollbackSentinel))))).toEqual([
-      [],
-      [],
-    ]);
-    await expectNothingReceived(b1, tenantB.tenantId);
+    ).rejects.toThrow(ROLLBACK);
+    await expectSilence([a1, a2], tenantA);
+    await expectNothingReceived(b1, tenantB);
 
     const runB = await createRunOnThread(tenantB, [b1]);
-    const requestB = await runInTenant(tenantB.tenantId, () =>
-      withTransaction(pool, (client) =>
-        createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runB.runId)),
-      ),
+    const requestB = await inTenantTransaction(tenantB, false, (client) =>
+      createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runB.runId)),
     );
     await expectRequestAndThreadInvalidations([b1], requestB.id, runB.threadId, runB.runId);
-    const foreignSentinel = await publishSentinel(tenantA.tenantId);
-    expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(foreignSentinel))))).toEqual([
-      [],
-      [],
-    ]);
+    await expectSilence([a1, a2], tenantA);
   });
 
   it("delivers status-only library outcomes to the owning sockets and suppresses rolled-back outcomes", async () => {
@@ -1935,1031 +1501,182 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
         },
       });
     };
-    const failures: unknown[] = [];
-    try {
-      const items = await runInTenant(tenantA.tenantId, async () => {
-        await chokePoint.createProperty({ databaseId: tenantA.databaseId, key: "name", name: "Name", type: "text" });
-        const result = [];
-        for (const name of ["Found", "Missing", "Rollback"]) {
-          const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: { name } });
-          await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
-          result.push(item);
-        }
-        return result;
-      });
-      const initial = await publishSentinel(tenantA.tenantId);
-      await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(initial))));
-      await expectNothingReceived(b1, tenantB.tenantId);
+    await withCleanup(
+      async () => {
+        const items = await runInTenant(tenantA.tenantId, async () => {
+          await chokePoint.createProperty({ databaseId: tenantA.databaseId, key: "name", name: "Name", type: "text" });
+          const result = [];
+          for (const name of ["Found", "Missing", "Rollback"]) {
+            const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: { name } });
+            await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+            result.push(item);
+          }
+          return result;
+        });
+        await drainA();
+        await expectNothingReceived(b1, tenantB);
 
-      const taskName = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
-      let providerCalls = 0;
-      let found = true;
-      const task = createCoreTaskList(
-        workerPool,
-        new Map(),
-        createLibraryMetadataFetcher({
-          fetch: async (url) => {
-            providerCalls++;
-            return new Response(
-              JSON.stringify(
-                url.includes("openlibrary.org")
-                  ? { docs: found ? [{ title: "Found" }] : [] }
-                  : { kind: "books#volumes", totalItems: 0 },
-              ),
-            );
-          },
-        }),
-      )[taskName];
-      if (!task) throw new Error("Library task missing");
-      const enqueue = (itemId: string) =>
-        runInTenant(tenantA.tenantId, () =>
-          withTransaction(pool, (client) =>
+        const taskName = CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS;
+        let providerCalls = 0;
+        let found = true;
+        const task = createCoreTaskList(
+          workerPool,
+          new Map(),
+          createLibraryMetadataFetcher({
+            fetch: async (url) => {
+              providerCalls++;
+              return new Response(
+                JSON.stringify(
+                  url.includes("openlibrary.org")
+                    ? { docs: found ? [{ title: "Found" }] : [] }
+                    : { kind: "books#volumes", totalItems: 0 },
+                ),
+              );
+            },
+          }),
+        )[taskName];
+        if (!task) throw new Error("Library task missing");
+        const enqueue = (itemId: string) =>
+          inTenantTransaction(tenantA, false, (client) =>
             enqueueJob(
               client,
               taskName,
               { itemId, databaseId: tenantA.databaseId, config: { source: "openLibrary", coverKey: "cover" } },
               { jobKey: `library-metadata:${itemId}`, maxAttempts: 3 },
             ),
-          ),
-        );
-      for (const [index, status] of ["found", "notFound"].entries()) {
-        const item = items[index];
-        if (!item) throw new Error("Library fixture missing");
-        found = status === "found";
-        await enqueue(item.id);
-        await runOnce({ pgPool: pool, taskList: { [taskName]: task } });
-        await expectInvalidationInA({ scope: "item", itemId: item.id, databaseId: tenantA.databaseId, op: "update" });
-        const after = await runInTenant(tenantA.tenantId, () => chokePoint.getItem(tenantA.databaseId, item.id));
-        expect(after?.properties).toEqual(item.properties);
-        const automation = await runInTenant(tenantA.tenantId, () => chokePoint.readAutomationForItems([item.id]));
-        expect(automation.get(item.id)?.status).toBe(status);
-      }
-      expect(providerCalls).toBe(3);
+          );
+        const statusOf = async (itemId: string) =>
+          (await runInTenant(tenantA.tenantId, () => chokePoint.readAutomationForItems([itemId]))).get(itemId)?.status;
+        for (const [index, status] of ["found", "notFound"].entries()) {
+          const item = items[index];
+          if (!item) throw new Error("Library fixture missing");
+          found = status === "found";
+          await enqueue(item.id);
+          await runOnce({ pgPool: pool, taskList: { [taskName]: task } });
+          await expectInvalidationInA({ scope: "item", itemId: item.id, databaseId: tenantA.databaseId, op: "update" });
+          const after = await runInTenant(tenantA.tenantId, () => chokePoint.getItem(tenantA.databaseId, item.id));
+          expect(after?.properties).toEqual(item.properties);
+          expect(await statusOf(item.id)).toBe(status);
+        }
+        expect(providerCalls).toBe(3);
 
-      const rollback = items[2];
-      if (!rollback) throw new Error("Rollback fixture missing");
-      found = true;
-      await enqueue(rollback.id);
-      workerPool.on("acquire", onAcquire);
-      rejectCommits = true;
-      await runOnce({ pgPool: pool, taskList: { [taskName]: task } });
-      rejectCommits = false;
-      expect(rejectedCommits).toBe(2);
-      const after = await runInTenant(tenantA.tenantId, () => chokePoint.readAutomationForItems([rollback.id]));
-      expect(after.get(rollback.id)?.status).toBe("pending");
-      const sentinel = await publishSentinel(tenantA.tenantId);
-      expect(await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(sentinel))))).toEqual([[], []]);
-      await expectNothingReceived(b1, tenantB.tenantId);
-    } catch (error) {
-      failures.push(error);
-    } finally {
-      rejectCommits = false;
-      workerPool.off("acquire", onAcquire);
-      for (const [client, descriptor] of originals) {
-        if (descriptor) Object.defineProperty(client, "query", descriptor);
-        else Reflect.deleteProperty(client, "query");
-      }
-      try {
+        const rollback = items[2];
+        if (!rollback) throw new Error("Rollback fixture missing");
+        found = true;
+        await enqueue(rollback.id);
+        workerPool.on("acquire", onAcquire);
+        rejectCommits = true;
+        await runOnce({ pgPool: pool, taskList: { [taskName]: task } });
+        rejectCommits = false;
+        expect(rejectedCommits).toBe(2);
+        expect(await statusOf(rollback.id)).toBe("pending");
+        await expectSilence([a1, a2], tenantA);
+        await expectNothingReceived(b1, tenantB);
+      },
+      async () => {
+        rejectCommits = false;
+        workerPool.off("acquire", onAcquire);
+        for (const [client, descriptor] of originals) {
+          if (descriptor) Object.defineProperty(client, "query", descriptor);
+          else Reflect.deleteProperty(client, "query");
+        }
         await workerPool.end();
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) throw new AggregateError(failures, "Library realtime test and cleanup failed");
+      },
+    );
   });
 
-  it("joins actual concurrent logins after an early failure and retains a later failure", async () => {
-    const lateError = new Error("late held login failure");
-    let release = () => {};
-    let reached = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
+  it("publishes REST relation invalidations with the authenticated actor in its tenant, none for a repeat or rollback, and none with an actor for a background write", async () => {
+    const { target, property } = await runInTenant(tenantA.tenantId, async () => {
+      const target = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+      const { property } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: tenantA.databaseId,
+        targetDatabaseId: tenantA.databaseId,
+        key: `linked${randomUUID().replace(/-/g, "").slice(0, 8)}`,
+        name: "Linked",
+        cardinality: "many_to_many",
+      });
+      return { target, property };
     });
-    const held = new Promise<void>((resolve) => {
-      reached = resolve;
-    });
-    // Forward the real database query and delay its completion within the actual login call.
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    const original = adminPool.query;
-    let intercepted = false;
-    adminPool.query = new Proxy(original, {
-      apply(target, receiver, args: unknown[]) {
-        const result: unknown = Reflect.apply(target, receiver, args);
-        if (
-          !intercepted &&
-          typeof args[0] === "string" &&
-          args[0].includes("FROM login_attempts") &&
-          Array.isArray(args[1]) &&
-          args[1][0] === tenantA.email
-        ) {
-          intercepted = true;
-          if (!(result instanceof Promise)) throw new Error("Expected real login query promise");
-          return result.then(async () => {
-            reached();
-            await gate;
-            throw lateError;
+    /** An item whose relation value is inherited, optionally already linked to `target`. */
+    const linkedItem = (related = false) =>
+      runInTenant(tenantA.tenantId, async () => {
+        const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
+        if (related) {
+          await chokePoint.createRelation({
+            relationPropertyId: property.id,
+            callerItemId: item.id,
+            targetItemId: target.id,
           });
         }
-        return result;
-      },
-    });
-    const invalid = () =>
-      runAsSystem("test:invalid-login", async () => {
-        await login(adminPool, {
-          email: `missing-${randomUUID()}@example.com`,
-          password: PASSWORD,
-          platform: "web",
-          ip: "127.0.0.1",
-        });
-        throw new Error("Unexpected successful login");
-      });
-    let recordFirst = (_result: { error: unknown }) => {};
-    const firstResult = new Promise<{ error: unknown }>((resolve) => {
-      recordFirst = resolve;
-    });
-    const joining = joinSessionAttempts([
-      () => {
-        const operation = invalid();
-        void operation.catch((error: unknown) => {
-          recordFirst({ error });
-        });
-        return operation;
-      },
-      () => openSession(tenantA),
-      () => openSession(tenantB),
-    ]);
-    const joined = joining.then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error }),
-    );
-    let failure: { error: unknown } | undefined;
-    let result: Awaited<typeof joined> | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        held,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("Held login did not reach its query")), FRAME_TIMEOUT_MS);
-        }),
-      ]);
-      const initial = await firstResult;
-      expect(initial.error).toMatchObject({ status: 401 });
-      let finished = false;
-      void joined.then(() => {
-        finished = true;
-      });
-      await Promise.resolve();
-      expect(finished).toBe(false);
-    } catch (error) {
-      failure = { error };
-    } finally {
-      if (timer) clearTimeout(timer);
-      release();
-      result = await joined;
-      adminPool.query = original;
-      if (failure && "error" in result)
-        failure = {
-          error: new AggregateError([failure.error, result.error], "Login control and cleanup failed", {
-            cause: failure.error,
-          }),
-        };
-    }
-    if (failure) throw failure.error;
-    const initial = await firstResult;
-    if (!result || !("error" in result) || !(result.error instanceof AggregateError))
-      throw new Error("Expected session failures");
-    expect(result.error.cause).toBe(initial.error);
-    expect(result.error.errors).toHaveLength(2);
-    expect(result.error.errors[0]).toBe(initial.error);
-    expect(result.error.errors[1]).toBe(lateError);
-    expect(intercepted).toBe(true);
-  });
-
-  it("settles partial socket success, refused and held upgrades before disposal", async () => {
-    const sockets = new Set<TestSocket>();
-    const local = createServer();
-    const upgrades = new WebSocketServer({ noServer: true });
-    let heldSocket: import("node:stream").Duplex | undefined;
-    let lateRejected = false;
-    let releaseUpgrade = () => {};
-    let heldReady = () => {};
-    const heldAccepted = new Promise<void>((resolve) => {
-      heldReady = resolve;
-    });
-    let heldClosed = () => {};
-    const heldEnded = new Promise<void>((resolve) => {
-      heldClosed = resolve;
-    });
-    local.on("upgrade", (req, socket, head) => {
-      if (req.url === "/open") upgrades.handleUpgrade(req, socket, head, () => {});
-      else if (req.url === "/hold") {
-        heldSocket = socket;
-        releaseUpgrade = () => {
-          if (socket.destroyed) {
-            lateRejected = true;
-            return;
-          }
-          upgrades.handleUpgrade(req, socket, head, () => {});
-        };
-        socket.once("close", heldClosed);
-        socket.resume();
-        heldReady();
-      } else socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
-    });
-    await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
-    const address = local.address();
-    if (!address || typeof address === "string") throw new Error("Missing upgrade server address");
-    const url = `ws://127.0.0.1:${address.port}`;
-    const opened = TestSocket.connect(`${url}/open`, {}, sockets);
-    const held = TestSocket.connect(`${url}/hold`, {}, sockets);
-    const outcomes = [opened, held];
-    const consumed = new Set<Promise<TestSocket>>();
-    let joining: Promise<TestSocket[]> | undefined;
-    let joiningConsumed = false;
-    void Promise.allSettled(outcomes);
-    let failure: { error: unknown } | undefined;
-    try {
-      await opened;
-      await Promise.race([
-        heldAccepted,
-        held.then(() => {
-          throw new Error("Held upgrade opened unexpectedly");
-        }),
-      ]);
-      const refused = TestSocket.connect(`${url}/refuse`, {}, sockets);
-      outcomes.push(refused);
-      joining = joinSocketAttempts([opened, held, refused], sockets);
-      const joined = joining.then(
-        () => ({ success: true as const }),
-        (error: unknown) => ({ success: false as const, error }),
-      );
-      const refusal = await refused.then(
-        () => {
-          throw new Error("Expected refused handshake");
-        },
-        (error: unknown) => error,
-      );
-      expect(refusal).toMatchObject({ message: "Unexpected server response: 403" });
-      const heldFailure = await held.then(
-        () => {
-          throw new Error("Expected held handshake cancellation");
-        },
-        (error: unknown) => error,
-      );
-      expect(heldFailure).toMatchObject({ message: "WebSocket was closed before the connection was established" });
-      const outcome = await joined;
-      expect(outcome.success).toBe(false);
-      if (outcome.success || !(outcome.error instanceof AggregateError))
-        throw new Error("Expected socket setup aggregate");
-      expect(outcome.error.cause).toBe(refusal);
-      expect(outcome.error.errors).toHaveLength(2);
-      expect(outcome.error.errors[0]).toBe(refusal);
-      expect(outcome.error.errors[1]).toBe(heldFailure);
-      consumed.add(refused);
-      consumed.add(held);
-      joiningConsumed = true;
-      heldSocket?.destroy();
-      await heldEnded;
-      releaseUpgrade();
-      expect(lateRejected).toBe(true);
-      expect(sockets.size).toBe(0);
-    } catch (error) {
-      failure = { error };
-    } finally {
-      const errors: unknown[] = [];
-      heldSocket?.destroy();
-      try {
-        await disposeSockets(sockets);
-      } catch (error) {
-        errors.push(error);
-      }
-      const settled = await Promise.allSettled(outcomes);
-      settled.forEach((result, index) => {
-        const operation = outcomes[index];
-        if (result.status === "rejected" && operation && !consumed.has(operation)) errors.push(result.reason);
-      });
-      if (joining) {
-        const joined = await joining.then(
-          () => ({ success: true as const }),
-          (error: unknown) => ({ success: false as const, error }),
-        );
-        if (!joined.success && !joiningConsumed) errors.push(joined.error);
-      }
-      local.closeAllConnections();
-      try {
-        await new Promise<void>((resolve, reject) => upgrades.close((error) => (error ? reject(error) : resolve())));
-      } catch (error) {
-        errors.push(error);
-      }
-      try {
-        await new Promise<void>((resolve, reject) => local.close((error) => (error ? reject(error) : resolve())));
-      } catch (error) {
-        errors.push(error);
-      }
-      if (errors.length) {
-        const all = failure ? [failure.error, ...errors] : errors;
-        failure = { error: new AggregateError(all, "Socket control and cleanup failed", { cause: all[0] }) };
-      }
-    }
-    if (failure) throw failure.error;
-  });
-
-  it("retains a distinct socket error emitted after termination and settles its close", async () => {
-    const sockets = new Set<TestSocket>();
-    const bodyError = new Error("socket body failed");
-    const lateError = new Error("late owned socket diagnostic");
-    const socket = await TestSocket.connect(wsUrl, { Cookie: a1Cookie, Origin: baseUrl }, sockets);
-    let failure: { error: unknown } | undefined;
-    try {
-      throw bodyError;
-    } catch (error) {
-      failure = { error };
-    } finally {
-      try {
-        await socket.dispose((owned) => {
-          owned.emit("error", lateError);
-        });
-      } catch (error) {
-        failure = failure
-          ? {
-              error: new AggregateError([failure.error, error], "Socket body and disposal failed", {
-                cause: failure.error,
-              }),
-            }
-          : { error };
-      } finally {
-        sockets.delete(socket);
-        await disposeSockets(sockets);
-      }
-    }
-    expect(failure?.error).toBeInstanceOf(AggregateError);
-    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected socket combined failure");
-    expect(failure.error.cause).toBe(bodyError);
-    expect(failure.error.errors).toHaveLength(2);
-    expect(failure.error.errors[0]).toBe(bodyError);
-    const cleanup: unknown = failure.error.errors[1];
-    expect(cleanup).toBeInstanceOf(AggregateError);
-    if (!(cleanup instanceof AggregateError)) throw new Error("Expected socket cleanup failure");
-    expect(cleanup.cause).toBe(lateError);
-    expect(cleanup.errors).toHaveLength(1);
-    expect(cleanup.errors[0]).toBe(lateError);
-    expect(socket.closeCode).toBeDefined();
-    expect(sockets.size).toBe(0);
-  });
-
-  it("retains an independent socket error during a refused handshake cleanup", async () => {
-    const sockets = new Set<TestSocket>();
-    const local = createServer();
-    local.on("upgrade", (_request, socket) => socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"));
-    await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
-    const address = local.address();
-    if (!address || typeof address === "string") throw new Error("Missing upgrade server address");
-    const lateError = new Error("late handshake cleanup diagnostic");
-    let failure: { error: unknown } | undefined;
-    try {
-      await TestSocket.connect(`ws://127.0.0.1:${address.port}/`, {}, sockets, (owned) => {
-        owned.emit("error", lateError);
-      });
-      throw new Error("Expected refused handshake");
-    } catch (error) {
-      failure = { error };
-    } finally {
-      const errors: unknown[] = [];
-      try {
-        await disposeSockets(sockets);
-      } catch (error) {
-        errors.push(error);
-      }
-      local.closeAllConnections();
-      try {
-        await new Promise<void>((resolve, reject) => local.close((error) => (error ? reject(error) : resolve())));
-      } catch (error) {
-        errors.push(error);
-      }
-      if (errors.length) {
-        const all = failure ? [failure.error, ...errors] : errors;
-        failure = { error: new AggregateError(all, "Handshake control cleanup failed", { cause: all[0] }) };
-      }
-    }
-    expect(failure?.error).toBeInstanceOf(AggregateError);
-    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected handshake and cleanup failure");
-    expect(failure.error.errors).toHaveLength(2);
-    const handshake: unknown = failure.error.errors[0];
-    expect(handshake).toMatchObject({ message: "Unexpected server response: 403" });
-    expect(failure.error.cause).toBe(handshake);
-    const cleanup: unknown = failure.error.errors[1];
-    expect(cleanup).toBeInstanceOf(AggregateError);
-    if (!(cleanup instanceof AggregateError)) throw new Error("Expected handshake cleanup failure");
-    expect(cleanup.cause).toBe(lateError);
-    expect(cleanup.errors).toHaveLength(1);
-    expect(cleanup.errors[0]).toBe(lateError);
-    expect(sockets.size).toBe(0);
-  });
-
-  it("settles a listener delivered after cleanup starts", async () => {
-    let started = () => {};
-    const verifying = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    let delivered = false;
-    const owner = ownRealtimeListener((owned, onCancel) => {
-      owned.options.verify = (_client, done) => {
-        onCancel(() =>
-          queueMicrotask(() => {
-            delivered = true;
-            done();
-          }),
-        );
-        started();
-      };
-    });
-    const opening = owner.open();
-    const settled = opening.then(
-      () => {},
-      () => {},
-    );
-    let failure: { error: unknown } | undefined;
-    let cleanup: { error: unknown } | undefined;
-    try {
-      await Promise.race([
-        verifying,
-        opening.then(() => {
-          throw new Error("Listener acquired before verify gate");
-        }),
-      ]);
-    } catch (error) {
-      failure = { error };
-    } finally {
-      try {
-        await owner.close();
-      } catch (error) {
-        cleanup = { error };
-      }
-      await settled;
-    }
-    if (failure) {
-      if (cleanup)
-        throw new AggregateError([failure.error, cleanup.error], "Listener control and cleanup failed", {
-          cause: failure.error,
-        });
-      throw failure.error;
-    }
-    const openingResult = await opening.then(
-      () => {
-        throw new Error("Expected listener rejection");
-      },
-      (error: unknown) => error,
-    );
-    expect(openingResult).toBeInstanceOf(Error);
-    expect(openingResult).toHaveProperty("message", "Listener closed during acquisition");
-    expect(cleanup?.error).toBeInstanceOf(AggregateError);
-    if (!(cleanup?.error instanceof AggregateError)) throw new Error("Expected listener cleanup failure");
-    expect(cleanup.error.errors).toHaveLength(1);
-    expect(cleanup.error.errors[0]).toBe(openingResult);
-    expect(delivered).toBe(true);
-    expect(owner.owned.totalCount).toBe(0);
-    expect(owner.hasOwnedClient()).toBe(false);
-  });
-
-  it("retains a late verification failure after the listener body fails", async () => {
-    const bodyError = new Error("listener observation failed");
-    const verificationError = new Error("listener verification failed");
-    let started = () => {};
-    const verifying = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    const owner = ownRealtimeListener((owned, onCancel) => {
-      owned.options.verify = (_client, done) => {
-        onCancel(() => queueMicrotask(() => done(verificationError)));
-        started();
-      };
-    });
-    const opening = owner.open();
-    const result = opening.then(
-      () => ({ value: true }),
-      (error: unknown) => ({ error }),
-    );
-    let failure: { error: unknown } | undefined;
-    try {
-      await Promise.race([
-        verifying,
-        result.then(() => {
-          throw new Error("Opening settled before gate");
-        }),
-      ]);
-      throw bodyError;
-    } catch (error) {
-      failure = { error };
-    } finally {
-      try {
-        await owner.close();
-      } catch (error) {
-        failure = failure
-          ? {
-              error: new AggregateError([failure.error, error], "Listener body and cleanup failed", {
-                cause: failure.error,
-              }),
-            }
-          : { error };
-      }
-    }
-    const actual = await result;
-    expect(actual).toHaveProperty("error", verificationError);
-    expect(failure?.error).toBeInstanceOf(AggregateError);
-    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected combined listener failure");
-    expect(failure.error.errors).toHaveLength(2);
-    expect(failure.error.errors[0]).toBe(bodyError);
-    expect(failure.error.cause).toBe(bodyError);
-    const cleanup = failure.error.errors[1];
-    expect(cleanup).toBeInstanceOf(AggregateError);
-    if (!(cleanup instanceof AggregateError)) throw new Error("Expected listener cleanup failure");
-    expect(cleanup.errors).toHaveLength(1);
-    expect(cleanup.errors[0]).toBe(verificationError);
-    expect(cleanup.cause).toBe(verificationError);
-    expect(owner.owned.totalCount).toBe(0);
-    expect(owner.owned.waitingCount).toBe(0);
-    expect(owner.hasOwnedClient()).toBe(false);
-  });
-
-  it("settles an owned listener and preserves simultaneous body and cleanup errors", async () => {
-    const bodyFailure = new Error("body failed");
-    const cleanupFailure = new Error("cancel failed");
-    const owner = ownRealtimeListener((_owned, onCancel) =>
-      onCancel(() => {
-        throw cleanupFailure;
-      }),
-    );
-    let failure: { error: unknown } | undefined;
-    try {
-      const listener = await owner.open();
-      const pid = await listener.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-      expect(pid.rows[0]?.pid).toBeGreaterThan(0);
-      throw bodyFailure;
-    } catch (error) {
-      failure = { error };
-    } finally {
-      try {
-        await owner.close();
-      } catch (error) {
-        failure = failure
-          ? { error: new AggregateError([failure.error, error], "Body and cleanup failed", { cause: failure.error }) }
-          : { error };
-      }
-    }
-    expect(failure?.error).toBeInstanceOf(AggregateError);
-    if (!(failure?.error instanceof AggregateError)) throw new Error("Expected combined failure");
-    expect(failure.error.errors).toHaveLength(2);
-    expect(failure.error.cause).toBe(bodyFailure);
-    expect(failure.error.errors[0]).toBe(bodyFailure);
-    expect(failure.error.errors[1]).toBeInstanceOf(AggregateError);
-    const cleanup: unknown = failure.error.errors[1];
-    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
-    expect(cleanup.errors).toHaveLength(1);
-    expect(cleanup.errors[0]).toBe(cleanupFailure);
-    expect(cleanup.cause).toBe(cleanupFailure);
-    expect(owner.hasOwnedClient()).toBe(false);
-    expect(owner.owned.totalCount).toBe(0);
-  });
-
-  it.each([false, true])(
-    "aborts and settles its owned HTTP request when the response stalls (cleanup failure %s)",
-    async (injectCleanup) => {
-      const bodyError = new Error("HTTP control body failed");
-      const cleanupError = new Error("HTTP control cleanup failed");
-      let observedClose = () => {};
-      const closed = new Promise<void>((resolve) => {
-        observedClose = resolve;
-      });
-      const local = createServer((_req, res) => {
-        res.on("close", observedClose);
-      });
-      await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
-      let failure: { error: unknown } | undefined;
-      try {
-        const address = local.address();
-        if (!address || typeof address === "string") throw new Error("Missing control server address");
-        await expect(ownedPut(`http://127.0.0.1:${address.port}/`, {}, 100)).rejects.toMatchObject({
-          name: "AbortError",
-        });
-        await Promise.race([
-          closed,
-          new Promise<never>((_, reject) => {
-            const timeout = setTimeout(() => reject(new Error("Control connection did not close")), FRAME_TIMEOUT_MS);
-            void closed.finally(() => clearTimeout(timeout));
-          }),
-        ]);
-        if (injectCleanup) throw bodyError;
-      } catch (error) {
-        failure = { error };
-      } finally {
-        observedClose();
-        local.closeAllConnections();
-        try {
-          await new Promise<void>((resolve, reject) => local.close((error) => (error ? reject(error) : resolve())));
-          if (injectCleanup) await Promise.reject(cleanupError);
-        } catch (error) {
-          failure = failure
-            ? {
-                error: new AggregateError([failure.error, error], "HTTP control and cleanup failed", {
-                  cause: failure.error,
-                }),
-              }
-            : { error };
-        }
-      }
-      if (injectCleanup) {
-        expect(failure?.error).toBeInstanceOf(AggregateError);
-        if (!(failure?.error instanceof AggregateError)) throw new Error("Expected HTTP cleanup failure");
-        expect(failure.error.cause).toBe(bodyError);
-        expect(failure.error.errors).toHaveLength(2);
-        expect(failure.error.errors[0]).toBe(bodyError);
-        expect(failure.error.errors[1]).toBe(cleanupError);
-      } else if (failure) {
-        // Preserve both the original failure and any owned-server cleanup failure.
-        throw failure.error;
-      }
-    },
-  );
-
-  it.each([
-    "normal",
-    "held-disposal",
-    "failed-disposal",
-    "observation-failure",
-    "client-failure",
-    "observation-primary",
-    "client-primary",
-  ] as const)(
-    "publishes a linked REST relation invalidation with the authenticated actor and tenant (%s)",
-    async (control) => {
-      const { source, target, property } = await runInTenant(tenantA.tenantId, async () => {
-        const source = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-        const target = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-        const { property } = await chokePoint.createRelationProperty({
-          sourceDatabaseId: tenantA.databaseId,
-          targetDatabaseId: tenantA.databaseId,
-          key: `linked${randomUUID().replace(/-/g, "").slice(0, 8)}`,
-          name: "Linked",
-          cardinality: "many_to_many",
-        });
         await withTransaction(pool, (client) =>
-          insertValueLink(client, { itemId: source.id, propertyKey: property.key, ruleKey: "test", sources: [] }),
+          insertValueLink(client, { itemId: item.id, propertyKey: property.key, ruleKey: "test", sources: [] }),
         );
-        return { source, target, property };
+        return item;
       });
-      const setupSentinel = await publishSentinel(tenantA.tenantId);
-      await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(setupSentinel))));
-      const listenerOwner = ownRealtimeListener();
-      let listener: PoolClient | undefined;
-      let failure: { error: unknown } | undefined;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let onNotification: ((message: { channel: string; payload?: string }) => void) | undefined;
-      let cancelObservation: (() => void) | undefined;
-      const observationCancelled = new Error("Observation cancelled");
-      const observationBodyFailure = new Error("Observation body failed");
-      const clientBodyFailure = new Error("HTTP observation body failed");
-      let lateClientResult: { ok: true; value: number } | { ok: false; error: unknown } | undefined;
-      let observationResult: Promise<{ ok: true; value: unknown } | { ok: false; error: unknown }> | undefined;
-      let observationConsumed = false;
-      let requestServer: Server | undefined;
-      const marker = randomUUID();
-      const requests: Array<{ task?: Promise<void> }> = [];
-      let gateEntered = () => {};
-      let releaseGate = () => {};
-      const admitted = new Promise<void>((resolve) => {
-        gateEntered = resolve;
-      });
-      const gate = new Promise<void>((resolve) => {
-        releaseGate = resolve;
-      });
-      let releasePublication = () => {};
-      const publicationGate = new Promise<void>((resolve) => {
-        releasePublication = resolve;
-      });
-      let holdFirstPublication = true;
-      const failedIds = [randomUUID(), randomUUID()];
-      const injectedFailures = [new Error("first publication"), new Error("second publication")];
-      const releaseFailures: Array<() => void> = [];
-      const failureGates = failedIds.map(() => new Promise<void>((resolve) => releaseFailures.push(resolve)));
-      const enteredFailures: Array<() => void> = [];
-      const entered = failedIds.map(() => new Promise<void>((resolve) => enteredFailures.push(resolve)));
-      let settlePublications = async () => {};
-      let publicationProbe: Promise<void> | undefined;
-      let disposalReachedPublications = () => {};
-      const disposalAtPublications = new Promise<void>((resolve) => {
-        disposalReachedPublications = resolve;
-      });
-      const boundedSignal = async (signal: Promise<unknown>): Promise<void> => {
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        try {
-          await Promise.race([
-            signal,
-            new Promise<never>((_, reject) => {
-              timeout = setTimeout(() => reject(new Error("Publication control timed out")), FRAME_TIMEOUT_MS);
-            }),
-          ]);
-        } finally {
-          if (timeout) clearTimeout(timeout);
-        }
-      };
-      let disposal: Promise<void> | undefined;
-      const dispose = (): Promise<void> => {
-        if (disposal) return disposal;
-        disposal = (async () => {
-          releaseGate();
-          const cleanupErrors: unknown[] = [];
-          try {
-            if (requestServer) {
-              requestServer.closeIdleConnections();
-              await new Promise<void>((resolve, reject) =>
-                requestServer?.close((error) => (error ? reject(error) : resolve())),
-              );
-            }
-          } catch (error) {
-            cleanupErrors.push(error);
-          }
-          for (const request of requests) {
-            try {
-              if (!request.task) {
-                cleanupErrors.push(new Error("Owned request was not started"));
-                continue;
-              }
-              await request.task;
-            } catch (error) {
-              cleanupErrors.push(error);
-            }
-          }
-          try {
-            await publicationProbe;
-          } catch (error) {
-            cleanupErrors.push(error);
-          }
-          try {
-            disposalReachedPublications();
-            await settlePublications();
-          } catch (error) {
-            cleanupErrors.push(error);
-          }
-          if (timer) clearTimeout(timer);
-          if (onNotification) listener?.removeListener("notification", onNotification);
-          cancelObservation?.();
-          if (observationResult) {
-            const outcome = await observationResult;
-            if (
-              !outcome.ok &&
-              !observationConsumed &&
-              outcome.error !== observationCancelled &&
-              !(failure !== undefined && failure.error === outcome.error)
-            )
-              cleanupErrors.push(outcome.error);
-          }
-          try {
-            await listenerOwner.close();
-          } catch (error) {
-            cleanupErrors.push(error);
-          }
-          if (cleanupErrors.length) {
-            const errors = failure ? [failure.error, ...cleanupErrors] : cleanupErrors;
-            failure = {
-              error: new AggregateError(errors, "Realtime observation and cleanup failed", { cause: errors[0] }),
-            };
-          }
-        })();
-        return disposal;
-      };
-      try {
-        const actualAdapter = adapterRouteModule.createAdapterRequestListener;
-        vi.spyOn(adapterRouteModule, "createAdapterRequestListener").mockImplementation((...args) => {
-          const actual = actualAdapter(...args);
-          return (req, res) => {
-            if (req.headers["x-test-owner"] !== marker) return actual(req, res);
-            const entry: { task?: Promise<void> } = {};
-            requests.push(entry);
-            const task = actual(req, res);
-            entry.task = task;
-            void task.catch(() => {});
-            return task;
-          };
-        });
-        const actualItems = itemRoutesModule.createItemRoutes;
-        vi.spyOn(itemRoutesModule, "createItemRoutes").mockImplementation((...args) =>
-          actualItems(...args).map((route) => {
-            if (route.method !== "PUT" || route.path !== "/api/items/:id/relations/:propertyKey/:targetItemId")
-              return route;
-            const actual = route.handler;
-            return {
+    const valueLinkOf = async (itemId: string) =>
+      (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([itemId]))).get(itemId)?.[
+        property.key
+      ];
+
+    // A gate inside the relation route holds a marked request until its client has gone away.
+    const marker = randomUUID();
+    let admit = () => {};
+    const admitted = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let releaseGate = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const actualItemRoutes = itemRoutesModule.createItemRoutes;
+    vi.spyOn(itemRoutesModule, "createItemRoutes").mockImplementation((...args) =>
+      actualItemRoutes(...args).map((route) =>
+        route.method === "PUT" && route.path === "/api/items/:id/relations/:propertyKey/:targetItemId"
+          ? {
               ...route,
               handler: async (context) => {
                 if (context.req.headers["x-test-gate"] === marker) {
-                  gateEntered();
+                  admit();
                   await gate;
                 }
-                return actual(context);
+                return route.handler(context);
               },
-            };
-          }),
-        );
-        const dispatcher = await createDispatcher(pool, {
-          passwordResetMailer: noopMailer,
-          appBaseUrl: "http://localhost",
-          setupToken: "unused-setup-token",
-          moduleRegistry,
-          blobStorage: new LocalFsBlobStorageWriter(blobDir ?? ""),
-          maxFileSizeBytes: 10 * 1024 * 1024,
-        });
-        requestServer = createServer(dispatcher);
-        await new Promise<void>((resolve) => requestServer?.listen(0, "127.0.0.1", resolve));
-        const requestAddress = requestServer.address();
-        if (!requestAddress || typeof requestAddress === "string") throw new Error("Missing owned request server");
-        const requestBase = `http://127.0.0.1:${requestAddress.port}`;
-        listener = await listenerOwner.open();
-        const activeListener = listener;
-        const observed = new Promise<unknown>((resolve, reject) => {
-          cancelObservation = () => reject(observationCancelled);
-          timer = setTimeout(() => reject(new Error("Timed out waiting for linked relation event")), FRAME_TIMEOUT_MS);
-          onNotification = (notification) => {
-            if (notification.channel !== "semprec_events" || !notification.payload) return;
-            try {
-              const payload: unknown = JSON.parse(notification.payload);
-              if (
-                !isRecord(payload) ||
-                !isRecord(payload.message) ||
-                payload.message.scope !== "item" ||
-                payload.message.itemId !== source.id
-              )
-                return;
-              resolve(payload);
-            } catch (error) {
-              reject(error instanceof Error ? error : new Error("Invalid notification"));
             }
-          };
-          activeListener.on("notification", onNotification);
-        });
-        observationResult = observed.then(
-          (value) => ({ ok: true as const, value }),
-          (error: unknown) => ({ ok: false as const, error }),
-        );
-        const querySpy = vi.spyOn(pool, "query");
-        const publications: Array<Promise<{ ok: true } | { ok: false; error: unknown }>> = [];
-        let settledPublicationCount = 0;
-        // The proxy forwards the original receiver to preserve the pool method's binding.
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        pool.query = new Proxy(pool.query, {
-          apply(target, receiver, args: unknown[]) {
-            const result: unknown = Reflect.apply(target, receiver, args);
-            if (typeof args[0] === "string" && args[0].includes("pg_notify")) {
-              if (!(result instanceof Promise)) throw new Error("Expected asynchronous publication");
-              const values: unknown = args[1];
-              const payload = Array.isArray(values) && typeof values[1] === "string" ? values[1] : "";
-              const failingIndex =
-                control === "failed-disposal" ? failedIds.findIndex((id) => payload.includes(id)) : -1;
-              const forwarded =
-                failingIndex >= 0
-                  ? result.then(async () => {
-                      enteredFailures[failingIndex]?.();
-                      await failureGates[failingIndex];
-                      const injected = injectedFailures[failingIndex];
-                      if (!injected) throw new Error("Missing injected publication failure");
-                      throw injected;
-                    })
-                  : holdFirstPublication
-                    ? result.then(async (value: unknown) => {
-                        await publicationGate;
-                        return value;
-                      })
-                    : result;
-              holdFirstPublication = false;
-              publications.push(
-                forwarded.then(
-                  () => ({ ok: true as const }),
-                  (error: unknown) => ({ ok: false as const, error }),
-                ),
-              );
-              return forwarded;
-            }
-            return result;
-          },
-        });
-        const publicationsFor = (scope: "item" | "relation", itemId: string): Record<string, unknown>[] => {
-          const messages: Record<string, unknown>[] = [];
-          for (const call of querySpy.mock.calls) {
-            const args: readonly unknown[] = call;
-            if (typeof args[0] !== "string" || !args[0].includes("pg_notify") || !Array.isArray(args[1])) continue;
-            const values: unknown[] = args[1];
-            if (values[0] !== "semprec_events" || typeof values[1] !== "string") continue;
-            const value: unknown = JSON.parse(values[1]);
-            if (isRecord(value) && value.type === "invalidation" && value.scope === scope && value.itemId === itemId)
-              messages.push(value);
-          }
-          return messages;
-        };
-        const itemPublications = (itemId: string) => publicationsFor("item", itemId);
-        settlePublications = async () => {
-          const errors: unknown[] = [];
-          while (settledPublicationCount < publications.length) {
-            const end = publications.length;
-            const outcomes = await Promise.all(publications.slice(settledPublicationCount, end));
-            settledPublicationCount = end;
-            for (const outcome of outcomes) if (!outcome.ok) errors.push(outcome.error);
-          }
-          if (errors.length) throw new AggregateError(errors, "Publication failed", { cause: errors[0] });
-        };
-        const causalBarrier = async (itemId: string): Promise<void> => {
-          await settlePublications();
-          const marker = randomUUID();
-          let sentinelTimer: ReturnType<typeof setTimeout> | undefined;
-          const forbiddenEnvelopes: unknown[] = [];
-          let removeSentinel: (() => void) | undefined;
-          let cancelSentinel: (() => void) | undefined;
-          const sentinelCancelled = new Error("Sentinel observation cancelled");
-          let sentinelFailure: { error: unknown } | undefined;
-          const seen = new Promise<void>((resolve, reject) => {
-            cancelSentinel = () => reject(sentinelCancelled);
-            sentinelTimer = setTimeout(() => reject(new Error("Sentinel observation timed out")), FRAME_TIMEOUT_MS);
-            const handler = (message: { channel: string; payload?: string }) => {
-              if (message.channel !== "semprec_events" || !message.payload) return;
-              try {
-                const envelope: unknown = JSON.parse(message.payload);
-                if (!isRecord(envelope) || !isRecord(envelope.message)) throw new Error("Invalid realtime envelope");
-                if (envelope.message.itemId === itemId && envelope.message.op === "update")
-                  forbiddenEnvelopes.push(envelope);
-                if (envelope.message.databaseId === marker) resolve();
-              } catch (error) {
-                reject(error instanceof Error ? error : new Error("Invalid sentinel"));
-              }
-            };
-            activeListener.on("notification", handler);
-            removeSentinel = () => activeListener.removeListener("notification", handler);
-          });
-          const settled = seen.then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
-          );
-          try {
-            await runInTenant(tenantA.tenantId, () =>
-              publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId: marker }),
-            );
-            await seen;
-            expect(forbiddenEnvelopes).toEqual([]);
-            const frames = await Promise.all([a1, a2].map((socket) => socket.drainUntil(isSentinel(marker))));
-            for (const stream of frames) {
-              expect(
-                stream.filter(
-                  (frame) =>
-                    frame.kind === "text" &&
-                    frame.type === "invalidate" &&
-                    frame.body.itemId === itemId &&
-                    frame.body.op === "update",
-                ),
-              ).toEqual([]);
-            }
-            await expectNothingReceived(b1, tenantB.tenantId);
-          } catch (error) {
-            sentinelFailure = { error };
-          } finally {
-            if (sentinelTimer) clearTimeout(sentinelTimer);
-            removeSentinel?.();
-            cancelSentinel?.();
-            const outcome = await settled;
-            if (!outcome.ok && outcome.error !== sentinelCancelled && outcome.error !== sentinelFailure?.error) {
-              sentinelFailure = sentinelFailure
-                ? {
-                    error: new AggregateError(
-                      [sentinelFailure.error, outcome.error],
-                      "Sentinel body and observation failed",
-                      { cause: sentinelFailure.error },
-                    ),
-                  }
-                : { error: outcome.error };
-            }
-          }
-          if (sentinelFailure) throw sentinelFailure.error;
-        };
-        const url = `${requestBase}/api/items/${source.id}/relations/${property.key}/${target.id}`;
-        const headers = { Cookie: a1Cookie, Origin: requestBase, "x-test-owner": marker };
-        if (control === "observation-failure" || control === "observation-primary") {
-          releasePublication();
-          await runInTenant(tenantA.tenantId, () =>
-            pool.query<{ pg_notify: string }>("SELECT pg_notify($1, $2)", ["semprec_events", "{"]),
-          );
-          const outcome = await observationResult;
-          expect(outcome.ok).toBe(false);
-          if (outcome.ok) throw new Error("Expected real observation failure");
-          expect(outcome.error).toBeInstanceOf(SyntaxError);
-          if (control === "observation-primary") await observed;
-          throw observationBodyFailure;
-        }
-        expect(await ownedPut(url, headers)).toBe(200);
-        expect(requests).toHaveLength(1);
-        await requests[0]?.task;
-        expect(await observed).toMatchObject({
-          tenantId: tenantA.tenantId,
-          message: { type: "invalidation", scope: "item", itemId: source.id, userId: tenantA.userId },
-        });
-        observationConsumed = true;
-        expect(itemPublications(source.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
-        expect(publicationsFor("relation", source.id)).toEqual([
+          : route,
+      ),
+    );
+    const requestServer = createServer(await createDispatcher(pool, dispatcherOptions()));
+    const requestBase = `http://${await listen(requestServer)}`;
+    const putRelation = (itemId: string, headers: Record<string, string> = {}, controller?: AbortController) =>
+      put(
+        `${requestBase}/api/items/${itemId}/relations/${property.key}/${target.id}`,
+        { Cookie: a1Cookie, Origin: requestBase, ...headers },
+        controller,
+      );
+
+    const publications = recordPublications();
+    /** Every publication so far is ordered before the sentinel; none announced an update of `itemId`. */
+    const expectNoUpdateOf = async (itemId: string) => {
+      await publications.settle();
+      expect(publications.of({ scope: "item", itemId })).toEqual([]);
+      await expectSilence([a1, a2], tenantA, isInvalidate({ itemId, op: "update" }));
+      await expectNothingReceived(b1, tenantB);
+    };
+    const settleSetup = async () => {
+      await drainA();
+      await publications.settle();
+      publications.clear();
+    };
+    await withCleanup(
+      async () => {
+        const source = await linkedItem();
+        await settleSetup();
+        expect(await putRelation(source.id)).toBe(200);
+        await publications.settle();
+        expect(publications.of({ scope: "item", itemId: source.id })).toEqual([
+          expect.objectContaining({ userId: tenantA.userId }),
+        ]);
+        expect(publications.of({ scope: "relation", itemId: source.id })).toEqual([
           {
             type: "invalidation",
             scope: "relation",
@@ -2970,7 +1687,7 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             userId: tenantA.userId,
           },
         ]);
-        expect(publicationsFor("relation", target.id)).toEqual([
+        expect(publications.of({ scope: "relation", itemId: target.id })).toEqual([
           {
             type: "invalidation",
             scope: "relation",
@@ -2981,572 +1698,175 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
             userId: tenantA.userId,
           },
         ]);
-        querySpy.mockClear();
-        if (control === "held-disposal") {
-          let finished = false;
-          const disposing = dispose().then(() => {
-            finished = true;
-          });
-          void disposing.catch(() => {});
-          try {
-            await boundedSignal(disposalAtPublications);
-            expect(finished).toBe(false);
-            expect(activeListener.listenerCount("notification")).toBeGreaterThan(0);
-          } finally {
-            releasePublication();
-            await disposing;
-          }
-          expect(finished).toBe(true);
-          if (failure) throw failure.error;
-          return;
-        }
-        if (control === "failed-disposal") {
-          releasePublication();
-          const publishFailure = (databaseId: string) =>
-            runInTenant(tenantA.tenantId, () =>
-              publishRealtimeMessage(pool, { type: "invalidation", scope: "schema", databaseId }),
-            ).then(
-              () => ({ ok: true as const }),
-              (error: unknown) => ({ ok: false as const, error }),
-            );
-          const [firstId, secondId] = failedIds;
-          const [firstEntered, secondEntered] = entered;
-          if (!firstId || !secondId || !firstEntered || !secondEntered) throw new Error("Missing publication control");
-          const attempts = [publishFailure(firstId)];
-          let disposing: Promise<void> | undefined;
-          try {
-            await boundedSignal(firstEntered);
-            attempts.push(publishFailure(secondId));
-            await boundedSignal(secondEntered);
-            disposing = dispose();
-            void disposing.catch(() => {});
-            await boundedSignal(disposalAtPublications);
-            releaseFailures[0]?.();
-            const first = await attempts[0];
-            expect(first?.ok).toBe(false);
-            if (first && !first.ok) expect(first.error).toBe(injectedFailures[0]);
-            let finished = false;
-            void disposing.then(() => {
-              finished = true;
-            });
-            await Promise.resolve();
-            expect(finished).toBe(false);
-            expect(activeListener.listenerCount("notification")).toBeGreaterThan(0);
-          } finally {
-            for (const release of releaseFailures) release();
-            await Promise.all(attempts);
-            await disposing;
-          }
-          const error = failure?.error;
-          expect(error).toBeInstanceOf(AggregateError);
-          if (!(error instanceof AggregateError)) throw new Error("Expected cleanup failure");
-          const publicationsError: unknown = error.errors[0];
-          expect(publicationsError).toBeInstanceOf(AggregateError);
-          if (!(publicationsError instanceof AggregateError)) throw new Error("Expected publication failures");
-          expect(error.cause).toBe(publicationsError);
-          expect(publicationsError.errors).toHaveLength(2);
-          expect(publicationsError.errors[0]).toBe(injectedFailures[0]);
-          expect(publicationsError.errors[1]).toBe(injectedFailures[1]);
-          expect(publicationsError.cause).toBe(injectedFailures[0]);
-          const second = await attempts[1];
-          expect(second?.ok).toBe(false);
-          if (second && !second.ok) expect(second.error).toBe(injectedFailures[1]);
-          expect(activeListener.listenerCount("notification")).toBe(0);
-          failure = undefined;
-          return;
-        }
-        let publicationSettled = false;
-        const waitingPublication = settlePublications().then(() => {
-          publicationSettled = true;
-        });
-        publicationProbe = waitingPublication;
-        void waitingPublication.catch(() => {});
-        await Promise.resolve();
-        expect(publicationSettled).toBe(false);
-        expect(activeListener.listenerCount("notification")).toBeGreaterThan(0);
-        releasePublication();
-        try {
-          await waitingPublication;
-        } finally {
-          publicationProbe = undefined;
-        }
         await expectInvalidationInA({ scope: "item", itemId: source.id, op: "update" });
-        expect(await ownedPut(url, headers)).toBe(200);
-        expect(requests).toHaveLength(2);
-        await requests[1]?.task;
-        await causalBarrier(source.id);
-        expect(itemPublications(source.id)).toEqual([]);
 
-        const heldSource = await runInTenant(tenantA.tenantId, async () => {
-          const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-          await withTransaction(pool, (client) =>
-            insertValueLink(client, {
-              itemId: item.id,
-              propertyKey: property.key,
-              ruleKey: "test",
-              sources: [],
-            }),
-          );
-          return item;
-        });
-        await causalBarrier(heldSource.id);
-        querySpy.mockClear();
+        publications.clear();
+        expect(await putRelation(source.id)).toBe(200);
+        await expectNoUpdateOf(source.id);
+
+        // The client gives up while the request is held; the server still completes and announces the write.
+        const held = await linkedItem();
+        await settleSetup();
         const controller = new AbortController();
-        if (control === "client-primary") controller.abort();
-        const heldRequest = ownedPut(
-          `${requestBase}/api/items/${heldSource.id}/relations/${property.key}/${target.id}`,
-          { ...headers, "x-test-gate": marker },
-          FRAME_TIMEOUT_MS,
-          controller,
-        );
-        const heldSettled = heldRequest.then(
-          (value) => ({ ok: true as const, value }),
-          (error: unknown) => ({ ok: false as const, error }),
-        );
-        let heldFailure: { error: unknown } | undefined;
-        let heldConsumed = false;
-        try {
-          await Promise.race([
-            admitted,
-            heldRequest.then(() => {
-              throw new Error("Request finished before admission");
-            }),
-          ]);
-          expect(requests).toHaveLength(3);
-          const serverTask = requests[2]?.task;
-          if (!serverTask) throw new Error("Missing owned server completion");
-          if (control === "client-failure") throw clientBodyFailure;
-          controller.abort();
-          const expected = await heldSettled;
-          expect(expected.ok).toBe(false);
-          if (expected.ok) throw new Error("Expected aborted client request");
-          expect(expected.error).toMatchObject({ name: "AbortError" });
-          heldConsumed = true;
-          let completed = false;
-          void serverTask.then(
-            () => {
-              completed = true;
-            },
-            () => {
-              completed = true;
-            },
-          );
-          await Promise.resolve();
-          expect(completed).toBe(false);
-          releaseGate();
-          await serverTask;
-          await settlePublications();
-          expect(completed).toBe(true);
-          expect(
-            (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([heldSource.id]))).get(
-              heldSource.id,
-            )?.[property.key],
-          ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
-          expect(itemPublications(heldSource.id)).toEqual([expect.objectContaining({ userId: tenantA.userId })]);
-          await expectInvalidationInA({ scope: "item", itemId: heldSource.id, op: "update" });
-        } catch (error) {
-          heldFailure = { error };
-        } finally {
-          controller.abort();
-          releaseGate();
-          lateClientResult = await heldSettled;
-          if (
-            !lateClientResult.ok &&
-            !heldConsumed &&
-            !(heldFailure !== undefined && heldFailure.error === lateClientResult.error)
-          ) {
-            heldFailure = heldFailure
-              ? {
-                  error: new AggregateError(
-                    [heldFailure.error, lateClientResult.error],
-                    "HTTP body and client failed",
-                    { cause: heldFailure.error },
-                  ),
-                }
-              : { error: lateClientResult.error };
-          }
-        }
-        if (heldFailure) throw heldFailure.error;
-        const unauthorized = await ownedPut(`${requestBase}/api/items/${randomUUID()}/relations/x/${randomUUID()}`, {
-          Origin: requestBase,
-          "x-test-owner": marker,
-        });
-        expect(unauthorized).toBe(401);
-        expect(requests).toHaveLength(4);
-        await requests[3]?.task;
+        const heldRequest = putRelation(held.id, { "x-test-gate": marker }, controller);
+        await Promise.race([admitted, heldRequest.then(() => Promise.reject(new Error("Finished before admission")))]);
+        controller.abort();
+        await expect(heldRequest).rejects.toMatchObject({ name: "AbortError" });
+        releaseGate();
+        await expectInvalidationInA({ scope: "item", itemId: held.id, op: "update" });
+        await publications.settle();
+        expect(publications.of({ scope: "item", itemId: held.id })).toEqual([
+          expect.objectContaining({ userId: tenantA.userId }),
+        ]);
+        expect(await valueLinkOf(held.id)).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
 
-        const rollbackSource = await runInTenant(tenantA.tenantId, async () => {
-          const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-          await chokePoint.createRelation({
-            relationPropertyId: property.id,
-            callerItemId: item.id,
-            targetItemId: target.id,
-          });
-          await withTransaction(pool, (client) =>
-            insertValueLink(client, {
-              itemId: item.id,
-              propertyKey: property.key,
-              ruleKey: "test",
-              sources: [],
-            }),
-          );
-          return item;
-        });
-        await causalBarrier(rollbackSource.id);
-        querySpy.mockClear();
-        const rollbackFailure = new Error("rollback relation invalidation");
-        await expect(
-          runInTenant(tenantA.tenantId, () =>
-            withTransaction(pool, async (client) => {
-              await deleteRelationWithClient(
-                client,
-                {
-                  relationPropertyId: property.id,
-                  callerItemId: rollbackSource.id,
-                  targetItemId: target.id,
-                },
-                undefined,
-                { writerKind: "user" },
-                tenantA.userId,
-              );
-              throw rollbackFailure;
-            }),
-          ),
-        ).rejects.toBe(rollbackFailure);
-        await causalBarrier(rollbackSource.id);
-        expect(itemPublications(rollbackSource.id)).toEqual([]);
         expect(
-          (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([rollbackSource.id]))).get(
-            rollbackSource.id,
-          )?.[property.key],
-        ).toMatchObject({ valueKind: "inherited", brokenBy: null });
-        const background = await runInTenant(tenantA.tenantId, async () => {
-          const item = await chokePoint.createItem({ databaseId: tenantA.databaseId, properties: {} });
-          await withTransaction(pool, (client) =>
-            insertValueLink(client, {
-              itemId: item.id,
-              propertyKey: property.key,
-              ruleKey: "test",
-              sources: [],
-            }),
-          );
-          return item;
-        });
-        await causalBarrier(background.id);
-        querySpy.mockClear();
-        let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
-        let backgroundHandler: ((message: { channel: string; payload?: string }) => void) | undefined;
-        let cancelBackground: (() => void) | undefined;
-        const backgroundCancelled = new Error("Background observation cancelled");
-        let backgroundFailure: { error: unknown } | undefined;
-        const backgroundEvent = new Promise<unknown>((resolve, reject) => {
-          cancelBackground = () => reject(backgroundCancelled);
-          backgroundTimer = setTimeout(() => reject(new Error("Background observation timed out")), FRAME_TIMEOUT_MS);
-          backgroundHandler = (notification) => {
-            if (notification.channel !== "semprec_events" || !notification.payload) return;
-            try {
-              const envelope: unknown = JSON.parse(notification.payload);
-              if (
-                isRecord(envelope) &&
-                isRecord(envelope.message) &&
-                envelope.message.scope === "item" &&
-                envelope.message.itemId === background.id &&
-                envelope.message.op === "update"
-              )
-                resolve(envelope);
-            } catch (error) {
-              reject(error instanceof Error ? error : new Error("Invalid background envelope"));
-            }
-          };
-          activeListener.on("notification", backgroundHandler);
-        });
-        const backgroundSettled = backgroundEvent.then(
-          () => ({ ok: true as const }),
-          (error: unknown) => ({ ok: false as const, error }),
-        );
-        try {
-          await runInTenant(tenantA.tenantId, () =>
-            chokePoint.createRelation(
-              {
-                relationPropertyId: property.id,
-                callerItemId: background.id,
-                targetItemId: target.id,
-              },
+          await put(`${requestBase}/api/items/${randomUUID()}/relations/x/${randomUUID()}`, { Origin: requestBase }),
+        ).toBe(401);
+
+        const rolledBack = await linkedItem(true);
+        await settleSetup();
+        await expect(
+          inTenantTransaction(tenantA, true, (client) =>
+            deleteRelationWithClient(
+              client,
+              { relationPropertyId: property.id, callerItemId: rolledBack.id, targetItemId: target.id },
+              undefined,
               { writerKind: "user" },
+              tenantA.userId,
             ),
-          );
-          expect(itemPublications(background.id)).toEqual([
-            expect.objectContaining({ scope: "item", itemId: background.id, op: "update" }),
-          ]);
-          expect(itemPublications(background.id)[0]).not.toHaveProperty("userId");
-          const envelope = await backgroundEvent;
-          expect(envelope).toMatchObject({
-            tenantId: tenantA.tenantId,
-            message: { itemId: background.id, op: "update" },
-          });
-          if (!isRecord(envelope) || !isRecord(envelope.message)) throw new Error("Invalid background envelope");
-          expect(envelope.message).not.toHaveProperty("userId");
-          expect(
-            (await runInTenant(tenantA.tenantId, () => chokePoint.getValueLinksForItems([background.id]))).get(
-              background.id,
-            )?.[property.key],
-          ).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
-          await expectInvalidationInA({ scope: "item", itemId: background.id, op: "update" });
-        } catch (error) {
-          backgroundFailure = { error };
-        } finally {
-          if (backgroundTimer) clearTimeout(backgroundTimer);
-          if (backgroundHandler) activeListener.removeListener("notification", backgroundHandler);
-          cancelBackground?.();
-          const outcome = await backgroundSettled;
-          if (!outcome.ok && outcome.error !== backgroundCancelled && outcome.error !== backgroundFailure?.error) {
-            backgroundFailure = backgroundFailure
-              ? {
-                  error: new AggregateError(
-                    [backgroundFailure.error, outcome.error],
-                    "Background body and observation failed",
-                    { cause: backgroundFailure.error },
-                  ),
-                }
-              : { error: outcome.error };
-          }
-        }
-        if (backgroundFailure) throw backgroundFailure.error;
-      } catch (error) {
-        failure =
-          failure && failure.error !== error
-            ? {
-                error: new AggregateError([error, failure.error], "Realtime observation and cleanup failed", {
-                  cause: error,
-                }),
-              }
-            : { error };
-      } finally {
-        releasePublication();
-        for (const release of releaseFailures) release();
-        await dispose();
-      }
-      if (control === "client-primary") {
-        if (!lateClientResult || lateClientResult.ok) throw new Error("Expected primary client failure");
-        expect(lateClientResult.error).toMatchObject({ name: "AbortError" });
-        expect(failure).toBeDefined();
-        expect(failure?.error).toBe(lateClientResult.error);
-        expect(listener?.listenerCount("notification")).toBe(0);
-        expect(listenerOwner.hasOwnedClient()).toBe(false);
-        return;
-      }
-      if (control === "observation-primary") {
-        if (!observationResult) throw new Error("Missing observation result");
-        const outcome = await observationResult;
-        if (outcome.ok) throw new Error("Expected primary observation failure");
-        expect(outcome.error).toBeInstanceOf(SyntaxError);
-        expect(failure).toBeDefined();
-        expect(failure?.error).toBe(outcome.error);
-        expect(listener?.listenerCount("notification")).toBe(0);
-        expect(listenerOwner.hasOwnedClient()).toBe(false);
-        return;
-      }
-      if (control === "client-failure") {
-        if (!lateClientResult || lateClientResult.ok) throw new Error("Expected late client failure");
-        expect(lateClientResult.error).toMatchObject({ name: "AbortError" });
-        expect(failure?.error).toBeInstanceOf(AggregateError);
-        if (!(failure?.error instanceof AggregateError)) throw new Error("Expected client cleanup failure");
-        expect(failure.error.cause).toBe(clientBodyFailure);
-        expect(failure.error.errors).toHaveLength(2);
-        expect(failure.error.errors[0]).toBe(clientBodyFailure);
-        expect(failure.error.errors[1]).toBe(lateClientResult.error);
-        expect(listener?.listenerCount("notification")).toBe(0);
-        expect(listenerOwner.hasOwnedClient()).toBe(false);
-        return;
-      }
-      if (control === "observation-failure") {
-        if (!observationResult) throw new Error("Missing observation result");
-        const outcome = await observationResult;
-        expect(outcome.ok).toBe(false);
-        if (outcome.ok) throw new Error("Expected real observation failure");
-        expect(outcome.error).toBeInstanceOf(SyntaxError);
-        expect(failure?.error).toBeInstanceOf(AggregateError);
-        if (!(failure?.error instanceof AggregateError)) throw new Error("Expected observation cleanup failure");
-        expect(failure.error.cause).toBe(observationBodyFailure);
-        expect(failure.error.errors).toHaveLength(2);
-        expect(failure.error.errors[0]).toBe(observationBodyFailure);
-        expect(failure.error.errors[1]).toBe(outcome.error);
-        expect(listener?.listenerCount("notification")).toBe(0);
-        expect(listenerOwner.hasOwnedClient()).toBe(false);
-        return;
-      }
-      if (failure) {
-        // Preserve the original failure rather than replacing it with a timeout wrapper.
-        throw failure.error;
-      }
-    },
-  );
+          ),
+        ).rejects.toThrow(ROLLBACK);
+        await expectNoUpdateOf(rolledBack.id);
+        expect(await valueLinkOf(rolledBack.id)).toMatchObject({ valueKind: "inherited", brokenBy: null });
+
+        const background = await linkedItem();
+        await settleSetup();
+        await runInTenant(tenantA.tenantId, () =>
+          chokePoint.createRelation(
+            { relationPropertyId: property.id, callerItemId: background.id, targetItemId: target.id },
+            { writerKind: "user" },
+          ),
+        );
+        const backgroundPublications = publications.of({ scope: "item", itemId: background.id });
+        expect(backgroundPublications).toEqual([expect.objectContaining({ op: "update" })]);
+        expect(backgroundPublications[0]).not.toHaveProperty("userId");
+        expect(await valueLinkOf(background.id)).toMatchObject({ valueKind: "inheritedBroken", brokenBy: "user" });
+        await expectInvalidationInA({ scope: "item", itemId: background.id, op: "update" });
+      },
+      async () => {
+        releaseGate();
+        publications.restore();
+        requestServer.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          requestServer.close((error) => (error ? reject(error) : resolve())),
+        );
+      },
+    );
+  });
 
   it("delivers committed approval resolution to its user's sockets, with no replay or rollback event", async () => {
-    async function createApprovalNotification(): Promise<{ requestId: string; notificationId: string }> {
-      const request = await runInTenant(tenantA.tenantId, () =>
-        createPendingApprovalRequest(pool, {
-          agentRunId: tenantA.runId,
-          toolName: "search",
-          riskClass: "write",
-          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
-          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    const approvalNotification = (fixture: TenantFixture, sourceId: string) =>
+      inTenantTransaction(fixture, false, (client) =>
+        writeNotification(client, {
+          userId: fixture.userId,
+          kind: "approval_pending",
+          linkHref: null,
+          sourceTable: "approval_requests",
+          sourceId,
+          transitionInstance: "pending",
         }),
       );
-      const notificationId = await runInTenant(tenantA.tenantId, () =>
-        withTransaction(pool, (client) =>
-          writeNotification(client, {
-            userId: tenantA.userId,
-            kind: "approval_pending",
-            linkHref: null,
-            sourceTable: "approval_requests",
-            sourceId: request.id,
-            transitionInstance: "pending",
-          }),
-        ),
+    async function createApprovalNotification(): Promise<{ requestId: string; notificationId: string }> {
+      const request = await runInTenant(tenantA.tenantId, () =>
+        createPendingApprovalRequest(pool, pendingApprovalInput(tenantA.runId)),
       );
-      const matches = (frame: Frame) =>
-        frame.kind === "text" &&
-        frame.type === "notification" &&
-        isRecord(frame.body.notification) &&
-        frame.body.notification.id === notificationId;
-      await Promise.all([a1.nextMatching(matches), a2.nextMatching(matches)]);
-      await expectNothingReceived(b1, tenantB.tenantId);
+      const notificationId = await approvalNotification(tenantA, request.id);
+      await nextOnA(isNotification(notificationId));
+      await expectNothingReceived(b1, tenantB);
       return { requestId: request.id, notificationId };
     }
-    async function decideOverHttp(id: string): Promise<Response> {
-      return fetch(`${baseUrl}/api/approval-requests/${id}`, {
+    const decideOverHttp = (id: string) =>
+      fetch(`${baseUrl}/api/approval-requests/${id}`, {
         method: "PATCH",
         headers: { Cookie: a1Cookie, Origin: baseUrl, "Content-Type": "application/json" },
         body: JSON.stringify({ decision: "rejected" }),
       });
-    }
-    const foreignId = await runInTenant(tenantB.tenantId, () =>
-      withTransaction(pool, (client) =>
-        writeNotification(client, {
-          userId: tenantB.userId,
-          kind: "approval_pending",
-          linkHref: null,
-          sourceTable: "approval_requests",
-          sourceId: randomUUID(),
-          transitionInstance: "pending",
-        }),
-      ),
-    );
-    await b1.nextMatching(
-      (frame) =>
-        frame.kind === "text" &&
-        frame.type === "notification" &&
-        isRecord(frame.body.notification) &&
-        frame.body.notification.id === foreignId,
-    );
-    const first = await createApprovalNotification();
-    // The real hook invokes this same wired pool synchronously from the after-commit callback.
-    const querySpy = vi.spyOn(pool, "query");
-    function readStatePublications(): Record<string, unknown>[] {
-      const messages: Record<string, unknown>[] = [];
-      for (const call of querySpy.mock.calls) {
-        const args: readonly unknown[] = call;
-        if (typeof args[0] !== "string" || !args[0].includes("pg_notify") || !Array.isArray(args[1])) continue;
-        const values: unknown[] = args[1];
-        if (values[0] !== "semprec_events" || typeof values[1] !== "string") continue;
-        const value: unknown = JSON.parse(values[1]);
-        if (!isRecord(value) || typeof value.type !== "string") throw new Error("Invalid realtime publication");
-        if (value.type === "notification_read_state") {
-          if (
-            typeof value.userId !== "string" ||
-            !Array.isArray(value.notificationIds) ||
-            !value.notificationIds.every((id: unknown) => typeof id === "string")
-          ) {
-            throw new Error("Invalid read-state publication");
-          }
-          messages.push(value);
-        }
-      }
-      return messages;
-    }
-    expect((await decideOverHttp(first.requestId)).status).toBe(200);
-    expect(readStatePublications()).toEqual([
-      expect.objectContaining({
-        type: "notification_read_state",
-        userId: tenantA.userId,
-        notificationIds: [first.notificationId],
-      }),
-    ]);
-    const matchesResolved = (frame: Frame) =>
-      frame.kind === "text" &&
-      frame.type === "notification" &&
-      isRecord(frame.body.notification) &&
-      frame.body.notification.id === first.notificationId;
-    const frames = await Promise.all([a1.nextMatching(matchesResolved), a2.nextMatching(matchesResolved)]);
-    for (const frame of frames) {
-      expect(frame).toMatchObject({
-        body: {
-          notification: { id: first.notificationId, readAt: expect.any(String), resolvedAt: expect.any(String) },
-        },
+    const foreignId = await approvalNotification(tenantB, randomUUID());
+    const expectForeignUntouched = async () =>
+      expect(await runInTenant(tenantB.tenantId, () => getNotificationById(pool, foreignId))).toMatchObject({
+        id: foreignId,
+        readAt: null,
+        resolvedAt: null,
       });
-    }
-    await expectNothingReceived(b1, tenantB.tenantId);
-    expect(await runInTenant(tenantB.tenantId, () => getNotificationById(pool, foreignId))).toMatchObject({
-      id: foreignId,
-      readAt: null,
-      resolvedAt: null,
-    });
-    querySpy.mockClear();
-    expect((await decideOverHttp(first.requestId)).status).toBe(200);
-    expect(readStatePublications()).toEqual([]);
 
-    const rollback = await createApprovalNotification();
-    querySpy.mockClear();
-    await expect(
-      runInTenant(tenantA.tenantId, () =>
-        withTransaction(pool, async (client) => {
+    await b1.nextMatching(isNotification(foreignId));
+    const first = await createApprovalNotification();
+    // The real hook invokes this pool synchronously from the after-commit callback.
+    const publications = recordPublications();
+    try {
+      const readStates = () => publications.of({ type: "notification_read_state" });
+      expect((await decideOverHttp(first.requestId)).status).toBe(200);
+      expect(readStates()).toEqual([
+        expect.objectContaining({ userId: tenantA.userId, notificationIds: [first.notificationId] }),
+      ]);
+      for (const frame of await nextOnA(isNotification(first.notificationId))) {
+        expect(frame).toMatchObject({
+          body: {
+            notification: { id: first.notificationId, readAt: expect.any(String), resolvedAt: expect.any(String) },
+          },
+        });
+      }
+      await expectNothingReceived(b1, tenantB);
+      await expectForeignUntouched();
+      publications.clear();
+      expect((await decideOverHttp(first.requestId)).status).toBe(200);
+      expect(readStates()).toEqual([]);
+
+      const rollback = await createApprovalNotification();
+      publications.clear();
+      await expect(
+        inTenantTransaction(tenantA, true, async (client) => {
           const result = await decideAndEnqueueApprovalRequest(client, {
             approvalRequestId: rollback.requestId,
             decidedByUserId: tenantA.userId,
             decision: "rejected",
           });
           expect(result?.outcome).toBe("decided");
-          throw new Error("intentional rollback");
         }),
-      ),
-    ).rejects.toThrow("intentional rollback");
-    const unchanged = await runInTenant(tenantA.tenantId, () => getNotificationById(pool, rollback.notificationId));
-    expect(unchanged).toMatchObject({ readAt: null, resolvedAt: null });
-    expect(readStatePublications()).toEqual([]);
-    expect(await runInTenant(tenantB.tenantId, () => getNotificationById(pool, foreignId))).toMatchObject({
-      id: foreignId,
-      readAt: null,
-      resolvedAt: null,
-    });
+      ).rejects.toThrow(ROLLBACK);
+      const unchanged = await runInTenant(tenantA.tenantId, () => getNotificationById(pool, rollback.notificationId));
+      expect(unchanged).toMatchObject({ readAt: null, resolvedAt: null });
+      expect(readStates()).toEqual([]);
+      await expectForeignUntouched();
+    } finally {
+      publications.restore();
+    }
   });
 
   describe("NOTIFY messages on semprec_events", () => {
-    it.each(scenariosOf(notifyTable))("%s: %s", async (_caseName, _scenarioName, run) => {
+    it.each(scenariosOf(notifyCases))("%s: %s", async (_caseName, _scenarioName, run) => {
       await run();
     });
 
     it.each([
-      ["an envelope without a tenantId", (databaseId: string) => ({ message: invalidation(databaseId) })],
+      ["an envelope without a tenantId", (databaseId: string) => JSON.stringify({ message: invalidation(databaseId) })],
       [
         "an envelope with a null tenantId",
-        (databaseId: string) => ({ tenantId: null, message: invalidation(databaseId) }),
+        (databaseId: string) => JSON.stringify({ tenantId: null, message: invalidation(databaseId) }),
       ],
-      ["a bare message without an envelope", (databaseId: string) => invalidation(databaseId)],
+      ["a bare message without an envelope", (databaseId: string) => JSON.stringify(invalidation(databaseId))],
+      ["a payload that is not JSON", () => "{"],
     ])("a raw pg_notify with %s reaches no socket", async (_name, build) => {
-      await adminPool.query("SELECT pg_notify('semprec_events', $1)", [JSON.stringify(build(randomUUID()))]);
+      await adminPool.query("SELECT pg_notify('semprec_events', $1)", [build(randomUUID())]);
 
-      // One sentinel per tenant: it reaches every socket of that tenant, so both of A's sockets share it.
-      const sentinelA = await publishSentinel(tenantA.tenantId);
-      const sentinelB = await publishSentinel(tenantB.tenantId);
-      expect(await a1.drainUntil(isSentinel(sentinelA))).toEqual([]);
-      expect(await a2.drainUntil(isSentinel(sentinelA))).toEqual([]);
-      expect(await b1.drainUntil(isSentinel(sentinelB))).toEqual([]);
+      await expectSilence([a1, a2], tenantA);
+      await expectNothingReceived(b1, tenantB);
     });
   });
 
   describe("NOTIFY messages on semprec_agent_stream", () => {
-    it.each(scenariosOf(streamTable))("%s: %s", async (_caseName, _scenarioName, run) => {
+    it.each(scenariosOf(streamCases))("%s: %s", async (_caseName, _scenarioName, run) => {
       await run();
     });
 
@@ -3563,28 +1883,30 @@ describe("realtime isolation across two tenants (issue #1054)", () => {
       };
       await adminPool.query("SELECT pg_notify('semprec_agent_stream', $1)", [JSON.stringify(build(delta))]);
 
-      const sentinelA = await publishSentinel(tenantA.tenantId);
-      const sentinelB = await publishSentinel(tenantB.tenantId);
-      expect(await a1.drainUntil(isSentinel(sentinelA))).toEqual([]);
-      expect(await b1.drainUntil(isSentinel(sentinelB))).toEqual([]);
+      await expectNothingReceived(a1, tenantA);
+      await expectNothingReceived(b1, tenantB);
     });
   });
 
   describe("inbound frames from B1 naming A's ids", () => {
-    it.each(scenariosOf(inboundTable))("%s: %s", async (_caseName, _scenarioName, run) => {
+    it.each(scenariosOf(inboundCases))("%s: %s", async (_caseName, _scenarioName, run) => {
       await run();
     });
   });
 
   describe("binary doc frames", () => {
-    it.each(scenariosOf(binaryTable))("%s: %s", async (_caseName, _scenarioName, run) => {
+    it.each(scenariosOf({ "binary doc frame": binaryCase }))("%s: %s", async (_caseName, _scenarioName, run) => {
       await run();
     });
   });
 
   describe("outbound frames", () => {
-    it.each(scenariosOf(outboundTable))("%s: %s", async (_caseName, _scenarioName, run) => {
+    it.each(scenariosOf(outboundCases))("%s: %s", async (_caseName, _scenarioName, run) => {
       await run();
     });
   });
 });
+
+function invalidation(databaseId: string): RealtimeMessage {
+  return { type: "invalidation", scope: "schema", databaseId };
+}

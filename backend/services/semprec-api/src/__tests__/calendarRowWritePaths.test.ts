@@ -31,15 +31,13 @@ const restError = z.object({
 const calendarRow = z.object({
   id: z.string(),
   updatedAt: z.string(),
+  version: z.string(),
   properties: z.object({ name: z.string(), isDefault: z.boolean().optional() }).passthrough(),
 });
 
 let pool: Pool;
 
-/**
- * The calendar row rules of issue #1778 as a client meets them: the generic item routes of the production
- * dispatcher, with the hooks that `@semprec/data` registers on import.
- */
+/** Through the production dispatcher's generic item routes, with the hooks `@semprec/data` registers on import. */
 describe("the generic item routes apply the calendar row rules (issue #1778)", () => {
   let server: Server;
   let baseUrl: string;
@@ -55,7 +53,7 @@ describe("the generic item routes apply the calendar row rules (issue #1778)", (
       tenantId: getTenantZeroId(),
       locale: "en",
     });
-    // Seeded after the English-speaking user exists, so the calendars are named `Personal`, `Work` and so on.
+    // Seeded after the English-speaking user exists, so the calendars have English names.
     await seedSystem(pool, createViewTypeRegistry());
     const calendars = (await createChokePoint(pool).listDatabases()).find(
       (database) => database.ownerModuleId === "calendars",
@@ -95,14 +93,12 @@ describe("the generic item routes apply the calendar row rules (issue #1778)", (
     return { status: res.status, body: await res.json() };
   }
 
-  /** A refusal as REST exposes it: the HTTP status and the error body's `code` and `details`. */
   async function refusal(method: string, path: string, body: unknown) {
     const response = await rest(method, path, body);
     const parsed = restError.parse(response.body);
     return { status: response.status, code: parsed.error.code, details: parsed.error.details };
   }
 
-  /** The live calendars as stored. */
   async function calendars() {
     return z.array(calendarRow).parse((await createChokePoint(pool).listItems(calendarsId, { limit: 50 })).items);
   }
@@ -113,15 +109,14 @@ describe("the generic item routes apply the calendar row rules (issue #1778)", (
     return row;
   }
 
-  /** The names of the live calendars whose `isDefault` is true. */
   async function defaultNames(): Promise<string[]> {
     return (await calendars()).filter((row) => row.properties.isDefault === true).map((row) => row.properties.name);
   }
 
-  /** The PATCH a client sends for the calendar `name`: the properties and the version it read. */
+  /** The properties and the version it read. */
   async function patchRequest(name: string, properties: Record<string, unknown>) {
     const row = await calendar(name);
-    return { path: `/api/items/${row.id}`, body: { properties, ifVersion: row.updatedAt } };
+    return { path: `/api/items/${row.id}`, body: { properties, ifVersion: row.version } };
   }
 
   async function patch(name: string, properties: Record<string, unknown>) {

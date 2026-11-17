@@ -98,7 +98,7 @@ const TRANSCRIPT_PHRASES = ["Let us plan the next sprint for iOS today", "I will
 const FIRST_ATTEMPT = { job: { attempts: 1, max_attempts: 3 } };
 const LAST_ATTEMPT = { job: { attempts: 3, max_attempts: 3 } };
 
-/** A fake `AiGatewayClientPort`: a deterministic transport that answers with whatever `respond` returns and counts calls. */
+/** Deterministic transport that answers with `respond` and counts calls. */
 class FakeCardGateway implements AiGatewayClientPort {
   calls: AiGatewayCompletionInput[] = [];
   failure: Error | null = null;
@@ -393,7 +393,7 @@ describe("transcriptCardRecompute task: an Event card (issue gh-1940)", () => {
     const relation = { entityKind: "relation", target: scenario.accountantId, properties: { propertyKey: "event" } };
     expect(after).toMatchObject({ status: "proposed", proposal: relation, aiProposal: relation, aiVersion: 2 });
     expect(after.context.role).toBe("event");
-    // The new proposal names the Event, so the card is found when that Event is deleted (issue gh-1916).
+    // The new proposal names the Event, so the card is found when that Event is deleted.
     expect(await storedReferencedItemIds(scenario.cardId)).toEqual([scenario.accountantId]);
     const [answer, ...others] = answerEntries(after, payload.instructionEntryId);
     expect(others).toEqual([]);

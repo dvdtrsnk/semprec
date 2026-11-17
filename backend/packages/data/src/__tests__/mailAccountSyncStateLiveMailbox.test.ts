@@ -27,12 +27,10 @@ let admin: Pool;
 let runtime: Pool;
 let tenant: string;
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
-/** A Mailboxes item with no `mail_account_sync_state` row, created through the choke point. */
 async function createMailbox(tenantId = tenant): Promise<{ id: string; mailboxesDatabaseId: string }> {
   return inTenant(async (client) => {
     const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
@@ -48,12 +46,11 @@ function syncStateOf(itemId: string, tenantId = tenant): ReturnType<typeof getMa
   return inTenant((client) => getMailAccountSyncState(client, itemId), tenantId);
 }
 
-/** Tries to row-lock the item `FOR UPDATE NOWAIT` in a transaction of its own, which ends at once. */
 function tryLockItemForUpdate(itemId: string): Promise<unknown> {
   return inTenant((client) => client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE NOWAIT", [itemId]));
 }
 
-/** 55P03 is `lock_not_available`, what PostgreSQL raises for a `NOWAIT` statement that would have to wait. */
+/** 55P03 is `lock_not_available`, raised for a `NOWAIT` statement that would have to wait. */
 const LOCK_NOT_AVAILABLE = { code: "55P03" };
 
 describe("ensureMailAccountSyncStateOfLiveMailbox (sp-1272c2b9)", () => {
@@ -102,7 +99,6 @@ describe("ensureMailAccountSyncStateOfLiveMailbox (sp-1272c2b9)", () => {
     expect(seeded?.itemId).toBe(mailbox.id);
     expect(seeded?.syncMode).toBe("graph_api");
     expect((await syncStateOf(mailbox.id))?.syncMode).toBe("graph_api");
-    // The lock ended with the transaction.
     await tryLockItemForUpdate(mailbox.id);
   });
 
@@ -182,7 +178,6 @@ function input(mailbox: { id: string; mailboxesDatabaseId: string }): {
   return { itemId: mailbox.id, mailboxesDatabaseId: mailbox.mailboxesDatabaseId, syncMode: "imap" };
 }
 
-/** A promise with its resolver, for the explicit signals of the concurrent test. */
 function signal(): { promise: Promise<void>; resolve: () => void } {
   let resolve: () => void = () => {};
   const promise = new Promise<void>((settle) => {

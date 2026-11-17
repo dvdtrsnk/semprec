@@ -53,9 +53,9 @@ import {
 } from "../proposalActions.js";
 import { recordingCardContextSchema } from "../recordingCardEnvelope.js";
 
-// Issue gh-1978: the card that proposes transcribing an audio attachment of an Inbox item, and its confirm. The tick
-// produces the card without a model call; the confirm writes the recording request, moves the attachment into Files
-// and enqueues the transcription in one transaction.
+// The card that proposes transcribing an audio attachment of an Inbox item, and its confirm. The tick produces the
+// card without a model call; the confirm writes the recording request, moves the attachment into Files and enqueues
+// the transcription in one transaction.
 
 const FIXTURE_RECORDED_AT = "2026-11-03T13:32:00.000Z"; // 14:32 on 2026-11-03 in the default zone, Europe/Prague
 const DURATION_SECONDS = 1380;
@@ -76,7 +76,6 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Runs `fn` in a transaction of tenant zero's scope, as a request of that tenant would. */
 function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(getTenantZeroId(), () => withTransaction(pool, fn));
 }
@@ -94,7 +93,6 @@ const recordingMetadata = (recordedAt?: string): InboxAttachmentMetadata => ({
   ...(recordedAt === undefined ? {} : { recordedAt }),
 });
 
-/** An Inbox item with one shared audio attachment whose metadata the job has written (unless `metadata` is `null`). */
 async function itemWithAudio(
   text: string | undefined,
   audio: AudioOptions = {},
@@ -155,7 +153,6 @@ async function cardOf(itemId: string): Promise<ItemRow> {
   return cards[0];
 }
 
-/** The `proposal` envelope of a card, parsed as the stored boundary value it is. */
 function envelopeOf(card: ItemRow): ProposalEnvelope {
   const envelope = parseStoredProposalEnvelope(card.properties.proposal, card.id);
   if (!envelope || "unknownKind" in envelope) throw new Error("The card has no known envelope");
@@ -193,7 +190,6 @@ async function corruptEvent(eventId: string, patch: Record<string, unknown>): Pr
   ]);
 }
 
-/** Stores `envelope` as the card's `proposal`, the way a producer that is not the tick would. */
 async function storeEnvelope(cardId: string, envelope: ProposalEnvelope): Promise<void> {
   await inTransaction((client) =>
     updateItemWithClient(
@@ -230,7 +226,6 @@ const jobCount = (fileItemId: string) =>
 const anyTranscriptionJobCount = () => count("SELECT 1 FROM graphile_worker.jobs WHERE key LIKE 'transcription-%'");
 const attachmentCount = (itemId: string) => count("SELECT 1 FROM inbox_attachments WHERE inbox_item_id = $1", [itemId]);
 
-/** Nothing of a recording started: no Files item, no request, no job and the attachment still on its item. */
 async function expectNothingStarted(itemId: string, attachmentId: string): Promise<void> {
   expect(await filesItemCount()).toBe(0);
   expect(await requestCount()).toBe(0);
@@ -257,7 +252,7 @@ async function requestRows(): Promise<RequestRow[]> {
   return rows;
 }
 
-/** The `event_decision` of every recording request: `'none'` is the default, `'noEvent'` the explicit choice (issue gh-1986). */
+/** The `event_decision` of every recording request: `'none'` is the default, `'noEvent'` the explicit choice. */
 async function eventDecisions(): Promise<string[]> {
   const { rows } = await pool.query<{ event_decision: string }>("SELECT event_decision FROM recording_requests");
   return rows.map((row) => row.event_decision);
@@ -1017,7 +1012,6 @@ describe("confirming the recording card", () => {
         databaseId: filesId,
         properties: { name: "Uploaded", file: { blobId } },
       });
-      // What the upload of the same recording queued.
       await enqueueTranscriptionCreate(client, { fileItemId: file.id });
       await enqueueTranscriptionJob(client, { fileItemId: file.id });
       return file.id;
@@ -1051,7 +1045,6 @@ describe("confirming the recording card", () => {
         },
         { allowedSystemKeys: ["status", "link"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
       );
-      // The checkpoint the transcription create step leaves on the Files item it made the transcript of.
       await writeComputed(client, filesId, file.id, TRANSCRIPTION_CREATE_COMPUTED_KEY, transcript.id);
       return file.id;
     });
@@ -1101,7 +1094,6 @@ describe("confirming the recording card", () => {
     const card = await cardOf(itemId);
     const itemsBefore = await count("SELECT 1 FROM items");
     const originsBefore = await count("SELECT 1 FROM item_origins");
-    // The request is written after the move created the Files item with its origin row and origin note.
     await pool.query(`
       CREATE FUNCTION fail_recording_request_insert() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'injected failure after the move'; END $$`);

@@ -58,16 +58,14 @@ export async function readRecordingRequest(client: PoolClient, fileItemId: strin
 }
 
 /**
- * The value of `recording_requests.event_decision` that records the user's explicit choice that a recording belongs to no
- * Event (issue gh-1986). The column is `NOT NULL DEFAULT 'none'` (migration 0137): the default means the user did not
- * decide, and any value other than this one leaves the match step as it is.
+ * The explicit "belongs to no Event" choice in `recording_requests.event_decision`. The column
+ * defaults to `'none'` (user did not decide); any other value leaves the match step as it is.
  */
 export const RECORDING_EVENT_DECISION_NO_EVENT = "noEvent";
 
 /**
- * Stores the user's explicit decision on the recording request of the Files item `fileItemId`, in the caller's
- * transaction. The request must exist: `recordRecordingIntake` writes or finds it first, and holds the Files item's
- * row lock by then. Nothing clears a stored decision.
+ * Runs in the caller's transaction. The request must exist: `recordRecordingIntake` writes it first
+ * and holds the Files item's row lock by then. Nothing clears a stored decision.
  */
 export async function setRecordingEventDecision(
   client: PoolClient,
@@ -82,10 +80,7 @@ export async function setRecordingEventDecision(
   requireAffectedRows(result, "recording event decision");
 }
 
-/**
- * The explicit decision stored on the recording request of the Files item `fileItemId`: `noEvent` when that is the stored
- * value, `null` for any other value (the default `'none'` included) and when the request does not exist. Writes nothing.
- */
+/** `noEvent` when stored, otherwise `null` (including the default and a missing request). */
 export async function readRecordingEventDecision(
   client: PoolClient,
   fileItemId: string,
@@ -115,11 +110,7 @@ async function reserve<T>(client: PoolClient, operation: () => Promise<T>): Prom
   }
 }
 
-/**
- * The parameters of a recording that the upload endpoint does not carry (issue gh-1978): the transcript's name, the
- * language, one of the two speaker counts and the project the user chose for it. Each is `null` when not set, which is
- * what every upload through the endpoint stores.
- */
+/** Parameters the upload endpoint does not carry; each is `null` when not set. */
 export interface RecordingRequestParameters {
   name: string | null;
   language: string | null;
@@ -129,9 +120,8 @@ export interface RecordingRequestParameters {
 }
 
 /**
- * Records the recording request of a Files item and queues its transcription. The result's `enqueued` is true when this
- * call added a `transcriptionCreate` or a `transcriptionJob` of its own; a job that was already queued under its key
- * (an upload or an earlier intake queued it) is found, not added, and a Files item that has its transcript gets none.
+ * `enqueued` is true only when this call added a `transcriptionCreate` or `transcriptionJob` itself;
+ * an already-queued job is found, not added, and an item that has its transcript gets none.
  */
 export async function recordRecordingIntake(
   client: PoolClient,

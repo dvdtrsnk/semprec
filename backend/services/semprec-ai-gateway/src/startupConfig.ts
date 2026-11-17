@@ -17,18 +17,13 @@ import { createOpenAiSpeechSynthesisProvider } from "./audioProviders/openAiSpee
 import { MAX_CONCURRENT_TTS_STREAMS, type TtsStreamHandlerOptions } from "./ttsStreamHandler.js";
 import type { PiMessagesHandlerOptions } from "./piMessagesHandler.js";
 
-/** Every provider this deployment of `semprec-ai-gateway` knows how to construct, keyed by id. */
 function buildRegisteredProviders(env: NodeJS.ProcessEnv): StructuredCompletionProvider[] {
   return [createAnthropicStructuredProvider(requireEnv(env, "ANTHROPIC_API_KEY"))];
 }
 
 /**
- * #215: "startup requires non-empty `AI_GATEWAY_STRUCTURED_PROVIDER` and
- * `AI_GATEWAY_STRUCTURED_MODEL`; the provider id must exist in the gateway provider registry and
- * advertise native JSON-Schema structured output, otherwise startup fails. There is deliberately
- * no silent/default model." This function is the single place that enforces all of that, so
- * `serve.ts` stays a thin wiring script and tests can exercise the same validation without
- * booting a real HTTP server.
+ * Startup fails unless the structured provider and model are set and the provider exists and
+ * supports native JSON-Schema output. There is deliberately no default model.
  */
 function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
@@ -63,10 +58,8 @@ export function resolveStartupConfig(
   env: NodeJS.ProcessEnv,
   registeredProviders: StructuredCompletionProvider[] = buildRegisteredProviders(env),
 ): StartupConfig {
-  // SEMPREC_SIDE_DATABASE_URL is the shared `semprec_side`-role connection string every
-  // side-table-only process reads out of the single `/opt/semprec/shared/.env` (issue #175,
-  // see docs/operations/database-roles.md) — `DATABASE_URL` remains the fallback for local
-  // development, where a developer runs this service alone against its own per-service `.env`.
+  // The shared `semprec_side` role (docs/operations/database-roles.md); `DATABASE_URL` is the
+  // local-development fallback.
   const databaseUrl = env.SEMPREC_SIDE_DATABASE_URL ?? requireDatabaseUrlFallback(env);
 
   const rawPort = env.AI_GATEWAY_PORT ?? "3002";
@@ -88,9 +81,7 @@ export function resolveStartupConfig(
     );
   }
 
-  // Pricing is read from configuration rather than a hardcoded table: provider rate cards change
-  // over time and vary per deployment, and guessing a figure here would silently mis-price every
-  // `ai_gateway_calls` row this route ever writes.
+  // Configured, not hardcoded: rate cards change and vary per deployment.
   const pricePerMillionInputTokens = requirePositiveFloat(env, "AI_GATEWAY_STRUCTURED_INPUT_PRICE_PER_MTOK");
   const pricePerMillionOutputTokens = requirePositiveFloat(env, "AI_GATEWAY_STRUCTURED_OUTPUT_PRICE_PER_MTOK");
 
@@ -107,8 +98,7 @@ export function resolveStartupConfig(
 
   const ttsPricePerAudioHour = requirePositiveFloat(env, "AI_GATEWAY_OPENAI_TTS_PRICE_PER_AUDIO_HOUR");
 
-  // The operator-wide safety caps over all tenants' spend: required, so a deploy without them
-  // cannot start rather than run with no global cap.
+  // Required, so a deploy cannot run without a global cap.
   const globalCaps: GlobalAiCaps = {
     dailyCapUsd: requirePositiveFloat(env, "AI_GLOBAL_DAILY_CAP_USD"),
     monthlyCapUsd: requirePositiveFloat(env, "AI_GLOBAL_MONTHLY_CAP_USD"),

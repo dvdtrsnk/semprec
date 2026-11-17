@@ -1,8 +1,6 @@
 /**
- * Issue #214: the canonical hand-written project-agent guidance and the generic ports its
- * application service and stores are built against. Everything here is neutral — no `pg`,
- * no `Pool`/`PoolClient`, no reference to a concrete store — so `packages/agent-runtime` and
- * `packages/application` can depend on these shapes without depending on `packages/data`.
+ * Project-agent guidance and the generic ports its service and stores are built against. Free of `pg` and concrete
+ * stores, so `agent-runtime` and `application` can use these shapes without depending on `packages/data`.
  */
 
 export interface ProjectAgentGuidance {
@@ -23,10 +21,8 @@ export interface UpsertProjectAgentGuidanceInput {
 }
 
 /**
- * Guidance markdown is appended verbatim to the agent's system prompt on every invocation
- * (see `packages/agent-runtime`'s `systemPromptOverride` adapter), so an unbounded value risks
- * context-window overflow and unbounded token cost. 32 KiB comfortably fits real guidance
- * documents while keeping the worst case bounded.
+ * Guidance is appended verbatim to the agent's system prompt on every invocation; the cap bounds context use and token
+ * cost.
  */
 export const MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES = 32 * 1024;
 
@@ -38,19 +34,14 @@ export interface TransferProjectAgentGuidanceInput {
 export type TransactionIsolationLevel = "repeatable_read" | "serializable";
 
 /**
- * Generic transaction port: a concrete `TransactionRunner<PoolClient>` executes
- * `BEGIN ISOLATION LEVEL REPEATABLE READ` or `BEGIN ISOLATION LEVEL SERIALIZABLE`
- * depending on `options.isolation`, commits on success, and rolls back on throw.
+ * Runs `BEGIN ISOLATION LEVEL REPEATABLE READ` or `SERIALIZABLE` per `options.isolation`, commits on success, rolls
+ * back on throw.
  */
 export interface TransactionRunner<Tx> {
   withTransaction<T>(options: { isolation: TransactionIsolationLevel }, work: (tx: Tx) => Promise<T>): Promise<T>;
 }
 
-/**
- * Persists the single `project_agent_guidance` row per project. Implementations use the
- * supplied `tx` and never open a transaction of their own — the caller (the application
- * service) owns transaction boundaries via `TransactionRunner`.
- */
+/** Implementations use the supplied `tx` and never open their own; the application service owns the boundaries. */
 export interface ProjectAgentGuidanceStore<Tx> {
   load(tx: Tx, projectItemId: string): Promise<ProjectAgentGuidance | null>;
   loadForUpdate(tx: Tx, projectItemId: string): Promise<ProjectAgentGuidance | null>;
@@ -60,12 +51,9 @@ export interface ProjectAgentGuidanceStore<Tx> {
 }
 
 /**
- * The one failure mode `GuidanceReferenceStore`'s `require*` methods are allowed to signal:
- * the referenced entity doesn't exist. Implementations (e.g. `packages/data`'s
- * `guidanceReferenceStore`) throw this specific class for a missing row; any other error
- * (a dropped connection, a timeout) must propagate as itself so callers in
- * `packages/application` can distinguish "not found" from an infrastructure failure without
- * depending on `packages/data`'s concrete error types.
+ * The only failure `GuidanceReferenceStore`'s `require*` methods may signal: the entity does not exist. Any other error
+ * must propagate as itself, so callers can tell "not found" from an infrastructure failure without depending on
+ * `packages/data`'s error types.
  */
 export class GuidanceReferenceNotFoundError extends Error {
   constructor(message: string) {
@@ -75,15 +63,9 @@ export class GuidanceReferenceNotFoundError extends Error {
 }
 
 /**
- * Validates the entities `project_agent_guidance` refers to but cannot enforce with a
- * Postgres FK (`items` is partitioned per database, so there is no direct FK target for
- * `project_item_id`). Each `require*` method rejects with `GuidanceReferenceNotFoundError`
- * when the referenced entity doesn't exist; any other rejection is an infrastructure failure
- * and must not be mistaken for one.
- *
- * `requireUserLocale` has no caller within this issue's scope; it's part of issue #214's port
- * as specified, kept here for #85's drift-notification flow (which needs the owner's locale to
- * localize the notification) rather than re-adding it to this interface later.
+ * Validates references Postgres cannot enforce with an FK (`items` is partitioned per database, so `project_item_id`
+ * has no FK target). A missing entity rejects with `GuidanceReferenceNotFoundError`; anything else is an infrastructure
+ * failure.
  */
 export interface GuidanceReferenceStore<Tx> {
   requireProjectsItem(tx: Tx, projectItemId: string): Promise<void>;
@@ -91,17 +73,13 @@ export interface GuidanceReferenceStore<Tx> {
   requireUserLocale(tx: Tx, userId: string): Promise<string>;
 }
 
-/**
- * #85 delivers the real `core.agentGuidanceDrift` heartbeat store (its unique index and
- * persisted fields); until then, callers inject a documented no-op so the service already
- * performs this call inside the same transaction as the guidance write.
- */
+/** Called inside the same transaction as the guidance write. */
 export interface GuidanceHeartbeatStore<Tx> {
   upsertDriftHeartbeat(tx: Tx, projectItemId: string): Promise<void>;
   disableDriftHeartbeat(tx: Tx, projectItemId: string): Promise<void>;
 }
 
-/** The four sections of a project's agent guidance, in the order the canonical Markdown lists them (issue #1449). */
+/** In the order the canonical Markdown lists them. */
 export const PROJECT_AGENT_GUIDANCE_SECTION_KEYS = ["purpose", "allowed", "notAllowed", "generalInstructions"] as const;
 
 export type ProjectAgentGuidanceSectionKey = (typeof PROJECT_AGENT_GUIDANCE_SECTION_KEYS)[number];
@@ -118,9 +96,8 @@ export const PROJECT_AGENT_GUIDANCE_HEADINGS: Readonly<Record<ProjectAgentGuidan
 export type ProjectAgentGuidanceSections = Record<ProjectAgentGuidanceSectionKey, string>;
 
 /**
- * Renders the canonical guidance Markdown: the reserved headings in order, each section's text trimmed,
- * empty sections omitted, sections separated by one blank line and the document ending with one newline.
- * Sections that all hold no text render as the empty string.
+ * Reserved headings in order, each section trimmed, empty sections omitted, one blank line between sections and one
+ * trailing newline. All-empty sections render as the empty string.
  */
 export function composeProjectAgentGuidanceMarkdown(sections: ProjectAgentGuidanceSections): string {
   const blocks = PROJECT_AGENT_GUIDANCE_SECTION_KEYS.flatMap((key) => {

@@ -11,7 +11,6 @@ class RollbackSentinel extends Error {}
 let pool: Pool;
 let tenantZero: string;
 
-/** Runs `fn` in a transaction that is always rolled back, with a second active tenant present. */
 async function inTwoTenants(fn: (client: PoolClient, tenantB: string) => Promise<void>): Promise<void> {
   try {
     await withTransaction(pool, async (client) => {

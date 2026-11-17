@@ -68,7 +68,7 @@ async function event(properties: Record<string, unknown> = {}, tenant: SeededTen
   return item.id;
 }
 
-/** Puts the task into the event through the route of issue #1764, which stamps the edge's `addedAt` from the clock. */
+/** Through the host-event route, which stamps `addedAt` from the clock. */
 function put(taskId: string, eventId: string, tenant: SeededTenant = home) {
   return runInTenant(tenant.id, () =>
     createTaskHostEventPutRouteHandler(pool)({ params: { id: taskId, eventId }, body: {}, identity }),
@@ -105,7 +105,6 @@ async function relationProperty(databaseId: string, key: string, tenant: SeededT
   return property;
 }
 
-/** The events a task is completed in, by their ids, as its own tenant reads the `completedInEvent` edges. */
 async function completedIn(taskId: string, tenant: SeededTenant = home): Promise<string[]> {
   const property = await relationProperty(tenant.tasksId, "completedInEvent", tenant);
   const edges = await runInTenant(tenant.id, () =>
@@ -118,7 +117,6 @@ async function completedIn(taskId: string, tenant: SeededTenant = home): Promise
   return edges.map((edge) => relationsStore.otherSide(edge, taskId)).sort();
 }
 
-/** Runs `write`: its result and the realtime frames announced while it ran. */
 async function framesOf<T>(write: () => Promise<T>): Promise<{ result: T; frames: InvalidationEvent[] }> {
   const frames: InvalidationEvent[] = [];
   setInvalidationHook((frame) => frames.push(frame));
@@ -344,7 +342,7 @@ describe("a repeated done and the properties of the completion (issue #1781)", (
     const { hiddenUntil: aloneHidden, effectiveDate: aloneEffective, ...aloneProperties } = alone.properties;
     expect(ownProperties).toEqual(aloneProperties);
     expect([aloneHidden ?? null, aloneEffective]).toEqual([null, "2026-10-12"]);
-    // The host state of the event is what the events of issue #1780 gave, not something this hook wrote.
+    // The host state comes from the host-event triggers, not from this hook.
     expect(hiddenUntil).toBe("2026-10-20T21:59:59.999Z");
     expect(effectiveDate).toBe("2026-10-20");
   });

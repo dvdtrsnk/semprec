@@ -9,13 +9,11 @@ import { getItemsByIds } from "./itemsStore.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** True when a Postgres error is the named unique-index violation, so callers can turn it into a clean ConflictError. */
 function isUniqueViolation(err: unknown, constraint: string): boolean {
   const pgErr = err as { code?: string; constraint?: string };
   return pgErr?.code === "23505" && pgErr?.constraint === constraint;
 }
 
-/** The raw `databases` row shape this module reads back from Postgres. */
 type DatabaseDbRow = {
   id: string;
   name: string | null;
@@ -56,27 +54,26 @@ const DATABASE_COLUMNS =
   "id, name, key, parent_item_id, owner_project_item_id, owner_module_id, schema_locked, system, icon, color, overview_hidden, sensitive, archived_at, purge_at";
 
 export interface CreateDatabaseInput {
-  /** Required unless `system` is true — enforced below, not by the (now nullable) column. */
+  /** Required unless `system` is true (enforced below, not by the column). */
   name: string | null;
-  /** Stable unique English camelCase identifier (issue #235) — only ever set for system databases. */
+  /** Stable English camelCase identifier; set only for system databases. */
   key?: string;
   parentItemId?: string;
   ownerProjectItemId?: string;
   ownerModuleId?: string;
   schemaLocked?: boolean;
   system?: boolean;
-  /** Only valid for a non-system database; a system database's icon comes from its module manifest. */
+  /** Non-system only; a system database's icon comes from its module manifest. */
   icon?: string;
-  /** `#RRGGBB`, stored upper-case; only valid for a non-system database. */
+  /** `#RRGGBB`, stored upper-case; non-system only. */
   color?: string;
-  /** Marks the database as holding data an agent must not read or write by default (issue #1808); only valid for a system database. */
+  /** Data an agent must not read or write by default; system databases only. */
   sensitive?: boolean;
 }
 
 /**
- * Creates the `databases` row and its dedicated `items` partition in one transaction.
- * `items` has no DEFAULT partition (see the migration's header note), so a database
- * only becomes writable once this returns.
+ * Creates the `databases` row and its `items` partition in one transaction. `items` has no DEFAULT
+ * partition, so a database is writable only once this returns.
  */
 export async function createDatabase(client: PoolClient, input: CreateDatabaseInput): Promise<DatabaseRow> {
   if (!input.system && !input.name) {
@@ -89,9 +86,7 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
     throw new ValidationError("sensitive is only valid for system databases", { field: "sensitive" });
   }
   if (input.system && !input.name && !input.key) {
-    // Without a name, key is the only source of a display label the permissionManifest
-    // fallback (db.name ?? db.key ?? db.id) has to fall back to before it resorts to
-    // surfacing the raw database id.
+    // Without a name, key is the display label before the fallback to the raw database id.
     throw new ValidationError("key is required for a system database with a null name", { field: "key" });
   }
 
@@ -100,8 +95,8 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
   }
 
   if (input.parentItemId !== undefined) {
-    // Foreign, soft-deleted, missing and malformed ids all fail identically (no id in the message),
-    // so the error cannot serve as an existence oracle across tenants.
+    // Foreign, soft-deleted, missing and malformed ids fail identically (no id in the message), so the
+    // error is no existence oracle across tenants.
     const parentExists =
       UUID_RE.test(input.parentItemId) && (await getItemsByIds(client, [input.parentItemId])).length > 0;
     if (!parentExists) {
@@ -137,15 +132,12 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
   }
 
   if (!UUID_RE.test(database.id)) {
-    // Sanity invariant only: database.id always comes straight from gen_random_uuid()
-    // above, never from external input. The partition step below does not depend on this
-    // check for safety (the id is bound as a uuid parameter and the function escapes the
-    // partition name and bound itself) — this just fails loudly if that invariant were
-    // ever violated.
+    // Sanity check only: the id comes from gen_random_uuid() and the partition function binds and
+    // escapes it itself.
     throw new Error(`Generated database id is not a UUID: ${database.id}`);
   }
-  // The runtime role does not own `items`, so the `items_p_<hex>` partition is created by the
-  // SECURITY DEFINER function from migration 0048 rather than by inline DDL.
+  // The runtime role does not own `items`, so the partition is created by the SECURITY DEFINER
+  // function `create_items_partition` rather than inline DDL.
   await client.query("SELECT create_items_partition($1::uuid)", [database.id]);
 
   return database;
@@ -156,10 +148,7 @@ export async function getDatabase(client: PoolClient, id: string): Promise<Datab
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
-/**
- * Looks up a system database by its stable `key` (unique per tenant). Under row-level security the
- * lookup is per tenant; a caller that sees several tenants fails with a plain `Error` on more than one match.
- */
+/** Unique per tenant under RLS; a caller seeing several tenants fails with a plain `Error` on several matches. */
 export async function getDatabaseByKey(client: PoolClient, key: string): Promise<DatabaseRow | null> {
   const { rows } = await client.query<DatabaseDbRow>(`SELECT ${DATABASE_COLUMNS} FROM databases WHERE key = $1`, [key]);
   if (rows.length > 1)
@@ -168,10 +157,8 @@ export async function getDatabaseByKey(client: PoolClient, key: string): Promise
 }
 
 /**
- * Looks up a system database by its canonical `owner_module_id` (e.g. 'tasks', 'events') — see the `canonical-keys` skill's established vocabulary.
- * Under row-level security the lookup is per tenant. A caller that sees several tenants (an
- * RLS-bypassing role) fails instead of picking one: more than one match is an invariant violation,
- * thrown as a plain `Error`, not a client error.
+ * By canonical `owner_module_id` (e.g. 'tasks'). Per tenant under RLS; an RLS-bypassing caller with
+ * several matches fails with a plain `Error` (an invariant violation) instead of picking one.
  */
 export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: string): Promise<DatabaseRow | null> {
   const { rows } = await client.query<DatabaseDbRow>(
@@ -184,11 +171,7 @@ export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: s
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
-/**
- * Every non-archived database system-wide, including the ten hardcoded system databases
- * (issue #147's schema-projection endpoint needs these: they carry no `owner_project_item_id`,
- * so they're invisible to any project-scoped query like `generatePermissionManifest`'s).
- */
+/** Every non-archived database, including system databases, which no project-scoped query sees. */
 export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[]> {
   const { rows } = await client.query<DatabaseDbRow>(
     `SELECT ${DATABASE_COLUMNS} FROM databases WHERE archived_at IS NULL ORDER BY key, name`,
@@ -196,7 +179,7 @@ export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[
   return rows.map(mapDatabaseRow);
 }
 
-/** What a reader needs to label an item of a database: its module id, the key of its `title` property and whether it is marked sensitive. */
+/** Module id, `title` property key and sensitivity: what a reader needs to label an item. */
 export interface DatabaseLabelRow {
   id: string;
   ownerModuleId: string | null;
@@ -205,9 +188,8 @@ export interface DatabaseLabelRow {
 }
 
 /**
- * The batched lookup behind item labels: one query for a whole set of databases, the key of the
- * `title` property included so the caller reads titles without a query per database. A database
- * with several `title` properties resolves to the alphabetically first key.
+ * One query for a set of databases, including the `title` property key so titles need no query per
+ * database. Several `title` properties resolve to the alphabetically first key.
  */
 export async function listDatabaseLabelsByIds(client: PoolClient, ids: string[]): Promise<DatabaseLabelRow[]> {
   if (ids.length === 0) return [];
@@ -239,9 +221,8 @@ async function requireDatabase(client: PoolClient, id: string): Promise<Database
 }
 
 /**
- * Moves a user database to the trash: `archived_at` is now and `purge_at`, the moment the nightly sweep may delete it for
- * good, is `RETENTION_DAYS` times 24 hours later, the retention a trashed item has (issue gh-1875). Archiving an
- * archived database restarts both.
+ * Moves a user database to the trash: `archived_at` is now and `purge_at` is `RETENTION_DAYS` × 24h
+ * later, as for a trashed item. Archiving an archived database restarts both.
  */
 export async function archiveDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   const database = await requireDatabase(client, id);
@@ -255,24 +236,21 @@ export async function archiveDatabase(client: PoolClient, id: string): Promise<D
   return mapDatabaseRow(requireSingleRow(rows, "databases row"));
 }
 
-/** Fields `patchDatabase` may change; `null` for `icon` or `color` returns it to the read-time default. */
+/** `null` for `icon` or `color` returns it to the read-time default. */
 export interface DatabasePatch {
   name?: string;
   icon?: string | null;
   color?: string | null;
-  /** Hides the database from the client overview (`true`) or shows it there again (`false`), issue #2002. */
   overviewHidden?: boolean;
 }
 
 /**
- * Updates any of `name`, `icon`, `color`, `overviewHidden` in one statement. The label is always renamable,
- * same as `renameProperty` in `propertiesStore.ts` — `schemaLocked`/`system` govern schema mutation, never the
- * display name — but the icon and color of a system database belong to its module manifest.
+ * Updates `name`, `icon`, `color`, `overviewHidden` in one statement. The name is always renamable;
+ * a system database's icon and color belong to its module manifest.
  *
- * `overviewHidden` (issue #2002) is written when `resolver` reports the database as hideable, which the
- * production resolver does for a system database whose module descriptor declares `overviewHideable: true`.
- * A patch that carries it for any other database, or without a `resolver`, is refused with `ForbiddenError`
- * before the statement runs, so none of its other fields is written either.
+ * `overviewHidden` is accepted only when `resolver` reports the database hideable (a system database
+ * whose descriptor declares `overviewHideable: true`); otherwise the whole patch is a `ForbiddenError`
+ * before anything is written.
  */
 export async function patchDatabase(
   client: PoolClient,
@@ -309,12 +287,7 @@ export async function renameDatabase(client: PoolClient, id: string, name: strin
   return patchDatabase(client, id, { name });
 }
 
-/**
- * Every inline database owned by a page item (`parent_item_id = itemId`) — the child-lookup
- * counterpart to `getDatabase`'s own `parentItemId` field, used by the choke-point's item-trash
- * cascade (issue #156) to walk down from a page to whatever inline databases it owns, and by the
- * purge sweep to bound how far a permanently-deleted subtree extends.
- */
+/** Inline databases owned by a page item, for the trash cascade and the purge sweep. */
 export async function listDatabasesByParentItem(client: PoolClient, itemId: string): Promise<DatabaseRow[]> {
   const { rows } = await client.query<DatabaseDbRow>(
     `SELECT ${DATABASE_COLUMNS} FROM databases WHERE parent_item_id = $1`,
@@ -323,7 +296,7 @@ export async function listDatabasesByParentItem(client: PoolClient, itemId: stri
   return rows.map(mapDatabaseRow);
 }
 
-/** Brings a database back from the trash: clears `archived_at` and the purge deadline `purge_at` (issue gh-1875). */
+/** Clears `archived_at` and `purge_at`. */
 export async function restoreDatabase(client: PoolClient, id: string): Promise<DatabaseRow> {
   await requireDatabase(client, id);
   const { rows } = await client.query<DatabaseDbRow>(
@@ -334,22 +307,17 @@ export async function restoreDatabase(client: PoolClient, id: string): Promise<D
 }
 
 /**
- * The SQL condition (`$n` is `RETENTION_DAYS`) that says a row's `purge_at` is one this release can have written:
- * `archiveDatabase` stamps exactly `archived_at` plus the retention and `assignMissingPurgeDeadlines` stamps a time
- * that is later still, so neither is ever earlier than `archived_at` plus the retention. A release rolled back to
- * restores a database (`archived_at = NULL`) and archives it again without touching `purge_at`, which leaves the
- * deadline of the first archive next to the time of the second: that deadline is earlier than the second archive
- * plus the retention (or already past) and must not delete the database.
+ * SQL condition (`$n` is `RETENTION_DAYS`) that `purge_at` is one this release can have written: never
+ * earlier than `archived_at` plus the retention. An older release's restore and re-archive leaves the
+ * first archive's deadline beside the second archive's time, which must not delete the database.
  */
 function purgeDeadlineIsCurrent(retentionParam: number): string {
   return `purge_at >= archived_at + make_interval(hours => $${retentionParam}::int * 24)`;
 }
 
 /**
- * Gives every archived user database that has no usable purge deadline one: `retentionDays` times 24 hours from now.
- * The databases archived by a release that did not stamp a deadline match, and so do those that carry a stale one: a
- * deadline earlier than `archived_at` plus `retentionDays` (`purgeDeadlineIsCurrent`), left by a restore and a new
- * archive under a release rolled back to. A deadline this release wrote is never touched. Returns how many it stamped.
+ * Gives every archived user database without a current deadline (`purgeDeadlineIsCurrent`) one
+ * `retentionDays` × 24h from now. A deadline this release wrote is never touched. Returns how many.
  */
 export async function assignMissingPurgeDeadlines(client: PoolClient, retentionDays: number): Promise<number> {
   const result = await client.query(
@@ -361,10 +329,7 @@ export async function assignMissingPurgeDeadlines(client: PoolClient, retentionD
   return result.rowCount ?? 0;
 }
 
-/**
- * The ids of the archived user databases whose purge deadline has passed, earliest deadline first. A stale deadline
- * (`purgeDeadlineIsCurrent`) does not count until `assignMissingPurgeDeadlines` has replaced it.
- */
+/** Earliest deadline first; a stale deadline does not count until `assignMissingPurgeDeadlines` replaced it. */
 export async function listExpiredArchivedDatabaseIds(client: PoolClient): Promise<string[]> {
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM databases
@@ -376,11 +341,9 @@ export async function listExpiredArchivedDatabaseIds(client: PoolClient): Promis
 }
 
 /**
- * Locks the database row `FOR NO KEY UPDATE`, which an archive or a restore of it (an `UPDATE` of the row) waits
- * for, and says whether it is still an archived user database past its current purge deadline. The purge calls it
- * first in every transaction that deletes from the database or drops it, so a restore that committed earlier is seen
- * and one that comes later waits for the transaction. A restore and a new archive by a release rolled back to leave a
- * stale deadline, which this answers false for.
+ * Locks the row `FOR NO KEY UPDATE` (an archive or restore waits for it) and says whether it is still
+ * an archived user database past a current deadline. The purge calls it first in every transaction
+ * that deletes from or drops the database, so an earlier restore is seen and a later one waits.
  */
 export async function lockExpiredArchivedDatabase(client: PoolClient, id: string): Promise<boolean> {
   const { rows } = await client.query<{ id: string }>(
@@ -393,18 +356,15 @@ export async function lockExpiredArchivedDatabase(client: PoolClient, id: string
 }
 
 /**
- * Locks the database row `FOR NO KEY UPDATE`, the lock the purge takes (`lockExpiredArchivedDatabase`) before it
- * deletes the database, and says whether the row exists. A caller that decides on the strength of this lookup, a
- * restore that reports an unknown id, holds the row to the commit: a purge that committed first is seen as a missing
- * row (the lookup waits for it), and one that comes later waits for the caller's transaction and then finds a
- * database that is no longer archived.
+ * Takes the purge's lock and says whether the row exists. A caller deciding on it (a restore reporting
+ * an unknown id) holds the row to commit: an earlier purge shows as missing, a later one waits and
+ * then finds the database no longer archived.
  */
 export async function lockDatabase(client: PoolClient, id: string): Promise<boolean> {
   const { rows } = await client.query<{ id: string }>("SELECT id FROM databases WHERE id = $1 FOR NO KEY UPDATE", [id]);
   return rows.length === 1;
 }
 
-/** The ids of the inline databases owned by any of `itemIds`; an item with a page can own one. */
 export async function listInlineDatabaseIds(client: PoolClient, itemIds: readonly string[]): Promise<string[]> {
   const { rows } = await client.query<{ id: string }>(
     "SELECT id FROM databases WHERE parent_item_id = ANY($1::uuid[]) ORDER BY id",
@@ -414,11 +374,10 @@ export async function listInlineDatabaseIds(client: PoolClient, itemIds: readonl
 }
 
 /**
- * Permanently removes an inline database whose last item the trash purge (issue #675) has just
- * hard-deleted: its `rollup_dependencies` (through their owner, `rollup/dependencies.ts`) and
- * `item_search_index` rows (FKs to `databases` without a cascade), its `items_p_<hex>` partition through migration 0050's SECURITY DEFINER function,
- * then the `databases` row itself (`properties` and `views` cascade by FK). The caller must have
- * confirmed the partition is empty in the same transaction.
+ * Permanently removes an inline database whose last item the purge just deleted: its
+ * `rollup_dependencies` and `item_search_index` rows (FKs without cascade), its partition via the
+ * SECURITY DEFINER `drop_items_partition`, then the row (`properties` and `views` cascade). The caller
+ * must have confirmed the partition is empty in the same transaction.
  */
 export async function dropDatabaseWithPartition(client: PoolClient, id: string): Promise<void> {
   await deleteRollupDependenciesBySourceDatabase(client, id);

@@ -5,8 +5,7 @@ import type { CheckRun, MainBranch, ReleaseHost, RemoteTag } from "./releaseTag.
 
 const execFileAsync = promisify(execFile);
 
-// A stalled network call must not hang the release command (io-hardening: always a timeout and
-// a cap on what is read back).
+// A stalled network call must not hang the release command.
 const COMMAND_TIMEOUT_MS = 60_000;
 const COMMAND_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 
@@ -119,8 +118,7 @@ export async function createGithubReleaseHost(): Promise<ReleaseHost> {
       try {
         await run("git", ["push", REMOTE, `refs/tags/${tag}`]);
       } catch (err) {
-        // Leaving the local tag would make a retry fail at `git tag` for a release that never
-        // reached the remote. A failed removal must not replace the push error, which is the real one.
+        // A leftover local tag would make a retry fail at `git tag`; a failed removal must not replace the push error.
         try {
           await run("git", ["tag", "--delete", tag]);
         } catch (cleanupErr) {

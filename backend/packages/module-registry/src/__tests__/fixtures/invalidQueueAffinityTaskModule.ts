@@ -8,7 +8,7 @@ export const manifest = {
   capabilities: [],
   agentTools: [],
   taskNames: [
-    // "worker" isn't a valid queueAffinity ("api" | "agents") — must fail ModuleRegistry load.
+    // "worker" is not a valid queueAffinity, so ModuleRegistry must refuse to load this.
     {
       name: "fixtureInvalidAffinity.doThing",
       payloadSchemaExport: "payloadSchema",

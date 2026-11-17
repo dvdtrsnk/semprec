@@ -36,7 +36,7 @@ let dataPool: Pool;
 let chokePoint: ChokePoint;
 let tenantId: string;
 
-/** The most items one purge transaction deletes; `purgeArchivedDatabases.ts` keeps it private. */
+/** Mirrors the private chunk size of `purgeArchivedDatabases.ts`. */
 const CHUNK = 500;
 
 function fakeStorage(onDelete: (key: string) => Promise<void> = async () => {}) {
@@ -51,7 +51,6 @@ function fakeStorage(onDelete: (key: string) => Promise<void> = async () => {}) 
   return { storage, deleteMock };
 }
 
-/** Runs `fn` in the scope of `tenant`, the way the sweep does for each tenant. */
 function inTenant<T>(fn: () => Promise<T>, tenant = tenantId): Promise<T> {
   return runInTenant(tenant, fn);
 }
@@ -64,10 +63,9 @@ async function createItem(databaseId: string, properties: Record<string, unknown
   return inTenant(async () => (await chokePoint.createItem({ databaseId, properties })).id, tenant);
 }
 
-/** Archives a database through the production write, then moves its archive time and deadline `days` days back. */
 async function archive(databaseId: string, daysAgo: number, tenant = tenantId): Promise<void> {
   await inTenant(() => chokePoint.archiveDatabase(databaseId), tenant);
-  // Time travel: the choke point stamps the transaction's now(), so an archive in the past needs raw SQL.
+  // The choke point stamps the transaction's now(), so an archive in the past needs raw SQL.
   await adminPool.query(
     `UPDATE databases SET archived_at = archived_at - make_interval(days => $2::int),
                           purge_at = purge_at - make_interval(days => $2::int)
@@ -98,7 +96,6 @@ async function purgeAtOf(databaseId: string): Promise<Date | null> {
   return rows[0]?.purge_at ?? null;
 }
 
-/** A relation from `sourceId` to `targetId` with its inverse; returns both property ids. */
 async function relate(sourceId: string, targetId: string, keys: { source: string; inverse: string }) {
   const result = await inTenant(() =>
     chokePoint.createRelationProperty({
@@ -121,7 +118,6 @@ async function createRollup(databaseId: string, key: string, config: Record<stri
 
 const propertyExists = async (id: string): Promise<boolean> => (await count("properties WHERE id = $1", [id])) === 1;
 
-/** Runs the purge for `tenant` as the sweep does, through the runtime-role pool. */
 async function sweep(storage: BlobStorageWriter, alternate?: BlobStorageWriter, tenant = tenantId): Promise<number> {
   return inTenant(() => purgeExpiredArchivedDatabases(dataPool, storage, alternate), tenant);
 }
@@ -137,7 +133,6 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     await inTenant(() => seedSystem(dataPool));
-    // A reset returns each passthrough spy to the real function and forgets what a test queued on it.
     vi.mocked(itemsStore.findItemsDeletedBefore).mockReset();
     vi.mocked(itemsStore.hardDeleteItemsOfDatabase).mockReset();
     vi.mocked(itemsStore.listItemIdsForPurge).mockReset();
@@ -214,10 +209,8 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     expect(await count("blobs WHERE id = $1", [blob.id])).toBe(0);
     expect(deleteMock).toHaveBeenCalledTimes(1);
     expect(deleteMock).toHaveBeenCalledWith("doomed-key");
-    // What belongs to the other database stays.
     expect(await databaseExists(otherId)).toBe(true);
     expect(await count("items WHERE id = $1", [otherItemId])).toBe(1);
-    // Its paired relation property and its rollup were its only properties.
     expect(await count("properties WHERE database_id = $1", [otherId])).toBe(0);
   });
 
@@ -269,7 +262,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
   it("gives a database archived before the deadline existed one 30 days from the first sweep and deletes it no earlier", async () => {
     const databaseId = await createDatabase("Legacy");
     await inTenant(() => chokePoint.archiveDatabase(databaseId));
-    // A database archived by the previous release has an archive time long ago and no deadline.
+    // Archived without a deadline, long ago.
     await adminPool.query(
       "UPDATE databases SET archived_at = now() - interval '200 days', purge_at = NULL WHERE id = $1",
       [databaseId],
@@ -285,31 +278,26 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     expect(firstSweepToDeadlineDays).toBeLessThan(RETENTION_DAYS + 0.01);
     expect(await databaseExists(databaseId)).toBe(true);
 
-    // The next sweep keeps the stamped deadline and still does not delete the database.
     expect(await sweep(fakeStorage().storage)).toBe(0);
     expect(await purgeAtOf(databaseId)).toEqual(stamped);
     expect(await databaseExists(databaseId)).toBe(true);
 
-    // Once the stamped deadline has passed, the next sweep deletes it.
     await adminPool.query("UPDATE databases SET purge_at = now() - interval '1 minute' WHERE id = $1", [databaseId]);
     expect(await sweep(fakeStorage().storage)).toBe(1);
     expect(await databaseExists(databaseId)).toBe(false);
   });
 
   it("replaces a deadline that an older release left behind a restore and a new archive, instead of purging at once", async () => {
-    // Archived under this release 40 days ago (deadline 10 days ago), then restored and archived again by a release
-    // rolled back to, which writes `archived_at` only: the stale deadline is in the past, the new archive is minutes old.
+    // Re-archived by a writer that sets `archived_at` only: the stale deadline is past, the new archive minutes old.
     const pastId = await createDatabase("Re-archived, deadline past");
     const pastItemId = await createItem(pastId);
     await archive(pastId, RETENTION_DAYS + 10);
     await adminPool.query("UPDATE databases SET archived_at = NULL WHERE id = $1", [pastId]);
     await adminPool.query("UPDATE databases SET archived_at = now() - interval '5 minutes' WHERE id = $1", [pastId]);
-    // The same, with a stale deadline that is still ahead but earlier than the new archive plus the retention.
     const aheadId = await createDatabase("Re-archived, deadline ahead");
     await archive(aheadId, RETENTION_DAYS - 10);
     await adminPool.query("UPDATE databases SET archived_at = NULL WHERE id = $1", [aheadId]);
     await adminPool.query("UPDATE databases SET archived_at = now() WHERE id = $1", [aheadId]);
-    // A deadline this release stamped is not touched.
     const validId = await createDatabase("Archived by this release");
     await archive(validId, 3);
     const validDeadline = await purgeAtOf(validId);
@@ -334,7 +322,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     await archive(databaseId, RETENTION_DAYS + 1);
     const actualList = vi.mocked(itemsStore.listItemIdsForPurge).getMockImplementation();
     vi.mocked(itemsStore.listItemIdsForPurge).mockImplementationOnce(async (...args) => {
-      // Committed after the selection: the deadline of the first archive is in the past, the new archive is now.
+      // Committed after the selection: the first archive's deadline is past, the new archive is now.
       await adminPool.query("UPDATE databases SET archived_at = NULL WHERE id = $1", [databaseId]);
       await adminPool.query("UPDATE databases SET archived_at = now() WHERE id = $1", [databaseId]);
       return actualList ? actualList(...args) : [];
@@ -387,7 +375,6 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     expect(await count("item_relations WHERE item_a = $1 OR item_b = $1", [doomedItemId])).toBe(0);
     expect(await propertyExists(rollupId)).toBe(false);
     expect(await count("rollup_dependencies WHERE rollup_property_id = $1", [rollupId])).toBe(0);
-    // No property of a kept database names the dropped database any more; the relation between kept ones stays.
     expect(await count("properties WHERE config->>'targetDatabaseId' = $1", [doomedId])).toBe(0);
     expect(await propertyExists(keptRelationId)).toBe(true);
     expect(await databaseExists(keptId)).toBe(true);
@@ -405,7 +392,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
       source: "others",
       inverse: "doomed",
     });
-    // One more item than a chunk holds. Raw SQL, because 501 production writes would only slow the test down.
+    // One more item than a chunk holds; raw SQL because 501 production writes would only slow the test.
     await adminPool.query(
       "INSERT INTO items (database_id, tenant_id, properties) SELECT $1, $2, '{}'::jsonb FROM generate_series(1, $3::int)",
       [doomedId, tenantId, CHUNK + 1],
@@ -426,7 +413,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     );
     expect(await itemsOf(doomedId)).toBe(1);
     expect(await databaseExists(doomedId)).toBe(true);
-    // The schema of the other database is removed only in the last transaction, so nothing dangles yet.
+    // The other database's schema is removed only in the last transaction.
     expect(await propertyExists(pairedPropertyId)).toBe(true);
 
     expect(await sweep(fakeStorage().storage)).toBe(1);
@@ -475,7 +462,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
       relationPropertyKey: "locked",
       aggregation: "count",
     });
-    // A system database is schema-locked and a user's relation write cannot reach it, so the lock is set directly.
+    // A user's relation write cannot reach a schema-locked system database, so the lock is set directly.
     await adminPool.query("UPDATE databases SET schema_locked = true WHERE id = $1", [lockedId]);
     await archive(doomedId, RETENTION_DAYS + 1);
 
@@ -512,7 +499,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
       async () => (await chokePoint.createInlineDatabase({ name: "Notes", parentItemId: pageId })).id,
     );
     const noteId = await createItem(inlineId);
-    // The cycle no write produces: the inline database's note owns the database that owns the inline database.
+    // A cycle no write produces: the inline database's note owns the database that owns the inline database.
     await adminPool.query("UPDATE databases SET parent_item_id = $2 WHERE id = $1", [doomedId, noteId]);
     await archive(doomedId, RETENTION_DAYS + 1);
     vi.spyOn(logger, "error").mockImplementation(() => {});
@@ -534,7 +521,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     const noteId = await createItem(inlineId);
     await archive(doomedId, RETENTION_DAYS + 1);
     const actualList = vi.mocked(itemsStore.listItemIdsForPurge).getMockImplementation();
-    // The first read lists the page; the second, of the inline database, is where the restore commits.
+    // The second read, of the inline database, is where the restore commits.
     vi.mocked(itemsStore.listItemIdsForPurge).mockImplementationOnce((...args) =>
       actualList ? actualList(...args) : Promise.resolve([]),
     );
@@ -576,7 +563,6 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     await archive(databaseId, RETENTION_DAYS + 1);
     const actualList = vi.mocked(itemsStore.listItemIdsForPurge).getMockImplementation();
     vi.mocked(itemsStore.listItemIdsForPurge).mockImplementationOnce(async (...args) => {
-      // The first read finds no item, so the next step is the drop; a restore commits before it.
       await inTenant(() => chokePoint.restoreDatabase(databaseId));
       return actualList ? actualList(...args) : [];
     });
@@ -595,7 +581,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
       ])
     ).rows[0]?.id;
     if (!tasks) throw new Error("no tasks database");
-    // A system database cannot be archived through the choke point; raw SQL builds the state the filter guards against.
+    // The choke point cannot archive a system database; raw SQL builds the guarded state.
     await adminPool.query(
       "UPDATE databases SET archived_at = now() - interval '90 days', purge_at = now() - interval '60 days' WHERE id = $1",
       [tasks],
@@ -608,8 +594,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     const ownId = await createDatabase("Own");
     await archive(ownId, RETENTION_DAYS + 1);
 
-    // The selection itself leaves the system database out; the row lock repeats the filter, so the outcome alone
-    // would not show a missing filter in the selection.
+    // The row lock repeats the filter, so only the selection itself shows a missing filter there.
     const selected = await inTenant(() =>
       withTransaction(dataPool, (client) => databasesStore.listExpiredArchivedDatabaseIds(client)),
     );
@@ -625,7 +610,6 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     expect(await purgeAtOf(tasks)).not.toBeNull();
     expect(await databaseExists(foreignId)).toBe(true);
     expect(await count("items WHERE id = $1", [foreignItemId])).toBe(1);
-    // A system database's missing deadline is not stamped either.
     await adminPool.query("UPDATE databases SET purge_at = NULL WHERE id = $1", [tasks]);
     await sweep(fakeStorage().storage);
     expect(await purgeAtOf(tasks)).toBeNull();
@@ -652,7 +636,6 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
 
     expect(await databaseExists(databaseId)).toBe(false);
     expect(deleteMock).toHaveBeenCalledWith("secret-key");
-    // A failure of one storage does not skip the other.
     expect(alternate.deleteMock).toHaveBeenCalledWith("secret-key");
     expect(errorSpy).toHaveBeenCalledWith(
       expect.objectContaining({ tenantId, databaseId, errorName: "Error" }),
@@ -691,7 +674,6 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
       const databaseId = await createDatabase("Live", tenant);
       const itemId = await createItem(databaseId, {}, tenant);
       await inTenant(() => chokePoint.softDeleteItem(databaseId, itemId), tenant);
-      // Time travel for the trash, as for the archive.
       await adminPool.query("UPDATE items SET deleted_at = now() - interval '40 days' WHERE id = $1", [itemId]);
       return { databaseId, itemId };
     }
@@ -717,7 +699,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
       const ownId = await createDatabase("Archived");
       await archive(ownId, RETENTION_DAYS + 1);
       const actualFind = vi.mocked(itemsStore.findItemsDeletedBefore).getMockImplementation();
-      // The tenants run in a rotating order, so the failure is bound to this test's tenant and not to the first call.
+      // The tenants run in a rotating order, so the failure is bound to this test's tenant.
       vi.mocked(itemsStore.findItemsDeletedBefore).mockImplementation((...args) => {
         const scope = currentTenantScope();
         if (scope?.kind === "tenant" && scope.tenantId === tenantId)

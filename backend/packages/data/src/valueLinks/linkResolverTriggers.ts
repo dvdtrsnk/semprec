@@ -6,11 +6,7 @@ import { getRelationDefinition } from "../chokePoint/relationsStore.js";
 import { loadResolverLinkRules } from "./linkResolver.js";
 import { enqueueLinkPropagation } from "./linkPropagation.js";
 
-/**
- * Queues the propagation of every resolver rule that declares the relation property of an edge change as an input
- * (`LinkRuleResolverInputs.edges`): one job per rule and per side of the edge whose property is declared, for the
- * item on that side, at budget `hop + 1`. The job finds the items the change affects (`affectedItemIds`).
- */
+/** One job per declaring rule and per declared edge side, for that side's item, at budget `hop + 1`. */
 export async function enqueueResolverRulesForEdge(context: RelationEdgeChangedHookContext, hop: number): Promise<void> {
   const rules = await loadResolverLinkRules();
   if (!rules.some((rule) => rule.resolver.inputs.edges.length > 0)) return;
@@ -33,11 +29,7 @@ export async function enqueueResolverRulesForEdge(context: RelationEdgeChangedHo
   }
 }
 
-/**
- * Queues the propagation of every resolver rule that declares a plain property among the `written` ones as an input
- * (`LinkRuleResolverInputs.properties`), for the item `itemId` of database `databaseKey`, at budget `hop + 1`. For
- * an item that appears (`appearing`: created or restored) only the properties declared `onAppear` count.
- */
+/** At budget `hop + 1`; for an appearing (created or restored) item only `onAppear` properties count. */
 export async function enqueueResolverRulesForWrittenProperties(
   client: PoolClient,
   databaseKey: string,
@@ -57,12 +49,11 @@ export async function enqueueResolverRulesForWrittenProperties(
   }
 }
 
-/** The properties of `properties` that hold a value: what a created or restored item brings to its rules. */
+/** What a created or restored item brings to its rules. */
 export function holdingProperties(properties: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(properties).filter(([, value]) => value !== null && value !== undefined));
 }
 
-/** Queues the propagation of the resolver rules that declare a property the update patched, for the updated item. */
 export async function enqueueResolverRulesForItemUpdate(context: ItemUpdateHookContext, hop: number): Promise<void> {
   const databaseKey = context.database.key;
   if (!databaseKey) return;

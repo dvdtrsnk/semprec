@@ -21,7 +21,6 @@ interface Tenants {
   b: string;
 }
 
-/** Runs `fn` in a transaction on the owner role that is always rolled back. */
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
   try {
@@ -40,7 +39,6 @@ async function scopeTo(client: PoolClient, tenantId: string): Promise<void> {
   await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
 }
 
-/** Adds a second tenant beside the existing one and switches to the runtime role. */
 async function twoTenantsAsRuntimeRole(client: PoolClient): Promise<Tenants> {
   const { rows: existing } = await client.query<{ id: string }>("SELECT id FROM tenants");
   const a = existing[0]?.id;

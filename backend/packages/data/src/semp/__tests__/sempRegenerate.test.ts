@@ -36,9 +36,8 @@ import {
 } from "./sempReplyTestSupport.js";
 
 /**
- * Regenerating the latest finished Semp reply (issue gh-1930), through the real store function, the real queue tables and
- * the real event reader, on the runtime role pool. Turns are played with the production writers of the turn handler of
- * `semprec-agents` (see `sempReplyTestSupport.ts`).
+ * Regenerating the latest finished reply through the real store, queue tables and event reader on the runtime
+ * role pool. Turns are played with the turn handler's production writers (see `sempReplyTestSupport.ts`).
  */
 
 // Seeding the tenant's system databases takes a while.
@@ -91,14 +90,12 @@ function regenerate(threadId: string, messageId: string, tenant = setup.tenant) 
   );
 }
 
-/** Plays and finishes a turn that answered with `text`; the message it answered is the one before it in the thread. */
 async function playAnswer(text: string, reuse: { threadId?: string; runId?: string } = {}): Promise<PlayedTurn> {
   const turn = await playTurn(setup, answerOf(text), reuse);
   await finishPlayedTurn(setup, turn, "done");
   return turn;
 }
 
-/** Claims the queued assistant message `messageId` and plays its turn on `runId`, as the turn handler does. */
 async function playQueued(
   threadId: string,
   messageId: string,
@@ -289,8 +286,7 @@ describe("regenerating a Semp reply (issue gh-1930)", () => {
 
     it("refuses the latest message of a thread when it is a user message", async () => {
       const turn = await playAnswer("an answer");
-      // Raw fixture: the send path always queues the assistant reply with the user message, so a thread whose latest
-      // message is a user message cannot be produced by it.
+      // Raw fixture: the send path always queues a reply with the user message, so it cannot leave a user message latest.
       const user = await runInTenant(setup.tenant, () =>
         setup.runtime.query<{ id: string }>(
           "INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', 'Unanswered') RETURNING id",
@@ -303,8 +299,7 @@ describe("regenerating a Semp reply (issue gh-1930)", () => {
 
     it("refuses a done assistant message that answers no message, as the reply of a heartbeat run does", async () => {
       const turn = await playAnswer("an answer");
-      // Raw fixture: a tick run's reply is stored with a run and a range but no `reply_to_message_id`, which no
-      // production writer of a thread reply leaves out.
+      // Raw fixture: a tick run's reply has a run and range but no `reply_to_message_id`, which thread replies always have.
       const orphan = await runInTenant(setup.tenant, () =>
         setup.runtime.query<{ id: string }>(
           `INSERT INTO semp_messages (thread_id, role, status, agent_run_id, event_from_id, event_to_id, created_at)
@@ -318,8 +313,7 @@ describe("regenerating a Semp reply (issue gh-1930)", () => {
 
     it("refuses a done reply that stored no run or no event range, which leaves nothing to hide from the model", async () => {
       const turn = await playTurn(setup, answerOf("an answer"));
-      // Raw fixture: the turn handler stores the run and the range before it finishes a message as done; this is a
-      // message finished without them.
+      // Raw fixture: the turn handler stores the run and range before finishing a message as done.
       await runInTenant(setup.tenant, () =>
         setup.runtime.query("UPDATE semp_messages SET status = 'done', event_to_id = NULL WHERE id = $1", [
           turn.messageId,
@@ -354,7 +348,7 @@ describe("regenerating a Semp reply (issue gh-1930)", () => {
       const turn = await playTurn(setup, answerOf("an old answer"));
       await runInTenant(setup.tenant, () =>
         withTransaction(setup.runtime, async (client) => {
-          // The writer a message stored before issue #1885 went through: a done status with no summary.
+          // A done status with no summary, as legacy rows have.
           expect(
             await finishSempMessageTurn(client, turn.messageId, {
               status: "done",
@@ -579,8 +573,7 @@ describe("regenerating a Semp reply (issue gh-1930)", () => {
 
     it("refuses a replacement that points at another tenant's message at the foreign key", async () => {
       const turn = await playAnswer("first answer");
-      // Raw statement on the admin pool: no production writer sets the column to anything but the new message of the
-      // same thread, so the constraint is proven by writing what a faulty writer would.
+      // Raw statement: no production writer points the column outside the thread, so a faulty write proves the constraint.
       const foreignMessage = await setup.admin.query<{ id: string }>(
         `INSERT INTO semp_threads (tenant_id, kind) VALUES ($1, 'chat') RETURNING id`,
         [foreignTenant],

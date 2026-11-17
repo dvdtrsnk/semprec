@@ -16,19 +16,17 @@ const PAGE_TEXT_MAX_CHARS = 100_000;
 const payloadSchema = z.object({ itemId: z.uuid() }).strict();
 
 interface OwnerRow {
-  /** The item's page doc, or null when it has none (a canvas-only item, or one that never got a page). */
+  /** Null for a canvas-only item or one that never got a page. */
   doc_id: string | null;
   database_id: string;
   owner_module_id: string | null;
 }
 
 /**
- * The `itemSearchPageText` task (issue #1658): converts the owner item's page to plain text and rebuilds its index
- * row. A missing, soft-deleted or Emails item completes without writing. An item with no page doc completes without
- * writing too, except a Journal entry, whose summary is recomputed as null (issue #1711). For a Journal entry the same
- * transaction also recomputes `computed.journalSummary` from the page's Markdown and makes its `events` relation equal to
- * the page's event links (issue #2016), from the same serialized Markdown. The page text, the index row, the summary and
- * the event edges are written in one transaction, so they commit together or not at all.
+ * Converts the item's page to plain text and rebuilds its index row. Missing, trashed or Emails items, and items
+ * without a page doc, complete without writing, except a Journal entry, whose summary becomes null. For a Journal
+ * entry it also recomputes `computed.journalSummary` and syncs its `events` relation to the page's event links. All
+ * writes share one transaction.
  */
 export async function handleItemSearchPageTextTask(pool: Pool, payload: unknown): Promise<void> {
   const { itemId } = payloadSchema.parse(payload);

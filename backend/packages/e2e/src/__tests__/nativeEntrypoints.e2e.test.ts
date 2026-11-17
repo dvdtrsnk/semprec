@@ -10,18 +10,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DRIFT_CHECK_ACTION_ID } from "@semprec/data";
 
 /**
- * The compiled entries of the units, the scripts and the restore runbook, run as the processes they are: plain
- * `process.execPath <compiled file>` children, never a test resolver, a TypeScript loader, `NODE_OPTIONS`,
- * `--conditions` or `--import`. The workspace roots that these entries reach resolve to `dist` through their
- * package manifests (docs/adr/2026-11-15-workspace-root-exports-for-the-service-entrypoints.md), which no
- * source-level test tier can show.
+ * The compiled entries of the units, the scripts and the restore runbook, run as plain
+ * `process.execPath <compiled file>` children: never a test resolver, a TypeScript loader, `NODE_OPTIONS`,
+ * `--conditions` or `--import`. Workspace roots resolve to `dist` through their package manifests
+ * (docs/architecture/edges-io-and-errors.md#service-entrypoints-and-packaging), which no source-level test can show.
  *
- * `semprec-api` was started by no case until source sp-b08abab8-34a6-4359-acb6-5d0e249ef45e: its start under the
- * production default of strict tenant scope failed because `createApiQueueRuntime` ran the `heartbeatFire`
- * queue-split migration outside any scope. That source removed the call, and case (d) now starts the API with the
- * other three services. Every service of case (d) runs under strict scope: the test process has
- * `SEMPREC_TENANT_SCOPE=warn` from the `test.env` of `vitest.e2e.config.ts`, so the environment of each child is
- * built from a list of names and never carries the variable. Case (e) runs the deploy order under the same condition.
+ * Case (d) starts the API with the other three services, and cases (d) and (e) run under strict tenant scope: the test
+ * process has `SEMPREC_TENANT_SCOPE=warn` from `vitest.e2e.config.ts`, so each child's environment is built from a
+ * list of names and never carries the variable.
  */
 
 const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -62,9 +58,7 @@ const DOWNSTREAM_CASE_TIMEOUT_MS =
 /** Migrate, seed, migrate again and verify the tenancy, each a child of its own, then the drop. */
 const DEPLOY_ORDER_CASE_TIMEOUT_MS = 4 * SETUP_CLI_DEADLINE_MS + DROP_DEADLINE_MS + CASE_SLACK_MS;
 
-// ---------------------------------------------------------------------------------------------------------------
 // Child processes
-// ---------------------------------------------------------------------------------------------------------------
 
 interface ChildResult {
   code: number | null;
@@ -205,9 +199,7 @@ afterEach(async () => {
   expect(leftovers.map((child) => child.pid)).toEqual([]);
 });
 
-// ---------------------------------------------------------------------------------------------------------------
 // Build provenance
-// ---------------------------------------------------------------------------------------------------------------
 
 /** `dist/x.js` of a source entry `src/x.ts`. */
 function sourceOf(compiled: string): string {
@@ -235,9 +227,7 @@ function assertBuilt(entries: readonly string[]): void {
   }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // The checker and its table
-// ---------------------------------------------------------------------------------------------------------------
 
 interface CheckerLine {
   status: "ok" | "FAIL";
@@ -513,9 +503,7 @@ describe("native entrypoints: the table and the checker", () => {
   );
 });
 
-// ---------------------------------------------------------------------------------------------------------------
 // Owned-database start of the services that can start today
-// ---------------------------------------------------------------------------------------------------------------
 
 async function freePort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
@@ -720,9 +708,8 @@ describe("native entrypoints: an owned database and the compiled services", () =
   });
 
   /**
-   * Runs one compiled data CLI against an owned database as its owner, with an environment of `PATH`, `HOME` and
-   * `DATABASE_URL` only. The environment has no `SEMPREC_TENANT_SCOPE` key although the test process has one (the
-   * `test.env` of `vitest.e2e.config.ts` pins `warn`), so the CLI runs under the production default.
+   * Runs one compiled data CLI against an owned database as its owner, with only `PATH`, `HOME` and `DATABASE_URL`, so
+   * it runs under the production tenant-scope default rather than the test process's `warn`.
    */
   async function runCli(cli: string, db: ScratchDatabase): Promise<ChildResult> {
     const env = explicitEnv({ DATABASE_URL: db.ownerUrl });
@@ -765,9 +752,8 @@ describe("native entrypoints: an owned database and the compiled services", () =
             filesDir: scratchDirs[0] ?? "",
             attachmentsDir: scratchDirs[1] ?? "",
           };
-          // The e2e vitest config sets SEMPREC_TENANT_SCOPE=warn in this process, and a child that inherited it
-          // would hide a start-up call made outside any tenant scope. The environment is built from names, and
-          // the object handed to the child must not carry the variable, so the service runs under strict scope.
+          // This process has SEMPREC_TENANT_SCOPE=warn, which would hide a start-up call outside any tenant scope, so the
+          // child's environment must not carry it.
           expect(process.env.SEMPREC_TENANT_SCOPE).toBeDefined();
           const env = explicitEnv(service.config(config));
           expect(Object.keys(env)).not.toContain("SEMPREC_TENANT_SCOPE");
@@ -804,35 +790,8 @@ describe("native entrypoints: an owned database and the compiled services", () =
     DOWNSTREAM_CASE_TIMEOUT_MS,
   );
 
-  /** The legacy job of case (e); a fixed key, so the migrated job is found by it. */
-  const LEGACY_JOB_KEY = "native-entry-legacy-heartbeat-fire";
-
-  interface JobRow {
-    task_identifier: string;
-    key: string | null;
-    payload: unknown;
-  }
-
-  /**
-   * The jobs of the queue with a key, with their envelope. graphile-worker's public `jobs` view does not project
-   * the payload, so this reads its private tables, checked against graphile-worker 0.17.3; the access stays here.
-   */
-  async function jobsWithKey(owner: Pool, key: string): Promise<JobRow[]> {
-    const { rows } = await owner.query<JobRow>(
-      `SELECT t.identifier AS task_identifier, j.key, j.payload::jsonb AS payload
-         FROM graphile_worker._private_jobs j JOIN graphile_worker._private_tasks t ON t.id = j.task_id
-        WHERE j.key = $1`,
-      [key],
-    );
-    return rows;
-  }
-
-  function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-
   it(
-    "(e) the deploy order under strict scope: a second migration run moves a legacy heartbeatFire job and the tenancy verification passes",
+    "(e) the deploy order under strict scope: a second migration run succeeds and the tenancy verification passes",
     async () => {
       await withScratchDatabase(admin, baseUrl, async (db) => {
         await prepare(db);
@@ -849,34 +808,14 @@ describe("native entrypoints: an owned database and the compiled services", () =
           // The owner (superuser) pool reads the seeded rows of every tenant; this case asserts the deploy step, not isolation.
           const tenants = await owner.query<{ id: string }>("SELECT id FROM tenants");
           expect(tenants.rows).toHaveLength(1);
-          const tenantId = tenants.rows[0]?.id;
           const heartbeats = await owner.query<{ id: string; tenant_id: string }>(
             "SELECT id, tenant_id FROM project_heartbeats WHERE action_id = $1",
             [DRIFT_CHECK_ACTION_ID],
           );
           expect(heartbeats.rows).toHaveLength(1);
-          const heartbeat = heartbeats.rows[0];
-          expect(heartbeat?.tenant_id).toBe(tenantId);
-
-          // A job as a release before issue #222 queued it: the retired task name and an envelope without a tenant.
-          // The state only the queue's own public function can produce here, since no current code enqueues the name.
-          await owner.query(
-            "SELECT graphile_worker.add_job('heartbeatFire', $1::json, job_key => $2, max_attempts => 3)",
-            [JSON.stringify({ traceId: randomUUID(), payload: { heartbeatId: heartbeat?.id } }), LEGACY_JOB_KEY],
-          );
-          expect(await jobsWithKey(owner, LEGACY_JOB_KEY)).toMatchObject([{ task_identifier: "heartbeatFire" }]);
+          expect(heartbeats.rows[0]?.tenant_id).toBe(tenants.rows[0]?.id);
 
           expectSucceeded("runMigrationsCli.js", await runCli("runMigrationsCli.js", db));
-
-          const moved = await jobsWithKey(owner, LEGACY_JOB_KEY);
-          expect(moved.map((job) => job.task_identifier)).toEqual(["heartbeatFireCore"]);
-          const envelope = moved[0]?.payload;
-          expect(isRecord(envelope) ? envelope.tenantId : undefined).toBe(tenantId);
-          const remaining = await owner.query<{ count: string }>(
-            `SELECT count(*)::text AS count FROM graphile_worker._private_jobs j
-             JOIN graphile_worker._private_tasks t ON t.id = j.task_id WHERE t.identifier = 'heartbeatFire'`,
-          );
-          expect(remaining.rows[0]?.count).toBe("0");
 
           const verified = await runCli("verifyTenancyCli.js", db);
           expectSucceeded("verifyTenancyCli.js", verified);

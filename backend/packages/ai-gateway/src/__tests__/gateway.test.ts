@@ -220,11 +220,7 @@ describe("gateway", () => {
   describe("settle retry", () => {
     const settleSql = /UPDATE ai_gateway_calls SET status = 'settled'/;
 
-    /**
-     * Intercepts the settle UPDATE on `pool.query`: each call hands the settle's attempt number to
-     * `onSettle`, which either rejects (a simulated transient failure) or resolves to let the
-     * original UPDATE run. Every other query runs unchanged.
-     */
+    /** Intercepts the settle UPDATE: `onSettle(attempt)` rejects to simulate a transient failure or resolves to let it run. */
     function interceptSettle(onSettle: (attempt: number) => Promise<void>): { attempts: () => number } {
       const original = pool.query.bind(pool) as (...args: unknown[]) => Promise<unknown>;
       let attempts = 0;
@@ -235,9 +231,7 @@ describe("gateway", () => {
         }
         return original(...args);
       };
-      // pg's overloaded `query` includes void-returning callback forms; typing the pass-through's
-      // return as `unknown` lets it stand in for all of them while still returning the promise
-      // the data layer awaits.
+      // pg's overloaded `query` includes void-returning callback forms, so the pass-through returns `unknown`.
       vi.spyOn(pool, "query").mockImplementation((...args: unknown[]): unknown => passThrough(args));
       return { attempts: () => attempts };
     }
@@ -886,12 +880,10 @@ describe("gateway caps across tenants, through the semprec_side role", () => {
   });
 
   /**
-   * A fixed-offset zone seven hours from UTC, so its local midnight is always at least five hours
-   * from both the UTC and the Europe/Prague (DEFAULT_TIMEZONE) midnight. Then, at any time of day,
-   * a row one minute before it or one minute after it sits on opposite sides of the tenant's
-   * boundary but on the same side of the UTC and Prague boundaries — so one of the two tests below
-   * fails if the tenant window were measured in UTC or the default zone. Bangkok is used unless its
-   * local time is within an hour of midnight (a row "one minute after" must lie in the past).
+   * A fixed-offset zone seven hours from UTC, so its midnight is at least five hours from both the UTC
+   * and Europe/Prague (DEFAULT_TIMEZONE) midnights: a row a minute either side of it lands on opposite
+   * sides of the tenant boundary but the same side of the others, so a window measured in UTC or the
+   * default zone fails a test. Bangkok unless its local time is within an hour of midnight.
    */
   function zoneFarFromUtcAndPragueMidnight(): string {
     const bangkokHour = (new Date().getUTCHours() + 7) % 24;

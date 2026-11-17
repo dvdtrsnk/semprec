@@ -162,8 +162,8 @@ describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
   });
 
   it("answers an empty list without guidance even with an active finding, and lists it once guidance is saved (R1 F4)", async () => {
-    // An active finding without guidance: the drift producer can insert one while a concurrent delete
-    // of the guidance resolves the findings it saw (R1 F4).
+    // An active finding without guidance: the drift producer can insert one while a concurrent guidance delete
+    // resolves the findings it saw.
     const id = await seedFinding(tenantA, projectA, behaviorPayload("tool_mixed"), new Date("2026-10-17T08:00:00Z"));
     expect(await runInTenant(tenantA, () => read(projectA))).toEqual({
       status: 200,

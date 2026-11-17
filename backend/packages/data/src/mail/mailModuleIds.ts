@@ -7,10 +7,8 @@ import type { MailModuleIds } from "./mailSyncJob.js";
 export type { MailModuleIds };
 
 /**
- * Resolves the four seeded databases the mail sync jobs write into, by their `owner_module_id`,
- * in the caller's tenant scope — once per job or per tenant pass, never captured at boot, because
- * the ids differ per tenant. Throws naming every missing module id (and the seed CLI) when that
- * tenant has no such database, which fails the job that needs them.
+ * Resolved per job or tenant pass, never captured at boot, because the ids differ per tenant. Throws naming every
+ * missing module id when the tenant lacks one of the databases.
  */
 export async function resolveMailModuleIds(client: PoolClient): Promise<MailModuleIds> {
   const missing: string[] = [];

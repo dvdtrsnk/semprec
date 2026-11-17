@@ -18,25 +18,14 @@ import { disposeLibraryCover, prepareLibraryCover } from "./libraryCoverStorage.
 import { COVER_OVERRIDE_KEY, COVER_REMOVED_KEY, COVER_SOURCE_KEY } from "./libraryModuleContract.js";
 import { enqueueLibraryMetadataProcessing } from "./libraryMetadataJob.js";
 import { downloadLibraryCoverOutcome, type LibraryCoverDownloadOutcome } from "./openLibraryFetcher.js";
+import type { CustomRouteResult, RouteParams, RouteUser } from "../customRoute.js";
 
 const logger = createLogger("library-cover-candidates");
 
-/** The request context of the three routes: the path parameters and the authenticated user. */
-interface CoverCandidateRouteContext {
-  params: Record<string, string>;
-  identity: { user: { id: string } };
-}
-
-type RouteResult = { status: number; body: unknown };
-
-/** What the select route downloads and stores through; the defaults are the production ones. */
 export interface LibraryCoverCandidateSelectOptions {
-  /**
-   * Fetches the image of a candidate and says how it ended; the default is `downloadLibraryCoverOutcome`, which goes
-   * through `createOutboundHttp()`.
-   */
+  /** Default `downloadLibraryCoverOutcome`, which goes through `createOutboundHttp()`. */
   downloadCover?: (url: string) => Promise<LibraryCoverDownloadOutcome>;
-  /** Where the image bytes are written; the default is the local file store of `FILES_STORAGE_DIR`. */
+  /** Default: the local file store of `FILES_STORAGE_DIR`. */
   storage?: BlobStorageWriter;
 }
 
@@ -46,16 +35,13 @@ function parseItemId(params: Record<string, string>): string {
   return parsed.data;
 }
 
-/** A position the table can hold (0 to 2) as written in the path; any other text is a candidate that does not exist. */
+/** Any text other than 0-2 is a candidate that does not exist (404). */
 function parseCandidateIndex(params: Record<string, string>): number {
   if (params.index === undefined || !/^[0-2]$/.test(params.index)) throw new NotFoundError("Cover candidate not found");
   return Number(params.index);
 }
 
-/**
- * The database of a live item of a Books or Movies database of the caller's tenant. A missing id, another tenant's
- * id, a trashed item and an item of another database are one and the same 404.
- */
+/** A missing id, another tenant's id, a trashed item and a non-library item are the same 404. */
 async function locateLibraryItem(client: PoolClient, itemId: string): Promise<DatabaseRow> {
   const [located] = await itemsStore.getItemsByIdsIncludingDeleted(client, [itemId]);
   const database = located ? await databasesStore.getDatabase(client, located.databaseId) : null;
@@ -70,14 +56,9 @@ async function locateLibraryItem(client: PoolClient, itemId: string): Promise<Da
   return database;
 }
 
-/**
- * `GET /api/items/:id/cover-candidates` (issue #1812): the candidates the metadata job stored for a Books or Movies
- * item, as `[{ index, source, title, subtitle, imageUrl }]` in position order. It reads the table only and makes no
- * request to an external service. A malformed id is a 400 on `id`; an id that is not a live Books or Movies item of
- * the caller's tenant is a 404.
- */
+/** Reads the stored table only; makes no external request. */
 export function createLibraryCoverCandidatesListRouteHandler(pool: Pool) {
-  return async (ctx: CoverCandidateRouteContext): Promise<RouteResult> => {
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
     const itemId = parseItemId(ctx.params);
     const candidates = await withClient(pool, async (client) => {
       await locateLibraryItem(client, itemId);
@@ -88,16 +69,11 @@ export function createLibraryCoverCandidatesListRouteHandler(pool: Pool) {
 }
 
 /**
- * `POST /api/items/:id/cover-candidates/refresh` (issue #1812): asks for a new search, so that the metadata job
- * replaces the stored candidates. Like the retry route (`createLibraryAutomationRetryRouteHandler`) it takes the
- * automation row and then the item row, sets the automation row to `pending` (a `locked` one included), enqueues
- * the job with the config of the database's metadata heartbeat and publishes the item's invalidation after the
- * commit. Unlike the retry route it leaves `coverOverride`, `coverRemoved` and `coverSource` as they are. Answers
- * 202; the job runs later, outside the request. The 400 and 404 cases are those of the list route, and a trashed
- * item is refused before any lock is taken.
+ * Like the retry route it locks the automation row, then the item row, and resets to `pending` (even `locked`),
+ * but leaves `coverOverride`, `coverRemoved` and `coverSource` untouched. Answers 202; the job runs later.
  */
 export function createLibraryCoverCandidatesRefreshRouteHandler(pool: Pool) {
-  return async (ctx: CoverCandidateRouteContext): Promise<RouteResult> => {
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
     const itemId = parseItemId(ctx.params);
     const userId = ctx.identity.user.id;
     await withTransaction(pool, async (client) => {
@@ -105,8 +81,7 @@ export function createLibraryCoverCandidatesRefreshRouteHandler(pool: Pool) {
       const config = await readJobConfig(client, database);
       await enqueueLibraryMetadataProcessing(client, { itemId, databaseId: database.id, config });
       await resetItemAutomationToPending(client, itemId);
-      // The locked read decides the narrow case of an item trashed after the read above, which rolls the enqueue
-      // and the reset back.
+      // Catches an item trashed after the unlocked read; the throw rolls back the enqueue and the reset.
       const stored = await itemsStore.lockItemById(client, database.id, itemId);
       if (!stored || stored.deletedAt) throw new NotFoundError("Item not found");
       runAfterCommit(client, () =>
@@ -125,30 +100,18 @@ export function createLibraryCoverCandidatesRefreshRouteHandler(pool: Pool) {
 }
 
 /**
- * `POST /api/items/:id/cover-candidates/:index/select` (issue #1812): makes the stored candidate at `index` the
- * item's manual cover. The image is downloaded first, with no transaction open, through `downloadCover` (by
- * default `downloadLibraryCoverOutcome`: the stored-URL baseline, then `createOutboundHttp()`, which refuses an
- * address in a private or link-local range at connect time, a size cap, an image content type and no redirects), and
- * its bytes are staged in the blob store. One transaction then locks the item row, checks that the candidate is
- * still the one that was downloaded, stores the blob and writes `coverOverride` (the blob), `coverSource:
- * "candidate"` and, when the item holds a removal, `coverRemoved: false` as the user through `updateItemWithClient`.
- * The item's invalidation is published after the commit. Answers 200 with the item id and the blob id.
+ * The image is downloaded with no transaction open (outbound policy: private/link-local addresses refused, size
+ * cap, image content type, no redirects) and staged in the blob store. One transaction then locks the item,
+ * checks the candidate is still the downloaded one (else 409 `cover_candidates_changed`) and writes the cover as
+ * the user.
  *
- * A malformed id is a 400 on `id`. An id that is not a live Books or Movies item of the caller's tenant, and an
- * index with no stored candidate (also a path segment that is not 0, 1 or 2), are one 404. A download that is
- * refused (an address the outbound policy denies) or that returns something that is not a usable image is a 400 on
- * `index`; one that fails because the host did not answer (timeout, connection failure, a non-success status) is a
- * 502 `upstream_unavailable`, which the caller may retry. Each of them writes nothing and logs the item id, the
- * index and the kind, never the URL. A candidate set that a metadata run replaced while the image was downloading is
- * a 409 `cover_candidates_changed`: the image belongs to the old set.
- *
- * The staged bytes are removed when the transaction body threw (a confirmed rollback) and when the commit kept
- * another blob for the same bytes. They are kept when COMMIT itself failed, because its outcome is unknown and the
- * live cover may be the staged file (docs/adr/2026-11-05-library-covers-stage-bytes-before-the-owned-item-transaction.md).
+ * A refused or unusable download is a 400 on `index`; an unreachable host is a retryable 502. The URL is never
+ * logged. Staged bytes are removed after a confirmed rollback or when the commit kept another blob for the same
+ * bytes, but kept when COMMIT itself failed, because the live cover may be the staged file.
  */
 export function createLibraryCoverCandidateSelectHandler(pool: Pool, options: LibraryCoverCandidateSelectOptions = {}) {
   const downloadCover = options.downloadCover ?? downloadLibraryCoverOutcome;
-  return async (ctx: CoverCandidateRouteContext): Promise<RouteResult> => {
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
     const itemId = parseItemId(ctx.params);
     const index = parseCandidateIndex(ctx.params);
     const userId = ctx.identity.user.id;
@@ -163,8 +126,7 @@ export function createLibraryCoverCandidateSelectHandler(pool: Pool, options: Li
     const storage = options.storage ?? new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
     const outcome = await downloadCover(candidate.imageUrl);
     if (outcome.kind !== "downloaded") {
-      // Only the kind, the reason and the ids are logged: the candidate URL and the exception text come from a
-      // provider and stay out of the log.
+      // The candidate URL and exception text come from a provider and stay out of the log.
       logger.warn(
         { itemId, index, outcome: outcome.kind, reason: outcome.kind === "unavailable" ? outcome.reason : undefined },
         "Cover candidate image was not downloaded",
@@ -181,14 +143,16 @@ export function createLibraryCoverCandidateSelectHandler(pool: Pool, options: Li
     }
     const prepared = await prepareLibraryCover(pool, storage, outcome.cover);
 
-    // `bodyFinished` is the last statement of the transaction body, so a false value in `finally` means the body threw
-    // and the transaction was rolled back. With it true and `committed` false, COMMIT itself failed: its outcome is
-    // unknown and the staged bytes are kept, as the library cover ADR decides, rather than deleting a possibly live cover.
+    // `bodyFinished` false in `finally` means the body threw (rolled back). True with `committed` false means
+    // COMMIT itself failed with an unknown outcome, so the staged bytes are kept rather than risk deleting a live cover.
     let bodyFinished = false;
     let committed = false;
     let blobKept = false;
     try {
       const blobId = await withTransaction(pool, async (client) => {
+        // The request transaction may be retried after a deadlock, so each attempt starts from a clean state.
+        bodyFinished = false;
+        blobKept = false;
         runAfterCommit(client, () => {
           committed = true;
         });
@@ -241,7 +205,6 @@ export function createLibraryCoverCandidateSelectHandler(pool: Pool, options: Li
   };
 }
 
-/** The factory the route table mounts for the select route: the production download and storage. */
 export function createLibraryCoverCandidateSelectRouteHandler(pool: Pool) {
   return createLibraryCoverCandidateSelectHandler(pool);
 }

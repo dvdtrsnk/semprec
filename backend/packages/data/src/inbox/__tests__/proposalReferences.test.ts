@@ -100,7 +100,6 @@ describe("the hooks that invalidate and restore the open proposals of an item (i
       }),
     );
 
-  /** An open task proposal made by the tick, in `project` when one is given. */
   async function createTaskCard(project: string | null, text = "Buy milk"): Promise<string> {
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -129,7 +128,6 @@ describe("the hooks that invalidate and restore the open proposals of an item (i
     return card;
   }
 
-  /** A card of a state no route produces from the outside, written as the system writer does. */
   const storeOnCard = (cardId: string, patch: Record<string, unknown>) =>
     withTransaction(pool, (client) =>
       updateItemWithClient(
@@ -316,7 +314,6 @@ describe("the hooks that invalidate and restore the open proposals of an item (i
     },
   );
 
-  /** A speaker card proposing to link `personId`, as `proposeSpeakerMappings` stores it (its own test covers the producer). */
   async function createSpeakerCard(personId: string): Promise<string> {
     const envelope = {
       entityKind: "relation",
@@ -494,7 +491,6 @@ describe("the hooks that invalidate and restore the open proposals of an item (i
     },
   );
 
-  /** The step of an "archive this project" card: it updates `projectId` and sets its status to `archived`. */
   const archiveStep = (projectId: string) => ({
     ref: "archive",
     op: "update" as const,
@@ -505,7 +501,6 @@ describe("the hooks that invalidate and restore the open proposals of an item (i
     after: { properties: { status: "archived" } },
   });
 
-  /** An open card whose multi-step envelope archives `projectId` when confirmed, stored as the writers store a proposal. */
   async function createArchiveProjectCard(projectId: string): Promise<string> {
     const card = await createTaskCard(projectId);
     const stored = (await readCard(card)).properties.proposal as Record<string, unknown>;

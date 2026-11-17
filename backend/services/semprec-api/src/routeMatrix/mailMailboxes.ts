@@ -1,10 +1,7 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/**
- * `ROUTE_MATRIX` slice for `/api/mail/mailboxes`: the mailbox list, detail and password connect entries, which the
- * matrix order places apart from the other mail entries in `mail.ts`.
- */
+/** Placed apart from the other mail entries by the matrix order. */
 export const MAIL_MAILBOXES_ROUTES: RouteMatrixEntry[] = [
   {
     name: "mailbox list",

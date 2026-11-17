@@ -2,8 +2,8 @@ import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
 /**
- * `ROUTE_MATRIX` slice for the `/api/auth` path family, together with the entries the matrix order places among
- * them: first-account setup (`/api/setup` and its wizard view) and `/api/invitations/accept`.
+ * Also holds first-account setup (`/api/setup` and its wizard view) and `/api/invitations/accept`,
+ * which the matrix order places here.
  */
 export const AUTH_ROUTES: RouteMatrixEntry[] = [
   {

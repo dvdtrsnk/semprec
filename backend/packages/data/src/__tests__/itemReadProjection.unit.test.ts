@@ -9,6 +9,7 @@ const item: ItemRow = {
   createdAt: "now",
   updatedAt: "now",
   deletedAt: null,
+  version: "1",
 };
 afterEach(() => clearHooksForTests());
 describe("item read projection registry", () => {

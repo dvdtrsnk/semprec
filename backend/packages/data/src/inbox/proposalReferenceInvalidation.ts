@@ -15,30 +15,24 @@ import { appendHistoryEntry } from "./proposalHistory.js";
 import { parseStoredProposalEnvelope } from "./proposalEnvelope.js";
 import { envelopeReferencesOf, isCardBeingConfirmed } from "./proposalReferences.js";
 
-/**
- * Invalidates the open Processing proposals that refer to an item that was archived or deleted, and returns them to
- * `proposed` when the item comes back (issue #1916). The hooks run in the transaction of the write that changed the
- * item, so the change of a card commits or rolls back with it. A card is found through the `referencedItemIds` its
- * writers store (`proposalReferences.ts`) and the `items_props_gin` index, never by reading every card; a card that
- * another transaction holds the lock of is skipped (docs/adr/2026-11-14-an-item-hook-invalidates-the-open-cards-of-an-item-without-waiting-for-a-card-a-confirm-holds.md).
- */
+// Invalidates open proposals referring to an item that was archived or deleted, and reopens them when it comes back.
+// The hooks run in the transaction of the item write, so card changes commit or roll back with it. Cards are found via
+// their stored `referencedItemIds` and `items_props_gin`, never by scanning; cards another transaction locked are
+// skipped rather than waited for.
 
 export interface ProposalReferenceConfig {
   processingProposalsDatabaseId: string;
 }
 
-/** The reasons a referenced item stops a card: the two fixable codes of `invalidReasonSchema` that name a target. */
 export type TargetReasonCode = Extract<InvalidReason["code"], "targetArchived" | "targetDeleted">;
 
-/** The longest label an `invalidReason` carries, counted in code points, as the label of a deleted source. */
+/** Counted in code points, like the label of a deleted source. */
 const REASON_LABEL_MAX = 80;
 
 /**
- * Locks the live cards of the Processing proposals database whose properties contain `match`, in id order, and
- * skips every card another transaction holds the lock of (`FOR UPDATE SKIP LOCKED`), so the caller never waits for a
- * confirm that locked its card first. A card the caller's own transaction is confirming (`runWhileConfirmingCard`,
- * a step of that confirm wrote the item) is skipped too, as its lock is the caller's own. `match` is a JSON
- * containment, which the `items_props_gin` index answers.
+ * Locks live cards whose properties contain `match` (answered by `items_props_gin`) in id order with
+ * `FOR UPDATE SKIP LOCKED`, so the caller never waits for a confirm that locked its card first. A card this
+ * transaction is confirming (`runWhileConfirmingCard`) is skipped too.
  */
 async function lockCardsContaining(
   client: PoolClient,
@@ -61,7 +55,6 @@ async function lockCardsContaining(
   return cards;
 }
 
-/** The item's title-property value as the label of an `invalidReason`, cut by code point; empty when there is none. */
 async function reasonLabelOf(client: PoolClient, item: ItemRow): Promise<string> {
   const title = (await listPropertiesByDatabase(client, item.databaseId)).find((property) => property.type === "title");
   const value = title ? item.properties[title.key] : undefined;
@@ -71,7 +64,7 @@ async function reasonLabelOf(client: PoolClient, item: ItemRow): Promise<string>
     : characters.join("");
 }
 
-/** The editor field of `card` whose value is `itemId`; empty when its stored envelope does not name the item or is of a kind this release does not know. */
+/** The editor field of `card` whose value is `itemId`; empty when not named or the envelope kind is unknown. */
 function fieldOfReference(card: ItemRow, itemId: string): string {
   const envelope = parseStoredProposalEnvelope(card.properties.proposal, card.id);
   if (envelope === null || "unknownKind" in envelope) return "";
@@ -79,13 +72,9 @@ function fieldOfReference(card: ItemRow, itemId: string): string {
 }
 
 /**
- * Puts every `proposed` card that refers to `itemId` into `invalid` with the reason `reasonCode`, in the caller's
- * transaction: `status` `invalid`, `invalidReason` `{ code, field, itemId, label }` (`field` is the editor field whose
- * value is the item, `label` the item's title when the reason is written) and a history entry of kind `invalidated`.
- * Only `proposed` cards are touched: a `confirmed`, `rejected` or already `invalid` card, a card that is still
- * computing or needs clarification, and a card another transaction holds the lock of (a confirm in progress, which
- * validates its targets itself) are left as they are. Cards of another tenant are not visible to the caller's
- * connection.
+ * Puts every `proposed` card referring to `itemId` into `invalid` with `invalidReason` `{ code, field, itemId, label }`
+ * and an `invalidated` history entry. Other statuses, and cards locked by another transaction (a confirm in progress
+ * validates its targets itself), are left alone.
  */
 export async function invalidateProposalsForItem(
   client: PoolClient,
@@ -122,10 +111,8 @@ export async function invalidateProposalsForItem(
 }
 
 /**
- * True when the card's stored envelope passes the tick's validation (`storedEnvelopeStillValid`) and the write it
- * describes is still permitted. A `ForbiddenError` of the revalidation (an archived database the envelope writes to or
- * links into, a relation property that is not writable) means the envelope is not usable now, so the card stays
- * `invalid`; it must not fail the restore of an item that has nothing to do with that database.
+ * True when the stored envelope passes the tick's validation and its write is still permitted. A `ForbiddenError`
+ * (archived database, non-writable relation) means not usable now; it must not fail the restore of an unrelated item.
  */
 export async function envelopeAllowsRestore(client: PoolClient, card: ItemRow): Promise<boolean> {
   try {
@@ -137,13 +124,9 @@ export async function envelopeAllowsRestore(client: PoolClient, card: ItemRow): 
 }
 
 /**
- * Returns to `proposed` the `invalid` cards whose reason is `reasonCode` for `itemId`, after the item came back, in
- * the caller's transaction: the card's stored envelope is validated again as the tick validates a computed one
- * (`storedEnvelopeStillValid`, with a refusal of a write the envelope describes counted as not valid), and a card whose
- * envelope no longer passes, because this item or another one it refers to is still unusable, stays `invalid` with
- * its reason. A restored card loses its `invalidReason` and gets a history
- * entry of kind `reopened`. A card of the same item with another reason, such as `sourceDeleted`, and a card another
- * transaction holds the lock of are left as they are.
+ * Returns to `proposed` the `invalid` cards whose reason is `reasonCode` for `itemId`, when their stored envelope
+ * passes revalidation (`envelopeAllowsRestore`); others stay `invalid` with their reason. Cards with another reason
+ * (such as `sourceDeleted`) and cards locked by another transaction are left alone.
  */
 export async function restoreProposalsForItem(
   client: PoolClient,
@@ -183,18 +166,16 @@ export async function restoreProposalsForItem(
   }
 }
 
-/** The Processing proposals database of the caller's tenant, or `null` for a tenant that has none (the Inbox pipeline is not seeded). */
+/** `null` for a tenant whose Inbox pipeline is not seeded. */
 async function readConfig(client: PoolClient): Promise<ProposalReferenceConfig | null> {
   const database = await getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
   return database ? { processingProposalsDatabaseId: database.id } : null;
 }
 
 /**
- * Item update hook of Projects: a write that names `status` and leaves it `archived` invalidates the open cards that
- * refer to the project (`targetArchived`), and one that leaves it anything else, `done` included, returns the cards
- * that were invalid for the project's archive and whose envelope is valid again. A `done` project is a valid target, so
- * no card is invalidated for it. Reads the stored status of the
- * written row, so a status the Projects write transform changed is the one judged.
+ * Projects update hook: a write leaving `status` `archived` invalidates referring cards (`targetArchived`); any other
+ * status (`done` is a valid target) restores cards invalid for the archive. Judges the stored status, so a status the
+ * Projects write transform changed is the one used.
  */
 export const proposalReferenceItemUpdateHook: ItemUpdateHook = async ({ client, database, item, propertiesPatch }) => {
   if (database.ownerModuleId !== PROJECTS_MODULE_ID || !Object.hasOwn(propertiesPatch, "status")) return;
@@ -205,13 +186,13 @@ export const proposalReferenceItemUpdateHook: ItemUpdateHook = async ({ client, 
   else await restoreProposalsForItem(client, config, item.id, "targetArchived");
 };
 
-/** Item delete hook, for the rows of any database: the open cards that refer to a trashed row become `invalid` (`targetDeleted`). */
+/** Item delete hook, any database: open cards referring to the trashed row become `invalid` (`targetDeleted`). */
 export const proposalReferenceItemDeleteHook: ItemDeleteHook = async ({ client, item }) => {
   const config = await readConfig(client);
   if (config) await invalidateProposalsForItem(client, config, item.id, "targetDeleted");
 };
 
-/** Item restore hook, for the rows of any database: the cards that were invalid for a restored row return to `proposed` when their envelope is valid again. */
+/** Item restore hook, any database: cards invalid for the restored row return to `proposed` if their envelope is valid. */
 export const proposalReferenceItemRestoreHook: ItemRestoreHook = async ({ client, item }) => {
   const config = await readConfig(client);
   if (config) await restoreProposalsForItem(client, config, item.id, "targetDeleted");

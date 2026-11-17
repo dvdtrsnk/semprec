@@ -1,9 +1,6 @@
-// Issue #1767: the action items of a transcript's meeting notes as a reader gets them, the task a user
-// makes of one, the undo of that, and the open items an Event offers. The state of an item is a row of
-// `transcript_action_item_states`; the two writers here lock the transcript's item row before they read
-// it and write through `./transcriptActionItemStates.ts`.
-// Constrained by: docs/adr/2026-11-11-transcript-action-item-states-serialize-on-the-transcript-row.md,
-// docs/adr/2026-11-11-action-item-tasks-inherit-project-and-people-by-link-rules.md
+// The action items of a transcript's meeting notes, the task a user makes of one and its undo. Both
+// writers lock the transcript's item row before reading state and write through
+// `./transcriptActionItemStates.ts`.
 import type { PoolClient } from "pg";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithRelationsWithClient } from "../chokePoint/itemCreateWithRelations.js";
@@ -27,31 +24,25 @@ import { readLiveTranscriptEventId } from "./transcriptEventEdges.js";
 import { TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY } from "./transcriptionComputedKeys.js";
 import { listTranscriptSpeakers } from "./transcriptionSpeakerEdges.js";
 
-/** One action item of a transcript's meeting notes, rendered for a reader, with what the user did with it. */
 export interface TranscriptActionItem {
-  /** The item's position in the stored `computed.meetingNotes.actionItems`. */
+  /** Position in the stored `computed.meetingNotes.actionItems`. */
   id: number;
   text: string;
   ownerSpeaker: string | null;
   ownerLabel: string | null;
   due: string | null;
   startsAt: number | null;
-  /** `open` for an item without a stored state and for an `added` item whose task is not live. */
+  /** `open` also for an `added` item whose task is not live. */
   state: "open" | TranscriptActionItemState;
-  /** The live task of an `added` item; `null` in every other state. */
   taskId: string | null;
-  /** Whether the item's owner speaker is mapped, through a `speakers` edge, to the tenant's own person. */
+  /** Owner speaker is mapped, through a `speakers` edge, to the tenant's own person. */
   isMine: boolean;
 }
 
 /**
- * The action items of a transcript's meeting notes (issue #1767), in the order of their ids: each
- * rendered by `renderMeetingNotes` in `locale` and joined with its stored state. An item is `added`
- * only while the task its state row names is a live item: with that task in the Trash or purged the
- * item reads `open` and has no `taskId`. `isMine` is true when the item's `ownerSpeaker` is mapped to
- * the person System settings `selfPerson` names; an item without an owner, with an unmapped owner or
- * in a tenant without an own person is not mine. A transcript that does not exist in the tenant in
- * scope, one in the Trash and one without stored notes have no items.
+ * An item reads `added` only while its task is live; with the task trashed or purged it reads `open`
+ * with no `taskId`. `isMine` compares the owner speaker's person with System settings `selfPerson`.
+ * An unknown, trashed or note-less transcript has no items.
  */
 export async function listTranscriptActionItems(
   client: PoolClient,
@@ -82,7 +73,7 @@ export async function listTranscriptActionItems(
   });
 }
 
-/** The same error for an unknown transcript, another tenant's, one in the Trash and an action item the notes do not have. */
+/** One error for unknown, other-tenant and trashed transcripts and a missing action item, so none is distinguishable. */
 function actionItemNotFound(transcriptId: string, actionItemId: number): NotFoundError {
   return new NotFoundError("Transcript action item not found", {
     resource: "transcriptActionItem",
@@ -91,17 +82,13 @@ function actionItemNotFound(transcriptId: string, actionItemId: number): NotFoun
   });
 }
 
-/**
- * Locks the item row of a live transcript until the transaction ends and returns it, or `null` for an
- * id that names no transcript of the tenant in scope and for a transcript in the Trash.
- */
+/** `null` for a transcript outside the tenant in scope or in the Trash. */
 async function lockLiveTranscript(client: PoolClient, transcriptId: string): Promise<ItemRow | null> {
   const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
   const transcript = transcripts && (await itemsStore.lockItemById(client, transcripts.id, transcriptId));
   return transcript && !transcript.deletedAt ? transcript : null;
 }
 
-/** One action item of a transcript, and the signed-in user whose write the request is. */
 export interface ActionItemTaskRequest {
   transcriptId: string;
   actionItemId: number;
@@ -110,26 +97,15 @@ export interface ActionItemTaskRequest {
 }
 
 /**
- * Makes a task of one action item (issue #1767) and returns its id, with `created` false when the
- * call created no item. Runs in the caller's transaction.
+ * Makes a task of one action item, in the caller's transaction, under the transcript row lock. An
+ * `added` item with a live task is answered with it and nothing is written. Otherwise the task is
+ * created as the user with a `sourceEvents` edge to the transcript's live Event (link rules fill its
+ * project and people). The idempotency key `transcript-action-item:<transcriptId>:<actionItemId>`
+ * returns a live reserved item unchanged (`created` false); the store releases a reservation whose
+ * item is trashed or purged. The state row becomes `added`, replacing a `noted` row.
  *
- * It locks the transcript's item row, then reads the item and its state. An item that is `added`
- * with a live task is answered with that task and nothing is written. Otherwise it creates a Tasks
- * item as the user, through the item create with relations (issue #1590): `name` is `input.name` or
- * the item's rendered text in `input.locale`, `date` is `input.date` or the item's `due` (left out
- * when both are absent), `status` is `notDone`. The task gets a `sourceEvents` edge to the
- * transcript's live linked Event and none when the transcript has no such Event; the link rules of
- * issue #1724 fill its project and people from that edge. The create carries the idempotency key
- * `transcript-action-item:<transcriptId>:<actionItemId>`: when the item reserved under it is live
- * (a task that was undone and then restored from the Trash), that item is returned unchanged and
- * `created` is false; a reservation whose item is in the Trash or purged is released by the store
- * and a new task is created. The state row is then stored as `added` with the task and with the
- * live person the item's owner speaker is mapped to, replacing a `noted` row.
- *
- * Throws the action item's `NotFoundError` for a transcript that is unknown, another tenant's or in
- * the Trash and for an `actionItemId` the notes do not have. The Event is read without a lock: one
- * moved to the Trash before the edge is written makes the relation write throw its
- * `validation_failed`.
+ * The Event is read without a lock: one trashed before the edge is written makes the relation write
+ * throw `validation_failed`.
  */
 export async function createActionItemTask(
   client: PoolClient,
@@ -143,7 +119,7 @@ export async function createActionItemTask(
 
   const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
   const sourceEvents = tasks && (await getPropertyByKey(client, tasks.id, "sourceEvents"));
-  // The seed and `tasks/tasksSourceEventsCutoverMigration.ts` give every tenant with transcripts both.
+  // The seed gives every tenant both.
   if (!tasks || !sourceEvents) throw new Error("The Tasks database or its 'sourceEvents' relation is missing");
   const eventId = await readLiveTranscriptEventId(client, transcript.databaseId, transcript.id);
   const idempotencyKey = `transcript-action-item:${transcript.id}:${input.actionItemId}`;
@@ -179,18 +155,9 @@ export async function createActionItemTask(
 }
 
 /**
- * Takes back the task of one action item (issue #1767) and returns the state the item has
- * afterwards. Runs in the caller's transaction.
- *
- * It locks the transcript's item row, then reads the item's state row. For a row that is `added` it
- * moves the task the row names to the Trash as the user, through the choke point's item delete, when
- * that task is a live item, and deletes the row: the item is open again (`null`). A task that is
- * already in the Trash or purged is left as it is and the row is deleted all the same. Any other
- * row and an item without a row are left unchanged and answered with their state, so a repeated
- * call changes nothing.
- *
- * Throws the action item's `NotFoundError` for a transcript that is unknown, another tenant's or in
- * the Trash and for an `actionItemId` the notes do not have.
+ * Undoes an `added` item, in the caller's transaction, under the transcript row lock: trashes the
+ * task as the user when it is live and deletes the state row, so the item is open again (`null`).
+ * Any other state is left unchanged and returned, so a repeated call changes nothing.
  */
 export async function removeActionItemTask(
   client: PoolClient,
@@ -217,7 +184,6 @@ export async function removeActionItemTask(
   return { actionItemId: input.actionItemId, state: null };
 }
 
-/** One open action item an Event offers as a task, as `GET /api/events/:id/transcript-action-items` returns it. */
 export interface EventActionItemProposal {
   transcriptId: string;
   actionItemId: number;
@@ -229,7 +195,7 @@ export interface EventActionItemProposal {
   state: "open";
 }
 
-/** A transcript's recording time for sorting; a transcript without a readable `date` sorts last. */
+/** A transcript without a readable `date` sorts last. */
 function recordedAt(transcript: ItemRow): number {
   const date = transcript.properties.date;
   const at = typeof date === "string" ? Date.parse(date) : Number.NaN;
@@ -237,13 +203,9 @@ function recordedAt(transcript: ItemRow): number {
 }
 
 /**
- * The action items an Event offers as tasks (issue #1767): over every live transcript linked to the
- * Event through the Transcripts `event` relation, the items `listTranscriptActionItems` reads as
- * `open` that are mine or have no owner. An item with a live task, a followed item and an item owned
- * by anyone else, an unmapped speaker included, are left out. Ordered by the transcript's `date`
- * ascending (a transcript without one last, equal dates by transcript id), then by the item's id.
- * Returns `null` when `eventId` names no live Event of the tenant in scope: an unknown id, another
- * tenant's Event, an Event in the Trash and a tenant without an Events database alike.
+ * Open items that are mine or have no owner, over every live transcript linked to the Event, ordered
+ * by transcript `date` (missing last, ties by id) then item id. `null` when `eventId` names no live
+ * Event of the tenant in scope.
  */
 export async function listEventActionItemProposals(
   client: PoolClient,

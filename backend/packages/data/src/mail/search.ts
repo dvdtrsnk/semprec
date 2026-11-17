@@ -4,12 +4,9 @@ import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { DRAFTS_AND_SENT_SPECIAL_PURPOSES, FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "./messageFlags.js";
 
 /**
- * Full-text search over synced message content (issue #26's scope: Emails only — the
- * generic `items`/`properties` model has no single "message text" column, so this is a
- * separate index table maintained by the application's write path, not a generated column).
- * `'czech'` is the text-search configuration 0006_mail_sync.sql builds on `unaccent` + `simple`,
- * which 0046_czech_hunspell_search.sql puts a Hunspell dictionary in front of once the
- * provisioned assets exist.
+ * A separate index table maintained by the write path, because the generic item model has no single
+ * message text column. `'czech'` is the schema's `unaccent` + `simple` configuration, which a Hunspell
+ * dictionary is put in front of once the assets are provisioned.
  */
 export interface ReindexItemSearchInput {
   itemId: string;
@@ -36,12 +33,8 @@ export interface FindEmailsMissingSearchIndexResult {
 }
 
 /**
- * The periodic reindex job's actual query (issue #26: "a periodic reindex job as a safety net
- * for writes outside the standard path — migrations, backfills"). Only catches "never indexed
- * at all," not "indexed but now stale" — a write that goes through `ingestEmailMessage` (the
- * standard path) always calls `reindexItemSearch` itself in the same transaction, so staleness
- * from the normal path can't happen; this only needs to cover a direct-DB write skipping that
- * call entirely.
+ * Safety net for direct-DB writes that skip `reindexItemSearch`. Finds only never-indexed items: the
+ * standard path reindexes in the same transaction, so it cannot leave a stale entry.
  */
 export async function findEmailsMissingSearchIndex(
   client: Queryable,
@@ -69,13 +62,7 @@ export interface SearchItemsResultRow {
   rank: number;
 }
 
-/**
- * A thin layer of Gmail-style search operators over the free-text query (issue #26):
- * `from:`, `has:attachment`, `before:`/`after:`, and `is:read`/`is:unread`/`is:flagged`/
- * `is:unflagged` become structured `WHERE` conditions; everything else is the free-text
- * remainder handed to `websearch_to_tsquery`. The `is:` operators compile over #97's
- * canonical `read`/`flagged` boolean properties (issue #90) — never into full text.
- */
+/** Gmail-style operators compile to structured conditions (never full text); the rest goes to `websearch_to_tsquery`. */
 export interface ParsedMailSearchQuery {
   freeText: string;
   from?: string;
@@ -90,13 +77,8 @@ export interface ParsedMailSearchQuery {
 const OPERATOR_PATTERN = /\b(from|has|before|after|is):(\S+)/gi;
 
 /**
- * `is:read`/`is:unread` and `is:flagged`/`is:unflagged` are each a single independent
- * boolean dimension: identical repeats collapse (`is:unread is:unread` is just `unread`),
- * but the two values of the same dimension contradict each other and fail predictably
- * (issue #90) rather than silently picking one or returning arbitrary results. An
- * unrecognized `is:` value (e.g. `is:spam`) is left unhandled — the caller falls back to
- * leaving the token in free text, the same as any other unrecognized operator, rather than
- * silently discarding it as if it were a no-op filter.
+ * Identical repeats collapse, but both values of one dimension contradict and fail predictably. An
+ * unrecognized `is:` value is left in free text, like any unrecognized operator.
  */
 function applyIsOperator(parsed: ParsedMailSearchQuery, value: string, allowContradictions: boolean): boolean {
   switch (value.toLowerCase()) {
@@ -167,14 +149,9 @@ export function parseMailSearchQuery(query: string, allowContradictions = false)
 }
 
 /**
- * `websearch_to_tsquery` accepts Google-style syntax (quotes, OR, `-exclude`) and never
- * throws on malformed input, unlike `to_tsquery` — appropriate for a raw user search box.
- * Ranked by `ts_rank_cd` (rewards terms appearing close together, better for prose than raw
- * term frequency) blended with recency — for a personal mailbox, "most relevant" usually also
- * means "most recent" (issue #26). Recency is read off `item_search_index.updated_at` (written
- * once at ingest, alongside the vector itself) rather than the Email item's own `date`
- * property — the index table is intentionally generic across future non-Emails consumers and
- * doesn't assume every indexed item has a `date` property.
+ * `websearch_to_tsquery` never throws on malformed input, unlike `to_tsquery`. Ranked by `ts_rank_cd`
+ * blended with recency. Recency comes from `item_search_index.updated_at`, not the Email's `date`,
+ * because the index is generic across item types.
  */
 export async function searchItems(client: Queryable, input: SearchItemsInput): Promise<SearchItemsResultRow[]> {
   const parsed = parseMailSearchQuery(input.query);
@@ -206,9 +183,8 @@ export async function searchItems(client: Queryable, input: SearchItemsInput): P
     params.push(parsed.read);
     conditions.push(`coalesce((i.properties ->> '${READ_PROPERTY_KEY}')::boolean, false) = $${params.length}`);
     if (parsed.read === false) {
-      // is:unread leaves out a message linked to any Drafts or Sent folder (issue #1461): those are read by
-      // definition, so a Sent message that was never marked read is not unread. The check is per edge, so a
-      // message that is also in an Inbox is left out too.
+      // Drafts and Sent are read by definition. The check is per edge, so a message also in an Inbox is
+      // left out too.
       params.push(FOLDERS_MODULE_ID, DRAFTS_AND_SENT_SPECIAL_PURPOSES);
       conditions.push(`NOT EXISTS (
         SELECT 1 FROM item_relations r

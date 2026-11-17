@@ -4,12 +4,10 @@ import { withTransaction } from "../db/pool.js";
 
 const logger: Logger = createLogger("inbox-tick");
 
-/** True when `err` is Postgres' `serialization_failure` (SQLSTATE 40001). */
 export function isSerializationFailure(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === "40001";
 }
 
-/** How many times a tick transaction is run before its serialization failure is rethrown. */
 const TICK_TRANSACTION_ATTEMPTS = 3;
 const writeTransactions = new WeakSet<PoolClient>();
 
@@ -30,12 +28,9 @@ export function withTickWriteTransaction<T>(pool: Pool, fn: (client: PoolClient)
 }
 
 /**
- * Runs one of the tick's `repeatable read` transactions and runs it again when Postgres aborts it with a
- * serialization failure; PostgreSQL's documentation says applications at this level must be prepared to retry.
- * The read phase can hit one: it enqueues the Journal day's recompute through graphile-worker's `add_job`, and
- * when the worker's completion of the job with that key is still in flight, the snapshot and the completion
- * conflict. A retry takes a fresh snapshot, by which time that completion has normally committed. The failed
- * attempt rolled back, so the retry does not double any write, and every other error is rethrown at once.
+ * Runs a tick `repeatable read` transaction, retrying on serialization failure. The read phase can hit one when its
+ * `add_job` for the Journal day recompute conflicts with the worker's in-flight completion of the same job key; a
+ * retry takes a fresh snapshot. The failed attempt rolled back, so nothing is written twice.
  */
 export async function withTickTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt++) {

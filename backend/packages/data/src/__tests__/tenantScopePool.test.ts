@@ -35,7 +35,6 @@ async function readViaClient(p: Pool): Promise<Reading> {
   }
 }
 
-/** Reads the GUC through every scoped path, in the order: transaction variants, pool.query, connect. */
 async function readAllPaths(p: Pool): Promise<Reading[]> {
   const readings: Reading[] = [];
   for (const isolation of [undefined, "repeatable_read", "serializable"] as const) {
@@ -112,8 +111,7 @@ describe("no leak between checkouts", () => {
 
   it("rejects a scoped pool.query syntax error with the Postgres error and leaves a clean connection", async () => {
     const single = newPool(1);
-    // Read the backend's state from a separate connection: the backend reports its state before it
-    // answers ReadyForQuery, so the row is current once the observed query has resolved.
+    // The backend reports its state before ReadyForQuery, so a separate connection's read is current.
     const observe = async (backendPid: number): Promise<{ state: string | null; xactStartIsNull: boolean }> => {
       const { rows } = await pool.query<{ state: string | null; xact_start_is_null: boolean }>(
         "SELECT state, xact_start IS NULL AS xact_start_is_null FROM pg_stat_activity WHERE pid = $1",
@@ -138,8 +136,7 @@ describe("no leak between checkouts", () => {
     expect(rows[0]!.tenant).toBeNull();
     expect(await observe(before)).toEqual({ state: "idle", xactStartIsNull: true });
 
-    // Control: the same observer must see an open read-only transaction on that backend, even though
-    // the transaction has no assigned ID, so the idle check above cannot pass by accident.
+    // Control: the observer must see an open read-only transaction, so the idle check cannot pass by accident.
     const client = await single.connect();
     const toError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
     let controlError: Error | undefined;
@@ -160,8 +157,7 @@ describe("no leak between checkouts", () => {
     } catch (err) {
       rollbackError = toError(err);
     }
-    // Releasing with the ROLLBACK error destroys the connection instead of pooling it; the control's
-    // own failure, if any, stays the reported one.
+    // Releasing with the error destroys the connection; the control's own failure stays the reported one.
     client.release(rollbackError);
     const thrown = controlError ?? rollbackError;
     if (thrown !== undefined) throw thrown;

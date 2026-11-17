@@ -36,9 +36,8 @@ import { normalizePageTitle } from "./pageTitle.js";
 import { PAGES_MODULE_ID } from "./pagesDatabase.js";
 
 /**
- * The version token of a page: `base64url(sha256(Y.encodeSnapshot(Y.snapshot(doc))))`. A Yjs snapshot is the state
- * vector plus the delete set, so a write that only deletes text changes it (the state vector alone does not change
- * on pure deletion), while compaction rewrites storage but not the logical document and leaves it unchanged.
+ * Page version token. A Yjs snapshot includes the delete set, so a pure deletion changes it (the state vector alone
+ * would not), while compaction leaves it unchanged.
  */
 export function docEtag(doc: Y.Doc): string {
   return createHash("sha256")
@@ -46,25 +45,21 @@ export function docEtag(doc: Y.Doc): string {
     .digest("base64url");
 }
 
-/** The refusal of an item whose document is not a page (a canvas): it cannot host one. */
 function notAPageHost(): ValidationError {
   return new ValidationError("This item cannot host a page", { field: "itemId", reason: "not_a_page_host" });
 }
 
 export interface PageMarkdownRead {
-  /** The item's page document, or `null` when it has none (a read never creates one). */
+  /** `null` when the item has no document; a read never creates one. */
   docId: string | null;
-  /** The canonical Markdown of the page's blocks (#1608); the page title is not part of it. */
+  /** Excludes the page title. */
   markdown: string;
   etag: string;
 }
 
 /**
- * Reads the page of `itemId` as canonical Markdown and its version token (issue #1678). It finds the document with
- * `getDocByItemId` and never creates one: an item without a document reads as an empty body with the token of an
- * empty document, so the same token applies once a later write creates the document lazily. A `page` block is
- * written as a link whose caption is the block's own title text. An item that already holds a canvas document
- * cannot host a page (`ValidationError`).
+ * Never creates a document: an item without one reads as an empty body with the empty-document token, so the token
+ * stays valid once a later write creates the document lazily.
  */
 export async function readPageMarkdown(client: PoolClient, itemId: string): Promise<PageMarkdownRead> {
   const row = await getDocByItemId(client, itemId);
@@ -88,16 +83,14 @@ export async function readPageMarkdown(client: PoolClient, itemId: string): Prom
 export interface InsertPageMarkdownInput {
   placement: PageInsertInput["placement"];
   markdown: string;
-  /** One id per parsed block, in order; absent means every id is generated. */
+  /** One id per parsed block; absent means generated. */
   blockIds?: string[] | undefined;
-  /** Who writes: derived server-side from the caller, never from a request body. */
+  /** Derived server-side from the caller, never from a request body. */
   origin: CreatedBy;
 }
 
 /**
- * The refusal of Markdown that is not a valid list of blocks. Its details are a flat record, the only shape the REST
- * error contract serves (`publicErrorDetails` drops a nested `issues` array): `field` names the request field and
- * `path` and `reason` the first offending line or block and why, never any of the Markdown itself.
+ * Details stay flat because `publicErrorDetails` drops a nested `issues` array; they never echo the Markdown itself.
  */
 function invalidMarkdown(issues: readonly BlockIssue[]): ValidationError {
   const first = issues[0];
@@ -108,11 +101,8 @@ function invalidMarkdown(issues: readonly BlockIssue[]): ValidationError {
 }
 
 /**
- * The ids the new blocks get: the caller's, one per parsed block (every element of the flat parser output,
- * indented list items included), or generated ones. The ids a `semprec:block`
- * comment carries are never used, so a body cannot choose an id the caller did not name. A supplied list must match the
- * block count and hold no repeated or empty id (`ValidationError` on `blockIds`); an id already in the document is a
- * `ConflictError`, decided where the document is read.
+ * Ids carried by `semprec:block` comments are never used, so a body cannot choose an id the caller did not name. An id
+ * already in the document is a `ConflictError`, decided where the document is read.
  */
 function resolveBlockIds(count: number, supplied: readonly string[] | undefined): string[] {
   if (supplied === undefined) return Array.from({ length: count }, () => randomUUID());
@@ -127,7 +117,6 @@ function resolveBlockIds(count: number, supplied: readonly string[] | undefined)
   return [...supplied];
 }
 
-/** Checks every parsed block against the block registry and returns it as an insertable block with its id, one `ids` entry per block. */
 export function identifyBlocks(parsed: readonly ParsedBlock[], ids: readonly string[]): IdentifiedBlock[] {
   const issues = parsed.flatMap((block, index) =>
     validateBlockInput({ ...block, id: ids[index] }).map((issue) => ({
@@ -152,14 +141,11 @@ export function identifyBlocks(parsed: readonly ParsedBlock[], ids: readonly str
   });
 }
 
-/** A block ready to insert, whose id is always set. */
 export type IdentifiedBlock = NewBlockInput & { id: string };
 
 /**
- * The blocks `markdown` parses to (issue #1679): page links refused unless `options.allowPage` is set (#1765, which
- * validates them itself), every block checked against the block registry
- * and every `semprec://items/` link against the tenant (`assertItemLinksExist`, which must hold on the caller's
- * tenant-scoped write client). Reads only; nothing is written and no block has an id yet.
+ * Page links are refused unless `options.allowPage` is set (the caller then validates them). `client` must be the
+ * caller's tenant-scoped write client so `semprec://items/` links are checked against the tenant. Read-only.
  */
 export async function parseCheckedMarkdown(
   client: PoolClient,
@@ -176,14 +162,13 @@ export async function parseCheckedMarkdown(
   try {
     await assertItemLinksExist(client, parsed, "markdown");
   } catch (error) {
-    // The guard's nested `issues` are not served over REST; every failed link answers one flat `{ field }` body.
+    // Nested `issues` are not served over REST; flatten to `{ field }`.
     if (error instanceof ValidationError) throw new ValidationError(error.message, { field: "markdown" });
     throw error;
   }
   return parsed;
 }
 
-/** `parseCheckedMarkdown` plus an id for each block, from `blockIds` or generated, checked and ready to insert. */
 export async function prepareMarkdownBlocks(
   client: PoolClient,
   markdown: string,
@@ -193,24 +178,20 @@ export async function prepareMarkdownBlocks(
   return identifyBlocks(parsed, resolveBlockIds(parsed.length, blockIds));
 }
 
-/** Where, and which blocks: what a caller decides inside the document write, from the document as it stands. */
+/** Decided inside the document write, from the document as it stands. */
 export interface PageBlockPlan {
-  /** The block to insert after, or `null` for the start of the page. */
+  /** `null` for the start of the page. */
   afterId: string | null;
   blocks: IdentifiedBlock[];
 }
 
-/** The refusal of a placement whose `afterBlockId` is not a block of the page. */
 function unknownAfterBlock(): ValidationError {
   return new ValidationError("afterBlockId does not name a block of the page", { field: "placement.afterBlockId" });
 }
 
 /**
- * Inserts the blocks `plan` returns into the page of the live, locked item `host` as one document update authored
- * `origin`, creating the document when the item has none. `plan` runs inside the write on the loaded document, so the
- * position it picks is the one the blocks are inserted at: an unknown `afterId` is a `ValidationError` on
- * `placement.afterBlockId` and an id already in the page a `ConflictError` on `blockIds`; the caller's transaction rolls
- * a lazily created document back with either. `plan` may throw its own error, which propagates unchanged.
+ * `host` must be live and locked. `plan` runs inside the write on the loaded document, so the position it picks is the
+ * one used. The document is created lazily; the caller's transaction rolls it back on any error.
  */
 export async function insertPlannedBlocks(
   client: PoolClient,
@@ -234,15 +215,10 @@ export async function insertPlannedBlocks(
 }
 
 /**
- * Inserts the blocks parsed from `input.markdown` into the page of `itemId` (issue #1679), at the start, at the end or
- * directly after `placement.afterBlockId`, as one document update authored `input.origin`. Page links are refused: a
- * link to a subpage is validated against the host's subpages, which `replacePageMarkdown` (#1765) does.
- * Everything that can refuse the Markdown runs before the document is created or written: the item is resolved live
- * and locked, then the blocks are prepared (`prepareMarkdownBlocks`). An unknown `afterBlockId` or an id already in the
- * document is refused inside the write. Markdown with no block writes nothing and creates no document, but an
- * `afterBlockId` it names is still checked against the page as it stands. After a block the new blocks are anchored
- * at that block's nesting level: each keeps its parsed indentation relative to the anchor, and a result past
- * `MAX_INDENT` is refused (nothing is clamped or dropped). `start` and `end` keep the parsed indentation.
+ * Page links are refused here; only `replacePageMarkdown` can validate them against the host's subpages. Everything
+ * that can refuse the Markdown runs before the document is created. Empty Markdown creates no document but still
+ * checks `afterBlockId`. After a block, new blocks are indented relative to it; past `MAX_INDENT` is refused, never
+ * clamped.
  */
 export async function insertPageMarkdown(
   client: PoolClient,
@@ -261,7 +237,7 @@ export async function insertPageMarkdown(
     const current = readPageBlocks(ydoc).filter((block) => !block.synthetic && block.id !== null);
     if (placement === "end") return { blocks, afterId: current.at(-1)?.id ?? null };
     const target = current.find((block) => block.id === placement.afterBlockId);
-    // An unknown target is refused by the insertion itself, with the same error as the empty-input check.
+    // An unknown target is refused by the insertion itself.
     return {
       afterId: placement.afterBlockId,
       blocks: target === undefined ? blocks : anchorIndent(blocks, target.indent),
@@ -270,7 +246,6 @@ export async function insertPageMarkdown(
   return { blockIds };
 }
 
-/** The blocks with `anchor` added to their indentation; past `MAX_INDENT` is an invalid-Markdown refusal. */
 function anchorIndent(blocks: readonly IdentifiedBlock[], anchor: number): IdentifiedBlock[] {
   return blocks.map((block, index) => {
     const indent = anchor + (block.indent ?? 0);
@@ -285,7 +260,6 @@ function anchorIndent(blocks: readonly IdentifiedBlock[], anchor: number): Ident
   });
 }
 
-/** Refuses an `afterBlockId` that is not a block of the page; reads the document without creating one. */
 async function assertAfterBlockExists(client: PoolClient, itemId: string, afterBlockId: string): Promise<void> {
   const row = await getDocByItemId(client, itemId);
   if (row?.kind !== "page") throw unknownAfterBlock();
@@ -298,12 +272,11 @@ async function assertAfterBlockExists(client: PoolClient, itemId: string, afterB
   }
 }
 
-/** A line `parseMarkdown` reads as a page link: the trimmed line is a link whose destination is `semprec://page/<id>`. */
+/** Must match how `parseMarkdown` recognizes a page link line (applied to the trimmed line). */
 const PAGE_LINK_LINE = /^\[(?:\\.|[^\]\\])*\]\(semprec:\/\/page\/[^)\s]+\)$/;
 
-/** The refusal of a request whose `If-Match` is not the page's current version; it carries the version that is. */
 export class PageVersionConflictError extends ConflictError {
-  /** The version token (`docEtag`) the page has now, which the REST route sends back as the `ETag` header. */
+  /** Sent back by the REST route as the `ETag` header. */
   readonly currentEtag: string;
 
   constructor(currentEtag: string) {
@@ -315,29 +288,23 @@ export class PageVersionConflictError extends ConflictError {
 
 export interface ReplacePageMarkdownInput {
   markdown: string;
-  /** The version token the caller read (`readPageMarkdown`); the replace is refused unless the page still has it. */
   expectedEtag: string;
-  /** Who writes the document updates: derived server-side from the caller, never from a request body. */
+  /** Derived server-side from the caller, never from a request body. */
   origin: CreatedBy;
-  /** Who trashes the subpages whose links vanished, passed to the choke point's trash and its hooks. */
   writer: WriterIdentity;
-  /** The user the trashed subpages are deleted for, passed to the choke point's trash; absent when no user is acting. */
   actingUserId?: string | undefined;
 }
 
 export interface ReplacePageMarkdownResult {
-  /** The version token of the page after the replace. */
   etag: string;
-  /** The subpages this call sent to the trash, each with the title its link carried. */
+  /** Each with the title its link carried. */
   trashedPages: Array<{ pageItemId: string; title: string }>;
 }
 
-/** The refusal of a page link block of a replacement body, for the block at `index`: `field` is the block field at fault. */
 function pageLinkRefused(index: number, field: "pageId" | "text", reason: string): ValidationError {
   return new ValidationError("Invalid Markdown", { field: "markdown", path: `block ${index + 1}: ${field}`, reason });
 }
 
-/** Refuses a `page` block of a replacement body that names anything but a live subpage of the host, `ValidationError` on `markdown`. */
 function assertPageLinksNameSubpages(
   blocks: ReadonlyArray<{ type: string; pageId?: string | null }>,
   liveSubpageIds: ReadonlySet<string>,
@@ -349,10 +316,8 @@ function assertPageLinksNameSubpages(
 }
 
 /**
- * The plain-text caption of each block of `markdown`, in block order, for the page link blocks: `parseMarkdown` reads a
- * page link as a block that carries only its page id, so this parses the Markdown a second time with every page link
- * line rewritten (by the test the parser applies itself: the trimmed line) to an ordinary link, which keeps its label as
- * text. Both parses split the same lines into the same blocks, so block `i` of one is block `i` of the other.
+ * `parseMarkdown` drops a page link's caption, so this reparses with page links rewritten to ordinary links. Both
+ * parses split the same lines into the same blocks, so block `i` of one is block `i` of the other.
  */
 function captionsOf(markdown: string): string[] {
   const rewritten = markdown
@@ -368,10 +333,8 @@ function captionsOf(markdown: string): string[] {
 }
 
 /**
- * The blocks `markdown` parses to for a replace, each with a fresh id: checked like an insert (`parseCheckedMarkdown`,
- * page links allowed, so the item links are checked against the tenant) and every block against the block registry. A
- * `page` block names its page in lower case and carries its normalized caption as its text; a caption over the title
- * limit is refused here, before anything is written. Whether a page link names a subpage is decided by the caller.
+ * Page ids are lowercased and captions normalized (too long is refused before any write). Whether a page link names a
+ * subpage is decided by the caller.
  */
 async function prepareReplacementBlocks(client: PoolClient, markdown: string): Promise<IdentifiedBlock[]> {
   const parsed = await parseCheckedMarkdown(client, markdown, { allowPage: true });
@@ -389,17 +352,15 @@ async function prepareReplacementBlocks(client: PoolClient, markdown: string): P
   });
 }
 
-/** The plain text of a block, as the Markdown read writes it into a link caption. */
 function plainTextOf(runs: ReadonlyArray<{ insert: string }>): string {
   return runs.map((run) => run.insert).join("");
 }
 
-/** The caption of a page link block `prepareReplacementBlocks` prepared; its text is always the normalized caption. */
 function captionOf(block: IdentifiedBlock | undefined): string {
   return typeof block?.text === "string" ? block.text : "";
 }
 
-/** For each page that a `page` block of `blocks` names, in lower case, the index of the first block that names it. */
+/** Lowercased page id -> index of the first block naming it. */
 function firstBlockIndexByPage(blocks: ReadonlyArray<{ type: string; pageId?: string | null }>): Map<string, number> {
   const byPage = new Map<string, number>();
   for (const [index, block] of blocks.entries()) {
@@ -409,7 +370,6 @@ function firstBlockIndexByPage(blocks: ReadonlyArray<{ type: string; pageId?: st
   return byPage;
 }
 
-/** The version token of the page document of `itemId`; that of an empty document when the item has none. */
 async function etagOfItemPage(client: PoolClient, itemId: string): Promise<string> {
   const row = await getDocByItemId(client, itemId);
   const doc = row ? await loadDocWithClient(client, row.id) : new Y.Doc();
@@ -420,59 +380,30 @@ async function etagOfItemPage(client: PoolClient, itemId: string): Promise<strin
   }
 }
 
-/**
- * Applies a planned diff in the document write it runs in: every insertion first, so the deletion never empties the
- * page, then the recorded positions of trashed subpages are moved off the blocks the deletion removed.
- */
+/** Insertions first, so the deletion never empties the page. */
 function applyBlockDiff(doc: Y.Doc, diff: BlockDiff): void {
   for (const { afterId, blocks } of diff.insertions) insertBlocks(doc, afterId, blocks);
   deleteBlocks(doc, diff.deleteIds);
-  // A subpage trashed earlier (by this request or before it) is restored after the block that stood before its link;
-  // when this diff deletes that block, the recorded neighbor moves to the block that took its place.
+  // Trashed subpages restore after their recorded neighbor; move that record off deleted blocks.
   repointTrashedPagePositions(doc, diff.placeAfter);
 }
 
-/** The real blocks of `ydoc` in document order. */
 function realBlocks(ydoc: Y.Doc) {
   return readPageBlocks(ydoc).filter((block) => !block.synthetic && block.id !== null);
 }
 
 /**
- * Replaces the whole body of the page of `itemId` with `input.markdown` (issue #1765) when the page still has the
- * version `input.expectedEtag`, in the caller's transaction. Nothing is written, and no document is created, when
- * anything below refuses.
+ * Replaces the whole page body when it still has `expectedEtag`, in the caller's transaction; nothing is written when
+ * anything refuses. A `page` block must name a live subpage of this item.
  *
- * For a writer `readerOfWriter` names a reader for (an agent under a run or an approved request replayed for one: its
- * project; an external client on `/mcp`, issue #1998) the reader needs write access to the database that owns the
- * page (`assertAgentPageAccess`), checked first.
+ * Lock order: the item row, then all live subpage rows in id order, then the document. A direct subpage trash locks
+ * its row and then this document, so taking the document first could deadlock. Two replaces of one item serialize on
+ * the item row and the second fails the etag comparison. An item without a document locks nothing, so the etag is
+ * compared again on the document `getOrCreateDoc` returns before writing.
  *
- * The item is resolved live and its row locked (a foreign or unknown id is the one `NotFoundError`), then the
- * Markdown is parsed and checked (`prepareReplacementBlocks`, so an invalid block or item link is a `ValidationError`
- * on `markdown`). A `page` block must name a live subpage of this item (a Pages item whose `parentItemId` is the item);
- * any other id, a trashed subpage and another parent's page are the same `ValidationError`. The rows of all live
- * subpages are locked, in id order, before the document is loaded: a direct trash of a subpage locks its row and then
- * this document, so taking the document first would let the two wait for each other. The document is then loaded under
- * its row locks and its `docEtag` compared with `expectedEtag`; a different one is a `PageVersionConflictError` that
- * carries the current token. Two replaces of the same item cannot interleave, because the second waits on the item's
- * row and then fails the comparison. An item without a document has nothing to lock, so a document another
- * transaction creates and commits before step 3 writes is found by that step (`getOrCreateDoc` returns it) and its
- * token is compared with `expectedEtag` again, on the document under its row locks, before anything is written to it.
- *
- * Then, in this order and all in this transaction:
- * 1. a subpage the page links now but the new Markdown no longer links is sent to the trash through the choke point
- *    (`itemDeleteWithClient`, whose Pages hook removes the first block naming it and records where it stood, so
- *    restoring the page puts the block back there). A subpage named by no block is left alone;
- * 2. a subpage whose first link has a different caption than the new Markdown gives is renamed (`renamePageWithClient`,
- *    which writes the item's title and the block's text);
- * 3. the document is brought to the new Markdown in one document update (`planBlockDiff`): a block with unchanged
- *    content keeps its id and is not rewritten, every other new block is inserted with a fresh id, and a block that
- *    no new block pairs with is deleted; the position recorded for a trashed subpage, whose neighbor block this
- *    deletes, is moved to the block that took the neighbor's place (`placeAfter`), so restoring the subpage puts its
- *    block back where it stood. Markdown identical to the page writes nothing, and empty Markdown for an item
- *    without a document creates none.
- *
- * Any error rolls everything back with the caller's transaction. Returns the new version token and the pages step 1
- * sent to the trash.
+ * Then: subpages no longer linked are trashed through the choke point (a subpage never linked is left alone), subpages
+ * whose caption changed are renamed, and the document is diffed in one update (`planBlockDiff`; unchanged blocks keep
+ * their ids).
  */
 export async function replacePageMarkdown(
   client: PoolClient,
@@ -510,7 +441,7 @@ export async function replacePageMarkdown(
       actingUserId: input.actingUserId,
       writer: input.writer,
     });
-    // The row has been locked since `lockLiveChildPageIds`, so the trash finds it; a missing row would mean the lock was not held.
+    // Locked since `lockLiveChildPageIds`; a missing row means the lock was not held.
     if (!trashed) throw new Error(`Subpage ${pageItemId} disappeared during the replace of page ${host.id}`);
     const caption = plainTextOf(current[index]?.text ?? []);
     const storedTitle: unknown = trashed.properties.title;
@@ -532,9 +463,7 @@ export async function replacePageMarkdown(
   if (writeRow) {
     await mutateDocWithClient(client, writeRow.id, input.origin, (ydoc) => {
       if (docRow === null) {
-        // The absence of a document locks nothing, so a document another transaction created and committed since the
-        // comparison above is only visible here, loaded under its row locks. Nothing of this request has written to a
-        // document that did not exist, so the token it started from must still be the token of what is written over.
+        // No document locked nothing: one committed concurrently is only visible here, under its row lock.
         const lockedEtag = docEtag(ydoc);
         if (lockedEtag !== input.expectedEtag) throw new PageVersionConflictError(lockedEtag);
       }
@@ -545,19 +474,13 @@ export async function replacePageMarkdown(
 }
 
 export interface PageReplaceCheckResult {
-  /** The item's page document, or `null` when it has none. */
   docId: string | null;
-  /** The version token of the page, equal to the `expectedEtag` the check was given. */
   etag: string;
 }
 
 /**
- * The read-only counterpart of the refusals at the head of `replacePageMarkdown`, for the approval of a replace
- * (`pageReplaceApproval.ts`): the item is resolved live and its row locked, the Markdown is parsed and checked
- * (`prepareReplacementBlocks`), every `page` block must name a live subpage of the item, and the page must still have
- * the version `expectedEtag` (`PageVersionConflictError`, which carries the current token). It writes nothing and locks
- * no subpage and no document, so it takes no lock in another order than `replacePageMarkdown`; the replace that
- * follows in the same transaction takes them and compares the token again.
+ * Read-only version of `replacePageMarkdown`'s refusals, for approvals. It locks only the item row, never a subpage or
+ * the document, so it cannot take locks in a different order than the replace that follows.
  */
 export async function checkPageReplace(
   client: PoolClient,

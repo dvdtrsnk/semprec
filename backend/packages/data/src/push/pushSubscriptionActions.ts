@@ -41,12 +41,7 @@ function isApnsEnvironment(value: unknown): value is ApnsEnvironment {
   return typeof value === "string" && (APNS_ENVIRONMENTS as readonly string[]).includes(value);
 }
 
-/**
- * Validates and persists an authenticated registration (issue #150's Task). Rejects any
- * channel/field/platform combination outside the closed set the schema enforces (migration
- * 0031's two CHECKs) before ever reaching the database, so a malformed request gets a 400 with a
- * specific reason instead of surfacing as an opaque constraint-violation 500.
- */
+/** Mirrors the schema's CHECKs up front so a malformed request is a specific 400, not a constraint 500. */
 export async function registerPushSubscription(
   client: Pool | PoolClient,
   input: RegisterPushSubscriptionInput,
@@ -90,7 +85,7 @@ export async function registerPushSubscription(
   });
 }
 
-/** Explicit authenticated revocation. Returns `false` for an unknown id or one owned by someone else. */
+/** `false` for unknown and foreign ids alike. */
 export async function revokePushSubscription(client: Pool | PoolClient, userId: string, id: string): Promise<boolean> {
   return revokePushSubscriptionForUser(client, id, userId);
 }

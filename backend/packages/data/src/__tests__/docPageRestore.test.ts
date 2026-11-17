@@ -75,16 +75,14 @@ let chokePoint: ChokePoint;
 let docStore: DocStore;
 
 /**
- * A page of one database whose history starts three hours before the database's own clock. Every
- * instant the tests use is relative to `now`, so each write's `created_at` is set by the test and
- * never by the wall clock: an edit is dated when the test says it happened.
+ * A page whose history starts three hours before the database clock. Every instant is relative to `now`
+ * and each write's `created_at` is set by the test, never by the wall clock.
  */
 interface Page {
   databaseId: string;
   itemId: string;
   docId: string;
   now: Date;
-  /** The instant `hoursFromNow` hours away from the database clock at setup. */
   at(hoursFromNow: number): Date;
 }
 
@@ -93,7 +91,6 @@ async function databaseNow(): Promise<Date> {
   return rows[0]!.now;
 }
 
-/** Moves the doc's availability and its initial baseline checkpoint back to `at`. */
 async function backdateBaseline(docId: string, at: Date): Promise<void> {
   const docs = await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [docId, at]);
   const baseline = await pool.query(
@@ -119,7 +116,6 @@ async function newPage(): Promise<Page> {
   };
 }
 
-/** Runs `write` and dates the update rows it appended to `at`, so the history reads as if the write happened then. */
 async function datedWrite(docId: string, at: Date, write: () => Promise<void>): Promise<void> {
   const { rows } = await pool.query<{ max: string | null }>(
     `SELECT max(update_id)::text AS max FROM doc_history_updates WHERE doc_id = $1`,
@@ -162,7 +158,6 @@ async function agentEdit(page: Page): Promise<void> {
   });
 }
 
-/** Block id to its `content`, the only field these tests compare. */
 async function blockContents(itemId: string): Promise<Record<string, unknown>> {
   const blocks = await docStore.listBlocks(itemId);
   return Object.fromEntries(blocks.map((block) => [String(block["sys:id"]), block.content]));

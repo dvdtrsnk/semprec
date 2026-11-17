@@ -83,7 +83,6 @@ async function propertyId(databaseKey: string, key: string): Promise<string> {
   return property.id;
 }
 
-/** A message in the inbox through the sync writer; a message that names `references` joins their thread. */
 async function newMessage(messageId: string, references: string[] = []): Promise<TestThread> {
   return inTenant(() =>
     withTransaction(runtime, async (client) => {
@@ -141,7 +140,6 @@ async function addPerson(emailItemId: string, name: string, via: Via = "emailSen
   return personId;
 }
 
-/** A task made from the thread the way the route makes it: through `createThreadTask`. */
 async function newThreadTask(thread: TestThread, name = "Answer the client"): Promise<string> {
   const task = await inTenant(() =>
     withTransaction(runtime, (client) =>
@@ -170,14 +168,12 @@ const jobPayload = z.object({
   payload: z.object({ threadItemId: z.uuid(), personId: z.uuid() }),
 });
 
-/** The envelopes of the queued jobs of the task, as the queue stores them, in person id order. */
 async function queuedJobs() {
   return (await readJobPayloadsByIdentifier(admin, TASK))
     .map((payload) => jobPayload.parse(payload))
     .sort((left, right) => left.payload.personId.localeCompare(right.payload.personId));
 }
 
-/** The keys of the queued jobs of the task. */
 async function queuedJobKeys(): Promise<string[]> {
   const { rows } = await admin.query<{ key: string | null }>(
     "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -186,7 +182,6 @@ async function queuedJobKeys(): Promise<string[]> {
   return rows.map((row) => row.key ?? "");
 }
 
-/** The jobs of the task still in the queue, with the error of their last attempt. */
 async function leftoverJobs() {
   const { rows } = await admin.query<{ key: string | null; attempts: number; last_error: string | null }>(
     "SELECT key, attempts, last_error FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -210,7 +205,6 @@ async function runJobs(): Promise<void> {
   expect(await leftoverJobs()).toEqual([]);
 }
 
-/** Queues the job for `personId` on `threadItemId` as another producer would, in the tenant's scope. */
 async function enqueueSync(threadItemId: string, personId: string, tenantId = tenant): Promise<void> {
   await inTenant(
     () => withTransaction(runtime, (client) => enqueueJob(client, TASK, { threadItemId, personId })),
@@ -280,7 +274,6 @@ describe("the people of a thread's tasks follow the conversation (issue gh-1923)
 
   it("is declared in the mail manifest as a module task of the api queue", async () => {
     const tasks = (await (await loadFullModuleRegistry()).getTasks()).filter((task) => task.moduleId === "mailSync");
-    // The mail module declares more than this task (`mailTriageThreadProject`, issue gh-1872), so look for this one.
     expect(tasks).toContainEqual(expect.objectContaining({ name: TASK, queueAffinity: "api" }));
   });
 
@@ -528,7 +521,6 @@ describe("the people of a thread's tasks follow the conversation (issue gh-1923)
       await runJobs();
       const task = await newThreadTask(thread);
       const me = await addPerson(thread.emailItemId, "Me Myself");
-      // The own mailbox address is one the mailbox lists and the person's address index holds.
       await inTenant(() =>
         withTransaction(runtime, async (client) => {
           await writeMailboxAddresses(client, {
@@ -600,7 +592,6 @@ describe("the people of a thread's tasks follow the conversation (issue gh-1923)
       const thread = await newMessage("<other-rule@example.test>");
       await runJobs();
       const own = await newThreadTask(thread);
-      // A task of the thread whose people link is on and names the thread, but another rule owns the link.
       const guarded = await inTenant(() =>
         cp.createItem({ databaseId: databaseId("tasks"), properties: { name: "Another rule" } }),
       );

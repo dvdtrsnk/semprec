@@ -25,9 +25,7 @@ import type { GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { createSempMessageTask } from "../sempMessageTask.js";
 
-// The MCP invoker is replaced for one test only, to make a tool call fail with a timeout at once: a real one waits
-// for the 60 s tool-call timeout. Everything around the invoker (the grant, the tool composition, the stored run
-// events, the step summary, the classification and the stored message) is the production code.
+// The MCP invoker is replaced in one test to time out at once instead of after 60 s; everything around it is production code.
 const mcpInvoke = vi.hoisted(() => ({ override: undefined as undefined | ((serverItemId: string) => McpInvokeTool) }));
 
 vi.mock("@semprec/agent-runtime", async (importOriginal) => {
@@ -43,10 +41,7 @@ vi.mock("@semprec/agent-runtime", async (importOriginal) => {
   };
 });
 
-/**
- * How a Semp turn that fails is stored (issue #1907), through the real queue runtime, the real turn handler and the
- * real agent session; only the model is a faux provider. Everything runs on the runtime role pool.
- */
+/** Only the model is faux; runs on the runtime role pool. */
 
 let admin: Pool;
 let pool: Pool;
@@ -189,9 +184,7 @@ describe("a Semp turn that fails", () => {
   });
 
   it("stores internal when the turn throws for a reason that is no run error", async () => {
-    // The source message is sent with no runtime running, then its text is removed by a raw UPDATE on the admin
-    // pool: no production path leaves a user message without text, which is what makes the handler throw an
-    // ordinary Error before the model is reached.
+    // Raw UPDATE: no production path leaves a user message without text; the handler throws before the model.
     const sent = await send("to be emptied");
     await admin.query("UPDATE semp_messages SET text = NULL WHERE thread_id = $1 AND id <> $2 AND role = 'user'", [
       sent.threadId,

@@ -66,17 +66,14 @@ let invalidations: InvalidationEvent[];
 let refusedEdgeLog: MockInstance<typeof logger.info>;
 const REFUSED_EDGE_MESSAGE = "Journal duplicate merge left a refused edge on the merged entry";
 
-// Fault injection through the choke point's hook registries, which have no unregister: the four hooks are registered
-// once for this file and do nothing until a test arms one; `beforeEach` disarms them all.
-/** The item delete hook rejects the trash of this item. */
+// The choke point's hook registries have no unregister: the hooks are registered once and armed per test.
 let failTrashOf: string | null = null;
-/** The edge-changed hook rejects the first edge created on this item. */
 let failEdgeCreatedOn: string | null = null;
 /** The edge write hook, which also runs when an edge is only checked, fails for an edge whose caller is this item. */
 let failEdgeCheckOf: string | null = null;
-/** The same hook refuses an edge whose caller is this item, as a domain rule does: a `ValidationError` without details. */
+/** Refuses as a domain rule does: a `ValidationError` without details. */
 let refuseEdgeCheckOf: string | null = null;
-/** The edge delete hook removes this edge on another connection, right before the caller's own delete of it runs. */
+/** The edge delete hook removes this edge on another connection right before the caller's own delete. */
 let removeConcurrently: { relationPropertyId: string; callerItemId: string; targetItemId: string } | null = null;
 
 async function databaseIds(tenantId: string): Promise<DatabaseIds> {
@@ -100,7 +97,6 @@ async function databaseIds(tenantId: string): Promise<DatabaseIds> {
   };
 }
 
-/** The period's entry through the lazy create, which takes the period reservation for it. */
 function reservedEntry(tenantId = tenant, databases = ids): Promise<string> {
   return runInTenant(tenantId, () =>
     withTransaction(
@@ -110,7 +106,6 @@ function reservedEntry(tenantId = tenant, databases = ids): Promise<string> {
   );
 }
 
-/** One more live entry of a period, created on `client` through the choke point's create without the reservation. */
 async function createUnreservedEntry(
   client: PoolClient,
   journalId: string,
@@ -125,10 +120,7 @@ async function createUnreservedEntry(
   return entry.id;
 }
 
-/**
- * A further live entry of a day. The lazy create never makes one while the period has a live entry: two live entries
- * are what earlier data left behind (restores before issue #1666), so the fixture creates the entry directly.
- */
+/** Two live entries of a day are legacy data the lazy create never makes, so the fixture creates one directly. */
 function unreservedEntry(period = DAY, tenantId = tenant, databases = ids): Promise<string> {
   return runInTenant(tenantId, () =>
     withTransaction(pool, (client) => createUnreservedEntry(client, databases.journal, period)),
@@ -152,7 +144,6 @@ function merge(
   );
 }
 
-/** Appends Markdown to an entry's page as the user, through the production insertion. */
 async function write(itemId: string, markdown: string, tenantId = tenant): Promise<void> {
   await runInTenant(tenantId, () =>
     withTransaction(pool, (client) =>
@@ -178,7 +169,6 @@ async function relationProperty(databaseId: string, key: string, tenantId = tena
   );
 }
 
-/** Links a Journal entry to an item through one of the entry's user-owned relation properties, as a user write does. */
 async function link(
   key: "area" | "project",
   entryId: string,
@@ -193,7 +183,6 @@ async function link(
   );
 }
 
-/** The items `itemId` is linked to through the relation `key` of `databaseId`, with each edge's metadata, by item id. */
 async function related(
   databaseId: string,
   key: string,
@@ -219,7 +208,6 @@ function createNamed(databaseId: string, name: string, tenantId = tenant): Promi
   return runInTenant(tenantId, async () => (await cp.createItem({ databaseId, properties: { name } })).id);
 }
 
-/** Captures one Inbox item of `DAY` through the production Inbox writer; its create hook links it to the day's entry. */
 function capture(text: string, tenantId = tenant, databases = ids): Promise<string> {
   return runInTenant(tenantId, () =>
     withTransaction(
@@ -231,7 +219,6 @@ function capture(text: string, tenantId = tenant, databases = ids): Promise<stri
   );
 }
 
-/** The entries of a period, live and trashed, in id order. */
 async function periodEntries(period = DAY, tenantId = tenant, databases = ids) {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ id: string; live: boolean }>(
@@ -247,7 +234,6 @@ function reservationKey(period = DAY, databases = ids): string {
   return `journal:${databases.journal}:day:${period}`;
 }
 
-/** The item the period's reservation points at, or null when there is none. */
 async function reservation(period = DAY, tenantId = tenant, databases = ids): Promise<string | null> {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ item_id: string }>("SELECT item_id FROM idempotency_keys WHERE key = $1", [
@@ -257,14 +243,12 @@ async function reservation(period = DAY, tenantId = tenant, databases = ids): Pr
   });
 }
 
-/** The queued jobs of every core task, counted over the whole queue. */
 async function queued(): Promise<Record<string, number>> {
   const jobs: Record<string, number> = {};
   for (const task of Object.values(CORE_TASK_NAMES)) jobs[task] = await countJobsByIdentifier(admin, task);
   return jobs;
 }
 
-/** Everything a merge writes, as stored for one tenant. */
 async function stored(tenantId = tenant) {
   return runInTenant(tenantId, async () => ({
     items: (
@@ -308,7 +292,6 @@ async function everything() {
   return { stored: await stored(), queued: await queued() };
 }
 
-/** Drains the queued Inbox recompute jobs with the production API task list. */
 async function runRecomputeJobs(): Promise<void> {
   const handler = createApiCoreTaskList(pool, createActionRegistry())[recomputeTask];
   if (!handler) throw new Error("Journal Inbox recompute handler missing from production API task list");
@@ -317,7 +300,6 @@ async function runRecomputeJobs(): Promise<void> {
 
 const cachedInboxItems = z.object({ inboxItems: z.array(z.object({ id: z.string() })) });
 
-/** The ids in an entry's cached Inbox list (`computed.inboxItems`), sorted; the entry may be in the Trash. */
 async function cachedInboxItemIds(itemId: string): Promise<string[]> {
   const { rows } = await runInTenant(tenant, () =>
     pool.query<{ computed: unknown }>("SELECT computed FROM items WHERE id = $1", [itemId]),
@@ -328,7 +310,6 @@ async function cachedInboxItemIds(itemId: string): Promise<string[]> {
     .sort();
 }
 
-/** The error `work` rejects with; a `work` that fulfils fails the test. */
 async function rejection(work: Promise<unknown>): Promise<unknown> {
   return work.then(
     () => {
@@ -366,7 +347,7 @@ async function backendPid(client: PoolClient): Promise<number> {
   return pid;
 }
 
-/** Polls (bounded) until `waiter`'s statement is blocked by `holder`, read through the admin pool; stops when aborted. */
+/** Polls (bounded) until `waiter` is blocked by `holder`; stops when aborted. */
 async function untilBlocked(waiter: number, holder: number, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + WAIT_MS;
   for (;;) {
@@ -381,7 +362,6 @@ async function untilBlocked(waiter: number, holder: number, signal: AbortSignal)
   }
 }
 
-/** Rejects as soon as `write` settles: a write that should still be waiting has finished, or it failed. */
 function settledEarly(write: Promise<unknown>, label: string): Promise<never> {
   return write.then((): never => {
     throw new Error(`${label} finished before it was expected to`);
@@ -389,10 +369,8 @@ function settledEarly(write: Promise<unknown>, label: string): Promise<never> {
 }
 
 /**
- * Runs `first` in a transaction that stays open until the second writer is observed waiting on it, then commits it
- * and settles both (the harness of `journal/__tests__/journalRestore.test.ts`). `whileWaiting` runs once the second
- * writer waits and before the first commits. The gate is opened on every path, and both transactions are awaited
- * before this returns, so a failing case leaves no open transaction behind.
+ * Runs `first` in a transaction that commits once the second writer is seen waiting on it;
+ * `whileWaiting` runs in between. Both transactions are awaited on every path.
  */
 async function contended<A, B>(
   first: (client: PoolClient) => Promise<A>,
@@ -447,6 +425,38 @@ async function contended<A, B>(
   if (primary instanceof Error) throw primary;
   if (primary !== undefined) throw new Error("The contended writes failed with a non-Error value", { cause: primary });
   return settled;
+}
+
+type Pair = { older: string; newer: string };
+
+/** The result of a merge that kept `older` and trashed `newer`, leaving `refusedEdges` on it. */
+function mergedInto({ older, newer }: Pair, refusedEdges: unknown[] = []) {
+  return { survivorId: older, mergedItemId: newer, refusedEdges };
+}
+
+/** Merges the pair and expects `refused` left on the duplicate: listed in the result, and logged one line each. */
+async function expectRefused(
+  pair: Pair,
+  refused: Array<{ relationPropertyId: string; otherItemId: string; field: string | null }>,
+): Promise<void> {
+  const refusedEdges = refused.map((edge) => ({ ...edge, code: "validation_failed" }));
+  expect(await merge()).toEqual(mergedInto(pair, refusedEdges));
+  expect(refusedEdgeLog.mock.calls).toEqual(
+    refusedEdges.map((edge) => [{ survivorId: pair.older, mergedItemId: pair.newer, ...edge }, REFUSED_EDGE_MESSAGE]),
+  );
+}
+
+async function relationPropertyId(databaseId: string, key: string): Promise<string> {
+  return (await relationProperty(databaseId, key)).property.id;
+}
+
+function trash(databaseId: string, itemId: string): Promise<unknown> {
+  return runInTenant(tenant, () => cp.softDeleteItem(databaseId, itemId));
+}
+
+/** `periodEntries` of entries with these ids and liveness, in its order. */
+function entriesOf(...entries: Array<[string, boolean]>): Array<{ id: string; live: boolean }> {
+  return entries.map(([id, live]) => ({ id, live })).sort((x, y) => byCodeUnit(x.id, y.id));
 }
 
 describe("merging the duplicate Journal entries of one period (issue #1726)", () => {
@@ -516,15 +526,10 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       await write(older, "# Friday\n\nOlder note");
       await write(newer, "# Friday\n\nNewer note\n\n- first\n- second\n\n> quoted");
 
-      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+      expect(await merge()).toEqual(mergedInto({ older, newer }));
 
       expect(await page(older)).toBe("# Friday\n\nOlder note\n\nNewer note\n\n- first\n- second\n\n> quoted");
-      expect(await periodEntries()).toEqual(
-        [
-          { id: older, live: true },
-          { id: newer, live: false },
-        ].sort((x, y) => byCodeUnit(x.id, y.id)),
-      );
+      expect(await periodEntries()).toEqual(entriesOf([older, true], [newer, false]));
       // The duplicate keeps its page, so the trashed entry can be restored whole.
       expect(await page(newer)).toBe("# Friday\n\nNewer note\n\n- first\n- second\n\n> quoted");
       const { rows: edits } = await runInTenant(tenant, () =>
@@ -542,7 +547,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       await write(reserved, "First");
       await write(later, "Second");
 
-      expect(await merge()).toEqual({ survivorId: reserved, mergedItemId: later, refusedEdges: [] });
+      expect(await merge()).toEqual(mergedInto({ older: reserved, newer: later }));
       expect(await page(reserved)).toBe("First\n\nSecond");
       expect(await reservation()).toBe(reserved);
     });
@@ -587,7 +592,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       await link("area", newer, home, { from: "duplicate" });
       await link("area", newer, work, { from: "duplicate" });
 
-      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+      expect(await merge()).toEqual(mergedInto({ older, newer }));
 
       expect(await related(ids.journal, "area", older)).toEqual(
         [
@@ -634,7 +639,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       await runRecomputeJobs();
       expect(await cachedInboxItemIds(newer)).toEqual([first, second].sort());
 
-      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+      expect(await merge()).toEqual(mergedInto({ older, newer }));
 
       expect(await relatedIds(ids.inbox, "journalDay", first)).toEqual([older]);
       expect(await relatedIds(ids.inbox, "journalDay", second)).toEqual([older]);
@@ -724,7 +729,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       if (duplicate !== null) await write(newer, duplicate);
       const before = await stored();
 
-      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+      expect(await merge()).toEqual(mergedInto({ older, newer }));
 
       expect(await page(older)).toBe("# Friday\n\nOlder");
       const after = await stored();
@@ -734,234 +739,109 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
   });
 
   describe("edges that are not moved", () => {
-    it("leaves an edge to a trashed item on the duplicate and reports it", async () => {
-      const { older, newer } = await duplicatedDay();
+    it("leaves an edge to a trashed item on the duplicate and reports it, but not one the survivor already holds", async () => {
+      const pair = await duplicatedDay();
+      const shared = await createNamed(ids.areas, "Shared");
       const gone = await createNamed(ids.areas, "Gone");
       const work = await createNamed(ids.areas, "Work");
-      await link("area", newer, gone);
-      await link("area", newer, work);
-      await runInTenant(tenant, () => cp.softDeleteItem(ids.areas, gone));
-      const { property: area } = await relationProperty(ids.journal, "area");
+      await link("area", pair.older, shared);
+      for (const area of [shared, gone, work]) await link("area", pair.newer, area);
+      await trash(ids.areas, shared);
+      await trash(ids.areas, gone);
 
-      expect(await merge()).toEqual({
-        survivorId: older,
-        mergedItemId: newer,
-        refusedEdges: [
-          { relationPropertyId: area.id, otherItemId: gone, code: "validation_failed", field: "targetItemId" },
-        ],
-      });
-
-      expect(await relatedIds(ids.journal, "area", older)).toEqual([work]);
-      expect(await relatedIds(ids.journal, "area", newer)).toEqual([gone]);
-      expect(refusedEdgeLog.mock.calls).toEqual([
-        [
-          {
-            survivorId: older,
-            mergedItemId: newer,
-            relationPropertyId: area.id,
-            otherItemId: gone,
-            code: "validation_failed",
-            field: "targetItemId",
-          },
-          REFUSED_EDGE_MESSAGE,
-        ],
+      await expectRefused(pair, [
+        { relationPropertyId: await relationPropertyId(ids.journal, "area"), otherItemId: gone, field: "targetItemId" },
       ]);
+
+      expect(await relatedIds(ids.journal, "area", pair.older)).toEqual([shared, work].sort(byCodeUnit));
+      expect(await relatedIds(ids.journal, "area", pair.newer)).toEqual([gone]);
     });
 
-    it("does not report an edge to a trashed item that the survivor already holds, and deletes the duplicate's copy", async () => {
-      const { older, newer } = await duplicatedDay();
-      const shared = await createNamed(ids.areas, "Shared");
-      await link("area", older, shared, { from: "survivor" });
-      await link("area", newer, shared, { from: "duplicate" });
-      await runInTenant(tenant, () => cp.softDeleteItem(ids.areas, shared));
-      // An insert on the survivor, or a check that its edge could be created, would fail the merge.
-      failEdgeCreatedOn = older;
-      failEdgeCheckOf = older;
+    it.each([
+      ["a trashed item", true],
+      ["a live item", false],
+    ])(
+      "neither checks nor writes an edge to %s that the survivor already holds, keeps its metadata and deletes the duplicate's copy",
+      async (_name, trashed) => {
+        const pair = await duplicatedDay();
+        const shared = await createNamed(ids.areas, "Shared");
+        await link("area", pair.older, shared, { from: "survivor" });
+        await link("area", pair.newer, shared, { from: "duplicate" });
+        if (trashed) await trash(ids.areas, shared);
+        // An insert on the survivor, or a check that its edge could be created, would fail the merge.
+        failEdgeCreatedOn = pair.older;
+        failEdgeCheckOf = pair.older;
 
-      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+        await expectRefused(pair, []);
 
-      expect(await related(ids.journal, "area", older)).toEqual([{ item: shared, metadata: { from: "survivor" } }]);
-      expect(await relatedIds(ids.journal, "area", newer)).toEqual([]);
-      expect(refusedEdgeLog).not.toHaveBeenCalled();
-    });
-
-    it("reports only the trashed item the survivor does not hold when the duplicate has an edge to each", async () => {
-      const { older, newer } = await duplicatedDay();
-      const shared = await createNamed(ids.areas, "Shared");
-      const gone = await createNamed(ids.areas, "Gone");
-      await link("area", older, shared);
-      await link("area", newer, shared);
-      await link("area", newer, gone);
-      await runInTenant(tenant, () => cp.softDeleteItem(ids.areas, shared));
-      await runInTenant(tenant, () => cp.softDeleteItem(ids.areas, gone));
-      const { property: area } = await relationProperty(ids.journal, "area");
-
-      expect(await merge()).toEqual({
-        survivorId: older,
-        mergedItemId: newer,
-        refusedEdges: [
-          { relationPropertyId: area.id, otherItemId: gone, code: "validation_failed", field: "targetItemId" },
-        ],
-      });
-
-      expect(await relatedIds(ids.journal, "area", older)).toEqual([shared]);
-      expect(await relatedIds(ids.journal, "area", newer)).toEqual([gone]);
-      expect(refusedEdgeLog.mock.calls.map(([fields]) => fields)).toEqual([
-        {
-          survivorId: older,
-          mergedItemId: newer,
-          relationPropertyId: area.id,
-          otherItemId: gone,
-          code: "validation_failed",
-          field: "targetItemId",
-        },
-      ]);
-    });
-
-    it("neither checks nor writes an edge to a live item that the survivor already holds, and keeps its metadata", async () => {
-      const { older, newer } = await duplicatedDay();
-      const home = await createNamed(ids.areas, "Home");
-      await link("area", older, home, { from: "survivor" });
-      await link("area", newer, home, { from: "duplicate" });
-      failEdgeCreatedOn = older;
-      failEdgeCheckOf = older;
-
-      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
-
-      expect(await related(ids.journal, "area", older)).toEqual([{ item: home, metadata: { from: "survivor" } }]);
-      expect(await relatedIds(ids.journal, "area", newer)).toEqual([]);
-      expect(refusedEdgeLog).not.toHaveBeenCalled();
-    });
+        expect(await related(ids.journal, "area", pair.older)).toEqual([
+          { item: shared, metadata: { from: "survivor" } },
+        ]);
+        expect(await relatedIds(ids.journal, "area", pair.newer)).toEqual([]);
+      },
+    );
 
     it("leaves a stored area on the duplicate when the survivor's area is derived from its project and reports it", async () => {
-      const { older, newer } = await duplicatedDay();
+      const pair = await duplicatedDay();
       const project = await createNamed(ids.projects, "Garden");
       const home = await createNamed(ids.areas, "Home");
-      await link("project", older, project);
-      await link("area", newer, home);
-      const { property: area } = await relationProperty(ids.journal, "area");
+      await link("project", pair.older, project);
+      await link("area", pair.newer, home);
 
-      expect(await merge()).toEqual({
-        survivorId: older,
-        mergedItemId: newer,
-        refusedEdges: [{ relationPropertyId: area.id, otherItemId: home, code: "validation_failed", field: "area" }],
-      });
-
-      expect(await relatedIds(ids.journal, "area", older)).toEqual([]);
-      expect(await relatedIds(ids.journal, "area", newer)).toEqual([home]);
-      expect(await relatedIds(ids.journal, "project", older)).toEqual([project]);
-      expect(refusedEdgeLog.mock.calls).toEqual([
-        [
-          {
-            survivorId: older,
-            mergedItemId: newer,
-            relationPropertyId: area.id,
-            otherItemId: home,
-            code: "validation_failed",
-            field: "area",
-          },
-          REFUSED_EDGE_MESSAGE,
-        ],
+      await expectRefused(pair, [
+        { relationPropertyId: await relationPropertyId(ids.journal, "area"), otherItemId: home, field: "area" },
       ]);
+
+      expect(await relatedIds(ids.journal, "area", pair.older)).toEqual([]);
+      expect(await relatedIds(ids.journal, "area", pair.newer)).toEqual([home]);
+      expect(await relatedIds(ids.journal, "project", pair.older)).toEqual([project]);
     });
 
     it("leaves the edge of a trashed Inbox item on the duplicate and reports it", async () => {
-      const { older, newer } = await duplicatedDay();
+      const pair = await duplicatedDay();
       const trashed = await capture("Trashed note");
       const live = await capture("Live note");
-      await runInTenant(tenant, () => cp.softDeleteItem(ids.inbox, trashed));
-      const { property: journalDay } = await relationProperty(ids.inbox, "journalDay");
+      await trash(ids.inbox, trashed);
 
-      expect(await merge()).toEqual({
-        survivorId: older,
-        mergedItemId: newer,
-        refusedEdges: [
-          { relationPropertyId: journalDay.id, otherItemId: trashed, code: "validation_failed", field: "callerItemId" },
-        ],
-      });
-
-      expect(await relatedIds(ids.inbox, "journalDay", trashed)).toEqual([newer]);
-      expect(await relatedIds(ids.inbox, "journalDay", live)).toEqual([older]);
-      expect(refusedEdgeLog.mock.calls).toEqual([
-        [
-          {
-            survivorId: older,
-            mergedItemId: newer,
-            relationPropertyId: journalDay.id,
-            otherItemId: trashed,
-            code: "validation_failed",
-            field: "callerItemId",
-          },
-          REFUSED_EDGE_MESSAGE,
-        ],
+      await expectRefused(pair, [
+        {
+          relationPropertyId: await relationPropertyId(ids.inbox, "journalDay"),
+          otherItemId: trashed,
+          field: "callerItemId",
+        },
       ]);
+
+      expect(await relatedIds(ids.inbox, "journalDay", trashed)).toEqual([pair.newer]);
+      expect(await relatedIds(ids.inbox, "journalDay", live)).toEqual([pair.older]);
     });
 
     it("leaves an edge a domain rule refuses for the survivor on the duplicate and reports it without a field", async () => {
-      const { older, newer } = await duplicatedDay();
+      const pair = await duplicatedDay();
       const home = await createNamed(ids.areas, "Home");
-      await link("area", newer, home);
-      const { property: area } = await relationProperty(ids.journal, "area");
-      refuseEdgeCheckOf = older;
+      await link("area", pair.newer, home);
+      refuseEdgeCheckOf = pair.older;
 
-      expect(await merge()).toEqual({
-        survivorId: older,
-        mergedItemId: newer,
-        refusedEdges: [{ relationPropertyId: area.id, otherItemId: home, code: "validation_failed", field: null }],
-      });
-
-      expect(await relatedIds(ids.journal, "area", older)).toEqual([]);
-      expect(await relatedIds(ids.journal, "area", newer)).toEqual([home]);
-      expect(refusedEdgeLog.mock.calls).toEqual([
-        [
-          {
-            survivorId: older,
-            mergedItemId: newer,
-            relationPropertyId: area.id,
-            otherItemId: home,
-            code: "validation_failed",
-            field: null,
-          },
-          REFUSED_EDGE_MESSAGE,
-        ],
+      await expectRefused(pair, [
+        { relationPropertyId: await relationPropertyId(ids.journal, "area"), otherItemId: home, field: null },
       ]);
+
+      expect(await relatedIds(ids.journal, "area", pair.older)).toEqual([]);
+      expect(await relatedIds(ids.journal, "area", pair.newer)).toEqual([home]);
     });
 
     it("reports the edges left on the duplicate across relation properties, one log line each", async () => {
-      const { older, newer } = await duplicatedDay();
+      const pair = await duplicatedDay();
       const gone = await createNamed(ids.areas, "Gone");
-      await link("area", newer, gone);
-      await runInTenant(tenant, () => cp.softDeleteItem(ids.areas, gone));
+      await link("area", pair.newer, gone);
+      await trash(ids.areas, gone);
       const trashed = await capture("Trashed note");
-      await runInTenant(tenant, () => cp.softDeleteItem(ids.inbox, trashed));
-      const { property: area } = await relationProperty(ids.journal, "area");
-      const { property: journalDay } = await relationProperty(ids.inbox, "journalDay");
+      await trash(ids.inbox, trashed);
 
-      const merged = await merge();
-
-      expect(merged).toEqual({
-        survivorId: older,
-        mergedItemId: newer,
-        refusedEdges: [
-          { relationPropertyId: area.id, otherItemId: gone, code: "validation_failed", field: "targetItemId" },
-          { relationPropertyId: journalDay.id, otherItemId: trashed, code: "validation_failed", field: "callerItemId" },
-        ],
-      });
-      expect(refusedEdgeLog.mock.calls.map(([fields]) => fields)).toEqual([
+      await expectRefused(pair, [
+        { relationPropertyId: await relationPropertyId(ids.journal, "area"), otherItemId: gone, field: "targetItemId" },
         {
-          survivorId: older,
-          mergedItemId: newer,
-          relationPropertyId: area.id,
-          otherItemId: gone,
-          code: "validation_failed",
-          field: "targetItemId",
-        },
-        {
-          survivorId: older,
-          mergedItemId: newer,
-          relationPropertyId: journalDay.id,
+          relationPropertyId: await relationPropertyId(ids.inbox, "journalDay"),
           otherItemId: trashed,
-          code: "validation_failed",
           field: "callerItemId",
         },
       ]);
@@ -971,7 +851,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       const { newer } = await duplicatedDay();
       const gone = await createNamed(ids.areas, "Gone");
       await link("area", newer, gone);
-      await runInTenant(tenant, () => cp.softDeleteItem(ids.areas, gone));
+      await trash(ids.areas, gone);
       const before = await everything();
       let refused: number | undefined;
 
@@ -997,7 +877,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       const { property } = await relationProperty(ids.journal, "area");
       removeConcurrently = { relationPropertyId: property.id, callerItemId: newer, targetItemId: home };
 
-      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+      expect(await merge()).toEqual(mergedInto({ older, newer }));
 
       expect(removeConcurrently).toBeNull();
       expect(await relatedIds(ids.journal, "area", older)).toEqual([]);
@@ -1013,7 +893,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       await write(newer, "# Friday\n\nNewer");
       await link("area", newer, await createNamed(ids.areas, "Home"));
       await capture("A note");
-      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+      expect(await merge()).toEqual(mergedInto({ older, newer }));
       const merged = await everything();
       invalidations = [];
 
@@ -1041,7 +921,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
         name: "has a second entry that is already in the Trash",
         arrange: async () => {
           const { newer } = await duplicatedDay();
-          await runInTenant(tenant, () => cp.softDeleteItem(ids.journal, newer));
+          await trash(ids.journal, newer);
         },
       },
     ])("returns null and writes nothing when the period $name", async ({ arrange }) => {
@@ -1056,17 +936,15 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
     });
 
     it("merges the entries of a week, and only when asked for that period type", async () => {
-      const [first, second] = [
-        await runInTenant(tenant, () =>
+      const weekEntry = () =>
+        runInTenant(tenant, () =>
           withTransaction(pool, (client) => createUnreservedEntry(client, ids.journal, "2026-W42", "week")),
-        ),
-        await runInTenant(tenant, () =>
-          withTransaction(pool, (client) => createUnreservedEntry(client, ids.journal, "2026-W42", "week")),
-        ),
-      ];
+        );
+      const first = await weekEntry();
+      const second = await weekEntry();
 
       expect(await merge("2026-W42", "day")).toBeNull();
-      expect(await merge("2026-W42", "week")).toEqual({ survivorId: first, mergedItemId: second, refusedEdges: [] });
+      expect(await merge("2026-W42", "week")).toEqual(mergedInto({ older: first, newer: second }));
     });
 
     it("merges one duplicate per call when the period has three live entries", async () => {
@@ -1077,8 +955,8 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       await write(second, "two");
       await write(third, "three");
 
-      expect(await merge()).toEqual({ survivorId: first, mergedItemId: second, refusedEdges: [] });
-      expect(await merge()).toEqual({ survivorId: first, mergedItemId: third, refusedEdges: [] });
+      expect(await merge()).toEqual(mergedInto({ older: first, newer: second }));
+      expect(await merge()).toEqual(mergedInto({ older: first, newer: third }));
       expect(await merge()).toBeNull();
 
       expect(await page(first)).toBe("one\n\ntwo\n\nthree");
@@ -1131,12 +1009,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
 
       expect(await everything()).toEqual(before);
       expect(await page(pair.older)).toBe("# Friday\n\nOlder");
-      expect(await periodEntries()).toEqual(
-        [
-          { id: pair.older, live: true },
-          { id: pair.newer, live: true },
-        ].sort((x, y) => byCodeUnit(x.id, y.id)),
-      );
+      expect(await periodEntries()).toEqual(entriesOf([pair.older, true], [pair.newer, true]));
       expect(await reservation()).toBe(pair.newer);
       expect(invalidations).toEqual([]);
     });
@@ -1145,13 +1018,13 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       const pair = await populatedDuplicates();
       const task = await createNamed(ids.tasks, "Follow up");
       await write(pair.newer, `See [Follow up](semprec://items/${task})`);
-      await runInTenant(tenant, () => cp.softDeleteItem(ids.tasks, task));
+      await trash(ids.tasks, task);
       const before = await everything();
 
       const error = await rejection(merge());
 
-      if (!(error instanceof ValidationError)) throw new Error(`Expected a ValidationError, got ${String(error)}`);
-      expect(error.details).toEqual({ field: "markdown" });
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "markdown" });
       expect(await everything()).toEqual(before);
       expect(await reservation()).toBe(pair.newer);
     });
@@ -1167,8 +1040,8 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
 
       const error = await rejection(merge());
 
-      if (!(error instanceof ValidationError)) throw new Error(`Expected a ValidationError, got ${String(error)}`);
-      expect(error.details).toMatchObject({ field: "markdown", reason: "page_not_allowed" });
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ details: { field: "markdown", reason: "page_not_allowed" } });
       expect(await everything()).toEqual(before);
     });
 
@@ -1182,8 +1055,8 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
 
       const error = await rejection(merge());
 
-      if (!(error instanceof ConflictError)) throw new Error(`Expected a ConflictError, got ${String(error)}`);
-      expect(error.details).toEqual({ key: reservationKey() });
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toHaveProperty("details", { key: reservationKey() });
       expect(await everything()).toEqual(before);
     });
 
@@ -1221,8 +1094,8 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
 
       const error = await rejection(merge(DAY, "day", unseeded));
 
-      if (!(error instanceof NotFoundError)) throw new Error(`Expected a NotFoundError, got ${String(error)}`);
-      expect(error.message).toBe("Journal database not found");
+      expect(error).toBeInstanceOf(NotFoundError);
+      expect(error).toHaveProperty("message", "Journal database not found");
     });
   });
 
@@ -1239,7 +1112,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
 
       expect(first).toEqual({
         status: "fulfilled",
-        value: { survivorId: older, mergedItemId: newer, refusedEdges: [] },
+        value: mergedInto({ older, newer }),
       });
       expect(second).toEqual({ status: "fulfilled", value: null });
       expect(await page(older)).toBe("Older\n\nNewer");
@@ -1282,7 +1155,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       expect(created).toEqual({ status: "fulfilled", value: newer });
       expect(merged).toEqual({
         status: "fulfilled",
-        value: { survivorId: older, mergedItemId: newer, refusedEdges: [] },
+        value: mergedInto({ older, newer }),
       });
     });
 
@@ -1308,16 +1181,16 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
         async () => {
           for (const itemId of [older, newer]) {
             const error = await lockOf(itemId);
-            if (!(error instanceof DatabaseError)) throw new Error(`Expected a lock failure, got ${String(error)}`);
+            expect(error).toBeInstanceOf(DatabaseError);
             // 55P03 lock_not_available: the merge already holds the row.
-            expect(error.code).toBe("55P03");
+            expect(error).toHaveProperty("code", "55P03");
           }
         },
       );
 
       expect(merged).toEqual({
         status: "fulfilled",
-        value: { survivorId: older, mergedItemId: newer, refusedEdges: [] },
+        value: mergedInto({ older, newer }),
       });
     });
   });
@@ -1372,15 +1245,10 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
     const before = await stored(other);
     const { older, newer } = await duplicatedDay();
 
-    expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+    expect(await merge()).toEqual(mergedInto({ older, newer }));
 
     expect(await stored(other)).toEqual(before);
-    expect(await periodEntries(DAY, other, otherIds)).toEqual(
-      [
-        { id: foreign.older, live: true },
-        { id: foreign.newer, live: true },
-      ].sort((x, y) => byCodeUnit(x.id, y.id)),
-    );
+    expect(await periodEntries(DAY, other, otherIds)).toEqual(entriesOf([foreign.older, true], [foreign.newer, true]));
     expect(await relatedIds(otherIds.inbox, "journalDay", foreignItem, other)).toEqual([foreign.newer]);
     expect(await reservation(DAY, other, otherIds)).toBe(foreign.newer);
   });

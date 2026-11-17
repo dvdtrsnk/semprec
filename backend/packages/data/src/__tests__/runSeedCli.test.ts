@@ -16,7 +16,6 @@ async function databaseIdsByModule(moduleId: string): Promise<string[]> {
   return rows.map((row) => row.id);
 }
 
-/** Every `databases` row in full, so a rewritten column is caught and not only an added row. */
 async function databaseRows(): Promise<unknown[]> {
   const { rows } = await adminPool.query<{ row: unknown }>(`SELECT to_jsonb(d) AS row FROM databases d ORDER BY d.id`);
   return rows.map((entry) => entry.row);

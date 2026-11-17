@@ -2,11 +2,9 @@ import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 
 /**
- * Integration tier: every test here runs against one ephemeral, real Postgres instance
- * provisioned by `globalSetup` for the whole run (never a mocked DB) — see
- * `packages/data/src/testSupport/globalSetup.ts`. `*.unit.test.ts` files belong to the
- * unit tier (`vitest.unit.config.ts`) and `*.e2e.test.ts` files belong to the e2e tier
- * (`vitest.e2e.config.ts`) — both are excluded here so no test file runs in more than one tier.
+ * Integration tier: runs against one real ephemeral Postgres provisioned by `globalSetup`
+ * (`packages/data/src/testSupport/globalSetup.ts`). Unit and e2e test files are excluded so no
+ * file runs in more than one tier.
  */
 export default defineConfig({
   resolve: {
@@ -75,12 +73,10 @@ export default defineConfig({
     // `tenantScopeModeDefault.test.ts` can tell a developer override from a default that some setup step applied.
     provide: { explicitTenantScopeMode: process.env.SEMPREC_TENANT_SCOPE ?? null },
     environment: "node",
-    // Issue #1199: warn-level output, chiefly tenant_scope_missing, can exceed
+    // Warn-level output, chiefly tenant_scope_missing, can exceed
     // Relay's output limit and hide real failures. Preserve developer overrides.
     env: { LOG_LEVEL: process.env.LOG_LEVEL ?? "error" },
-    // Embedded Postgres cold-starts (initdb + start) take real wall-clock time, and the heaviest cutover
-    // and fan-out cases take 10 to 20 s alone on a developer machine; on a hosted runner that is more
-    // than the former 30 s (observed on PR2057, PR2059, PR2060 and PR2062).
+    // Embedded Postgres cold starts and the heaviest fan-out cases take 10 to 20 s locally and more on hosted runners.
     testTimeout: 60_000,
     hookTimeout: 60_000,
     fileParallelism: false,

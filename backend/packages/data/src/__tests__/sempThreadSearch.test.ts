@@ -56,7 +56,6 @@ afterAll(async () => {
 
 const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"];
 
-/** Searches as a person of `tenantId` (tenant zero by default), unless the input says otherwise. */
 function search(
   q: string,
   input: Partial<Omit<SearchItemGroupsInput, "q">> = {},
@@ -78,22 +77,17 @@ function chatGroupOf(output: SearchOutput): ChatGroup {
 
 const threadIdsOf = (group: ChatGroup): string[] => group.items.map((item) => item.threadId);
 
-/** The ids of the chat threads a person of `tenantId` finds for `q`; none when the answer has no chat group. */
 async function found(q: string, tenantId: string = tenant): Promise<string[]> {
   const group = (await search(q, { scope: ["chat"], perGroupLimit: 50 }, tenantId)).groups[0];
   return group?.type === "chat" ? threadIdsOf(group) : [];
 }
 
 interface ThreadOptions {
-  /** The stored title; only a chat thread has one. */
   title?: string;
-  /** The user messages sent to the thread, oldest first. */
   messages?: readonly string[];
-  /** `last_activity_at`, set after the messages. */
   lastActivityAt?: string;
 }
 
-/** A chat thread whose user messages are written through the production send path. */
 async function chatThread(options: ThreadOptions = {}, tenantId: string = tenant): Promise<string> {
   const threadId = await runInTenant(tenantId, () => withTransaction(pool, (client) => createSempChatThread(client)));
   for (const text of options.messages ?? []) {
@@ -105,7 +99,7 @@ async function chatThread(options: ThreadOptions = {}, tenantId: string = tenant
   return threadId;
 }
 
-/** Raw SQL: only the title job writes a chat title, through a model call, and no write sets `last_activity_at` to a chosen instant. */
+/** Raw SQL: only the title job writes a chat title, and no write sets `last_activity_at` to a chosen instant. */
 async function shapeThread(threadId: string, options: ThreadOptions): Promise<void> {
   if (options.title !== undefined) {
     await admin.query("UPDATE semp_threads SET title = $2 WHERE id = $1", [threadId, options.title]);
@@ -126,7 +120,6 @@ async function inboxDatabaseId(tenantId: string): Promise<string> {
   return inbox.id;
 }
 
-/** An Inbox item with `text` and the item thread that discusses it, written through the production send path. */
 async function itemThread(
   text: string,
   options: ThreadOptions = {},
@@ -154,12 +147,10 @@ async function itemThread(
   return { threadId: sent.threadId, inboxItemId };
 }
 
-/** The user of tenant zero, whom a run is attributed to and whose `users.locale` titles the threads. */
 async function createTenantUser(): Promise<string> {
   return (await createUser(admin, { tenantId: tenant, email: "chat-search@example.test", passwordHash: "unused" })).id;
 }
 
-/** The tick thread (automatic task log) of a heartbeat called `name`, holding the reply `text` of a finished run. */
 async function tickThread(name: string, text: string): Promise<string> {
   return runInTenant(tenant, () =>
     withTransaction(pool, async (client) => {
@@ -257,7 +248,7 @@ describe("the chat group of global search (issue #1854)", () => {
       const previewed = await chatThread({ title: "Nákupy", messages: ["Zaplatit fakturu", "Objednat vstupenky"] });
 
       expect(await found("vstupenky")).toEqual([previewed]);
-      // The earlier message is not the preview: message text is a separate search (issue #1783).
+      // Message text is a separate search, so the earlier message is not matched.
       expect(await found("fakturu")).toEqual([]);
     });
 

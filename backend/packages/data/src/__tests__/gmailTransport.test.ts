@@ -52,10 +52,6 @@ interface FakeGoogle {
   fetchImpl: typeof fetch;
 }
 
-/**
- * `sendReply` answers each send. `tokenRefused` makes the token endpoint reject every refresh, the way Google
- * answers a revoked refresh token.
- */
 function fakeGoogle(options: { tokenRefused?: boolean; sendReply?: () => Response } = {}): FakeGoogle {
   const refreshTokensPresented: string[] = [];
   const sends: SendCall[] = [];

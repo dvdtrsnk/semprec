@@ -6,10 +6,7 @@ import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
 import { z } from "zod";
 
-/**
- * Test-only media fixtures and probes for the integration-tier tests that run the real binaries.
- * Most fixtures come from ffmpeg's `lavfi` test sources; spoken-markers.wav is the owned offline fixture below.
- */
+/** Media fixtures for tests that run the real binaries, mostly from ffmpeg's `lavfi` sources. */
 
 export const FIXTURE_CREATION_TIME = "2024-03-01T12:00:00Z";
 
@@ -116,11 +113,7 @@ function runToBuffer(command: "ffmpeg" | "ffprobe", args: string[]): Promise<Buf
   });
 }
 
-/**
- * A one-second fragmented-mp4 recording. `withVideo` adds a video track next to the audio one (the
- * "video input with an audio track" case); `creationTime` becomes the container's `creation_time`
- * tag, which is left out entirely when omitted.
- */
+/** A one-second fragmented mp4; `creationTime` becomes the `creation_time` tag. */
 export function generateMp4Fixture(options: { withVideo?: boolean; creationTime?: string } = {}): Promise<Buffer> {
   const inputs = options.withVideo
     ? [
@@ -153,11 +146,7 @@ export function generateMp4Fixture(options: { withVideo?: boolean; creationTime?
   ]);
 }
 
-/**
- * A three-second streamed Matroska recording with a video track whose audio track starts one second
- * late (`-itsoffset`) and lasts two. Matroska because a fragmented MP4 piped from ffmpeg does not
- * keep the offset.
- */
+/** Audio starting one second late in a video; Matroska because a piped fragmented MP4 drops the offset. */
 export function generateLateAudioVideoFixture(): Promise<Buffer> {
   return runToBuffer("ffmpeg", [
     "-y",
@@ -221,7 +210,7 @@ export async function seekToneFrequency(path: string, seconds: number): Promise<
   return crossings / (bytes.length / 2 / 16000);
 }
 
-/** A one-second Ogg Opus recording, a type that is not directly playable on iOS. */
+/** Not directly playable on iOS. */
 export function generateOggFixture(): Promise<Buffer> {
   return runToBuffer("ffmpeg", [
     "-y",
@@ -239,7 +228,6 @@ export function generateOggFixture(): Promise<Buffer> {
   ]);
 }
 
-/** The codec, channel count and bit rate of a file's first audio stream, as ffprobe reports them. */
 export async function probeAudioStream(
   path: string,
 ): Promise<{ codecName: string; channels: number; bitRate: number }> {
@@ -263,11 +251,7 @@ export async function probeAudioStream(
   return { codecName: stream.codec_name, channels: stream.channels, bitRate: Number(stream.bit_rate ?? 0) };
 }
 
-/**
- * A three-second streamed WebM/Matroska recording, the shape browser `MediaRecorder` output takes.
- * Piped straight to `pipe:1` rather than muxed to a seekable file, its container header carries no
- * `format.duration` — unlike `generateMp4Fixture`, which does store one even when fragmented.
- */
+/** Like browser `MediaRecorder` output: piped, so the header carries no `format.duration`. */
 export function generateWebmFixture(): Promise<Buffer> {
   return runToBuffer("ffmpeg", [
     "-y",
@@ -285,7 +269,7 @@ export function generateWebmFixture(): Promise<Buffer> {
   ]);
 }
 
-/** A one-second MP3 recording. Unlike mp4, which only stores a real timestamp, its ID3v2 tag keeps a free-text `creation_time` verbatim. */
+/** Unlike mp4, an ID3v2 tag keeps a free-text `creation_time` verbatim. */
 export function generateMp3Fixture(creationTimeTag: string): Promise<Buffer> {
   return runToBuffer("ffmpeg", [
     "-y",
@@ -310,9 +294,8 @@ const audioStreamsSchema = z.object({
 });
 
 /**
- * Reads back what a normalized file actually is. `inputSampleRate` comes from the Ogg Opus
- * identification header (RFC 7845 §5.1), the one place the rate ffmpeg resampled to before
- * encoding survives — ffprobe reports every Opus stream at its fixed 48 kHz decode rate.
+ * `inputSampleRate` comes from the Opus identification header (RFC 7845 §5.1); ffprobe reports
+ * every Opus stream at 48 kHz.
  */
 export async function probeNormalizedAudio(
   path: string,
@@ -336,11 +319,7 @@ export async function probeNormalizedAudio(
   return { codecName: stream.codec_name, channels: stream.channels, inputSampleRate: bytes.readUInt32LE(header + 12) };
 }
 
-/**
- * A silent M4A voice note (AAC in a seekable MP4 file, so its container carries an exact duration) of exactly
- * `seconds` seconds. `creationTime` becomes the container's `creation_time` tag, left out when omitted. Silence at
- * 8 kHz mono keeps a 23-minute recording quick to encode.
- */
+/** A seekable M4A with an exact duration; silence at 8 kHz mono keeps long ones quick to encode. */
 export async function generateM4aFixture(seconds: number, options: { creationTime?: string } = {}): Promise<Buffer> {
   const directory = await mkdtemp(join(tmpdir(), "semprec-m4a-fixture-"));
   try {
@@ -369,11 +348,7 @@ export async function generateM4aFixture(seconds: number, options: { creationTim
   }
 }
 
-/**
- * A still picture of `width` x `height` pixels from ffmpeg's `testsrc`, as a JPEG or a PNG. `exifOrientation` (JPEG
- * only) adds an EXIF `Orientation` tag, which ffmpeg applies when it reads the file: 6 asks for a quarter turn, so a
- * file stored 300 x 200 is shown 200 x 300.
- */
+/** `exifOrientation` (JPEG only): 6 is a quarter turn, so 300 x 200 stored is shown 200 x 300. */
 export async function generateImageFixture(options: {
   width: number;
   height: number;
@@ -406,10 +381,7 @@ export async function generateImageFixture(options: {
   return Buffer.concat([bytes.subarray(0, 2), segment, bytes.subarray(2)]);
 }
 
-/**
- * A grayscale PNG that declares a `width` x `height` canvas and is a few hundred KB however large it is: its image data
- * is a zlib stream of zero rows, which `ffprobe` and `ffmpeg` can only read by allocating the whole decoded frame.
- */
+/** A small PNG declaring a huge canvas, which decoders can only read by allocating the whole frame. */
 export function generateHugeCanvasPng(width: number, height: number): Buffer {
   const chunk = (type: string, data: Buffer): Buffer => {
     const body = Buffer.concat([Buffer.from(type, "latin1"), data]);

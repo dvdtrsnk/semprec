@@ -8,7 +8,7 @@ export type MailDraftMode = (typeof MAIL_DRAFT_MODES)[number];
 export const MAIL_DRAFT_ACTORS = ["user", "agent"] as const;
 export type MailDraftActor = (typeof MAIL_DRAFT_ACTORS)[number];
 
-/** One recipient of a draft; `name` is an empty string when the address has no display name. */
+/** `name` is an empty string when the address has no display name. */
 export interface MailDraftRecipient {
   name: string;
   address: string;
@@ -67,10 +67,7 @@ export interface UpdateMailDraftInput {
   conversationId?: string | null;
 }
 
-/**
- * Raised when an unsent agent draft already exists for the thread
- * (`mail_drafts_one_unsent_agent_per_thread_uq`), so callers can map it to their own response.
- */
+/** An unsent agent draft already exists for the thread (`mail_drafts_one_unsent_agent_per_thread_uq`). */
 export class MailDraftThreadConflictError extends ConflictError {
   constructor(threadId: string | null | undefined) {
     super("An unsent agent draft already exists for this thread", { threadId: threadId ?? null });
@@ -188,10 +185,7 @@ export async function insertMailDraft(db: Queryable, input: InsertMailDraftInput
   }
 }
 
-/**
- * The draft's row, or `null` when the item has none. With `forUpdate` the row is locked until the end of the
- * caller's transaction, for a caller whose decision to write depends on what it reads (its `sentAt`).
- */
+/** With `forUpdate` the row stays locked for a caller whose write depends on what it reads (its `sentAt`). */
 export async function getMailDraft(db: Queryable, emailItemId: string, forUpdate = false): Promise<MailDraft | null> {
   const { rows } = await db.query<DraftDbRow>(
     `SELECT ${COLUMNS} FROM mail_drafts WHERE email_item_id = $1${forUpdate ? " FOR UPDATE" : ""}`,
@@ -201,7 +195,7 @@ export async function getMailDraft(db: Queryable, emailItemId: string, forUpdate
   return row ? toDraft(row) : null;
 }
 
-/** Updates the given fields of an unsent draft; throws `NotFoundError` when there is no unsent draft row. */
+/** Throws `NotFoundError` when there is no unsent draft row. */
 export async function updateMailDraft(
   db: Queryable,
   emailItemId: string,
@@ -232,7 +226,7 @@ export async function updateMailDraft(
   return toDraft(row);
 }
 
-/** Marks an unsent draft as sent, which frees its thread for a new agent draft; throws `NotFoundError` when there is none. */
+/** Frees the draft's thread for a new agent draft; throws `NotFoundError` when there is no unsent draft. */
 export async function markMailDraftSent(
   db: Queryable,
   emailItemId: string,
@@ -248,43 +242,35 @@ export async function markMailDraftSent(
   return toDraft(row);
 }
 
-/**
- * Deletes the draft's row, which frees its thread for a new agent draft. The row is expected to exist: the
- * caller read it under `forUpdate` in the same transaction.
- */
+/** Frees the thread for a new agent draft. The caller read the row under `forUpdate` in the same transaction. */
 export async function deleteMailDraft(db: Queryable, emailItemId: string): Promise<void> {
   const result = await db.query("DELETE FROM mail_drafts WHERE email_item_id = $1", [emailItemId]);
   requireAffectedRows(result, `mail draft ${emailItemId} delete`);
 }
 
-/** An unsent draft that an agent created, as `findOpenAgentDraftOfThread` finds it. */
 export interface OpenAgentDraft {
   emailItemId: string;
-  /** Who wrote it last: `user` once its owner changed it, which an agent must not overwrite. */
+  /** `user` once its owner changed it, which an agent must not overwrite. */
   lastEditedBy: MailDraftActor;
 }
 
 /**
- * The thread ids a thread's drafts may carry: the thread itself and the threads merged into it, because
- * `reassignThread` leaves `mail_drafts.thread_id` as it was and records the merge in `mail_thread_aliases` (issue gh-1493).
- * Fixed SQL around the bind parameter `$1`, the thread's id.
+ * The thread and the threads merged into it: `reassignThread` leaves `mail_drafts.thread_id` unchanged and records the
+ * merge in `mail_thread_aliases`. `$1` is the thread's id.
  */
 const THREAD_AND_MERGED_THREAD_IDS_SQL = `SELECT $1::uuid
       UNION ALL
       SELECT a.from_thread_id FROM mail_thread_aliases a
       WHERE a.tenant_id = app_tenant_default() AND a.to_thread_id = $1::uuid`;
 
-/** The live Emails items, as a join condition on the item `i` of a draft row `d`; fixed SQL. */
 const LIVE_DRAFT_ITEM_SQL = `JOIN items i ON i.tenant_id = d.tenant_id AND i.id = d.email_item_id AND i.deleted_at IS NULL
     AND i.database_id = (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'emails')`;
 
 const openAgentDraftRow = z.object({ email_item_id: z.uuid(), last_edited_by: z.enum(MAIL_DRAFT_ACTORS) });
 
 /**
- * The open agent draft of the thread whose live id is `threadId` (issue gh-1941): an unsent draft that an agent created, in
- * a live Emails item, of the thread or of a thread merged into it. The oldest when merged threads left several, `null`
- * when there is none. A draft of a person, a sent draft and a discarded one do not count. The read takes no lock: a caller
- * that decides a write from it relies on `mail_drafts_one_unsent_agent_per_thread_uq` for the write itself.
+ * The oldest unsent agent-created draft of the thread (or a thread merged into it) in a live Emails item, or `null`.
+ * Takes no lock: a caller that writes based on it relies on `mail_drafts_one_unsent_agent_per_thread_uq`.
  */
 export async function findOpenAgentDraftOfThread(db: Queryable, threadId: string): Promise<OpenAgentDraft | null> {
   const { rows } = await db.query<Record<string, unknown>>(
@@ -299,9 +285,8 @@ export async function findOpenAgentDraftOfThread(db: Queryable, threadId: string
 }
 
 /**
- * Whether the thread whose live id is `threadId` holds a draft made in answer to the message `sourceEmailItemId`, by
- * anybody and sent or not: a live Emails item with a `mail_drafts` row of the thread, or of a thread merged into it,
- * whose `source_email_item_id` is that message (issue gh-1941).
+ * Whether the thread (or a thread merged into it) holds a live draft, by anybody and sent or not, answering
+ * `sourceEmailItemId`.
  */
 export async function hasDraftOfSourceMessage(
   db: Queryable,

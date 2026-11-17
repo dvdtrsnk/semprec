@@ -26,7 +26,6 @@ import {
 
 let pool: Pool;
 
-/** Records every `writeStream` key and keeps the bytes in memory. */
 class RecordingBlobStorage implements BlobStorageWriter {
   readonly bytesByKey = new Map<string, Buffer>();
   readonly writtenKeys: string[] = [];
@@ -51,7 +50,6 @@ class RecordingBlobStorage implements BlobStorageWriter {
   }
 }
 
-/** Runs `fn` in a transaction on the owner role that is always rolled back. */
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
   let primary: unknown;
@@ -82,7 +80,6 @@ async function useTenant(client: PoolClient, tenantId: string): Promise<void> {
   await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
 }
 
-/** Adds tenant B beside tenant zero (A) and runs as `semprec_data` against the migrated schema. */
 async function twoTenants(client: PoolClient): Promise<{ tenantA: string; tenantB: string }> {
   await client.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
   const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ('active') RETURNING id");

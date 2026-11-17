@@ -1,13 +1,10 @@
+import type { DatabaseError } from "pg";
 import type { ActiveHeartbeatRunSummary, ChokePointError, ItemRow } from "@semprec/data";
 import { toItemEnvelope, type ItemEnvelope } from "./itemEnvelope.js";
 
 /**
- * The closed enum of error codes the `semprec-api` REST adapter speaks (issue #238). Every route
- * built on this adapter maps its `ChokePointError`s onto exactly one of these — there is no
- * escape hatch to invent a new code from a route handler. Growing this list is an additive
- * contract change (new code, same shape for the existing ones); removing or repurposing one is
- * a breaking change and needs a transition period, per the adapter's "no URL versioning, additive
- * only" evolution rule.
+ * The closed enum of REST error codes. Growing it is an additive contract change; removing or
+ * repurposing a code is a breaking one.
  */
 export const ITEM_ERROR_CODES = [
   "owner_violation",
@@ -47,18 +44,18 @@ export const ITEM_ERROR_CODES = [
   "regenerate_after_compaction",
   "unsupported_media_type",
   "unsupported_attachment_type",
+  "unique_violation",
+  "foreign_key_violation",
+  "check_violation",
+  "transaction_conflict",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
 
 /**
- * The single code→status table every route built on this adapter shares, so no later slice can
- * drift into mapping the same code to two different statuses. `version_conflict` and
- * `approval_required`/`computed_readonly`/`schema_locked`/`property_locked`/`not_found` are fixed
- * by the issue's approved behavior; `owner_violation`, `validation_failed`, and
- * `heartbeat_event_triggered` are this adapter's own deterministic choice (400 for a bad request
- * shape, 403 for an authorization boundary, 409 for a request that is well-formed but conflicts
- * with the addressed resource's current state).
+ * The single code-to-status table every route shares: 400 for a bad request shape, 403 for an
+ * authorization boundary, 409 for a well-formed request that conflicts with the resource's current
+ * state.
  */
 export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> = {
   owner_violation: 403,
@@ -98,13 +95,47 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   regenerate_after_compaction: 409,
   unsupported_media_type: 415,
   unsupported_attachment_type: 415,
+  unique_violation: 409,
+  foreign_key_violation: 409,
+  check_violation: 400,
+  transaction_conflict: 503,
 };
+
+/** The SQLSTATEs answered by their own code; any other database error is a 500. */
+const DATABASE_ERROR_CODES: Readonly<Record<string, ItemErrorCode>> = {
+  "23505": "unique_violation",
+  "23503": "foreign_key_violation",
+  "23514": "check_violation",
+  "40001": "transaction_conflict",
+  "40P01": "transaction_conflict",
+};
+
+/** Seconds a client waits before repeating a request that kept conflicting with concurrent writes. */
+const TRANSACTION_CONFLICT_RETRY_AFTER_SECONDS = 1;
+
+/**
+ * The response for a Postgres error whose SQLSTATE says what went wrong, or `null` for any other. The body
+ * carries only the code: constraint names, columns and values stay in the log.
+ */
+export function databaseErrorResponse(
+  err: DatabaseError,
+): { status: number; body: ErrorResponseBody; headers?: Record<string, string> } | null {
+  const code = err.code === undefined ? undefined : DATABASE_ERROR_CODES[err.code];
+  if (code === undefined) return null;
+  return {
+    status: ITEM_ERROR_STATUS_BY_CODE[code],
+    body: { error: { code } },
+    ...(code === "transaction_conflict"
+      ? { headers: { "Retry-After": String(TRANSACTION_CONFLICT_RETRY_AFTER_SECONDS) } }
+      : {}),
+  };
+}
 
 function isItemErrorCode(code: string): code is ItemErrorCode {
   return (ITEM_ERROR_CODES as readonly string[]).includes(code);
 }
 
-/** The `status` this adapter answers with for a given `ChokePointError` — the table above when the error's `code` is one of the nine, its own `status` otherwise (forward-compatible with a code this contract hasn't named yet). */
+/** A code outside the table answers with the error's own `status`. */
 export function statusForError(err: ChokePointError): number {
   return isItemErrorCode(err.code) ? ITEM_ERROR_STATUS_BY_CODE[err.code] : err.status;
 }
@@ -117,10 +148,8 @@ export interface ErrorResponseBody {
 }
 
 /**
- * `ConflictError`'s internal details shape (`{ current: ItemRow }`) — see `chokePoint/itemsStore.ts`'s
- * `ifVersion` check. Checks `current`'s required fields, not just its presence, so a `ConflictError`
- * some future call site raises with an unrelated `details` shape falls through to the generic
- * verbatim-`details` branch below instead of being projected as if it were an item.
+ * Checks `current`'s required fields, not just its presence, so a `ConflictError` with unrelated
+ * `details` falls through to the generic branch instead of being projected as an item.
  */
 function isVersionConflictDetails(details: unknown): details is { current: ItemRow } {
   if (typeof details !== "object" || details === null || !("current" in details)) return false;
@@ -135,6 +164,7 @@ function isVersionConflictDetails(details: unknown): details is { current: ItemR
     typeof row.computed === "object" &&
     row.computed !== null &&
     typeof row.updatedAt === "string" &&
+    typeof row.version === "string" &&
     (row.deletedAt === null || typeof row.deletedAt === "string")
   );
 }
@@ -143,7 +173,7 @@ export interface VersionConflictDetails {
   currentItem: ItemEnvelope;
 }
 
-/** `heartbeat_running`'s `details.activeRun` is the running run's summary, or `null` while only a fire job is waiting (issue #1453). */
+/** `null` while only a fire job is waiting. */
 export interface HeartbeatRunningDetails {
   activeRun: ActiveHeartbeatRunSummary | null;
 }
@@ -171,12 +201,9 @@ function isHeartbeatRunningDetails(details: unknown): details is HeartbeatRunnin
 }
 
 /**
- * `details` is `unknown` on `ChokePointError`, so nothing here stops a future call site — a
- * `SchemaLockedError`/`PropertyLockedError`/`HeartbeatEventTriggeredError` thrown with a raw
- * database row, a foreign key, or a file path as `details` — from having that value forwarded
- * to an HTTP client verbatim. Only a flat record of primitive values (the shape every documented
- * `details` payload in this contract actually has — `{ field }`, `{ approvalRequestId, link }`)
- * is safe to serve as-is; anything else is dropped rather than risk leaking internal state.
+ * `details` is `unknown`, so a call site could pass a raw row, a foreign key or a file path. Only a
+ * flat record of primitives (the shape every documented `details` payload has) is served; anything
+ * else is dropped rather than risk leaking internal state.
  */
 export function publicErrorDetails(details: unknown): Record<string, string | number | boolean | null> | undefined {
   if (typeof details !== "object" || details === null || Array.isArray(details)) return undefined;
@@ -189,13 +216,9 @@ export function publicErrorDetails(details: unknown): Record<string, string | nu
 }
 
 /**
- * The single place a thrown `ChokePointError` becomes the `{ error: { code, details } }` body
- * defined by issue #238's error contract — no route handler builds this shape itself.
- * `version_conflict`'s `details.currentItem` is the one code whose wire shape isn't just the
- * choke-point error's own `details` verbatim: the choke-point raises it with `{ current }` (an
- * `ItemRow`), and this is where that gets projected onto the public item envelope. `heartbeat_running`'s
- * `details.activeRun` is a nested object, which `publicErrorDetails` would drop, so it is projected
- * here field by field. Every other code's `details` passes through `publicErrorDetails` rather than verbatim.
+ * `version_conflict` projects its `{ current }` row onto the public item envelope, and
+ * `heartbeat_running` projects its nested `activeRun` field by field (`publicErrorDetails` would
+ * drop it). Every other code's `details` passes through `publicErrorDetails`.
  */
 export function toErrorResponseBody(err: ChokePointError): ErrorResponseBody {
   if (err.code === "version_conflict" && isVersionConflictDetails(err.details)) {
@@ -222,9 +245,8 @@ export function toErrorResponseBody(err: ChokePointError): ErrorResponseBody {
 }
 
 /**
- * The bespoke handlers' `{ error: message, code, details }` body — a different top-level shape
- * from `toErrorResponseBody`'s envelope, kept as is (additive-only REST contract) — with `details`
- * passed through `publicErrorDetails` instead of forwarded verbatim.
+ * The bespoke handlers' `{ error: message, code, details }` body, a different top-level shape from
+ * `toErrorResponseBody`'s envelope kept for the additive-only contract.
  */
 export function toPublicErrorBody(err: ChokePointError): {
   error: string;

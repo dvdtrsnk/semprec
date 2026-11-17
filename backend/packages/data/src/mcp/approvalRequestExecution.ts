@@ -26,22 +26,15 @@ import { executeClaimedModuleToolApproval } from "./moduleToolApprovalExecution.
 const logger = createLogger("mcp");
 
 /**
- * Comfortably above the MCP SDK's 60 s `tools/call` timeout (`mcpToolExecution.ts`'s
- * `MCP_TOOL_CALL_TIMEOUT_MS`) plus `connectMcpServer`'s own connect timeout, so a claim older
- * than this can only belong to a delivery that died before it could record an outcome — never one
- * still genuinely in flight.
+ * Well above the 60 s `tools/call` timeout plus the connect timeout, so an older claim can only belong to a
+ * delivery that died before recording an outcome.
  */
 const MCP_APPROVAL_CLAIM_STALE_AFTER_MS = 10 * 60 * 1000;
 
 /**
- * Replays one approved generic-operation request (issue #220): reloads the request and the
- * persisted `agent_run` provenance it was snapshotted from, rejects a mismatch as
- * `owner_violation`, then invokes the same `GENERIC_OPERATION_BINDINGS` entry REST/MCP/AgentTool
- * dispatch through, bypassing only the already-satisfied approval check. Lives in
- * `packages/application` (needs `createGenericApplicationService`), so `packages/data`'s worker
- * can't call it directly without an `application -> data -> application` cycle — a composition
- * root injects its own instance here the same way it already injects `mailSyncAdapters`/
- * `pushSenders` into `createCoreTaskList`.
+ * Implemented in `packages/application`; a composition root injects it to avoid an
+ * `application -> data -> application` cycle. Rejects a provenance mismatch as `owner_violation`, then runs the
+ * same operation binding as every other dispatch, skipping only the already-satisfied approval check.
  */
 export type GenericOperationApprovalReplay = (
   pool: Pool,
@@ -53,52 +46,21 @@ export interface HandleApprovalRequestExecuteInput {
 }
 
 /**
- * The `approvalExecute` job's handler (issue #131, restructured for #89's exactly-once
- * protocol): dispatches by the request's payload kind *before* claiming or locking anything,
- * since the two kinds now settle their terminal state completely differently.
+ * Dispatches by payload kind *before* claiming or locking anything.
  *
- * A generic-operation payload (the five destructive ops, #89) is handed straight to
- * `genericOperationApprovalReplay`: that function opens its own single transaction, row-locks the
- * request itself, and — whether it succeeds, conflicts, or finds the row already terminal —
- * writes `execution_status`/`execution_result`/`executed_at` inside that same transaction. This
- * handler does nothing further for that kind; calling `claimApprovalRequestExecution` or
- * `recordApprovalRequestOutcome` first would race the executor's own locked read and double-write
- * the terminal columns.
+ * Generic operation: handed straight to `genericOperationApprovalReplay`, which locks the row and writes the
+ * terminal state in its own transaction. Claiming or recording here would race that locked read.
  *
- * An mcpInvoke payload follows issue #693's exactly-once protocol. `claimApprovalRequestExecution`
- * is the atomic `UPDATE ... WHERE executed_at IS NULL AND execution_status = 'queued'`: a request
- * that is not `approved`/`queued`, or was already claimed by a previous delivery, sees `claimed
- * === null`. That is ambiguous on its own — it could mean "rejected/unknown", "a delivery is
- * still running", or "a delivery died mid-flight and never recorded an outcome" — so a null claim
- * falls through to `settleStaleApprovalRequestClaim`, which tells those apart by how long the
- * claim has been held: `"settled"` (it just wrote `conflict` for a claim older than
- * `MCP_APPROVAL_CLAIM_STALE_AFTER_MS`) logs a warning and returns; `"in_flight"` (a claim younger
- * than that) throws a retriable error so graphile-worker's default backoff redelivers the job
- * later, once the claim has had time to go stale if the original delivery really did die;
- * `"not_claimed"` (rejected, unknown, or already terminal) returns silently, same as today. Once
- * claimed, `executeMcpInvocation` is called with the claim id as its idempotency key, and
- * `recordApprovalRequestOutcome` records the result — guarded on `execution_status = 'queued'`, so
- * if `settleStaleApprovalRequestClaim` already terminalized this same row from a concurrent stale
- * sweep, the outcome write finds it no longer `queued` and is discarded (logged, not thrown).
+ * mcpInvoke, moduleTool and mail send share the claim protocol. A `null` claim is ambiguous, so
+ * `settleStaleApprovalRequestClaim` resolves it: `"settled"` warns and returns, `"in_flight"` throws so the
+ * worker's backoff redelivers once the claim can go stale, `"not_claimed"` returns silently. The claim id is the
+ * idempotency key, and the outcome write is `queued`-guarded, so a concurrent stale settle wins and the late
+ * outcome is discarded (logged).
  *
- * The approval snapshot (`payload`) fixes *what* is called — args, tool, server — never *whether*
- * it may still be called: that is re-derived from current state at execution time (issue #694),
- * after the claim and before any connection is opened, via the same three-way check
- * `resolveGrantedMcpTool` performs at request time (grant still `granted`, registration still
- * `active`, server item still `active`) — re-run here because a human can approve hours after the
- * request, long enough for any of the three to have changed. A missing run, a run with no
- * `projectItemId`, no resolved target, or a resolved target whose server or tool no longer matches
- * the snapshotted payload are all treated identically: recorded as a `conflict` outcome, no
- * connection opened.
- *
- * A moduleTool payload (issue #1791) follows the same claim, stale-claim and outcome-guard steps as
- * an mcpInvoke payload; once claimed it is handed to `executeClaimedModuleToolApproval`, which
- * resolves the tool through `moduleRegistry`, compares the snapshot and runs the handler at most
- * once. Without a `moduleRegistry` the request ends in an error outcome and nothing runs.
- *
- * A mail send payload (issue gh-1913) follows the same claim, stale-claim and outcome-guard steps; once claimed it is
- * handed to `executeClaimedMailSendApproval`, which sends the draft through `mailSendAdapters` if it is still the draft
- * that was approved. Without `mailSendAdapters` the request ends in an error outcome and nothing is sent.
+ * The snapshot fixes *what* is called, never *whether* it may still be: an approval can come hours later, so the
+ * grant, registration and server are re-checked after the claim and before connecting. Any mismatch is recorded as
+ * `conflict` with no connection opened. Without `moduleRegistry` or `mailSendAdapters` the respective request ends
+ * in an error outcome and nothing runs.
  */
 export async function handleApprovalRequestExecuteTask(
   pool: Pool,
@@ -116,7 +78,7 @@ export async function handleApprovalRequestExecuteTask(
       await genericOperationApprovalReplay(pool, { ...request, payload: genericPayload });
       return;
     }
-    // No replay handler configured: fail the request instead of leaving it `queued` forever with no way to progress.
+    // Without a replay handler, fail the request rather than leave it `queued` forever.
     const recorded = await withTransaction(pool, async (client) => {
       const changed = await recordApprovalRequestOutcome(client, request.id, {
         error: true,
@@ -173,12 +135,8 @@ export async function handleApprovalRequestExecuteTask(
     await executeClaimedMailSendApproval(pool, mailSendAdapters, claimed, claimed.payload);
     return;
   }
-  // `isGenericOperationApprovalRequestPayload(claimed.payload)` can never be true here — the
-  // early return above already handles every generic-operation payload, and a payload's kind is
-  // fixed at row-creation time, so `claimed` (re-read by id from `claimApprovalRequestExecution`)
-  // carries the same kind `request` did. The check still has to run: `claimed` is a distinct read
-  // from `request`, so TypeScript can't carry that invariant across them, and this is what
-  // narrows `claimed.payload` to `McpInvokeApprovalRequestPayload` below without an unchecked `as`.
+  // Unreachable (the kind is fixed at creation and handled above), but `claimed` is a separate read, so this check
+  // is what narrows its payload without an unchecked `as`.
   if (isGenericOperationApprovalRequestPayload(claimed.payload)) return;
 
   const payload = claimed.payload;

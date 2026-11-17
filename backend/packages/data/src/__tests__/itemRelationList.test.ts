@@ -28,7 +28,6 @@ describe("choke-point listItemRelations (issue #1404)", () => {
     await pool?.end();
   });
 
-  /** Tasks and People joined by a paired `assignedTo` / `assignedTasks` relation. */
   async function makePairedRelation() {
     const tasks = await chokePoint.createDatabase({ name: "Tasks" });
     const people = await chokePoint.createDatabase({ name: "People" });
@@ -350,8 +349,8 @@ describe("choke-point listItemRelations (issue #1404)", () => {
     const areaItem = await chokePoint.createItem({ databaseId: areas.id, properties: {} });
     await chokePoint.createRelation({ relationPropertyId: area.id, callerItemId: file.id, targetItemId: areaItem.id });
 
-    // Raw SQL, because no choke-point write can remove a definition under a live relation property.
-    // The edges cascade with the definition.
+    // Raw SQL: no choke-point write removes a definition under a live relation property. The edges cascade
+    // with the definition.
     const definitionId = area.config.relationDefinitionId;
     if (typeof definitionId !== "string") throw new Error("expected the relation property to name its definition");
     await pool.query("DELETE FROM relation_definitions WHERE id = $1", [definitionId]);

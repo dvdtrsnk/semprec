@@ -74,17 +74,13 @@ interface ProviderCall {
   url: string;
   method: string;
   authorization: string | null;
-  /** The form body of a token exchange or a revocation; null for every other request. */
   form: URLSearchParams | null;
   signal: AbortSignal | null;
 }
 
 type ProviderRoute = (call: ProviderCall) => Response | Promise<Response>;
 
-/**
- * A provider that answers each known URL from `routes` and records every request it received, in
- * `calls` and, as `<METHOD> <url>`, in `events`.
- */
+/** Answers each known URL from `routes` and records every request in `calls` and `events`. */
 function fakeProvider(
   routes: Record<string, ProviderRoute>,
   events: string[] = [],
@@ -143,16 +139,14 @@ function microsoftRoutes(overrides: Record<string, ProviderRoute> = {}): Record<
 }
 
 interface MailboxFixture {
-  /** The mailbox's `provider` property, which its user can edit. */
   provider: "gmail" | "outlook" | "generic";
   credential?: { type: CredentialType; plaintext: string };
   /** With a sync mode the mailbox gets its `mail_account_sync_state` row. The cleanup takes the provider from it. */
   syncMode?: SyncMode;
   gmailWatch?: boolean;
   /**
-   * The Google account the row of a `gmail_api` mailbox records. Left out, it is an account of the
-   * mailbox's own, so two mailboxes share an account only when a test names it. `null` records none,
-   * which a mailbox with a recorded watch cannot be: a watch registration records its account.
+   * Left out, the mailbox gets an account of its own. `null` records none, which a mailbox with a
+   * recorded watch cannot be.
    */
   gmailAccount?: string | null;
   graphSubscriptionId?: string;
@@ -179,9 +173,7 @@ let runtime: Pool;
 let tenant: string;
 let userId: string;
 let roots: MailLiveSyncRoot[];
-/** The mail logger's `warn`, spied on before every test so that each failure line of the cleanup is recorded. */
 let warnings: { mock: { calls: unknown[][] } };
-/** The mail logger's `info`, spied on the same way for the lines of the steps the cleanup skipped. */
 let infos: { mock: { calls: unknown[][] } };
 
 /** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
@@ -189,7 +181,6 @@ function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant):
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
-/** A mailbox as the connect flows and the lifecycles leave it, written through the stores that own each row. */
 function createMailbox(fixture: MailboxFixture, tenantId = tenant): Promise<string> {
   return inTenant(async (client) => {
     const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
@@ -230,17 +221,12 @@ function createMailbox(fixture: MailboxFixture, tenantId = tenant): Promise<stri
 
 interface Hosting {
   root: MailLiveSyncRoot;
-  /** The custom routes' `mailLiveSync` member, bound to `root` as the composition root binds it. */
   control: NonNullable<MailboxRemovalCleanupDependencies["mailLiveSync"]>;
-  /** The mailbox ids whose lifecycle started and stopped, in order. */
   starts: string[];
   stops: string[];
 }
 
-/**
- * Hosts every live mailbox in a real live-sync root, after one discovery pass. A lifecycle's stop is
- * recorded in `stops` and, as `stop:<id>`, in `events`; it then waits for `stopGate` when there is one.
- */
+/** Hosts every live mailbox in a real live-sync root; each stop is recorded, then waits for `stopGate`. */
 async function hostLifecycles(events: string[] = [], stopGate?: Promise<void>): Promise<Hosting> {
   const starts: string[] = [];
   const stops: string[] = [];
@@ -264,7 +250,6 @@ async function hostLifecycles(events: string[] = [], stopGate?: Promise<void>): 
   };
 }
 
-/** `DELETE /api/mail/mailboxes/:id` as a user of `tenantId`, the way the adapter calls it: inside the session's tenant. */
 function removeThroughRoute(
   mailboxItemId: string,
   dependencies: MailboxRemovalCleanupDependencies,
@@ -276,7 +261,6 @@ function removeThroughRoute(
   );
 }
 
-/** Every argument of every log call the data layer's two loggers received, as text. */
 function captureLogs(): () => string {
   const spies = [mailLogger, dbLogger].flatMap((target) =>
     (["trace", "debug", "info", "warn", "error", "fatal"] as const).map((level) => vi.spyOn(target, level)),
@@ -284,12 +268,10 @@ function captureLogs(): () => string {
   return () => spies.map((spy) => inspect(spy.mock.calls, { depth: 8 })).join("\n");
 }
 
-/** The first argument of every failure line the cleanup logged, in order. */
 function cleanupFailures(): unknown[] {
   return warnings.mock.calls.filter((call) => call[1] === CLEANUP_FAILURE_MESSAGE).map((call) => call[0]);
 }
 
-/** The first argument of every line the cleanup logged for a step it skipped, in order. */
 function cleanupSkips(): unknown[] {
   return infos.mock.calls.filter((call) => call[1] === CLEANUP_SKIP_MESSAGE).map((call) => call[0]);
 }
@@ -307,7 +289,6 @@ interface MailboxRows {
 const LIVE: MailboxRows = { trashed: false, credentials: 1, syncStates: 1 };
 const REMOVED: MailboxRows = { trashed: true, credentials: 0, syncStates: 0 };
 
-/** Whether the mailbox is in the trash and how many of its secret-bearing rows exist, read in `tenantId`. */
 function mailboxRows(mailboxItemId: string, tenantId = tenant): Promise<MailboxRows[]> {
   return inTenant(async (client) => {
     const { rows } = await client.query<MailboxRows>(
@@ -326,7 +307,6 @@ interface AccessLogRow {
   purpose: string;
 }
 
-/** The decryptions of the mailbox's credential on record, read in `tenantId`. */
 function accessLog(mailboxItemId: string, tenantId = tenant): Promise<AccessLogRow[]> {
   return inTenant(async (client) => {
     const { rows } = await client.query<AccessLogRow>(
@@ -338,9 +318,8 @@ function accessLog(mailboxItemId: string, tenantId = tenant): Promise<AccessLogR
 }
 
 /**
- * The tables in which some row holds `needle` in any column, read as the superuser so that every
- * tenant's rows and the queue's own tables, with their job payloads, are searched alike. Postgres
- * builds each statement from its own catalog with `format('%I')`, and `needle` is a bind parameter.
+ * Searched as the superuser so every tenant's rows and the queue's job payloads are covered. Each
+ * statement is built with `format('%I')`; `needle` is a bind parameter.
  */
 async function tablesHolding(needle: string): Promise<string[]> {
   const statements = await admin.query<{ name: string; sql: string }>(
@@ -358,11 +337,7 @@ async function tablesHolding(needle: string): Promise<string[]> {
   return holding;
 }
 
-/**
- * Makes one statement of the removal fail until the returned function runs: every insert into
- * `credential_access_log`, or every delete from `external_credentials`. A trigger is the only way to
- * fail one statement of the removal's transaction; no production code exposes that seam.
- */
+/** A trigger is the only way to fail one statement of the removal's transaction. */
 async function failStatement(statement: "accessLogInsert" | "credentialDelete"): Promise<() => Promise<void>> {
   await admin.query(`CREATE FUNCTION test_mailbox_cleanup_fail() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN RAISE EXCEPTION 'test mailbox cleanup failure'; END $$`);
@@ -493,7 +468,6 @@ describe("mailbox removal cleanup outside the database (gh-2030)", () => {
       // The token is the body of the revocation, and nothing else of the request carries it.
       expect(Object.fromEntries(revocation?.form ?? [])).toEqual({ token: SECRETS.refreshToken });
       expect(revocation?.authorization).toBeNull();
-      // Every request was ended once it was answered.
       expect(provider.calls.map((call) => call.signal?.aborted)).toEqual([true, true, true]);
       expect(cleanupFailures()).toEqual([]);
       expect(cleanupSkips()).toEqual([]);
@@ -534,7 +508,6 @@ describe("mailbox removal cleanup outside the database (gh-2030)", () => {
 
       const answer = await removeThroughRoute(removed, dependencies);
 
-      // The answer is the one of every removal, and only the removed mailbox's lifecycle was stopped.
       expect(answer).toEqual({ status: 200, body: { id: removed } });
       expect(events).toEqual([`stop:${removed}`]);
       expect(cleanupFailures()).toEqual([]);
@@ -821,9 +794,7 @@ describe("mailbox removal cleanup outside the database (gh-2030)", () => {
       name: string;
       fixture: MailboxFixture;
       routes: Record<string, ProviderRoute>;
-      /** The container's OAuth clients; left out when the composition root configured none. */
       oauth?: MailboxRemovalCleanupDependencies["oauth"];
-      /** The URLs called, in order: the steps after the failing one are among them. */
       calls: string[];
       failures: Array<{ step: string; classification: string }>;
     }
@@ -1044,8 +1015,8 @@ describe("mailbox removal cleanup outside the database (gh-2030)", () => {
       const logs = captureLogs();
       const mailboxItemId = randomUUID();
       const provider = fakeProvider(googleRoutes({ [GOOGLE_TOKEN_URL]: neverAnswers }));
-      // The exchange's limit is fixed, so the clock is advanced. The cleanup is called with the input
-      // the removal hands it, because a removal needs the database and its real timers.
+      // The exchange's limit is fixed, so the clock is advanced; the cleanup is called directly because a
+      // removal needs real timers.
       vi.useFakeTimers();
       try {
         const cleanup = runInTenant(tenant, () =>
@@ -1085,7 +1056,6 @@ describe("mailbox removal cleanup outside the database (gh-2030)", () => {
       );
 
       expect(answer).toEqual({ status: 200, body: { id: mailbox } });
-      // The lifecycle's stop was called and is still running.
       expect(hosting.stops).toEqual([mailbox]);
       expect(provider.calls.map((call) => call.url)).toEqual([
         GOOGLE_TOKEN_URL,
@@ -1206,8 +1176,7 @@ describe("mailbox removal cleanup outside the database (gh-2030)", () => {
       for (const secret of [SECRETS.refreshToken, SECRETS.accessToken, SECRETS.rotatedRefreshToken]) {
         expect(await tablesHolding(secret)).toEqual([]);
       }
-      // The search finds what is stored: the removed mailbox's id is in its item row, in the access
-      // log and in the payload of the job the removal queued.
+      // The removed id is still in its item row, the access log and the queued job payload.
       const holdingTheId = await tablesHolding(cleaned);
       expect(holdingTheId).toContain("public.credential_access_log");
       expect(holdingTheId.some((table) => table.startsWith("graphile_worker."))).toBe(true);

@@ -9,13 +9,8 @@ import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
 /**
- * Load tests (module-contract issue #226) proving each retrofit manifest for the schema/data
- * core, views, docs, and ten-system-databases modules actually loads through
- * `ModuleRegistry.loadModule()` and passes its load-time structural validation — never that
- * a `ModuleManifest` object merely type-checks. Each module is loaded into its own registry
- * so a failure in one never masks or is masked by another; the four together also prove none
- * of the four collide with each other on module id/name (the fourth-loaded manifest -
- * `systemDatabases` - would fail first, since it declares the most identifiers).
+ * Each retrofit manifest loads through `ModuleRegistry.loadModule()` and passes its load-time
+ * validation, each in its own registry so one failure cannot mask another.
  */
 function manifestPath(fileName: string): string {
   return new URL(`../${fileName}`, import.meta.url).href;
@@ -43,7 +38,7 @@ describe("core module manifests (module-contract issue #226)", () => {
       { moduleId: "schemaCore", name: "heartbeat.update", handlerExport: "createHeartbeatUpdateTool" },
       { moduleId: "schemaCore", name: "heartbeat.setEnabled", handlerExport: "createHeartbeatSetEnabledTool" },
     ]);
-    // The write tools of issue #1846 declare `requiresApproval`, so they are offered only to a caller that asks for them.
+    // These write tools declare `requiresApproval`, so they are offered only to a caller that asks for them.
     const gated = await registry.getAgentToolDefinitions(new Set(), { includeApprovalGated: true });
     expect(gated.map((tool) => [tool.name, tool.requiresApproval === true, typeof tool.snapshot])).toEqual([
       ["heartbeat.list", false, "undefined"],
@@ -59,7 +54,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     if (!trigger) throw new Error("Heartbeat trigger missing");
     expect(trigger.parseArguments({ heartbeatId: "00000000-0000-4000-8000-000000000000" }).success).toBe(true);
     expect(trigger.parseArguments({ heartbeatId: "not-a-uuid" }).success).toBe(false);
-    expect(await registry.getMigrations()).toEqual([{ moduleId: "schemaCore", migration: "0001_core_schema.sql" }]);
+    expect(await registry.getMigrations()).toEqual([{ moduleId: "schemaCore", migration: "0001_baseline.sql" }]);
   });
 
   it("loads the views manifest and projects the built-in view types", async () => {
@@ -80,10 +75,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(await registry.getDatabases()).toEqual([{ moduleId: "docs", key: PAGES_MODULE_ID, name: "Pages" }]);
     expect(await registry.getTasks()).toEqual([]);
     expect(await registry.getHeartbeatActions()).toEqual([]);
-    expect(await registry.getMigrations()).toEqual([
-      { moduleId: "docs", migration: "0003_docs.sql" },
-      { moduleId: "docs", migration: "0036_doc_history_retention.sql" },
-    ]);
+    expect(await registry.getMigrations()).toEqual([]);
   });
 
   it("loads the ten-system-databases manifest with all ten existing database keys and Journal's view type", async () => {
@@ -170,7 +162,6 @@ describe("core module manifests (module-contract issue #226)", () => {
   });
 });
 
-/** Every filter tree a database declares (issue #1647), named by where it is declared. */
 function declaredFilters(databases: ModuleDatabaseProjection[]): [string, unknown][] {
   return databases.flatMap((db) => [
     ...(db.quickFilters ?? []).flatMap((chip): [string, unknown][] =>
@@ -183,7 +174,6 @@ function declaredFilters(databases: ModuleDatabaseProjection[]): [string, unknow
   ]);
 }
 
-/** Every sort spec a database declares, named by where it is declared. */
 function declaredSorts(databases: ModuleDatabaseProjection[]): [string, unknown][] {
   return databases.flatMap((db) => [
     ...(db.quickFilters ?? []).flatMap((chip) =>
@@ -204,7 +194,7 @@ function refusedDeclarations(databases: ModuleDatabaseProjection[]): string[] {
   ].map(([where]) => where);
 }
 
-/** The databases of every manifest the processes load (`loadFullModuleRegistry`), so no module's declaration is skipped. */
+/** The databases of every manifest the processes load (`loadFullModuleRegistry`). */
 async function loadViewHintManifests(): Promise<ModuleDatabaseProjection[]> {
   return (await loadFullModuleRegistry()).getDatabases();
 }

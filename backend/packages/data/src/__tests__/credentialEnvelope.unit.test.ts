@@ -102,7 +102,7 @@ describe("wrapDataKey / unwrapDataKey", () => {
   it("refuses an unwrapped value that is not a 32-byte key", async () => {
     const masterKey = await generateDataKey();
     const tenantId = randomUUID();
-    // Sealed directly because wrapDataKey now refuses a short key; same associated data as wrapDataKey.
+    // Sealed directly because wrapDataKey refuses a short key; same associated data as wrapDataKey.
     const wrapped = await sealSecret(Buffer.alloc(16), masterKey, ad(`semprec:tenant-key:v1:${tenantId}`));
     await expect(unwrapDataKey(wrapped, masterKey, tenantId)).rejects.toThrow(
       "Unwrapped data key must be 32 bytes, got 16",

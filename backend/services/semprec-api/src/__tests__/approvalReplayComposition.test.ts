@@ -53,13 +53,8 @@ const testMetadataResolver: CollectionMetadataResolver = {
 };
 
 const ALL_CAPABILITIES = new Set(CAPABILITY_IDS);
-const TERMINAL_EXECUTION_STATUSES: ReadonlySet<ApprovalRequest["executionStatus"]> = new Set([
-  "succeeded",
-  "conflict",
-  "legacy_terminal",
-]);
+const TERMINAL_EXECUTION_STATUSES: ReadonlySet<ApprovalRequest["executionStatus"]> = new Set(["succeeded", "conflict"]);
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -79,7 +74,7 @@ async function createUser(pool: Pool): Promise<string> {
   ).id;
 }
 
-/** Mirrors `genericOperationGateway.test.ts`'s `createPendingDeleteAndApprove`: an agent-run `item.delete`, gated, then approved (which enqueues `approvalExecute`). */
+/** An agent-run `item.delete`, gated, then approved (which enqueues `approvalExecute`). */
 async function createPendingDeleteAndApprove(pool: Pool): Promise<{ requestId: string; itemId: string }> {
   const chokePoint = createChokePoint(pool);
   const gateway = createGenericOperationGateway(pool, testMetadataResolver);
@@ -156,7 +151,7 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
     );
     expect(await createChokePoint(pool).findItem(itemId)).toBeNull();
 
-    // Redelivery: a second `approvalExecute` for the same request completes without touching the row.
+    // Redelivery: a second `approvalExecute` completes without touching the row.
     await inTenantZero(() =>
       enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: requestId }),
     );
@@ -382,7 +377,7 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
       active = false;
     }
   });
-  /** A file whose `title` follows its task's `name` through an active value link (issue #1758). */
+  /** The file's `title` follows its task's `name` through an active value link. */
   async function linkedFileFixture(cp: ReturnType<typeof createChokePoint>) {
     const tasks = await cp.createDatabase({ name: "Link tasks" });
     await cp.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
@@ -422,7 +417,7 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
         gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: file.id,
           properties: { title: "Agent title" },
-          ifVersion: file.updatedAt,
+          ifVersion: file.version,
         }),
       );
       expect.unreachable("Expected approval");
@@ -454,7 +449,6 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
 
     expect((await cp.findItem(file.id))?.properties.title).toBe("Agent title");
     expect(await linkOf(file.id)).toEqual({ state: "broken", broken_by: "agent" });
-    // The write and the announcement of the broken link are attributed to the user the run acts for.
     const fileEvents = events.filter((event) => event.scope === "item" && event.itemId === file.id);
     expect(fileEvents).not.toEqual([]);
     for (const event of fileEvents) expect(event.userId).toBe(run.actorUserId);
@@ -493,7 +487,7 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
           method: "tools/call",
           params: {
             name: "semprec.item.patch",
-            arguments: { itemId: file.id, properties: { title: "Human title" }, ifVersion: file.updatedAt },
+            arguments: { itemId: file.id, properties: { title: "Human title" }, ifVersion: file.version },
           },
         }),
       });

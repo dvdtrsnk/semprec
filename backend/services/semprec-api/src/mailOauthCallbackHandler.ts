@@ -1,17 +1,20 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { sendJson } from "./adapter/http.js";
 
-/** The redirect target of the mailbox sign-in, as `mail/mailOauthRouteHandlers.ts` in `@semprec/data` builds the redirect URI. */
+/** Matches the redirect URI `mail/mailOauthRouteHandlers.ts` builds. */
 export const MAIL_OAUTH_CALLBACK_PATH = "/api/mail/oauth/callback";
 
 /** Our states are 43 characters; the cap only bounds what is echoed. */
 const STATE_PATTERN = /^[A-Za-z0-9_-]{1,512}$/;
-/** An authorization code is opaque to this server, so only its length is bounded. */
+/** The code is opaque to this server, so only its length is bounded. */
 const MAX_CODE_LENGTH = 4096;
 /** An OAuth `error` value is a short lowercase token (RFC 6749 §4.1.2.1), never free text. */
 const PROVIDER_ERROR_PATTERN = /^[a-z_]{1,64}$/;
 
-/** A JSON body the browser must take as data, and whose address, which holds the code, goes into no `Referer` header. */
+/**
+ * The browser must take the body as data, and the URL (which holds the code) goes into no `Referer`
+ * header.
+ */
 const RESPONSE_HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 
 function refuse(res: ServerResponse): void {
@@ -19,16 +22,12 @@ function refuse(res: ServerResponse): void {
 }
 
 /**
- * Handles `GET /api/mail/oauth/callback` (issue gh-1686), the one address a Google or Microsoft
- * sign-in redirects the browser back to. Public by design: the browser arrives from the provider
- * and the app's session is not consulted. The handler takes no pool, reads no cookie or
- * `Authorization` header, writes nothing and logs nothing. It answers `{ state, code }`, which the
- * app hands to the authenticated `POST /api/mail/mailboxes/oauth/complete`; that route is what
- * verifies the state against the signed-in user. When the provider reported an error such as a
- * cancelled consent it answers `{ state, providerError }` instead. The complete route accepts no
- * such body, so the app calls nothing after it and starts a new sign-in; the unused state expires.
- * A request without a well-formed `state`, with a malformed `error`, or with neither an `error` nor
- * a bounded `code` answers 400 `validation_failed`.
+ * Public by design: the browser arrives from the provider. The handler takes no pool, reads no
+ * cookie or `Authorization`, writes and logs nothing. It answers `{ state, code }`, which the app
+ * hands to the authenticated `POST /api/mail/mailboxes/oauth/complete`, where the state is verified
+ * against the signed-in user. A provider error (e.g. cancelled consent) answers `{ state,
+ * providerError }`; the app then starts a new sign-in and the unused state expires. A malformed
+ * `state` or `error`, or neither `error` nor a bounded `code`, is 400 `validation_failed`.
  */
 export function createMailOauthCallbackRequestListener() {
   return function handleRequest(req: IncomingMessage, res: ServerResponse): void {

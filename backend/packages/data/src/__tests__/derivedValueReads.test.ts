@@ -215,8 +215,8 @@ describe("derived values through project relations", () => {
       const projectArea = (await cp.listProperties(projects)).find((property) => property.key === "area");
       const fileProjects = (await cp.listProperties(files)).find((property) => property.key === "projects");
       if (!projectArea || !fileProjects) throw new Error("Missing contributor fixture relations");
-      // Build the complete fixture through the same write owners in one transaction, avoiding
-      // 155 separate commits and read projections while preserving every write hook and edge.
+      // One transaction through the same write owners, avoiding 155 separate commits while keeping every write
+      // hook and edge.
       const { area, file, ids } = await withTransaction(data, async (client) => {
         const area = await createItemWithClient(client, { databaseId: areas, properties: { name: "Shared" } });
         const file = await createItemWithClient(client, { databaseId: files, properties: { name: "File" } });

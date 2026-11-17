@@ -27,7 +27,6 @@ import {
   updateProposalValuesWithClient,
 } from "../proposalActions.js";
 
-/** The fields of a refusal the revise tool answers for a failed check of the write. */
 const refusalSchema = z.object({
   status: z.number(),
   error: z.string(),
@@ -58,7 +57,6 @@ interface ThreadFixture {
   cardId: string;
   threadId: string;
   runId: string;
-  /** The assistant message the run's turn is answering, `running` and stamped with the run. */
   messageId: string;
   tasksId: string;
   inboxId: string;
@@ -176,7 +174,6 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
         expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
         await startSempMessageTurn(client, turn.assistantMessageId, run.id, "1");
       });
-      // The fixture's own card writes are not what a test observes.
       events.length = 0;
       return {
         tenant,
@@ -193,16 +190,15 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
     });
   }
 
-  /** The stored card and its version, read through the runtime role inside the tenant. */
   async function readCard(fixture: ThreadFixture, cardId = fixture.cardId) {
     return runInTenant(fixture.tenant, async () => {
-      const row = await runtime.query<{ properties: unknown; updated_at: Date }>(
-        "SELECT properties, updated_at FROM items WHERE id = $1",
+      const row = await runtime.query<{ properties: unknown; updated_at: Date; version: string }>(
+        "SELECT properties, updated_at, version FROM items WHERE id = $1",
         [cardId],
       );
       const stored = row.rows[0];
       if (!stored) throw new Error("Card is missing");
-      return { properties: stored.properties, updatedAt: stored.updated_at.toISOString() };
+      return { properties: stored.properties, updatedAt: stored.updated_at.toISOString(), version: stored.version };
     });
   }
 
@@ -216,7 +212,6 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
     });
   }
 
-  /** What a refused or failed revision must leave behind: the card, the target databases and no invalidation. */
   async function snapshot(fixture: ThreadFixture) {
     return {
       card: await readCard(fixture),
@@ -235,7 +230,7 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
   const call = async (fixture: ThreadFixture, args: unknown, runId = fixture.runId) => {
     if (typeof args === "object" && args !== null && "proposalId" in args && !("ifVersion" in args)) {
       const version = await readCard(fixture, String(args.proposalId)).then(
-        (card) => card.updatedAt,
+        (card) => card.version,
         () => "no-such-version",
       );
       return callRaw(fixture, { ...args, ifVersion: version }, runId);
@@ -257,7 +252,7 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
     expect(successSchema.parse(JSON.parse(result.result))).toEqual({
       proposalId: fixture.cardId,
       revised: true,
-      version: (await readCard(fixture)).updatedAt,
+      version: (await readCard(fixture)).version,
     });
     const after = storedCardSchema.parse((await readCard(fixture)).properties);
     expect(after.proposal).toEqual({
@@ -275,7 +270,6 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
       messageId: fixture.messageId,
     });
     expect(after.history).toHaveLength(storedCardSchema.parse(before.card.properties).history.length + 1);
-    // Nothing is created in a target database.
     expect(await countItems(fixture, fixture.tasksId)).toBe(before.tasks);
     expect(await countItems(fixture, fixture.eventsId)).toBe(before.events);
   });
@@ -352,8 +346,7 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
 
   it("refuses a revision composed from a card that the user edited since, keeps the user's value, and accepts it again from the version the answer carries", async () => {
     const fixture = await createCardThread(owner);
-    const seen = (await readCard(fixture)).updatedAt;
-    // The user edits the title while the turn is still working from the card it read.
+    const seen = (await readCard(fixture)).version;
     await runInTenant(owner, () =>
       withTransaction(runtime, async (client) => {
         const proposals = await getDatabaseByModuleId(client, "processingProposals");
@@ -383,7 +376,7 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
 
     const current = await callRaw(fixture, {
       proposalId: fixture.cardId,
-      ifVersion: before.card.updatedAt,
+      ifVersion: before.card.version,
       properties: { name: "Koupit mléko", description: "Oat milk" },
     });
     expect(current.error).toBe(false);
@@ -392,7 +385,6 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
       .parse((await readCard(fixture)).properties);
     expect(stored.userOverrides).toEqual({ primary: { name: "Koupit mléko" } });
 
-    // A second revision of the same turn names the version the first one answered.
     const { version } = successSchema.parse(JSON.parse(current.result));
     const again = await callRaw(fixture, {
       proposalId: fixture.cardId,
@@ -733,7 +725,7 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
   it("rejects arguments that are not the strict shape without touching the card", async () => {
     const fixture = await createCardThread(owner);
     const before = await snapshot(fixture);
-    const valid = { proposalId: fixture.cardId, ifVersion: before.card.updatedAt, properties: { name: "x" } };
+    const valid = { proposalId: fixture.cardId, ifVersion: before.card.version, properties: { name: "x" } };
 
     for (const args of [
       { ...valid, extra: true },
@@ -800,13 +792,13 @@ describe("inbox.proposal.revise agent tool (issue #1906)", () => {
 
       const refused = await revise.invoke({
         proposalId: other.cardId,
-        ifVersion: (await readCard(other)).updatedAt,
+        ifVersion: (await readCard(other)).version,
         properties: { name: "x" },
       });
       expect(refused).toEqual(NOT_FOUND);
       const revised = await revise.invoke({
         proposalId: fixture.cardId,
-        ifVersion: (await readCard(fixture)).updatedAt,
+        ifVersion: (await readCard(fixture)).version,
         properties: { name: "Through the registry" },
       });
       expect(revised.error).toBe(false);

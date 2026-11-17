@@ -7,11 +7,9 @@ const TENANT_ID_HEADER = "x-semprec-tenant-id";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The tenant a trusted internal caller claims via `x-semprec-tenant-id`; `null` when the header is
- * absent (a previous-release or legacy-envelope caller, processed with no tenant scope). Call only
- * after the bearer token check. Anything that is not one canonical UUID — including a repeated
- * header, which Node joins with `, ` — is a 400. Whether the tenant exists and is active is the
- * reservation's decision, not this function's.
+ * `null` when the header is absent (no tenant scope). Call only after the bearer check. Anything but
+ * one canonical UUID (a repeated header is joined with `, `) is a 400. Existence and activity are
+ * the reservation's decision.
  */
 export function readCallerTenantId(req: IncomingMessage): string | null {
   const value = req.headers[TENANT_ID_HEADER];
@@ -22,7 +20,6 @@ export function readCallerTenantId(req: IncomingMessage): string | null {
   return value;
 }
 
-/** Runs `fn` inside the caller's tenant scope, or directly when the request carried no tenant. */
 export function runForCallerTenant<T>(tenantId: string | null, fn: () => Promise<T>): Promise<T> {
   return tenantId === null ? fn() : runInTenant(tenantId, fn);
 }

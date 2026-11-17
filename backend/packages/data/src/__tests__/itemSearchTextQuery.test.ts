@@ -15,8 +15,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { queryDatabaseItems } from "../views/viewQuery.js";
 import type { ItemRow } from "../types.js";
 
-// The `q` text match of `database.query`, `view.query` and `item.count` (issue #1857), through the runtime-role pool
-// (RLS applies) and the real choke point. The match is the predicate global search uses (`itemSearchMatch.ts`).
+// The `q` text match of `database.query`, `view.query` and `item.count`, through the runtime-role pool and
+// the real choke point. The match is the predicate global search uses (`itemSearchMatch.ts`).
 
 let admin: Pool;
 let pool: Pool;
@@ -37,7 +37,6 @@ async function make(key: string, properties: Record<string, unknown>): Promise<I
   return cp.createItem({ databaseId: await databaseId(key), properties });
 }
 
-/** The Projects fixture of a tenant: names are what the assertions read, ids are what they compare. */
 async function seedProjects(): Promise<{
   web: ItemRow;
   redesign: ItemRow;
@@ -52,7 +51,7 @@ async function seedProjects(): Promise<{
   };
 }
 
-/** How many projects a freshly seeded tenant already holds (system projects); the fixtures add to it. */
+/** How many (system) projects a freshly seeded tenant already holds. */
 async function seededProjectCount(): Promise<number> {
   const page = await cp.queryDatabaseItems(await databaseId("projects"), { includeCount: true });
   if (page.totalCount === undefined) throw new Error("Expected a totalCount");
@@ -62,7 +61,6 @@ async function seededProjectCount(): Promise<number> {
 const idsOf = (items: ItemRow[]): string[] => items.map((item) => item.id);
 const sorted = (ids: string[]): string[] => [...ids].sort();
 
-/** A client that records the statements it runs, for a test that has to read the SQL a request produced. */
 function recordingClient(client: PoolClient, statements: string[]): PoolClient {
   const query = client.query.bind(client);
   return new Proxy(client, {
@@ -79,12 +77,10 @@ function recordingClient(client: PoolClient, statements: string[]): PoolClient {
   });
 }
 
-/** What a refused request says, whole: the message and the details together. */
 function errorText(error: ValidationError): string {
   return `${error.message} ${JSON.stringify(error.details)}`;
 }
 
-/** The `ValidationError` a request is refused with; any other outcome fails the test. */
 async function refusalOf(request: Promise<unknown>): Promise<ValidationError> {
   try {
     await request;
@@ -298,7 +294,7 @@ describe("q on database.query, view.query and item.count (issue #1857)", () => {
         };
         expect(withoutQ.some((sql) => sql.includes("item_search_index"))).toBe(false);
         expect(listSql(withoutQ).replace(/\s+/g, " ")).toBe(
-          "SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> $2 = $3 ORDER BY id ASC LIMIT $4",
+          "SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> $2 = $3 ORDER BY id ASC LIMIT $4",
         );
         expect(countSql(withoutQ)).toBe(
           "SELECT count(*)::text AS count FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> $2 = $3",
@@ -317,7 +313,6 @@ describe("q on database.query, view.query and item.count (issue #1857)", () => {
           expect(error.details).toEqual({ field: "q" });
           expect(errorText(error)).not.toContain(tooLong);
         }
-        // The longest text the schema takes is accepted.
         await expect(cp.queryDatabaseItems(projectsId, { q: "x".repeat(200) })).resolves.toMatchObject({ items: [] });
       }));
 

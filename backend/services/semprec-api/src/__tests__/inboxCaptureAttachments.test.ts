@@ -19,9 +19,8 @@ import {
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 
-// Issue gh-1963: the client uploads bytes with `POST /api/blobs`, then names the blob ids in `POST /api/inbox/items`.
-// Tenant isolation of the capture is proven on the runtime role in `tenantIsolationRoutes.test.ts` and
-// `packages/data/src/inbox/__tests__/captureAttachments.test.ts`; this file walks the two routes together.
+// The client uploads bytes with `POST /api/blobs`, then names the blob ids in `POST /api/inbox/items`; this walks
+// the two routes together. Tenant isolation is proven in `tenantIsolationRoutes.test.ts` and the data package.
 const PASSWORD = "s3cret-password";
 const OWNER_EMAIL = "capture-attachments-owner@example.com";
 const noopMailer: PasswordResetMailer = {
@@ -136,7 +135,6 @@ describe("capturing an Inbox item with uploaded blobs (issue gh-1963)", () => {
       "SELECT count(*)::int AS n FROM items WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'files')",
     );
   const attachmentRows = () => count("SELECT count(*)::int AS n FROM inbox_attachments");
-  /** The keys of the metadata jobs (issue gh-1965) the captures queued. */
   async function metadataJobKeys(): Promise<string[]> {
     const { rows } = await pool.query<{ key: string | null }>(
       "SELECT key FROM graphile_worker.jobs WHERE task_identifier = 'inboxAttachmentMetadata' ORDER BY key",

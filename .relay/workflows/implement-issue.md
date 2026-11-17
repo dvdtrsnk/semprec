@@ -10,7 +10,7 @@ on:
     skip-if-open-pull-request: true   # the duplicate-PR guard
 worker: any                           # or a worker preset name; must be in project.workerIds
 model-tier: { from: issue }
-max-concurrent: 5                     # batches decompose as a dependency DAG (docs/adr/2026-09-24-issue-batches-as-dependency-dags.md); the choke-point-split batch routinely has 4-7 issues eligible at once
+max-concurrent: 5                     # batches decompose as a dependency DAG (docs/architecture/delivery-and-operations.md); the choke-point-split batch routinely has 4-7 issues eligible at once
 protected-paths: [".relay/**", ".github/workflows/**"]
 steps:
   - id: pickup
@@ -19,7 +19,7 @@ steps:
   - id: implement
     uses: agent
     prompt: "#implement"              # section heading in the body
-  # Pre-review (docs/adr/2026-10-17-pre-review-draft-pull-requests-before-verify.md): the
+  # Pre-review (docs/architecture/delivery-and-operations.md): the
   # implementation goes to a draft pull request and through the code-review bot BEFORE the
   # verify pipeline, and the implementing thread itself fixes what the bot finds. A finding
   # then costs one bot run and a fix with full context, not a whole fix-review-findings run

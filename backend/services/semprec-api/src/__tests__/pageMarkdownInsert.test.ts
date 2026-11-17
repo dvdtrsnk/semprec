@@ -47,7 +47,6 @@ interface PageState {
   relations: number;
 }
 
-/** What a refused insert must leave exactly as it found it. */
 async function stateOf(itemId: string): Promise<PageState> {
   const { rows } = await runInTenant(harness.tenantA, () =>
     harness.runtime.query<PageState>(
@@ -62,7 +61,6 @@ async function stateOf(itemId: string): Promise<PageState> {
   return row;
 }
 
-/** Trashes `itemId` of tenant A through the production route. */
 async function trash(itemId: string): Promise<void> {
   const response = await fetch(`${harness.baseUrl}/api/items/${itemId}`, {
     method: "DELETE",
@@ -356,7 +354,7 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
 
     it("keeps authenticating a session by cookie or bearer as a person, and refuses an unknown bearer token", async () => {
       const host = await harness.createHost(harness.tenantA);
-      // A web-platform session is delivered by cookie, the native session of `headersA` by bearer.
+      // A web session comes by cookie, `headersA`'s native session by bearer.
       const cookie = await harness.webSessionCookie(harness.tenantA);
 
       idsOf(await insert({ Cookie: cookie }, host, { placement: "end", markdown: "Cookie" }));
@@ -380,7 +378,7 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
       return runInTenant(harness.tenantA, async () => {
         const doc = await loadYDoc(harness.runtime, docId);
         try {
-          // Read through the document's own maps: this package does not import the block model.
+          // Through the document's own maps: this package does not import the block model.
           const blocks = doc.getMap<Y.Map<unknown>>("blocks");
           return doc
             .getArray<string>("order")
@@ -398,7 +396,6 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
       });
     }
 
-    /** A page whose block "Deep" is at indent 2, made through the route with a nested list. */
     async function hostWithDeepBlock(): Promise<{ host: string; deepId: string }> {
       const host = await harness.createHost(harness.tenantA);
       const ids = idsOf(

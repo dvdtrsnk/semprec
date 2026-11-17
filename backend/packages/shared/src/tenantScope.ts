@@ -2,9 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createLogger, type Logger } from "./logger.js";
 
 /**
- * The tenant a piece of work runs for. `system` is work that belongs to no tenant (startup,
- * listeners, schedulers); it reads as no `app.tenant_id` in Postgres. See
- * `docs/adr/2026-10-05-tenant-scope-propagation.md`.
+ * The tenant a piece of work runs for. `system` is work of no tenant (startup, listeners, schedulers); it reads as no
+ * `app.tenant_id` in Postgres. See docs/architecture/tenancy-and-security.md#scope-api.
  */
 export type TenantScope =
   { readonly kind: "tenant"; readonly tenantId: string } | { readonly kind: "system"; readonly reason: string };
@@ -33,8 +32,8 @@ const MAX_REMEMBERED_STACKS = 1_000;
 const tenantScopeStorage = new AsyncLocalStorage<TenantScope>();
 const warnedStacks = new Set<string>();
 
-// Created on first use: `logger.ts` is allowed to import this module, so a top-level
-// `createLogger` call here would run before `logger.ts` has finished evaluating.
+// Created lazily: `logger.ts` imports this module, so a top-level `createLogger` call would run before `logger.ts`
+// finished evaluating.
 let scopeLogger: Logger | undefined;
 function getScopeLogger(): Logger {
   scopeLogger ??= createLogger("tenant-scope");
@@ -47,10 +46,8 @@ export function currentTenantScope(): TenantScope | undefined {
 }
 
 /**
- * Runs `fn` for `tenantId`. From no scope or a system scope it enters the tenant; inside the same
- * tenant it just runs `fn`; inside a different tenant it throws `TenantScopeConflictError`.
- * `tenantId` must be a canonical UUID (it is stored lower-cased) or `TypeError` is thrown and `fn`
- * is not called.
+ * Enters the tenant from no scope or a system scope; runs `fn` directly inside the same tenant; throws
+ * `TenantScopeConflictError` inside another tenant. A non-canonical UUID throws `TypeError` without calling `fn`.
  */
 export function runInTenant<T>(tenantId: string, fn: () => T): T {
   if (typeof tenantId !== "string" || !UUID_PATTERN.test(tenantId)) {
@@ -66,9 +63,8 @@ export function runInTenant<T>(tenantId: string, fn: () => T): T {
 }
 
 /**
- * Runs `fn` as tenant-less system work. From no scope or a system scope it enters `{ system, reason }`
- * (the inner reason wins); inside a tenant it throws `TenantScopeConflictError`, because a system
- * scope would otherwise be a way to leave one tenant and enter another.
+ * Enters `{ system, reason }` from no scope or a system scope (the inner reason wins). Throws inside a tenant, since a
+ * system scope would otherwise be a way to switch tenants.
  */
 export function runAsSystem<T>(reason: string, fn: () => T): T {
   assertReason(reason, "runAsSystem");
@@ -82,9 +78,8 @@ export function runAsSystem<T>(reason: string, fn: () => T): T {
 }
 
 /**
- * Runs `fn` in a fresh system scope whatever the current scope is. Its only permitted use is opening
- * shared, long-lived I/O resources (a pooled database connection) whose event callbacks run in the
- * async context that opened them and must never inherit one caller's tenant. It never runs work.
+ * Fresh system scope regardless of the current one. Only for opening shared long-lived I/O resources (a pooled
+ * connection) whose callbacks run in the opening context and must never inherit a caller's tenant. Never runs work.
  */
 export function runDetachedAsSystem<T>(reason: string, fn: () => T): T {
   assertReason(reason, "runDetachedAsSystem");
@@ -92,11 +87,9 @@ export function runDetachedAsSystem<T>(reason: string, fn: () => T): T {
 }
 
 /**
- * Called by every database access site. With a scope active it returns it. Without one the mode in
- * `SEMPREC_TENANT_SCOPE` (read on every call) decides: unset, empty or `strict` throws
- * `TenantScopeMissingError`; `warn` logs `tenant_scope_missing` once per distinct stack and returns
- * `undefined`; any other value throws an `Error`. `warn` is an operator escape hatch that production
- * must not set (verified at go-live by #1086).
+ * Called by every database access site. Without an active scope, `SEMPREC_TENANT_SCOPE` (read per call) decides: unset,
+ * empty or `strict` throws `TenantScopeMissingError`; `warn` logs `tenant_scope_missing` once per distinct stack and
+ * returns `undefined`; anything else throws. `warn` is an operator escape hatch production must not set.
  */
 export function enforceTenantScope(site: string): TenantScope | undefined {
   const scope = tenantScopeStorage.getStore();

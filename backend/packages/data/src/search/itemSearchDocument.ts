@@ -10,13 +10,13 @@ export interface ItemSearchDocumentInput {
   descriptor?: ModuleDatabaseDescriptor;
   properties: PropertyRow[];
   relatedTitles: string[];
-  /** The item's converted page text (`item_search_index.page_text`); null or absent when the item has no page text. */
+  /** `item_search_index.page_text`; null or absent without page text. */
   pageText?: string | null;
   locale: ManifestLocale;
   catalogs?: ModuleCatalogs;
 }
 
-/** The cached Inbox entry texts of a Journal day (issue #106); empty for every other item. */
+/** Empty for every item but a Journal day. */
 function journalInboxTexts(input: Pick<ItemSearchDocumentInput, "item" | "databaseKey">): string[] {
   if (input.databaseKey !== JOURNAL_MODULE_ID || input.item.properties.type !== "day") return [];
   const entries: unknown = input.item.computed.inboxItems;
@@ -31,7 +31,7 @@ function journalInboxTexts(input: Pick<ItemSearchDocumentInput, "item" | "databa
   return texts;
 }
 
-/** Pure text projection; related titles have already been resolved from live, tenant-visible edges. */
+/** Pure text projection; related titles were resolved from live, tenant-visible edges. */
 export function buildItemSearchDocument(input: ItemSearchDocumentInput): string {
   const fields = input.descriptor?.searchFields;
   const parts: string[] = [];
@@ -74,10 +74,7 @@ export function buildItemSearchDocument(input: ItemSearchDocumentInput): string 
   return parts.filter((part) => part.trim().length > 0).join(" ");
 }
 
-/**
- * Excerpt source for `item_search_index.body` (issue #1658): a Journal day's Inbox entry texts followed by its
- * page text, or the page text alone for every other item. Null when there is neither.
- */
+/** A Journal day's Inbox entry texts then its page text, else the page text alone; null when there is neither. */
 export function buildItemSearchBody(
   input: Pick<ItemSearchDocumentInput, "item" | "databaseKey" | "pageText">,
 ): string | null {

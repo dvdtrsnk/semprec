@@ -16,7 +16,6 @@ import {
 
 const DISCOVERY_INTERVAL_MS = 200;
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -33,7 +32,7 @@ async function syncStateItemIds(pool: Pool): Promise<string[]> {
   return rows.map((row) => row.item_id);
 }
 
-/** Returns each stored job's `enqueueJob` envelope (`{ traceId, payload }`), not the bare task payload. */
+/** The stored `{ traceId, payload }` envelopes, not the bare task payloads. */
 async function mailAccountSyncJobEnvelopes(pool: Pool): Promise<unknown[]> {
   const { rows } = await pool.query<{ payload: unknown }>(
     `SELECT jobs.payload FROM graphile_worker._private_jobs jobs
@@ -51,7 +50,7 @@ async function insertMailbox(pool: Pool, mailboxesDatabaseId: string, name: stri
   return item.id;
 }
 
-/** Composes the live-sync root exactly as `serve.ts` does, with a shortened discovery interval. */
+/** As `serve.ts` does, with a shortened discovery interval. */
 async function composeLikeServe(pool: Pool): Promise<{ root: MailLiveSyncRoot; mailboxesDatabaseId: string }> {
   const { mailboxesDatabaseId } = await withTransaction(pool, (client) => resolveMailModuleIds(client));
   const root = createMailLiveSyncRoot(pool, createNoopMailLiveSyncLifecycleFactory(pool), {

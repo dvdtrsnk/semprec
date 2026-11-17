@@ -31,13 +31,9 @@ function requireString(payload: unknown, field: string): string {
 }
 
 /**
- * Registers a fresh controller for the job's tenant, runs `fn` with its signal and unregisters on
- * every path. The registration spans the whole job, so a deactivation during session composition
- * is seen as an already-aborted signal when the turn starts. Throws, before `fn`, outside a tenant scope: that is a wiring bug, since every
- * queued job runs inside its tenant.
- *
- * With `assistantMessageId`, the same controller is also registered as the turn that answers that Semp message
- * (`InFlightAgentRuns.registerTurn`), so `abortTurn` can end this job alone.
+ * The registration spans the whole job, so a deactivation during session composition is seen as an
+ * already-aborted signal. With `assistantMessageId` it is also registered as that message's turn,
+ * so `abortTurn` can end this job alone.
  */
 export async function withInFlightRegistration<T>(
   pool: Pool,
@@ -70,10 +66,8 @@ export async function withInFlightRegistration<T>(
 }
 
 /**
- * Closes a run whose session could not even be composed, so it is not left `running` until the
- * next startup repair. The close, its notification and the `error` event commit together, and the
- * event is written only when this call actually closed the row. Best-effort: a failure here is
- * logged, and the composition error is what the caller rethrows.
+ * Closes a run whose session could not be composed, so it is not left `running` until startup
+ * repair. Best-effort: a failure is logged; the caller rethrows the composition error.
  */
 async function closeUncomposedRun(pool: Pool, run: AgentRunRow, cause: unknown): Promise<void> {
   try {
@@ -95,12 +89,7 @@ async function closeUncomposedRun(pool: Pool, run: AgentRunRow, cause: unknown):
   }
 }
 
-/**
- * Records the run's `running` status only if the row is still `running`, re-read under a row lock
- * in the same transaction as that write: a concurrent close (startup repair, a duplicate job)
- * either commits first and is seen here, or blocks until the `running` event is in. Returns
- * whether the run was claimed.
- */
+/** Re-reads the row under lock in the write's transaction, so a concurrent close is either seen or waits. */
 async function claimRunningRun(pool: Pool, agentRunId: string): Promise<boolean> {
   return withTransaction(pool, async (client) => {
     const locked = await getAgentRun(client, agentRunId, true);
@@ -110,13 +99,7 @@ async function claimRunningRun(pool: Pool, agentRunId: string): Promise<boolean>
   });
 }
 
-/**
- * The `agentRun`/`delegatedAgentRun` handler (issue #647; a delegated run is just a row with
- * `parent_run_id` set, so both share one payload contract): runs a pi session for the
- * `{ agentRunId }` row and closes it through `runAgentSessionForRun`. A row that is missing or no
- * longer `running` — a redelivered job for a finished run, or one closed while its session was
- * being composed — is a logged no-op.
- */
+/** `agentRun`/`delegatedAgentRun` handler. A missing or no longer `running` row is a logged no-op. */
 export function createAgentRunTask(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
@@ -147,12 +130,7 @@ export function createAgentRunTask(
     });
 }
 
-/**
- * The `RunAgentFn` behind `core.agentRun` (issue #647). `coreAgentRunAction` already opened the
- * row and closes it from this function's outcome — `done` with the returned `result`, or `error`
- * plus its `agent_run_error` notification on a throw — so this only drives the session and its
- * `run_status` events in between.
- */
+/** `coreAgentRunAction` opens and closes the row; this only drives the session and its `run_status` events. */
 export function createRunAgentForHeartbeats(
   pool: Pool,
   moduleRegistry: ModuleRegistry,
@@ -172,7 +150,7 @@ export function createRunAgentForHeartbeats(
       await pushRunStatus(pool, run.id, "running");
       if (signal.aborted) throw new AgentRunCancelledError();
       const session = createAgentSession({ task: run.task, signal });
-      // The job result becomes `agent_runs.result`: it comes from the stored form of the last message (issue #2001).
+      // From the stored (possibly redacted) form of the last message.
       const { storedLastMessage } = await runAgentTurnWithStoredForm(
         pool,
         run.id,

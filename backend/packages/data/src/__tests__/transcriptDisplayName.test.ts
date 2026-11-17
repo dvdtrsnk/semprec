@@ -21,7 +21,6 @@ let admin: Pool;
 let runtime: Pool;
 let tenant: string;
 
-/** 14 October 2024, 13:52 in Prague (UTC+2). */
 const RECORDED_AT = "2024-10-14T11:52:00.000Z";
 const FILENAME = "IMG_0042.m4a";
 const SEGMENTS = [
@@ -70,9 +69,7 @@ describe("the display name and the suggested name of a transcript (issue #1830)"
       if (!property) throw new Error(`Missing Transcripts.${key}`);
       return property.id;
     };
-    /** The Files item an upload leaves, named after the uploaded file. */
     const file = async (name = FILENAME) => (await cp.createItem({ databaseId: db("files"), properties: { name } })).id;
-    /** A transcript as the create step leaves it: no `name` of its own, unless the upload gave one. */
     const transcript = (input: {
       status: "processing" | "done";
       name?: string;
@@ -119,7 +116,6 @@ describe("the display name and the suggested name of a transcript (issue #1830)"
       }));
       await cp.updateItem({ ...settings, propertiesPatch: { timezone } });
     };
-    /** What the detail endpoint and the list endpoint each say about one transcript, in `locale`. */
     const read = async (transcriptId: string, locale = "en") => {
       const identity = { user: { locale } };
       const detail = readSchema.parse(

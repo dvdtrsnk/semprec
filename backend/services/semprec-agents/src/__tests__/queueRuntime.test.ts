@@ -48,7 +48,6 @@ async function buildRegistryWith(fixtureFile: string, moduleId: string): Promise
   return registry;
 }
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -346,11 +345,8 @@ describe("createAgentsQueueRuntime (issue #91)", () => {
       await inTenantZero(() => enqueueJob(pool, identifier, {}));
     }
 
-    // This runtime's taskList has no handler for any of these api-affinity identifiers, so
-    // graphile-worker's own job fetcher (which only claims jobs for task identifiers the
-    // connected worker supports) never claims them — there is no "it ran and failed" signal to
-    // poll for, only their continued, unclaimed presence after giving this runner ample time to
-    // have picked them up if it could.
+    // graphile-worker only claims jobs for task identifiers it has handlers for, so the only signal
+    // is that these stay unclaimed after ample time.
     await sleep(1_500);
     const { rows } = await pool.query<{ identifier: string; attempts: number }>(
       `SELECT tasks.identifier, jobs.attempts FROM graphile_worker._private_jobs jobs
@@ -368,11 +364,7 @@ describe("createAgentsQueueRuntime (issue #91)", () => {
 
     await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, {}));
 
-    // An empty payload fails this handler's own field validation, so it never completes — but
-    // graphile-worker still has to claim and invoke it to discover that. `attempts >= 1` is
-    // therefore the positive counterpart to the negative "never claimed" proof above: it shows
-    // this runtime is the one that owns and runs this task name, regardless of whether the
-    // specific payload used here happens to be valid business data (irrelevant to ownership).
+    // The empty payload fails validation, but `attempts >= 1` proves this runtime claimed it.
     await waitFor(async () => {
       const { rows } = await pool.query<{ attempts: number }>(
         `SELECT jobs.attempts FROM graphile_worker._private_jobs jobs

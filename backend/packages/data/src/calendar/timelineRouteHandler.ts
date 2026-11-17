@@ -4,14 +4,11 @@ import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { readCalendarTimeline } from "./timelineRead.js";
+import type { CustomRouteResult, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
-/** The longest range one request may ask for, both days included. A month grid needs at most 42 days. */
+/** Inclusive. A month grid needs at most 42 days. */
 export const MAX_RANGE_DAYS = 93;
-
-/** The request context of `GET /api/calendar/timeline`: its query string is read from the request URL. */
-interface CalendarTimelineRouteRequestContext {
-  req: { url?: string };
-}
 
 function dateParameter(parameters: URLSearchParams, name: "from" | "to"): string {
   const value = parameters.get(name);
@@ -21,15 +18,10 @@ function dateParameter(parameters: URLSearchParams, name: "from" | "to"): string
   return value;
 }
 
-/**
- * `GET /api/calendar/timeline?from=YYYY-MM-DD&to=YYYY-MM-DD[&shape=compact]` (issue #1717): the body of
- * `readCalendarTimeline` for the caller's tenant. `from` and `to` are calendar dates, `to` is not before
- * `from`, and the range, both days included, is at most 93 days; `shape` is absent or `compact`. Anything
- * else is a 400 `validation_failed` naming the parameter.
- */
+/** `GET /api/calendar/timeline?from=YYYY-MM-DD&to=YYYY-MM-DD[&shape=compact]`. */
 export function createCalendarTimelineRouteHandler(pool: Pool) {
-  return async (ctx: CalendarTimelineRouteRequestContext): Promise<{ status: number; body: unknown }> => {
-    const parameters = new URL(ctx.req.url ?? "/", "http://localhost").searchParams;
+  return async (ctx: RouteUrl): Promise<CustomRouteResult> => {
+    const parameters = requestUrl(ctx.req).searchParams;
     const from = dateParameter(parameters, "from");
     const to = dateParameter(parameters, "to");
     if (to < from) throw new ValidationError("'to' must not be before 'from'", { field: "to" });

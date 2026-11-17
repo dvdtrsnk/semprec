@@ -10,40 +10,31 @@ import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import type { ApprovalOutcomeKind } from "./approvalConflictReason.js";
 import { isMcpItemId, parseMcpInvokeFailure, type McpInvokeFailure } from "./mcpFailure.js";
 
-/** Longest agent-supplied reason, in characters; mirrored by the `approval_requests_reason_length_check` constraint. */
+/** Mirrored by the `approval_requests_reason_length_check` constraint. */
 export const APPROVAL_REQUEST_REASON_MAX_LENGTH = 500;
 
 export type ApprovalRequestStatus = "pending" | "approved" | "rejected";
 
-/** The only two transitions a decision can make a `pending` request into. */
 export type ApprovalRequestDecision = "approved" | "rejected";
 
 const APPROVAL_REQUEST_STATUSES: readonly ApprovalRequestStatus[] = ["pending", "approved", "rejected"];
 
 /**
- * The exactly-once execution protocol's own state machine (issue #89), independent of the
- * approval decision above: `not_approved` (default) -> `queued` (set atomically alongside
- * `status: 'approved'`) -> `succeeded` (the mutation committed) or `conflict` (a terminal
- * revalidation failure — the resource changed or its authorization no longer holds). A
- * populated-upgrade row that predates this column is `legacy_terminal` and never executes.
+ * The exactly-once execution state, independent of the decision: `not_approved` -> `queued` (set together with
+ * `approved`) -> `succeeded` or `conflict` (the resource changed or its authorization no longer holds).
  */
-export type ApprovalRequestExecutionStatus = "not_approved" | "queued" | "succeeded" | "conflict" | "legacy_terminal";
+export type ApprovalRequestExecutionStatus = "not_approved" | "queued" | "succeeded" | "conflict";
 
 const APPROVAL_REQUEST_EXECUTION_STATUSES: readonly ApprovalRequestExecutionStatus[] = [
   "not_approved",
   "queued",
   "succeeded",
   "conflict",
-  "legacy_terminal",
 ];
 
 /**
- * The persisted `{ kind, resourceId, sha256 }` shape every approval request now carries
- * (issue #89). `kind` is validated against the closed five-destructive-operation enum only by
- * `DestructiveApprovalPreflight` at the point a *new* generic-operation request is created — this
- * store-level type stays a plain string so the still-live `mcpInvoke` request kind (and a
- * populated-upgrade's `legacy_unavailable` kind) can also satisfy the column's `NOT NULL`
- * constraint without widening it into a union this module has no reason to know about.
+ * `kind` is validated against the destructive-operation enum only when a generic-operation request is created; it
+ * stays a plain string here so the `mcpInvoke` kind can also fill the `NOT NULL` column.
  */
 export interface ApprovalResourceSnapshot {
   kind: string;
@@ -51,25 +42,20 @@ export interface ApprovalResourceSnapshot {
   sha256: string | null;
 }
 
-/**
- * The localisable description snapshotted on a request (issue #1683): a template key plus
- * parameters, never rendered text. The template contract is documented next to the builders in
- * `approvalDescription.ts`.
- */
+/** A template key plus parameters, never rendered text (contract in `approvalDescription.ts`). */
 export interface ApprovalDescription {
   key: string;
   params: Record<string, string | number | null>;
-  /** The active value links the action would end, one entry per link and source (issue #1758); omitted when it ends none. */
+  /** Omitted when the action ends no link. */
   breaksLinks?: BreaksLinkEntry[];
-  /** The links that follow a broken link's property and so lose the value it fed them; omitted when there are none. */
+  /** Links that follow a broken link's property and lose the value it fed them; omitted when none. */
   endsInheritance?: EndsInheritanceEntry[];
 }
 
 /**
- * A value link a write would end: the item and property that follow `sourceItemId`, and the value the
- * write sets. `propertyKey` is the canonical key. A link fed by a sender domain has no source item, so
- * `sourceItemId` and `sourceDatabaseKey` are `null` and `sourceItemName` is the domain; a link without
- * any source row has all three `null`. `newValueName` is `null` where the write sets no value.
+ * `propertyKey` is canonical. A link fed by a sender domain has `null` source ids and the domain as
+ * `sourceItemName`; a link without any source row has all three `null`. `newValueName` is `null` when the write
+ * sets no value.
  */
 export interface BreaksLinkEntry {
   itemId: string;
@@ -81,7 +67,6 @@ export interface BreaksLinkEntry {
   newValueName: string | null;
 }
 
-/** A link that follows the property of a broken link: `itemId` and `propertyKey` follow `sourceName`'s item. */
 export interface EndsInheritanceEntry {
   itemId: string;
   propertyKey: string;
@@ -135,14 +120,9 @@ export function assertDescriptionShape(value: unknown): ApprovalDescription | nu
 }
 
 /**
- * `approval_requests` (issue #130 baseline): one immutable, invocation-time snapshot per
- * deferred MCP tool call. `payload` is exactly what a later issue needs to execute the
- * approved call unchanged — the resolved target's identity plus the model-supplied
- * arguments — never re-derived from `agentRunId` at decision time, since the underlying
- * grant or registration may have since changed.
- *
- * This issue only creates and reads pending requests; deciding one (`status` moving to
- * `approved`/`rejected`, `decidedAt`/`decidedBy`) and executing it are out of scope here.
+ * An immutable, invocation-time snapshot of one deferred call. `payload` holds everything needed to execute the
+ * approved call unchanged and is never re-derived from `agentRunId`, since the grant or registration may have
+ * changed since.
  */
 export interface ApprovalRequest {
   id: string;
@@ -156,19 +136,17 @@ export interface ApprovalRequest {
   decidedBy: string | null;
   resourceSnapshot: ApprovalResourceSnapshot;
   executionStatus: ApprovalRequestExecutionStatus;
-  /** Set atomically as an execution claim (issue #131) before the deferred call is made — see 0022's migration comment. */
+  /** Set atomically as the execution claim before the deferred call is made. */
   executedAt: string | null;
   executionError: boolean | null;
   executionResult: unknown;
-  /** The agent's own explanation of why it asked, as plain text; `null` when it gave none. */
   reason: string | null;
-  /** The model-runtime tool call that created the request; `null` for older requests and paths without one. */
+  /** `null` for older requests and paths without one. */
   toolCallId: string | null;
-  /** What the request asks, as a template key and parameters snapshotted at creation; `null` for requests created before issue #1683. */
+  /** `null` for older requests. */
   description: ApprovalDescription | null;
 }
 
-/** The outbound third-party-MCP-tool-invoke payload shape (issue #130) — the resolved target's identity plus the model-supplied arguments. */
 export interface McpInvokeApprovalRequestPayload {
   mcpToolRegistrationId: string;
   mcpServerItemId: string;
@@ -176,13 +154,9 @@ export interface McpInvokeApprovalRequestPayload {
 }
 
 /**
- * The inbound generic-operation payload shape (issue #220, `resourceSnapshot` added by #89): the
- * operation name, its already-validated canonical input, the exact actor identity
- * `agentRunsStore`'s persisted `agent_run` row backed at dispatch time — never re-derived from
- * `agentRunId` at replay, so a mismatch between this snapshot and the run's current provenance is
- * what `owner_violation` detects at `approvalExecute` time — and the same resource snapshot
- * persisted in the row's own `resource_snapshot` column, duplicated into the payload so the
- * payload alone is a self-contained record of exactly what was approved.
+ * The actor identity is the one the run row backed at dispatch, never re-derived at replay, so a mismatch with
+ * the run's current provenance is what `owner_violation` detects. `resourceSnapshot` duplicates the column so the
+ * payload alone records exactly what was approved.
  */
 export interface GenericOperationApprovalRequestPayload {
   operationName: string;
@@ -191,25 +165,17 @@ export interface GenericOperationApprovalRequestPayload {
   resourceSnapshot: ApprovalResourceSnapshot;
 }
 
-/**
- * The module-agent-tool payload shape (issue #1791): the tool's manifest name and the arguments the
- * agent supplied, which the tool's own schema accepted when the request was created. The module that
- * owns the tool is resolved from the name through `ModuleRegistry` at execution time, never stored.
- */
+/** The owning module is resolved from the tool name through `ModuleRegistry` at execution time, never stored. */
 export interface ModuleToolApprovalRequestPayload {
   moduleToolName: string;
   args: Record<string, unknown>;
 }
 
-/** The tool name of an agent's or an MCP run credential's mail send (issue gh-1913): the `tool_name` of its request. */
 export const MAIL_DRAFT_SEND_TOOL_NAME = "mail.draft.send";
 
 /**
- * The payload of the approval request of an agent's mail send (issue gh-1913), a request of the `moduleTool` family
- * whose tool is `MAIL_DRAFT_SEND_TOOL_NAME`: the draft, the hash of what it held when the request was made, its mailbox
- * and the To recipients, subject and text body. The Cc and Bcc recipients, the From address and the attachments are
- * covered by `draftHash` only. The values stay in this column: every client-facing view of a request carries the
- * argument names at most.
+ * Cc, Bcc, From and attachments are covered by `draftHash` only. The values stay in this column; client-facing
+ * views carry argument names at most.
  */
 export interface MailSendApprovalRequestPayload {
   draftId: string;
@@ -339,17 +305,16 @@ export interface CreatePendingApprovalRequestInput {
   riskClass: RiskClass;
   payload: ApprovalRequestPayload;
   resourceSnapshot: ApprovalResourceSnapshot;
-  /** Optional agent-supplied reason (at most `APPROVAL_REQUEST_REASON_MAX_LENGTH` characters); stored as `NULL` when absent. */
+  /** Stored as `NULL` when absent. */
   reason?: string | null;
-  /** The model-runtime tool call that produced the request; stored as `NULL` when absent. */
   toolCallId?: string | null;
-  /** The localisable description, computed by the caller in the same transaction; stored as `NULL` when absent. */
+  /** Computed by the caller in the same transaction. */
   description?: ApprovalDescription | null;
 }
 
 /**
- * Inserts one `pending` request. The caller is responsible for running this inside the same transaction as whatever it must be atomic with.
- * A repeated creation for the same `(agentRunId, toolCallId)` returns the existing request instead of inserting a second row.
+ * Run it in the same transaction as whatever it must be atomic with. A repeated `(agentRunId, toolCallId)`
+ * returns the existing request.
  */
 export async function createPendingApprovalRequest(
   client: Queryable,
@@ -358,11 +323,7 @@ export async function createPendingApprovalRequest(
   return (await insertPendingApprovalRequest(client, input)).request;
 }
 
-/**
- * `createPendingApprovalRequest` that also says whether this call inserted the row (`inserted`) or
- * returned the existing request of a repeated `(agentRunId, toolCallId)`, which wrote nothing. A
- * caller that announces the creation (`approvalRequestRealtime.ts`) announces only an insert.
- */
+/** Also reports whether this call inserted the row; announcers announce only an insert. */
 export async function insertPendingApprovalRequest(
   client: Queryable,
   input: CreatePendingApprovalRequestInput,
@@ -395,16 +356,14 @@ export async function insertPendingApprovalRequest(
     };
   }
   const created = rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));
-  // Raise the requesting run's thread to the top of the activity ordering (issue #1728). Runs in the
-  // caller's transaction, so a rollback drops it with the request; GREATEST never lowers a newer
-  // activity committed after this transaction started (`now()` is the transaction start time). A
-  // run without a thread matches no row. A replayed tool call (conflict above) is not new activity.
+  // Bumps the run's thread in the activity ordering inside the caller's transaction. GREATEST never lowers newer
+  // activity (`now()` is the transaction start). A replayed tool call is not new activity.
   await client.query(
     `UPDATE semp_threads SET last_activity_at = GREATEST(last_activity_at, now())
       WHERE id = (SELECT thread_id FROM agent_runs WHERE id = $1)`,
     [input.agentRunId],
   );
-  // The pending count of the run's actor grew, so their badge changes (issue #1891).
+  // The actor's pending badge changes.
   const actor = await client.query<{ actor_user_id: string }>("SELECT actor_user_id FROM agent_runs WHERE id = $1", [
     input.agentRunId,
   ]);
@@ -415,7 +374,7 @@ export async function insertPendingApprovalRequest(
   return { request: created, inserted: true };
 }
 
-/** `forUpdate` row-locks the request for the duration of the caller's transaction — `approvalExecute`'s locked revalidate-then-mutate protocol (issue #89) needs this so a concurrent decide/replay can't observe or race a half-finished execution. */
+/** `forUpdate` row-locks the request so a concurrent decide/replay cannot race a half-finished execution. */
 export async function getApprovalRequest(
   client: Queryable,
   id: string,
@@ -428,10 +387,7 @@ export async function getApprovalRequest(
   return rows[0] ? rowToApprovalRequest(rows[0]) : null;
 }
 
-/**
- * The oldest pending mail send request (issue gh-1913) of the draft `draftId`, or `null`. It is a guard only for a
- * caller that holds the draft's Emails item lock, which is what every creation of such a request takes.
- */
+/** A reliable guard only for a caller holding the draft's Emails item lock, which every creation takes. */
 export async function findPendingMailSendApprovalRequest(
   client: Queryable,
   draftId: string,
@@ -447,10 +403,8 @@ export async function findPendingMailSendApprovalRequest(
 }
 
 /**
- * Closes as superseded every other pending mail send request of the draft `draftId` once `decidedRequestId` was
- * decided (issue gh-1913): they become `rejected` at this instant with no decider, and their execution result
- * records `{ supersededBy }`. They never execute. Returns each request this call closed with the user that owns its
- * run; none is a normal outcome, because creating a request returns the draft's pending one instead of a second request.
+ * The others become `rejected` with no decider and `{ supersededBy }` as result, and never execute. Returns each
+ * closed request with its run's owner.
  */
 export async function supersedePendingMailSendApprovalRequests(
   client: Queryable,
@@ -464,20 +418,16 @@ export async function supersedePendingMailSendApprovalRequests(
       RETURNING *, (SELECT r.actor_user_id FROM agent_runs r WHERE r.id = approval_requests.agent_run_id) AS owner_user_id`,
     [draftId, decidedRequestId, JSON.stringify({ supersededBy: decidedRequestId })],
   );
-  // Zero rows is the normal outcome: the draft had no other pending request.
   if (rowCount === 0) return [];
   return rows.map((row) => ({ request: rowToApprovalRequest(row), ownerUserId: row.owner_user_id }));
 }
 
-/**
- * What a reader needs to say how far a request has come: its decision and the execution protocol's state
- * and result. The payload (the call's arguments) is deliberately not part of it.
- */
+/** The payload (the call's arguments) is deliberately left out. */
 export interface ApprovalRequestStateView {
   id: string;
   status: ApprovalRequestStatus;
   executionStatus: ApprovalRequestExecutionStatus;
-  /** `execution_result_jsonb` as stored; a reader reads its discriminators only (`approvalConflictReason`). */
+  /** Read only for its discriminators (`approvalConflictReason`). */
   executionResult: unknown;
 }
 
@@ -495,10 +445,7 @@ function rowToApprovalRequestState(row: ApprovalRequestStateRow): ApprovalReques
   };
 }
 
-/**
- * The state of every request in `ids` that the caller's tenant scope can read, in one query (issue #1862).
- * An id that matches no visible row is absent from the result; `ids` must be uuids, which the caller checks.
- */
+/** One query. Invisible ids are absent; `ids` must be uuids (the caller checks). */
 export async function listApprovalRequestStatesByIds(
   client: Queryable,
   ids: readonly string[],
@@ -511,11 +458,7 @@ export async function listApprovalRequestStatesByIds(
   return rows.map(rowToApprovalRequestState);
 }
 
-/**
- * As `listApprovalRequestStatesByIds`, but only the requests whose run is owned by `ownerUserId` (issue #1887),
- * the ownership rule of `getApprovalRequestForOwner`. A request of another user and an unknown id are both absent
- * from the result, so the caller cannot tell them apart.
- */
+/** Another user's request and an unknown id are both absent, so the caller cannot tell them apart. */
 export async function listApprovalRequestStatesByIdsForOwner(
   client: Queryable,
   ids: readonly string[],
@@ -532,13 +475,7 @@ export async function listApprovalRequestStatesByIdsForOwner(
   return rows.map(rowToApprovalRequestState);
 }
 
-/**
- * The approval queue's source list for one owner (issue #132, owner-scoped by issue #1028): every
- * still-`pending` request whose run is owned by `ownerUserId`, oldest first — the same FIFO order a
- * human triage list expects. Decided requests never appear here; a caller that needs one anyway
- * (e.g. rendering the authoritative outcome of a raced decision) already holds it from the decide
- * response, not from this list.
- */
+/** Oldest first. Decided requests never appear. */
 export async function listPendingApprovalRequests(client: Queryable, ownerUserId: string): Promise<ApprovalRequest[]> {
   const { rows } = await client.query<ApprovalRequestRow>(
     `SELECT ar.* FROM approval_requests ar
@@ -550,11 +487,10 @@ export async function listPendingApprovalRequests(client: Queryable, ownerUserId
   return rows.map(rowToApprovalRequest);
 }
 
-/** The kinds of source an approval request can have (issue #1766). */
 export const APPROVAL_REQUEST_SOURCE_KINDS = ["chat", "tick", "mcp"] as const;
 export type ApprovalRequestSourceKind = (typeof APPROVAL_REQUEST_SOURCE_KINDS)[number];
 
-/** Where a page of `listApprovalRequestsPage` continues: the last row's ordering instant with microseconds, and its id. */
+/** The last row's ordering instant (with microseconds) and its id. */
 export interface ApprovalRequestListCursor {
   at: string;
   id: string;
@@ -563,11 +499,7 @@ export interface ApprovalRequestListCursor {
 const LIST_CURSOR_SHAPE =
   /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z)\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
-/**
- * Decodes a `nextCursor` of `listApprovalRequestsPage`. A value of another shape is a
- * `ValidationError` on `cursor`, and so is an instant that is no calendar time or lies in year
- * zero: Postgres would refuse both as a `timestamptz`.
- */
+/** Rejects other shapes and instants Postgres would refuse as `timestamptz` (non-calendar or year zero). */
 export function parseApprovalRequestListCursor(value: string): ApprovalRequestListCursor {
   const match = /^[A-Za-z0-9_-]{1,128}$/.test(value)
     ? LIST_CURSOR_SHAPE.exec(Buffer.from(value, "base64url").toString("utf8"))
@@ -588,44 +520,28 @@ export function parseApprovalRequestListCursor(value: string): ApprovalRequestLi
 
 export interface ListApprovalRequestsPageInput {
   ownerUserId: string;
-  /**
-   * `pending`: the requests waiting for a decision. `decided`: the approved and the rejected ones
-   * that have a decision time (see `LIST_STATUS_SQL`).
-   */
+  /** `decided`: approved and rejected requests that have a decision time. */
   status: "pending" | "decided";
-  /** Only requests whose source is of one of these kinds; `null` is every source. */
+  /** `null` is every source. */
   sourceKinds: readonly ApprovalRequestSourceKind[] | null;
-  /**
-   * Only requests that contain this text, without regard to case or diacritics (see
-   * `listApprovalRequestsPage`). `null` is no filter, and so is a text of which removing the
-   * diacritics leaves nothing.
-   */
+  /** Case- and diacritic-insensitive. `null`, or a text that is empty after removing diacritics, is no filter. */
   search: string | null;
-  /** The direction of the ordering instant: `requested_at` of a pending request, `decided_at` of a decided one. */
+  /** `requested_at` for pending, `decided_at` for decided. */
   order: "asc" | "desc";
   cursor: ApprovalRequestListCursor | null;
   limit: number;
 }
 
-/**
- * The SQL of the two lists. A pending request is ordered by `requested_at`. A decided one is ordered
- * by `decided_at`, which `decideApprovalRequest` sets in the statement that decides the request. A
- * decided row without it has no place in the order and is in neither list. The one-time cutover of
- * issue #89 (`approvalRequestExecutionStatusCutoverMigration.ts`) left such rows: it rejected the
- * requests that were pending when it ran and set no decision time.
- */
+/** A decided row without `decided_at` has no place in the order and is in neither list. */
 const LIST_STATUS_SQL = {
   pending: { predicate: "ar.status = 'pending'", orderedAt: "ar.requested_at" },
   decided: { predicate: "ar.status <> 'pending' AND ar.decided_at IS NOT NULL", orderedAt: "ar.decided_at" },
 } as const;
 
 /**
- * The joins that derive the source of the request `ar` raised by the run `r`: the run's thread as
- * `t`, and as `root` the `triggered_by` and `heartbeat_id` of the run that following `parent_run_id`
- * reaches within `AGENT_RUN_ROOT_MAX_HOPS` hops (empty when the run has a thread). `hopsParameter`
- * is the placeholder of the query that holds `AGENT_RUN_ROOT_MAX_HOPS`; only the constants of this
- * module are passed, never a caller's value. Shared by the list and the count, so that both derive
- * the kind of a request by one rule.
+ * `root` is the run reached via `parent_run_id` within `AGENT_RUN_ROOT_MAX_HOPS` (empty when the run has a
+ * thread). Only this module's constants are bound to `hopsParameter`. Shared by list and count so both derive
+ * the source kind by one rule.
  */
 function sourceJoinSql(hopsParameter: string): string {
   return `LEFT JOIN semp_threads t ON t.tenant_id = r.tenant_id AND t.id = r.thread_id
@@ -643,48 +559,33 @@ function sourceJoinSql(hopsParameter: string): string {
        ) root ON true`;
 }
 
-/** The kind of the source of the request, from the joins of `sourceJoinSql`: the rule of `loadApprovalSources`. */
+/** Same rule as `loadApprovalSources`. */
 const SOURCE_KIND_SQL = `CASE WHEN t.kind = 'tick' THEN 'tick'
                      WHEN t.id IS NOT NULL THEN 'chat'
                      WHEN root.triggered_by = 'mcp' THEN 'mcp'
                      WHEN root.triggered_by = 'heartbeat' THEN 'tick'
                      ELSE 'chat' END`;
 
-/** The SQL of the two directions: the sort keyword, and the comparison that selects the rows after a cursor. */
 const LIST_ORDER_SQL = {
   asc: { direction: "ASC", after: ">" },
   desc: { direction: "DESC", after: "<" },
 } as const;
 
 /**
- * One page of the requests of `ownerUserId`'s runs (issue #1785), in the order of `input.status` and
- * `input.order` with the request id as the tie-break, and `nextCursor` set while more rows follow.
- * Owner scoping is that of `listPendingApprovalRequests`: the request's run has `ownerUserId` as its
- * actor.
+ * Ordered by `input.status`/`input.order` with the id as tie-break. `sourceKinds` and `search` apply before the
+ * page is cut, so a page is short only when nothing more matches.
  *
- * `sourceKinds` and `search` are applied in the query, before the page is cut, so a page is short
- * only when no further row matches. The query derives the source kind by the rule of
- * `loadApprovalSources` (`approvalRequestsQueue.ts`): the kind of the run's thread, and for a run
- * without a thread the `triggered_by` of the run that following `parent_run_id` reaches within
- * `AGENT_RUN_ROOT_MAX_HOPS` hops.
- *
- * `search` keeps the requests that contain it as a substring, compared through `unaccent` and
- * `ILIKE`, in one of: the tool or operation name (`tool_name`), a string value at any depth of
- * `description.params`, the stored title of the run's chat thread, the current text of the Inbox
- * item of its item thread, and the current name of the heartbeat of its tick thread or, without a
- * thread, of its root heartbeat run. Nothing else is searched: not `payload`, and so no argument
- * value, and of `description` neither the template key, the parameter names nor `endsInheritance`.
- *
- * The search text is a bound parameter and the pattern is built from it in the query: the text is
- * folded with `unaccent` first, and a backslash, `%` and `_` in the folded text are escaped after
- * that, so each matches only itself.
+ * `search` is an `unaccent` + `ILIKE` substring match over: `tool_name`, string values in `description.params`,
+ * the chat thread title, the item thread's Inbox text, and the tick thread's (or root run's) heartbeat name. Never
+ * `payload` (no argument value), nor the template key, parameter names or `endsInheritance`. The text is bound,
+ * folded first, then `\`, `%` and `_` are escaped so each matches only itself.
  */
 export async function listApprovalRequestsPage(
   client: PoolClient,
   input: ListApprovalRequestsPageInput,
 ): Promise<{ requests: ApprovalRequest[]; nextCursor: string | null }> {
   const inbox = await getDatabaseByModuleId(client, INBOX_MODULE_ID);
-  // `status` and `order` are closed unions that select constant SQL fragments; every value is bound.
+  // Closed unions select constant SQL fragments; every value is bound.
   const { predicate, orderedAt } = LIST_STATUS_SQL[input.status];
   const { direction, after } = LIST_ORDER_SQL[input.order];
   const { rows } = await client.query<ApprovalRequestRow & { cursor_at: string }>(
@@ -740,12 +641,7 @@ export async function listApprovalRequestsPage(
   };
 }
 
-/**
- * How many requests `listApprovalRequestsPage` returns over all its pages for `status: "pending"`,
- * no search and the same `ownerUserId` and `sourceKinds` (issue #1786): the pending requests whose
- * run has `ownerUserId` as its actor and whose source is of one of `sourceKinds`, or of any kind
- * when that is `null`. The status predicate and the source rule are those of the list.
- */
+/** Matches `listApprovalRequestsPage` for `status: "pending"` without search, by the same status and source rules. */
 export async function countPendingApprovalRequests(
   client: Queryable,
   input: { ownerUserId: string; sourceKinds: readonly ApprovalRequestSourceKind[] | null },
@@ -763,10 +659,7 @@ export async function countPendingApprovalRequests(
   return requireSingleRow(rows, "approval_requests pending count").count;
 }
 
-/**
- * The request only when its run is owned by `ownerUserId` (issue #1028). A foreign or unknown id
- * both return `null`, so the caller cannot tell them apart.
- */
+/** A foreign or unknown id both return `null`, so the caller cannot tell them apart. */
 export async function getApprovalRequestForOwner(
   client: Queryable,
   id: string,
@@ -782,18 +675,12 @@ export async function getApprovalRequestForOwner(
 }
 
 /**
- * The single atomic decision transition (issue #131): `pending` -> `approved`/`rejected`, one
- * `UPDATE ... WHERE status = 'pending'`, also conditioned on `decidedBy` being the run's actor
- * (issue #1028). Returns `null` when no row matches: the id is unknown, the request is no longer
- * `pending`, or `decidedBy` is not the run's actor. This call cannot tell those apart; the caller
- * re-reads with `getApprovalRequestForOwner` if it needs to. A retried decision is a deterministic
- * no-op instead of a second transition: two concurrent decisions on the same row race on this one
- * `UPDATE`, and only one can ever see `rowCount > 0`.
+ * A single `UPDATE ... WHERE status = 'pending'` also conditioned on `decidedBy` being the run's actor, so two
+ * concurrent decisions race on one row and only one wins. `null` when unknown, no longer pending, or not the
+ * actor (the caller re-reads with `getApprovalRequestForOwner` if needed).
  *
- * Deliberately **not** re-exported from this package's `index.ts` — see
- * `mcpGrantsAdminStore.ts`'s header for the same convention. Only `approvalDecisionAction.ts`'s
- * wrapper (which composes this with enqueueing the execution job in the same transaction) is
- * reachable from a route handler; an agent has no path to decide its own approval request.
+ * Not re-exported from `index.ts`: only `approvalDecisionAction.ts` (which enqueues execution in the same
+ * transaction) is reachable from a route, so an agent has no path to decide its own request.
  */
 export async function decideApprovalRequest(
   client: Queryable,
@@ -813,19 +700,14 @@ export async function decideApprovalRequest(
       RETURNING *`,
     [id, decision, decidedBy],
   );
-  // Zero rows is a legitimate outcome here (unknown, already decided, or not the run's actor), so it
-  // is read explicitly rather than requireAffectedRows-ed: the caller turns it into its own answer.
+  // Zero rows is a legitimate outcome the caller answers itself.
   if (rowCount === 0) return null;
   return rowToApprovalRequest(requireSingleRow(rows, "approval_requests decide RETURNING"));
 }
 
 /**
- * Claims one `approved` request for execution: sets `executed_at` iff it is still unset and the
- * request is still `queued`. A redelivered `approvalExecute` job (queue retry, or a second
- * worker) sees `rowCount === 0` and treats it as a no-op instead of invoking the deferred tool
- * call twice — see 0022's migration comment. This claim is the exclusive "executing" marker for
- * the row (`queued` + `executed_at` set, per that same migration's documented state); a second
- * delivery arriving while it holds sees `null` here, not a fresh claim.
+ * Sets `executed_at` only while unset and `queued`, so a redelivered `approvalExecute` job gets `null` instead of
+ * invoking the deferred call twice. `queued` + `executed_at` set is the exclusive "executing" state.
  */
 export async function claimApprovalRequestExecution(client: Queryable, id: string): Promise<ApprovalRequest | null> {
   const { rows } = await client.query<ApprovalRequestRow>(
@@ -842,32 +724,20 @@ export interface ApprovalRequestOutcome {
   error: boolean;
   result: string;
   /**
-   * Why a failed MCP outcome failed. When set, `execution_result_jsonb` holds `{ text, outcomeKind }`
-   * so `approvalConflictReason` can tell the causes apart; when absent it holds the plain text.
+   * When set, `execution_result_jsonb` holds `{ text, outcomeKind }` so `approvalConflictReason` can tell causes
+   * apart; otherwise the plain text.
    */
   outcomeKind?: ApprovalOutcomeKind;
   failure?: McpInvokeFailure;
 }
 
 /**
- * Records a deferred call's outcome — the audit trail's final write for the mcpInvoke path
- * (already claimed, so `executed_at` is set there) and for the generic-operation "no replay
- * handler configured" fallback (never claimed, since that path bypasses
- * `claimApprovalRequestExecution` entirely — see `approvalRequestExecution.ts`'s header comment
- * — so `executed_at` must be stamped here instead). `COALESCE` keeps the mcpInvoke path's
- * original claim timestamp rather than overwriting it. `execution_status` settles to `succeeded`
- * only when `outcome.error` is false, and to `conflict` otherwise — the same terminal-state
- * vocabulary issue #89 introduced for generic-operation requests — so a failed outcome (e.g. "no
- * generic-operation approval replay handler is configured") is never recorded as `succeeded` and
- * can never be replayed by `replayApprovedGenericOperation`'s idempotency check as a false
- * success.
+ * The final write for a claimed mcpInvoke call and for the unclaimed generic-operation "no replay handler"
+ * fallback, which is why `executed_at` is `COALESCE`d here. A failed outcome settles to `conflict`, never
+ * `succeeded`, so replay idempotency cannot mistake it for success.
  *
- * Guarded on `execution_status = 'queued'` like every other targeted UPDATE in this file, and
- * returns whether it actually wrote instead of throwing on zero rows (issue #693): a second
- * delivery's outcome, or one that arrives after `settleStaleApprovalRequestClaim` already
- * terminalized the row, finds it no longer `queued` and must discard its result rather than
- * overwrite an already-settled outcome. `false` is a legitimate, expected result here — the
- * caller logs the discard instead of treating it as an error.
+ * Guarded on `execution_status = 'queued'`: a second delivery, or one after `settleStaleApprovalRequestClaim`,
+ * must discard its result rather than overwrite a settled outcome. `false` is expected; the caller logs it.
  */
 export async function recordApprovalRequestOutcome(
   client: Queryable,
@@ -899,24 +769,15 @@ export async function recordApprovalRequestOutcome(
   return result.rowCount === 1;
 }
 
-/** What `settleStaleApprovalRequestClaim` returns can distinguish. */
 export type StaleApprovalClaimSettlement = "settled" | "in_flight" | "not_claimed";
 
 /**
- * Settles a claim (`execution_status = 'queued'` with `executed_at` set — see
- * `claimApprovalRequestExecution`'s docstring for that state's meaning) that has outlived
- * `staleAfterMs` without an outcome ever being recorded for it (issue #693): a process crash or a
- * transient database error between the claim and `recordApprovalRequestOutcome` otherwise leaves
- * the row claimed forever, with no later delivery able to tell whether the tool call ran.
- * `conflict` is the only terminal failure value `execution_status`'s `CHECK` constraint allows,
- * so that is what a stale claim settles to — its `execution_result_jsonb` text is what
- * distinguishes this "unknown outcome" case for a reader from an ordinary revalidation conflict.
+ * A crash or transient error between claim and `recordApprovalRequestOutcome` would leave the row claimed
+ * forever, unable to tell whether the call ran. Settles to `conflict` (the only terminal failure the `CHECK`
+ * allows); the result text marks it as an unknown outcome.
  *
- * Returns `"settled"` when this call performed that write. Otherwise re-reads the row to tell
- * apart the two reasons it didn't: `"in_flight"` when the claim is still within `staleAfterMs` (a
- * delivery may genuinely still be running), and `"not_claimed"` when the row was never in the
- * stale-claimed state at all (rejected, unknown, already terminal) — the caller treats those two
- * outcomes differently (retry later vs. give up quietly).
+ * `"in_flight"` when still within `staleAfterMs` (retry later); `"not_claimed"` when never stale-claimed
+ * (give up quietly).
  */
 export async function settleStaleApprovalRequestClaim(
   client: Queryable,
@@ -946,16 +807,9 @@ export async function settleStaleApprovalRequestClaim(
 }
 
 /**
- * Writes the terminal `conflict` outcome on an already-locked row (issue #89's
- * `ApprovedOperationExecutor`, `replayApprovedGenericOperation` in `packages/application`), inside
- * the caller's own transaction — never throws, so the transaction that wrote it commits. The sole
- * owner of `approval_requests` writes, per the single-writer ownership model; a caller outside
- * this module must never issue its own `UPDATE approval_requests` for this transition. Also sets
- * the legacy `execution_error` column so it stays in sync with `execution_status` for any reader
- * still keyed off it — the same pairing `recordApprovalRequestOutcome` maintains for the mcpInvoke
- * path. Guards on `execution_status = 'queued'` like every other targeted UPDATE in this file
- * guards on current state — a caller bug that passes an id already in a terminal state must not
- * silently overwrite it; `requireAffectedRows` turns that into a thrown error instead.
+ * Runs inside the caller's transaction on an already-locked row and never throws, so that transaction commits.
+ * Also sets the legacy `execution_error` column for readers still keyed off it. The `queued` guard turns a
+ * caller bug on an already-terminal row into a thrown error instead of a silent overwrite.
  */
 export async function terminalizeApprovalRequestAsConflict(
   client: Queryable,
@@ -975,14 +829,9 @@ export async function terminalizeApprovalRequestAsConflict(
 }
 
 /**
- * Writes the terminal `succeeded` outcome on an already-locked row, inside the caller's own
- * transaction, so the mutation `replayApprovedGenericOperation` (`packages/application`) just ran
- * and its terminal-state write land in the same commit — see that function's header comment for
- * why both must be atomic. The sole owner of `approval_requests` writes; see
- * `terminalizeApprovalRequestAsConflict` above for the same rationale, including the legacy
- * `execution_error` column and the `execution_status = 'queued'` guard — the row being
- * `FOR UPDATE`-locked already rules out a concurrent writer, but not a caller bug that invokes
- * this on an id already in a terminal state.
+ * In the caller's transaction so the replayed mutation and its terminal state commit together. Same legacy column
+ * and `queued` guard as `terminalizeApprovalRequestAsConflict`: the row lock rules out concurrent writers but not
+ * a caller bug.
  */
 export async function markApprovalRequestExecutionSucceeded(
   client: Queryable,

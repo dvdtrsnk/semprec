@@ -6,10 +6,8 @@ import { describe, expect, it } from "vitest";
 const srcRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
- * The bespoke handlers serialise a caught `ChokePointError` through `toPublicErrorBody`, which
- * drops any `details` that is not a flat record of primitives. Reading `err.details` directly in a
- * handler would bypass that filter, so the only permitted occurrences live in
- * `adapter/errorContract.ts`.
+ * Bespoke handlers serialise a caught `ChokePointError` through `toPublicErrorBody`, which drops non-flat `details`;
+ * reading `err.details` directly would bypass it, so it may appear only in `adapter/errorContract.ts`.
  */
 const BESPOKE_HANDLER_FILES = [
   "authHandler.ts",

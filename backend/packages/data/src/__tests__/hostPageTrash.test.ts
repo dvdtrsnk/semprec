@@ -88,7 +88,6 @@ function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant):
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
 
-/** A new item of the system database of `moduleId`, written through the choke point. */
 async function moduleItem(moduleId: string, properties: Record<string, unknown>, tenantId = tenant): Promise<string> {
   return runInTenant(tenantId, async () => {
     const database = (await chokePoint.listDatabases()).find(
@@ -143,7 +142,6 @@ interface TrashOptions {
   tenantId?: string;
 }
 
-/** Trashes an item the way the application service does: resolve its database, then the choke point's cascade. */
 async function trash(itemId: string, options: TrashOptions = {}): Promise<ItemRow | null> {
   const via = options.via ?? chokePoint;
   return runInTenant(options.tenantId ?? tenant, async () => {
@@ -162,7 +160,6 @@ async function restore(itemId: string, options: TrashOptions = {}): Promise<Item
   });
 }
 
-/** Whether each item is live, in the order given, read inside `tenantId`; a missing row fails the test. */
 async function liveStatesIn(tenantId: string, ...itemIds: string[]): Promise<boolean[]> {
   return runInTenant(tenantId, async () => {
     const states: boolean[] = [];
@@ -179,7 +176,6 @@ function liveStates(...itemIds: string[]): Promise<boolean[]> {
   return liveStatesIn(tenant, ...itemIds);
 }
 
-/** The ids of `itemIds` that the live item read finds, the read behind `GET /api/items/:id`. */
 async function foundLive(...itemIds: string[]): Promise<string[]> {
   return runInTenant(tenant, async () => {
     const found: string[] = [];
@@ -190,7 +186,7 @@ async function foundLive(...itemIds: string[]): Promise<string[]> {
   });
 }
 
-/** `deleted_at` of an item as Postgres renders it, with its full precision; `null` for a live item. */
+/** `deleted_at` as Postgres renders it, at full precision; `null` for a live item. */
 async function deletedAtExact(itemId: string, tenantId = tenant): Promise<string | null> {
   const { rows } = await inTenant(
     (client) =>
@@ -223,7 +219,6 @@ async function docIdOf(itemId: string, tenantId = tenant): Promise<string> {
   return doc.id;
 }
 
-/** The stored blocks of an item's page in document order, and its `trashedPages` map. */
 async function readDocument(itemId: string, tenantId = tenant): Promise<DocumentView> {
   const docId = await docIdOf(itemId, tenantId);
   return inTenant(async (client) => {
@@ -258,7 +253,6 @@ async function editDocument(itemId: string, edit: (doc: Y.Doc) => void): Promise
   await runInTenant(tenant, () => mutateDoc(runtime, docId, "user", edit));
 }
 
-/** The authors of the stored updates of an item's page, oldest first. */
 async function updateAuthors(itemId: string, tenantId = tenant): Promise<string[]> {
   const docId = await docIdOf(itemId, tenantId);
   const { rows } = await inTenant(
@@ -269,7 +263,6 @@ async function updateAuthors(itemId: string, tenantId = tenant): Promise<string[
   return rows.map((row) => row.created_by);
 }
 
-/** The ids of the text blocks `texts` appended to the notes of `itemId`, in order. */
 async function appendTextBlocks(itemId: string, texts: string[]): Promise<string[]> {
   await runInTenant(tenant, () => writePageTextBlocks(runtime, itemId, texts));
   const ids = (await readDocument(itemId)).blocks
@@ -288,10 +281,6 @@ interface ProjectWithSubpages {
   nested: Subpage;
 }
 
-/**
- * A project whose notes read `first`, the page block of `checklist`, `second`, the page block of `risks`; `nested` is
- * a page below `checklist`.
- */
 async function projectWithSubpages(): Promise<ProjectWithSubpages> {
   const project = await createProject();
   const [first, second] = await appendTextBlocks(project, ["first", "second"]);
@@ -303,8 +292,8 @@ async function projectWithSubpages(): Promise<ProjectWithSubpages> {
 }
 
 /**
- * Two subpages of `parentItemId`. `lower` is the one with the lower item id, which a trash of the parent reaches first.
- * Canonical UUID strings compare like the `uuid` values Postgres orders by.
+ * Two subpages of `parentItemId`; `lower` has the lower item id, which a trash of the parent reaches
+ * first (canonical UUID strings compare like Postgres `uuid` values).
  */
 async function twoSubpagesOf(parentItemId: string): Promise<{ lower: Subpage; higher: Subpage }> {
   const a = await createSubpage(parentItemId, "Subpage A");
@@ -313,7 +302,6 @@ async function twoSubpagesOf(parentItemId: string): Promise<{ lower: Subpage; hi
   return { lower, higher };
 }
 
-/** Every Pages item of `tenantId` as stored and the number of stored document updates: what a trash may change. */
 async function pagesAndUpdates(tenantId = tenant): Promise<unknown> {
   return inTenant(async (client) => {
     const pages = await client.query<{ row: unknown }>(
@@ -329,8 +317,8 @@ async function pagesAndUpdates(tenantId = tenant): Promise<unknown> {
 /** Makes every later stored update of `itemId`'s page fail inside the database. */
 async function failDocumentWritesOf(itemId: string): Promise<void> {
   const docId = await docIdOf(itemId);
-  // Fault injection inside the document write itself: no production input makes the append fail. The document id
-  // reaches the trigger through a scratch table, not interpolated into its body.
+  // Fault injection inside the document write itself: no production input makes the append fail. The
+  // document id reaches the trigger through a scratch table, not interpolated into its body.
   await admin.query("CREATE TABLE fail_host_page_trash_test_docs (doc_id uuid PRIMARY KEY)");
   await admin.query("INSERT INTO fail_host_page_trash_test_docs (doc_id) VALUES ($1)", [docId]);
   await admin.query("GRANT SELECT ON fail_host_page_trash_test_docs TO PUBLIC");
@@ -345,7 +333,6 @@ async function failDocumentWritesOf(itemId: string): Promise<void> {
     FOR EACH ROW EXECUTE FUNCTION fail_host_page_trash_test()`);
 }
 
-/** Records the text of every statement a client of this process sends, until `stop` is called. */
 function recordStatements(): { texts: string[]; stop: () => void } {
   const texts: string[] = [];
   // Called back with the receiving client below, so the unbound reference is safe.
@@ -353,7 +340,6 @@ function recordStatements(): { texts: string[]; stop: () => void } {
   const originalQuery: (this: pg.Client, ...args: unknown[]) => unknown = pg.Client.prototype.query;
   const spy = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (this: pg.Client, ...args: unknown[]) {
     const [statement] = args;
-    // A statement is sent as its text or as a query config that carries the text.
     const text: unknown =
       typeof statement === "object" && statement !== null && "text" in statement ? statement.text : statement;
     if (typeof text === "string") texts.push(text);
@@ -368,7 +354,6 @@ const LOCKS_EPOCH_SUBPAGES = /properties->>'parentItemId' = \$2 AND deleted_at =
 const READS_TRASH_EPOCH = /to_char\(deleted_at[\s\S]*FOR SHARE/;
 const WRITES = /^\s*(INSERT|UPDATE|DELETE)\b/i;
 
-/** The stored row and database of `itemId`, read on `client`. */
 async function rowAndDatabase(client: PoolClient, itemId: string): Promise<{ item: ItemRow; database: DatabaseRow }> {
   const [visible] = await getItemsByIdsIncludingDeleted(client, [itemId]);
   const item = visible ? await lockItemById(client, visible.databaseId, itemId) : null;
@@ -379,8 +364,8 @@ async function rowAndDatabase(client: PoolClient, itemId: string): Promise<{ ite
 }
 
 /**
- * Calls `hostItemDeleteHook` on its own for the stored row of `itemId`, with the context the cascade builds for a root
- * it trashed as the system writer, and returns the statements the hook sent. For a live row `deletedAt` is a stand-in.
+ * Calls `hostItemDeleteHook` alone for the stored row of `itemId`, with the context the cascade builds
+ * for a system-writer root, and returns the statements it sent. For a live row `deletedAt` is a stand-in.
  */
 async function deleteHookStatements(itemId: string, tenantId = tenant): Promise<string[]> {
   return inTenant(async (client) => {
@@ -404,9 +389,8 @@ async function deleteHookStatements(itemId: string, tenantId = tenant): Promise<
 }
 
 /**
- * Calls `pageItemDeleteHook` on its own for the stored Pages row of `itemId`, with the context the cascade builds for a
- * root it trashed as the system writer, and returns the statements the hook sent before it returned or threw. For a
- * live row `deletedAt` is a stand-in.
+ * Calls `pageItemDeleteHook` alone for the stored Pages row of `itemId`, as above, and returns the
+ * statements sent before it returned or threw.
  */
 async function pageDeleteHookStatements(itemId: string): Promise<{ statements: string[]; error: unknown }> {
   return inTenant(async (client) => {
@@ -433,9 +417,8 @@ async function pageDeleteHookStatements(itemId: string): Promise<{ statements: s
 }
 
 /**
- * Calls `hostItemRestoreHook` on its own for the stored row of the trashed item `itemId`, with the context the cascade
- * builds for a root of the deletion epoch `epoch` that it restores as the system writer, and returns the statements
- * the hook sent.
+ * Calls `hostItemRestoreHook` alone for trashed `itemId` as a root of deletion epoch `epoch`, and returns
+ * the statements it sent.
  */
 async function restoreHookStatements(itemId: string, epoch: string, tenantId = tenant): Promise<string[]> {
   return inTenant(async (client) => {
@@ -461,7 +444,6 @@ async function restoreHookStatements(itemId: string, epoch: string, tenantId = t
   }, tenantId);
 }
 
-/** The exact deletion epoch of a trashed item, in the text form a restore hook receives. */
 async function trashEpochOf(itemId: string, tenantId = tenant): Promise<string> {
   const epoch = await inTenant(async (client) => {
     const { item } = await rowAndDatabase(client, itemId);
@@ -471,7 +453,6 @@ async function trashEpochOf(itemId: string, tenantId = tenant): Promise<string> 
   return epoch;
 }
 
-/** How long a test waits for a step of a concurrent scenario before it fails instead of hanging. */
 const WAIT_MS = 15_000;
 
 function withinWait<T>(promise: Promise<T>, label: string): Promise<T> {

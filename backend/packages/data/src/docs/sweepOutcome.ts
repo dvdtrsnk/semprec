@@ -5,12 +5,7 @@ export interface SweepOutcome {
   failed: number;
 }
 
-/**
- * Throws when a sweep failed for every doc it attempted (so graphile-worker retries the
- * job and the queue checks see it); logs a warning when it failed for some; is silent when
- * nothing failed. A sweep that attempted zero docs (`{ succeeded: 0, failed: 0 }`) is not a
- * failure.
- */
+/** Throws only when every attempt failed (so the job retries); a partial failure warns; zero attempts is fine. */
 export function assertSweepNotFailedEntirely(sweepName: string, outcome: SweepOutcome): void {
   const { succeeded, failed } = outcome;
   if (failed === 0) return;

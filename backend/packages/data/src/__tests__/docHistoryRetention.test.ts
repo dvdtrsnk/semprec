@@ -14,7 +14,7 @@ let pool: Pool;
 let chokePoint: ChokePoint;
 let docStore: DocStore;
 
-/** Postgres's own clock, so the retention math below does not depend on test/database skew. */
+/** Postgres's own clock, so the retention math does not depend on test/database skew. */
 async function databaseNow(): Promise<Date> {
   const { rows } = await pool.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
   return rows[0]!.now;
@@ -40,7 +40,6 @@ async function docWithTwoUpdates(): Promise<{ docId: string; firstId: string; se
   return { docId: doc.id, firstId: rows[0]!.update_id, secondId: rows[1]!.update_id };
 }
 
-/** Moves the doc's availability and its initial baseline checkpoint back to `at`. */
 async function backdateBaseline(docId: string, at: Date): Promise<void> {
   const docs = await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [docId, at]);
   const { rowCount } = await pool.query(
@@ -51,7 +50,6 @@ async function backdateBaseline(docId: string, at: Date): Promise<void> {
   expect(rowCount).toBe(1);
 }
 
-/** Sets one append's `created_at` in both the live log and its history mirror. */
 async function setUpdateCreatedAt(docId: string, updateId: string, at: Date): Promise<void> {
   const live = await pool.query(`UPDATE doc_updates SET created_at = $3 WHERE doc_id = $1 AND id = $2`, [
     docId,
@@ -135,8 +133,8 @@ describe("doc history retention rebaseline boundary", () => {
 
     expect(await rebaselineDocHistory(pool, docId, RETENTION_DAYS)).toBe(true);
 
-    // Nothing lies before the gap, so the new baseline stays at the old checkpoint's boundary
-    // and neither update is deleted — the one past the cutoff was never folded.
+    // Nothing lies before the gap, so the baseline stays at the old checkpoint's boundary and neither update
+    // is deleted.
     const checkpoints = await baselines(docId);
     expect(checkpoints).toHaveLength(1);
     expect(checkpoints[0]!.through_update_id).toBe("0");

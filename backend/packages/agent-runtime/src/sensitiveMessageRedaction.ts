@@ -5,19 +5,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** What a stored `toolCall` content block of an assistant message keeps as its arguments: pi types them as an object. */
+/** pi types `toolCall` arguments as an object. */
 const REDACTED_TOOL_CALL_ARGUMENTS = { redacted: REDACTED_SENSITIVE_MARKER };
 
-/** A `tool_use` message with its arguments replaced by the marker; the name, the call id and the targets stay. */
+/** Name, call id and targets stay. */
 export function redactToolUse(message: AgentMessage): AgentMessage {
   return { ...message, arguments: REDACTED_SENSITIVE_MARKER };
 }
 
 /**
- * An assistant `message` with everything the model said replaced (issue #2001): its `text` and every text block
- * of its `content` become the marker, thinking blocks are dropped, and a `toolCall` block keeps its id and name
- * but not its arguments, so the call still pairs with its stored result on a replay. The role, the stop reason
- * and the error message stay.
+ * Its `text` and text blocks become the marker, thinking blocks are dropped, and a `toolCall` block keeps id and name
+ * but not arguments, so the call still pairs with its stored result on replay. Role, stop reason and error message
+ * stay.
  */
 export function redactAssistantMessage(message: AgentMessage): AgentMessage {
   const redacted: AgentMessage = { ...withoutToolCallTargets(message), text: REDACTED_SENSITIVE_MARKER };
@@ -39,8 +38,7 @@ function withoutToolCallTargets(message: AgentMessage): AgentMessage {
 }
 
 /**
- * The `toolCallTargets` an assistant `message` carries from its session (`ToolCallTarget`), parsed from `unknown`:
- * an entry without a string call id and operation is dropped, a target that is not a string is ignored.
+ * Parsed from `unknown`: entries without a string call id and operation are dropped; non-string targets are ignored.
  */
 export function toolCallTargetsOf(message: AgentMessage): ToolCallTarget[] {
   const { toolCallTargets } = message;
@@ -59,9 +57,8 @@ export function toolCallTargetsOf(message: AgentMessage): ToolCallTarget[] {
 }
 
 /**
- * The stored form of an assistant `message` (issue #2001): `toolCallTargets` is a steering field of the session and
- * never reaches `agent_run_events`; the `toolCall` blocks whose ids are in `redactedCallIds` keep their id and name
- * but not their arguments, so the call still pairs with its stored result. Everything else stays as it is.
+ * `toolCallTargets` never reaches `agent_run_events`; `toolCall` blocks in `redactedCallIds` keep id and name but not
+ * arguments.
  */
 export function storedAssistantMessage(message: AgentMessage, redactedCallIds: ReadonlySet<string>): AgentMessage {
   const stored = withoutToolCallTargets(message);
@@ -77,13 +74,9 @@ export function storedAssistantMessage(message: AgentMessage, redactedCallIds: R
 }
 
 /**
- * Brings the assistant messages of a reconstructed history in line with the stored `tool_use` events (issue #2001).
- * The assistant message of a call is stored before the call starts; `createSensitiveTurnRedactor` already stores its
- * `toolCall` block redacted when the session names the operation and targets of the call. This is the second line
- * for a session that does not: a `toolCall` block still holding the arguments that its own `tool_use` event,
- * stored later, replaced by the marker gets the same replacement for every call id of a `tool_use` stored with the
- * marker as its arguments, so neither a resumed session nor a compaction ever sees the arguments. Entries that
- * need no change are returned as they are.
+ * Second line of defence for sessions that attach no `toolCallTargets`: a replayed assistant `toolCall` block whose
+ * `tool_use` event was stored with the marker gets the marker too, so neither a resumed session nor a compaction sees
+ * the arguments. Unchanged entries are returned as they are.
  */
 export function redactReplayedToolCalls(entries: ConversationEntry[]): ConversationEntry[] {
   const redactedCallIds = new Set<string>();

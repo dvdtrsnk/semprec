@@ -12,11 +12,7 @@ import { createHttpAudioGatewayClient, type AudioGatewayClient } from "./audioGa
 import { logger } from "./logger.js";
 import { downloadToTempFile, removeTempFile } from "./mediaNormalization.js";
 
-/**
- * The largest voice note, in bytes, that is read into memory and sent to the gateway. A voice note is shorter than two
- * minutes, so a file of this size is far past anything a recording of that length produces; the upload limit of the API
- * is configurable and can be higher. A larger file is not transcribed.
- */
+/** Far past any sub-two-minute voice note; the API upload limit can be higher. A larger file is not transcribed. */
 export const MAX_VOICE_NOTE_BYTES = 32 * 1024 * 1024;
 
 /** The transcripts of the voice notes are joined with a blank line, in the order of the notes. */
@@ -28,7 +24,6 @@ function requireGatewayInternalToken(): string {
   return token;
 }
 
-/** The transcript of one voice note: its bytes from storage, one gateway call, no transaction open. */
 async function transcribeVoiceNote(
   note: InboxVoiceNote,
   blobStorage: BlobStorageWriter,
@@ -50,25 +45,11 @@ async function transcribeVoiceNote(
 }
 
 /**
- * The handler of `inboxVoiceNoteTranscribe` (issue gh-1980): writes the transcript of an Inbox item's voice notes into
- * its system-owned `transcribedText`, as the transcribe process, through the choke point (`recordInboxTranscribedText`).
- *
- * - The voice notes are the audio attachments the metadata job classified `voiceNote` (`audioKindForDuration`), in
- *   position order; a recording is left to its own pipeline. Each is sent to the gateway's transcription route
- *   (`AudioGatewayClient.transcribe`, with the probed length as `audioSeconds`) and the non-empty transcripts are
- *   joined with a blank line. The job covers every voice note of the item, so a second one re-runs it over all of them.
- * - The slow work (the download and the gateway call) runs outside any transaction; one transaction then writes the text.
- *   A text equal to the stored one writes nothing. The person's `text` is never read or written, and a transcript is
- *   written whether `text` is empty or not.
- * - A voice note larger than `MAX_VOICE_NOTE_BYTES` is not downloaded or transcribed and the others are; the log names
- *   its attachment id. An item that is gone or in the Trash, and one without a voice note, end the job successfully with
- *   nothing written.
- * - A gateway failure, a budget refusal included, fails the job so the queue retries it, and nothing is written. So does a
- *   write that finds the item's voice notes changed while the audio was being transcribed: the text it holds would be
- *   wrong, and the retry reads the notes of then.
- *
- * The transcript, the file and the item's text are never logged. `gatewayClient` defaults to the loopback client of
- * `semprec-ai-gateway`, built when the first job that needs it runs.
+ * Writes the transcript of all of an Inbox item's `voiceNote` attachments into its system-owned
+ * `transcribedText`; the person's `text` is never touched. Slow work runs outside any transaction.
+ * Oversized notes are skipped; a gone or trashed item ends successfully. A gateway failure, or voice
+ * notes that changed while transcribing, fails the job for retry with nothing written. Nothing about
+ * the audio or text is logged.
  */
 export function createInboxVoiceNoteTranscribeTask(
   pool: Pool,

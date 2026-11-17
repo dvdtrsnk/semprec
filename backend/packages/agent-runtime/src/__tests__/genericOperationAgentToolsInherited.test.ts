@@ -85,7 +85,7 @@ async function newAgent(
   const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
   const run = await createAgentRun(runtime, { projectItemId: project.id, triggeredBy: "user", task: "inherited" });
   for (const { database, access } of grants) {
-    // The user-only admin store is not exported from `@semprec/data`, so a fixture writes the decision directly.
+    // The user-only admin store is not exported from `@semprec/data`, so the decision is written directly.
     await withTransaction(runtime, (client) =>
       client.query("INSERT INTO agent_database_grants (project_item_id, database_id, access) VALUES ($1, $2, $3)", [
         project.id,
@@ -140,9 +140,8 @@ describe("marking the answers that return an item linked to a sensitive record (
       if (!healthProperty) throw new Error("The Files database has no healthRecords relation");
       fileToHealth = healthProperty;
 
-      // A fixture the API cannot produce: the schemas of the system databases are locked until a code-level
-      // migration changes them, and neither Transcripts nor Inbox has a relation to Health records yet. The
-      // superuser pool unlocks them so the relation properties are created through the choke point.
+      // A fixture the API cannot produce: system database schemas are locked, and neither Transcripts nor Inbox relates
+      // to Health records. The superuser pool unlocks them so the relations are created through the choke point.
       await admin.query("UPDATE databases SET schema_locked = false WHERE id = ANY($1::uuid[])", [
         [transcripts.id, inbox.id],
       ]);
@@ -324,7 +323,7 @@ describe("marking the answers that return an item linked to a sensitive record (
         const outcome = await tools()["item.patch"](agent.runId, {
           itemId: file.id,
           properties: { name: "After" },
-          ifVersion: file.updatedAt,
+          ifVersion: file.version,
         });
         expect(outcome.error).toBe(false);
         expect(outcome.sensitive).toBe(true);

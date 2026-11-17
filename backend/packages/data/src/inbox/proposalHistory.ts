@@ -8,10 +8,7 @@ const edgeEndsSchema = z.object({
   targetItemId: z.string().uuid(),
 });
 
-/**
- * An edge the confirmation wrote: `metadata` is what the edge held right after the write, `previousMetadata` is `null`
- * when the confirmation inserted the edge and the metadata the edge already had when the write replaced it.
- */
+/** An edge the confirmation wrote; `previousMetadata` is `null` when it inserted the edge, else the replaced metadata. */
 export const writtenRelationSchema = edgeEndsSchema.extend({
   metadata: edgeMetadataSchema,
   previousMetadata: edgeMetadataSchema.nullable(),
@@ -20,7 +17,7 @@ export const writtenRelationSchema = edgeEndsSchema.extend({
 /** An edge the confirmation deleted, with the metadata it had. */
 export const removedRelationSchema = edgeEndsSchema.extend({ metadata: edgeMetadataSchema });
 
-/** A Processing proposal's chat + decision log entry (issue #104). */
+/** A Processing proposal's chat and decision log entry. */
 const PROPOSAL_HISTORY_KINDS = [
   "computed",
   "userEdit",
@@ -37,17 +34,16 @@ const PROPOSAL_HISTORY_KINDS = [
 export type ProposalHistoryKind = (typeof PROPOSAL_HISTORY_KINDS)[number];
 
 export const proposalHistoryEntrySchema = z.object({
-  /** The entry's own id, set on a user's instruction to a transcript card (issue gh-1940) so a job can name it. */
+  /** Set on a user's instruction to a transcript card, so a job can name the entry. */
   id: z.uuid().optional(),
   author: z.enum(["ai", "user"]),
   message: z.string(),
   at: z.string(),
   kind: z.enum(PROPOSAL_HISTORY_KINDS).optional(),
-  /** `ref.key` strings a `userEdit` entry touched. */
   keys: z.array(z.string()).optional(),
   threadId: z.string().optional(),
   messageId: z.string().optional(),
-  /** On a `threadRevision` entry that answers an instruction to a transcript card: the `id` of that instruction's entry. */
+  /** On a `threadRevision` answering a transcript card instruction: that instruction entry's `id`. */
   instructionEntryId: z.uuid().optional(),
   addedRelations: z
     .array(
@@ -60,12 +56,11 @@ export const proposalHistoryEntrySchema = z.object({
     )
     .optional(),
   /**
-   * On the entry of a confirmation: every edge between items that already existed which the confirmation wrote (link steps, the
-   * edges an update step added, the edge of a transcript card), recorded as `writtenRelationSchema` says. Present, even
-   * as an empty array, on every entry written by a confirmation that records its edges; absent on one written before.
+   * On a confirmation entry: edges between existing items it wrote. Present (maybe empty) whenever the confirmation
+   * recorded its edges; absent on older entries.
    */
   writtenRelations: z.array(writtenRelationSchema).optional(),
-  /** On the entry of a confirmation: the edges an update step of the confirmation deleted, with the metadata they had. */
+  /** On a confirmation entry: the edges an update step deleted, with their metadata. */
   removedRelations: z.array(removedRelationSchema).optional(),
 });
 
@@ -74,12 +69,7 @@ export type RemovedRelation = z.infer<typeof removedRelationSchema>;
 
 export type ProposalHistoryEntry = z.infer<typeof proposalHistoryEntrySchema>;
 
-/**
- * Appends one history entry to a proposal's `history`, tolerating a missing/malformed
- * stored value as empty. Defaults to `author: 'ai'` for the tick's own entries (`inboxTickAction.ts`);
- * inbox/proposalActions.ts (issue #105) reuses this with `author: 'user'` for
- * confirm/reject/revise's own log entries.
- */
+/** Appends a history entry, treating a missing or malformed `history` as empty. `author` defaults to `'ai'`. */
 export function appendHistoryEntry(
   history: unknown,
   message: string,

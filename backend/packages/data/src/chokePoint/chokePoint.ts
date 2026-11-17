@@ -34,10 +34,9 @@ export function createChokePoint(
   const deps: ChokePointDeps = { pool, computedKeyRegistry, viewTypeRegistry, queueAffinity };
 
   /**
-   * The live relation edges of one item from its own side (issue #1404), in one transaction; `null` when the item is not
-   * found. An agent (a `reader` that is its project, issue #1810) or an external client (issue #1998) needs `read`
-   * access to the item's database and sees an edge to a database it may not read as a `HiddenItemRelationEntry`; a
-   * read without a reader returns every edge in full.
+   * The live relation edges of one item from its own side; `null` when the item is not found. A
+   * `reader` needs `read` on the item's database and sees an edge into a database it may not read as a
+   * `HiddenItemRelationEntry`; without a reader every edge is returned in full.
    */
   function listItemRelations(itemId: string, relationPropertyId?: string): Promise<VisibleItemRelationEntry[] | null>;
   function listItemRelations(
@@ -50,9 +49,8 @@ export function createChokePoint(
   }
 
   /**
-   * The collections related to one item (issue #1839), in one transaction; `null` when the item is not found. An agent
-   * (a `reader` that is its project, issue #1810) or an external client (issue #1998) needs `read` access to the
-   * item's database and gets no collection it may not read; a read without a reader lists every collection.
+   * The collections related to one item; `null` when the item is not found. A `reader` needs `read` on
+   * the item's database and gets no collection it may not read.
    */
   function listRelatedCollections(itemId: string, resolver: RelatedResolver, reader?: DatabaseReader) {
     return withTransaction(pool, (client) => listRelatedWithClient(client, itemId, resolver, reader));
@@ -72,9 +70,8 @@ export function createChokePoint(
     createViewQueryOps(deps),
     {
       /**
-       * The value links of a set of items for `include=links` (issue #1403), in one transaction. An agent (a `reader`
-       * that is its project, issue #1849) gets no source item from a database its project may not read; an external
-       * client (issue #1998) none from a sensitive database.
+       * The value links for `include=links`. An agent gets no source item from a database its project may
+       * not read; an external client none from a sensitive database.
        */
       async getValueLinksForItems(
         itemIds: string[],

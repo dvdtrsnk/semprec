@@ -48,7 +48,6 @@ function inTenant<T>(t: MailTenant, fn: () => Promise<T>): Promise<T> {
   return runInTenant(t.tenantId, fn);
 }
 
-/** A tenant with a mailbox that has a Drafts and a Sent folder, and the mail project that owns the mail databases. */
 async function seededTenant(): Promise<MailTenant> {
   const tenantId = await createTestTenant(admin);
   const user = await createUser(admin, {
@@ -102,7 +101,6 @@ const routeContext = (t: MailTenant, params: Record<string, string>, body: unkno
   identity: { user: { id: t.userId, locale: "en" } },
 });
 
-/** A draft made through the real create route, with a recipient in To. */
 async function newDraft(t: MailTenant): Promise<string> {
   const created = await inTenant(t, () =>
     createMailDraftCreateRouteHandler(runtime)(
@@ -140,14 +138,12 @@ async function toolsFor(
   );
 }
 
-/** The send tool as the session of the run composes it from the manifest. */
 async function sendToolOf(t: MailTenant, runId: string): Promise<ResolvedModuleAgentTool> {
   const tool = (await toolsFor(t, runId)).find((candidate) => candidate.name === "mail.draft.send");
   if (!tool) throw new Error("The run has no tool mail.draft.send");
   return tool;
 }
 
-/** Calls the tool as a session does. */
 async function callSend(t: MailTenant, runId: string, args: unknown): Promise<{ error: boolean; result: string }> {
   const tool = await sendToolOf(t, runId);
   return inTenant(t, () => tool.invoke(args));
@@ -176,7 +172,6 @@ async function requestsOf(t: MailTenant): Promise<RequestRow[]> {
   return rows;
 }
 
-/** Whether the mailbox's draft was claimed or sent: its `sent_at` and a `mail_message_meta` claim row. */
 async function sendTraceOf(draftId: string): Promise<{ sentAt: Date | null; claims: number }> {
   const draft = await admin.query<{ sent_at: Date | null }>(
     "SELECT sent_at FROM mail_drafts WHERE email_item_id = $1",

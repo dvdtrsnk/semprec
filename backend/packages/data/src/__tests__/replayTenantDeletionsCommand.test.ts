@@ -233,7 +233,6 @@ describe("runReplayCommand (issue #1078)", () => {
   });
 
   it("accepts a file of exactly the size cap", async () => {
-    // Blank lines only: within the cap, so it is read and parsed to an empty ledger.
     const code = await run([await ledgerFile("\n".repeat(MAX_LEDGER_BYTES))]);
 
     expect(code).toBe(0);

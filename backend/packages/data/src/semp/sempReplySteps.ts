@@ -5,27 +5,22 @@ import type { SempReplyTargets } from "./sempReplyTargets.js";
 import { pairSempToolCalls, sempToolCallApprovalRequestId, sempUuid, type SempToolCall } from "./sempReplyToolCalls.js";
 
 /**
- * The typed summary of the steps of a Semp reply (issue #1860), stored on the assistant message when its turn
- * ends so it outlives the 30-day retention of the events it is made from. A step carries i18n keys with
- * params, never a localized text: the keys are the `agentStep.*` entries of the agent-run catalog
- * (`agentRuns/i18n`), which also render the steps of `GET /api/agent-runs/:id/steps` (issue #1847).
+ * Typed step summary of a Semp reply, stored on the assistant message so it outlives event retention. Steps hold
+ * `agentStep.*` i18n keys with params, never localized text.
  *
- * What a step may hold is conservative because it is permanent. Params are counts, names of targets, the
- * property keys of a change and the `before` and `after` of fields from `details.changes`; never free text
- * from a call's arguments or result. A step on an item of a sensitive database holds none of them.
+ * It is permanent, so params are conservative: counts, target names, changed property keys and `before`/`after`
+ * from `details.changes`, never free text from arguments or results, and nothing for a sensitive database.
  */
 
-/** The status a stored step has; `running` exists only while the turn runs and is never stored. */
+/** `running` exists only while the turn runs and is never stored. */
 export type SempReplyStepStatus = "ok" | "wait" | "error";
 
-/** One changed property in the params of a step: its key and the values the result reported for it. */
 export interface SempReplyStepChange {
   key: string;
   before?: unknown;
   after?: unknown;
 }
 
-/** The params of an i18n key; every value is a JSON value. */
 export type SempReplyStepParams = Readonly<
   Record<string, string | number | readonly string[] | readonly SempReplyStepChange[]>
 >;
@@ -38,9 +33,7 @@ export interface SempReplyStepText {
 export interface SempReplyStep {
   kind: "tool" | "model";
   toolCallId?: string;
-  /** The model-facing name of a tool step's tool. */
   toolName?: string;
-  /** The dotted name of the generic operation a tool step called. */
   operation?: GenericOperationName;
   label: SempReplyStepText;
   detail: SempReplyStepText;
@@ -48,21 +41,18 @@ export interface SempReplyStep {
   startedAt: string;
   durationMs: number;
   approvalRequestId?: string;
-  /** The `ChokePointError.code` of a failed generic operation, or the `failureKind` of a failed MCP tool call. */
+  /** `ChokePointError.code` of a failed operation, or `failureKind` of a failed MCP call. */
   errorCode?: string;
-  /** The registration of the MCP tool a tool step called (issue #1890): what a later successful call of the same tool is matched on. */
+  /** What a later successful call of the same MCP tool is matched on. */
   mcpToolRegistrationId?: string;
-  /** The id of the MCP server of a failed MCP tool step (issue #1890). */
   mcpServerItemId?: string;
-  /** The name of the MCP server of a failed MCP tool step (issue #1890), as the grant named it. */
+  /** As the grant named it. */
   connectorName?: string;
-  /** The timeout in milliseconds of an MCP tool step that failed with `errorCode` `timeout` (issue #1890). */
+  /** Set when `errorCode` is `timeout`. */
   timeoutMs?: number;
-  /** Only for a model step whose message event carries token usage. */
   tokens?: { input: number; output: number };
 }
 
-/** The operations whose own summary entry (`agentStep.summary.operation.<name>`) the catalog holds. */
 export const SEMP_REPLY_OPERATIONS_WITH_SUMMARY: ReadonlySet<GenericOperationName> = new Set<GenericOperationName>([
   "item.get",
   "item.create",
@@ -73,10 +63,10 @@ export const SEMP_REPLY_OPERATIONS_WITH_SUMMARY: ReadonlySet<GenericOperationNam
   "view.query",
 ]);
 
-/** A tool name as a model provider accepts it; anything else has no name worth storing and reads the generic title. */
+/** Anything else has no name worth storing and reads the generic title. */
 const MODEL_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
-/** A code as the platform writes it (a `ChokePointError` code, an MCP failure kind); free text never matches. */
+/** A platform code (`ChokePointError` code, MCP failure kind); free text never matches. */
 const ERROR_CODE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -94,10 +84,8 @@ function elapsedMs(from: string, to: string): number {
 }
 
 /**
- * The time of the whole turn: from its first `turn_start` event to its last `turn_end` event, not the sum of
- * its steps. pi emits a `turn_start` and a `turn_end` for every model round, so a turn that failed in a later
- * round has the `turn_end` of an earlier one; a round that started after the last `turn_end` (or a turn with no
- * `turn_end` at all) never ended, and the turn lasted until its last event. `null` for events with no `turn_start`.
+ * First `turn_start` to last `turn_end`, not the sum of steps. pi emits both per model round, so a round started
+ * after the last `turn_end` never ended and the turn lasted until its last event. `null` without a `turn_start`.
  */
 export function sempTurnDurationMs(events: readonly AgentRunEventRow[]): number | null {
   const start = events.find((event) => event.kind === "turn_start");
@@ -108,7 +96,6 @@ export function sempTurnDurationMs(events: readonly AgentRunEventRow[]): number 
   return end ? elapsedMs(start.at, end.at) : null;
 }
 
-/** The token usage of a message event, when it carries one (`usage.input` and `usage.output` as counts). */
 function messageTokens(payload: Record<string, unknown>): { input: number; output: number } | undefined {
   const usage = payload.usage;
   if (!isRecord(usage)) return undefined;
@@ -122,18 +109,16 @@ function hasToolCallBlock(content: unknown): boolean {
   return Array.isArray(content) && content.some((block) => isRecord(block) && block.type === "toolCall");
 }
 
-/** The assistant messages of the turn that carry text (the candidates for a model step), with what follows them. */
 interface ModelMessage {
   event: AgentRunEventRow;
   payload: Record<string, unknown>;
-  /** The latest `turn_start` before the message, else the event before it: when its generation began. */
+  /** When its generation began: the latest `turn_start` before it, else the preceding event. */
   startedAt: string;
 }
 
 /**
- * The intermediate model generations of the turn: an assistant message with text that is followed by further
- * tool calls (it calls tools itself, or a call event follows it) or by a later assistant message. The last
- * assistant message of the turn is the reply itself and is never a step.
+ * Intermediate generations: assistant text followed by further tool calls or a later assistant message. The last
+ * assistant message is the reply itself and never a step.
  */
 function modelMessages(events: readonly AgentRunEventRow[]): ModelMessage[] {
   const found: ModelMessage[] = [];
@@ -159,7 +144,7 @@ function modelMessages(events: readonly AgentRunEventRow[]): ModelMessage[] {
   return found;
 }
 
-/** The label of a tool step: the generic operation's title entry with the database's module, else a named or generic tool. */
+/** The operation's title with the database's module, else a named or generic tool. */
 function toolLabel(call: SempToolCall, moduleId: string | null): SempReplyStepText {
   if (call.operation !== undefined) {
     return {
@@ -172,14 +157,12 @@ function toolLabel(call: SempToolCall, moduleId: string | null): SempReplyStepTe
   return { key: "agentStep.title.tool", params: {} };
 }
 
-/** The summary entry of a step that did not fail and is not waiting for approval. */
 function doneDetailKey(operation: GenericOperationName | undefined): string {
   return operation !== undefined && SEMP_REPLY_OPERATIONS_WITH_SUMMARY.has(operation)
     ? `agentStep.summary.operation.${operation}`
     : "agentStep.summary.done";
 }
 
-/** The params of a changed-properties summary: the count, the changed keys and the values of each change. */
 function changeParams(call: SempToolCall): SempReplyStepParams | null {
   const changes = call.result?.details?.changes;
   if (changes === undefined || changes.length === 0) return null;
@@ -195,7 +178,7 @@ function changeParams(call: SempToolCall): SempReplyStepParams | null {
 }
 
 function toolStep(call: SempToolCall, targets: SempReplyTargets, turnEndAt: string): SempReplyStep {
-  // The ids in an MCP tool's arguments are the model's own and name nothing of the platform's.
+  // An MCP tool's argument ids are the model's own and name nothing of the platform's.
   const generic = call.operation !== undefined;
   const itemId = generic ? sempUuid(call.targetItemId ?? call.args.itemId) : null;
   const item = itemId === null ? undefined : targets.items.get(itemId);
@@ -203,7 +186,7 @@ function toolStep(call: SempToolCall, targets: SempReplyTargets, turnEndAt: stri
     ? (sempUuid(call.targetDatabaseId ?? call.args.databaseId) ?? item?.databaseId ?? null)
     : null;
   const database = databaseId === null ? undefined : targets.databases.get(databaseId);
-  // A generic operation that names a target the lookup cannot place counts as sensitive: on a doubt nothing is stored.
+  // A target the lookup cannot place counts as sensitive: on a doubt nothing is stored.
   const namesTarget = itemId !== null || databaseId !== null;
   const targetUnknown = namesTarget && (databaseId === null || database === undefined);
   const sensitive = call.redacted || database?.sensitive === true || targetUnknown;
@@ -248,7 +231,7 @@ function toolStep(call: SempToolCall, targets: SempReplyTargets, turnEndAt: stri
     ...(status === "wait" && approvalRequestId !== undefined ? { approvalRequestId } : {}),
     ...(failedCode !== undefined ? { errorCode: failedCode } : {}),
     ...(registrationId !== null ? { mcpToolRegistrationId: registrationId } : {}),
-    // The identity of the server the failed call went to: ids and a name the grant gave, never a call's text.
+    // Ids and the grant's name only, never a call's text.
     ...(status === "error" && call.mcp !== undefined
       ? {
           ...(serverItemId !== null ? { mcpServerItemId: serverItemId } : {}),
@@ -262,11 +245,8 @@ function toolStep(call: SempToolCall, targets: SempReplyTargets, turnEndAt: stri
 }
 
 /**
- * The steps of one turn, from its events (`agent_run_id` = the message's run and `id` between its
- * `event_from_id` and `event_to_id`), in the order of each step's first event. A tool step is a tool call and
- * its result matched on `toolCallId`; a call without a result ended with the turn and is an `error` step.
- * `targets` is what the calls point at (`loadSempReplyTargets`). The result is the array stored in
- * `semp_messages.steps`: the same events always give the same steps.
+ * The steps of one turn from its events, ordered by each step's first event. A tool call without a result ended
+ * with the turn and is an `error` step. Deterministic: the same events always give the same stored steps.
  */
 export function projectSempReplySteps(input: {
   events: readonly AgentRunEventRow[];

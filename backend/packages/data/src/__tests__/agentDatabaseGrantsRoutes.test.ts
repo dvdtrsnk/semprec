@@ -26,7 +26,6 @@ import {
 } from "../testSupport/testDb.js";
 import type { DatabaseRow } from "../types.js";
 
-// Seeding the system databases of two tenants is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 240_000;
 const FORBIDDEN = { status: 403, code: "forbidden" };
 const VALIDATION = { status: 400, code: "validation_failed" };
@@ -68,7 +67,6 @@ function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return inTenant(() => withTransaction(dataPool, fn));
 }
 
-/** `GET /api/projects/:id/database-grants` as the caller's tenant, parsed. */
 async function list(projectId: string, locale = "en", tenant = tenantId): Promise<ListedDatabase[]> {
   const handler = createListAgentDatabaseGrantsRouteHandler(dataPool);
   const result = await inTenant(() => handler(context({ id: projectId }, undefined, locale)), tenant);
@@ -76,7 +74,6 @@ async function list(projectId: string, locale = "en", tenant = tenantId): Promis
   return listPage.parse(result.body).rows;
 }
 
-/** `PATCH /api/projects/:id/database-grants` as the caller's tenant; resolves with the answered body. */
 async function patch(projectId: string, body: unknown, locale = "en", tenant = tenantId): Promise<ListedDatabase> {
   const handler = createPatchAgentDatabaseGrantRouteHandler(dataPool);
   const result = await inTenant(() => handler(context({ id: projectId }, body, locale)), tenant);
@@ -102,7 +99,6 @@ function newProject(tenant = tenantId): Promise<string> {
   return inTenant(() => createTestProjectItem(dataPool), tenant);
 }
 
-/** A user-created database with a title property. */
 async function newUserDatabase(name: string, tenant = tenantId): Promise<DatabaseRow> {
   return inTenant(async () => {
     const database = await cp.createDatabase({ name });
@@ -126,7 +122,6 @@ async function storedRows(projectId: string): Promise<Array<{ databaseId: string
   return rows.map((row) => ({ databaseId: row.database_id, access: row.access }));
 }
 
-/** A record the person created in `databaseId`, so an agent read has something to find. */
 function newRecord(databaseId: string): Promise<string> {
   return inTenant(async () => (await cp.createItem({ databaseId, properties: { name: "Record" } })).id);
 }
@@ -485,10 +480,9 @@ describe("project database grants over REST (issue #1841)", () => {
 
   describe("the wrapper's locks", () => {
     /**
-     * Tries to take the row `FOR NO KEY UPDATE NOWAIT` on a second connection, the lock an archive, a trash or a
-     * rename takes (an UPDATE of a non-key column); resolves with the SQLSTATE of a refusal, if any. A stronger
-     * probe (`FOR UPDATE`) would also be refused by the `KEY SHARE` that the grant row's foreign key takes on the
-     * database row, and could not tell whether the wrapper's own `FOR SHARE` is there.
+     * Tries to take the row `FOR NO KEY UPDATE NOWAIT` on a second connection (the lock an archive, trash or
+     * rename takes); resolves with the refusal's SQLSTATE, if any. `FOR UPDATE` would also be refused by the
+     * grant row's foreign-key `KEY SHARE`, so it could not detect the wrapper's own `FOR SHARE`.
      */
     async function updateLockRefusal(table: "items" | "databases", id: string): Promise<string | null> {
       try {

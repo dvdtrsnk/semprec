@@ -34,8 +34,8 @@ import {
   recordInboxTranscribedText,
 } from "../inboxVoiceNote.js";
 
-// Issue gh-1980: the two store functions of the voice note transcription and its job's key, on the runtime role pool
-// with a second tenant. The handler that runs them is tested in `semprec-transcribe`'s `inboxVoiceNoteTranscribe.test.ts`.
+// The two store functions of the voice note transcription and its job's key, on the runtime role pool with a second
+// tenant. The handler that runs them is tested in `semprec-transcribe`'s `inboxVoiceNoteTranscribe.test.ts`.
 
 let adminPool: Pool;
 let runtimePool: Pool;
@@ -69,7 +69,6 @@ afterAll(async () => {
   else process.env.SEMPREC_TENANT_SCOPE = previousScope;
 });
 
-/** Runs `fn` in one transaction of `tenant`, as the runtime role in that tenant's scope. */
 function inTenant<T>(tenant: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenant, () => withTransaction(runtimePool, fn));
 }
@@ -97,7 +96,6 @@ interface AudioOptions {
   byteSize?: number;
 }
 
-/** Attaches a blob to `itemId` the way a capture does, and records `metadata` the way the metadata job does. */
 async function attach(tenant: string, itemId: string, options: AudioOptions = {}): Promise<string> {
   const { metadata = VOICE_NOTE, mimeType = "audio/mp4", byteSize = 1000 } = options;
   return inTenant(tenant, async (client) => {
@@ -132,7 +130,6 @@ async function readProperties(tenant: string, itemId: string): Promise<Record<st
   );
 }
 
-/** The whole stored row, to compare before and after a call that must change nothing. */
 async function itemRow(tenant: string, itemId: string): Promise<string> {
   return runInTenant(tenant, () =>
     withTenantTransaction(runtimePool, tenant, async (client) => {
@@ -146,7 +143,6 @@ async function itemRow(tenant: string, itemId: string): Promise<string> {
 
 const tickJobSchema = z.object({ payload: z.object({ heartbeatId: z.string(), itemId: z.string() }) });
 
-/** The `onItemEvent` heartbeat jobs queued for `itemId`: a write of the item announces itself through them. */
 async function heartbeatJobsFor(itemId: string): Promise<number> {
   const raw = await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE);
   return raw.map((entry) => tickJobSchema.parse(entry).payload).filter((payload) => payload.itemId === itemId).length;

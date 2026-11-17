@@ -25,7 +25,6 @@ async function partitionExists(databaseId: string): Promise<boolean> {
   return rows[0]?.regclass !== null;
 }
 
-/** Runs `fn` expecting a `no_data_found` (P0002) failure; returns the error message. */
 async function expectRefused(fn: () => Promise<unknown>): Promise<string> {
   const error: unknown = await fn().then(
     () => undefined,
@@ -61,7 +60,7 @@ describe("tenant-checked partition functions (issue #1021)", () => {
     await resetDatabase(adminPool);
   });
 
-  // Strict `app_tenant_default()` (#1067): no fallback to the sole tenant.
+  // Strict `app_tenant_default()`: no fallback to the sole tenant.
   it("refuses a partition without a tenant scope even while tenant zero is the only tenant", async () => {
     const databaseId = await insertDatabase(getTenantZeroId());
     await expectRefused(() =>

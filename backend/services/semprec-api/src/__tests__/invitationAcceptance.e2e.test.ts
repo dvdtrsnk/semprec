@@ -43,9 +43,8 @@ function stringField(record: Record<string, unknown>, key: string): string {
 }
 
 /**
- * The invitation flow of issue #1087 through the real dispatcher on a runtime-role pool, which
- * `provisionTenant` requires: an admin invites an address, the invitee accepts, signs in, and sees
- * only the new tenant's own system databases, never the admin's data.
+ * Through the real dispatcher on a runtime-role pool, which `provisionTenant` requires: the invitee accepts, signs in
+ * and sees only the new tenant's own system databases, never the admin's data.
  */
 describe("invitation acceptance, end to end (issue #1087)", () => {
   let adminPool: Pool;
@@ -123,7 +122,6 @@ describe("invitation acceptance, end to end (issue #1087)", () => {
       role: "admin",
     });
     const adminToken = await signIn(adminEmail);
-    // The admin's own data, in tenant zero, which the invitee's tenant must not see.
     const adminItemId = await runInTenant(getTenantZeroId(), () => createTestProjectItem(dataPool));
 
     const invited = await fetch(`${baseUrl}/api/admin/invites`, {

@@ -3,7 +3,7 @@ import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@s
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import type { TranscriptSpeaker } from "./transcriptionSpeakerEdges.js";
 
-/** The stored `computed.meetingNotes` (issue #1695), validated where it is read: it is a JSONB value. */
+/** The stored `computed.meetingNotes`, validated where it is read: it is a JSONB value. */
 const storedMeetingNotesSchema = z.object({
   title: z.string(),
   summary: z.string(),
@@ -20,7 +20,7 @@ const storedMeetingNotesSchema = z.object({
 });
 export type StoredMeetingNotes = z.infer<typeof storedMeetingNotesSchema>;
 
-/** The notes in `computed.meetingNotes`, or `null` when the key is absent; a malformed value throws. */
+/** `null` when the key is absent; a malformed value throws. */
 export function parseStoredMeetingNotes(value: unknown): StoredMeetingNotes | null {
   if (value === undefined) return null;
   return storedMeetingNotesSchema.parse(value);
@@ -38,15 +38,11 @@ function loadCatalogs(): Promise<ModuleCatalogs> {
 const SPEAKER_TOKEN = /\{(SPEAKER_\d+)\}/g;
 
 /**
- * The meeting notes as a reader shows them (issue #1695), rendered at read time from the stored
- * notes and the transcript's speakers, so mapping a speaker changes the text on the next read with
- * no model call. A speaker counts as mapped only through a `speakers` edge to a person
- * (`listTranscriptSpeakers`); an unconfirmed suggestion card maps nothing. In running text a
- * `{SPEAKER_NN}` token becomes the mapped person's first name (the first word of their name),
- * "Speaker N" (`transcript.speaker.unmappedLabel`, N the speaker's ordinal) for an unmapped speaker
- * or a person without a name, and the generic word (`transcript.speaker.genericLabel`) for a token
- * that names no speaker of the transcript. Each action item gains `ownerLabel` (the owner's full
- * name, "Speaker N", or `null` without an owner) and `id`, its position in the stored array.
+ * Renders the stored notes at read time against the transcript's speakers, so mapping a speaker
+ * changes the text on the next read with no model call. Only a `speakers` edge to a person maps a
+ * speaker; an unconfirmed suggestion card maps nothing. `{SPEAKER_NN}` becomes the person's first
+ * name, "Speaker N" when unmapped or nameless, or the generic word for a token naming no speaker of
+ * the transcript. Action item `id` is its position in the stored array.
  */
 export async function renderMeetingNotes(notes: StoredMeetingNotes, speakers: TranscriptSpeaker[], locale: string) {
   const catalogs = await loadCatalogs();

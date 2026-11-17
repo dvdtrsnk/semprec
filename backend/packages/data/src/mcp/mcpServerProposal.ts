@@ -2,13 +2,9 @@ import { ValidationError } from "../errors.js";
 import { assertStorableMcpConnectionConfig, mcpConnectionConfigSchema } from "./mcpConnectionConfig.js";
 
 /**
- * Names a proposal for an `mcpServers` item (issue #123) could plausibly carry a secret
- * under — checked independently of `mcpServers`'s actual declared properties (which never
- * include any of these), so a future accidental `owner: 'user'` property with one of these
- * keys is still rejected here rather than relying solely on ownership. The credential itself
- * never lives in `items.properties` at all — it goes into `external_credentials` (issue #26),
- * supplied by a human separately at confirm time (proposalActions.ts), never inside the
- * envelope an agent computes.
+ * Checked independently of the declared properties, so a future `owner: 'user'` property with such a key is still
+ * rejected. The credential itself never lives in `items.properties`: a human supplies it into
+ * `external_credentials` at confirm time, never inside an agent's envelope.
  */
 export const MCP_CREDENTIAL_FIELD_NAMES: readonly string[] = [
   "credential",
@@ -32,11 +28,8 @@ const NORMALIZED_CREDENTIAL_FIELD_NAMES: ReadonlySet<string> = new Set(
 );
 
 /**
- * A `stdio` transport's `env` map is itself a plausible smuggling route for a secret an agent
- * isn't allowed to set (e.g. `env: { apiKey: "sk-..." }` or `env: { API_KEY: "sk-..." }`) — it
- * never appears as a top-level proposal property, so the loop below wouldn't otherwise catch
- * it. Checked against the same denylist, normalized (env vars are conventionally
- * `SCREAMING_SNAKE_CASE`, not camelCase) rather than exact-matched.
+ * A `stdio` `env` map is a smuggling route the top-level check would miss; matched normalized, since env vars are
+ * `SCREAMING_SNAKE_CASE`.
  */
 function assertNoCredentialShapedEnvKeys(connectionConfig: unknown): void {
   if (typeof connectionConfig !== "object" || connectionConfig === null) return;
@@ -53,12 +46,8 @@ function assertNoCredentialShapedEnvKeys(connectionConfig: unknown): void {
 }
 
 /**
- * An `sse`/`http` transport's `url` is just as plausible a smuggling route as `stdio`'s `env` —
- * a query string like `?token=sk-...` passes both the top-level denylist (no such property key)
- * and the Zod schema (any well-formed URL is valid), and would otherwise land verbatim in
- * `items.properties.connectionConfig.url`. `url` may not even be a syntactically valid absolute
- * URL yet at this point (that's `assertValidMcpConnectionConfig`'s job, run right after this);
- * `new URL` failing here just means there's nothing query-string-shaped to inspect.
+ * A query string like `?token=sk-...` passes both the key denylist and the schema. `url` may not parse yet (the
+ * schema check runs after this); then there is nothing to inspect.
  */
 function assertNoCredentialShapedUrlParams(connectionConfig: unknown): void {
   if (typeof connectionConfig !== "object" || connectionConfig === null) return;
@@ -90,13 +79,8 @@ function assertNotStdioConfig(connectionConfig: unknown): void {
 }
 
 /**
- * Extra validation `assertValidProposalEnvelope` (inboxTickAction.ts) runs for a `database`
- * envelope whose target is the `mcpServers` system database, on top of the generic
- * unknown-key/relation/rollup/system-owner checks it already applies to every target: reject
- * any credential-shaped field outright, and strictly validate `connectionConfig` against the
- * transport-discriminated schema when present. Semp may still propose a bare `name` with no
- * `connectionConfig` at all (e.g. leaving it for the confirming human to fill in), so
- * `connectionConfig` is validated only when the envelope actually sets it, not required here.
+ * Extra checks for a `database` envelope targeting `mcpServers`, on top of the generic ones. `connectionConfig` is
+ * validated only when set: Semp may propose a bare `name` for the human to complete.
  */
 export function assertValidMcpServerProposalProperties(properties: Record<string, unknown>): void {
   for (const field of MCP_CREDENTIAL_FIELD_NAMES) {
@@ -107,8 +91,7 @@ export function assertValidMcpServerProposalProperties(properties: Record<string
     }
   }
   if ("connectionConfig" in properties) {
-    // A model-authored host command never becomes a card: stdio is confined to a human admin
-    // (docs/adr/2026-10-16-stdio-mcp-confined-to-admin-tenants.md).
+    // A model-authored host command never becomes a card: stdio is confined to a human admin.
     assertNotStdioConfig(properties.connectionConfig);
     assertNoCredentialShapedEnvKeys(properties.connectionConfig);
     assertNoCredentialShapedUrlParams(properties.connectionConfig);
@@ -117,11 +100,9 @@ export function assertValidMcpServerProposalProperties(properties: Record<string
 }
 
 /**
- * The properties of an MCP server card as the item is stored: a remote (`http` or `sse`) connection is
- * `{ transport, url }` and nothing else, so a field the transport hides (a `command`) is dropped. A `stdio`
- * connection, a card with no connection yet (a bare `name`) and a connection that does not parse are returned as they
- * are: confirm refuses `stdio` before it gets here (`assertCardIsNotStdioMcpServer`) and the envelope validation
- * judges the rest.
+ * A remote connection is stored as `{ transport, url }` only, dropping fields the transport hides (a `command`).
+ * `stdio`, no connection, and unparseable connections pass through: confirm refuses `stdio` earlier and envelope
+ * validation judges the rest.
  */
 export function normalizeMcpServerProperties(properties: Record<string, unknown>): Record<string, unknown> {
   const connection = mcpConnectionConfigSchema.safeParse(properties.connectionConfig);

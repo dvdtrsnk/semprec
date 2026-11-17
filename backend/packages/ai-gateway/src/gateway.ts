@@ -46,10 +46,9 @@ class TenantBudgetRefusal extends BudgetExceededError {
 
 /**
  * Logs which limit refused (never an amount or content) and throws the constant refusal. A refusal
- * caused by the tenant's own state passes the window it belongs to, so `reserve` can announce it once
- * the transaction has rolled back; an operator-wide cap passes none and is never announced, because it
- * is not the tenant's state. The announcement needs the tenant of the active scope, so a refusal of a
- * call that ran in none is plain.
+ * caused by the tenant's own state passes its window so `reserve` can announce it after rollback; an
+ * operator-wide cap is never announced, being no tenant's state. A call outside a tenant scope is
+ * refused plainly.
  */
 function refuse(limit: BudgetLimit, budgetWindow?: Pick<TenantRefusalNotice, "window" | "timezone">): never {
   logger.warn({ limit }, "AI gateway call refused: budget exceeded");
@@ -61,12 +60,10 @@ function refuse(limit: BudgetLimit, budgetWindow?: Pick<TenantRefusalNotice, "wi
 }
 
 /**
- * Refuses (`spent >= cap`) when the caller's tenant has no `tenant_ai_budgets` row, when its own
- * non-null daily/monthly cap is reached (measured in the tenant's timezone over its own rows), or
- * when the operator-wide `globalCaps` are reached (measured in UTC over every tenant's rows). A
- * `NULL` tenant cap means that window has no per-tenant cap; the global cap still applies. Called
- * only from `reserve`, under the budget lock, so the spend it reads includes every other in-flight
- * reservation at its estimate. Every refusal carries the same message.
+ * Refuses (`spent >= cap`) when the tenant has no `tenant_ai_budgets` row, its non-null daily or
+ * monthly cap is reached (in the tenant's timezone over its rows), or the operator-wide `globalCaps`
+ * are reached (in UTC over all rows). A `NULL` tenant cap leaves only the global cap. Called only
+ * from `reserve` under the budget lock, so the spend includes every in-flight reservation.
  */
 async function assertWithinBudget(client: PoolClient, globalCaps: GlobalAiCaps): Promise<void> {
   const budget = await getCurrentTenantAiBudget(client);
@@ -87,17 +84,13 @@ async function assertWithinBudget(client: PoolClient, globalCaps: GlobalAiCaps):
 }
 
 /**
- * #620: before each provider call, one transaction takes a transaction-scoped advisory lock that
- * serializes every gateway reservation, then checks that the caller's tenant exists and is active
- * (`assertGatewayTenantActive`, so an inactive and an unknown tenant get the same
- * `attribution_refused`), then checks the budget, and then inserts a `reserved` row at the
- * caller's estimate. The lock is released at COMMIT, before the provider is called, so concurrent
- * calls serialize only on the check-and-insert, never on the provider round trip — and the next
- * caller's budget check already sees this call's reservation. A `BudgetExceededError`, or the
- * tenant check's `ForbiddenError`, rolls the transaction back (no row) and propagates unchanged.
- * Once a refusal caused by the tenant's own budget state has rolled back, `announceTenantRefusal`
- * runs before the error propagates; it cannot change the error. The lock key and the reserve/settle/fail lifecycle are
- * docs/adr/2026-09-27-ai-budget-reservations-under-a-global-advisory-lock.md.
+ * In one transaction: takes the advisory lock that serializes all reservations, checks the tenant is
+ * active (`assertGatewayTenantActive`; inactive and unknown both get `attribution_refused`), checks
+ * the budget, and inserts a `reserved` row at the estimate. The lock is released at COMMIT, before
+ * the provider call, so calls serialize only on check-and-insert and the next check sees this
+ * reservation. A refusal rolls back (no row) and propagates unchanged; a tenant-state refusal is
+ * announced by `announceTenantRefusal` after the rollback, which cannot change the error. See
+ * docs/architecture/agents-approvals-and-ai.md#budgets-and-accounting.
  */
 async function reserve(pool: Pool, ctx: GatewayCallContext): Promise<AiGatewayCallRow> {
   try {
@@ -123,11 +116,7 @@ async function reserve(pool: Pool, ctx: GatewayCallContext): Promise<AiGatewayCa
   }
 }
 
-/**
- * Runs `invoke` against a reservation; when it rejects, marks the reservation `failed` (cost 0)
- * and rethrows the original error — a failure of that cleanup is logged, never surfaced in its
- * place.
- */
+/** Runs `invoke`; on rejection marks the reservation `failed` (cost 0) and rethrows, logging rather than surfacing a cleanup failure. */
 async function invokeReserved<T>(
   pool: Pool,
   ctx: GatewayCallContext,
@@ -149,19 +138,17 @@ async function invokeReserved<T>(
   }
 }
 
-/** Total settle attempts before the reservation is left `reserved` at its estimate (#623). */
+/** Total settle attempts before the reservation is left `reserved` at its estimate. */
 const SETTLE_MAX_ATTEMPTS = 3;
 /** Delay before the 2nd and 3rd settle attempt. */
 const SETTLE_BACKOFF_MS = [100, 300];
 
 /**
- * Runs `settle` for a reservation whose provider call already succeeded, retrying a rejection
- * (a transient database failure) with backoff up to `SETTLE_MAX_ATTEMPTS` times. It never rejects:
- * the provider has already been paid, so the caller gets its result regardless. When every attempt
- * fails, the row deliberately stays `reserved` at its estimate — it keeps counting against the cap
- * rather than under-reporting real spend — and an error-level log line names it for reconciliation.
- * A `null` settle (no `reserved` row matched — someone else already settled or failed it) is not
- * transient, so it is logged once at error level and not retried.
+ * Settles a reservation whose provider call succeeded, retrying a rejection with backoff up to
+ * `SETTLE_MAX_ATTEMPTS`. Never rejects: the provider is already paid. If every attempt fails the
+ * row stays `reserved` at its estimate, so it keeps counting against the cap, and an error log
+ * names it for reconciliation. A `null` settle (another path already settled or failed the row) is
+ * logged once and not retried.
  */
 async function settleWithRetry(
   row: AiGatewayCallRow,
@@ -281,13 +268,11 @@ export function diarize<T extends AudioCallResult>(
 class SpeechNotProducedError extends Error {}
 
 /**
- * Speech synthesis egress point (docs/adr/2026-10-28-live-voice-chains-speech-to-text-agent-turn-and-text-to-speech.md).
- * Records exactly one ai_gateway_calls row per invocation. The text length gives the price up
- * front, so the row is reserved at `ctx.estimatedCostUsd` through the same reserve step as every
- * other call (a refusal propagates before `produce` runs, leaving no row), then settled with the
- * seconds and cost `produce` reports. `produce` streams the audio itself and resolves with what was
- * actually produced, also when the caller disconnected part-way; a result with no audio
- * (`audioSeconds <= 0`) marks the row `failed`, and so does a rejection, which is rethrown.
+ * Speech synthesis egress point; one ai_gateway_calls row per invocation. The text length gives
+ * the price up front, so the row is reserved at `ctx.estimatedCostUsd` (a refusal propagates before
+ * `produce` runs) and settled with what `produce` reports. `produce` streams the audio and resolves
+ * with what was produced, also after a disconnect; no audio (`audioSeconds <= 0`) or a rejection
+ * marks the row `failed`, and a rejection is rethrown.
  */
 export async function synthesizeSpeech(
   pool: Pool,
@@ -327,12 +312,10 @@ export interface AudioStreamChunk {
 }
 
 /**
- * Streaming audio egress point (docs/adr/2026-10-28-live-voice-chains-speech-to-text-agent-turn-and-text-to-speech.md):
- * the audio length is unknown up front, so the stream reserves it chunk by chunk. Each call runs the
- * same reserve step as every other call (advisory lock, tenant-active check, tenant and global
- * caps) and records one `ai_gateway_calls` row at `ctx.estimatedCostUsd`, which the caller sets to
- * the price of one full chunk. A `BudgetExceededError` propagates and leaves no row. The caller
- * must settle or fail every chunk it receives, including on disconnect.
+ * Streaming audio egress point: the audio length is unknown up front, so the stream reserves chunk
+ * by chunk through the same reserve step, one row per chunk at `ctx.estimatedCostUsd` (the price of
+ * one full chunk). A `BudgetExceededError` leaves no row. The caller must settle or fail every chunk,
+ * including on disconnect.
  */
 export async function reserveAudioStreamChunk(pool: Pool, ctx: GatewayCallContext): Promise<AudioStreamChunk> {
   const reservation = await reserve(pool, ctx);
@@ -364,10 +347,9 @@ export async function reserveAudioStreamChunk(pool: Pool, ctx: GatewayCallContex
 }
 
 /**
- * Attributes the rows of the given stream chunks to the Semp assistant message of the turn their audio started
- * (issue #2020), in the ambient tenant, whatever the status of the rows. It touches only the rows of these chunks;
- * a message that is not visible in the tenant, an unknown message and a chunk row that is not visible in the
- * tenant are refused with the one `attribution_refused` error and change nothing. Without chunks it does nothing.
+ * Attributes the given chunk rows, whatever their status, to the Semp assistant message of the turn
+ * their audio started, in the ambient tenant. An unknown or invisible message or chunk row is
+ * refused with `attribution_refused` and changes nothing; no chunks does nothing.
  */
 export function attributeAudioStreamChunks(
   pool: Pool,

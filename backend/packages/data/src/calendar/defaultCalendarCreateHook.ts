@@ -1,11 +1,6 @@
-// Gives a new Event its calendar (issue #1761): the choke point's item-create hook that links a new Event
-// to the tenant's default calendar, the scope through which a caller names another calendar, and the
-// helper that creates an Event inside that scope. The hook runs inside the create's transaction after a
-// real insert and not on an idempotency-key replay, so the calendar edge commits or rolls back with the Event.
-// A create that names the Event's calendar in its own relations writes that edge itself (issue #1777).
-// Constrained by: docs/adr/2026-11-11-new-events-get-their-calendar-in-a-create-hook.md,
-// docs/adr/2026-11-12-create-hooks-are-given-the-initial-relations-of-their-create.md,
-// docs/adr/2026-10-09-item-create-domain-hooks.md
+// Links a new Event to a calendar: the create hook, the scope through which a caller names another calendar, and
+// a helper creating an Event inside that scope. The hook runs in the create's transaction after a real insert, not
+// on an idempotency-key replay, so the edge commits or rolls back with the Event.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PoolClient } from "pg";
 import { z } from "zod";
@@ -25,29 +20,19 @@ import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ItemRow } from "../types.js";
 import { logger } from "./logger.js";
 
-/** The Events side of the `Calendars.events` relation: the one calendar an Event belongs to. */
 const EVENT_CALENDAR_PROPERTY_KEY = "calendar";
 
-/** The calendar id a caller chose for the Events that are inserted inside `withChosenCalendar`. */
 const chosenCalendarScope = new AsyncLocalStorage<string>();
 
-/**
- * Runs `fn` with `calendarId` as the calendar the hook links, in place of the default calendar, to each
- * Event that is inserted inside it. The id is checked when the hook writes the edge, not here. An inner
- * call replaces the outer one's calendar for its own `fn`.
- */
+/** The id is checked when the hook writes the edge, not here. An inner call overrides the outer one. */
 export function withChosenCalendar<T>(calendarId: string, fn: () => T): T {
   return chosenCalendarScope.run(calendarId, fn);
 }
 
 /**
- * Creates an Event in the calendar `calendarId` inside the caller's transaction: `createItemWithClient` for
- * the tenant's Events database, run inside `withChosenCalendar`. A calendar the hook refuses fails the
- * create with `validation_failed` on `calendarId`. The default calendar is not read, so a tenant without a
- * live default calendar does not fail this create. An idempotency-key replay returns the Event stored
- * earlier with the calendar it has: the hook does not run and `calendarId` is not checked. In a tenant
- * without a calendars database the Event is created without a calendar and `calendarId` is not checked
- * either. Throws `NotFoundError` in a tenant without an Events database.
+ * A refused calendar fails with `validation_failed` on `calendarId`. The default calendar is not read, so a tenant
+ * without one does not fail this. An idempotency-key replay returns the stored Event without checking
+ * `calendarId`; so does a tenant without a calendars database.
  */
 export async function createEventInCalendar(
   client: PoolClient,
@@ -65,11 +50,8 @@ export async function createEventInCalendar(
 const calendarIdSchema = z.uuid();
 
 /**
- * The id of the chosen calendar when it is a live item of the tenant's calendars database whose `kind` is
- * empty or `own`, with its row locked `FOR SHARE` until the caller's transaction ends. Anything else is
- * refused with the same `validation_failed` on `calendarId`: an id that is not a UUID, an unknown id,
- * another tenant's calendar (row-level security hides it), a calendar in the trash, and a system or
- * subscription calendar.
+ * Locked `FOR SHARE`. Non-UUID, unknown, other tenant's (hidden by RLS), trashed, and system or subscription
+ * calendars all get the same `validation_failed`.
  */
 async function lockChosenCalendar(
   client: PoolClient,
@@ -94,15 +76,9 @@ async function lockChosenCalendar(
 }
 
 /**
- * The id of the live calendar marked `isDefault`, with the row of every live calendar so marked locked
- * `FOR SHARE` until the caller's transaction ends, or `null` when there is none. Should several be marked,
- * the one with the lowest id is taken, the choice `calendarsCutoverMigration.ts` makes for the Events it
- * links.
- *
- * The statement runs a second time when the first returns nothing. A statement that waited for a
- * concurrent change of the calendar it read as the default checks that row again and no other, so it
- * returns nothing when the mark moved to another calendar in that change; the second statement reads the
- * committed rows.
+ * Should several be marked, the lowest id wins. The statement runs a second time when the first returns nothing:
+ * a statement that waited on a concurrent change rechecks only the row it read, so it returns nothing when the
+ * mark moved; the second statement reads the committed rows.
  */
 async function lockDefaultCalendar(client: PoolClient, calendarsDatabaseId: string): Promise<string | null> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -119,34 +95,18 @@ async function lockDefaultCalendar(client: PoolClient, calendarsDatabaseId: stri
 }
 
 /**
- * The choke point's item-create hook for the Events database (registered by `../domainWriteHooks.ts`):
- * links the new Event to one calendar through its `calendar` relation.
+ * - An Event already having a calendar edge keeps it.
+ * - A create naming `calendar` in its initial relations gets no edge here; that create writes it after the hooks.
+ * - Otherwise the edge goes to the chosen calendar, or to the default calendar.
  *
- * - A tenant without a calendars database (its calendars cutover has not run yet) gets no edge, and a
- *   chosen calendar is not checked.
- * - An Event that already has a calendar edge when the hook runs keeps it and gets no other, and a chosen
- *   calendar is not checked.
- * - An Event whose create names the `calendar` relation in its initial relations
- *   (`createItemWithRelationsWithClient`) gets no edge from the hook, and a chosen calendar is not checked.
- *   That create writes the relation after the hooks, as the write of its own writer, and throws when it
- *   cannot.
- * - Otherwise the edge goes to the calendar chosen with `withChosenCalendar`, as `lockChosenCalendar`
- *   accepts it, or without a choice to the default calendar of `lockDefaultCalendar`.
- *
- * The default calendar is read only in the last case, when no calendar was chosen. There, a calendars
- * database without a live default calendar fails the create with a plain error, which a transport answers
- * as a server error, after the error log line `default_calendar_missing` that carries the two ids. A
- * create with a chosen calendar is judged by that calendar alone, and one whose Event already has a
- * calendar edge or whose initial relations name the calendar writes nothing here: none of them reads the
- * default, so a missing default fails none of them. A calendars database whose Events `calendar` relation
- * is missing fails the create with a plain error in every case, with a chosen calendar or without. The
- * hook writes its edge through `createRelationWithClient` without a writer, so as a system write, with that
- * write's guards and hooks.
+ * Only the last case reads the default; a missing default then fails the create after logging
+ * `default_calendar_missing`. A missing calendars database or Events `calendar` relation fails every create (the
+ * seed creates both). The edge is written as a system write.
  */
 export const defaultCalendarCreateHook: ItemCreateHook = async ({ client, database, item, initialRelations }) => {
   if (!database.system || database.ownerModuleId !== EVENTS_MODULE_ID) return;
   const calendars = await databasesStore.getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
-  if (!calendars) return;
+  if (!calendars) throw new Error("Calendars database not found");
 
   const property = await propertiesStore.getPropertyByKey(client, database.id, EVENT_CALENDAR_PROPERTY_KEY);
   const definition = property ? await relationsStore.getRelationDefinitionByPropertyId(client, property.id) : null;

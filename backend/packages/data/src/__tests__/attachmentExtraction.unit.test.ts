@@ -11,8 +11,6 @@ import {
   type ExtractionImage,
 } from "../inbox/attachmentExtraction.js";
 
-// Issue gh-1970: the extraction call over a stubbed gateway, the schema of its answer and the choice of attachments.
-
 const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
 const IMAGE: ExtractionImage = {
   attachmentId: "22222222-2222-4222-8222-222222222222",

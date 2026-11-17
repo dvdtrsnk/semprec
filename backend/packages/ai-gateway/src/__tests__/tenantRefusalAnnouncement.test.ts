@@ -21,11 +21,10 @@ import { BudgetExceededError, complete, reserveAudioStreamChunk } from "../gatew
 import { logger } from "../logger.js";
 
 /**
- * Issues gh-2023 and gh-2024: the gateway announces the first refusal of a tenant's budget window, once per tenant
- * and window, after the refused reservation has rolled back. Every call runs on a `semprec_side` pool, the gateway's
- * own role, in its tenant's scope; a fresh tenant per case keeps the process-wide ledger of announced windows from
- * carrying one case into the next. Realtime frames are observed through the in-process hook the processes wire to
- * NOTIFY, with the tenant scope it was called in. Queued jobs are read through graphile-worker's public `jobs` view.
+ * The gateway announces the first refusal of a tenant's budget window once per tenant and window, after the refused
+ * reservation rolled back. Calls run on a `semprec_side` pool in the tenant's scope; a fresh tenant per case keeps the
+ * process-wide ledger of announced windows from leaking between cases. Realtime frames are observed through the
+ * in-process NOTIFY hook; queued jobs through graphile-worker's public `jobs` view.
  */
 
 const GLOBAL_CAPS = { dailyCapUsd: 1_000_000, monthlyCapUsd: 10_000_000 };

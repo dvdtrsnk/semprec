@@ -1,9 +1,6 @@
-// Owns the walk over the rows a delete or restore of an item reaches (the item and the items of the databases nested under
-// it, recursively) and the per-database access check of an agent's project over that walk (issue #1810). It is shared by
-// the item delete and restore in `itemTrash.ts` and by the approval projection of an `item.delete` in
-// `destructiveProjection.ts`, which may not import each other. It writes nothing.
-// Constrained by: docs/adr/2026-11-12-per-database-agent-grants.md
-// and, for the cascade expansion, docs/adr/2026-11-14-a-recurring-task-series-is-trashed-and-restored-as-one-cascade.md
+// The walk over the rows a delete or restore reaches (the item and the items of databases nested
+// under it, recursively) and the per-database access check over that walk. Shared by `itemTrash.ts`
+// and `destructiveProjection.ts`, which may not import each other. Nothing here writes.
 import type { PoolClient } from "pg";
 import type { ItemRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
@@ -13,17 +10,10 @@ import type { WriterIdentity } from "./writerKind.js";
 import { assertWriterDatabaseAccess, readerOfWriter } from "../agentGrants/agentDatabaseAccess.js";
 
 /**
- * Walks down from an already-fetched page item to every row nested underneath it — the inline
- * databases it owns directly (`databases.parent_item_id = itemId`), every item in each of those,
- * and recursively whatever inline databases *those* items own in turn — so delete/restore (issue
- * #156) can act on the whole subtree in one transaction instead of just the one row named by the
- * caller. Root-first order, BFS by level, root included as given (its `deletedAt` reflects the
- * state the caller read it in, before this transaction's own writes). Guards against a
- * `parent_item_id` cycle the same way `getItemPath` guards against one in the opposite direction:
- * tracking every database id already walked and refusing to walk it twice, so a corrupted loop
- * stops the traversal instead of hanging it. `include`, when given, filters the walk: a row for
- * which it returns `false` is neither collected nor descended into, so everything nested under it
- * is excluded too. The root is always included regardless of `include`.
+ * Every row nested under a page item: its inline databases' items and, recursively, theirs.
+ * Root-first BFS, root included as the caller read it. A `parent_item_id` cycle is stopped by never
+ * walking a database twice. A row `include` rejects is neither collected nor descended into; the root
+ * is always included.
  */
 export async function collectItemSubtree(
   client: PoolClient,
@@ -55,12 +45,9 @@ export async function collectItemSubtree(
 }
 
 /**
- * The rows a trash, a restore or a purge of `root` reaches: `collectItemSubtree` of the root, then, when the module that
- * owns the root's database registered a cascade expansion, each row the expansion adds, in the expansion's order, with
- * the rows of its own inline databases (`collectItemSubtree` of that row). Root first; a row appears once. `include`
- * filters the rows the expansion adds and the walk below them as it does the walk below the root. A root of a database
- * without an owner module, or of a module without an expansion, gives exactly `collectItemSubtree(client, root, include)`.
- * The impact preview (`trash/deleteImpact.ts`) counts the plain subtree and does not use this.
+ * `collectItemSubtree` of the root plus, when the owning module registered a cascade expansion, each
+ * row it adds (in its order) with its own subtree. Root first; each row once; `include` applies
+ * throughout. The delete impact preview counts the plain subtree instead.
  */
 export async function collectCascadeRows(
   client: PoolClient,
@@ -84,9 +71,8 @@ export async function collectCascadeRows(
 }
 
 /**
- * A cascade trashes or restores the rows of the databases nested under the item as well, so an agent's project
- * (issue #1810) or an external client (issue #1998) needs `write` access to each of them besides the database of the
- * root, which the caller has checked.
+ * A cascade also reaches the databases nested under the item, so a restricted writer needs `write`
+ * on each of them; the caller has checked the root's database.
  */
 export async function assertWriterCascadeAccess(
   client: PoolClient,
@@ -100,11 +86,9 @@ export async function assertWriterCascadeAccess(
 }
 
 /**
- * The cascade check of `itemDeleteWithClient` for the approval projection of an `item.delete` (issue #1810), so a
- * delete whose cascade reaches a database the agent's project cannot write is refused when the request is made and
- * ends as a conflict when a grant is revoked before the approved request runs, like one whose own database is refused.
- * The root's database is checked by the caller. A writer without a project or an external-client marker (a person, the
- * system) is not checked.
+ * `itemDeleteWithClient`'s cascade check for the `item.delete` approval projection, so a cascade into
+ * an unwritable database is refused at request time and conflicts if a grant is revoked before
+ * execution. A person or the system is not checked.
  */
 export async function assertWriterDeleteCascadeAccess(
   client: PoolClient,

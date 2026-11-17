@@ -41,7 +41,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** A real Mailbox item — `mail_account_sync_state.item_id` is a foreign key, so a plain string id is rejected. */
+/** A real Mailbox item: `mail_account_sync_state.item_id` is a foreign key. */
 async function createMailboxItem(name: string): Promise<string> {
   const mailboxesId = await databaseIdFor("mailboxes");
   const item = await withTransaction(pool, (client) =>
@@ -126,7 +126,7 @@ describe("Microsoft Graph webhook subscription lifecycle (issue #198)", () => {
     expect(createCalls.length).toBe(1);
     const firstCreateCall = createCalls[0];
     if (!firstCreateCall) throw new Error("expected a createSubscription call to have been recorded");
-    expect(firstCreateCall.clientState).toHaveLength(64); // 32 random bytes, hex-encoded
+    expect(firstCreateCall.clientState).toHaveLength(64);
     const state = await getMailAccountSyncState(pool, mailboxItemId);
     expect(state?.graphClientState).toBe(firstCreateCall.clientState);
 
@@ -148,8 +148,8 @@ describe("Microsoft Graph webhook subscription lifecycle (issue #198)", () => {
     });
     await lifecycle1.stop();
 
-    // A fresh process/lifecycle instance, as a real restart would produce — nothing carried in
-    // memory, only what's persisted in `mail_account_sync_state`.
+    // A fresh lifecycle instance, as a restart would produce: only what is persisted in
+    // `mail_account_sync_state` carries over.
     const { transport: secondTransport, createCalls, renewCalls } = createFakeTransport();
     const factory2 = createGraphWebhookLifecycleFactory(pool, secondTransport, {
       getCredential: async () => "access-token",
@@ -201,10 +201,8 @@ describe("Microsoft Graph webhook subscription lifecycle (issue #198)", () => {
   });
 
   it("renews on the configured interval, replacing the persisted expiry each time without changing the subscription id", async () => {
-    // Real timers, not fake ones: each renewal round makes a real DB write, and racing that real
-    // I/O against a virtual clock is exactly the kind of flake this avoids by using a short real
-    // interval and polling instead — same rationale as `gmailWatchLifecycle.test.ts`'s own
-    // renewal-cadence test.
+    // Real timers: each renewal makes a real DB write, which would race a virtual clock, so a short real
+    // interval and polling are used instead.
     const mailboxItemId = await createMailboxItem("D");
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "graph_api" });
     let call = 0;
@@ -256,9 +254,8 @@ describe("Microsoft Graph webhook subscription lifecycle (issue #198)", () => {
         throw failure;
       },
     });
-    // No `onError`: the renewal loop's catch has nowhere to report to but the logger, and a
-    // subscription that never registers must not fail silently just because the caller left the
-    // optional handler out.
+    // No `onError`: a subscription that never registers must still be logged when the caller omits the
+    // optional handler.
     const factory = createGraphWebhookLifecycleFactory(pool, transport, {
       getCredential: async () => "access-token",
       notificationUrl: NOTIFICATION_URL,
@@ -314,7 +311,7 @@ describe("handleGraphChangeNotification (issue #198)", () => {
     return rows.map((row) => row.tenant_id);
   }
 
-  /** Registers a subscription directly with plain SQL: `graphWebhookLifecycle.test.ts`'s own describe block above already covers registration through the real factory — this block only needs a row in place to exercise `handleGraphChangeNotification`'s own dedup/rejection behavior. */
+  /** Registers a subscription directly with SQL; registration through the factory is covered above. */
   async function createRegisteredMailbox(subscriptionId: string, clientState: string): Promise<string> {
     const mailboxItemId = await createMailboxItem(`mbx-${subscriptionId}`);
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "graph_api" });

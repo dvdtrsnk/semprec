@@ -201,7 +201,7 @@ describe("the writers of a card's proposal (issue #1916)", () => {
     }
 
     expect(offenders).toEqual([]);
-    // The scan is not vacuous: it found the writers this issue changed, the tick's four writes among them.
+    // The scan is not vacuous: it finds the known writers, the tick's four writes among them.
     expect(writers.filter((name) => name === "inboxTickAction.ts")).toHaveLength(4);
     expect([...new Set(writers)].sort()).toEqual([
       "inboxTickAction.ts",

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ValidationError } from "../errors.js";
 
-/** Closed condition set; keep the types, path tuples and UUID validation identical to shared/genericOperations/filterSort.ts. */
+/** Closed condition set; keep identical to shared/genericOperations/filterSort.ts. */
 export const FILTER_CONDITION_TYPES = [
   "equals",
   "not_equals",
@@ -22,10 +22,7 @@ export const FILTER_CONDITION_TYPES = [
   "gt",
   "gte",
   "in",
-  // Relation-valued conditions (issue #96): relation values live in `item_relations`, not
-  // in `properties`, so they need their own condition types rather than a `value` on the
-  // scalar ones. Generic over any relation property — Emails->Folders is only this issue's
-  // first caller.
+  // Relation values live in `item_relations`, not `properties`, so they need their own condition types.
   "relation_contains",
   "relation_not_contains",
   "relation_path_contains",
@@ -50,7 +47,7 @@ export const DATE_RELATIVE_PRESETS = [
   "beforeNow",
 ] as const;
 export type DateRelativePresetName = (typeof DATE_RELATIVE_PRESETS)[number];
-/** Days relative to today, inclusive; negative is the past; no `toDays` means no upper bound. */
+/** Inclusive; negative is the past; no `toDays` means no upper bound. */
 export type DateRelativeRange = { fromDays: number; toDays?: number };
 export type DateRelativePreset = DateRelativePresetName | DateRelativeRange;
 
@@ -104,9 +101,7 @@ const filterConditionSchema = z.union([
     .strict(),
   z.object({ type: z.enum(["lt", "lte", "gt", "gte"]), property, value: z.number().finite() }),
   z.object({ type: z.literal("in"), property, value: z.array(z.string()).min(1) }),
-  // The value is a target *item id*, so it is validated as a uuid here rather than reaching
-  // the compiled `$N::uuid` cast, where a malformed id would surface as a raw Postgres cast
-  // error instead of a ValidationError naming the offending field.
+  // Validated as a uuid here so a malformed id is a ValidationError, not a raw Postgres cast error.
   z.object({ type: z.enum(["relation_contains", "relation_not_contains"]), property, value: z.uuid() }),
   z
     .object({ type: z.literal("relation_path_contains"), path: z.tuple([property, property]), value: z.uuid() })
@@ -114,7 +109,7 @@ const filterConditionSchema = z.union([
   z.object({ type: z.enum(["relation_is_empty", "relation_is_not_empty"]), property }).strict(),
 ]);
 
-/** Recursive tree: zod needs an explicit `z.ZodType` annotation plus `z.lazy` to type-check a self-referential schema. */
+/** zod needs an explicit `z.ZodType` plus `z.lazy` for a self-referential schema. */
 export const filterNodeSchema: z.ZodType<FilterNode> = z.lazy(() =>
   z.union([
     filterConditionSchema,

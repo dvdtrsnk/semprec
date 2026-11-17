@@ -37,7 +37,6 @@ const typeRowSchema = z.object({
 });
 type TypeRow = z.infer<typeof typeRowSchema>;
 
-/** All Inbox item types of the tenant, live and trashed, read through the runtime role the tenant scope applies to. */
 async function readTypes(tenantId: string): Promise<TypeRow[]> {
   return runInTenant(tenantId, () =>
     withTransaction(dataPool, async (client) => {
@@ -82,7 +81,6 @@ async function seedTenant(tenantId: string): Promise<void> {
   await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
 }
 
-/** Gives the tenant its one user, with `locale`. */
 async function addUser(tenantId: string, locale: string): Promise<string> {
   const user = await createUser(adminPool, {
     tenantId,
@@ -93,7 +91,10 @@ async function addUser(tenantId: string, locale: string): Promise<string> {
   return user.id;
 }
 
-/** Hides (or shows again) the system database of `moduleId` from its module-id lookup; no production write can remove a system database. */
+/**
+ * Hides (or shows again) the system database of `moduleId` from its lookup; no production write removes
+ * a system database.
+ */
 async function setModuleId(tenantId: string, from: string, to: string): Promise<void> {
   const result = await adminPool.query(
     "UPDATE databases SET owner_module_id = $3 WHERE tenant_id = $1 AND owner_module_id = $2",
@@ -359,7 +360,7 @@ describe("default Inbox item types seeding (issue gh-1977)", () => {
     it("treats a settings row without a marker value, and one with a null marker, as an empty list", async () => {
       await seedTenant(zero);
       await seedTenant(b);
-      // Fixtures: a populated tenant's settings row has no value for the property the cutover adds.
+      // Fixtures: a populated tenant's settings row has no value for this property.
       await adminPool.query(
         `UPDATE items SET properties = properties - 'seededDefaultInboxTypes'
           WHERE tenant_id = $1 AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'systemSettings')`,
@@ -548,7 +549,6 @@ describe("default Inbox item types seeding (issue gh-1977)", () => {
       await provisionTenant(dataPool, fresh);
       const idea = (await readTypes(fresh)).find((row) => row.properties.name === "Nápad");
       if (!idea) throw new Error("Idea type missing");
-      // Fixture: trashed directly; a type with no Inbox item is the only shape this test needs.
       await adminPool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [idea.id]);
 
       await expect(provisionTenant(dataPool, fresh)).resolves.toBe("already-provisioned");

@@ -13,17 +13,12 @@ import { nextReconnectDelayMs } from "./backoff.js";
 import { createDocSession, type DocSession } from "./docSession.js";
 import { parseServerFrame } from "./serverFrame.js";
 
-/** `WebSocket.readyState`'s `OPEN` value — identical in both `ws` and the browser API. */
+/** `WebSocket.readyState`'s `OPEN` value in both `ws` and the browser API. */
 const OPEN_READY_STATE = 1;
 
 type RawSocketData = string | Buffer | ArrayBuffer | Buffer[];
 
-/**
- * The minimal structural surface this client needs from a WebSocket — satisfied as-is by both
- * `ws`'s `WebSocket` (used by every test in this package) and the browser's native `WebSocket`,
- * so this module never imports a concrete implementation and stays usable from a future browser
- * client without a rewrite.
- */
+/** The WebSocket surface this client needs, satisfied by both `ws` and the browser's `WebSocket`. */
 export interface WebSocketLike {
   readonly readyState: number;
   send(data: string | Uint8Array): void;
@@ -38,12 +33,9 @@ export interface SyncClientOptions {
   /** Opens one fresh `WS /api/sync` connection. Called again, with a growing backoff, after every drop. */
   createSocket: () => WebSocketLike;
   /**
-   * Re-runs every REST fetch this client's currently displayed state depends on (issue #161's
-   * active-view queries, the open item) — called once per successful connect, including the
-   * first. No `invalidate` frame received before this settles is applied; one received while it
-   * is in flight is dropped rather than queued, since the refetch itself already carries whatever
-   * that frame would have told this client. Omit it if this client displays nothing invalidation
-   * ever targets.
+   * Re-runs every REST fetch the displayed state depends on (active-view queries, the open item), once per
+   * successful connect including the first. `invalidate` frames received while it is in flight are dropped, not
+   * queued, since the refetch already carries what they would say. Omit it if nothing displayed is ever invalidated.
    */
   refetchActiveState?: () => Promise<void>;
   /** One-time `GET /api/notifications/unread` equivalent, called once per successful connect. */
@@ -82,10 +74,9 @@ function toBuffer(data: Buffer | ArrayBuffer | Buffer[]): Buffer {
 }
 
 /**
- * The `WS /api/sync` client (issue #164's Task): reconnects after a drop with exponential
- * backoff and jitter (`backoff.ts`), then runs every stream's own recovery path on each
- * successful reconnect — no universal cursor. Built against `@semprec/realtime`'s protocol-v1
- * types so a change to the wire format is a compile error here, not a silent drift.
+ * The `WS /api/sync` client: reconnects after a drop with exponential backoff and jitter, then runs
+ * each stream's own recovery path (no universal cursor). Typed against `@semprec/realtime`'s
+ * protocol so wire-format changes fail to compile.
  */
 export function createSyncClient(options: SyncClientOptions): SyncClient {
   let socket: WebSocketLike | null = null;
@@ -93,9 +84,7 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let closedByCaller = true;
   let gateInvalidations = false;
-  // Bumped on every `establishConnection()` call so a stale socket's `onclose`/`onopen` handler —
-  // one whose connection attempt has already been superseded by a newer one — can recognize
-  // itself as stale and no-op instead of clobbering the current connection's state.
+  // Bumped per `establishConnection()` so a superseded socket's handlers recognize themselves as stale and no-op.
   let connectionId = 0;
 
   const openDocs = new Map<string, DocSession>();
@@ -114,10 +103,8 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
   function dispatchFrame(frame: OutboundFrame): void {
     switch (frame.type) {
       case "invalidate":
-        // Dropped, never queued, while this connection's active-state refetch is in flight —
-        // that refetch already supersedes whatever this frame would have told the client (see
-        // `refetchActiveState`'s doc comment and the server's own "never replays an invalidation
-        // published while a socket was disconnected" contract in `syncServer.ts`).
+        // Dropped while this connection's active-state refetch is in flight, which supersedes it; the server never
+        // replays invalidations published while a socket was disconnected.
         if (!gateInvalidations) options.onInvalidate?.(frame);
         return;
       case "notification":
@@ -157,11 +144,9 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
   }
 
   /**
-   * Runs once per successful (re)connect: resubscribes every open doc and watched agent run from
-   * its own last-known cursor — never a universal one — then gates `invalidate` delivery on the
-   * active-state refetch this issue's Task requires before any new invalidation is trusted.
-   * Yjs/agent-run recovery is deliberately not gated on the same refetch: each stream's Task
-   * describes its own independent resume path, not one blocking the others.
+   * Runs once per successful (re)connect: resubscribes every open doc and watched agent run from its
+   * own last cursor, then gates `invalidate` delivery on the active-state refetch. Doc and agent-run
+   * recovery are deliberately not gated on that refetch.
    */
   function recoverAfterConnect(myConnectionId: number): void {
     for (const docId of openDocs.keys()) sendFrame({ type: "doc:open", docId });
@@ -176,15 +161,12 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
     const refetch = options.refetchActiveState?.() ?? Promise.resolve();
     refetch
       .catch((err: unknown) => {
-        // The active-state refetch itself failed: logged, not swallowed, and the gate still
-        // lifts below rather than leaving this client permanently deaf to invalidations over one
-        // failed fetch — the next write still arrives as a live `invalidate` frame even though
-        // this particular resync attempt didn't converge.
+        // Logged, and the gate still lifts below so one failed fetch does not leave the client deaf to
+        // invalidations; the next write still arrives live.
         console.error("Sync client failed to refetch active state after connect", err);
       })
       .finally(() => {
-        // A superseded connection attempt's refetch resolving late must not lift the *current*
-        // attempt's gate — only the still-current connection may clear it.
+        // A superseded attempt's late refetch must not lift the current attempt's gate.
         if (myConnectionId === connectionId) gateInvalidations = false;
       });
   }
@@ -211,21 +193,17 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
       if (myConnectionId !== connectionId) return;
       handleMessage(event.data);
     };
-    // A listener must be attached even when the caller supplies none: leaving `onerror` null
-    // would surface as an unhandled error in some `WebSocketLike` implementations (`ws`'s own
-    // included) rather than the `close` event this client already reacts to right after.
+    // `onerror` must be set even without a caller listener: a null handler surfaces as an unhandled error in some
+    // implementations (`ws` included) instead of the `close` event handled next.
     ws.onerror = (err: unknown) => {
       console.error("Sync client socket error", err);
     };
     ws.onclose = (event) => {
-      // A stale socket's own close (e.g. one `close()` explicitly tore down, or one that lost a
-      // race against a newer `establishConnection()`) must not clobber a connection that has
-      // already superseded it.
+      // A stale socket's close must not clobber the connection that superseded it.
       if (myConnectionId !== connectionId) return;
       socket = null;
       if (event.code === SESSION_REVOKED_CLOSE_CODE) {
-        // Terminal: a revoked session will fail authentication again on every retry, so this
-        // client stops rather than looping against a credential that will never become valid.
+        // Terminal: a revoked session fails authentication on every retry.
         closedByCaller = true;
         options.onSessionRevoked?.();
         return;

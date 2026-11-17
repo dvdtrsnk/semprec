@@ -41,9 +41,9 @@ import { createInboxItemWithClient } from "../inboxStore.js";
 import { createSemprecTickAction } from "../inboxTickAction.js";
 import { confirmProposalWithClient, readConfirmationResults, reopenProposalWithClient } from "../proposalActions.js";
 
-// Issue gh-1984: the undo of a confirmed card cancels the follow-up jobs the confirmation queued (a transcription for a
-// recording card, the tool sync of an MCP server card) in its own transaction, and removes the transcript a finished
-// transcription produced. The reversal of the synchronous writes is gh-1943's and is not tested here.
+// The undo of a confirmed card cancels the follow-up jobs the confirmation queued (a transcription for a recording
+// card, the tool sync of an MCP server card) in its own transaction, and removes the transcript a finished
+// transcription produced. The reversal of the synchronous writes is not tested here.
 
 /**
  * `connectMock.impl` is what the mocked `connectMcpServer` calls. The sync handler is run in this file only for a server
@@ -82,7 +82,6 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Runs `fn` in a transaction of tenant zero's scope, as a request of that tenant would. */
 function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(getTenantZeroId(), () => withTransaction(pool, fn));
 }
@@ -130,7 +129,6 @@ async function waitForLockWaiter(): Promise<void> {
 
 const transcriptCount = () => count("SELECT 1 FROM items WHERE database_id = $1", [transcriptsId]);
 
-/** An Inbox item with one shared audio attachment whose metadata the job has written, and the recording card the tick made. */
 async function recordingCard(sharedBlobId?: string): Promise<string> {
   const itemId = await inTransaction(async (client) => {
     const blob = sharedBlobId
@@ -168,7 +166,6 @@ async function recordingCard(sharedBlobId?: string): Promise<string> {
   return rows[0].id;
 }
 
-/** The Files item a confirmed recording card moved the attachment into. */
 function fileOf(confirmed: ItemRow): string {
   const [result] = readConfirmationResults(confirmed.properties);
   if (!result || result.databaseKey !== "files") throw new Error("The confirmation did not report a Files item");
@@ -197,7 +194,6 @@ async function uploadedRecording(): Promise<{ fileItemId: string; blobId: string
   });
 }
 
-/** Confirms a fresh recording card and returns the Files item whose transcription it queued. */
 async function confirmedRecording(): Promise<{ cardId: string; fileItemId: string }> {
   const cardId = await recordingCard();
   return { cardId, fileItemId: fileOf(await confirm(cardId)) };
@@ -225,7 +221,6 @@ async function finishTranscription(fileItemId: string, linkedFileItemId = fileIt
   return transcriptId;
 }
 
-/** Removes both jobs of a file the way the worker does when it completes them. */
 async function completeJobs(fileItemId: string): Promise<void> {
   for (const key of [transcriptionCreateJobKey(fileItemId), transcriptionJobKey(fileItemId)]) {
     await pool.query("SELECT graphile_worker.remove_job($1)", [key]);
@@ -256,7 +251,6 @@ async function cardWith(envelope: Record<string, unknown>): Promise<string> {
   return card.id;
 }
 
-/** Confirms an MCP server card as `userId` and returns the server item whose sync it queued. */
 async function confirmedServer(
   options: { userId?: string | undefined; credential?: boolean } = {},
 ): Promise<{ cardId: string; serverId: string; followUp: string | null }> {
@@ -393,7 +387,6 @@ describe("undoing a confirmed recording card (transcription follow-up)", () => {
 
   it("removes the jobs and trashes the transcript of a transcription that is half done", async () => {
     const { cardId, fileItemId } = await confirmedRecording();
-    // The create step ran, the pipeline has not: both jobs may still be queued, and the transcript exists.
     const transcriptId = await inTransaction(async (client) => {
       const transcript = await createItemWithClient(
         client,
@@ -670,7 +663,6 @@ describe("tenant isolation of the follow-up cancellation (runtime role pool)", (
       );
 
       expect(await queuedKeys()).toEqual([mcpServerSyncJobKey(serverB)]);
-      // Tenant B's server is live and still in tenant B's scope only.
       expect((await itemState(serverB)).deleted).toBe(false);
       expect(
         await withTenantTransaction(

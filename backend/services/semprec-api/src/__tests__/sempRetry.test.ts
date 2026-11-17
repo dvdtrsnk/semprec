@@ -25,9 +25,8 @@ import { createDispatcher } from "../app.js";
 import { createInboxProposalFixture, decideInboxProposal, playItemThreadReply } from "./inboxItemThreadFixtures.js";
 
 /**
- * Retrying a failed or incomplete Semp reply (issue gh-1926) through the real route, the real store and the real
- * queue tables, on the runtime role pool. Replies are played with the production writers: a message is sent, claimed
- * by the turn and finished with `finishSempMessageTurn`.
+ * Retrying a failed or incomplete Semp reply through the real route, store and queue tables on the runtime role
+ * pool; replies are played with the production writers.
  */
 
 const PASSWORD = "retry-test-password";
@@ -71,7 +70,7 @@ interface PlayedReply {
   assistantMessageId: string;
 }
 
-/** Sends a message (into `threadId` when given) and plays its turn to `outcome` (`null` leaves the reply queued). */
+/** `null` leaves the reply queued. */
 async function playReply(tenant: Tenant, outcome: Outcome | null, threadId?: string): Promise<PlayedReply> {
   return runInTenant(tenant.tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -86,7 +85,7 @@ async function playReply(tenant: Tenant, outcome: Outcome | null, threadId?: str
         const done = {
           status: "done" as const,
           text: "Answer",
-          // The turn's last event id; this reply has no run, so the id only has to be a valid bigint.
+          // This reply has no run, so the id only has to be a valid bigint.
           lastEventId: "1",
         };
         const summary = (steps: SempReplyStep[]) => ({
@@ -142,7 +141,7 @@ function storedMessages(tenant: Tenant, threadId: string): Promise<StoredMessage
   );
 }
 
-/** The `sempMessage` jobs of the thread's messages, by key (the view of the queue does not project the payload). */
+/** By key: the queue's view does not project the payload. */
 function queuedJobKeys(tenant: Tenant, threadId: string): Promise<string[]> {
   return runInTenant(tenant.tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -245,7 +244,7 @@ describe("retrying a Semp reply", () => {
     const ref = { kind: "agentRun", agentRunId: randomUUID() };
     const played = await runInTenant(tenant.tenantId, () =>
       withTransaction(pool, async (client) => {
-        // The refs are stored as the send path stores them after it validated them; the turn only reads them back.
+        // Stored as the send path stores validated refs; the turn only reads them back.
         const sent = await sendSempMessage(client, { text: "Question with a ref", context: [ref], hasContext: true });
         expect(await claimSempMessage(client, sent.threadId, sent.assistantMessageId)).toBe(true);
         expect(
@@ -331,8 +330,7 @@ describe("retrying a Semp reply", () => {
         return id;
       }),
     );
-    // Raw fixture: a thread whose latest message is a user message cannot be produced by the send route, which
-    // always queues the assistant reply with it.
+    // The send route always queues the assistant reply with a user message, so this state is a raw fixture.
     const userMessageId = await runInTenant(tenant.tenantId, async () => {
       const inserted = await pool.query<{ id: string }>(
         "INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', 'Unanswered') RETURNING id",
@@ -356,7 +354,7 @@ describe("retrying a Semp reply", () => {
       const created = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
       const threadId = created.rows[0]?.id;
       if (!threadId) throw new Error("Missing thread");
-      // Raw fixture: the send path always sets `reply_to_message_id`, so a reply without it cannot be produced by it.
+      // The send path always sets `reply_to_message_id`, so this is a raw fixture.
       const inserted = await pool.query<{ id: string }>(
         "INSERT INTO semp_messages (thread_id, role, status) VALUES ($1, 'assistant', 'error') RETURNING id",
         [threadId],
@@ -376,8 +374,8 @@ describe("retrying a Semp reply", () => {
   it("creates exactly one new message and one job when several retries of the same reply arrive at once", async () => {
     const tenant = await createTenant();
     const played = await playReply(tenant, "error");
-    // The thread's row lock is held until every request is waiting for it, so all of them are in flight together
-    // and the first statement of each is the one that decides the order.
+    // The thread's row lock is held until every request waits for it, so the first statement of each decides the
+    // order.
     let release!: () => void;
     const released = new Promise<void>((resolve) => {
       release = resolve;
@@ -456,7 +454,6 @@ describe("retrying a Semp reply", () => {
     const jobsBefore = await queuedJobKeys(tenant, played.threadId);
 
     const response = await retry(tenant, played.threadId, played.assistantMessageId);
-    // The send path answers the same for a new message to the same thread.
     const send = await fetch(`${baseUrl}/api/semp/threads`, {
       method: "POST",
       headers: { authorization: `Bearer ${tenant.token}`, "content-type": "application/json" },
@@ -474,8 +471,8 @@ describe("retrying a Semp reply", () => {
     const tenant = await createTenant();
     const played = await playReply(tenant, "error");
 
-    // Raw statement: the retry route never reaches the index because it takes the thread lock first; this inserts
-    // what a writer that skipped the lock would, to show that the database refuses it.
+    // The retry route takes the thread lock first and never reaches the index; this inserts what a writer that
+    // skipped the lock would, to show the database refuses it.
     await expect(
       runInTenant(tenant.tenantId, () =>
         pool.query(
@@ -531,7 +528,6 @@ describe("retrying a Semp reply", () => {
 
     const foreignAnswer = await retry(caller, foreign.threadId, foreign.assistantMessageId);
     const randomAnswer = await retry(caller, randomUUID(), randomUUID());
-    // The foreign message id in a thread of the caller's own is not found there either.
     const mixedAnswer = await retry(caller, own.threadId, foreign.assistantMessageId);
     const randomInOwnThread = await retry(caller, own.threadId, randomUUID());
 
@@ -543,7 +539,7 @@ describe("retrying a Semp reply", () => {
     expect(await storedMessages(owner, foreign.threadId)).toHaveLength(2);
     expect(await queuedJobKeys(owner, foreign.threadId)).toEqual([`sempMessage:${foreign.assistantMessageId}`]);
     expect(await storedMessages(caller, own.threadId)).toHaveLength(2);
-    // The owner's own retry works, so the answers above are not a route that refuses everything.
+    // Proves the route does not refuse everything.
     expect((await retry(owner, foreign.threadId, foreign.assistantMessageId)).status).toBe(202);
   });
 

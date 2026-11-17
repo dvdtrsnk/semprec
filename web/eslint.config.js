@@ -48,7 +48,7 @@ export default tseslint.config(
   },
   {
     // Cap production source files at 900 counted lines so no module grows into a
-    // monolith (docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md).
+    // monolith.
     // Tests are exempt: a test file's length tracks the number of cases it covers,
     // not how many responsibilities it mixes.
     files: ["src/**/*.{ts,tsx}"],

@@ -1,9 +1,8 @@
 import type { ViewRow } from "@semprec/data";
 
 /**
- * The wire shape every view read/write returns (issue #155). Unlike `databaseEnvelope.ts`/
- * `propertyEnvelope.ts`, `name` is a plain user-supplied string with no localized-metadata
- * catalog entry behind it (views carry no `key`), so it is projected verbatim.
+ * Unlike databases and properties, a view `name` has no localized-metadata entry (views carry no
+ * `key`), so it is projected verbatim.
  */
 export interface ViewEnvelope {
   id: string;

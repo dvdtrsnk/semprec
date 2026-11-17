@@ -1,25 +1,21 @@
-// The RRULE subset that subscribed events are expanded with (issue gh-1966): which rule texts are understood, and on which
-// local days a series that starts on a given day occurs. Everything here is pure and works on calendar days only; the
-// time zones, the exceptions and the overrides are applied by `subscribedEventOccurrences.ts`.
-// Constrained by: docs/adr/2026-11-14-a-subscribed-event-series-is-expanded-from-its-stored-rows-on-read.md
+// The RRULE subset subscribed events are expanded with. Pure, on calendar days only; time zones, exceptions and
+// overrides are applied by `subscribedEventOccurrences.ts`.
 
-/** The frequencies a rule may have. */
 export type RecurrenceFrequency = "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY";
 
-/** A `BYDAY` entry: the weekday (ISO, Monday is 1) and, for `2TU` or `-1FR`, the ordinal within the month. */
+/** ISO weekday (Monday is 1); `ordinal` for `2TU` or `-1FR`. */
 export interface RecurrenceWeekday {
   weekday: number;
   ordinal: number | null;
 }
 
-/** The `UNTIL` of a rule as the feed gave it: a date, with a time of day when it has one, `utc` for a `Z` time. */
+/** `utc` for a `Z` time. */
 export interface RecurrenceUntil {
   date: string;
   time: string | null;
   utc: boolean;
 }
 
-/** A rule that uses only `FREQ`, `INTERVAL`, `COUNT`, `UNTIL`, `BYDAY`, `BYMONTHDAY` and `BYMONTH`. */
 export interface RecurrenceRule {
   freq: RecurrenceFrequency;
   interval: number;
@@ -30,7 +26,7 @@ export interface RecurrenceRule {
   byMonth: number[];
 }
 
-/** The most periods (days, weeks, months or years, by frequency) one expansion looks at before it gives up. */
+/** Bounds one expansion, in periods of the rule's frequency. */
 const MAX_PERIODS = 20_000;
 
 function isFrequency(value: string): value is RecurrenceFrequency {
@@ -42,7 +38,6 @@ const WEEKDAY_CODES: readonly string[] = ["MO", "TU", "WE", "TH", "FR", "SA", "S
 
 const MS_PER_DAY = 86_400_000;
 
-/** The days since 1970-01-01 of the calendar date `YYYY-MM-DD`. */
 function toDays(date: string): number {
   const [year, month, day] = date.split("-").map(Number);
   return Math.round(Date.UTC(year ?? 1970, (month ?? 1) - 1, day ?? 1) / MS_PER_DAY);
@@ -52,13 +47,12 @@ function pad(value: number, width: number): string {
   return String(value).padStart(width, "0");
 }
 
-/** The calendar date `YYYY-MM-DD` of a number of days since 1970-01-01. */
 function fromDays(days: number): string {
   const date = new Date(days * MS_PER_DAY);
   return `${pad(date.getUTCFullYear(), 4)}-${pad(date.getUTCMonth() + 1, 2)}-${pad(date.getUTCDate(), 2)}`;
 }
 
-/** The ISO weekday (Monday is 1) of a number of days since 1970-01-01, which was a Thursday. */
+/** 1970-01-01 was a Thursday. */
 function weekdayOf(days: number): number {
   return ((((days + 3) % 7) + 7) % 7) + 1;
 }
@@ -109,13 +103,7 @@ function readNumbers(text: string, pattern: RegExp, within: (value: number) => b
   return numbers;
 }
 
-/**
- * Reads the text of an `RRULE` value. Returns `null` for a rule that is not expanded: one with a part other than
- * `FREQ`, `INTERVAL`, `COUNT`, `UNTIL`, `BYDAY`, `BYMONTHDAY` and `BYMONTH`, a frequency other than daily, weekly,
- * monthly or yearly, a value that is not valid, a part given twice, `COUNT` together with `UNTIL`, an ordinal `BYDAY`
- * outside a monthly rule or a yearly one with `BYMONTH`, `BYMONTHDAY` in a weekly rule, and a yearly rule with `BYDAY`
- * or `BYMONTHDAY` but no `BYMONTH`. The last four are combinations that this expansion does not define.
- */
+/** `null` for anything outside the supported subset, including combinations this expansion does not define. */
 export function parseRecurrenceRule(text: string): RecurrenceRule | null {
   const parts = new Map<string, string>();
   for (const entry of text.split(";")) {
@@ -163,7 +151,6 @@ export function parseRecurrenceRule(text: string): RecurrenceRule | null {
   return rule;
 }
 
-/** The date of the `ordinal`-th `weekday` of a month: from the first one for a positive ordinal, the last for a negative. */
 function nthWeekday(year: number, month: number, weekday: number, ordinal: number): number | null {
   const length = daysInMonth(year, month);
   const firstDay = toDays(`${pad(year, 4)}-${pad(month, 2)}-01`);
@@ -174,7 +161,7 @@ function nthWeekday(year: number, month: number, weekday: number, ordinal: numbe
   return day >= 1 && day <= length ? day : null;
 }
 
-/** The days of a month that `BYMONTHDAY` and `BYDAY` name, both applying when both are given. `null` when neither is. */
+/** Both filters apply when both are given; `null` when neither is. */
 function namedDaysOfMonth(rule: RecurrenceRule, year: number, month: number): number[] | null {
   if (rule.byMonthDay.length === 0 && rule.byDay.length === 0) return null;
   const length = daysInMonth(year, month);
@@ -200,7 +187,6 @@ function sortedUnique(days: number[]): number[] {
   return [...new Set(days)].sort((a, b) => a - b);
 }
 
-/** What the iteration needs to know about the day the series starts on. */
 interface SeriesStart {
   days: number;
   year: number;
@@ -215,7 +201,6 @@ function readStart(date: string): SeriesStart {
   return { days, year: year ?? 1970, month: month ?? 1, day: day ?? 1, weekday: weekdayOf(days) };
 }
 
-/** The first day of period `index` and the days of the rule inside it, ascending; the period is a day, week, month or year. */
 function period(rule: RecurrenceRule, start: SeriesStart, index: number): { first: number; days: number[] } {
   const step = index * rule.interval;
   switch (rule.freq) {
@@ -262,7 +247,7 @@ function period(rule: RecurrenceRule, start: SeriesStart, index: number): { firs
   }
 }
 
-/** How many periods of the rule lie between its first and the day `from`, rounded down; an upper bound for skipping ahead. */
+/** An upper bound for skipping ahead. */
 function periodsBefore(rule: RecurrenceRule, start: SeriesStart, from: number): number {
   const date = fromDays(from);
   const year = readInteger(date.slice(0, 4));
@@ -280,12 +265,9 @@ function periodsBefore(rule: RecurrenceRule, start: SeriesStart, from: number): 
 }
 
 /**
- * The days of the series that fall in `window` (`from` and `to` are dates, both included), ascending, as `YYYY-MM-DD`.
- * `start` is the local date and time of the first occurrence, which is an occurrence whether or not the rule names it,
- * and counts towards `COUNT`. `until` is the last allowed local start as `YYYY-MM-DDTHH:mm`, compared with each start
- * (`start.date` with `start.time`), or `null`. Without `COUNT` the iteration starts at the period before `window.from`;
- * with it, every period from the first is counted, and a rule that has not produced its `COUNT` occurrences after
- * `MAX_PERIODS` periods ends there. A day that a month lacks (the 31st, 29 February) is no occurrence, it is not moved.
+ * `window` is inclusive. `start` is always an occurrence, whether or not the rule names it, and counts towards
+ * `COUNT`. With `COUNT` every period from the first must be counted, so skipping ahead is only possible without it.
+ * A day a month lacks (the 31st, 29 February) is no occurrence; it is not moved.
  */
 export function recurrenceDates(
   rule: RecurrenceRule,

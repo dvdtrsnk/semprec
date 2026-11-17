@@ -16,7 +16,7 @@ import {
   TranscriptionStoppedError,
 } from "./transcriptionTask.js";
 
-/** What the queue sees of a failed attempt: a code, never the cause, whose message could carry the recording. */
+/** A code only: the cause's message could carry the recording. */
 class TranscriptSpeakerSuggestionError extends Error {
   readonly code: "budgetExceeded" | "providerFailed" | "unknown";
 
@@ -40,18 +40,10 @@ function requireGatewayInternalToken(): string {
 }
 
 /**
- * The handler of `transcriptSpeakerSuggestion` (issue gh-1942): asks the unmapped speakers of one transcript again, with
- * the same suggestion as the pipeline's step 7 (`runSpeakerSuggestion`), after the transcript's Event or the Event's
- * participants changed. The transcript is `done` or still processing, as long as it has `segments`; a transcript
- * without them, one in the Trash or gone, one without a source Files item, and one a user locked get nothing, so the
- * job ends successfully. The call is skipped when the checkpoint holds the Event and candidates of now.
- *
- * The task does not touch `item_automation`: it takes the same locks as a pipeline step (source, transcript, then the
- * automation row, to see a user's lock) and counts no attempt. A failure, a budget refusal of the gateway included, throws an
- * error that carries a code only, so the job fails visibly in the queue rather than ending as a success with nothing
- * written: the task leaves no card, history entry or checkpoint behind, and only a later edge write or a rerun asks again. The
- * transcript and the model's answer are never logged. `completionClient` defaults to `@semprec/ai-gateway-client`'s
- * client, built when the first job runs.
+ * Re-runs `runSpeakerSuggestion` after the transcript's Event or its participants changed, for any
+ * transcript with `segments`. Trashed, sourceless or locked transcripts end successfully with nothing.
+ * Takes the pipeline's locks but counts no attempt. A failure (budget refusal included) throws a
+ * code-only error so the job fails visibly. Transcript and answer are never logged.
  */
 export function createTranscriptSpeakerSuggestionTask(pool: Pool, completionClient?: AiGatewayClientPort) {
   const resolveCompletionClient = (): AiGatewayClientPort =>

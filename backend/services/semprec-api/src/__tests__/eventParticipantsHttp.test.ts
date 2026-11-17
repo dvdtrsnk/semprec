@@ -52,7 +52,7 @@ const moduleRegistry = await loadFullModuleRegistry();
 const MAILBOX_ID = randomUUID();
 
 const createdItem = z.object({ id: z.string() }).passthrough();
-/** A JSON-RPC error answer of the MCP endpoint; a `ValidationError` arrives as `-32602` with its details as `data`. */
+/** A `ValidationError` arrives as `-32602` with its details as `data`. */
 const mcpError = z.object({ error: z.object({ code: z.number(), data: z.unknown().optional() }) });
 const peopleBody = z.object({
   people: z.array(
@@ -70,9 +70,8 @@ const peopleBody = z.object({
 let pool: Pool;
 
 /**
- * The participant edge and its read route through the real dispatcher: the generic edge `PUT` is the public
- * write, and the invitation writes stand in for the calendar module's invitation code, which writes through
- * the choke point with the system writer kind.
+ * The generic edge `PUT` is the public write; the invitation writes stand in for the calendar module's invitation
+ * code, which writes through the choke point with the system writer kind.
  */
 describe("Event participants over HTTP (issue #1757)", () => {
   let server: Server;
@@ -149,11 +148,9 @@ describe("Event participants over HTTP (issue #1757)", () => {
     return createdItem.parse(created.body).id;
   }
 
-  /** The generic edge `PUT`, the public write of a participant edge. */
   const put = (eventId: string, personId: string, body?: unknown) =>
     call("PUT", `/api/items/${eventId}/relations/people/${personId}`, body);
 
-  /** Server code writing an invitation: the choke point with the system writer kind. */
   const invite = (eventId: string, personId: string, invitation: Record<string, unknown>) =>
     inTenantZero(() =>
       createChokePoint(pool).createRelation({
@@ -293,7 +290,6 @@ describe("Event participants over HTTP (issue #1757)", () => {
           data: { field: "targetItemId", reason: "nonCanonicalItemId" },
         });
       }
-      // The same call with the id as stored is judged against the stored invitation.
       expect(await relationPut({ ...edge, targetItemId: petr })).toEqual({
         code: -32602,
         data: { field: "metadata", reason: "invitationReadOnly" },

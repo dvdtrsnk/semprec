@@ -64,8 +64,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
   });
 
   afterEach(() => {
-    // Restore every production registration `domainWriteHooks.ts` makes. Re-importing that
-    // module would not re-run its registrations: it is cached after its first import.
+    // Re-importing `domainWriteHooks.ts` would not re-run its registrations (module cache).
     clearHooksForTests();
     registerProductionWriteHookDefaults();
   });
@@ -74,7 +73,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
     await pool?.end();
   });
 
-  /** Mirrors the registrations of `../domainWriteHooks.ts` that this file's scenarios depend on. Reads each hook through its module namespace, so a test's scoped spy is what gets registered while it is installed. */
+  /** Registers the `../domainWriteHooks.ts` hooks these scenarios need, through the module namespace so a scoped spy is what gets registered. */
   function registerProductionWriteHookDefaults(): void {
     registerItemCreateHook(mcpServerWriteHook.mcpServerItemCreateHook);
     registerItemUpdateHook(mcpServerWriteHook.mcpServerItemUpdateHook);

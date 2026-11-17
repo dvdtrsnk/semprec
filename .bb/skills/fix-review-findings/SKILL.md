@@ -1,13 +1,12 @@
 ---
 name: fix-review-findings
-description: "How to address code-review-bot findings on a Semprec pull request - verify the bot's claim, check it against the issue's Task, Acceptance criteria and Out of scope, fix the whole class of defect rather than the one instance, add the test that proves the fix, and reply only after the fix is committed. Load this BEFORE changing code in response to a review, whether in a Relay fix-review-findings run or by hand. Triggers on: review findings, review:changes-requested, an inline review thread, a review summary comment, FINAL_DECISION: blocked, a fix round, a Relay fix prompt, and any instruction to address, resolve or reply to review comments."
+description: "How to address code-review-bot findings on a Semprec pull request - verify the bot's claim, check it against the issue's Task, Acceptance criteria and Out of scope, fix the whole class of defect rather than the one instance, prove a behaviour fix with a test, and reply only after the fix is committed. Load this BEFORE changing code in response to a review, whether in a Relay fix-review-findings run or by hand. Triggers on: review findings, review:changes-requested, an inline review thread, a review summary comment, FINAL_DECISION: blocked, a fix round, a Relay fix prompt, and any instruction to address, resolve or reply to review comments."
 ---
 
 # Fixing review findings
 
-A fix round is where defects are most often *introduced*, not only removed.
-Findings re-opened after a fix, and the longest blocked loops on this repository
-(four rounds on one pull request), came from the same few habits:
+A fix round is where defects are most often *introduced*. Re-opened findings
+and the longest blocked loops came from the same few habits:
 
 - applying a finding literally against the issue,
 - fixing one instance and leaving its siblings,
@@ -29,8 +28,12 @@ constraint it assumes, the grep it implies ("nothing else imports this"), the
 code it says is missing, and whether the code is pre-existing or moved verbatim.
 Most rejected findings were the bot not checking one of these.
 
-Why: a fix agent that accepts a false claim writes code, or worse a rule, that
-encodes it. Then the next reviewer has two wrong things to undo.
+Also check it against the repository's rules. A finding that asks for a test
+of a defensive or unreachable branch, a new ADR for a local pattern, a
+docstring on a self-explanatory function, or an issue number in a comment
+contradicts `.bb/AGENTS.md`; reply instead of complying. A finding that a
+defensive branch is untested is fixed by removing the branch when the types
+already exclude the state.
 
 ## 2. Check it against the issue before applying it
 
@@ -60,8 +63,7 @@ Before editing, list every place that shares the defect:
 
 Fix all of them in this round.
 
-Why: the bot reports the first instance it sees. Fixing only that one
-guarantees the next round reports the second.
+Why: the bot reports the first instance it sees; the next round reports the second.
 
 ## 4. Enumerate failure points before rewriting async error handling
 
@@ -76,12 +78,10 @@ Why: patching one interleaving per round is what produced the four-round loop.
 
 ## 5. Every fix brings its proof
 
-- Add a test that fails without the fix (see `testing`).
-- Re-read the docstrings, comments, ADR text and PR description that describe
-  the code you changed, and make them true again.
-
-Why: an unproven fix is reported again as an untested branch, and a stale
-docstring is reported as a false claim.
+- A behaviour fix gets a test that fails without it, preferably a new row in an
+  existing table-driven test (see `testing`).
+- Re-read the comments, the `docs/architecture/` section and the PR description
+  that describe the code you changed, and make them true again.
 
 ## 6. Keep the round scoped
 
@@ -89,8 +89,7 @@ Change only what the findings and the pull request's own intent require. A
 flake, a bug or a cleanup you notice along the way goes into your final answer
 as a proposed follow-up, not into this branch.
 
-Why: unrelated changes in a fix round are themselves reported as scope findings,
-and were the most frequently re-opened kind.
+Why: unrelated changes are themselves reported as scope findings.
 
 ## 7. Reply after the fix is committed
 
@@ -104,7 +103,7 @@ or the code path that shows the finding does not hold.
 
 - [ ] Every finding was checked against the repository and against the issue.
 - [ ] Every sibling of each fixed instance was fixed too.
-- [ ] Every fix has a test that fails without it.
-- [ ] Docstrings, comments and ADR text near each fix still describe the code.
+- [ ] Every behaviour fix has a test that fails without it.
+- [ ] Comments and architecture text near each fix still describe the code.
 - [ ] No change outside the findings and the pull request's intent.
 - [ ] Every reply names a commit, or the concrete reason the finding is wrong.

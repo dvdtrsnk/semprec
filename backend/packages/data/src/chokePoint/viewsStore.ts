@@ -17,7 +17,6 @@ const CREATED_BY_VALUES: readonly CreatedBy[] = ["user", "ai_agent", "system"];
 const VIEW_COLUMNS =
   "id, database_id, type, name, config, is_default, owner_module_id, created_by, creator_project_item_id";
 
-/** The raw `views` row shape this module reads back from Postgres. */
 type ViewDbRow = {
   id: string;
   database_id: string | null;
@@ -44,13 +43,12 @@ function mapViewRow(row: ViewDbRow): ViewRow {
   };
 }
 
-/** True when a Postgres error is the named unique-index violation, so callers can turn it into a clean ConflictError. */
 function isUniqueViolation(err: unknown, constraint: string): boolean {
   const pgErr = err as { code?: string; constraint?: string };
   return pgErr?.code === "23505" && pgErr?.constraint === constraint;
 }
 
-/** Runs a view type's registered `configSchema` (data shape) and `service.validateConfig` (issue #22, point 4) against a config, on both create and patch. */
+/** Runs a view type's registered `configSchema` and `service.validateConfig`, on both create and patch. */
 async function validateViewTypeConfig(
   client: PoolClient,
   type: string,
@@ -61,8 +59,7 @@ async function validateViewTypeConfig(
   if (definition?.configSchema) {
     const result = definition.configSchema.safeParse(config);
     if (!result.success) {
-      // `details` stays a flat record of primitives: the HTTP error contract drops anything else
-      // wholesale (including `field`), and the issues are already in the message.
+      // `details` stays a flat record of primitives: the HTTP error contract drops anything else.
       throw new ValidationError(`Invalid config for view type '${type}': ${result.error.message}`, {
         field: "config",
       });
@@ -70,8 +67,8 @@ async function validateViewTypeConfig(
   }
   definition?.service?.validateConfig?.(config);
 
-  // Lookups run inside the caller's tenant, so a foreign id fails exactly like a missing one; the
-  // message names the field, never the id.
+  // Lookups run inside the caller's tenant, so a foreign id fails like a missing one; the message
+  // names the field, never the id.
   const fields = config as Record<string, unknown>;
   for (const field of definition?.referenceFields?.databaseIds ?? []) {
     const value = fields[field];
@@ -94,7 +91,7 @@ async function validateViewTypeConfig(
 }
 
 export interface CreateViewInput {
-  /** Set for a linked/filtered view (must reference an existing database); omit/null for a curated view. */
+  /** Set for a linked/filtered view; omit/null for a curated view. */
   databaseId?: string | null;
   type: string;
   name: string;
@@ -102,7 +99,7 @@ export interface CreateViewInput {
   isDefault?: boolean;
   ownerModuleId?: string;
   createdBy?: CreatedBy;
-  /** Required and non-null exactly when `createdBy === 'ai_agent'` — enforced by the choke-point, not here. Never set for a 'user'/'system' view. */
+  /** Required exactly when `createdBy === 'ai_agent'` (enforced by the choke point, not here). */
   creatorProjectItemId?: string | null;
 }
 
@@ -207,9 +204,9 @@ export interface PatchViewInput {
   name?: string;
   config?: Record<string, unknown>;
   isDefault?: boolean;
-  /** Set only by the choke-point's ai_agent -> user adoption on a user write; never accepted directly from an API payload. */
+  /** Set only by the choke point's ai_agent -> user adoption; never accepted from an API payload. */
   createdBy?: CreatedBy;
-  /** Set (to `null`) only alongside `createdBy: 'user'` on the same adoption; never accepted directly from an API payload. */
+  /** Set (to `null`) only alongside `createdBy: 'user'` on that adoption. */
   creatorProjectItemId?: string | null;
 }
 
@@ -223,8 +220,7 @@ export async function patchView(
 
   let nextConfig: ViewConfig | undefined;
   if (patch.config !== undefined) {
-    // A shallow merge, not a replace: a caller patching e.g. just `sort` must not silently
-    // wipe `filter`/`propertyOrder` — same shape as itemsStore.updateItemProperties's `||` merge.
+    // A shallow merge, not a replace: patching just `sort` must not wipe `filter`/`propertyOrder`.
     nextConfig = parseViewConfig({ ...view.config, ...patch.config });
     const wasCurated = view.databaseId === null;
     const willBeCurated = nextConfig.membership === "manual";

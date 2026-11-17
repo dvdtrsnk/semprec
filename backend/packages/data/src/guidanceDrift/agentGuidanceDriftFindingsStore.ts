@@ -14,9 +14,7 @@ interface FindingRow {
   id: string;
   project_item_id: string;
   fingerprint: string;
-  // JSONB column: the `pg` driver hands back a plain object with no runtime guarantee it still
-  // matches `GuidanceDriftContradiction`'s shape (a direct DB patch or schema evolution could
-  // diverge it), so `mapRow` validates and narrows it below rather than casting.
+  // JSONB with no runtime shape guarantee; `mapRow` validates rather than casts.
   payload: Record<string, unknown>;
   status: string;
   first_seen_at: Date;
@@ -40,14 +38,8 @@ function mapRow(row: FindingRow): GuidanceDriftFinding {
 const COLUMNS = "id, project_item_id, fingerprint, payload, status, first_seen_at, last_seen_at, resolved_at";
 
 /**
- * Concrete `PoolClient` implementation of `@semprec/shared`'s `GuidanceDriftFindingStore`
- * (issue #85), backed by migration 0035's `agent_guidance_drift_findings` table and its
- * `unique(project_item_id, fingerprint)` constraint.
- *
- * A write that changes which findings of a project are active (a finding raised or reactivated, a
- * finding resolved, dismissed or decided) announces the change of the project's agent setup once the
- * transaction commits (`publishProjectAgentInvalidation`); observing a finding that is already active
- * and a call that finds nothing to change announce nothing.
+ * Backed by `unique(project_item_id, fingerprint)`. A write that changes which findings are active publishes the
+ * project's agent invalidation after commit; a no-op publishes nothing.
  */
 export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClient> = {
   async listActive(tx, projectItemId) {
@@ -59,9 +51,7 @@ export const agentGuidanceDriftFindingsStore: GuidanceDriftFindingStore<PoolClie
   },
 
   async upsertActive(tx, input: UpsertActiveGuidanceDriftFindingInput) {
-    // Row-lock first (rather than a single `INSERT ... ON CONFLICT`) because the caller needs to
-    // know whether this was a genuine active/resolved *transition* — an `ON CONFLICT DO UPDATE`
-    // can't distinguish "was already active" from "was resolved" for the row it just touched.
+    // Lock and read first: `ON CONFLICT DO UPDATE` cannot tell "already active" from "was resolved".
     const { rows: existingRows } = await tx.query<FindingRow & { resolution_choice: string | null }>(
       `SELECT ${COLUMNS}, resolution_choice FROM agent_guidance_drift_findings
        WHERE project_item_id = $1 AND fingerprint = $2 FOR UPDATE`,

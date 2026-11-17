@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/calendar` path family. */
 export const CALENDAR_ROUTES: RouteMatrixEntry[] = [
   {
     name: "calendar timeline",

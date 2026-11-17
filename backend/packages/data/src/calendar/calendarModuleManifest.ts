@@ -30,48 +30,23 @@ export {
 } from "./calendarAgentTools.js";
 
 /**
- * Manifest of the calendar module. The later calendar issues (invitations, reminders, recurrence, agent
- * tools) add their databases, routes, heartbeat actions and agent tools to this one manifest. The module
- * owns the calendar databases and the system-owned properties on them (`CALENDAR_MODULE_ID` is their owner
- * process). Its first database is `calendars` (issue #1600), seeded by `seed/seedCalendars.ts`; `invitations` (issue
- * gh-1901), seeded by `seed/seedInvitationsDatabase.ts`, holds the incoming meeting invitations; `subscribedEvents`
- * (issue gh-1962), seeded by `seed/seedSubscribedEvents.ts`, holds the read-only events of subscribed calendars. Its
- * first custom route is the timeline read (issue #1717). Like the Inbox and Mail modules it is
- * non-removable and a system project module.
+ * Manifest of the calendar module. The module owns the calendar databases and the system-owned properties on
+ * them (`CALENDAR_MODULE_ID` is their owner process). Like Inbox and Mail it is non-removable and a system
+ * project module.
  *
- * Ownership handoff (docs/adr/2026-09-10-single-writer-ownership-model.md, issue #1757): `Events.people`
- * is a user-owned relation of the systemDatabases module, and the edges and their `role` stay the user's
- * to write. The `invitation` object in an edge's metadata is handed to this module: its one writer is the
- * calendar module's invitation code, which writes with the system writer kind. Issue #1774 added its `sentAt`
- * write (`eventInvitationJob.ts`); issue #1790 added the pending invitation. Issue #1950 added the writer of
- * `invitation.status` and `invitation.respondedAt`: the heartbeat action `calendar.applyInvitationReply`
- * (`invitationReplyAction.ts`), which sets them from the iMIP reply of an invited person. `eventParticipantEdgeHook.ts`
- * refuses a write of another writer kind that would add an `invitation`, or change or remove the stored one
- * (docs/adr/2026-11-11-event-participant-invitations-are-written-by-system-writers.md).
+ * Ownership handoff: `Events.people` edges and their `role` stay user-owned, but the `invitation` object in an
+ * edge's metadata is written only by this module's invitation code with the system writer kind;
+ * `eventParticipantEdgeHook.ts` refuses any other writer kind that would add, change or remove it.
  *
- * Ownership handoff (issue gh-2007, docs/adr/2026-11-14-an-organizers-update-is-adopted-into-an-event-by-the-calendar-module-until-the-user-changes-the-field.md):
- * `name`, `place`, `date`, `timeFrom`, `timeTo` and `endDate` of an Event are user-owned. The invitation ingest
- * (`invitationIngestAction.ts`) is the only non-user writer of them, and only for the Event an answered invitation links
- * through its `event` relation. It writes with the system writer kind, only for an update that comes from the
- * invitation's stored organizer, and only a field that still equals the invitation's previous mapped value
- * (`invitationEventFields`); it never clears the title.
+ * Ownership handoff: an Event's `name`, `place`, `date`, `timeFrom`, `timeTo` and `endDate` are user-owned. The
+ * invitation ingest is their only non-user writer: for the Event an answered invitation links, only for an
+ * update from the stored organizer, and only for a field still equal to the previous mapped value; it never
+ * clears the title (docs/architecture/domain-calendar-tasks-and-media.md#event-participants-and-invitations).
  *
- * Agent tool (issue gh-1952): `calendar.timeline` needs the capability `calendar.read` and no approval, because it only
- * reads: it answers what `GET /api/calendar/timeline` answers in the full shape for a range of at most 93 days
- * (`calendarTimelineTool.ts`). Like the write tools it declares `mcp`, so a run credential whose list names
- * `calendar.read` and a human session reach it over `/mcp`. It does not leave out the items of hidden calendars.
- *
- * Agent tools (issue gh-1957): `calendar.respondToInvitation`, `calendar.placeTaskInEvent` and
- * `calendar.removeTaskFromEvent` need the capability `calendar.write`. Each is declared with `requiresApproval`, so a
- * call by an agent session or by a run credential over `/mcp` files a `moduleTool` approval request and the handler
- * (`calendarAgentTools.ts`) runs once, after the user approved it. `calendar.respondToInvitation` keeps the requirement
- * for good, because the answer sends an email to the organizer; the other two may be relaxed by changing their
- * declarations (docs/adr/2026-11-12-module-agent-tools-that-require-approval-run-through-a-moduletool-request.md). Each
- * also declares `mcp`, which the run credential's capability list and a human session need: a credential reaches the
- * tools when its own list names `calendar.write` and its run's project holds it, and a human session runs the
- * `...UserTool` handler as its user without an approval
- * (docs/adr/2026-11-14-calendar-tools-over-mcp-are-gated-for-a-run-credential-and-run-as-the-user-for-a-session.md). The
- * tools see hidden calendars: hiding is a display preference.
+ * Agent tools: `calendar.timeline` needs `calendar.read` and no approval, because it only reads. The write
+ * tools need `calendar.write` and `requiresApproval`; `calendar.respondToInvitation` keeps the requirement
+ * for good because the answer emails the organizer. All declare `mcp`. The tools see hidden calendars: hiding
+ * is a display preference.
  */
 export const manifest: ModuleManifest = {
   id: CALENDAR_MODULE_ID,
@@ -82,13 +57,11 @@ export const manifest: ModuleManifest = {
   databases: [
     { key: CALENDARS_MODULE_ID, name: "Calendars" },
     { key: INVITATIONS_MODULE_ID, name: "Invitations" },
-    // Read-only events of subscribed calendars (issue gh-1962); every property is system-owned by this module.
+    // Every property is system-owned by this module.
     { key: SUBSCRIBED_EVENTS_MODULE_ID, name: "Subscribed events" },
   ],
   capabilities: ["calendar.read", "calendar.write"],
   agentTools: [
-    // Issue gh-1952. It only reads, so it needs no approval
-    // (docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md).
     {
       name: "calendar.timeline",
       handlerExport: "createCalendarTimelineTool",
@@ -129,10 +102,8 @@ export const manifest: ModuleManifest = {
       mcp: { humanHandlerExport: "createCalendarRemoveTaskFromEventUserTool" },
     },
   ],
-  // Moves the stored `nextOccurrenceDate` of recurring Events on as days pass (issue gh-1905).
-  // Also reads the calendar part of a new email into a pending invitation (issue gh-1929), applies the organizer's
-  // update (issue gh-2007) or cancellation (issue gh-2006) of a known invitation, and applies the reply of an invited
-  // person to the invitation on their participant edge (issue gh-1950).
+  // Advances `nextOccurrenceDate` of recurring Events; ingests invitations from new email (new, updated,
+  // cancelled); applies an invited person's reply to their participant edge.
   heartbeatActions: [
     NEXT_OCCURRENCE_REFRESH_ACTION_ID,
     CALENDAR_INGEST_INVITATION_ACTION_ID,
@@ -144,9 +115,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/calendar/timeline",
       handlerExport: "createCalendarTimelineRouteHandler",
-      // Shaped for exactly one consumer, the calendar views: one call merges the Events and Tasks of a
-      // date range with their calendar, project and people, which the generic query reads one database
-      // at a time and without relations.
+      // One call merges Events and Tasks of a range with calendar, project and people; the generic query reads one
+      // database at a time without relations.
       justification: "single-consumer-read",
     },
     {
@@ -154,9 +124,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/calendar/agenda",
       handlerExport: "createCalendarAgendaRouteHandler",
-      // Shaped for exactly one consumer, the calendar's list view: the entries of the timeline as one
-      // list that continues from a day in either direction, paged by a cursor, which the generic query
-      // cannot do across the Events and Tasks databases.
+      // One list continuing from a day in either direction, cursor-paged across Events and Tasks.
       justification: "single-consumer-read",
     },
     {
@@ -164,9 +132,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/calendar/calendars/:id/cancellation-impact",
       handlerExport: "createCalendarCancellationImpactRouteHandler",
-      // Shaped for exactly one consumer, the confirmation dialog of a calendar deletion (issue gh-2003): one
-      // call counts the Events, cancellations and invited people the deletion affects, which the generic
-      // reads would have to assemble from the Events of a calendar and the edges of each.
+      // Counts what a calendar deletion affects for the confirmation dialog.
       justification: "single-consumer-read",
     },
     {
@@ -174,22 +140,20 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/calendar/invitations/:id/respond",
       handlerExport: "createRespondToInvitationRouteHandler",
-      // The answer and the Event it creates, restores or trashes (issue gh-1944) must commit together, which the
-      // generic item endpoints cannot express.
+      // The answer and the Event it creates, restores or trashes must commit together.
       justification: "transactional-semantics",
     },
   ],
   taskNames: [
     {
-      // Sends the iTIP REQUEST and CANCEL messages about an Event (issue #1774); `eventInvitationJob.ts` enqueues it.
+      // Enqueued by `eventInvitationJob.ts`.
       name: "calendarSendEventInvitation",
       payloadSchemaExport: "calendarSendEventInvitationPayloadSchema",
       handlerExport: "handleCalendarSendEventInvitation",
       queueAffinity: "api",
     },
     {
-      // Sends the iMIP REPLY to the organizer after the user answered an invitation (issue gh-1953); the respond route
-      // (`invitationRouteHandlers.ts`) enqueues it in the answer's transaction.
+      // Enqueued by the respond route in the answer's transaction.
       name: "calendarSendInvitationReply",
       payloadSchemaExport: "calendarSendInvitationReplyPayloadSchema",
       handlerExport: "handleCalendarSendInvitationReply",

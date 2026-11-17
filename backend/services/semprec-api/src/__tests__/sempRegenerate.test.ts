@@ -29,10 +29,8 @@ import {
 import { createInboxProposalFixture, decideInboxProposal, playItemThreadReply } from "./inboxItemThreadFixtures.js";
 
 /**
- * Regenerating the latest finished Semp reply (issue gh-1930) through the real route, the real store and the real queue
- * tables, on the runtime role pool. Replies are played with the production writers of the turn
- * (`agentRunReplyFixtures.ts`). The store function itself, with every branch of its checks, is covered by
- * `sempRegenerate.test.ts` of `@semprec/data`.
+ * Regenerating the latest finished Semp reply through the real route, store and queue tables on the runtime role
+ * pool. The store function's branches are covered by `sempRegenerate.test.ts` of `@semprec/data`.
  */
 
 const PASSWORD = "regenerate-test-password";
@@ -89,7 +87,7 @@ function storedMessages(tenant: Tenant, threadId: string): Promise<StoredMessage
   });
 }
 
-/** The `sempMessage` jobs of the thread's messages, by key (the view of the queue does not project the payload). */
+/** By key: the queue's view does not project the payload. */
 function queuedJobKeys(tenant: Tenant, threadId: string): Promise<string[]> {
   return runInTenant(tenant.tenant, async () => {
     const { rows } = await pool.query<{ key: string }>(
@@ -110,7 +108,6 @@ function regenerate(tenant: Tenant, threadId: string, messageId: string): Promis
 
 const newMessageSchema = z.object({ messageId: z.uuid() });
 
-/** Expects a 409 with `code` and nothing created, queued or marked in the thread. */
 async function expectRefused(tenant: Tenant, played: Played, code: string): Promise<void> {
   const threadId = played.chat.threadId;
   const before = await storedMessages(tenant, threadId);
@@ -190,7 +187,6 @@ describe("regenerating a Semp reply", () => {
       .object({ rows: z.array(z.object({ id: z.string(), role: z.string() }).passthrough()) })
       .parse(await response.json());
     const row = (id: string) => body.rows.find((candidate) => candidate.id === id);
-    // The replaced answer stays readable with its steps; the client hides it.
     expect(row(played.reply.assistantMessageId)).toMatchObject({ replaced: true, attempt: 1, status: "done" });
     expect(row(played.reply.assistantMessageId)).toHaveProperty("steps");
     expect(row(messageId)).toMatchObject({ replaced: false, attempt: 2, status: "queued" });
@@ -252,7 +248,7 @@ describe("regenerating a Semp reply", () => {
   it("does not let the guard of an item thread with an open proposal change the refusal of the reply itself", async () => {
     const tenant = await createTenant();
     const fixture = await createInboxProposalFixture(pool, tenant.tenant);
-    // The played reply has no run range to hide, so the regeneration is refused by its own check, not by the guard.
+    // No run range to hide, so the regeneration is refused by its own check, not by the guard.
     const played = await playItemThreadReply(pool, tenant.tenant, fixture, "done");
 
     const response = await regenerate(tenant, played.threadId, played.assistantMessageId);
@@ -264,8 +260,8 @@ describe("regenerating a Semp reply", () => {
   it("creates exactly one new message and one job when several regenerations of the same reply arrive at once", async () => {
     const tenant = await createTenant();
     const played = await playDone(tenant);
-    // The thread's row lock is held until every request is waiting for it, so all of them are in flight together and
-    // the first statement of each is the one that decides the order.
+    // The thread's row lock is held until every request waits for it, so the first statement of each decides the
+    // order.
     let release!: () => void;
     const released = new Promise<void>((resolve) => {
       release = resolve;
@@ -356,7 +352,6 @@ describe("regenerating a Semp reply", () => {
 
     const foreignAnswer = await regenerate(caller, foreign.chat.threadId, foreign.reply.assistantMessageId);
     const randomAnswer = await regenerate(caller, randomUUID(), randomUUID());
-    // The foreign message id in a thread of the caller's own is not found there either.
     const mixedAnswer = await regenerate(caller, own.chat.threadId, foreign.reply.assistantMessageId);
     const randomInOwnThread = await regenerate(caller, own.chat.threadId, randomUUID());
 
@@ -371,7 +366,7 @@ describe("regenerating a Semp reply", () => {
       `sempMessage:${foreign.reply.assistantMessageId}`,
     ]);
     expect(await storedMessages(caller, own.chat.threadId)).toHaveLength(2);
-    // The owner's own regeneration works, so the answers above are not a route that refuses everything.
+    // Proves the route does not refuse everything.
     expect((await regenerate(owner, foreign.chat.threadId, foreign.reply.assistantMessageId)).status).toBe(202);
   });
 

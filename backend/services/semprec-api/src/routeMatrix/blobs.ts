@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/blobs` path family. */
 export const BLOBS_ROUTES: RouteMatrixEntry[] = [
   {
     name: "upload blob",

@@ -1,7 +1,5 @@
-// Choke-point write hooks (registered by `../domainWriteHooks.ts`) validating the user's own
-// library ratings: the `rating` property on Books and Movies/TV items (a whole number of stars,
-// 0 meaning "no rating", null clearing it) and the per-person `metadata.rating` on the Movies
-// `watchedWith` edge (1 to 5). They validate new writes only; stored values are not migrated.
+// Validate new writes of the user's library ratings: item `rating` (whole stars, 0 = none, null clears) and the
+// Movies `watchedWith` edge's `metadata.rating` (1 to 5). Stored values are not migrated.
 import type { ItemCreateHook, ItemUpdateHook, RelationEdgeWriteHook } from "../chokePoint/hooks.js";
 import { ValidationError } from "../errors.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";

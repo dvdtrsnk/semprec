@@ -34,25 +34,18 @@ import {
 import { NodemailerSmtpClient, type RawMailEnvelope } from "./smtpClient.js";
 
 /**
- * How a mailbox submits outgoing mail. `sendDraftEmail` (mail/send.ts) builds a complete RFC 5322 message
- * once (mail/outgoingMime.ts) and hands it to the transport of the mailbox's sync mode, so each provider
- * differs only in how the bytes leave. The SMTP transport below serves `imap` mailboxes, the Gmail API
- * transport (gmailTransport.ts) serves `gmail_api` mailboxes, and the Microsoft Graph transport (graphTransport.ts)
- * serves `graph_api` mailboxes.
+ * The complete RFC 5322 message is built once (outgoingMime.ts); providers differ only in how the bytes
+ * leave: SMTP for `imap`, Gmail API for `gmail_api`, Microsoft Graph for `graph_api`.
  */
 export interface MailTransportMessage {
   raw: Buffer;
   envelope: RawMailEnvelope;
-  /**
-   * The provider's thread id of the message being replied to, for a provider that files sent mail into a
-   * conversation by id. The Gmail API transport passes it as the send's `threadId`. The SMTP and Microsoft Graph
-   * transports ignore it.
-   */
+  /** Provider thread id of the replied-to message; only the Gmail API transport uses it. */
   providerThreadId?: string;
 }
 
 export interface MailTransportResult {
-  /** The provider's id for the sent message, when the provider reports one. SMTP does not. */
+  /** SMTP reports none. */
   providerMessageId?: string;
 }
 
@@ -62,9 +55,8 @@ export interface MailTransport {
 
 export interface MailTransportFactory {
   /**
-   * The transport that sends for this mailbox. Rejects with a `ValidationError` when the mailbox has no SMTP settings
-   * and with a `MailTransportUnavailableError` when the composition root has no transport for it; any other rejection
-   * is a failure of a read that may succeed on a retry.
+   * Rejects with `ValidationError` when the mailbox has no SMTP settings and with
+   * `MailTransportUnavailableError` when no transport is configured; any other rejection is retryable.
    */
   forMailbox(mailboxItemId: string, syncMode: SyncMode): Promise<MailTransport>;
 }
@@ -74,10 +66,8 @@ function fieldOf(error: unknown, key: string): unknown {
 }
 
 /**
- * Maps the two SMTP failures this transport names. nodemailer reports a failed login as `EAUTH` (a 535 among
- * other login failures), and a refusal of every recipient on `RCPT TO` as `EENVELOPE` with a 5xx response.
- * Already-classified connection failures remain unreachable. Unknown failures leave this
- * boundary as a fixed generic error after the transport has been closed.
+ * nodemailer reports a failed login as `EAUTH` and a refusal of every recipient as `EENVELOPE` (5xx).
+ * Unknown failures leave as a fixed generic error after the transport has been closed.
  */
 function mapSmtpSendFailure(error: unknown): Error {
   if (error instanceof MailServerUnreachableError) return new MailServerUnreachableError();
@@ -97,34 +87,25 @@ function mapSmtpSendFailure(error: unknown): Error {
   return new Error("SMTP submission failed unexpectedly");
 }
 
-/** Opens an SMTP transporter for one mailbox; `createSmtpTransporter` is the production opener. */
 export type SmtpTransporterOpener = (
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,
 ) => MailSmtpTransporter;
 
-/** Opens the IMAP connection a Sent-folder copy is appended over; `openImapConnection` is the production opener. */
 export type ImapConnectionOpener = (
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,
 ) => Promise<ImapMailClient>;
 
-/**
- * Keeps a copy of a message the SMTP server accepted (issue #1641). `createSmtpMailTransport` calls it once per
- * accepted send, after the submission succeeded and the SMTP connection was closed. Its failure never fails the send.
- */
+/** Called once per accepted send after the SMTP connection closed. Its failure never fails the send. */
 export type SentCopySaver = (raw: Buffer) => Promise<void>;
 
 /**
- * The SMTP transport of an `imap` mailbox. Each send opens its own transporter through the policy-checked
- * factory, submits the raw message with its envelope, and closes the transporter on every path out. Closing
- * ends any connection the send still holds (`createSmtpTransporter`'s `close`). Exported for the protocol
- * tests, which take a loopback endpoint that the stored settings (standard ports only) cannot name, and
- * which inject `open` to observe the close; the production path is `createMailTransportFactory`.
+ * Each send opens its own policy-checked transporter and closes it on every path out. Exported for
+ * protocol tests that need a loopback endpoint the stored settings (standard ports only) cannot name.
  *
- * Once the server accepts the message, `saveSentCopy` keeps a copy in the Sent folder (IMAP servers do not file
- * sent mail by themselves). A failure there is logged with a fixed stage and does not fail the send, because the
- * message has been delivered. Omitted, the send keeps no copy; the production factory always supplies one.
+ * IMAP servers do not file sent mail themselves, so `saveSentCopy` appends a Sent copy; its failure is
+ * logged and does not fail the send, because the message has been delivered.
  */
 export function createSmtpMailTransport(
   mailboxItemId: string,
@@ -201,11 +182,7 @@ export function createSmtpMailTransport(
   };
 }
 
-/**
- * The IMAP path of the mailbox's Sent folder: the Folder item with `specialPurpose` `sent` (the folder `sendDraftEmail`
- * files a sent draft into, mail/send.ts), whose `providerId` is the path the sync recorded. `null` when no sync has
- * discovered a Sent folder for this mailbox yet.
- */
+/** `null` when no sync has discovered a Sent folder for this mailbox yet. */
 async function sentFolderPathOf(
   client: PoolClient,
   moduleIds: MailModuleIds,
@@ -227,15 +204,9 @@ async function sentFolderPathOf(
 }
 
 /**
- * Builds the `SentCopySaver` of one `imap` mailbox (issue #1641). Gmail and Graph file a sent message in their Sent
- * folder themselves; an IMAP server does not, so the raw message is appended here.
- *
- * The saver reads the mailbox's IMAP endpoint and its Sent folder's path at send time, the way the sync worker does.
- * It opens the connection through `openImap` (`openImapConnection` in production, so the outbound address policy
- * applies), appends the message with the `\Seen` flag, and closes the connection on every path out. The append holds
- * the account's IMAP connection slot (`sharedImapConnectionLimiter`) at the limit the sync worker uses. A mailbox with
- * no Sent folder yet logs `no_sent_folder` and keeps no copy. Every other failure rejects, and
- * `createSmtpMailTransport` logs it.
+ * Gmail and Graph file sent mail themselves; an IMAP server does not, so the raw message is appended
+ * with `\Seen`. The connection goes through the outbound address policy and holds the account's IMAP
+ * connection slot at the sync worker's limit. No Sent folder yet logs `no_sent_folder` and keeps no copy.
  */
 export function createSentCopySaver(
   pool: Pool,
@@ -278,26 +249,15 @@ export function createSentCopySaver(
 }
 
 export interface MailTransportFactoryOptions {
-  /** The Google OAuth client the `gmail_api` transport refreshes its access tokens with. Without it a Gmail mailbox cannot send. */
   gmailOAuthClient?: { clientId: string; clientSecret: string };
-  /** The Microsoft OAuth client the `graph_api` transport refreshes its access tokens with. Without it a Graph mailbox cannot send. */
   graphOAuthClient?: { clientId: string; clientSecret: string };
-  /**
-   * Replaces the global `fetch` for the Gmail and Graph transports' token endpoints and API requests. Tests inject a
-   * fake provider here.
-   */
   fetchImpl?: typeof fetch;
-  /** Replaces `openImapConnection` for the copy an `imap` send keeps in the Sent folder. Tests inject a fake IMAP server here. */
   openImapConnection?: ImapConnectionOpener;
 }
 
 /**
- * The transport factory a composition root hands `sendDraftEmail`. `forMailbox` picks the transport of the
- * mailbox's sync mode. For `imap` it reads the mailbox's stored SMTP settings and decrypts its app-specific
- * password for the `smtp_send` purpose; `sendDraftEmail` gets the password only through this factory. The `imap`
- * transport also keeps a copy of each accepted message in the Sent folder (`createSentCopySaver`, issue #1641). For
- * `gmail_api` it builds the Gmail transport from `options.gmailOAuthClient`, and for `graph_api` the Graph transport
- * from `options.graphOAuthClient`.
+ * Picks the transport of the mailbox's sync mode. For `imap` it decrypts the SMTP password for the
+ * `smtp_send` purpose; `sendDraftEmail` gets the password only through this factory.
  */
 export function createMailTransportFactory(
   pool: Pool,
@@ -334,7 +294,7 @@ export function createMailTransportFactory(
         });
       }
       if (syncMode !== "imap") {
-        // Every SYNC_MODES value has a transport above, so only a stored value outside the union reaches this line.
+        // Only a stored value outside the SYNC_MODES union reaches this line.
         const unnamedMode: string = syncMode;
         throw new MailTransportUnavailableError(`No mail transport for sync mode ${unnamedMode} is available yet`);
       }

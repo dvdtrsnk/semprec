@@ -5,8 +5,6 @@ import { z } from "zod";
 import { loadModuleCatalogs } from "@semprec/module-registry";
 import { runInTenant } from "@semprec/shared";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
-import { runSubscribedEventsCutoverMigration } from "../calendar/subscribedEventsCutoverMigration.js";
-import { runSubscribedEventsRecurrenceCutoverMigration } from "../calendar/subscribedEventsRecurrenceCutoverMigration.js";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -15,16 +13,9 @@ import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { CardinalityViolationError } from "../errors.js";
 import { withTransaction } from "../db/pool.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { CALENDARS_MODULE_ID, SUBSCRIBED_EVENTS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import {
-  createRuntimeRolePool,
-  createTestTenant,
-  getTestPool,
-  resetDatabase,
-  withTenantTransaction,
-} from "../testSupport/testDb.js";
+import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let adminPool: Pool;
 let dataPool: Pool;
@@ -32,7 +23,6 @@ let dataPool: Pool;
 const USER = { writerKind: "user" } as const;
 const AGENT = { writerKind: "agent", onBehalfOfUserId: randomUUID() } as const;
 
-/** The scalar properties of a subscribed event, in key order, with the type and the config the seed gives them. */
 const EXPECTED_PROPERTIES = [
   ["allDay", "checkbox", {}],
   ["calendar", "relation", null],
@@ -85,51 +75,6 @@ async function requireDatabaseId(tenantId: string, moduleId: string): Promise<st
   const id = await databaseId(tenantId, moduleId);
   if (!id) throw new Error(`The tenant has no ${moduleId} database`);
   return id;
-}
-
-/**
- * Turns a seeded tenant into one that was seeded before this issue: the subscribed events database, its
- * properties and its relation are removed with SQL. The API cannot produce that state (system databases are
- * locked and never deleted), and it is exactly what the cutover must upgrade.
- */
-async function removeSubscribedEventsDatabase(tenantId: string): Promise<void> {
-  const subscribedEventsId = await requireDatabaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID);
-  const calendarsId = await requireDatabaseId(tenantId, CALENDARS_MODULE_ID);
-  await withTenantTransaction(adminPool, tenantId, async (client) => {
-    await client.query(
-      `DELETE FROM relation_definitions
-        WHERE property_id_a IN (SELECT id FROM properties WHERE database_id = $1 AND key = 'subscribedEvents')`,
-      [calendarsId],
-    );
-    await client.query("DELETE FROM properties WHERE database_id = $1 AND key = 'subscribedEvents'", [calendarsId]);
-    await client.query("DELETE FROM properties WHERE database_id = $1", [subscribedEventsId]);
-    await databasesStore.dropDatabaseWithPartition(client, subscribedEventsId);
-  });
-}
-
-/** The ids of every structural row the cutover can create for a tenant, in a stable order. */
-async function structure(
-  tenantId: string,
-): Promise<{ databases: string[]; properties: string[]; relations: string[] }> {
-  const databases = await adminPool.query<{ id: string }>(
-    "SELECT id FROM databases WHERE tenant_id = $1 AND key = $2 ORDER BY id",
-    [tenantId, SUBSCRIBED_EVENTS_MODULE_ID],
-  );
-  const properties = await adminPool.query<{ id: string }>(
-    `SELECT p.id FROM properties p JOIN databases d ON d.id = p.database_id
-      WHERE p.tenant_id = $1 AND (d.key = $2 OR (d.key = $3 AND p.key = 'subscribedEvents'))
-      ORDER BY p.id`,
-    [tenantId, SUBSCRIBED_EVENTS_MODULE_ID, CALENDARS_MODULE_ID],
-  );
-  const relations = await adminPool.query<{ id: string }>(
-    "SELECT id FROM relation_definitions WHERE tenant_id = $1 ORDER BY id",
-    [tenantId],
-  );
-  return {
-    databases: databases.rows.map((row) => row.id),
-    properties: properties.rows.map((row) => row.id),
-    relations: relations.rows.map((row) => row.id),
-  };
 }
 
 async function propertiesOf(databaseIdValue: string) {
@@ -264,168 +209,7 @@ describe("subscribedEvents system database (issue gh-1962)", () => {
     });
   });
 
-  describe("cutover for an existing tenant", () => {
-    it("creates the database, the properties and the relation, and a second run changes nothing", async () => {
-      const tenantId = await tenantWithUser("cs");
-      await removeSubscribedEventsDatabase(tenantId);
-      const removed = await structure(tenantId);
-      expect(removed).toMatchObject({ databases: [], properties: [] });
-      const relationsBefore = removed.relations;
-
-      await runInTenant(tenantId, () => runSubscribedEventsCutoverMigration(dataPool));
-      const created = await structure(tenantId);
-      expect(created.databases).toHaveLength(1);
-      expect(created.properties).toHaveLength(EXPECTED_PROPERTIES.length + 1);
-      expect(created.relations).toHaveLength(relationsBefore.length + 1);
-      const properties = await propertiesOf(await requireDatabaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID));
-      expect(
-        properties.map((property) => [property.key, property.type, property.owner, property.owner_process]),
-      ).toEqual(EXPECTED_PROPERTIES.map(([key, type]) => [key, type, "system", CALENDAR_MODULE_ID]));
-      const { rows: locked } = await adminPool.query<{ schema_locked: boolean }>(
-        "SELECT schema_locked FROM databases WHERE id = $1",
-        [created.databases[0]],
-      );
-      expect(locked).toEqual([{ schema_locked: true }]);
-
-      await runInTenant(tenantId, () => runSubscribedEventsCutoverMigration(dataPool));
-      expect(await structure(tenantId)).toEqual(created);
-    });
-
-    it("builds the same schema as the fresh seed", async () => {
-      const seeded = await tenantWithUser("cs");
-      const upgraded = await tenantWithUser("cs");
-      await removeSubscribedEventsDatabase(upgraded);
-      await runInTenant(upgraded, () => runSubscribedEventsCutoverMigration(dataPool));
-
-      const properties = async (tenantId: string) =>
-        propertiesOf(await requireDatabaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID));
-      expect(await properties(upgraded)).toEqual(await properties(seeded));
-      const calendarSide = async (tenantId: string) => {
-        const { rows } = await adminPool.query(
-          `SELECT key, type, owner, owner_process, config - 'relationDefinitionId' - 'targetDatabaseId' AS config, locked
-             FROM properties WHERE database_id = $1 AND key = 'subscribedEvents'`,
-          [await requireDatabaseId(tenantId, CALENDARS_MODULE_ID)],
-        );
-        return z.array(propertyRow).parse(rows);
-      };
-      expect(await calendarSide(upgraded)).toEqual(await calendarSide(seeded));
-      expect(await calendarSide(upgraded)).toHaveLength(1);
-    });
-
-    it("skips a tenant without a Calendars database", async () => {
-      const tenantId = await createTestTenant(adminPool);
-      await runInTenant(tenantId, () => runSubscribedEventsCutoverMigration(dataPool));
-      const { rows } = await adminPool.query<{ databases: string; properties: string }>(
-        `SELECT (SELECT count(*) FROM databases WHERE tenant_id = $1)::text AS databases,
-                (SELECT count(*) FROM properties WHERE tenant_id = $1)::text AS properties`,
-        [tenantId],
-      );
-      expect(rows).toEqual([{ databases: "0", properties: "0" }]);
-    });
-
-    it("changes only the tenant it runs in", async () => {
-      const first = await tenantWithUser("cs");
-      const second = await tenantWithUser("cs");
-      await removeSubscribedEventsDatabase(first);
-      await removeSubscribedEventsDatabase(second);
-
-      await runInTenant(first, () => runSubscribedEventsCutoverMigration(dataPool));
-      expect((await structure(first)).databases).toHaveLength(1);
-      expect((await structure(second)).databases).toEqual([]);
-    });
-
-    it("runs through runTenantCutoverMigrations for a suspended tenant", async () => {
-      const tenantId = await tenantWithUser("cs");
-      await removeSubscribedEventsDatabase(tenantId);
-      await adminPool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantId]);
-
-      await runTenantCutoverMigrations(dataPool);
-      expect((await structure(tenantId)).databases).toHaveLength(1);
-    });
-  });
-
-  describe("recurrence properties cutover for an existing tenant (issue gh-1966)", () => {
-    const RECURRENCE_KEYS = ["exceptionDates", "recurrenceId", "recurrenceRule"];
-
-    /**
-     * Turns a seeded tenant into one whose subscribed events database was created before issue gh-1966: the named
-     * recurrence properties are removed with SQL, which no write path does to a locked schema.
-     */
-    async function removeRecurrenceProperties(tenantId: string, keys: string[]): Promise<void> {
-      const subscribedEventsId = await requireDatabaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID);
-      await withTenantTransaction(adminPool, tenantId, async (client) => {
-        await client.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
-          subscribedEventsId,
-          keys,
-        ]);
-      });
-    }
-
-    async function keysOf(tenantId: string): Promise<string[]> {
-      const rows = await propertiesOf(await requireDatabaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID));
-      return rows.map((row) => row.key).filter((key) => RECURRENCE_KEYS.includes(key));
-    }
-
-    it("adds the three properties as the fresh seed declares them, and a second run changes nothing", async () => {
-      const seeded = await tenantWithUser("cs");
-      const upgraded = await tenantWithUser("cs");
-      await removeRecurrenceProperties(upgraded, RECURRENCE_KEYS);
-      expect(await keysOf(upgraded)).toEqual([]);
-
-      await runInTenant(upgraded, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
-      const properties = async (tenantId: string) =>
-        propertiesOf(await requireDatabaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID));
-      expect(await properties(upgraded)).toEqual(await properties(seeded));
-      expect(await keysOf(upgraded)).toEqual(RECURRENCE_KEYS);
-      const before = await structure(upgraded);
-
-      await runInTenant(upgraded, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
-      expect(await structure(upgraded)).toEqual(before);
-    });
-
-    it("adds only the property that is missing and leaves the others as they are", async () => {
-      const tenantId = await tenantWithUser("cs");
-      const before = await structure(tenantId);
-      await removeRecurrenceProperties(tenantId, ["recurrenceId"]);
-
-      await runInTenant(tenantId, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
-      const after = await structure(tenantId);
-      expect(await keysOf(tenantId)).toEqual(RECURRENCE_KEYS);
-      expect(after.properties).toHaveLength(before.properties.length);
-      expect(before.properties.filter((id) => !after.properties.includes(id))).toHaveLength(1);
-    });
-
-    it("skips a tenant without a subscribed events database", async () => {
-      const tenantId = await tenantWithUser("cs");
-      await removeSubscribedEventsDatabase(tenantId);
-      const removed = await structure(tenantId);
-      await runInTenant(tenantId, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
-      expect(await structure(tenantId)).toEqual(removed);
-    });
-
-    it("changes only the tenant it runs in", async () => {
-      const first = await tenantWithUser("cs");
-      const second = await tenantWithUser("cs");
-      await removeRecurrenceProperties(first, RECURRENCE_KEYS);
-      await removeRecurrenceProperties(second, RECURRENCE_KEYS);
-
-      await runInTenant(first, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
-      expect(await keysOf(first)).toEqual(RECURRENCE_KEYS);
-      expect(await keysOf(second)).toEqual([]);
-    });
-
-    it("runs through runTenantCutoverMigrations for a suspended tenant", async () => {
-      const tenantId = await tenantWithUser("cs");
-      await removeRecurrenceProperties(tenantId, RECURRENCE_KEYS);
-      await adminPool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantId]);
-
-      await runTenantCutoverMigrations(dataPool);
-      expect(await keysOf(tenantId)).toEqual(RECURRENCE_KEYS);
-    });
-  });
-
   describe("writes", () => {
-    /** A subscribed event row as the later feed import writes it. */
     const ROW = {
       uid: "event-1@example.com",
       title: "Quarterly review",
@@ -622,7 +406,6 @@ describe("subscribedEvents system database (issue gh-1962)", () => {
       });
     });
 
-    /** Edges of the definition of `relationPropertyId`, read through the runtime role in the caller's tenant scope. */
     async function countEdges(relationPropertyId: string): Promise<number> {
       const { rows } = await dataPool.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM item_relations r

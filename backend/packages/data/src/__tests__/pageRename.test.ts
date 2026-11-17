@@ -108,10 +108,7 @@ async function databaseIdOf(itemId: string): Promise<string> {
   return databaseId;
 }
 
-/**
- * Everything a rename may write for a page and its parent, read inside `tenantId`: the stored row of the page's item
- * (its version included) and every update of the parent's document with its author.
- */
+/** The page's item row (version included) and every update of the parent's document with its author. */
 async function writtenState(pageItemId: string, parentItemId: string, tenantId = tenant): Promise<unknown> {
   return inTenant(async (client) => {
     const item = await client.query<{ row: unknown }>(`SELECT to_jsonb(i) AS row FROM items i WHERE i.id = $1`, [
@@ -139,7 +136,6 @@ async function titleOf(itemId: string, tenantId = tenant): Promise<unknown> {
   return (await propertiesOf(itemId, tenantId))?.title;
 }
 
-/** How many documents and document updates the tenant has stored, and how many of the documents belong to `itemId`. */
 async function documentCounts(itemId: string): Promise<{ docs: number; docUpdates: number; docsOfItem: number }> {
   const { rows } = await inTenant((client) =>
     client.query<{ docs: number; docUpdates: number; docsOfItem: number }>(
@@ -154,10 +150,7 @@ async function documentCounts(itemId: string): Promise<{ docs: number; docUpdate
   return row;
 }
 
-/**
- * Stores `parentItemId` as the parent id of the page. No operation reparents a page, so this superuser write stands in
- * for a purged parent and for hand-edited data.
- */
+/** Superuser write standing in for a purged parent or hand-edited data. */
 async function setParentItemId(pageItemId: string, parentItemId: string): Promise<void> {
   await admin.query(
     `UPDATE items SET properties = jsonb_set(properties, '{parentItemId}', to_jsonb($2::text)) WHERE id = $1`,
@@ -184,7 +177,6 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   throw new Error("Expected the call to be rejected");
 }
 
-/** Resolves once a statement on this test database waits for a lock, and fails after ten seconds. */
 async function lockWait(): Promise<void> {
   const deadline = Date.now() + 10_000;
   for (;;) {
@@ -198,10 +190,7 @@ async function lockWait(): Promise<void> {
   }
 }
 
-/**
- * Runs `body` while a transaction of its own on a dedicated connection, scoped to the tenant, is open. `body` commits
- * it through `commit`; a transaction still open afterwards is rolled back.
- */
+/** `body` commits through `commit`; a transaction still open afterwards is rolled back. */
 async function withOpenTransaction(
   body: (holder: PoolClient, commit: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
@@ -224,7 +213,6 @@ async function withOpenTransaction(
   }
 }
 
-/** A project whose page holds "first", the page block of "Release checklist" and "last", in that order. */
 async function projectWithChecklist(): Promise<{
   project: string;
   checklist: Subpage;
@@ -275,7 +263,6 @@ describe("page.rename (issue #1725)", () => {
     const { project, checklist } = await projectWithChecklist();
     const created = await writtenState(checklist.pageItemId, project);
 
-    // The title the page was created with, also when it only differs before normalization.
     expect(await rename(checklist.pageItemId, "Release checklist")).toEqual({
       pageItemId: checklist.pageItemId,
       title: "Release checklist",
@@ -315,7 +302,7 @@ describe("page.rename (issue #1725)", () => {
     const absentParentId = await projectWithChecklist();
     const malformedParentId = await projectWithChecklist();
     await setParentItemId(missingParent.checklist.pageItemId, randomUUID());
-    // No operation removes a parent id; this superuser write stands in for hand-edited data.
+    // Superuser write standing in for hand-edited data.
     await admin.query(`UPDATE items SET properties = properties - 'parentItemId' WHERE id = $1`, [
       absentParentId.checklist.pageItemId,
     ]);
@@ -350,7 +337,6 @@ describe("page.rename (issue #1725)", () => {
 
     expect(renamed).toEqual({ pageItemId: checklist.pageItemId, title: "Release plan" });
     expect(await propertiesOf(checklist.pageItemId)).toEqual({ title: "Release plan", parentItemId: bareParent });
-    // No document was created for the parent and no document of the tenant was written.
     expect(await documentCounts(bareParent)).toEqual(countsBefore);
     expect(await parentAuthors(project)).toEqual(authorsBefore);
   });
@@ -392,8 +378,7 @@ describe("page.rename (issue #1725)", () => {
   it("rolls the item's title back when the write of the parent's document fails", async () => {
     const { project, checklist } = await projectWithChecklist();
     const parentDocId = await docIdOf(project);
-    // No production write stores bytes that are not an update; this row makes the parent's document unloadable, so
-    // the document write of the rename fails after the item's title was already updated.
+    // Bytes that are not an update make the parent's document unloadable, so the rename fails after the title update.
     await inTenant((client) =>
       client.query(`INSERT INTO doc_updates (doc_id, update, created_by) VALUES ($1, $2, 'user')`, [
         parentDocId,
@@ -514,8 +499,7 @@ describe("page.rename (issue #1725)", () => {
       createChokePoint(runtime).softDeleteItem(projectDatabaseId, project),
     );
     expect(trashed).not.toBeNull();
-    // The project's trash took the page with it (issue #1763). Restored on its own, the page is live below the
-    // trashed project, with its block back in the project's notes.
+    // The project's trash took the page with it; restored on its own, the page is live below the trashed project.
     const restored = await runInTenant(tenant, () =>
       createChokePoint(runtime).restoreItem(pagesDatabaseId, checklist.pageItemId),
     );
@@ -542,8 +526,7 @@ describe("page.rename (issue #1725)", () => {
     const pagesDatabaseId = await databaseIdOf(checklist.pageItemId);
     const authorsBefore = await parentAuthors(project);
     await withOpenTransaction(async (holder, commit) => {
-      // The open transaction has trashed the page and holds its row; the rename still reads it as live. The store
-      // function runs on the held connection, because the choke point's trash commits in a transaction of its own.
+      // The trash runs on the held connection because the choke point's trash commits in its own transaction.
       await softDeleteItem(holder, pagesDatabaseId, checklist.pageItemId);
       const settled = Promise.allSettled([rename(checklist.pageItemId, title)]);
       await lockWait();
@@ -561,11 +544,9 @@ describe("page.rename (issue #1725)", () => {
     const projectDatabaseId = await databaseIdOf(project);
     const pagesDatabaseId = await databaseIdOf(checklist.pageItemId);
     await withOpenTransaction(async (holder, commit) => {
-      // The open transaction holds the parent's row, so the rename waits at its first lock.
       await lockItemById(holder, projectDatabaseId, project);
       const settled = Promise.allSettled([rename(checklist.pageItemId, "Release plan")]);
       await lockWait();
-      // While it waits for the parent it holds no lock on the page: another transaction takes that row at once.
       const page = await inTenant((client) => lockItemByIdNowait(client, pagesDatabaseId, checklist.pageItemId));
       expect(page?.id).toBe(checklist.pageItemId);
       await commit();

@@ -3,14 +3,9 @@ import { runAsSystem } from "@semprec/shared";
 
 /**
  * Startup check that a long-running service connects as a runtime role. Row-level security does not
- * apply to a role that is itself a superuser or has `BYPASSRLS`, nor to the owner of a table. Those
- * attributes are not inherited through role membership, but a member can `SET ROLE` into a privileged
- * role, so membership in one is refused too. The tenant-isolation ADR
- * (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`, "No `FORCE ROW LEVEL SECURITY`")
- * requires runtime roles to be neither superuser nor `BYPASSRLS` and to own no table. The ownership
- * check covers relations in the `public` schema only, as issue #1051 specifies; tables in other schemas
- * are not checked here. This module is the per-process half of that rule; the deploy-time half is
- * issue #1085.
+ * apply to a superuser, a `BYPASSRLS` role or a table owner, and a member can `SET ROLE` into a
+ * privileged role, so membership in one is refused too. Only relations in `public` are checked for
+ * ownership; the deploy-time counterpart is `tenancyInvariants.ts`.
  */
 
 export type RuntimeRoleViolation = "superuser" | "bypassrls" | "memberOfPrivilegedRole" | "ownsPublicRelation";
@@ -48,11 +43,8 @@ const RUNTIME_ROLE_QUERY = `
 `;
 
 /**
- * Refuses to continue unless the role this pool logged in as is a runtime role. Runs one catalog
- * query under a system scope, so it neither logs `tenant_scope_missing` nor throws in strict mode.
- * Any violation throws `RuntimeRoleAssertionError`, whose message names the role and the violations
- * but never the connection string or password. Errors propagate; the caller decides what a failed
- * startup does.
+ * Runs its catalog query under a system scope. The error names the role and the violations, never
+ * the connection string or password.
  */
 export async function assertRuntimeRole(pool: Pool): Promise<void> {
   const { rows } = await runAsSystem("runtime-role-assertion", () => pool.query<RuntimeRoleRow>(RUNTIME_ROLE_QUERY));

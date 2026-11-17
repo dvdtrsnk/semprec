@@ -8,12 +8,9 @@ export interface InFlightAgentRuns {
   register(tenantId: string, controller: AbortController, semp?: boolean): () => void;
   /** Aborts every controller registered for `tenantId` and returns how many it aborted. */
   abortTenant(tenantId: string): number;
-  /**
-   * Tracks `controller` under the assistant message `assistantMessageId` of `tenantId`, so that one turn can be aborted
-   * by `abortTurn`; the returned function stops tracking it. Independent of `register`, which tracks the same job per tenant.
-   */
+  /** For `abortTurn`; independent of `register`, which tracks the same job per tenant. */
   registerTurn(tenantId: string, assistantMessageId: string, controller: AbortController): () => void;
-  /** Aborts the controllers registered for that turn of that tenant; `false` when this process runs no such turn. */
+  /** `false` when this process runs no such turn. */
   abortTurn(tenantId: string, assistantMessageId: string): boolean;
   abortSemp(): number;
   trackSemp<T>(work: () => Promise<T>): Promise<T>;

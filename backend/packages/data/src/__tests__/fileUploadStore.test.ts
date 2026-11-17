@@ -20,9 +20,8 @@ import { logger } from "../blobs/logger.js";
 import { deleteBlobIfUnreferenced } from "../blobs/blobsStore.js";
 
 /**
- * In-memory stand-in for `LocalFsBlobStorageWriter`: records every `writeStream`/`delete` call
- * and can be told to make the *next* written key's `delete` throw, so the tests can drive the
- * "delete inside vs. after commit" distinction the ADR requires without touching the filesystem.
+ * In-memory stand-in for `LocalFsBlobStorageWriter`: records every `writeStream`/`delete` call and can
+ * make the next written key's `delete` throw, to drive "delete inside vs. after commit".
  */
 class FakeBlobStorageWriter implements BlobStorageWriter {
   readonly bytesByKey = new Map<string, Buffer>();
@@ -130,7 +129,6 @@ function isOwnedPgClosure(
   return error instanceof Error && error.constructor === Error && !("code" in error) && error.message === message;
 }
 
-/** Owns only this overlap's runtime clients, gates and operations. */
 function ownOverlap(
   runtime: Pool,
   cancel: () => void,
@@ -307,7 +305,6 @@ function combineOverlapFailure(body: { error: unknown } | undefined, cleanup: un
 }
 
 function rethrowOverlap(error: unknown): never {
-  // Preserve even non-Error thrown identities from the tested operation.
   throw error;
 }
 
@@ -1284,9 +1281,8 @@ describe("ingestUploadedFile (issue #670)", () => {
 
   it("deletes the streamed bytes and leaves no blobs row when the transaction fails", async () => {
     const filesId = await filesDatabaseId();
-    // The Files database is seeded as a system database, which `chokePoint.archiveDatabase`
-    // refuses to archive — archived directly here purely to make `createItemWithClient` throw
-    // `database_archived`, the same guard a non-system database hits through the choke point.
+    // The Files system database cannot be archived through the choke point; it is archived directly so
+    // `createItemWithClient` throws `database_archived`.
     await pool.query("UPDATE databases SET archived_at = now() WHERE id = $1", [filesId]);
     const storage = new FakeBlobStorageWriter();
 
@@ -1332,8 +1328,7 @@ describe("ingestUploadedFile (issue #670)", () => {
     expect(second.created).toBe(false);
     expect(second.item.id).toBe(first.item.id);
     expect(storage.deleteCalls).toHaveLength(1);
-    // The duplicate's bytes are still present because the fake's delete failed — the point
-    // being verified is that the failure did not abort the transaction.
+    // The duplicate's bytes remain because the fake's delete failed; the failure did not abort the transaction.
     const secondKey = requireDefined(storage.deleteCalls[0], "expected one delete call");
     expect(storage.bytesByKey.has(secondKey)).toBe(true);
 

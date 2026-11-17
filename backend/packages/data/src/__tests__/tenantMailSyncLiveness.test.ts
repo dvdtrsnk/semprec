@@ -31,7 +31,6 @@ async function markAllProcessesFresh(): Promise<void> {
   }
 }
 
-/** A tenant with its own user, the recipient of its mailbox stalls, and its own Mailboxes database (tenant zero's is seeded). */
 async function createTenantWithMailboxes(status?: "suspended"): Promise<string> {
   const tenantId = await createTestTenant(pool, status ? { status } : {});
   await createUser(pool, {
@@ -48,7 +47,6 @@ async function createTenantWithMailboxes(status?: "suspended"): Promise<string> 
   return tenantId;
 }
 
-/** An active mailbox with a sync-state row and a heartbeat five minutes old, created inside `tenantId`. */
 async function createStaleMailbox(tenantId: string): Promise<string> {
   const mailboxId = await runInTenant(tenantId, () =>
     withTransaction(dataPool!, async (client) => {

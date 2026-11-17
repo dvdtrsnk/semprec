@@ -55,7 +55,6 @@ const jobSchema = z.object({
   runsLater: z.boolean(),
 });
 
-/** The queued jobs of the task, from the queue's public view, oldest first. */
 async function queuedJobs() {
   const { rows } = await adminPool.query<Record<string, unknown>>(
     `SELECT key, attempts, last_error AS "lastError", (run_at > now()) AS "runsLater"
@@ -80,7 +79,6 @@ async function newTenant(locale: string | null = "en"): Promise<string> {
   return tenantId;
 }
 
-/** The rows of one tenant's calendar, built in its scope on the runtime-role pool through production writes. */
 function world(tenantId: string) {
   const cp = createChokePoint(dataPool);
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenantId, fn);
@@ -98,7 +96,6 @@ function world(tenantId: string) {
     return (await inTenant(() => cp.createItem({ databaseId: id, properties }, undefined, undefined, USER))).id;
   }
 
-  /** A mailbox whose first address is `address`. */
   async function mailbox(address: string | null = "me@example.com", provider = "generic"): Promise<string> {
     const mailboxesId = await databaseId("mailboxes");
     return inTenant(() =>
@@ -147,7 +144,6 @@ function world(tenantId: string) {
     );
   }
 
-  /** A participant without an invitation. */
   async function addPlain(eventId: string, personId: string): Promise<void> {
     const relationPropertyId = await peopleProperty();
     await inTenant(() =>
@@ -162,7 +158,6 @@ function world(tenantId: string) {
     );
   }
 
-  /** The metadata of the Event's stored edge to the person, or `null` when there is none. */
   async function edge(eventId: string, personId: string): Promise<Record<string, unknown> | null> {
     const relationPropertyId = await peopleProperty();
     const edges = (await inTenant(() => cp.listItemRelations(eventId, relationPropertyId))) ?? [];
@@ -192,7 +187,6 @@ function world(tenantId: string) {
     });
   }
 
-  /** The stored Event, for the UID and the sequence. */
   async function storedEvent(eventId: string): Promise<{ icalUid: string; icalSequence: number }> {
     const id = await databaseId("events");
     const item = await inTenant(() =>
@@ -207,17 +201,14 @@ function world(tenantId: string) {
     return z.object({ icalUid: z.string(), icalSequence: z.number() }).parse(item);
   }
 
-  /** Queues a message in a transaction of the tenant, as a hook or a route would. */
   const enqueue = (input: EnqueueEventInvitationInput) =>
     inTenant(() => withTransaction(dataPool, (client) => enqueueEventInvitation(client, input)));
 
-  /** Runs the queued jobs of the task once, through the module registry's task list as the API runtime hosts it. */
   async function runQueued(): Promise<void> {
     const taskList = await mergeModuleTaskListForAffinity({}, await loadFullModuleRegistry(), "api");
     await runOnce({ pgPool: adminPool }, { [TASK]: taskList[TASK]! });
   }
 
-  /** Runs one payload through the task handler in the tenant's scope, as a retry of the job would. */
   const handle = (payload: unknown) => inTenant(() => handleCalendarSendEventInvitation(payload));
 
   return {
@@ -245,7 +236,6 @@ function world(tenantId: string) {
 
 type World = ReturnType<typeof world>;
 
-/** What a sent message says: its envelope, headers, the plain-text part and the lines of its calendar part. */
 async function readMessage(raw: Buffer) {
   const parsed = await simpleParser(raw);
   const calendar = parsed.attachments.find((attachment) => attachment.contentType === "text/calendar");
@@ -261,7 +251,6 @@ async function readMessage(raw: Buffer) {
   };
 }
 
-/** A REQUEST payload as the hooks queue it. */
 function plainRequest(ids: { eventId: string; personId: string; mailboxId: string }, email = ATTENDEE) {
   return { method: "REQUEST" as const, ...ids, attendeeEmail: email };
 }
@@ -379,7 +368,6 @@ describe("event invitation messages (issue #1774)", () => {
   });
 
   describe("the Event hooks", () => {
-    /** An Event with a sent invitation to Petr, an unsent one to Jana, a declined one to Karel and a plain participant. */
     async function eventWithInvitations() {
       const w = world(await newTenant());
       const mailboxId = await w.mailbox();
@@ -733,7 +721,6 @@ describe("event invitation messages (issue #1774)", () => {
         expect(job).toMatchObject({ attempts: 1, runsLater: true });
         expect(job?.lastError).toContain("connection reset");
 
-        // The retry finds a working transport: the same payload sends once and marks the invitation.
         setEventInvitationDelivery({ pool: dataPool, transports: transportFor(transport) });
         await f.w.handle(plainRequest(f.ids));
         expect(transport.sent).toHaveLength(1);
@@ -924,7 +911,6 @@ describe("event invitation messages (issue #1774)", () => {
           await undo();
         }
 
-        // Three attempts, each logged; the message left once in this run.
         expect(transport.sent).toHaveLength(1);
         expect(error.mock.calls.map(([fields]) => fields)).toEqual(
           [1, 2, 3].map((attempt) => ({
@@ -938,7 +924,6 @@ describe("event invitation messages (issue #1774)", () => {
         );
         expect((await f.w.edge(f.eventId, f.personId))?.invitation).not.toHaveProperty("sentAt");
 
-        // The queue's retry sends again with the same UID and SEQUENCE and records sentAt.
         await f.w.handle(plainRequest(f.ids));
         expect(transport.sent).toHaveLength(2);
         const [first, second] = await Promise.all(transport.sent.map((sent) => readMessage(sent.raw)));
@@ -1008,7 +993,6 @@ describe("event invitation messages (issue #1774)", () => {
       });
 
       describe("an Event changed while the message was on its way", () => {
-        /** Sends through a transport that runs `during` while the message is in flight. */
         function sendingWhile(during: () => Promise<void>) {
           const recorder = recordingTransport();
           let ran = false;
@@ -1040,7 +1024,6 @@ describe("event invitation messages (issue #1774)", () => {
           ]);
           expect((await f.w.edge(f.eventId, f.personId))?.invitation).toHaveProperty("sentAt");
 
-          // The queued job sends the new time.
           await f.w.runQueued();
           expect(transport.sent).toHaveLength(2);
           const second = await readMessage(transport.sent[1]!.raw);
@@ -1062,7 +1045,6 @@ describe("event invitation messages (issue #1774)", () => {
           await trashed.w.handle(plainRequest(trashed.ids));
 
           const jobs = (await queuedJobs()).map((job) => job.key);
-          // Only the CANCEL the delete hook queued for the trashed Event.
           expect(jobs).toEqual([expect.stringContaining(`${trashed.eventId}:${trashed.personId}:CANCEL:`)]);
         });
 
@@ -1314,7 +1296,7 @@ describe("event invitation messages (issue #1774)", () => {
   });
 });
 
-/** The stored metadata of every invitation edge of the item, read on the admin pool because a trashed Event hides its edges from the choke point. */
+/** Read on the admin pool because a trashed Event hides its edges from the choke point. */
 async function storedEdges(itemId: string): Promise<unknown[]> {
   const { rows } = await adminPool.query<{ metadata: unknown }>(
     "SELECT metadata FROM item_relations WHERE (item_a = $1 OR item_b = $1) AND metadata ? 'invitation' ORDER BY metadata::text",
@@ -1331,7 +1313,6 @@ async function databaseIdOf(w: World, moduleId: string): Promise<string> {
   return database.id;
 }
 
-/** The jobs of the task the open transaction can see, its own uncommitted ones included. */
 async function jobsInTransaction(client: PoolClient): Promise<number> {
   const { rows } = await client.query<{ count: string }>(
     "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE task_identifier = $1",

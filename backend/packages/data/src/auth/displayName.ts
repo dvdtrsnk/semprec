@@ -1,16 +1,9 @@
 import { ValidationError } from "../errors.js";
 
-/** The longest display name the account routes accept, counted in code points after trimming. */
+/** Counted in code points after trimming. */
 export const DISPLAY_NAME_MAX_LENGTH = 80;
 
-/**
- * Validates the optional `displayName` of an account-creation request: `POST /api/setup` and
- * invitation acceptance (issue #1513). An absent or `null` value gives `null`, which is stored as NULL.
- * A string is trimmed, and the trimmed value must be 1 to `DISPLAY_NAME_MAX_LENGTH` code points long and
- * must not contain a NUL character, which Postgres `text` cannot store. Anything else throws a
- * `ValidationError` whose `details.field` is `'displayName'`. Length counts code points rather than
- * UTF-16 units, so a character outside the Basic Multilingual Plane counts once.
- */
+/** NUL is rejected because Postgres `text` cannot store it. */
 export function normalizeDisplayName(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== "string") {

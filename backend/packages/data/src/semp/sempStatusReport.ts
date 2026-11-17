@@ -39,22 +39,16 @@ const causes = new Set(["budgetExceeded", "modelError", "cancelled", "interrupte
 type StatusAction = { kind: string; target: string | { threadId: string; messageId: string } };
 
 /**
- * The AI budget problem of the current tenant (issue gh-1871), or null when there is none. It is
- * derived on every read from the budget summary of issue gh-1456 and has no `semp_problems` row
- * (docs/adr/2026-11-10-semp-status-problems-derived-at-read-time.md): `aiBudgetMissing` while the
- * tenant has no budget row, `aiBudgetExhausted` while a cap of its own is reached. The summary sets
- * `resetsAt` exactly while a window is exhausted, so that field alone selects the second problem.
- * The summary does not read the operator-wide caps, so reaching them produces no problem.
+ * The tenant's AI budget problem, derived on every read from the budget summary with no `semp_problems` row
+ * (docs/adr/2026-11-10-semp-status-problems-derived-at-read-time.md): `aiBudgetMissing` without a budget row,
+ * `aiBudgetExhausted` while one of its own caps is reached (exactly when `resetsAt` is set). Operator-wide caps
+ * are not read, so they produce no problem.
  *
- * `id` is the problem key, followed for an exhausted window by its reset instant, so the next
- * exhausted window is a different problem to a client. `replacements.resetTime` is that instant in
- * the tenant's time zone, written in `language`.
+ * `id` carries the reset instant for an exhausted window, so the next window is a different problem.
  *
- * Luxon writes the reset time, because the settings writer validates the zone with Luxon
- * (`assertValidTimezone`): a fixed offset such as `UTC+2` is a zone a tenant can store, and
- * `Intl.DateTimeFormat` throws for it as a `timeZone`. The zone is validated only for an exhausted
- * window, where the text needs it: a stored zone Luxon cannot read throws `ValidationError` then,
- * instead of putting "Invalid DateTime" into the text.
+ * Luxon formats the reset time because the settings writer validates zones with Luxon: a fixed offset like
+ * `UTC+2` is storable but `Intl.DateTimeFormat` throws for it. An unreadable zone throws `ValidationError`
+ * instead of writing "Invalid DateTime" into the text.
  */
 async function readAiBudgetProblem(
   client: PoolClient,
@@ -73,29 +67,20 @@ async function readAiBudgetProblem(
 }
 
 /**
- * The Semp status report of the current tenant (issue #1555), together with the stored `kind` of
- * every stored problem it lists, keyed by problem id. The summary (issue #1631) derives its banner
- * from this same read, so the count, the order and the rendered text have one source.
+ * The tenant's status report plus the stored `kind` of each listed problem, by id. The summary derives its
+ * banner from this same read, so count, order and text have one source.
  *
- * The list starts with the AI budget problem when the tenant has one (`readAiBudgetProblem`), which
- * is derived in this read and written nowhere. The stored active problems follow, `critical` first,
- * then the latest `last_seen_at`. `activeCount` counts both. `services` take their state from the
- * stored problems only; the `transcription` service also carries the tenant's queued and running
- * transcription jobs as its `detail` (issue gh-1945, `readTranscriptionQueueCounts`) and no
- * `lastActivityAt`. The report does not carry `resolvedRecent`: only the full endpoint lists the
- * problems resolved in the last seven days (`getSempStatusReport`, issue gh-1919), so the summary
- * and the overview, which read only the count and the banner, never run the resolved read.
+ * The AI budget problem comes first, then stored active problems (`critical` first, latest `last_seen_at`);
+ * `activeCount` counts both. Services take their state from stored problems only; `transcription` also carries
+ * its queue counts as `detail`. `resolvedRecent` is left to `getSempStatusReport`, so summary and overview
+ * never run that read.
  */
 export async function readSempStatusReport(pool: Pool) {
   const { report, problemKinds } = await readSempStatus(pool, async () => null);
   return { report, problemKinds };
 }
 
-/**
- * The one transaction behind `readSempStatusReport` and `getSempStatusReport`. `readExtra` runs last,
- * in the same transaction, so the full endpoint reads its extra list from the same snapshot as the
- * active problems; the summary passes a reader that reads nothing.
- */
+/** `readExtra` runs last in the same transaction, so it reads the same snapshot as the active problems. */
 async function readSempStatus<Extra>(
   pool: Pool,
   readExtra: (client: PoolClient, catalogs: ModuleCatalogs, language: "cs" | "en") => Promise<Extra>,
@@ -374,11 +359,7 @@ async function readSempStatus<Extra>(
   });
 }
 
-/**
- * The body of `GET /api/semp-status`: the report and `resolvedRecent`, the problems resolved in the last
- * seven days with their resolution titles (issue gh-1919, `readSempResolvedRecent`). `resolvedRecent`
- * is not part of `activeCount`.
- */
+/** The body of `GET /api/semp-status`; `resolvedRecent` is not part of `activeCount`. */
 export async function getSempStatusReport(pool: Pool) {
   const { report, extra } = await readSempStatus(pool, readSempResolvedRecent);
   return { ...report, resolvedRecent: extra };

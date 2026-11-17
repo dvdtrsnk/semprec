@@ -14,32 +14,26 @@ import { assertValidTimezone } from "../timezone.js";
 
 export const TASKS_DAY_ROLLOVER_ACTION_ID = "core.tasksDayRollover";
 
-/**
- * The rollover's heartbeat, shared by `seedSystem` (fresh install) and
- * `runTasksDayRolloverHeartbeatCutoverMigration` (populated upgrade) so both create the same one: midnight in the
- * tenant's system time zone.
- */
+/** Created by `seedSystem`: midnight in the tenant's system time zone. */
 export const TASKS_DAY_ROLLOVER_HEARTBEAT = {
   name: "Tasks day rollover",
   rule: { kind: "dailyTime", at: "00:00" },
 } as const;
 
-/** The heartbeat's `action_config`: the Tasks database it moves tasks in, resolved once at seed time. */
+/** Resolved once at seed time. */
 const configSchema = z.object({ tasksDatabaseId: z.uuid() });
 
 /** Rows one transaction moves. */
 const CHUNK_SIZE = 100;
 
-/** How the `completedInEvent` edge names the task: the side of its relation definition the Tasks property is. */
+/** Which side of the relation definition the Tasks property is. */
 type CompletedInEventSide = "item_a" | "item_b" | null;
 
 /**
- * The candidates of one chunk, locked: live, `notDone`, not recurring (no `seriesId`), whose effective day
- * (`effectiveDate` when set, else `date`, until #1780 and #1798 define it fully) is a calendar day before `today`, and
- * visible by the predicate the Tasks today view (#1798) is to use: `hiddenUntil` empty or before now, and no
- * `completedInEvent` edge. A task already in the state a rollover leaves for `today` (`date` today, no `timeFrom`, no
- * `timeTo`) is no candidate, whatever its `effectiveDate`: moving it again would write the same values. The first pass
- * skips rows another transaction holds and pages by id; the second waits for them.
+ * One locked chunk of candidates: live, `notDone`, no `seriesId`, effective day (`effectiveDate`, else `date`)
+ * before `today`, and visible (`hiddenUntil` empty or past, no `completedInEvent` edge). A task already in the
+ * rollover's result state for today (`date` today, no times) is excluded whatever its `effectiveDate`. The first
+ * pass skips locked rows and pages by id; the second waits for them.
  */
 async function lockCandidates(
   client: PoolClient,
@@ -95,20 +89,15 @@ async function completedInEventEdge(
 }
 
 /**
- * Registered as the `dailyTime` 00:00 heartbeat action `core.tasksDayRollover` (issue #1674): moves every unfinished
- * one-off task of the tenant whose day has passed to today, in the tenant's system time zone, through
- * `rolloverTaskWithClient` (`date` today, no times, `since`/`sinceTime` by the first-planned-day rule).
+ * The `core.tasksDayRollover` 00:00 heartbeat action: moves every passed one-off unfinished task to today in the
+ * tenant zone via `rolloverTaskWithClient` (`date` today, no times, `since` by the first-planned-day rule).
  *
- * Runs in the firing heartbeat's tenant. The first pass pages through the candidates by id in chunks of
- * `CHUNK_SIZE`, each its own transaction, with `FOR UPDATE SKIP LOCKED`; the second pass waits (`FOR UPDATE`) for the
- * rows the first one skipped, chunk after chunk from the start, until no candidate is left. Each pass runs at most
- * `MAX_SWEEP_CHUNKS_PER_TENANT` chunks, the cap of the heartbeat sweep; what is left after that waits for the next
- * run. When every chunk and every closing of a missed occurrence has committed, one `overview` invalidation is
- * announced to the tenant's sockets (`publishOverviewInvalidation`), whether or not a task moved, because the number
- * of tasks for today changes with the day itself. A run that throws before that point announces nothing. A moved task is in the rollover's result state for today, so it is no candidate again even when a stale
- * `effectiveDate` still lies in the past: a second run on the same day changes nothing, and a run after an outage of
- * several days writes each task once. See docs/adr/2026-11-08-nightly-task-rollover-writes-user-owned-schedule.md and
- * docs/adr/2026-11-09-task-rollover-excludes-its-current-result-state.md.
+ * The first pass pages by id with `FOR UPDATE SKIP LOCKED`, one transaction per chunk; the second waits for the
+ * skipped rows. Each pass is capped at `MAX_SWEEP_CHUNKS_PER_TENANT`; the rest waits for the next run. After every
+ * chunk and missed-occurrence close commits, one `overview` invalidation is announced even if nothing moved,
+ * because today's count changes with the day. A moved task is in the result state and never a candidate again,
+ * so reruns are no-ops and a run after an outage writes each task once. See
+ * docs/architecture/domain-calendar-tasks-and-media.md#nightly-rollover.
  */
 export function createTasksDayRolloverAction(pool: Pool, options: { recurringLimit?: number } = {}): ActionHandler {
   return async (actionConfig) => {
@@ -181,8 +170,7 @@ export function createTasksDayRolloverAction(pool: Pool, options: { recurringLim
       });
       if (ids.length === 0) break;
     }
-    // Every transaction above has committed: the announcement is that of the whole run, and it is its own
-    // transaction so that it is sent when nothing moved as well.
+    // Its own transaction after all others committed, so it is sent when nothing moved as well.
     await withTransaction(pool, async (client) => publishOverviewInvalidation(client));
   };
 }

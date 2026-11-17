@@ -19,7 +19,6 @@ export function loadLinkRules(): Promise<ModuleLinkRuleProjection[]> {
   return rulesPromise;
 }
 
-/** The relation property a rule's `valueFilter.omit` names, with its relation definition. */
 export interface ResolvedValueFilter {
   property: PropertyRow;
   definition: RelationDefinitionRow;
@@ -35,14 +34,13 @@ export interface ResolvedLinkRule {
   viaDefinition: RelationDefinitionRow;
   sourceDefinition: RelationDefinitionRow | null;
   targetDefinition: RelationDefinitionRow | null;
-  /** The rule's resolved `valueFilter`; `null` for a rule that declares none. */
+  /** `null` for a rule that declares none. */
   valueFilter: ResolvedValueFilter | null;
 }
 
 /**
- * Resolves a `valueFilter.omit` endpoint within the caller's tenant transaction (issue #1697). The
- * database is the system database whose owner module id is `omit.databaseKey`. Returns `null` when
- * that database or the property is missing, or the property is not a relation with a definition.
+ * The system database whose owner module is `omit.databaseKey`. `null` when it or the property is missing or the
+ * property is not a relation with a definition.
  */
 export async function resolveValueFilter(
   client: PoolClient,
@@ -57,16 +55,10 @@ export async function resolveValueFilter(
 }
 
 /**
- * The ids a resolved value filter leaves out: every item its relation connects to a row of the
- * property's database, a trashed row included. It reads all rows of that database and the edges of
- * each, which a filter keeps small by naming a singleton database. No edge (for example no own
- * person chosen) leaves nothing out.
- *
- * The rows are locked `FOR SHARE` before their edges are read, and the lock is held until the caller's
- * transaction ends. A change of the filter's relation locks its row `FOR UPDATE`: `setSelfPersonId`
- * before it writes, the link rule edge hook for any other writer before it queues the recomputation. So
- * a caller at READ COMMITTED either reads the relation as that change committed it, or commits its copy
- * before the change looks for the links to recompute.
+ * Every item the filter's relation connects to a row of the property's database, trashed rows included. The rows
+ * are locked `FOR SHARE` until the caller's transaction ends; a change of the relation locks the row `FOR UPDATE`
+ * first (`setSelfPersonId`, or the edge hook), so a READ COMMITTED caller either sees that change or commits its copy
+ * before the change looks for links to recompute.
  */
 export async function readOmittedItemIds(client: PoolClient, filter: ResolvedValueFilter): Promise<string[]> {
   const omitted: string[] = [];
@@ -76,10 +68,7 @@ export async function readOmittedItemIds(client: PoolClient, filter: ResolvedVal
   return omitted;
 }
 
-/**
- * Resolves a rule afresh within the caller's tenant transaction. A rule whose `valueFilter` cannot
- * be resolved is unresolved as a whole (`null`), so its values are never copied unfiltered.
- */
+/** An unresolvable `valueFilter` makes the whole rule `null`, so its values are never copied unfiltered. */
 export async function resolveLinkRule(
   client: PoolClient,
   rule: ModuleLinkRuleProjection,

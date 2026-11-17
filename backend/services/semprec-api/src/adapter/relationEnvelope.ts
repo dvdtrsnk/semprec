@@ -1,6 +1,6 @@
 import type { RelationEdge } from "@semprec/data";
 
-/** The wire shape a relation edge write/delete returns (issue #157) — always the full authoritative edge, never an empty 204. */
+/** Always the full authoritative edge, never an empty 204. */
 export interface RelationEnvelope {
   id: string;
   relationDefinitionId: string;

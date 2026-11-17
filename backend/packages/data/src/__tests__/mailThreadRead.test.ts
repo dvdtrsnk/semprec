@@ -67,7 +67,6 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
     await rm(storageRoot, { recursive: true, force: true });
   });
 
-  /** Two mailboxes with their Inbox, Sent and Drafts folders, and an ingest through the sync writer. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -146,8 +145,8 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
   }
 
   /**
-   * The conversation "Re: Nabídka na web": the user's sent offer, an incoming reply that was also delivered to
-   * a second mailbox, the user's sent answer and a last incoming reply. Both of Petr's messages are incoming.
+   * The conversation "Re: Nabídka na web": the user's sent offer, an incoming reply also delivered to a
+   * second mailbox, the user's answer and a last incoming reply.
    */
   async function offerThread() {
     const f = await setup();
@@ -185,7 +184,6 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
     return threadId;
   }
 
-  /** The `read` property of each item (`null` when the item has none) and the time of its last update. */
   async function stateOf(itemIds: string[]): Promise<Map<string, { read: boolean | null; updatedAt: string }>> {
     const { rows } = await runtime.query<{ id: string; read: boolean | null; updated_at: string }>(
       `SELECT id, (properties->'read')::boolean AS read, updated_at::text AS updated_at
@@ -200,7 +198,7 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
     return itemIds.map((id) => state.get(id)?.read ?? null);
   }
 
-  /** The `read` rows of the flag write-back table: one per message whose read state was written by a user or an agent. */
+  /** The `read` rows of the flag write-back table: one per message whose read state a user or agent wrote. */
   async function desiredReadStates(): Promise<{ itemId: string; desired: boolean }[]> {
     const { rows } = await runtime.query<{ item_id: string; desired_state: boolean }>(
       `SELECT message_item_id AS item_id, desired_state FROM mail_message_flag_sync_state
@@ -209,7 +207,6 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
     return rows.map((row) => ({ itemId: row.item_id, desired: row.desired_state }));
   }
 
-  /** Calls the route handler as the session user, in the tenant of the session. */
   function post(threadId: string, body: unknown, inTenant = tenant) {
     return runInTenant(inTenant, () =>
       createMailThreadReadRouteHandler(runtime)({
@@ -220,7 +217,7 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
     );
   }
 
-  /** From here on the fixture is built, so only the announcements of the call under test are recorded. */
+  /** The fixture is built, so only announcements of the call under test are recorded from here on. */
   function recordThreadAnnouncements(): void {
     events = [];
     setInvalidationHook((event) => {
@@ -296,8 +293,8 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
       const opened = await post(threadId, { read: true });
       expect(await readsOf([first, second])).toEqual([true, true]);
       expect(await stateOf(excluded)).toEqual(excludedBefore);
-      // The answer is the unread state the thread detail reports, which counts the draft of a sender that is no
-      // mailbox address of the tenant. The route never writes the draft, so it keeps the thread unread.
+      // The answer is the thread detail's unread state, which counts the draft of a sender that is no mailbox
+      // address of the tenant. The route never writes the draft, so the thread stays unread.
       expect(opened.body.unread).toBe(true);
 
       const result = await post(threadId, { read: false });
@@ -398,9 +395,8 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
       const highestHeld = new Promise<void>((resolve) => {
         passHoldsHighest = resolve;
       });
-      // A reconcile pass: the guard first, then the copy with the highest id, and the one with the lowest id only
-      // once the route is waiting. Without the guard in the route, the route holds the lowest copy by then and the
-      // two wait for each other (40P01).
+      // A reconcile pass takes the guard, then the highest-id copy, and the lowest only once the route waits.
+      // Without the guard in the route, the two would deadlock (40P01).
       const pass = withTransaction(runtime, async (client) => {
         await lockMailThreadMutation(client);
         await applyObservedMailMessageFlags(client, seen(highest));
@@ -476,7 +472,7 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
       expect(await desiredReadStates()).toEqual([]);
       recordThreadAnnouncements();
 
-      // A trigger is the only way to fail the second write of the call; no production code exposes that seam.
+      // A trigger is the only way to fail the second write of the call.
       await admin.query(`CREATE FUNCTION test_mail_thread_read_fail() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
           IF EXISTS (SELECT 1 FROM mail_message_flag_sync_state) THEN RAISE EXCEPTION 'test mail thread read failure'; END IF;

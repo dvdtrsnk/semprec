@@ -21,19 +21,16 @@ import type { PushBadgeSenders, PushSendResult, PushSenders } from "../push/push
 import { upsertApnsSubscription, upsertWebPushSubscription } from "../push/pushSubscriptionsStore.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// Passthrough spy: every call reaches the real adapter unless a test replaces one answer, so the default wiring of
-// the job to the adapter can be observed without a network.
+// Passthrough spy: the default job-to-adapter wiring is observable without a network.
 vi.mock("../push/apnsAdapter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../push/apnsAdapter.js")>();
   return { ...actual, sendApnsBadgeUpdate: vi.fn(actual.sendApnsBadgeUpdate) };
 });
 
 /**
- * Issue #1891: the badge on visible pushes and the debounced badge-only refresh. Every write goes through the
- * production stores and route handlers on a `semprec_data` pool, so row-level security applies; each tenant has one
- * user. The job runs through its production handler drained with `runOnce`, with a fake sender in place of APNs.
- * Only `Date` is faked in the queue tests, which makes the run time of a job a known instant and leaves every job
- * due when it is drained, because graphile-worker compares `run_at` with the database clock.
+ * The badge on visible pushes and the debounced badge-only refresh, on a `semprec_data` pool so RLS applies.
+ * Only `Date` is faked in the queue tests, so jobs are due when drained (graphile-worker compares `run_at`
+ * with the database clock).
  */
 
 const jobEnvelope = z.object({ tenantId: z.string(), payload: z.object({ userId: z.string() }) });
@@ -54,7 +51,6 @@ function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): 
   return runInTenant(tenantId, () => withTransaction(dataPool, fn));
 }
 
-/** A new tenant with its one user, one APNs registration and one Web Push registration. */
 async function newTenant(): Promise<BadgeTenant> {
   const tenantId = await createTestTenant(adminPool);
   const user = await createUser(adminPool, {
@@ -85,7 +81,6 @@ async function newTenant(): Promise<BadgeTenant> {
   return { tenantId, userId: user.id, apns: { id: apns.id, deviceToken }, webPush: { id: webPush.id } };
 }
 
-/** One more active APNs registration for the user of `tenant`. */
 async function addApnsRegistration(tenant: BadgeTenant): Promise<{ id: string; deviceToken: string }> {
   const deviceToken = randomUUID();
   const registration = await runInTenant(tenant.tenantId, () =>
@@ -100,7 +95,6 @@ async function addApnsRegistration(tenant: BadgeTenant): Promise<{ id: string; d
   return { id: registration.id, deviceToken };
 }
 
-/** A new pending approval request of a new run of the user of `tenant`, created the way production creates one. */
 function createRequest(tenant: BadgeTenant, toolCallId?: string) {
   return inTenant(tenant.tenantId, async (client) => {
     const run = await createAgentRun(client, { triggeredBy: "user", task: "badge refresh", userId: tenant.userId });
@@ -121,7 +115,6 @@ function decide(tenant: BadgeTenant, approvalRequestId: string, decision: "appro
   );
 }
 
-/** PATCHes the notification preferences of `tenant`'s user through the production route handler. */
 function patchPreferences(tenant: BadgeTenant, body: unknown) {
   return runInTenant(tenant.tenantId, () =>
     createPatchNotificationPreferencesRouteHandler(dataPool)({ body, identity: { user: { id: tenant.userId } } }),
@@ -140,7 +133,6 @@ interface PendingJob {
   last_error: string | null;
 }
 
-/** The queued `pushBadgeRefresh` jobs, read through graphile-worker's public `jobs` view. */
 async function refreshJobs(): Promise<PendingJob[]> {
   const { rows } = await adminPool.query<PendingJob>(
     `SELECT key, run_at, attempts, max_attempts, last_error
@@ -150,14 +142,12 @@ async function refreshJobs(): Promise<PendingJob[]> {
   return rows;
 }
 
-/** The envelopes of the queued `pushBadgeRefresh` jobs: the tenant each is stamped with and its payload. */
 async function refreshEnvelopes() {
   return (await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.PUSH_BADGE_REFRESH))
     .map((envelope) => jobEnvelope.parse(envelope))
     .sort((a, b) => a.payload.userId.localeCompare(b.payload.userId));
 }
 
-/** Completes the queued jobs of every task but `pushBadgeRefresh`, through graphile-worker's public `complete_jobs`. */
 async function discardOtherJobs(): Promise<void> {
   await adminPool.query(
     `SELECT graphile_worker.complete_jobs(
@@ -166,7 +156,6 @@ async function discardOtherJobs(): Promise<void> {
   );
 }
 
-/** Completes every queued `pushBadgeRefresh` job without running it. */
 async function discardRefreshJobs(): Promise<void> {
   await adminPool.query(
     `SELECT graphile_worker.complete_jobs(
@@ -189,7 +178,6 @@ function runRefresh(tenantId: string, payload: unknown, badgeSenders?: PushBadge
   return runInTenant(tenantId, () => handlePushBadgeRefreshTask(dataPool, payload, badgeSenders));
 }
 
-/** Drains the queue once with the production handler of `pushBadgeRefresh`; nothing else runs. */
 async function drainRefreshJobs(badgeSenders: PushBadgeSenders): Promise<void> {
   await discardOtherJobs();
   await runOnce(
@@ -202,7 +190,6 @@ async function drainRefreshJobs(badgeSenders: PushBadgeSenders): Promise<void> {
   );
 }
 
-/** The `revoked_at` state of every push registration of `tenant`'s user, by registration id. */
 async function revoked(tenant: BadgeTenant): Promise<Record<string, boolean>> {
   const { rows } = await inTenant(tenant.tenantId, (client) =>
     client.query<{ id: string; revoked: boolean }>(
@@ -311,7 +298,6 @@ describe("a visible push carries the badge (issue #1891)", () => {
     };
   }
 
-  /** Writes a critical Semp problem notification for the tenant's user, a kind the default preferences push. */
   function writeCriticalProblem(tenant: BadgeTenant): Promise<string> {
     return inTenant(tenant.tenantId, (client) =>
       writeNotification(client, {
@@ -796,8 +782,7 @@ describe("handlePushBadgeRefreshTask (issue #1891)", () => {
   it("sends through the APNs adapter's badge update by default", async () => {
     const tenant = await newTenant();
     await createRequest(tenant);
-    // Neither APNS_* variable is set in the test environment, so the real adapter resolves not-configured
-    // without a network request, which the job logs and accepts.
+    // No APNS_* variable is set, so the real adapter resolves not-configured without a network request.
     const saved = {
       teamId: process.env.APNS_TEAM_ID,
       keyId: process.env.APNS_KEY_ID,

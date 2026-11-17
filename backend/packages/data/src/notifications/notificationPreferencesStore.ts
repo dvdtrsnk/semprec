@@ -6,7 +6,7 @@ import { publishNotificationPreferencesInvalidation } from "./notificationInvali
 export const NOTIFICATION_PROBLEMS_LEVELS = ["off", "critical", "all"] as const;
 export type NotificationProblemsLevel = (typeof NOTIFICATION_PROBLEMS_LEVELS)[number];
 
-/** One user's preferences as the API reports them. `updatedAt` is null while the user has no row. */
+/** `updatedAt` is null while the user has no row. */
 export interface NotificationPreferences {
   approvals: boolean;
   invites: boolean;
@@ -19,10 +19,9 @@ export interface NotificationPreferences {
   updatedAt: string | null;
 }
 
-/** The fields a change sets; an omitted field keeps its stored value. */
 export type NotificationPreferencesPatch = Partial<Omit<NotificationPreferences, "updatedAt">>;
 
-/** What a user without a row has. Migration 0119 declares the same values as the column defaults. */
+/** Must match the column defaults. */
 const DEFAULT_VALUES: Omit<NotificationPreferences, "updatedAt"> = {
   approvals: true,
   invites: true,
@@ -63,7 +62,7 @@ function mapRow(row: NotificationPreferencesDbRow): NotificationPreferences {
   };
 }
 
-/** The caller's preferences: the stored row, or the defaults when the user has none. Reads only; never writes a row. */
+/** Never writes a row. */
 export async function getNotificationPreferences(client: Queryable, userId: string): Promise<NotificationPreferences> {
   const { rows } = await client.query<NotificationPreferencesDbRow>(
     `SELECT ${PREFERENCE_COLUMNS} FROM notification_preferences WHERE user_id = $1`,
@@ -74,12 +73,8 @@ export async function getNotificationPreferences(client: Queryable, userId: stri
 }
 
 /**
- * Sets the fields `patch` supplies and leaves the others as they are. A patch with no fields changes
- * nothing and returns the current values. The first change creates the row with the column defaults,
- * then one statement updates it, so both run in the caller's transaction. Each `COALESCE` keeps the
- * stored value when its parameter is null. A change is announced to the user's sockets once the
- * transaction has committed (`publishNotificationPreferencesInvalidation`); a patch with no fields writes
- * and announces nothing.
+ * Insert-then-update in the caller's transaction; `COALESCE` keeps fields the patch omits. An
+ * empty patch writes and announces nothing.
  */
 export async function patchNotificationPreferences(
   client: PoolClient,

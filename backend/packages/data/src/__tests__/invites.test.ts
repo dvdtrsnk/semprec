@@ -24,7 +24,6 @@ interface InviteRow {
   revoked_at: Date | null;
 }
 
-/** A mailer that records every call; `failWith` makes it reject instead. */
 function recordingMailer(failWith?: Error): InviteMailer & { calls: SendInviteEmailInput[] } {
   const calls: SendInviteEmailInput[] = [];
   return {
@@ -36,7 +35,6 @@ function recordingMailer(failWith?: Error): InviteMailer & { calls: SendInviteEm
   };
 }
 
-/** The raw token from an invite URL's fragment. */
 function tokenFromUrl(inviteUrl: string): string {
   const token = new URL(inviteUrl).hash.replace("#token=", "");
   if (token.length === 0) throw new Error(`no token in ${inviteUrl}`);

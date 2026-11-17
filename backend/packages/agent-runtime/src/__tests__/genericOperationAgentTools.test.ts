@@ -9,7 +9,6 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-  runMailboxAddressesOwnerCutoverMigration,
   upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
 import {
@@ -126,7 +125,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         const rejected = await tools["item.patch"](run.id, {
           itemId: validType.id,
           properties: { targetDatabase },
-          ifVersion: validType.updatedAt,
+          ifVersion: validType.version,
         });
         expect(rejected.error).toBe(true);
         expect(rejected.result).toMatch(/^validation_failed:/);
@@ -176,7 +175,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       expect(rows[0]?.body).toBe(raw);
     });
 
-    it("refuses mailbox address edits in fresh and cut-over tenants through the agent tool", async () =>
+    it("refuses mailbox address edits through the agent tool", async () =>
       runInTenant(getTenantZeroId(), async () => {
         const runtime = await createRuntimeRolePool(pool, "semprec_data");
         const failures: unknown[] = [];
@@ -211,34 +210,25 @@ describe("generic operation AgentTools (issue #220)", () => {
             task: "edit mailbox",
           });
           const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
-          for (const phase of ["fresh", "cutover"] as const) {
-            if (phase === "cutover") {
-              // Restore the historical property owner before the actual tenant cutover.
-              await pool.query("UPDATE properties SET owner = 'user' WHERE database_id = $1 AND key = 'addresses'", [
-                fixture.databaseId,
-              ]);
-              await runMailboxAddressesOwnerCutoverMigration(runtime);
-            }
-            const before = await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId);
-            if (!before) throw new Error("Mailbox missing");
-            const refused = await tools["item.patch"](run.id, {
-              itemId: fixture.mailboxId,
-              properties: { addresses: "bad@example.test" },
-              ifVersion: before.updatedAt,
-            });
-            expect(refused.error).toBe(true);
-            expect(refused.result).toMatch(/^owner_violation:/);
-            expect(await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId)).toEqual(before);
-            const allowed = await tools["item.patch"](run.id, {
-              itemId: fixture.mailboxId,
-              properties: { name: `Allowed ${phase}` },
-              ifVersion: before.updatedAt,
-            });
-            expect(allowed.error).toBe(false);
-            expect(
-              (await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId))?.properties,
-            ).toMatchObject({ name: `Allowed ${phase}`, addresses: "owner@example.test" });
-          }
+          const before = await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId);
+          if (!before) throw new Error("Mailbox missing");
+          const refused = await tools["item.patch"](run.id, {
+            itemId: fixture.mailboxId,
+            properties: { addresses: "bad@example.test" },
+            ifVersion: before.version,
+          });
+          expect(refused.error).toBe(true);
+          expect(refused.result).toMatch(/^owner_violation:/);
+          expect(await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId)).toEqual(before);
+          const allowed = await tools["item.patch"](run.id, {
+            itemId: fixture.mailboxId,
+            properties: { name: "Allowed" },
+            ifVersion: before.version,
+          });
+          expect(allowed.error).toBe(false);
+          expect(
+            (await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId))?.properties,
+          ).toMatchObject({ name: "Allowed", addresses: "owner@example.test" });
         } catch (error) {
           failures.push(error);
         }
@@ -292,7 +282,7 @@ describe("generic operation AgentTools (issue #220)", () => {
             const result = await tools["item.patch"](run.id, {
               itemId: item.id,
               properties,
-              ifVersion: item.updatedAt,
+              ifVersion: item.version,
             });
             expect(result.error).toBe(false);
           }
@@ -331,7 +321,6 @@ describe("generic operation AgentTools (issue #220)", () => {
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "plan a meeting" });
       const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
       const UID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@semprec$/;
-      /** The item a successful tool call returned, narrowed from its JSON text. */
       const returnedItem = (outcome: { error: boolean; result: string }) => {
         expect(outcome.error).toBe(false);
         const value: unknown = JSON.parse(outcome.result);
@@ -342,6 +331,8 @@ describe("generic operation AgentTools (issue #220)", () => {
           typeof value.id !== "string" ||
           !("updatedAt" in value) ||
           typeof value.updatedAt !== "string" ||
+          !("version" in value) ||
+          typeof value.version !== "string" ||
           !("properties" in value) ||
           typeof value.properties !== "object" ||
           value.properties === null
@@ -350,6 +341,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         return {
           id: value.id,
           updatedAt: value.updatedAt,
+          version: value.version,
           properties: Object.fromEntries(Object.entries(value.properties)),
         };
       };
@@ -372,7 +364,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         await tools["item.patch"](run.id, {
           itemId: created.id,
           properties: { timeFrom: "8:30" },
-          ifVersion: created.updatedAt,
+          ifVersion: created.version,
         }),
       );
       expect(patched.properties).toMatchObject({
@@ -412,9 +404,8 @@ describe("generic operation AgentTools (issue #220)", () => {
       const database = await chokePoint.createDatabase({ name: "Tools DB" });
       const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
 
-      // Every generic-operation input schema is a strict zod object with none of these field
-      // names (see AuthenticatedActor's own doc comment) — an attempt to smuggle a different
-      // identity in through `args` fails validation rather than silently being ignored.
+      // Input schemas are strict objects without these fields, so smuggling an identity through `args` fails
+      // validation.
       const spoofed = await tools["view.create"](run.id, {
         databaseId: database.id,
         type: "table",
@@ -438,10 +429,8 @@ describe("generic operation AgentTools (issue #220)", () => {
     it("a destructive operation, granted, returns a synthetic-success result and creates exactly one pending approval request, without executing", async () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a view" });
-      // Owned by this same agent identity (issue #89's preflight now runs the destructive
-      // command's own `assertViewWritable` ownership check before ever creating the approval
-      // row) — a view owned by someone else is exactly what that preflight must reject outright,
-      // not synthesize a pending approval for, so this fixture has to match the calling agent.
+      // Owned by the calling agent: the destructive preflight runs `assertViewWritable` before creating an approval,
+      // and would reject someone else's view outright.
       const view = await chokePoint.createView(
         { type: "list", name: "Scratch", config: { membership: "manual" } },
         { type: "ai_agent", agentProjectItemId: projectItemId },
@@ -502,7 +491,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const outcome = await tools["item.patch"](run.id, {
         itemId: item.id,
         properties: { read: true },
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
       });
       expect(outcome.error).toBe(false);
       expect(outcome.result).toContain("safe");
@@ -529,7 +518,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const outcome = await tools["item.patch"](run.id, {
         itemId: item.id,
         properties: { due: "2026-10-22T09:00" },
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
       });
 
       expect(outcome.error).toBe(false);
@@ -559,7 +548,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         const outcome = await tools["item.patch"](run.id, {
           itemId: item.id,
           properties: { due: "new" },
-          ifVersion: item.updatedAt,
+          ifVersion: item.version,
         });
         expect(outcome.error).toBe(false);
         expect(outcome.changes).toEqual([{ key: "due", after: "new" }]);
@@ -577,7 +566,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const outcome = await tools["item.patch"](run.id, {
         itemId: item.id,
         properties: { title: long, body: "secret new body" },
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
       });
 
       expect(outcome.error).toBe(false);
@@ -609,7 +598,7 @@ describe("generic operation AgentTools (issue #220)", () => {
             const output = await invoke(...call);
             if (call[0] === "item.patch") {
               if (change === "type change") {
-                // The public conversion catalog has no longText-to-text path; simulate the committed schema change directly.
+                // The conversion catalog has no longText-to-text path; simulate the committed schema change directly.
                 const updated = await withTransaction(pool, (client) =>
                   client.query("UPDATE properties SET type = 'text' WHERE id = $1", [property.id]),
                 );
@@ -625,7 +614,7 @@ describe("generic operation AgentTools (issue #220)", () => {
           const result = await tools["item.patch"](run.id, {
             itemId: item.id,
             properties: { body: "new secret" },
-            ifVersion: item.updatedAt,
+            ifVersion: item.version,
           });
           expect(result.error).toBe(false);
           expect(result.changes).toEqual([{ key: "body" }]);
@@ -663,7 +652,7 @@ describe("generic operation AgentTools (issue #220)", () => {
           const result = await tools["item.patch"](run.id, {
             itemId: item.id,
             properties: { due: "new" },
-            ifVersion: item.updatedAt,
+            ifVersion: item.version,
           });
           expect(result.error).toBe(false);
           expect(result.changes).toEqual([{ key: "due" }]);

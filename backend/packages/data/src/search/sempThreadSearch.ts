@@ -13,48 +13,39 @@ import {
 } from "../semp/sempThreadsListStore.js";
 import type { ThreadSearchGroup } from "./searchGroupRegistry.js";
 
-// The `chat` group of global search (issue #1854): the user's Semp conversations found by title or preview. A thread
-// is not an item, so it has no row in `item_search_index`; the combined query of `buildItemSearchQuery` is applied to
-// the two short texts of each thread on the fly, which is cheap because a user has few threads.
+// The `chat` global-search group: Semp threads by title or preview. Threads have no `item_search_index` row; the
+// query is applied to each thread's two short texts on the fly, which is cheap because a user has few threads.
 
-/**
- * The thread kinds the group searches: the ones the thread list shows by default. A tick thread is the log of an
- * automatic task, which the list hides unless it is asked for, so search hides it too.
- */
+/** As the thread list shows by default; tick threads are hidden there, so search hides them too. */
 const SEARCHED_KINDS: readonly string[] = ["chat", "item"];
 
-/** The preview window of the thread list (issue #1737): the first code points of the stored text of the previewed message. */
+/** The thread list's preview window, in code points. */
 const PREVIEW_CODE_POINTS = 140;
 
 /**
- * How much of a title is searched, in code points from its start. An item thread is titled by the text of its Inbox
- * item, which nothing short bounds, and Postgres refuses a tsvector above 1 MiB, which would fail the whole search.
+ * An item thread's title is unbounded Inbox text, and Postgres refuses a tsvector above 1 MiB, which would fail the
+ * whole search.
  */
 const TITLE_SEARCH_MAX_CODE_POINTS = 1000;
 
-/** The current `text` of the joined Inbox item `subject`, null unless it is a JSON string; the same rule as the thread list. */
+/** Null unless a JSON string; the same rule as the thread list. */
 const SUBJECT_TEXT_SQL = `CASE WHEN jsonb_typeof(subject.properties -> 'text') = 'string'
                  THEN subject.properties ->> 'text' END`;
 
-/** `users.locale` of a tenant without a bound user: the column default. */
+/** The `users.locale` column default, for a tenant without a bound user. */
 const FALLBACK_LOCALE = "cs";
 
-/**
- * The tsquery of the search text as the shared builder produces it, with its bind values; `buildQuery(n)` numbers
- * the parameters from `$n`.
- */
+/** `buildQuery(n)` numbers the parameters from `$n`. */
 export type ThreadSearchQueryBuilder = (firstParameter: number) => { sql: string; params: string[] };
 
 export interface SempThreadSearchInput {
   buildQuery: ThreadSearchQueryBuilder;
-  /** The most threads returned. */
   limit: number;
-  /** The `nextCursor` of an earlier page, as the thread list issues it, already parsed by `parseSempThreadListCursor`. */
+  /** Already parsed by `parseSempThreadListCursor`. */
   cursor?: SempThreadListCursor;
 }
 
 export interface SempThreadSearchPage {
-  /** Every matching thread, whatever the page or the cursor. */
   total: number;
   items: SearchThreadResult[];
   nextCursor: string | null;
@@ -73,16 +64,13 @@ interface CountDbRow {
   total: number;
 }
 
-/** True when the combined `czech` and `czech_simple` vector of the text, a fixed SQL fragment, matches the tsquery. */
 function vectorMatches(textSql: string, tsquerySql: string): string {
   return `(to_tsvector('czech', coalesce(${textSql}, '')) || to_tsvector('czech_simple', coalesce(${textSql}, ''))) @@ ${tsquerySql}`;
 }
 
 /**
- * The part of the statements after the select list. `$1` is the searched kinds and `$2` the Inbox database id, which
- * an item thread needs to read its subject. A thread matches when the words of the query are found, by
- * lemma or as a prefix, in what its title is resolved from or in the preview window, each taken alone as the thread
- * list does. Every table read is a tenant table, so only the caller's tenant is seen.
+ * `$1` is the searched kinds, `$2` the Inbox database id (an item thread reads its subject). Only tenant tables are
+ * read, so only the caller's tenant is seen.
  */
 function matchingThreadsSql(tsquerySql: string): string {
   return `FROM semp_threads t
@@ -104,15 +92,9 @@ function matchingThreadsSql(tsquerySql: string): string {
 }
 
 /**
- * One page of the tenant's chat and Inbox item threads that match the query, newest activity first (the order of the
- * thread list), with the real `total`. Runs in the caller's transaction and tenant scope, and writes nothing. The
- * query must have at least one searchable word; the caller checks that. A thread result carries its title, resolved
- * as the thread list resolves it in the user's locale (an empty string when the thread has none), and the date and
- * time of its last activity in the user's time zone as `date` and `time` parts. `snippet` is `null`.
- *
- * `cursor` is the parsed `nextCursor` of an earlier page, in the format of the thread list's cursor (the last
- * thread's `last_activity_at` with microseconds, and its id). The caller parses the token (`sempThreadSearchGroup.prepare`
- * does), so that a token of another shape is refused whether or not this group is searched.
+ * One page of matching chat and Inbox item threads, newest activity first, with the real `total`, in the caller's
+ * transaction. The caller ensures a searchable word and parses the cursor (so a malformed token is refused even when
+ * this group is not searched). Titles resolve as in the thread list; `snippet` is `null`.
  */
 export async function searchSempThreads(
   client: PoolClient,
@@ -181,10 +163,8 @@ export async function searchSempThreads(
 }
 
 /**
- * The `chat` group as the search registry holds it. `prepare` parses a token with `parseSempThreadListCursor`, which
- * refuses a malformed one with a `ValidationError` naming `cursor`. The run searches the Semp threads for a person
- * only: Semp conversations belong to the user and are part of no database an agent or an MCP client is granted, so
- * for any other actor it answers an empty page and reads nothing.
+ * Searches for a person only: Semp conversations belong to the user and are part of no database an agent or MCP
+ * client is granted, so any other actor gets an empty page and nothing is read.
  */
 export const sempThreadSearchGroup: ThreadSearchGroup = {
   type: "chat",

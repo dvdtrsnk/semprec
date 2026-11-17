@@ -87,9 +87,7 @@ const proposalSchema = z
 
 const taskAnswerSchema = z.object({ taskId: z.string() }).strict();
 interface World {
-  /** The tenant's own person, mapped to SPEAKER_01. */
   me: string;
-  /** Another person, mapped to SPEAKER_00. */
   other: string;
   project: string;
   event: string;
@@ -114,7 +112,6 @@ async function createItem(moduleId: string, properties: Record<string, unknown>)
   return (await createChokePoint(runtime).createItem({ databaseId: await databaseId(moduleId), properties })).id;
 }
 
-/** A user-written edge, the way the generic relation endpoint writes it. */
 async function link(
   moduleId: string,
   key: string,
@@ -128,7 +125,6 @@ async function link(
   });
 }
 
-/** A transcript of the tenant in scope with segments and, unless `notes` is `null`, stored meeting notes. */
 async function createTranscript(notes: unknown = NOTES, date?: string): Promise<string> {
   const transcripts = await databaseId("transcripts");
   return withTransaction(runtime, async (client) => {
@@ -148,10 +144,7 @@ async function mapSpeaker(transcriptId: string, speaker: string, personId: strin
   await link("transcripts", "speakers", transcriptId, personId, { speaker });
 }
 
-/**
- * The tenant in scope with its own person, another person, a project, an Event of that project and a
- * transcript linked to the Event whose SPEAKER_01 is the own person and SPEAKER_00 the other person.
- */
+/** The tenant's own person, another person, a project, its Event and a transcript linked to the Event. */
 async function buildWorld(): Promise<World> {
   const me = await createItem("people", { name: "Zdenek Own" });
   const other = await createItem("people", { name: "Petr Other" });
@@ -195,13 +188,11 @@ function proposals(eventId: string) {
   return createEventTranscriptActionItemsRouteHandler(runtime)({ params: { id: eventId }, identity });
 }
 
-/** The task a successful `POST` answered with: its status and id, the body parsed at the boundary. */
 async function addTask(transcriptId: string, actionItemId: number, body: unknown = {}) {
   const answer = await postTask(transcriptId, String(actionItemId), body);
   return { status: answer.status, taskId: taskAnswerSchema.parse(JSON.parse(JSON.stringify(answer.body))).taskId };
 }
 
-/** The action items of the transcript detail, read through the route as a client reads them. */
 async function detailItems(transcriptId: string) {
   const answer = await createTranscriptDetailRouteHandler(runtime)({ params: { id: transcriptId }, identity });
   const body = z
@@ -223,7 +214,6 @@ interface TaskRow {
   deleted_at: string | null;
 }
 
-/** Every Tasks item of the tenant in scope, the Trash included, read through the runtime role. */
 async function allTasks(): Promise<TaskRow[]> {
   const { rows } = await runtime.query<TaskRow>(
     "SELECT id, properties, deleted_at::text AS deleted_at FROM items WHERE database_id = $1 ORDER BY id",
@@ -259,7 +249,6 @@ async function storedStates(): Promise<StoredState[]> {
   return rows;
 }
 
-/** The `ChokePointError` a call was refused with: its status, code and details. Any other outcome fails the test. */
 async function refusal(call: Promise<unknown>): Promise<{ status: number; code: string; details: unknown }> {
   try {
     await call;
@@ -370,7 +359,7 @@ describe("transcript action items (issue #1767)", () => {
           deleted_at: null,
         });
         expect(await related("tasks", "sourceEvents", created.taskId)).toEqual([world.event]);
-        // The project is the Event's, inherited by the link rules of issue #1724 and not copied by the route.
+        // The project is the Event's, inherited by the link rules and not copied by the route.
         expect(await related("tasks", "project", created.taskId)).toEqual([world.project]);
         expect(await storedStates()).toEqual([
           {

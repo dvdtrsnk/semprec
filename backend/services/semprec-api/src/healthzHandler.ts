@@ -6,13 +6,10 @@ import { sendJson } from "./adapter/http.js";
 import { logger } from "./logger.js";
 
 /**
- * Handles unauthenticated `GET /healthz` (issue #168). Responds 200 `{"status":"ok"}` only when
- * a plain `SELECT 1` and this `api` process's own heartbeat freshness both pass; any other
- * outcome — a DB error, a missing or stale `api` row — is a 503 with the same minimal body.
- * Gates on `api`, the process this handler runs inside (started by `serve.ts`), not on a
- * separate process like `agents` that may not be deployed alongside it (issue #404). Neither
- * branch ever includes the underlying error or which specific check failed: a probe reachable
- * without a session must not become a way to learn why a deployment is unhealthy.
+ * 200 `{"status":"ok"}` only when `SELECT 1` and this `api` process's own heartbeat freshness both
+ * pass, otherwise 503 with the same minimal body. Gates on `api`, not on a process like `agents`
+ * that may not be deployed alongside. No branch names the error or the failed check: an
+ * unauthenticated probe must not reveal why a deployment is unhealthy.
  */
 export function createHealthzRequestListener(pool: Pool) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -36,7 +33,10 @@ export function createHealthzRequestListener(pool: Pool) {
     }
   }
 
-  /** Same rationale as `setupHandler.ts`'s `handleRequestSafely`: confines an escaped rejection to this one request instead of an unhandled rejection that takes the whole process down. */
+  /**
+   * Confines an escaped rejection to a 500 for this request instead of an unhandled rejection
+   * ending the process.
+   */
   return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
     handleRequest(req, res).catch((err: unknown) => {
       logger.error({ err }, "Unhandled error in the healthz request listener");

@@ -7,7 +7,7 @@ export interface DetectedFile {
   mimeType: string;
 }
 
-/** How many leading bytes `detectFileType` needs to see: the ZIP entry-name scan reads this far. */
+/** The ZIP entry-name scan reads this far. */
 export const FILE_TYPE_DETECTION_HEAD_BYTES = 64 * 1024;
 
 const PDF_SEARCH_BYTES = 1024;
@@ -17,7 +17,7 @@ const ZIP_LOCAL_HEADER_BYTES = 30;
 const HEIC_BRANDS = new Set(["heic", "heix", "heif", "mif1", "msf1", "hevc", "hevx"]);
 const M4A_BRANDS = new Set(["M4A ", "M4B "]);
 
-/** ISO-BMFF brands of the `ftyp` box at the start of `head`: the major brand, then the compatible ones. */
+/** Major brand, then compatible brands. */
 function isoBmffBrands(head: Buffer): string[] | null {
   if (head.length < 12 || head.toString("latin1", 4, 8) !== "ftyp") return null;
   const boxSize = head.readUInt32BE(0);
@@ -30,7 +30,6 @@ function isoBmffBrands(head: Buffer): string[] | null {
   return brands;
 }
 
-/** Office type from the entry names of the ZIP's local file headers, or null for a plain ZIP. */
 function officeTypeFromZip(head: Buffer): "xlsx" | "docx" | null {
   let offset = 0;
   while (offset + ZIP_LOCAL_HEADER_BYTES <= head.length && head.subarray(offset, offset + 4).equals(ZIP_LOCAL_HEADER)) {
@@ -55,7 +54,7 @@ function officeTypeFromZip(head: Buffer): "xlsx" | "docx" | null {
   return null;
 }
 
-/** The Files `type` value each stored mime type files as; `audio/*` is handled separately. */
+/** `audio/*` is handled separately. */
 const FILES_TYPE_BY_MIME_TYPE: ReadonlyMap<string, DetectedFileType> = new Map([
   ["application/pdf", "pdf"],
   ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"],
@@ -65,20 +64,13 @@ const FILES_TYPE_BY_MIME_TYPE: ReadonlyMap<string, DetectedFileType> = new Map([
   ["image/heic", "heic"],
 ]);
 
-/**
- * The Files `type` value a stored blob's mime type files as, or null when no Files type matches it.
- * A caller still checks that the value is one of the Files `type` options before it writes it.
- */
+/** A caller still checks the value against the Files `type` options before writing it. */
 export function filesTypeForMimeType(mimeType: string): DetectedFileType | null {
   if (mimeType.startsWith("audio/")) return "audio";
   return FILES_TYPE_BY_MIME_TYPE.get(mimeType) ?? null;
 }
 
-/**
- * Detects a file's type from its leading bytes (at most the first `FILE_TYPE_DETECTION_HEAD_BYTES`
- * are read), never from a declared content type or extension. Pure and total: short, empty or
- * malformed input yields `null`, never an exception.
- */
+/** From the bytes only, never a declared type or extension. Total: malformed input yields `null`, never throws. */
 export function detectFileType(head: Buffer): DetectedFile | null {
   if (head.subarray(0, PDF_SEARCH_BYTES).includes("%PDF-", 0, "latin1")) {
     return { type: "pdf", mimeType: "application/pdf" };

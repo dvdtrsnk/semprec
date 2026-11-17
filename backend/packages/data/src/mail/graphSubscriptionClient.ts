@@ -6,12 +6,12 @@ import {
 } from "./graphWebhookLifecycle.js";
 
 const SUBSCRIPTIONS_URL = "https://graph.microsoft.com/v1.0/subscriptions";
-/** The resource this app watches — every folder's messages, mailbox-wide, mirroring `graphReconcile.ts`'s own mailbox-wide (not per-folder) `/me/messages/delta` scope. */
+/** Mailbox-wide, matching the reconcile's `/me/messages/delta` scope. */
 const WATCHED_RESOURCE = "/me/messages";
-/** Graph's documented maximum subscription lifetime for the `messages` resource type: 4230 minutes (~2.94 days). Requesting the maximum every time minimizes how often `createSubscription` itself needs to run; the renewal loop (graphWebhookLifecycle.ts) keeps it alive well before that from then on. */
+/** Graph's maximum lifetime for `messages` subscriptions (~2.94 days). */
 const MAX_EXPIRATION_MINUTES = 4230;
 
-/** Hard cap on a single response body — generous for a subscription create/renew ack, but bounds a misbehaving or compromised endpoint's ability to exhaust process memory by streaming an unbounded body before `response.json()` would otherwise buffer all of it. */
+/** Bounds memory against an endpoint streaming an unbounded body. */
 const MAX_JSON_RESPONSE_BYTES = 1024 * 1024;
 
 class GraphApiError extends Error {
@@ -66,12 +66,8 @@ function maxExpirationDateTime(): string {
 }
 
 /**
- * Real `GraphSubscriptionTransport` (graphWebhookLifecycle.ts) over the Microsoft Graph REST
- * `/subscriptions` endpoint — same "not exercised by tests, orchestration tested via a fake"
- * relationship as `GmailPubSubClient`/`GraphRestClient`. `renewSubscription` uses `PATCH` against
- * the existing subscription id (only `expirationDateTime` changes — `clientState` is immutable
- * once set, so it's never sent on a renewal), while `createSubscription` `POST`s a fresh one with
- * a freshly generated `clientState`.
+ * `GraphSubscriptionTransport` over `/subscriptions`. Renewal PATCHes only `expirationDateTime`
+ * (`clientState` is immutable); creation POSTs with a fresh `clientState`.
  */
 export function createGraphSubscriptionRestClient(
   getAccessToken: (mailboxItemId: string, credential: string) => Promise<string>,

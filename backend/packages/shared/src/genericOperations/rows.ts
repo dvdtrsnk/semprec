@@ -1,15 +1,11 @@
 /**
- * The authoritative shared row/result shapes the generic-operation port returns (issue #252).
- * `packages/shared` must not import `packages/data` (that would make the transport-independent
- * catalog depend on a concrete implementation package), so these mirror — rather than import —
- * `packages/data/src/types.ts`'s row shapes. Keep the two in sync by hand; `Item` is pinned
- * verbatim by this issue's Task, and `RelationEdge` by issue #82. See
- * docs/adr/2026-09-17-shared-package-mirrors-rather-than-imports-data-row-types.md for the
- * rationale and the dependency-cruiser rule (`no-shared-data-import`) that enforces it.
+ * Row/result shapes the generic-operation port returns. `packages/shared` must not import `packages/data`, so these
+ * mirror `packages/data/src/types.ts` and must be kept in sync by hand (enforced by the dependency-cruiser rule
+ * `no-shared-data-import`; see docs/architecture/edges-io-and-errors.md#application-port).
  */
 import type { FilterNode } from "./filterSort.js";
 
-/** Mirrors `packages/data/src/types.ts`'s `PROPERTY_TYPES` — the single source of truth for the actual enum lives there; this list must be kept identical. */
+/** Must stay identical to `packages/data`'s `PROPERTY_TYPES`. */
 export const PROPERTY_TYPES = [
   "text",
   "number",
@@ -47,9 +43,9 @@ export interface Database {
   /** Stored pick of a user-created database; null when none was made or for a system database. */
   icon: string | null;
   color: string | null;
-  /** True while the user hides the database from the client overview (issue #2002). */
+  /** True while the user hides the database from the client overview. */
   overviewHidden: boolean;
-  /** True for a system database whose data an agent must not read or write by default; set by the system only (issue #1808). */
+  /** True for a system database an agent must not read or write by default; set by the system only. */
   sensitive: boolean;
   archivedAt: string | null;
 }
@@ -85,13 +81,12 @@ export interface ViewItem {
   position: number;
 }
 
-/** Fixed exactly by this issue's Task. */
-/** Mirrors `packages/data`'s `ValueLinkSource`: where an inherited value was taken from (issue #1403). */
+/** Mirrors `packages/data`'s `ValueLinkSource`: where an inherited value was taken from. */
 export type ItemLinkSource =
   | { kind: "item"; itemId: string; databaseKey: string | null; title: string; propertyKey: string }
   | { kind: "senderDomain"; domain: string; propertyKey: string };
 
-/** Mirrors `packages/data`'s `ValueLinkEntry`: one property's link on an item (issue #1403). */
+/** Mirrors `packages/data`'s `ValueLinkEntry`. */
 export interface ItemLink {
   valueKind: "inherited" | "inheritedBroken" | "derived";
   sources: ItemLinkSource[];
@@ -113,8 +108,8 @@ export interface ExpandedRelationTarget extends ReducedRelationTarget {
   blobs?: Record<string, { blobId: string; byteSize: number; mimeType: string; filename: string | null }>;
 }
 /**
- * A relation target in a database the reading agent's project may not read (issue #1810): its id and nothing
- * else. Only an agent read produces it; a person reads every target in full.
+ * A relation target in a database the reading agent's project may not read: its id only. People read every target in
+ * full.
  */
 export interface HiddenRelationTarget {
   id: string;
@@ -153,13 +148,12 @@ export interface Item {
   databaseId: string;
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
-  /**
-   * When the item was created (ISO 8601), set by the database; no item write changes it. An item that
-   * predates the field carries its last update time at the issue #1594 backfill instead.
-   */
+  /** Set by the database; no item write changes it. */
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /** The optimistic-concurrency token a patch passes back as `ifVersion`; a decimal integer string. */
+  version: string;
   /** Present on item reads and queries: true exactly when the item was created from an Inbox proposal. */
   fromInbox?: boolean;
   relations?: Record<string, ItemRelationTarget[]>;
@@ -168,7 +162,6 @@ export interface Item {
   links?: Record<string, ItemLink>;
 }
 
-/** Fixed by issue #82. */
 export interface RelationEdge {
   id: string;
   relationDefinitionId: string;
@@ -178,9 +171,8 @@ export interface RelationEdge {
 }
 
 /**
- * One live edge seen from one end (issue #1404): `relationPropertyId` and `propertyKey` name the
- * listed item's own property, `targetItemId` the item on the other side, and `targetDatabaseId`
- * that item's database. A paired definition reports the other end under that end's own property.
+ * One live edge seen from one end: `relationPropertyId`/`propertyKey` name the listed item's own property. A paired
+ * definition reports the other end under that end's own property.
  */
 export interface VisibleRelationListEntry {
   relationPropertyId: string;
@@ -190,10 +182,7 @@ export interface VisibleRelationListEntry {
   metadata: Record<string, unknown>;
 }
 
-/**
- * An edge to an item in a database the reading agent's project may not read (issue #1810): the listed item's own
- * property and the target's id, without the target's database and the edge's metadata. A person reads every edge in full.
- */
+/** An edge into a database the reading agent's project may not read: no target database and no edge metadata. */
 export interface HiddenRelationListEntry {
   relationPropertyId: string;
   propertyKey: string;
@@ -204,11 +193,9 @@ export interface HiddenRelationListEntry {
 export type RelationListEntry = VisibleRelationListEntry | HiddenRelationListEntry;
 
 /**
- * One collection related to a record, as `relation.related` returns it (issue #1839): `count` records of the
- * database are connected to the record, `via` says whether they are connected to the record itself (`direct`) or
- * through a project of it (`project`), and `filter` is the filter tree that selects exactly those records when it is
- * passed to a query of the database. `filter` is `null` for the Threads database, which a client opens by the
- * viewed record's id instead. `databaseKey` is `null` for a database a user created.
+ * `via` says whether the records connect to the record itself (`direct`) or through a project of it (`project`).
+ * `filter` selects exactly those records in a query of the database; it is `null` for the Threads database, which a
+ * client opens by the record's id. `databaseKey` is `null` for a user-created database.
  */
 export interface RelatedCollection {
   databaseKey: string | null;
@@ -218,10 +205,7 @@ export interface RelatedCollection {
   filter: FilterNode | null;
 }
 
-/**
- * The page after `page.restoreVersion` (issue #1617): the restored instant as ISO 8601 and the ids
- * of the page's blocks in document order once the restore is applied.
- */
+/** The restored instant (ISO 8601) and the page's block ids in document order after the restore. */
 export interface PageRestoreOutput {
   itemId: string;
   at: string;
@@ -238,20 +222,13 @@ export interface ItemPage extends Page<Item> {
   totalCount?: number;
 }
 
-/**
- * One group of an `item.count` entry (issue #1709). `key` is the id of a relation target or the stored
- * option key of a select property; `null` is the group of the items that have neither.
- */
+/** `key` is a relation target id or a select option key; `null` groups the items with neither. */
 export interface ItemCountGroup {
   key: string | null;
   count: number;
 }
 
-/**
- * The answer to one `item.count` entry: `count` is the number of items the entry matches and `groups`
- * their split by the entry's `groupBy`, present exactly when the entry named one. `databaseId` repeats
- * the entry's own value.
- */
+/** `groups` is present exactly when the entry named a `groupBy`. */
 export interface ItemCountEntry {
   databaseId: string;
   count: number;
@@ -259,11 +236,9 @@ export interface ItemCountEntry {
 }
 
 /**
- * One choice of a facet of `database.facets` (issue #1759). `value` is a stored option key, a stored text, the id
- * of a related item, `true` or `false` of a checkbox, the name of a relative-date preset or the threshold of a
- * number preset; `null` is the choice of the items without a value. `label` and `color` are present when the
- * stored option, the stored preset or the related item supplies them. `count` is the number of items that hold
- * the choice under the caller's filter without its conditions on the facet itself.
+ * One facet choice: an option key, a text, a related item id, a checkbox boolean, a relative-date preset name or a
+ * number preset threshold; `null` means no value. `count` is under the caller's filter without its conditions on this
+ * facet.
  */
 export interface DatabaseFacetValue {
   value: string | number | boolean | null;
@@ -273,9 +248,8 @@ export interface DatabaseFacetValue {
 }
 
 /**
- * The answer to one requested facet of `database.facets`. `property` or `path` repeats the request. `all` is the
- * number of items under the caller's filter without its conditions on the facet itself, and `open`, present
- * exactly when the call carried `extra.open`, the number of those items that also match that filter.
+ * `all` counts items under the caller's filter without its conditions on this facet; `open`, present only with
+ * `extra.open`, counts those that also match that filter.
  */
 export type DatabaseFacet = ({ property: string } | { path: [string, string] }) & {
   all: number;

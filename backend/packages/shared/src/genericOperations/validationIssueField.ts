@@ -1,6 +1,6 @@
 /**
- * The subset of a Zod issue `validationIssueField` reads. An `invalid_union` issue carries one
- * array of issues per union member, in declaration order, in `errors`.
+ * The subset of a Zod issue `validationIssueField` reads. An `invalid_union` issue carries one issue array per union
+ * member, in declaration order, in `errors`.
  */
 export interface ValidationIssueLike {
   readonly code?: string;
@@ -21,14 +21,11 @@ function isRelationPathFilterIssue(issue: ValidationIssueLike): boolean {
 }
 
 /**
- * The `field` a validation failure should name. For a first issue that is not `invalid_union` it
- * is that issue's `path` joined with `.` (`undefined` when the path is empty). Zod only emits a
- * path-less `invalid_union` when every member failed with an aborting issue, so for one the
- * member with the fewest issues (the first in declaration order on a tie) is taken as the one
- * the caller meant, and the field is that member's first issue with a non-empty path —
- * `undefined` when it has none. A malformed `relation_path_contains` condition names `filter`
- * as required by its query contract, including inside nested filter trees/unions. Its marker
- * can follow the first issue on that condition; a marker on a sibling does not override it.
+ * The `field` a validation failure names: the first issue's `path` joined with `.` (`undefined` when empty). Zod emits
+ * a path-less `invalid_union` only when every member failed with an aborting issue; then the member with the fewest
+ * issues (first on a tie) is taken as the intended one, and its first issue with a non-empty path names the field. A
+ * malformed `relation_path_contains` condition names `filter`, as its query contract requires, also inside nested trees
+ * and unions; a marker on a sibling does not override it.
  */
 export function validationIssueField(issues: readonly ValidationIssueLike[]): string | undefined {
   const firstIssue = issues[0];

@@ -31,7 +31,7 @@ import {
 import { logger } from "../logger.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "../types.js";
 
-/** Everything the spies recorded as one string; an `Error` is expanded, which `JSON.stringify` alone drops. */
+/** An `Error` is expanded, which `JSON.stringify` alone drops. */
 function loggedText(...spies: MockInstance[]): string {
   return JSON.stringify(
     spies.map((spy) => spy.mock.calls),
@@ -56,9 +56,8 @@ function fakeSession(messages: AgentMessage[]): CreateAgentSession {
   });
 }
 
-// wireRealtimeHooks(pool) installs every hook, not just the agent-run one. Reset all of them after
-// each test, so a test that wires them and then fails before its own cleanup (a rejected
-// pool.connect(), say) cannot leave them publishing on the shared pool for later tests.
+// wireRealtimeHooks(pool) installs every hook; reset all after each test so a failed test cannot leave them publishing
+// on the shared pool.
 function resetHooks(): void {
   setInvalidationHook(() => {});
   setDocUpdateHook(() => {});
@@ -211,9 +210,8 @@ describe("runAgentSession", () => {
   });
 
   it("announces durable events as thin references and sends message_update only on the ephemeral stream", async () => {
-    // The ordered eventId assertion holds only for the production hook, which publishes one run's
-    // references one after another; the hand-rolled hook in beforeEach fires each NOTIFY on its own
-    // pooled connection, so their commits, and with them delivery, can reorder (issue #1236).
+    // The ordered eventId assertion holds only for the production hook, which publishes one run's references in
+    // sequence; the beforeEach hook fires each NOTIFY on its own pooled connection, so delivery can reorder.
     wireRealtimeHooks(pool);
     const listenClient = await pool.connect();
     try {
@@ -249,8 +247,7 @@ describe("runAgentSession", () => {
           .map((n) => JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { agentRunId?: string } })
           .filter((envelope) => envelope.message.agentRunId === run.id);
 
-      // NOTIFY delivery to a LISTEN-ing client is asynchronous relative to the query that
-      // triggered it; poll instead of a fixed sleep so this isn't flaky under load.
+      // NOTIFY delivery is asynchronous to the triggering query; poll rather than sleep.
       const expectedCount = 5; // run_status(running), turn_start, message, turn_end, run_status(done)
       const deadline = Date.now() + 5000;
       while ((durableForRun().length < expectedCount || deltasForRun().length < 1) && Date.now() < deadline) {

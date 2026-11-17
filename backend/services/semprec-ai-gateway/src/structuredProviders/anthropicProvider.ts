@@ -59,11 +59,8 @@ function sleepOrAbort(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /**
- * The Anthropic Messages API has no `response_format`; native JSON-Schema-constrained output is
- * obtained by forcing a single tool call whose `input_schema` is the caller's schema (Anthropic's
- * own documented technique for structured output) and reading the resulting `tool_use.input`
- * back as the structured content. The tool name is internal — never sent to the caller — so any
- * value stable enough not to collide with a doubly-nested schema property would do.
+ * The Messages API has no `response_format`, so structured output forces one tool call whose
+ * `input_schema` is the caller's schema. The tool name is internal and never reaches the caller.
  */
 const STRUCTURED_OUTPUT_TOOL_NAME = "emit_structured_output";
 
@@ -72,10 +69,7 @@ const anthropicContentBlockSchema = z.looseObject({
   input: z.unknown().optional(),
 });
 
-/**
- * `usage` and both token counts are required: a response without them would otherwise be recorded
- * as a call that cost nothing, silently under-counting spend against the budget.
- */
+/** Required, or a call would be recorded as free and under-count spend against the budget. */
 const anthropicMessagesResponseSchema = z.looseObject({
   content: z.array(anthropicContentBlockSchema),
   usage: z.object({
@@ -84,11 +78,6 @@ const anthropicMessagesResponseSchema = z.looseObject({
   }),
 });
 
-/**
- * Reads the response body with a hard byte cap, independent of any (absent, wrong, or
- * adversarial) `Content-Length` header, so a pathologically large or malformed provider response
- * can't be buffered into memory wholesale before we even attempt to parse it.
- */
 async function readJsonBodyWithSizeCap(res: Response, maxBytes: number): Promise<unknown> {
   const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = res.body?.getReader();
   if (!reader) throw new ProviderCallError("Anthropic response body stream was unavailable");
@@ -128,8 +117,7 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
     id: "anthropic",
     supportsJsonSchemaStructuredOutput: true,
     async complete(request: StructuredCompletionRequest) {
-      // 55s: comfortably inside the client's 60s budget after this process's own overhead. Shared
-      // by every attempt below, so a retry can never push the call past that budget.
+      // Inside the client's 60 s budget and shared by every attempt, so a retry cannot exceed it.
       const deadline = AbortSignal.timeout(ATTEMPT_DEADLINE_MS);
       const signal = request.signal ? AbortSignal.any([deadline, request.signal]) : deadline;
       const deadlineAt = Date.now() + ATTEMPT_DEADLINE_MS;
@@ -169,8 +157,7 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
 
         if (res.ok) break;
 
-        // Cancelling only hands the connection back to the pool; whether it succeeds changes nothing
-        // about the failure reported below, so a cancel error must not replace it.
+        // A cancel error must not replace the failure reported below.
         await res.body?.cancel().catch(() => {});
 
         if (!isRetryableStatus(res.status)) {

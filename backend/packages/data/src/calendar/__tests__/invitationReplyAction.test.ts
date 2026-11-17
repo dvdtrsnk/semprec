@@ -36,11 +36,9 @@ const UID_PREFIX = "reply-uid";
 
 interface Store {
   storage: BlobStorageWriter;
-  /** The storage keys `readStream` was asked for. */
   reads: string[];
 }
 
-/** A storage that keeps the bytes it was given, so the action reads back what mail ingest wrote. */
 function memoryStore(): Store {
   const blobs = new Map<string, Buffer>();
   const store: Store = {
@@ -73,13 +71,11 @@ interface IcsOptions {
   method?: string | null;
   uid: string;
   sequence?: number;
-  /** The `ATTENDEE` lines as `[address, PARTSTAT]`; one accepting `PETR` unless given. */
   attendees?: Array<[string, string]>;
   recurrenceId?: boolean;
   summary?: string;
 }
 
-/** The text of an iMIP calendar part: one VEVENT with the given `ATTENDEE` lines. */
 function ics(options: IcsOptions): string {
   const method = options.method === undefined ? "REPLY" : options.method;
   return [
@@ -102,7 +98,6 @@ function ics(options: IcsOptions): string {
   ].join("\r\n");
 }
 
-/** A message that arrives through the sync writer from `from` with `parts` as its attachments; returns its Emails item id. */
 async function receive(
   world: World,
   messageId: string,
@@ -150,7 +145,6 @@ function actionFor(storage: BlobStorageWriter = store.storage): ActionHandler {
   return createInvitationReplyAction(runtime, { storage });
 }
 
-/** Fires the heartbeat action for `emailItemId` the way a heartbeat for the Emails database does, in the tenant of `world`. */
 function apply(world: World, emailItemId: string, config: Record<string, unknown> = configOf(world)): Promise<void> {
   return runInTenant(world.tenantId, () =>
     actionFor()(config, { heartbeatId: "test", projectItemId: "test", itemId: emailItemId }),
@@ -159,7 +153,6 @@ function apply(world: World, emailItemId: string, config: Record<string, unknown
 
 const edgeSchema = z.array(z.object({ targetItemId: z.string(), metadata: z.record(z.string(), z.unknown()) }));
 
-/** The fixture rows of one tenant, all written through the choke point as production writes them. */
 function fixtureOf(world: World) {
   const inTenant = <T>(fn: () => Promise<T>) => runInTenant(world.tenantId, fn);
   const peopleProperty = async (): Promise<string> => {
@@ -168,7 +161,6 @@ function fixtureOf(world: World) {
     return property.id;
   };
   return {
-    /** A live Event; its `icalUid` is assigned by the Events create hook. */
     event: (): Promise<{ id: string; uid: string }> =>
       inTenant(async () => {
         const created = await world.cp.createItem({
@@ -191,7 +183,6 @@ function fixtureOf(world: World) {
         );
         return created.id;
       }),
-    /** An edge written with the system writer kind, the way the invitation code writes one. */
     invite: (eventId: string, personId: string, invitation: Record<string, unknown>, role?: "attendee") =>
       inTenant(async () => {
         await world.cp.createRelation({
@@ -201,7 +192,6 @@ function fixtureOf(world: World) {
           metadata: { ...(role === undefined ? {} : { role }), invitation },
         });
       }),
-    /** A plain participant edge, the way a user links a person. */
     link: (eventId: string, personId: string) =>
       inTenant(async () => {
         await world.cp.createRelation(
@@ -209,7 +199,6 @@ function fixtureOf(world: World) {
           USER,
         );
       }),
-    /** The stored edges of the Event by person id. */
     edges: (eventId: string) =>
       inTenant(async () => {
         const edges = edgeSchema.parse(await world.cp.listItemRelations(eventId, await peopleProperty()));
@@ -221,12 +210,10 @@ function fixtureOf(world: World) {
 
 type Fixture = ReturnType<typeof fixtureOf>;
 
-/** The invitation an Event's edge carries before any answer. */
 function pending(world: World, email = PETR): Record<string, unknown> {
   return { status: "pending", email, mailboxId: world.inbox.mailboxId, sentAt: "2026-11-14T08:00:00.000Z" };
 }
 
-/** Every argument that the spied logger methods were called with, as text. */
 function loggedText(...spies: Array<{ mock: { calls: unknown[][] } }>): string {
   return JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
 }
@@ -261,7 +248,6 @@ describe("calendar.applyInvitationReply (issue gh-1950)", () => {
     await admin?.end();
   });
 
-  /** An Event with `PETR` invited, and the id of Petr. */
   async function invitedPetr(): Promise<{ event: { id: string; uid: string }; petr: string }> {
     const event = await f.event();
     const petr = await f.person("Petr", PETR);
@@ -363,7 +349,6 @@ describe("calendar.applyInvitationReply (issue gh-1950)", () => {
   });
 
   describe("an answer that changes nothing", () => {
-    /** The edges before and after `apply` of a message made of `parts` from `from`. */
     async function expectUntouched(
       event: { id: string },
       parts: string[],
@@ -598,11 +583,9 @@ describe("calendar.applyInvitationReply (issue gh-1950)", () => {
           ),
         );
 
-      // The allowed side: a user changes only the role and sends the stored invitation back.
       await publicWrite({ role: "attendee", invitation });
       expect((await f.edges(event.id)).get(petr)).toEqual(stored);
 
-      // The refused side: a user cannot move the status the action set.
       const refusal = await publicWrite({ role: "attendee", invitation: { ...invitation, status: "declined" } }).then(
         () => null,
         (error: unknown) => error,

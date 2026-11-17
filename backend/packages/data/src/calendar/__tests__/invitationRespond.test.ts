@@ -35,7 +35,6 @@ const eventRow = z.object({
   updatedAt: z.string(),
 });
 
-/** A tenant with one English-speaking user, so its seeded calendars are named `Personal`, `Work` and so on. */
 async function seededTenant(): Promise<{ tenantId: string; userId: string }> {
   const tenantId = await createTestTenant(admin);
   const user = await createUser(admin, {
@@ -67,7 +66,6 @@ describe("respond to an invitation (issue gh-1944)", () => {
     await admin.end();
   });
 
-  /** The ids and reads of the tenant in scope; every write of a test goes through the choke point or the route. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -92,7 +90,6 @@ describe("respond to an invitation (issue gh-1944)", () => {
     const invitation = (overrides: Record<string, unknown> = {}, suggestedCalendar: string | null = calendar("Work")) =>
       createInvitation(runtime, overrides, suggestedCalendar);
 
-    /** Every Events row, trashed ones included, oldest first. */
     const events = () =>
       withTransaction(runtime, async (client) => {
         const { rows } = await client.query<{
@@ -112,7 +109,6 @@ describe("respond to an invitation (issue gh-1944)", () => {
           }),
         );
       });
-    /** The Events the invitation links to, as the ids on its `event` edges. */
     const linkedEvents = (invitationId: string) =>
       withTransaction(runtime, async (client) => {
         const property = await propertiesStore.getPropertyByKey(client, db(INVITATIONS_MODULE_ID), "event");
@@ -135,7 +131,6 @@ describe("respond to an invitation (issue gh-1944)", () => {
         body,
         identity: { user: { id: identityId } },
       });
-    /** The error a respond fails with, as a `ChokePointError`; a different outcome fails the test. */
     const refused = async (invitationId: string, body: unknown): Promise<ChokePointError> => {
       const error: unknown = await respond(invitationId, body).then(
         () => null,
@@ -592,7 +587,7 @@ describe("respond to an invitation (issue gh-1944)", () => {
   });
 
   it("answers 404 in a tenant that has no invitations database", async () => {
-    // A tenant that was never seeded has no Invitations database, as one whose invitations cutover has not run.
+    // A tenant that was never seeded has no Invitations database.
     const unseeded = await createTestTenant(admin);
     await runInTenant(unseeded, async () => {
       const error: unknown = await createRespondToInvitationRouteHandler(runtime)({

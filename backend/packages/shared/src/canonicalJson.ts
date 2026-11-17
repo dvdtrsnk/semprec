@@ -1,9 +1,7 @@
 /**
- * Deterministic JSON serialization, shared by issue #85's fingerprint algorithm and its
- * permission-manifest byte-equality check: object keys sorted by ascending Unicode code point,
- * array order preserved (callers normalize array order themselves before calling this, e.g.
- * sorting `manifestFacts`), no whitespace, standard JSON escaping, non-finite numbers rejected
- * outright rather than silently coerced (JSON has no representation for them).
+ * Deterministic JSON for drift fingerprints and the permission-manifest byte-equality check: keys sorted by Unicode
+ * code point, array order preserved (callers normalize it), no whitespace, standard escaping, non-finite numbers
+ * rejected instead of coerced.
  */
 export function canonicalizeJson(value: unknown): string {
   if (value === null) return "null";
@@ -21,7 +19,7 @@ export function canonicalizeJson(value: unknown): string {
   throw new Error(`canonicalizeJson: cannot serialize a value of type ${typeof value}`);
 }
 
-/** Ascending Unicode code-point order — plain `<`/`>` on JS strings compares UTF-16 code units, which agrees with code-point order for this algorithm's purposes. */
+/** Plain `<`/`>` compares UTF-16 code units, which agrees with code-point order for this purpose. */
 export function compareByCodePoint(a: string, b: string): number {
   if (a < b) return -1;
   if (a > b) return 1;

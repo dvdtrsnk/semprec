@@ -10,10 +10,10 @@ import {
 import { carriesSensitiveMark, redactSensitiveToolResult } from "./sensitiveToolResult.js";
 import type { AgentMessage } from "./types.js";
 
-/** The operations whose call arguments carry the values to write (issue #2001). */
+/** The operations whose call arguments carry the values to write. */
 const CONTENT_BEARING_WRITES: ReadonlySet<unknown> = new Set(["item.create", "item.patch"]);
 
-/** The identity of one call: a stored `tool_use` carries it as its fields, an assistant `message` as a `ToolCallTarget`. */
+/** A stored `tool_use` carries it as its fields, an assistant `message` as a `ToolCallTarget`. */
 interface CallIdentity {
   operation?: unknown;
   targetDatabaseId?: unknown;
@@ -21,12 +21,10 @@ interface CallIdentity {
 }
 
 /**
- * Whether a call is a content-bearing write (`item.create`, `item.patch`) whose target is a sensitive
- * database. The target databases are the call's `targetDatabaseId` and the database of its `targetItemId`, read
- * through the choke point in the caller's tenant scope. A call that names no target, an item or database that
- * resolves to nothing, a lookup that fails and a run handle that is not a pool (so no choke point can be built)
- * all count as sensitive, so the arguments are not stored in full on a doubt. A failed lookup is logged with the
- * operation, the run and the error class, never with the arguments.
+ * Whether a call is an `item.create`/`item.patch` targeting a sensitive database (its `targetDatabaseId`, or the
+ * database of its `targetItemId`, read through the choke point in the caller's tenant scope). No target, an
+ * unresolvable target, a failed lookup or a run handle that is not a pool all count as sensitive, so arguments are
+ * never stored in full on a doubt. A failed lookup is logged with operation, run and error class, never arguments.
  */
 async function isSensitiveContentWrite(
   chokePoint: ChokePoint | null,
@@ -59,9 +57,8 @@ async function isSensitiveContentWrite(
 }
 
 /**
- * The ids of the `toolCall` blocks of an assistant `message` that are content-bearing writes to a sensitive database,
- * decided from the operation and targets the session attached to the message (`toolCallTargets`), each by the same
- * `isSensitiveContentWrite` lookup as the `tool_use` stored later. A message without targets yields none.
+ * The `toolCall` block ids of an assistant `message` that are sensitive content writes, decided from the message's
+ * `toolCallTargets` with the same lookup as the later `tool_use`.
  */
 async function sensitiveWriteCallIds(
   chokePoint: ChokePoint | null,
@@ -76,15 +73,11 @@ async function sensitiveWriteCallIds(
 }
 
 /**
- * The persisted form of the messages of one `runAgentTurn` call (issue #2001, which extends the stored
- * `tool_result` redaction of issue #1827), kept in arrival order. Once a persisted `tool_result` has carried the
- * sensitive mark, every later `tool_use` of the call is stored with the marker as its arguments and every later
- * assistant `message` is stored redacted (`redactAssistantMessage`); a `tool_use` of a content-bearing write to a
- * sensitive database is stored with the marker as its arguments from its own `isSensitiveContentWrite` lookup, marked
- * result or not, and so is the `toolCall` block of such a call in the assistant `message` that precedes it, decided
- * from the `toolCallTargets` the session attached to that message (the message never stores them). Any other message
- * is returned as it is. The messages handed in are not modified: the running turn
- * keeps the real ones.
+ * The persisted form of one `runAgentTurn` call's messages, in arrival order. After a stored `tool_result` carried the
+ * sensitive mark, every later `tool_use` stores the marker as its arguments and every later assistant `message` is
+ * redacted (`redactAssistantMessage`). A sensitive content write's `tool_use` is redacted from the start, as is its
+ * `toolCall` block in the preceding assistant message (decided from `toolCallTargets`, which are never stored). Other
+ * messages are returned as they are. Inputs are not modified: the running turn keeps the real messages.
  */
 export interface SensitiveTurnRedactor {
   redact(message: AgentMessage): Promise<AgentMessage>;

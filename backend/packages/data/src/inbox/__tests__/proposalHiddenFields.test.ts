@@ -10,7 +10,7 @@ import type { DatabaseRow } from "../../types.js";
 import { assertCardIsNotStdioMcpServer, normalizeEnvelopeForWrite } from "../proposalHiddenFields.js";
 import type { ProposalEnvelope } from "../proposalEnvelope.js";
 
-// Issue #1934: the envelope a confirm writes, read from the seeded databases the way confirm reads them.
+// The envelope a confirm writes, read from the seeded databases the way confirm reads them.
 
 let pool: Pool;
 let databases: Record<string, DatabaseRow>;
@@ -45,7 +45,6 @@ const envelopeFor = (moduleId: (typeof MODULES)[number], properties: Record<stri
   properties,
 });
 
-/** A card of `kind` whose user set `userOverrides`. */
 const cardOf = (userOverrides: Record<string, unknown>) => ({
   id: randomUUID(),
   properties: { kind: "inbox", userOverrides },

@@ -19,12 +19,9 @@ import {
   tenantExportJobKey,
 } from "./tenantExportsStore.js";
 
-/**
- * Builds one tenant's export archive (issue #1043). The archive layout, the catalog-driven table
- * set and its exclusions are recorded in `docs/adr/2026-10-17-tenant-data-export-archive.md`.
- */
+/** Builds one tenant's export archive from the catalog-driven table set. */
 
-/** Tenant-classified tables never exported: credential ciphertext, the wrapped tenant data key, the exports themselves, and the stored responses of card actions (transient, expire after 24 hours). */
+/** Never exported: credential ciphertext, the wrapped tenant key, the exports themselves, and card-action responses (transient, 24 h). */
 export const EXPORT_EXCLUDED_TABLES = [
   "external_credentials",
   "tenant_keys",
@@ -33,19 +30,17 @@ export const EXPORT_EXCLUDED_TABLES = [
   "idempotent_responses",
 ] as const;
 
-/** The archive layout version written to `manifest.json`. */
+/** Written to `manifest.json`. */
 const EXPORT_FORMAT_VERSION = 1;
 
-/** Rows fetched per `FETCH` from a table's cursor. */
 const CURSOR_BATCH_ROWS = 500;
 
-/** The two blob roots searched by the export; cross-root content-hash deduplication can leave bytes in either. */
+/** Both blob roots, since cross-root content-hash dedup can leave bytes in either. */
 export interface TenantExportStorages {
   files: BlobStorageWriter;
   mailAttachments: BlobStorageWriter;
 }
 
-/** The part of graphile-worker's `JobHelpers` the export reads. */
 export interface TenantExportJobHelpers {
   abortSignal?: AbortSignal;
 }
@@ -68,13 +63,7 @@ function errorName(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
 }
 
-/**
- * Writes the archive entries one at a time, in order, on the transaction's client. Each entry is
- * a stream that yazl consumes; the next entry is added only after the previous source has ended,
- * so no two entries ever read from the client at once. A failure of the storage write, of an
- * entry's source, or of yazl itself destroys the archive's output stream; the storage write then
- * rejects and the caller sees the first error.
- */
+/** Entries are added one at a time so no two read from the client at once; any failure surfaces once. */
 class ArchiveWriter {
   private readonly zip = new yazl.ZipFile();
   private readonly output: Readable;
@@ -102,7 +91,6 @@ class ArchiveWriter {
     this.writeFailed.catch(() => undefined);
   }
 
-  /** Adds `source` as `name` and waits until it has been read to its end. */
   async addEntry(name: string, source: Readable): Promise<void> {
     this.currentSource = source;
     this.zip.addReadStream(source, name);
@@ -110,7 +98,7 @@ class ArchiveWriter {
     this.currentSource = undefined;
   }
 
-  /** Closes the archive and resolves with its stored size. */
+  /** Resolves with the stored size. */
   async finish(): Promise<number> {
     this.zip.end();
     const { byteSize } = await this.written;
@@ -122,13 +110,13 @@ class ArchiveWriter {
   async abort(cause: unknown): Promise<void> {
     this.currentSource?.destroy();
     this.output.destroy(cause instanceof Error ? cause : new Error(String(cause)));
-    // The output and write rejections follow the failure already caught by the caller, which
-    // rethrows that cause. Settle both, including output errors emitted before a pipeline attaches.
+    // The caller already caught and rethrows the original failure; settle both, including output errors
+    // emitted before a pipeline attached.
     await Promise.allSettled([this.written, this.outputFinished]);
   }
 }
 
-/** An entry whose bytes come from `produce`, run lazily as yazl reads the entry. */
+/** `produce` runs lazily as yazl reads the entry. */
 function lazySource(produce: () => AsyncGenerator<Buffer>): Readable {
   return Readable.from(produce(), { objectMode: false });
 }
@@ -153,7 +141,7 @@ async function* accountEntry(client: PoolClient): AsyncGenerator<Buffer> {
   yield Buffer.from(JSON.stringify(account, null, 2));
 }
 
-/** One `to_jsonb` line per row of `table` in the tenant in scope, read through a transaction-scoped cursor. */
+/** One `to_jsonb` line per row of the tenant in scope, through a transaction-scoped cursor. */
 async function* tableEntry(client: PoolClient, table: ManifestTable): AsyncGenerator<Buffer> {
   // `table.name` comes from `pg_class`, not from a caller, and is quoted by `escapeIdentifier`.
   await client.query(
@@ -185,7 +173,7 @@ interface ArchiveResult {
   byteSize: number;
 }
 
-/** Writes the whole archive in the transaction's snapshot; `signal` is checked before every entry. */
+/** One snapshot for the whole archive; `signal` is checked before every entry. */
 async function writeArchive(
   client: PoolClient,
   storages: TenantExportStorages,
@@ -240,8 +228,7 @@ async function writeArchive(
         checkpoint();
         const storage = blob.in_mail ? storages.mailAttachments : storages.files;
         const alternate = blob.in_mail ? storages.files : storages.mailAttachments;
-        // A reference selects the first root, but shared content-hash deduplication can retain
-        // bytes in the other one; see ADR 2026-10-18-tenant-export-cross-root-blob-lookup.
+        // A reference selects the first root, but shared content-hash dedup can keep bytes in the other.
         const bytes = await openBlobFromRoots({ primary: storage, alternate, storageKey: blob.storage_key });
         if (!bytes) {
           missingBlobIds.push(blob.id);
@@ -283,16 +270,8 @@ async function deletePartialArchive(storage: BlobStorageWriter, exportId: string
 }
 
 /**
- * The `tenantExport` task: builds the export `payload.exportId` of the tenant in scope.
- *
- * - A missing export, or one that is not `pending`, is logged and left alone.
- * - The export is marked `running`, then the archive is written in one `repeatable_read`
- *   transaction, so every entry reads the same snapshot, and the export is marked `ready`.
- * - On shutdown (`helpers.abortSignal`), checked between entries: the partial archive is deleted,
- *   the export is marked `pending` and queued again under the same job key, and the task returns
- *   normally.
- * - On any other failure: the partial archive is deleted, the export is marked `failed`, and the
- *   original error is rethrown.
+ * Builds `payload.exportId` in one `repeatable_read` snapshot. On shutdown the partial archive is deleted and
+ * the export requeued; on other failure it is deleted, the export marked `failed` and the error rethrown.
  */
 export async function handleTenantExportTask(
   pool: Pool,
@@ -334,7 +313,7 @@ export async function handleTenantExportTask(
   }
 }
 
-/** Puts an interrupted export back to `pending` with its job, in one transaction; if that fails, the export is marked `failed` so it cannot stay `running`. */
+/** One transaction; if it fails the export is marked `failed` so it cannot stay `running`. */
 async function requeueInterruptedExport(pool: Pool, exportId: string): Promise<void> {
   try {
     await withTransaction(pool, async (client) => {
@@ -353,7 +332,7 @@ async function requeueInterruptedExport(pool: Pool, exportId: string): Promise<v
   logger.info({ exportId }, "Tenant export interrupted by shutdown and queued again");
 }
 
-/** Marks the export `failed`; a failure to do so is logged, so the error that failed the export is the one that propagates. */
+/** A failure to mark is logged, so the error that failed the export is the one that propagates. */
 async function markFailedPreservingCause(pool: Pool, exportId: string): Promise<void> {
   try {
     await withTransaction(pool, (client) => markTenantExportFailed(client, exportId));
@@ -362,11 +341,7 @@ async function markFailedPreservingCause(pool: Pool, exportId: string): Promise<
   }
 }
 
-/**
- * The `tenantExportExpirySweep` task: for every active tenant, deletes its expired export rows in a
- * transaction and then, after the commit, their archives. A storage failure is logged and skipped
- * (`docs/adr/2026-09-28-blob-bytes-deleted-best-effort-after-the-commit.md`).
- */
+/** Per active tenant, deletes expired rows, then their archives after commit; storage failures are logged. */
 export async function handleTenantExportExpirySweepTask(pool: Pool, filesStorage: BlobStorageWriter): Promise<void> {
   await forEachActiveTenant(pool, async (tenantId) => {
     const storageKeys = await withTransaction(pool, (client) => deleteExpiredTenantExports(client));

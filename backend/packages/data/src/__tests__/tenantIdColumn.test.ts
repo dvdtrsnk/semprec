@@ -1,78 +1,12 @@
-import { copyFile, mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
-import { runMigrations } from "../db/migrate.js";
-import { createPool } from "../db/pool.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-/**
- * Issue #972: every tenant-owned table gains `tenant_id uuid NOT NULL DEFAULT app_tenant_default()`
- * referencing tenants(id), without a table rewrite and without the previous release noticing.
- */
-const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrations");
-const THIS_MIGRATION = "0059_tenant_id_columns.sql";
-// Each test creates and fully migrates its own database, which can take well past the default 30 s.
-const FRESH_DATABASE_TEST_TIMEOUT_MS = 120_000;
+/** Every tenant-owned table carries `tenant_id uuid NOT NULL DEFAULT app_tenant_default()` referencing tenants(id). */
 
-function testDatabaseUrl(): string {
-  const url = process.env.TEST_DATABASE_URL;
-  if (!url) throw new Error("TEST_DATABASE_URL is not set — is vitest.config.ts's globalSetup wired up?");
-  return url;
-}
-
-/**
- * A scratch database created and dropped by the test (the pattern of czechHunspellSearch.test.ts).
- * Both pools run without a statement_timeout: creating, migrating and force-dropping a database is
- * test infrastructure, and DROP DATABASE can exceed the default 60 s while the host is flushing a checkpoint.
- */
-async function withFreshDatabase(fn: (pool: Pool) => Promise<void>): Promise<void> {
-  const name = `tenant_id_${randomUUID().replaceAll("-", "")}`;
-  const admin = createPool(testDatabaseUrl(), { statementTimeoutMs: 0 });
-  try {
-    await admin.query(`CREATE DATABASE "${name}" ENCODING 'UTF8' TEMPLATE template0`);
-  } catch (createError) {
-    try {
-      await admin.end();
-    } catch {
-      // The CREATE DATABASE rejection is the real failure; a failed pool teardown must not replace it.
-    }
-    throw createError;
-  }
-  const url = new URL(testDatabaseUrl());
-  url.pathname = `/${name}`;
-  const pool = createPool(url.toString(), { statementTimeoutMs: 0 });
-  let failure: { error: unknown } | undefined;
-  try {
-    await fn(pool);
-  } catch (error) {
-    failure = { error };
-  }
-  const cleanup = [() => pool.end(), () => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`), () => admin.end()];
-  for (const step of cleanup) {
-    try {
-      await step();
-    } catch (error) {
-      failure ??= { error };
-    }
-  }
-  if (failure) throw failure.error;
-}
-
-async function relfilenodes(pool: Pool, tables: string[]): Promise<Record<string, string>> {
-  const { rows } = await pool.query<{ relname: string; relfilenode: string }>(
-    `SELECT relname, relfilenode::text FROM pg_class
-      WHERE relnamespace = 'public'::regnamespace AND relname = ANY($1::text[])`,
-    [tables],
-  );
-  return Object.fromEntries(rows.map((row) => [row.relname, row.relfilenode]));
-}
-
-/** A notification may only name its own tenant's user (`notifications_user_id_tenant_fkey`, #1066), hence `tenantId`. */
+/** A notification may only name its own tenant's user (`notifications_user_id_tenant_fkey`). */
 async function insertUser(db: Pick<Pool | PoolClient, "query">, tenantId: string | null): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO users (email, password_hash, tenant_id) VALUES ($1, 'unused', $2) RETURNING id`,
@@ -104,52 +38,6 @@ async function sqlState(client: PoolClient, text: string, values: unknown[]): Pr
 }
 
 describe("tenant_id on every tenant-owned table", () => {
-  it(
-    "backfills existing rows with tenant zero without rewriting any table",
-    async () => {
-      const dir = await mkdtemp(path.join(tmpdir(), "semprec-tenant-id-"));
-      try {
-        const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql")).sort();
-        expect(files).toContain(THIS_MIGRATION);
-        for (const file of files.filter((f) => f < THIS_MIGRATION)) {
-          await copyFile(path.join(MIGRATIONS_DIR, file), path.join(dir, file));
-        }
-        await withFreshDatabase(async (pool) => {
-          await runMigrations(pool, dir);
-          // Raw SQL, not `createDatabase` or `createItem` (whose database lookup names `icon`/`color` too): this schema predates every later column (`icon`, `color`, ...) that the
-          // choke point's INSERT names, and the test only needs a database row with its items partition.
-          const { rows: dbRows } = await pool.query<{ id: string }>(
-            `INSERT INTO databases (name) VALUES ('Upgrade') RETURNING id`,
-          );
-          const db = { id: dbRows[0]?.id ?? "" };
-          await pool.query("SELECT create_items_partition($1::uuid)", [db.id]);
-          await pool.query(`INSERT INTO items (database_id, properties) VALUES ($1, '{}'::jsonb)`, [db.id]);
-          await pool.query(...notificationInsert(await insertUser(pool, null)));
-
-          const partition = `items_p_${db.id.replaceAll("-", "")}`;
-          const tables = ["databases", partition, "notifications"];
-          const before = await relfilenodes(pool, tables);
-          expect(Object.keys(before).sort()).toEqual([...tables].sort());
-
-          await copyFile(path.join(MIGRATIONS_DIR, THIS_MIGRATION), path.join(dir, THIS_MIGRATION));
-          await runMigrations(pool, dir);
-
-          expect(await relfilenodes(pool, tables)).toEqual(before);
-          const { rows: tenants } = await pool.query<{ id: string }>("SELECT id FROM tenants");
-          expect(tenants).toHaveLength(1);
-          for (const table of ["databases", "items", "notifications"]) {
-            const { rows } = await pool.query<{ tenant_id: string }>(`SELECT tenant_id FROM ${table}`);
-            expect(rows.length, table).toBeGreaterThan(0);
-            for (const row of rows) expect(row.tenant_id, table).toBe(tenants[0]?.id);
-          }
-        });
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    },
-    FRESH_DATABASE_TEST_TIMEOUT_MS,
-  );
-
   describe("on the shared test database", () => {
     let pool: Pool;
 
@@ -220,7 +108,7 @@ describe("tenant_id on every tenant-owned table", () => {
         const secondId = second[0]?.id;
         if (!secondId) throw new Error("second tenant insert returned no row");
         const userId = await insertUser(client, secondId);
-        // `getTestPool` connections start in tenant zero (#1067); this case is the scope-less one.
+        // `getTestPool` connections start in tenant zero; this case is the scope-less one.
         await client.query("SELECT set_config('app.tenant_id', '', true)");
 
         const [text, values] = notificationInsert(userId);

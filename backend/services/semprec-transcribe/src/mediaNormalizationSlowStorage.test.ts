@@ -15,8 +15,7 @@ import {
 } from "./mediaNormalization.js";
 import { generateOggFixture } from "./__tests__/fixtures/mediaFixtures.js";
 
-// Integration tier although no test here touches the database: it runs the real ffmpeg/ffprobe, like
-// `mediaNormalization.test.ts`.
+// Integration tier without a database: it runs the real ffmpeg/ffprobe.
 
 /** How long the writer's directory creation is held back: far longer than ffmpeg needs to encode the fixture. */
 const MKDIR_DELAY_MS = 1500;

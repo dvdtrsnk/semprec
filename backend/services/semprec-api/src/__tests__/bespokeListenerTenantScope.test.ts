@@ -33,7 +33,6 @@ const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
-/** The `public: false` matrix entries answered by tenant-scoped bespoke listeners. */
 const TENANT_LISTENER_PATH =
   /^\/(?:api\/notifications\/|api\/schema$|api\/approval-requests|mcp$|api\/agent-runs\/|api\/projects\/[^/]+\/mcp-grants|api\/mcp-tool-registrations\/|api\/mcp-servers\/[^/]+\/sync$|api\/files$|api\/blobs\/|api\/items\/[^/]+\/page\.md$|api\/items\/[^/]+\/page\/insert$|api\/semp\/threads\/[^/]+\/messages\/[^/]+\/speech$)/;
 
@@ -44,7 +43,7 @@ interface RequestSpec {
   body?: string;
 }
 
-/** A body that gets each route past its own validation and onto the database, fresh per call so no two runs collide on dedup. */
+/** Fresh per call so no two runs collide on dedup. */
 function requestSpecFor(route: RouteMatrixEntry): RequestSpec {
   if (route.path === "/api/files") {
     return { headers: { "Content-Type": "text/plain", "X-Filename": "note.txt" }, body: `content ${randomUUID()}` };
@@ -114,8 +113,8 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
     await startDispatcher();
 
     recorded = [];
-    // Every statement of every pool path ends at `Client.prototype.query`.
-    // Called back with the receiving client below, so the unbound reference is safe.
+    // Every statement of every pool path ends at `Client.prototype.query`; it is called back with the receiving
+    // client below, so the unbound reference is safe.
     // eslint-disable-next-line @typescript-eslint/unbound-method
     const originalQuery: (this: pg.Client, ...args: unknown[]) => unknown = pg.Client.prototype.query;
     querySpy = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
@@ -225,8 +224,8 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
       await resetDatabase(pool);
       recorded.length = 0;
       const strictFirst = await withScopeMode("strict", setup);
-      // The bootstrap seeds the new account's project guidance inside that tenant's scope
-      // (seedAccountSystemProjectGuidance), so the success path may enter tenant zero; nothing else leaves the system scope.
+      // The bootstrap seeds the new account's project guidance inside that tenant's scope, so the success path may
+      // enter tenant zero; nothing else leaves the system scope.
       expect(recorded.length).toBeGreaterThan(0);
       expect(
         recorded.every(
@@ -281,7 +280,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
 
   describe("POST /mcp with a restricted run credential", () => {
     it("answers as before, looking the credential up in a system scope and serving in its owner's tenant", async () => {
-      // The run's actor must be its own tenant's user (agent_runs_actor_user_id_tenant_fkey, issue #1066).
+      // The run's actor must be its own tenant's user.
       const user = await createUser(pool, {
         email: `${randomUUID()}@example.com`,
         passwordHash: await hashPassword(PASSWORD),
@@ -314,7 +313,6 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
       expect(recorded.length).toBeGreaterThan(0);
       expect(recorded.every((scope) => scope?.kind === "system" || scope?.kind === "tenant")).toBe(true);
       expect(recorded.some((scope) => scope?.kind === "system")).toBe(true);
-      // The request body is read and served inside the credential owner's tenant scope.
       expect(recorded.filter((scope) => scope?.kind === "tenant")).toContainEqual({
         kind: "tenant",
         tenantId: getTenantZeroId(),

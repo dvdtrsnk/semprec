@@ -41,7 +41,7 @@ const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
-const itemBody = z.object({ id: z.string(), updatedAt: z.string() }).passthrough();
+const itemBody = z.object({ id: z.string(), version: z.string() }).passthrough();
 
 let pool: Pool;
 
@@ -54,7 +54,6 @@ describe("the sleep resync push through REST, the agent gateway and the queue ha
   let plansDatabaseId: string;
   const gateway = () => createGenericOperationGateway(pool, testMetadataResolver);
 
-  /** The keys of the pending `sleep.resync` jobs, read through the public view of the queue schema. */
   async function resyncKeys(): Promise<string[]> {
     const { rows } = await pool.query<{ key: string }>(
       "SELECT key FROM graphile_worker.jobs WHERE task_identifier = 'sleep.resync' ORDER BY key",
@@ -77,9 +76,8 @@ describe("the sleep resync push through REST, the agent gateway and the queue ha
     return { status: res.status, body: await res.json() };
   }
 
-  /** The `updatedAt` the API reports for the plan, which a patch sends back as `ifVersion`. */
   async function planVersion(): Promise<string> {
-    return itemBody.parse((await rest("GET", `/api/items/${planId}`)).body).updatedAt;
+    return itemBody.parse((await rest("GET", `/api/items/${planId}`)).body).version;
   }
 
   beforeEach(async () => {
@@ -107,9 +105,8 @@ describe("the sleep resync push through REST, the agent gateway and the queue ha
     const projectItemId = await createTestProjectItem(pool);
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "plan my sleep" });
     agentActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-    // The Sleep databases are sensitive, so the data layer closes them to an agent's project until the user grants
-    // write access (issue gh-1810). The user-only admin store is not exported from `@semprec/data`, so the fixture
-    // stores the decision with the statement of `setAgentDatabaseGrant`.
+    // The Sleep databases are sensitive, so an agent's project needs the user's write grant. The user-only admin store
+    // is not exported from `@semprec/data`, so the fixture uses the statement of `setAgentDatabaseGrant`.
     const grant = await pool.query(
       `INSERT INTO agent_database_grants (project_item_id, database_id, access)
          SELECT $1, id, 'write' FROM databases WHERE id = $2`,
@@ -209,8 +206,7 @@ describe("the sleep resync push through REST, the agent gateway and the queue ha
     const definition = (await moduleRegistry.getTaskDefinitions()).find((task) => task.name === "sleep.resync");
     if (!definition) throw new Error("The module registry has no sleep.resync task");
 
-    // The handler as the queue runs it: the payload parsed with the module's schema, in the tenant of the job's
-    // envelope. APNs is not configured in the test environment, so the push is reported as not sent.
+    // As the queue runs it, in the envelope's tenant. APNs is not configured in tests, so the push reports not sent.
     const payload = definition.payloadSchema.parse({ tenantId: getTenantZeroId() });
     await runInTenant(getTenantZeroId(), () =>
       definition.handler(payload, {

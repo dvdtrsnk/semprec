@@ -10,10 +10,8 @@ const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
 };
 
 /**
- * Links a freshly created Processing proposal back to its source Inbox item via `sourceInbox`. It reads only the
- * Processing proposals database id of the config, so the sibling cards of a split (issue #1939) use it as the tick does.
- * Lives apart from `inboxTickAction.ts`, which sits at the ESLint `max-lines` cap (issue #1811 moved
- * it unchanged to make room for the card realtime calls).
+ * Reads only the Processing proposals database id of the config, so split siblings can use it as the tick does. Kept
+ * out of `inboxTickAction.ts`, which sits at the ESLint `max-lines` cap.
  */
 export async function linkSourceInboxRelation(
   client: PoolClient,

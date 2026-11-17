@@ -43,8 +43,7 @@ let chokePoint: ChokePoint;
 let docStore: DocStore;
 const moduleRegistry = await loadFullModuleRegistry();
 
-/** Polls a synchronous predicate — this test exercises a real (unmocked) backoff timer and real
- * sockets, so it waits on wall-clock time rather than fake timers. */
+/** Real backoff timers and sockets, so this waits on wall-clock time rather than fake timers. */
 async function waitUntil(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -53,7 +52,6 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 10_000): Promise<
   }
 }
 
-/** Polls an async predicate, e.g. one that re-reads durable Yjs state on every attempt. */
 async function waitUntilAsync(predicate: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -64,9 +62,8 @@ async function waitUntilAsync(predicate: () => Promise<boolean>, timeoutMs = 10_
 }
 
 /**
- * Intercepts `createSyncServer`'s dedicated LISTEN connection, the same way `syncServer.test.ts`
- * does for issue #242's own fault-injection tests, so this client-side suite can force the same
- * LISTEN-connection-loss fault without any test-only hook in production code.
+ * Intercepts `createSyncServer`'s dedicated LISTEN connection, as `syncServer.test.ts` does, to force a
+ * LISTEN-connection loss without any test-only hook in production code.
  */
 async function captureListenClient(
   create: () => Promise<SyncServer>,
@@ -188,7 +185,7 @@ interface UnreadBody {
   notifications: { id: string; readAt: string | null }[];
 }
 
-/** Guards a `Response.json()` result (typed `any`) against a server response-shape regression before the caller treats it as `T` — a shape mismatch throws here instead of surfacing as a confusing TypeError deep inside a later `.map()`. */
+/** Fails on a response-shape regression here instead of as a confusing TypeError later. */
 function asShape<T>(body: unknown, check: (b: Record<string, unknown>) => boolean): T {
   if (typeof body !== "object" || body === null || !check(body as Record<string, unknown>)) {
     throw new Error(`unexpected response shape: ${JSON.stringify(body)}`);
@@ -196,7 +193,7 @@ function asShape<T>(body: unknown, check: (b: Record<string, unknown>) => boolea
   return body as T;
 }
 
-/** Everything a converged client should show, kept in sync purely by this rig's recovery hooks — never asserted on directly by a test until after a fault. */
+/** Kept in sync only by this rig's recovery hooks. */
 interface ClientRig {
   client: SyncClient;
   sockets: WebSocket[];
@@ -265,12 +262,10 @@ async function connectAndOpenStreams(rig: ClientRig, fixture: Fixture): Promise<
 
   rig.client.openDoc(fixture.docId, rig.ydoc);
   rig.client.watchAgentRun(fixture.agentRunId, fixture.firstEventId);
-  // The doc's own root block was written before this client ever connected, so a converged
-  // `SyncStep1`/`SyncStep2` exchange must leave this ydoc non-empty before any fault is injected.
+  // The root block was written before this client connected, so the initial sync must leave the ydoc non-empty.
   await waitUntil(() => rig.ydoc.share.size > 0);
 }
 
-/** Asserts every stream converges with server truth after a fault + reconnect: REST, Yjs, agent events, unread. */
 async function assertConverged(
   rig: ClientRig,
   fixture: Fixture,
@@ -311,7 +306,7 @@ describe("client reconnect and per-stream recovery (issue #164)", () => {
     await pool?.end();
   });
 
-  /** Mutates every stream's server-side truth while the client is mid-fault, returning what a converged client must end up showing. */
+  /** Returns what a converged client must end up showing. */
   async function mutateWhileDisconnected(
     fixture: Fixture,
   ): Promise<{ title: string; secondEventId: string; notificationId: string }> {
@@ -343,7 +338,7 @@ describe("client reconnect and per-stream recovery (issue #164)", () => {
     return { title, secondEventId: secondEvent.id, notificationId };
   }
 
-  /** Builds a fresh harness/fixture/rig, connects, triggers `fault`, then asserts every stream converges — closing the rig's client on every exit path so no test leaves a reconnect timer running into the next one. */
+  /** Closes the rig's client on every exit path so no reconnect timer leaks into the next test. */
   async function runScenario(
     setupHarness: () => Promise<Harness>,
     fault: (harness: Harness, rig: ClientRig) => Promise<void> | void,
@@ -356,9 +351,8 @@ describe("client reconnect and per-stream recovery (issue #164)", () => {
 
       const socketCountBeforeFault = rig.sockets.length;
       await fault(harness, rig);
-      // Mutated while this client is still disconnected (the 1s injected backoff gives ample
-      // room), so the reconnect's one refetch below is guaranteed to observe the final state —
-      // exactly what "no universal cursor, refetch after reconnect" promises, not a race with it.
+      // Mutated while still disconnected (the 1s injected backoff gives room), so the reconnect's one refetch is
+      // guaranteed to observe the final state rather than racing it.
       const expectation = await mutateWhileDisconnected(fixture);
       await waitUntil(
         () =>
@@ -376,7 +370,7 @@ describe("client reconnect and per-stream recovery (issue #164)", () => {
     await runScenario(
       () => startServer(),
       (_harness, rig) => {
-        // Abrupt drop, no close handshake — the client only learns about this from the TCP layer.
+        // Abrupt drop with no close handshake.
         rig.sockets[0]!.terminate();
       },
     );
@@ -391,8 +385,7 @@ describe("client reconnect and per-stream recovery (issue #164)", () => {
         return startServer(() => Promise.resolve(captured.syncServer));
       },
       () => {
-        // Simulates the LISTEN connection being lost (network blip, Postgres restart) — the
-        // server closes every socket with 1012 and starts its own capped-backoff reconnect loop.
+        // The server closes every socket with 1012 and starts its own capped-backoff reconnect loop.
         listenClient!.emit("error", new Error("simulated LISTEN connection loss"));
       },
     );
@@ -402,8 +395,8 @@ describe("client reconnect and per-stream recovery (issue #164)", () => {
     await runScenario(
       () => startServer(),
       async (harness) => {
-        // A rolling restart behind a fixed port: the old process's sync server shuts down (1012
-        // to every socket) and a fresh one takes over the same HTTP server's upgrade handling.
+        // A rolling restart behind a fixed port: the old sync server closes every socket with 1012 and a fresh one
+        // takes over the upgrade handling.
         await harness.syncServer.close();
         await harness.rebindUpgrade(await createSyncUpgradeHandler(pool));
       },
@@ -414,9 +407,7 @@ describe("client reconnect and per-stream recovery (issue #164)", () => {
     await runScenario(
       () => startServer(),
       (_harness, rig) => {
-        // Mirrors the 1013 close code `syncServer.ts` sends a socket whose outbound buffer stays
-        // over threshold — from this client's perspective, indistinguishable from any other
-        // server-initiated drop.
+        // The 1013 close `syncServer.ts` sends a slow consumer; to the client, like any server-initiated drop.
         rig.sockets[0]!.close(1013, "slow consumer");
       },
     );

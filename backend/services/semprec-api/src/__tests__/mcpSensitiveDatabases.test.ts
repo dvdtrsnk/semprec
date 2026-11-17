@@ -42,7 +42,7 @@ const noopMailer: PasswordResetMailer = {
 
 const moduleRegistry = await loadFullModuleRegistry();
 
-/** What `/mcp` answers: a JSON-RPC result, or an error that carries the operation's error code in `data`. */
+/** An error carries the operation's error code in `data`. */
 const rpcBody = z.object({
   result: z.object({ content: z.array(z.object({ text: z.string() })) }).optional(),
   error: z
@@ -139,7 +139,6 @@ describe("sensitive databases over POST /mcp (issue #1998)", () => {
     return rpcBody.parse(await res.json());
   }
 
-  /** The tool's JSON output; a refused call fails the test here. */
   async function callOk<T>(headers: Record<string, string>, name: string, args: unknown, schema: z.ZodType<T>) {
     const body = await call(headers, name, args);
     expect(body.error).toBeUndefined();
@@ -148,7 +147,6 @@ describe("sensitive databases over POST /mcp (issue #1998)", () => {
     return schema.parse(JSON.parse(text));
   }
 
-  /** A refused call: the JSON-RPC error of a `ForbiddenError`, whose code is `forbidden`. */
   function expectForbidden(body: z.infer<typeof rpcBody>): void {
     expect(body.result).toBeUndefined();
     expect(body.error).toMatchObject({ code: -32000, data: { code: "forbidden" } });
@@ -207,7 +205,7 @@ describe("sensitive databases over POST /mcp (issue #1998)", () => {
       await call(humanHeaders, "semprec.item.patch", {
         itemId: record.id,
         properties: { name: "After" },
-        ifVersion: record.updatedAt,
+        ifVersion: record.version,
       }),
     );
     expectForbidden(await call(humanHeaders, "semprec.item.delete", { itemId: record.id }));

@@ -39,10 +39,8 @@ async function authHeader(): Promise<{ Authorization: string }> {
 }
 
 /**
- * Issue #1072: every HTTP response this service writes carries `Cache-Control: no-store`, because
- * bodies hold one tenant's content. The unauthenticated sweep covers every `surface: "api"` route in
- * `ROUTE_MATRIX`, so a route added later is checked without a new test; the blob and webhook cases
- * cover the branches that write their own response heads instead of going through `sendJson`.
+ * Every response carries `Cache-Control: no-store` because bodies hold one tenant's content. The sweep covers every
+ * `surface: "api"` route in `ROUTE_MATRIX`; the blob and webhook cases cover handlers that write their own heads.
  */
 describe("Cache-Control on every API response (issue #1072)", () => {
   let server: Server;

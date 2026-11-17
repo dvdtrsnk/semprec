@@ -4,30 +4,22 @@ import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import type { ItemRow } from "../types.js";
 
 /**
- * The invoke-time authorization+lookup primitive for issue #128's outbound MCP-invoke adapter:
- * re-derives, from current DB state alone, whether `mcpToolRegistrationId` is still an active,
- * granted tool for `projectItemId` — the same three-way AND `mcpAgentTools.ts`'s
- * `getGrantedMcpAgentTools` computes for the whole per-run tool list, scoped here to one
- * registration and joined with the server item's `properties`, which the connection factory
- * (#231, `mcpConnectionFactory.ts`) needs to actually open a connection.
+ * Invoke-time authorization: re-derives from current state whether the registration is still active and granted
+ * for the project (the same three-way check as `getGrantedMcpAgentTools`), joined with what the connection factory
+ * needs.
  *
- * `projectItemId` and `mcpToolRegistrationId` must both come from server-derived context (the
- * per-run permission manifest's already-resolved `McpAgentToolProjection`, itself keyed off
- * `agent_runs.project_item_id` — never from a model's own tool-call arguments): re-checking
- * both together, freshly, against the database is what makes a spoofed or stale identity fail
- * exactly like a legitimately unknown/revoked one, rather than trusting a snapshot taken when
- * the tool list was built.
+ * Both ids must come from server-derived context, never from model arguments; re-checking them fresh makes a
+ * spoofed or stale identity fail exactly like an unknown or revoked one.
  */
 export interface McpToolInvocationTarget {
   mcpToolRegistrationId: string;
   mcpServerItemId: string;
   toolName: string;
   toolSchema: unknown;
-  /** `mcp_tool_registrations.updated_at`, ISO 8601 — lets `mcpInvokeTool.ts` detect a schema change since it last compiled this registration. */
+  /** Lets the invoke adapter detect a schema change since it last compiled this registration. */
   toolSchemaUpdatedAt: string;
   requiresApproval: boolean;
   riskClass: string;
-  /** Exactly what `connectMcpServer` needs — see `mcpConnectionFactory.ts`. */
   serverItem: Pick<ItemRow, "id" | "properties">;
 }
 
@@ -42,12 +34,7 @@ interface McpToolInvocationRow {
   server_properties: Record<string, unknown>;
 }
 
-/**
- * Returns `null` for every rejection case the issue's Task groups together — an unknown
- * registration id, one whose registration or server is inactive, or one never (or no longer)
- * granted to this project — deliberately without distinguishing which, so a caller cannot use
- * this function's return value to probe which of those is true for a given id.
- */
+/** `null` for unknown, inactive or ungranted alike, so the result cannot be used to probe which. */
 export async function resolveGrantedMcpTool(
   client: PoolClient,
   projectItemId: string,

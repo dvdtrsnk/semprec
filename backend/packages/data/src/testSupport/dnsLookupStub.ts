@@ -2,14 +2,11 @@ import dns, { type LookupAddress } from "node:dns";
 import { isIP } from "node:net";
 
 /**
- * Replaces `dns.lookup` so a test can make a hostname resolve to chosen addresses (issue #1034's
- * outbound address policy tests). Hostnames not in the table go to the real `dns.lookup`, because
- * other code in the process (the `pg` pool) resolves through the same function. A hostname mapped to
- * an empty list fails through the callback with `ENOTFOUND`, as the real resolver does for an unknown
- * name. Restore it in `afterEach`/`finally`.
+ * Replaces `dns.lookup` so chosen hostnames resolve to chosen addresses. Others go to the real lookup, because the
+ * `pg` pool resolves through it too. An empty list fails with `ENOTFOUND`. Restore in `afterEach`/`finally`.
  */
 export interface DnsLookupStub {
-  /** Every stubbed hostname looked up, in order. */
+  /** In lookup order. */
   readonly calls: string[];
   restore(): void;
 }
@@ -50,8 +47,7 @@ export function stubDnsLookup(table: Readonly<Record<string, readonly string[]>>
     });
   }
 
-  // `defineProperty` rather than assignment: `dns.lookup` is overloaded, and this stub implements
-  // the overloads by inspecting its arguments at runtime.
+  // `defineProperty`, not assignment: `dns.lookup` is overloaded and the stub dispatches on its arguments.
   Object.defineProperty(dns, "lookup", { value: stubbedLookup, configurable: true, writable: true });
   return {
     calls,

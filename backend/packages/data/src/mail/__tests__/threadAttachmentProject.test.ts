@@ -2,12 +2,11 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { findOrCreateBlob } from "../../blobs/blobsStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { withTransaction } from "../../db/pool.js";
-import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { loadFullModuleRegistry } from "../../manifest/fullModuleRegistry.js";
 import { createActionRegistry } from "../../scheduler/actions.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -29,7 +28,6 @@ import {
 } from "../mailDraftRouteHandlers.js";
 import { reassignThread } from "../mailMessageMetaStore.js";
 import { THREAD_ATTACHMENT_PROJECT_RULE_KEY } from "../threadAttachmentLinks.js";
-import { runThreadAttachmentsCutoverMigration } from "../threadAttachmentsCutoverMigration.js";
 
 const USER_ID = "7c0e2f6a-58a1-4d0e-9d55-2f1c6f7c9b02";
 
@@ -40,7 +38,6 @@ let other: string;
 
 const setup = (tenantId: string): Promise<World> => setupMailAttachmentWorld(runtime, tenantId);
 
-/** Runs the queued value-link propagation jobs until none is left. */
 async function runPropagation(): Promise<void> {
   const taskName = CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
   const handler = createCoreTaskList(runtime, createActionRegistry())[taskName];
@@ -52,7 +49,6 @@ async function runPropagation(): Promise<void> {
   throw new Error("Propagation queue did not drain");
 }
 
-/** The job keys of the value-link propagation jobs that are queued. */
 async function queuedPropagationJobKeys(): Promise<string[]> {
   const { rows } = await admin.query<{ key: string | null }>(
     "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -61,14 +57,12 @@ async function queuedPropagationJobKeys(): Promise<string[]> {
   return rows.map((row) => row.key ?? "");
 }
 
-/** Merges thread `fromThreadId` into `toThreadId` as the threading writer does, in one transaction of the tenant. */
 function merge(world: World, fromThreadId: string, toThreadId: string): Promise<void> {
   return runInTenant(world.tenantId, () =>
     withTransaction(runtime, (client: PoolClient) => reassignThread(client, fromThreadId, toThreadId)),
   );
 }
 
-/** The value-link entry of a file that follows the project of thread item `itemId`. */
 const followsProjectOf = (itemId: string) => ({
   valueKind: "inherited",
   sources: [{ kind: "item", itemId, databaseKey: "threads", propertyKey: "project", title: expect.any(String) }],
@@ -94,7 +88,7 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
     await admin.end();
   });
 
-  describe("the relation, its cutover and the link rule", () => {
+  describe("the relation and the link rule", () => {
     interface AttachmentsSchemaRow {
       owner: string;
       owner_process: string | null;
@@ -114,15 +108,6 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
       ).then((result) => result.rows);
     }
 
-    function counts() {
-      return admin
-        .query<{ properties: number; edges: number; links: number }>(
-          `SELECT (SELECT count(*)::int FROM properties) AS properties, (SELECT count(*)::int FROM item_relations) AS edges,
-                  (SELECT count(*)::int FROM value_links) AS links`,
-        )
-        .then((result) => result.rows);
-    }
-
     const EXPECTED_SCHEMA = (filesDatabaseId: string | undefined) => [
       {
         owner: "system",
@@ -133,64 +118,9 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
       },
     ];
 
-    it("exists on a fresh install as a one-directional one-to-many relation to Files owned by the emails process, and the cutover adds nothing there", async () => {
+    it("exists on a fresh install as a one-directional one-to-many relation to Files owned by the emails process", async () => {
       const world = await setup(tenant);
       expect(await schemaOf(world)).toEqual(EXPECTED_SCHEMA(world.databases.files));
-      const before = await counts();
-
-      await runInTenant(tenant, () => runThreadAttachmentsCutoverMigration(runtime));
-
-      expect(await counts()).toEqual(before);
-      expect(await schemaOf(world)).toEqual(EXPECTED_SCHEMA(world.databases.files));
-    });
-
-    it("is added to an existing tenant by the registered cutover, a second run adds nothing, and files that exist get no edge and keep their values", async () => {
-      const world = await setup(tenant);
-      const project = await world.newItem("projects", { name: "Existing" });
-      const file = await world.newItem("files", { name: "old.pdf" });
-      await world.link(world.properties.filesProjects, file, project);
-      // A tenant whose Threads schema predates issue gh-1898: the locked schema cannot lose a property publicly.
-      await runInTenant(tenant, async () => {
-        await runtime.query("DELETE FROM relation_definitions WHERE property_id_a = $1", [
-          world.properties.threadAttachments,
-        ]);
-        const removed = await runtime.query("DELETE FROM properties WHERE id = $1", [
-          world.properties.threadAttachments,
-        ]);
-        expect(removed.rowCount).toBe(1);
-      });
-      expect(await schemaOf(world)).toEqual([]);
-
-      await runAsSystem("test:thread-attachments", () => runTenantCutoverMigrations(runtime));
-
-      expect(await schemaOf(world)).toEqual(EXPECTED_SCHEMA(world.databases.files));
-      const afterFirstRun = await counts();
-      await runAsSystem("test:thread-attachments", () => runTenantCutoverMigrations(runtime));
-      expect(await counts()).toEqual(afterFirstRun);
-      const migratedProperty = await runInTenant(tenant, () =>
-        runtime.query<{ id: string }>("SELECT id FROM properties WHERE database_id = $1 AND key = 'attachments'", [
-          world.databases.threads,
-        ]),
-      );
-      const edgesOfRelation = await runInTenant(tenant, () =>
-        runtime.query(
-          "SELECT 1 FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id WHERE d.property_id_a = $1",
-          [migratedProperty.rows[0]?.id],
-        ),
-      );
-      expect(edgesOfRelation.rowCount).toBe(0);
-      expect(await world.related(world.properties.filesProjects, file)).toEqual([project]);
-      // The company link of the file's own project is another rule's; no link names the project of the file.
-      expect((await world.linksOf(file)).projects).toBeUndefined();
-    });
-
-    it("leaves a tenant that has no Threads and Files databases unchanged", async () => {
-      const bare = await createTestTenant(admin);
-      const before = await counts();
-
-      await runInTenant(bare, () => runThreadAttachmentsCutoverMigration(runtime));
-
-      expect(await counts()).toEqual(before);
     });
 
     it("declares the link rule of the thread's project in the mail manifest", async () => {
@@ -303,7 +233,6 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
 
     it("writes nothing for a message without attachments and does not read the Threads.attachments property", async () => {
       const world = await setup(tenant);
-      // A tenant without the relation still ingests a message that brings no file.
       await runInTenant(tenant, async () => {
         await runtime.query("DELETE FROM relation_definitions WHERE property_id_a = $1", [
           world.properties.threadAttachments,
@@ -659,8 +588,8 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
 
       await merge(world, loser.threadId, winner.threadId);
 
-      // The value merge of gh-1869 queues the jobs of every rule that follows `Threads.project` of the winner, so the
-      // queue holds other jobs too; the job of the attachment rule for the winner is among them.
+      // The value merge queues the jobs of every rule that follows `Threads.project` of the winner, so the queue holds
+      // other jobs too; the job of the attachment rule for the winner is among them.
       expect(await queuedPropagationJobKeys()).toContain(
         `valueLinksPropagate:${tenant}:${THREAD_ATTACHMENT_PROJECT_RULE_KEY}:${winner.itemId}:1`,
       );
@@ -676,8 +605,8 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
 
       await merge(world, loser.threadId, winner.threadId);
 
-      // The value merge of gh-1869 queues the jobs of the rules that follow `Threads.project` whatever the
-      // attachments are, so the queue is not asserted here.
+      // The value merge queues the jobs of the rules that follow `Threads.project` whatever the attachments are, so the
+      // queue is not asserted here.
       expect((await world.linksOf(winnerFile)).projects).toEqual(followsProjectOf(winner.itemId));
     });
 
@@ -721,7 +650,6 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
       expect(await a.related(a.properties.filesProjects, fileA)).toEqual([projectA]);
       expect(await b.related(b.properties.filesProjects, fileB)).toEqual([]);
       expect((await b.linksOf(fileB)).projects).toEqual(followsProjectOf(threadB.itemId));
-      // B cannot see A's thread edge, A's file or A's link.
       expect(await b.related(b.properties.threadAttachments, threadA.itemId)).toEqual([]);
       expect(await b.linksOf(fileA)).toEqual({});
       const sourcesSeenByB = await runInTenant(other, () =>
@@ -729,7 +657,6 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
       );
       expect(sourcesSeenByB.rows.map((row) => row.source_item_id)).toEqual([threadB.itemId]);
 
-      // A merge in A does not touch B's links.
       const secondA = await a.receive("<second@example.test>", { attachments: ["a2.pdf"] });
       await merge(a, secondA.threadId, threadA.threadId);
       await runPropagation();

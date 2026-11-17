@@ -21,10 +21,9 @@ const rowSchema = z
 const rlsSchema = z.object({ active: z.literal(true) }).strict();
 
 /**
- * Imports previously staged wrapped rows into an offline target under the target tenant's RLS. A row
- * is imported only when its tenant exists in the target, is not `deleting` and has no row in
- * `tenant_deletions`; a refused row is skipped like the row of an absent tenant (zero rows, no error),
- * because the deletion of a tenant erases its key and a restore must not bring that key back.
+ * Imports staged wrapped rows into an offline target under the target tenant's RLS. A row whose tenant
+ * is absent, `deleting` or listed in `tenant_deletions` is skipped without error: deletion erased the key
+ * and a restore must not bring it back.
  */
 export async function importStagedTenantKeys(
   stage: PoolClient,

@@ -58,7 +58,6 @@ async function createUserIn(tenantId: string): Promise<{ Authorization: string }
   return { Authorization: `Bearer ${token}` };
 }
 
-/** The tenant's Files database id, read in its own scope. */
 async function filesDatabaseIdIn(tenantId: string): Promise<string> {
   return runInTenant(tenantId, async () => {
     const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, FILES_MODULE_ID));
@@ -67,7 +66,7 @@ async function filesDatabaseIdIn(tenantId: string): Promise<string> {
   });
 }
 
-/** Uploads `content` as a Files item in `tenantId`, the way `POST /api/files` does. */
+/** The way `POST /api/files` does. */
 async function uploadIn(tenantId: string, filename: string, content: string): Promise<Upload> {
   const filesDatabaseId = await filesDatabaseIdIn(tenantId);
   const { blob } = await runInTenant(tenantId, () =>
@@ -119,10 +118,10 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
   beforeEach(async () => {
     await resetDatabase(adminPool);
     tenantA = getTenantZeroId();
-    // Seeded while tenant zero is the only tenant: `seedSystem` cannot resolve a tenant for its module data migrations once a second one exists.
+    // Seeded while tenant zero is the only tenant: `seedSystem` cannot resolve a tenant once a second one exists.
     await seedSystem(adminPool);
     tenantB = await createTestTenant(adminPool);
-    // Tenant B's Files database, with the two properties `POST /api/files` writes (the seeded one has more).
+    // Only the two properties `POST /api/files` writes.
     const chokePoint = createChokePoint(adminPool);
     await runInTenant(tenantB, async () => {
       const database = await chokePoint.createDatabase({ name: "Files", system: true, ownerModuleId: FILES_MODULE_ID });
@@ -229,7 +228,7 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
         });
       }),
     );
-    // Historical invalid JSONB may name a foreign blob even though new writes are rejected.
+    // Stored JSONB may name a foreign blob even though new writes are rejected.
     await runInTenant(tenantB, () =>
       withTransaction(pool, async (client) => {
         const item = await createItemWithClient(client, {
@@ -384,7 +383,7 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
       expect(foreign).toEqual(unknown);
     });
 
-    /** Writes `content` under a fresh key in `target` and records the blob (and, for an attachment, its `mail_attachments` row) in tenant zero. */
+    /** For an attachment, also its `mail_attachments` row; in tenant zero. */
     async function seedBlob(opts: {
       target: LocalFsBlobStorageWriter | null;
       attachment: boolean;
@@ -414,7 +413,7 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
       );
     }
 
-    // A mail_attachments row carries no folder, so an attachment synced into Sent has the same shape as one synced into the inbox.
+    // A mail_attachments row carries no folder, so a Sent attachment has the same shape as an inbox one.
     it("serves an attachment whose bytes are only in the mail attachments root, whole and ranged", async () => {
       const blobId = await seedBlob({ target: mailStorage, attachment: true, content: "attachment bytes" });
       const headers = await createUserIn(tenantA);

@@ -19,12 +19,7 @@ import type { GatewayModel } from "../modelComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
 import { createSempMessageTask } from "../sempMessageTask.js";
 
-/**
- * The turns that follow a regenerated Semp reply (issue gh-1930), through the real turn handler, the real queue
- * runtime, the real session registry and the real history reconstruction; only the model is a faux provider. The
- * regeneration is queued by `regenerateSempReply`, the store function behind the route (`sempRegenerate.test.ts` of
- * `semprec-api` covers the route). Everything runs on the runtime role pool.
- */
+/** Only the model is faux; the regeneration is queued by `regenerateSempReply`. Runtime role pool. */
 
 let admin: Pool;
 let pool: Pool;

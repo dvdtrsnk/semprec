@@ -3,7 +3,7 @@
 Issue #995. Every database has its own `items` partition
 (`backend/packages/data/src/chokePoint/databasesStore.ts`), and every tenant owns its system
 databases plus the user's own: about 25 partitions per tenant. Each partition has two indexes,
-the primary key and `items_props_gin` (`0001_core_schema.sql`).
+the primary key and `items_props_gin` (`0001_baseline.sql`).
 
 A statement on `items` that the planner cannot prune locks the parent, every partition and
 every partition's indexes until its transaction ends. Examples are an id-only lookup, an
@@ -24,12 +24,12 @@ lock table total               = max_locks_per_transaction × (max_connections +
 `deploy/systemd/scripts/semprec-restore-test.sh` (`semprec-restore-test.test.sh` asserts the two
 values are equal). `max_connections` stays at 100 and `max_prepared_transactions` at 0.
 
-| | Value |
-| --- | --- |
-| Entries per unpruned statement at 200 tenants × 25 partitions × 3 relations | 15,000 |
-| Lock table with the image defaults, 64 × (100 + 0) | 6,400 (one such statement fails) |
-| Lock table with 2048 × (100 + 0) | 204,800 |
-| Headroom | about 13 concurrent unpruned `items` statements |
+|                                                                             | Value                                           |
+| --------------------------------------------------------------------------- | ----------------------------------------------- |
+| Entries per unpruned statement at 200 tenants × 25 partitions × 3 relations | 15,000                                          |
+| Lock table with the image defaults, 64 × (100 + 0)                          | 6,400 (one such statement fails)                |
+| Lock table with 2048 × (100 + 0)                                            | 204,800                                         |
+| Headroom                                                                    | about 13 concurrent unpruned `items` statements |
 
 ## Shared-memory cost
 
@@ -40,10 +40,10 @@ SELECT name, pg_size_pretty(allocated_size) FROM pg_shmem_allocations
 WHERE name IN ('LOCK hash', 'PROCLOCK hash');
 ```
 
-| name | allocated_size |
-| --- | --- |
-| LOCK hash | 9088 bytes |
-| PROCLOCK hash | 17 kB |
+| name          | allocated_size |
+| ------------- | -------------- |
+| LOCK hash     | 9088 bytes     |
+| PROCLOCK hash | 17 kB          |
 
 These two rows are only the hash directories; the entries themselves are allocated from the
 shared-memory pool that the server total accounts for. `postgres -C shared_memory_size` on the

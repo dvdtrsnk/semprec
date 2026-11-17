@@ -211,7 +211,6 @@ describe("bounded Inbox proposal workspace context", () => {
       });
     }
 
-    /** Reads the context in a read-only transaction, so a statement that writes would fail the test. */
     function readContext(fixture: Fixture, limitPerKind = 20, projectItemId = fixture.projectItemId) {
       return runInTenant(fixture.tenant, () =>
         withTransaction(runtime, async (client) => {
@@ -221,7 +220,7 @@ describe("bounded Inbox proposal workspace context", () => {
       );
     }
 
-    /** A built-in database cannot be marked sensitive through the API (only the cutover does it for Health records and sleep), so the test marks it directly. */
+    /** The API cannot mark a built-in database sensitive, so the test does it directly. */
     async function markSensitive(databaseId: string): Promise<void> {
       await admin.query("UPDATE databases SET sensitive = true WHERE id = $1", [databaseId]);
     }

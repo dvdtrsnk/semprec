@@ -25,8 +25,8 @@ afterAll(async () => {
 });
 
 /**
- * The options of a card's picker (issue gh-1959), read through the runtime role pool in the scope of a tenant, so row-level
- * security applies. Every case builds its own items and reads the list back by their ids, never by the length of a list.
+ * The options of a card's picker, read through the runtime role pool in the scope of a tenant, so row-level security
+ * applies. Every case reads the list back by the ids of its own items, never by the length of a list.
  */
 describe("the options of a proposal card", () => {
   let tenantA: string;
@@ -51,7 +51,6 @@ describe("the options of a proposal card", () => {
       await runInTenant(tenant, () => seedSystem(runtime, createViewTypeRegistry()));
   });
 
-  /** An item of a system database, written through the choke point. */
   const createItem = (moduleId: string, properties: Record<string, unknown>, tenant = tenantA): Promise<string> =>
     inTenant(tenant, async (client) => {
       const item = await createItemWithClient(client, { databaseId: await databaseId(client, moduleId), properties });
@@ -61,7 +60,6 @@ describe("the options of a proposal card", () => {
   const createProject = (name: string, extra: Record<string, unknown> = {}): Promise<string> =>
     createItem("projects", { name, ...extra });
 
-  /** A task linked to `projectId` through the `project` relation, so one more edge points at the project. */
   const linkTaskToProject = (projectId: string, name = "Task"): Promise<void> =>
     inA(async (client) => {
       const tasks = await databaseId(client, "tasks");
@@ -75,7 +73,6 @@ describe("the options of a proposal card", () => {
       });
     });
 
-  /** A task linked to `personId` through the `people` relation. */
   const linkTaskToPerson = (personId: string): Promise<void> =>
     inA(async (client) => {
       const tasks = await databaseId(client, "tasks");
@@ -120,16 +117,14 @@ describe("the options of a proposal card", () => {
     });
 
   interface CardInput {
-    /** The envelope the card is stored with (what a confirm would write). */
     proposal?: unknown;
-    /** The assistant's envelope; the stored one when absent. */
     aiProposal?: unknown;
     userOverrides?: Record<string, Record<string, unknown>>;
   }
 
   /**
-   * A `proposed` card of an Inbox item holding the given envelopes. The envelopes and overrides are written directly, because
-   * the cases need a card whose assistant and effective envelopes differ in a chosen way; the tick writes them in step.
+   * The envelopes and overrides are written directly: the cases need assistant and effective envelopes that differ in a
+   * chosen way, while the tick writes them in step.
    */
   const createCard = (input: CardInput, tenant = tenantA): Promise<string> =>
     inTenant(tenant, async (client) => {
@@ -150,7 +145,6 @@ describe("the options of a proposal card", () => {
       return card.id;
     });
 
-  /** A single-step `database` envelope writing a task, with the given relation lists. */
   const taskEnvelope = async (
     relations: Record<string, string[]> = {},
     tenant = tenantA,

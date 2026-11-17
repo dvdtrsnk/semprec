@@ -14,7 +14,6 @@ import {
 import { sendWebPushNotification } from "../push/webPushAdapter.js";
 import { stubDnsLookup, type DnsLookupStub } from "../testSupport/dnsLookupStub.js";
 
-/** A local HTTP server that records every TCP connection and request path it receives. */
 interface CountingServer {
   readonly port: number;
   readonly requests: string[];
@@ -69,7 +68,7 @@ afterEach(async () => {
   await server.stop();
 });
 
-/** The public-only address rule over `http:`, so the refusal under test is the resolved address, not the protocol. */
+/** Public-only over `http:`, so the refusal is the resolved address, not the protocol. */
 const PUBLIC_ONLY_OVER_HTTP: OutboundAddressPolicy = {
   isTestPolicy: false,
   protocols: ["http:"],
@@ -119,7 +118,7 @@ describe("createOutboundHttp().fetch against a real server (issue #1034)", () =>
   });
 });
 
-/** The source fields of a notification whose source has no durable identity (issue #1829), so no collapse key. */
+/** A source with no durable identity, so no collapse key. */
 const NO_IDENTITY_SOURCE = {
   sourceTable: "project_heartbeats",
   sourceId: "heartbeat-1",

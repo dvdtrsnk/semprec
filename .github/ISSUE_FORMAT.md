@@ -6,7 +6,7 @@ The owner-directed program in `issues/batches/backend/README.md` delivered its
 sequences 1-39 as larger technical implementation records containing complete
 source requirement snapshots. Its remaining sources are implemented one record
 at a time in parallel worktrees and landed by a local serialized queue, as
-`docs/adr/2026-11-10-parallel-backend-delivery-through-a-serialized-merge-queue.md`
+`docs/architecture/delivery-and-operations.md`
 decides. Inside that program a blocker that the issue text marks as
 `Shared-file ordering` gates landing, not the start. The default DAG,
 single-mechanism and concurrent-worker conventions below still apply outside
@@ -28,7 +28,7 @@ documented below remain active. After a verified cutover to `repository`, read
 the local record, history and dependency handovers without GitHub issue reads;
 GitHub still hosts PRs, reviews and CI. Initial file preparation alone does not
 activate that cutover. The cutover contract is
-`docs/adr/2026-10-27-repository-markdown-issues-with-a-guarded-cutover.md`.
+`docs/architecture/delivery-and-operations.md`.
 
 Every implementation issue in this repository follows this exact structure. It is
 the contract between the planning side (`/define-behavior`) and the execution side
@@ -49,7 +49,7 @@ implementer needs must be inside it.
   `implement-issue`'s `max-concurrent` (`respect-blocked-by: true` in
   `.relay/workflows/implement-issue.md` still enforces every real edge; it no
   longer serializes a whole batch by default). See
-  `docs/adr/2026-09-24-issue-batches-as-dependency-dags.md` for why.
+  `docs/architecture/delivery-and-operations.md` for why.
 - **Fully self-contained.** The implementing agent reads the issue body and, for
   each issue named in its `Blocked by:` line, the pull request that closed it (see
   "Hand-over context" below) — nothing else. Referencing an external specification
@@ -330,7 +330,7 @@ it. Closing a proposed issue rejects it and retires its findings permanently,
 because their markers stay in the ledger whatever the issue's state; reopening it
 is the undo. Closing an epic decides nothing: each child issue carries its own
 findings and its own decision. See
-[`docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md`](../docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md).
+[`docs/architecture/delivery-and-operations.md`](../docs/architecture/delivery-and-operations.md#review-findings-become-follow-up-issues).
 
 ## Hand-over context
 

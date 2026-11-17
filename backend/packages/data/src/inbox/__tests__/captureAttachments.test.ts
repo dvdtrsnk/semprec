@@ -21,8 +21,8 @@ import { UnsupportedAttachmentTypeError, ValidationError } from "../../errors.js
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 
-// Issue gh-1963: `POST /api/inbox/items` attaches uploaded blobs. Everything here runs on the runtime role pool inside
-// a tenant scope, with a second tenant for the cross-tenant cases.
+// `POST /api/inbox/items` attaching uploaded blobs, on the runtime role pool inside a tenant scope, with a second
+// tenant for the cross-tenant cases.
 let adminPool: Pool;
 let runtimePool: Pool;
 let tenantA: string;
@@ -70,7 +70,7 @@ function answerOf(result: Answer) {
   return result;
 }
 
-/** A blob of the given stored type, written as the upload route's own `blobs` row would be (the upload route is covered over HTTP). */
+/** A blob of the given stored type, written as the upload route's own `blobs` row would be. */
 function makeBlob(tenant: string, mimeType: string, byteSize = 1234): Promise<string> {
   return withTenantTransaction(runtimePool, tenant, async (client) => {
     const blob = await createBlob(client, { mimeType, byteSize, storageKey: `${tenant}/blobs/${randomUUID()}` });
@@ -78,7 +78,6 @@ function makeBlob(tenant: string, mimeType: string, byteSize = 1234): Promise<st
   });
 }
 
-/** In-memory bytes for `ingestUploadedBlob`; the upload route itself is covered over HTTP. */
 class MemoryStorage implements BlobStorageWriter {
   readonly bytesByKey = new Map<string, Buffer>();
 
@@ -151,7 +150,6 @@ const metadataJobSchema = z.object({
   queue_name: z.string().nullable(),
 });
 
-/** The metadata jobs in the queue (issue gh-1965), as the public `jobs` view shows them. */
 async function metadataJobs() {
   const { rows } = await adminPool.query<Record<string, unknown>>(
     "SELECT key, max_attempts, queue_name FROM graphile_worker.jobs WHERE task_identifier = 'inboxAttachmentMetadata' ORDER BY key",
@@ -159,7 +157,6 @@ async function metadataJobs() {
   return rows.map((row) => metadataJobSchema.parse(row));
 }
 
-/** Nothing the capture could have written exists in the tenant, and no metadata job was queued. */
 async function expectNothingWritten(tenant: string): Promise<void> {
   expect(await inboxItems(tenant)).toBe(0);
   expect(await attachmentRows(tenant)).toBe(0);
@@ -760,7 +757,6 @@ describe("lockBlobsForReference (issue gh-1963)", () => {
       await deleter.query("ROLLBACK");
       await holder.query("COMMIT");
 
-      // Once the holder is done, the blob is deletable again as an unreferenced one.
       expect(
         await withTenantTransaction(runtimePool, tenantA, (client) => deleteBlobIfUnreferenced(client, blob)),
       ).toEqual(expect.any(String));

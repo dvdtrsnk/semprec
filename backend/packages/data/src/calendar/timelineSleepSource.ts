@@ -18,10 +18,9 @@ interface SleepItemRow {
   properties: Record<string, unknown>;
 }
 
-/** A wall-clock time `HH:MM` the resolver accepts: `00:00` to `23:59`. */
 const wallClockTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
 
-/** The plan values the resolver reads; an unset name or alarm reads as "" and false, as an unchecked checkbox does. */
+/** An unset name or alarm reads as "" and false, as an unchecked checkbox does. */
 const planProperties = z.object({
   name: z
     .string()
@@ -37,7 +36,7 @@ const planProperties = z.object({
   position: z.number(),
 });
 
-/** One night exception; an unset field becomes null, which the resolver reads as "follow the plan". */
+/** An unset field becomes null, which the resolver reads as "follow the plan". */
 const nightProperties = z.object({
   night: z.string().refine(isCalendarDate),
   bedTime: wallClockTime.nullish().transform((value) => value ?? null),
@@ -48,29 +47,22 @@ const nightProperties = z.object({
     .transform((value) => value ?? null),
 });
 
-/** The one live sleep settings item of the tenant and the database that holds it. */
 interface SleepSettingsItem {
   id: string;
   databaseId: string;
   properties: Record<string, unknown>;
 }
 
-/** The longest bedtime reminder lead time the source passes on. */
 const MAX_PREP_REMINDER_MINUTES = 24 * 60;
 
 const SKIP_MESSAGE = "Calendar timeline left out an item with an invalid stored value";
 
-/** The day before `date` (`YYYY-MM-DD`), which the caller has checked to be a calendar date. */
 function dayBefore(date: string): string {
   const day = DateTime.fromISO(date, { zone: "utc" }).minus({ days: 1 }).toISODate();
   if (day === null) throw new Error("The day before the range is not a valid date");
   return day;
 }
 
-/**
- * The non-deleted items of one sleep database of the tenant, ordered by id; none when the tenant has no such
- * database. With `nights`, only the items whose `night` is between its two dates, both included.
- */
 async function liveItems(
   client: PoolClient,
   moduleId: string,
@@ -88,10 +80,7 @@ async function liveItems(
   return { databaseId: database.id, rows };
 }
 
-/**
- * Parses each row with `schema`. A row that does not parse is left out, with one log line that carries its id,
- * its database and the name of its first invalid property, never its value.
- */
+/** An invalid row is logged by property name, never its value, and left out. */
 function parseRows<T>(databaseId: string, rows: SleepItemRow[], schema: z.ZodType<T>): { id: string; value: T }[] {
   const parsed: { id: string; value: T }[] = [];
   for (const row of rows) {
@@ -105,10 +94,7 @@ function parseRows<T>(databaseId: string, rows: SleepItemRow[], schema: z.ZodTyp
   return parsed;
 }
 
-/**
- * The sleep settings item the source reads, or `null` when the tenant has none or more than one. Of several
- * settings items none is chosen: the read leaves the nights out and logs the count.
- */
+/** Of several settings items none is chosen. */
 async function readSettings(client: PoolClient): Promise<SleepSettingsItem | null> {
   const { databaseId, rows } = await liveItems(client, SLEEP_SETTINGS_MODULE_ID);
   if (rows.length > 1) {
@@ -121,14 +107,7 @@ async function readSettings(client: PoolClient): Promise<SleepSettingsItem | nul
   return only ? { id: only.id, databaseId, properties: only.properties } : null;
 }
 
-/**
- * The reminder lead time the source passes to the resolver: the settings' `prepReminderMinutes` when the
- * reminder is switched on (`prepReminder` is `true`) and the minutes are a whole number from 0 to 1440, a day.
- * With the reminder off, the nights carry no `prepReminderAt`. With the reminder on and minutes that are
- * missing or outside that range, they carry none either, and the source logs one line with the settings
- * item id, its database and the property name, never the value, so that a reminder the user switched on
- * does not vanish without a trace.
- */
+/** Invalid minutes with the reminder on are logged, so a reminder the user switched on never vanishes silently. */
 function readPrepReminder(settings: SleepSettingsItem): SleepNightsSettings {
   const { prepReminder, prepReminderMinutes: minutes } = settings.properties;
   if (prepReminder !== true) return { prepReminder: false, prepReminderMinutes: 0 };
@@ -148,21 +127,10 @@ function readPrepReminder(settings: SleepSettingsItem): SleepNightsSettings {
 }
 
 /**
- * The sleep source of the calendar timeline (issue #1806): one entry per planned night. For the range
- * `from`..`to` it asks `resolveSleepNights` for the nights from the day before `from` to `to`, in the tenant
- * time zone, so that a night that starts the evening before `from` and ends inside the range is included. A
- * night that crosses midnight is one entry; its day in the order of the merge is its `night`. The entries are
- * not stored rows and their ids are not item ids; they are not read-only, because a night is edited on its own
- * and not through the item routes (docs/adr/2026-11-12-a-sleep-night-in-the-timeline-is-a-derived-entry-the-user-edits.md).
- *
- * It returns nothing, and reads nothing, when `context.includeSleep` is false: the sleep databases are sensitive and
- * a caller that may not read them is given no night derived from them
- * (docs/adr/2026-11-14-the-calendar-timeline-tool-leaves-out-sleep-nights-the-caller-may-not-read.md). It returns
- * nothing when the tenant has no sleep settings item, when `enabled` or `showInCalendar` of that
- * item is not `true`, and when the tenant has several settings items; the plans and the night items are then
- * not read. Whether the Sleep calendar is hidden does not matter. A plan or a night exception that does not
- * have the value types of `planProperties` or `nightProperties` is left out with one log line, so one broken
- * row never fails the timeline.
+ * Starts the day before `from`, so a night that begins the evening before is included. Entries are derived, not
+ * item rows, yet not read-only: a night is edited on its own, not through the item routes. With `includeSleep`
+ * false nothing is read, because the sleep databases are sensitive. Whether the Sleep calendar is hidden does not
+ * matter.
  */
 export async function readSleepTimelineItems(
   client: PoolClient,

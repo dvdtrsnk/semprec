@@ -40,8 +40,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 interface TickJobRow {
   key: string;
   queue_name: string | null;
-  // Issue #167: `enqueueJob` wraps every job payload in a `{ traceId, payload }` envelope before
-  // it reaches `graphile_worker`'s own `jobs` table.
+  // `enqueueJob` wraps every job payload in a `{ traceId, payload }` envelope.
   payload: { traceId: string; payload: { heartbeatId: string; itemId: string } };
 }
 
@@ -60,7 +59,7 @@ async function drainQueue(registry: ActionRegistry = createActionRegistry()): Pr
   await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, registry) });
 }
 
-/** These dispatch-only tests never exercise a recognized-type item, so this is never actually invoked. */
+/** Dispatch-only tests never reach a recognized-type item, so this is never invoked. */
 const unusedComputeProposal: ComputeSemprecProposalFn = async () => {
   throw new Error("computeProposal should not be called by these tests");
 };
@@ -75,7 +74,7 @@ function countingTickRegistry(calls: string[]): ActionRegistry {
   return registry;
 }
 
-/** Captures the item state the tick action actually observed, mirroring createSemprecTickAction's own re-read. */
+/** Captures the item state the tick action observed, mirroring createSemprecTickAction's own re-read. */
 function capturingTickRegistry(captured: Array<Record<string, unknown> | null>): ActionRegistry {
   const registry = createActionRegistry();
   registry.set(SEMPREC_TICK_ACTION_ID, async (actionConfig, context) => {
@@ -149,7 +148,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
     await chokePoint.softDeleteItem(inboxId, item.id);
     const afterDelete = await pendingTickJobs();
-    expect(afterDelete).toHaveLength(3); // + delete's own job
+    expect(afterDelete).toHaveLength(3);
     expect(new Set(afterDelete.map((j) => j.key)).size).toBe(3);
   });
 
@@ -344,8 +343,8 @@ describe("Inbox item event dispatch (issue #103)", () => {
         }),
       ),
     );
-    // The capture's type edge also fires the Inbox `update` tick (issue #1718). This test follows the `create`
-    // tick through its attempts, so the other job is taken off the queue first.
+    // The capture's type edge also fires the Inbox `update` tick; this test follows the `create` tick, so
+    // the other job is taken off the queue first.
     const { rows: updateHeartbeats } = await pool.query<{ id: string }>(
       `SELECT id FROM project_heartbeats WHERE rule ->> 'databaseId' = $1 AND rule ->> 'event' = 'update'`,
       [inboxId],
@@ -418,7 +417,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
     expect(completed.rows[0]!.n).toBe(0);
   });
 
-  // Restoring an Inbox item is a change of it: its `update` heartbeat re-runs the tick (issue #1604).
+  // Restoring an Inbox item is a change of it: its `update` heartbeat re-runs the tick.
   function tickRegistry(compute: ComputeSemprecProposalFn): ActionRegistry {
     const registry = createActionRegistry();
     registry.set(SEMPREC_TICK_ACTION_ID, createSemprecTickAction(pool, compute));
@@ -433,7 +432,6 @@ describe("Inbox item event dispatch (issue #103)", () => {
     };
   }
 
-  /** The single live card of the Processing proposals database, read from its table. */
   async function soleCardProperties(): Promise<Record<string, unknown>> {
     const proposalsId = await databaseIdFor("processingProposals");
     const { rows } = await pool.query<{ properties: Record<string, unknown> }>(

@@ -1,7 +1,6 @@
 import type { RouteMatrixEntry } from "../routeMatrix.js";
 import { EXAMPLE_ID } from "./exampleId.js";
 
-/** `ROUTE_MATRIX` slice for the `/api/projects/:id/mcp-grants` path family. */
 export const MCP_GRANTS_ROUTES: RouteMatrixEntry[] = [
   {
     name: "project mcp grants",

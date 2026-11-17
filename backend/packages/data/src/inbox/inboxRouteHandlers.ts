@@ -61,23 +61,17 @@ import { containsNul, MAX_REVISE_MESSAGE_LENGTH } from "./reviseInputChecks.js";
 import type { ItemRow } from "../types.js";
 import { isProposalOptionField, listProposalOptions, PROPOSAL_OPTION_FIELDS } from "./proposalOptions.js";
 import { readItemOrigin } from "./itemOriginsStore.js";
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser, RouteLocale } from "../customRoute.js";
+import { requestUrl, requireBodyObject } from "../customRoute.js";
 
-/**
- * The custom-route handler shape this file's exports are cast to by `semprec-api`'s mount
- * (issue #239) — this package has no reason to import that service's HTTP types, so the shape is
- * duck-typed here instead: a params map and a JSON body, resolving to either an item envelope or
- * a raw JSON body.
- */
-interface CustomRouteRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-  /** The authenticated caller; only the confirm, reopen, revise, update-values, recompute, change-type and options routes read it. */
+/** `identity` and `req` are optional on the card routes. */
+interface InboxRouteContext extends RouteParams, RouteBody {
   identity?: { user: { id: string; locale?: string } };
-  /** The request: the `Idempotency-Key` header the update-values route reads, and the `url` whose query the options route reads. */
   req?: { headers: Record<string, string | string[] | undefined>; url?: string };
 }
 
-type CustomRouteResult =
+/** Either the card, serialized into the item envelope with its extra top-level fields, or a raw JSON body. */
+type InboxRouteResult =
   | {
       status: number;
       item: ItemRow;
@@ -86,7 +80,7 @@ type CustomRouteResult =
       keptItems?: KeptItem[];
       attachments?: CaptureAttachmentResponse[];
     }
-  | { status: number; body: unknown };
+  | CustomRouteResult;
 
 function requireParam(params: Record<string, string>, name: string): string {
   const value = params[name];
@@ -102,7 +96,7 @@ async function resolveDatabaseIdByModuleId(client: PoolClient, moduleId: string)
   return database.id;
 }
 
-/** The request body as an object; a `null` body (the JSON `null`) is an empty one. Any other shape is a `ValidationError`. */
+/** A JSON `null` body is an empty one. */
 function bodyObject(body: unknown): Record<string, unknown> {
   if (body === null) return {};
   if (typeof body !== "object" || Array.isArray(body)) {
@@ -111,20 +105,21 @@ function bodyObject(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
-/** The optional `ifVersion` of a confirm or reject body (issue #1852): the card's `updatedAt`, which is an ISO 8601 UTC timestamp. */
-const ifVersionSchema = z.iso.datetime();
+/** The card's `version`, a decimal integer string. */
+const ifVersionSchema = z.string().regex(/^[1-9][0-9]{0,18}$/);
 
-/** `undefined` when the body carries no `ifVersion`; otherwise the timestamp string, or a `ValidationError` naming the field. */
 function parseIfVersion(body: Record<string, unknown>): string | undefined {
   if (body.ifVersion === undefined) return undefined;
   const parsed = ifVersionSchema.safeParse(body.ifVersion);
   if (!parsed.success) {
-    throw new ValidationError("'ifVersion' must be an ISO 8601 UTC timestamp string", { field: "ifVersion" });
+    throw new ValidationError("'ifVersion' must be the card's version, a decimal integer string", {
+      field: "ifVersion",
+    });
   }
   return parsed.data;
 }
 
-/** `undefined` when the body carries no `credential` at all — not every proposal confirm needs one (issue #123). */
+/** Not every proposal confirm needs a credential. */
 function parseConfirmCredential(body: Record<string, unknown>): ConfirmProposalCredentialInput | undefined {
   const credential = body.credential;
   if (credential === undefined) return undefined;
@@ -143,15 +138,9 @@ function parseConfirmCredential(body: Record<string, unknown>): ConfirmProposalC
   return { credentialType: credentialType as CredentialType, plaintext };
 }
 
-/**
- * `POST /api/proposals/:id/confirm` (issue #239's custom-route registration of #105's
- * `confirmProposalWithClient` — the sole cross-destination write path a generic item update
- * could never express, so it stays a custom route rather than moving to the generic surface).
- * Thin mapping only: every confirmation rule (idempotency, envelope re-validation, the
- * credential/MCP-server gate) lives in `confirmProposalWithClient` itself.
- */
+/** Thin mapping: every confirmation rule lives in `confirmProposalWithClient`. */
 export function createConfirmProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const body = bodyObject(ctx.body);
     const credential = parseConfirmCredential(body);
@@ -172,13 +161,8 @@ export function createConfirmProposalRouteHandler(pool: Pool) {
   };
 }
 
-/** The longest `message` a reject may carry; it becomes the text of one history entry. */
 const REJECT_MESSAGE_MAX_LENGTH = 1000;
 
-/**
- * The optional `message` of a reject body: `undefined` when the body carries none, else a string that is
- * not blank and at most `REJECT_MESSAGE_MAX_LENGTH` characters.
- */
 function parseRejectMessage(body: Record<string, unknown>): string | undefined {
   const message = body.message;
   if (message === undefined) return undefined;
@@ -194,15 +178,11 @@ function parseRejectMessage(body: Record<string, unknown>): string | undefined {
 }
 
 /**
- * `POST /api/proposals/:id/reject` (issue #1845) — discards a card without writing a destination, as one
- * transaction of `rejectProposalWithClient` (the status transition, its history entry and the Journal
- * recompute). A custom route because the generic item update cannot set the system-owned `status`.
- * Thin mapping only: idempotency (an already `rejected` card is returned unchanged) and the refusal of a
- * `confirmed` card live in the action. The answer is the card item; unlike the confirm answer it has no
- * `results`, because a rejected card never holds any.
+ * Thin mapping: idempotency and the refusal of a `confirmed` card live in `rejectProposalWithClient`. Unlike confirm
+ * the answer has no `results`.
  */
 export function createRejectProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const body = bodyObject(ctx.body);
     const message = parseRejectMessage(body);
@@ -216,16 +196,11 @@ export function createRejectProposalRouteHandler(pool: Pool) {
 }
 
 /**
- * `POST /api/proposals/:id/reopen` (issues #1937 and #1943): returns a card the user decided on to the stack, as one
- * transaction of `reopenProposalWithClient`. The body is `{ ifVersion? }` with the card's `updatedAt` as an ISO 8601 UTC
- * timestamp, or no body. Thin mapping only: the lock, the status rules (a `proposed` card is answered unchanged, a
- * `rejected` or `confirmed` one is reopened, any other status is refused), the version check, the validation of the
- * stored envelope of a rejected card and the reversal of a confirmed one live in the action. Answers `200` with the card
- * item and `keptItems`, the items the undo of a confirmation left in place (empty for any other reopen); the card has
- * no `results`.
+ * Thin mapping over `reopenProposalWithClient`. Answers the card and `keptItems`, the items the undo of a confirmation
+ * left in place (empty for any other reopen).
  */
 export function createReopenProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const ifVersion = parseIfVersion(bodyObject(ctx.body));
     const actingUserId = ctx.identity?.user.id;
@@ -255,7 +230,7 @@ function requireNonEmptyString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new ValidationError(`'${field}' must be a non-empty string`, { field });
   }
-  // Postgres cannot store U+0000 in jsonb or text (22P05), so it is refused here as a 400 naming the field.
+  // Postgres cannot store U+0000 in jsonb or text (22P05), so refuse it here as a 400 naming the field.
   if (value.includes("\u0000")) {
     throw new ValidationError(`'${field}' must not contain NUL characters`, { field });
   }
@@ -263,16 +238,11 @@ function requireNonEmptyString(value: unknown, field: string): string {
 }
 
 /**
- * Parses the revise body strictly: a JSON object with only the keys `entityKind`, `target`, `properties`, `message`
- * and `ifVersion`, each of its type and free of U+0000, which jsonb cannot store. The three envelope keys come all together or not at all, and the body must carry
- * the envelope or a `message`. Whether a `message` alone is allowed depends on the card, which
- * `reviseProposalWithClient` decides.
+ * Strict: the three envelope keys come together or not at all, and the body needs the envelope or a `message`.
+ * Whether a lone `message` is allowed is decided by `reviseProposalWithClient`.
  */
 function parseReviseBody(body: unknown): ReviseProposalInput {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    throw new ValidationError("Request body must be a JSON object");
-  }
-  const fields = body as Record<string, unknown>;
+  const fields = requireBodyObject(body);
   for (const key of Object.keys(fields)) {
     if (!REVISE_BODY_KEYS.includes(key)) {
       throw new ValidationError(`Unknown field '${key}'`, { field: key });
@@ -327,15 +297,9 @@ function parseReviseBody(body: unknown): ReviseProposalInput {
   };
 }
 
-/**
- * `POST /api/proposals/:id/revise` (issue #1870): mounts `reviseProposalWithClient` with the body described at
- * `parseReviseBody`. The revise runs in one transaction, so the envelope's validation against live destination state,
- * the lock check and the status transition commit together. Answers `200` with the updated card. Every
- * rule about the card (locked, role of a transcript card, `message` on a non-transcript card, `ifVersion`) lives in
- * `reviseProposalWithClient`.
- */
+/** Thin mapping; validation, lock check and status transition commit in one transaction in `reviseProposalWithClient`. */
 export function createReviseProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const input = parseReviseBody(ctx.body);
     const actingUserId = ctx.identity?.user.id;
@@ -351,10 +315,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The most target ids one relation list of a values request may hold. */
 const MAX_RELATION_TARGETS = 200;
 
-/** `value` as a JSON object of JSON objects, one per ref: the shape of `set`, `relations` and `steps` before their own entries are checked. */
 function parseRefMap(value: unknown, part: "set" | "relations" | "steps"): Array<[string, Record<string, unknown>]> {
   if (!isPlainObject(value)) throw new ValidationError(`'${part}' must be a JSON object`, { field: part });
   return Object.entries(value).map(([ref, entries]): [string, Record<string, unknown>] => {
@@ -365,7 +327,7 @@ function parseRefMap(value: unknown, part: "set" | "relations" | "steps"): Array
   });
 }
 
-/** One relation list: a JSON array of at most `MAX_RELATION_TARGETS` item ids, each a UUID string. The target's existence and the relation itself are the envelope validation's question. */
+/** Target existence and the relation itself are checked by envelope validation. */
 function parseRelationTargets(ref: string, key: string, value: unknown): string[] {
   const where = { field: "relations", ref, key };
   if (!Array.isArray(value)) throw new ValidationError(`'relations.${ref}.${key}' must be a JSON array`, where);
@@ -380,12 +342,7 @@ function parseRelationTargets(ref: string, key: string, value: unknown): string[
   });
 }
 
-/**
- * `{ set?, relations?, steps?, ifVersion? }` (issues #1892 and #1920): `set` a JSON object of JSON objects, `relations`
- * ref -> relation property key -> a list of item ids, `steps` ref -> `{ enabled: boolean }`, `ifVersion` a string when
- * present, and at least one of `set`, `relations` and `steps`. The values of `set` stay unchecked here and so do the
- * refs, the relation keys and the targets; the envelope validation judges them.
- */
+/** Values, refs, relation keys and targets are left to envelope validation. */
 function parseUpdateValuesBody(body: unknown): UpdateProposalValuesInput {
   if (!isPlainObject(body)) throw new ValidationError("Request body must be a JSON object");
   const { set, relations, steps, ifVersion } = body;
@@ -423,7 +380,6 @@ function parseUpdateValuesBody(body: unknown): UpdateProposalValuesInput {
   };
 }
 
-/** The card of a stored update-values response, as `updateProposalValuesWithClient` returned it. */
 const storedCardSchema = z.object({
   id: z.string(),
   databaseId: z.string(),
@@ -432,33 +388,27 @@ const storedCardSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
+  version: z.string(),
   fromInbox: z.boolean().optional(),
 });
 
-/** The body of a stored update-values response: the card the first call answered and its required-field warnings. */
 const storedUpdateSchema = z.object({
   item: storedCardSchema,
   warnings: z.array(z.object({ ref: z.string().optional(), field: z.string(), code: z.literal("required") })),
 });
 
-/** The route template under which update-values responses are stored (`idempotent_responses.route`). */
+/** Stored as `idempotent_responses.route`. */
 const UPDATE_VALUES_ROUTE = "PATCH /api/proposals/:id/values";
 
 /**
- * `PATCH /api/proposals/:id/values` (issue #1892): the user's edit of the values on a proposal card. Thin mapping
- * only: the lock, the merge into `userOverrides`, the validation and the history entry live in
- * `updateProposalValuesWithClient`, which runs in the one transaction opened here. The same request may also
- * replace relation lists and switch steps on or off (issue #1920). Answers the updated card, as
- * the confirm route does, with its `warnings` (issue #1928): one `{ ref?, field, code: "required" }` per visible
- * required field the card still lacks, an empty list when none.
+ * Thin mapping over `updateProposalValuesWithClient`, in one transaction opened here. Answers the card with its
+ * required-field `warnings`.
  *
- * With an `Idempotency-Key` header (issue gh-1894) the update runs through `runIdempotent`: a repeat of the key by
- * the same user with the same card and body answers the card and the warnings the first call answered and applies
- * nothing, and the key with another card or body is `400 validation_failed`. Without the header the route runs as
- * it always did.
+ * With an `Idempotency-Key` the update runs through `runIdempotent`: a repeat by the same user with the same card and
+ * body replays the first answer and applies nothing; the same key with another card or body is `400`.
  */
 export function createUpdateProposalValuesRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const input = parseUpdateValuesBody(ctx.body);
     const idempotencyKey = readIdempotencyKeyHeader(ctx.req?.headers);
@@ -490,15 +440,9 @@ export function createUpdateProposalValuesRouteHandler(pool: Pool) {
   };
 }
 
-/**
- * `POST /api/proposals/:id/reset-overrides` (issue #1912): returns a card to the assistant's last proposal, as one
- * transaction of `resetProposalOverridesWithClient`. The body is `{ ifVersion? }` with the card's `updatedAt` as an
- * ISO 8601 UTC timestamp, or no body. Thin mapping only: the lock, the status rules, the version check, the
- * validation of the restored envelope and the unchanged answer for a card with nothing edited live in the action.
- * Answers `200` with the card.
- */
+/** Thin mapping over `resetProposalOverridesWithClient`. */
 export function createResetProposalOverridesRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const ifVersion = parseIfVersion(bodyObject(ctx.body));
     const item = await withTransaction(pool, async (client) => {
@@ -515,15 +459,11 @@ export function createResetProposalOverridesRouteHandler(pool: Pool) {
 }
 
 /**
- * `POST /api/proposals/:id/recompute` (issue gh-1955): asks for a new computation of an Inbox card, as one transaction of
- * `recomputeProposalWithClient` (the `computing` status, its history entry and the tick trigger). A custom route because
- * the generic item update cannot set the system-owned `status` and cannot queue the tick in the same transaction. The body
- * is `{ ifVersion? }` with the card's `updatedAt` as an ISO 8601 UTC timestamp, or no body, and has no other key. Thin
- * mapping only: the kind and status rules, the version check, the answer for a card that is `computing` already and the
- * trigger live in the action. Answers `200` with the card.
+ * Thin mapping over `recomputeProposalWithClient`. A custom route because the generic update cannot set the
+ * system-owned `status` or queue the tick in the same transaction.
  */
 export function createRecomputeProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     if (!UUID_RE.test(proposalId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
     const body = bodyObject(ctx.body);
@@ -543,21 +483,17 @@ export function createRecomputeProposalRouteHandler(pool: Pool) {
   };
 }
 
-/** The value `includeDone` takes to list `done` projects; it is absent, or this, and nothing else. */
 const INCLUDE_DONE_VALUE = "true";
 
 /**
- * `GET /api/proposals/:id/options?field=<key>[&includeDone=true]` (issue gh-1959) — the choices of one field of a card's
- * picker, a read shaped for exactly one consumer, the card editor. `field` is one of `PROPOSAL_OPTION_FIELDS` and any other
- * value, or none, is a `ValidationError` on `field`; `includeDone` is absent or `true`. Thin mapping only: the card, the
- * order, the disabled states and the hints live in `listProposalOptions`. The tenant and the locale come only from the
- * session, and a card of another tenant is as unknown as a random id. Answers `200 { options }`.
+ * Thin mapping over `listProposalOptions`. Tenant and locale come only from the session; another tenant's card is as
+ * unknown as a random id.
  */
 export function createProposalOptionsRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     if (!UUID_RE.test(proposalId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-    const query = new URL(ctx.req?.url ?? "/", "http://localhost").searchParams;
+    const query = requestUrl(ctx.req ?? {}).searchParams;
     const field = query.get("field");
     if (field === null || !isProposalOptionField(field)) {
       throw new ValidationError(`'field' must be one of: ${PROPOSAL_OPTION_FIELDS.join(", ")}`, { field: "field" });
@@ -581,18 +517,15 @@ export function createProposalOptionsRouteHandler(pool: Pool) {
   };
 }
 
-/** The one message `GET /api/items/:id/origin` answers a missing origin with, so no case of the 404 differs from another and none names the id. */
+/** One message for every missing-origin 404, so no case differs and none names the id. */
 const ITEM_ORIGIN_NOT_FOUND_MESSAGE = "Item origin not found";
 
 /**
- * `GET /api/items/:id/origin` (issue gh-1967): where one item came from, `{ proposalId, inboxItemId, capturedAt,
- * captureTimeBasis, captureChannel, sourceText, siblings }` (`readItemOrigin`), shaped for one consumer, the item detail
- * screen, which is why it is a custom route. A list screen must not call it per row. An item that does not exist, belongs
- * to another tenant, is in the Trash or was not created by a confirmed proposal answers the same 404 `not_found` with
- * the same body. The tenant comes only from the session; a path segment that is not a UUID is a `ValidationError`.
+ * A list screen must not call it per row. A missing, foreign, trashed or not-proposal-created item answers the same
+ * 404. Tenant comes only from the session.
  */
 export function createItemOriginRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const itemId = requireParam(ctx.params, "id");
     if (!UUID_RE.test(itemId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
     const origin = await withTransaction(pool, (client) => readItemOrigin(client, itemId));
@@ -601,14 +534,8 @@ export function createItemOriginRouteHandler(pool: Pool) {
   };
 }
 
-/** The keys `PUT /api/inbox/items/:id/type` accepts. */
 const CHANGE_TYPE_BODY_KEYS: readonly string[] = ["typeId", "ifVersion"];
 
-/**
- * The body of `PUT /api/inbox/items/:id/type`: a JSON object with a UUID string `typeId`, an optional `ifVersion` (as on
- * confirm and reject) and no other key. Whether the type is an active one and whether the item has a card to hold the
- * `ifVersion` are the questions of `changeInboxItemTypeWithClient`.
- */
 function parseChangeTypeBody(body: unknown): Pick<ChangeInboxItemTypeInput, "typeId" | "ifVersion"> {
   if (!isPlainObject(body)) throw new ValidationError("Request body must be a JSON object");
   for (const key of Object.keys(body)) {
@@ -622,15 +549,9 @@ function parseChangeTypeBody(body: unknown): Pick<ChangeInboxItemTypeInput, "typ
   return { typeId, ...(ifVersion === undefined ? {} : { ifVersion }) };
 }
 
-/**
- * `PUT /api/inbox/items/:id/type` (issue gh-1947): the one route that changes an Inbox item's type. The edge
- * replacement, the clearing of the card's manual values, its `computing` status and the tick trigger commit in the one
- * transaction opened here, which is why it is a custom route. Thin mapping only: every rule lives in
- * `changeInboxItemTypeWithClient`. Answers `{ itemId, typeId, card }`, `card` being the card as written or `null` for an
- * item without one.
- */
+/** Thin mapping over `changeInboxItemTypeWithClient`, in the one transaction opened here. `card` is `null` without one. */
 export function createChangeInboxItemTypeRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const itemId = requireParam(ctx.params, "id");
     if (!UUID_RE.test(itemId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
     const input = parseChangeTypeBody(ctx.body);
@@ -650,7 +571,6 @@ export function createChangeInboxItemTypeRouteHandler(pool: Pool) {
   };
 }
 
-/** The keys `POST /api/inbox/items` accepts. */
 const CAPTURE_BODY_KEYS: readonly string[] = [
   "text",
   "date",
@@ -661,7 +581,6 @@ const CAPTURE_BODY_KEYS: readonly string[] = [
   "sourceApp",
 ];
 
-/** What a capture body holds once its shape is checked. */
 interface CaptureInput extends CaptureSource {
   text: string;
   date: string;
@@ -671,11 +590,8 @@ interface CaptureInput extends CaptureSource {
 }
 
 /**
- * The body of `POST /api/inbox/items`: a JSON object with a string `text` that holds no U+0000 (which Postgres cannot
- * store) and is not blank after trimming unless the capture has an attachment, a string `date` and a string `time`, an
- * optional UUID string `typeId`, optional `attachments` (`parseCaptureAttachments`), a `captureChannel` and an optional
- * `sourceApp` (`parseCaptureSource`), and no other key. Whether `date` is a calendar date and `time` a 24-hour time is the create hook's question (issue #1432), whether the type is an active
- * one is `lockActiveInboxType`'s, and whether each attached blob exists and may be attached is `requireAttachableBlobs`'s.
+ * `text` may be blank only when the capture has an attachment. Date/time validity is the create hook's question,
+ * type activity `lockActiveInboxType`'s, blob eligibility `requireAttachableBlobs`'s.
  */
 function parseCaptureBody(body: unknown): CaptureInput {
   if (!isPlainObject(body)) throw new ValidationError("Request body must be a JSON object");
@@ -701,24 +617,15 @@ function parseCaptureBody(body: unknown): CaptureInput {
 }
 
 /**
- * `POST /api/inbox/items` (issue gh-1961): captures an Inbox item with its optional `type` edge and its attachments in
- * one transaction, which is why it is a custom route and not the generic create, which knows nothing of the edge or the
- * attachments. Body `{ text, date, time, captureChannel, sourceApp?, typeId?, attachments? }` (`parseCaptureBody`);
- * `date` and `time` are the user's wall clock and are validated, and the item linked to its Journal day, by the create
- * hook inside `createInboxItemWithClient`, which also stamps `addedAt` with the server's receive time. `captureChannel`
- * (`typed`, `voice` or `share`) is required and `sourceApp` names the app a share came from (`parseCaptureSource`). A
- * `typeId` must name a live, active Inbox item type (`lockActiveInboxType`, a `ValidationError` on `typeId` otherwise). Each attachment must name an uploaded blob of the caller's tenant whose stored
- * type may be attached (`requireAttachableBlobs`: a `ValidationError` on `attachments`, or a 415
- * `unsupported_attachment_type`). Both checks run before anything is written, and a refusal rolls the transaction back,
- * so a refused capture leaves no item and no attachment.
+ * Captures the item, its `type` edge and its attachments in one transaction. The create hook validates `date`/`time`,
+ * links the Journal day and stamps `addedAt` with the server's receive time. Type and attachment checks run before
+ * anything is written, so a refused capture leaves nothing behind.
  *
- * With an `Idempotency-Key` header, a live item the key already reserved is answered as it is, before the type or the
- * attachments are looked at, and nothing is written: no second item, no second `type` edge, no second set of attachments.
- * A trashed item does not count, as in the generic create. Answers `201` with the item and its `attachments` in their
- * order (`[]` for none), a replay included.
+ * With an `Idempotency-Key`, a live item the key already reserved is answered before type or attachments are looked
+ * at, and nothing is written; a trashed item does not count, as in the generic create.
  */
 export function createCaptureInboxItemRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const input = parseCaptureBody(ctx.body);
     const idempotencyKey = readIdempotencyKeyHeader(ctx.req?.headers);
     const { item, attachments } = await withTransaction(pool, async (client) => {
@@ -754,14 +661,8 @@ export function createCaptureInboxItemRouteHandler(pool: Pool) {
   };
 }
 
-/** `GET /api/inbox-types`'s request context: the adapter always supplies the caller, whose `users.locale` is the locale its labels resolve in. */
-interface InboxTypesRouteRequestContext {
-  identity: { user: { locale: string } };
-}
-
-/** One active type as the capture UI reads it (issue #1439): the base fields, the processing config, and the target's label. */
 interface InboxTypeEntry extends InboxTypeSummary {
-  /** The target database's display name in the caller's locale; `null` when the type has no target. */
+  /** `null` when the type has no target. */
   targetLabel: string | null;
 }
 
@@ -769,9 +670,8 @@ let moduleRegistryPromise: Promise<ModuleRegistry> | undefined;
 let catalogResolverPromise: Promise<CatalogResolver> | undefined;
 
 /**
- * The module registry the handlers of this file read through, loaded once per process by `loadFullModuleRegistry`.
- * The custom-route factory receives only the pool, so a handler cannot take the composition root's registry
- * instance. A failed load is not cached, so the next request retries instead of failing until restart.
+ * The custom-route factory receives only the pool, so the registry is loaded here once per process. A failed load is
+ * not cached, so the next request retries instead of failing until restart.
  */
 function getModuleRegistry(): Promise<ModuleRegistry> {
   moduleRegistryPromise ??= loadFullModuleRegistry().catch((error: unknown) => {
@@ -781,7 +681,7 @@ function getModuleRegistry(): Promise<ModuleRegistry> {
   return moduleRegistryPromise;
 }
 
-/** The catalog resolver every target label is read through, built once per process from `getModuleRegistry`. A failed build is not cached. */
+/** A failed build is not cached. */
 function getCatalogResolver(): Promise<CatalogResolver> {
   catalogResolverPromise ??= getModuleRegistry()
     .then((registry) => createCatalogResolver(registry))
@@ -792,11 +692,7 @@ function getCatalogResolver(): Promise<CatalogResolver> {
   return catalogResolverPromise;
 }
 
-/**
- * A target database's display name in `locale`: the name it was given, else its catalog label, else
- * the key itself when the catalog has no entry for it. The key is always known here, so the database
- * id is never read; the key stands in for it.
- */
+/** The given name, else the catalog label, else the key itself. */
 async function resolveTargetLabel(
   client: PoolClient,
   catalogResolver: CatalogResolver,
@@ -808,15 +704,9 @@ async function resolveTargetLabel(
   return resolveDatabaseName(database?.name ?? null, targetKey, targetKey, catalogs, locale);
 }
 
-/**
- * `GET /api/inbox-types` (issue #239's custom-route registration of #101's `listActiveInboxTypes`,
- * extended by issue #1439) — a read shortcut shaped for exactly one consumer, the capture UI's type
- * picker, not a generic list-items-in-a-database query. It returns only active types, and per type only
- * the base fields, how the type is processed, and, for a type with a target, the target's label in the
- * caller's locale. A label is resolved once per distinct target.
- */
+/** Only active types; each distinct target label is resolved once. */
 export function createInboxTypesRouteHandler(pool: Pool) {
-  return async (ctx: InboxTypesRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteLocale): Promise<CustomRouteResult> => {
     const locale = toManifestLocale(ctx.identity.user.locale);
     const catalogResolver = await getCatalogResolver();
     const types = await withTransaction(pool, async (client) => {
@@ -843,20 +733,12 @@ export function createInboxTypesRouteHandler(pool: Pool) {
   };
 }
 
-/** `GET /api/inbox/cards`'s request context: the adapter always supplies the caller, whose id scopes the approvals and whose `users.locale` the labels. */
-interface InboxCardsRouteRequestContext {
-  identity: { user: { id: string; locale: string } };
-}
-
 /**
- * `GET /api/inbox/cards` (issue #1807) — the one read the Inbox needs, shaped for a single consumer: the
- * stack of open cards (pending tick and MCP approvals first, then the open Processing proposals cards)
- * with at most 200 entries and the `total` of the cards that are counted. Each card also carries the
- * `editorSchema` of its base kind in the caller's locale (issue #1825), `null` when no module declares one.
- * Tenant and user come only from the session. The route takes no query parameters: it neither pages nor filters.
+ * At most 200 entries plus the counted `total`; each card carries its base kind's `editorSchema`. Tenant and user come
+ * only from the session; no paging or filtering.
  */
 export function createInboxCardsRouteHandler(pool: Pool) {
-  return async (ctx: InboxCardsRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteUser & RouteLocale): Promise<CustomRouteResult> => {
     const { id: ownerUserId, locale } = ctx.identity.user;
     const list = await withTransaction(pool, (client) => listInboxCards(client, { ownerUserId, locale }));
     const registry = await getModuleRegistry();
@@ -869,18 +751,9 @@ export function createInboxCardsRouteHandler(pool: Pool) {
   };
 }
 
-/** `GET /api/inbox/cards/count`'s request context: the adapter always supplies the caller, whose id scopes the approvals. */
-interface InboxCardsCountRouteRequestContext {
-  identity: { user: { id: string } };
-}
-
-/**
- * `GET /api/inbox/cards/count` (issue #1823) — how many cards wait for a decision, `{ total }`, without
- * reading the stack: the same number as the `total` of `GET /api/inbox/cards`, from `countOpenInboxCards`.
- * Tenant and user come only from the session. The route takes no query parameters.
- */
+/** The same number as `total` of `GET /api/inbox/cards`, without reading the stack. */
 export function createInboxCardsCountRouteHandler(pool: Pool) {
-  return async (ctx: InboxCardsCountRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteUser): Promise<CustomRouteResult> => {
     const total = await withTransaction(pool, (client) =>
       countOpenInboxCards(client, { ownerUserId: ctx.identity.user.id }),
     );

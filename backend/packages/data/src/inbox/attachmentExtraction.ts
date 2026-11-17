@@ -2,26 +2,21 @@ import type { Readable } from "node:stream";
 import { z } from "zod";
 import { AiGatewayFailedError, createLogger, type AiGatewayClientPort } from "@semprec/shared";
 
-// Reading a document from a photo attached to an Inbox item (issue gh-1970): the shape of
-// `inbox_attachments.extraction`, the gateway call that fills it, and which attachments take part. The proposal
-// computation of `semprec-api` runs it before its own model call and writes the answer once through
-// `recordInboxAttachmentExtraction` of `inboxAttachmentsStore.ts`.
+// The `inbox_attachments.extraction` shape and the gateway call that fills it. The caller stores the result through
+// `recordInboxAttachmentExtraction`.
 
 const logger = createLogger("inbox-attachment-extraction");
 
-/** The gateway operation registered by `semprec-ai-gateway` (`completeHandler.ts`); it needs the Semprec project item. */
+// Needs the Semprec project item for attribution.
 const INBOX_ATTACHMENT_EXTRACTION_OPERATION = "inbox_attachment_extraction";
 
-/** At most this many attachments of one Inbox item are extracted, in the order of their positions. */
 export const MAX_EXTRACTED_ATTACHMENTS = 4;
 
-/** The decoded size the gateway accepts for one image block (`completeHandler.ts`); a larger copy is not read. */
+/** The decoded image size the gateway accepts; a larger copy is not read. */
 const MAX_EXTRACTION_IMAGE_BYTES = 1.5 * 1024 * 1024;
 
-/** The longest part of the person's text sent along as a hint, in characters. */
 const MAX_HINT_CHARS = 4000;
 
-/** Reading values off a document is not creative work. */
 const EXTRACTION_TEMPERATURE = 0;
 
 const HINT_OPEN = "<<<PERSON_TEXT";
@@ -31,7 +26,6 @@ const DOCUMENT_TYPES = ["receipt", "invoice", "contract", "businessCard", "other
 
 const FIELD_MAX_CHARS = 200;
 
-/** A bounded text field: trimmed, cut at `FIELD_MAX_CHARS`, and `null` when nothing is left. */
 const textField = z
   .string()
   .nullish()
@@ -55,9 +49,8 @@ const dateField = z
   );
 
 /**
- * `inbox_attachments.extraction`: what the model read off the document. Every field is nullable and a field the answer
- * leaves out is `null`. Amounts are plain numbers, `currency` is three upper-case letters (an ISO 4217 code; the code itself is not looked up) and dates are real calendar days written `YYYY-MM-DD`. A key this
- * release does not know is dropped when the value is parsed, on the model's answer and on the column alike.
+ * Every field is nullable. `currency` is an ISO 4217-shaped code (not looked up); dates are real calendar days
+ * `YYYY-MM-DD`. Unknown keys are dropped on parse, both on the model's answer and on the stored column.
  */
 export const attachmentExtractionSchema = z.object({
   documentType: z
@@ -85,7 +78,7 @@ export type AttachmentExtraction = z.infer<typeof attachmentExtractionSchema>;
 const nullableString = { type: ["string", "null"] } as const;
 const nullableDate = { type: ["string", "null"], pattern: "^\\d{4}-\\d{2}-\\d{2}$" } as const;
 
-/** The same shape as `attachmentExtractionSchema`, as the Draft 2020-12 JSON Schema the gateway forwards to the provider. */
+/** `attachmentExtractionSchema` as the JSON Schema the gateway forwards to the provider. */
 const ATTACHMENT_EXTRACTION_RESPONSE_SCHEMA = {
   type: "object",
   properties: {
@@ -113,7 +106,6 @@ const ATTACHMENT_EXTRACTION_RESPONSE_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-/** What decides whether an attachment is read: its type, whether its metadata job has run, and its reduced copy. */
 export interface ExtractionCandidate {
   mimeType: string;
   metadata: object | null;
@@ -121,9 +113,8 @@ export interface ExtractionCandidate {
 }
 
 /**
- * `extract`: an image whose metadata job produced a reduced copy. `awaitingMetadata`: an image the metadata job has not
- * finished (`metadata` is `null`), whose copy does not exist yet. `skip`: anything else, which is a PDF, audio, and an
- * image the job could not read (`metadata.error`, no copy).
+ * `awaitingMetadata`: an image whose metadata job has not finished, so its reduced copy does not exist yet. `skip`:
+ * PDFs, audio and images the job could not read.
  */
 export type ExtractionEligibility = "extract" | "awaitingMetadata" | "skip";
 
@@ -133,28 +124,22 @@ export function classifyForExtraction(attachment: ExtractionCandidate): Extracti
   return attachment.reducedBlobId === null ? "skip" : "extract";
 }
 
-/** The reduced copy of an attachment, as it is stored. */
 export interface ExtractionImage {
   attachmentId: string;
   storageKey: string;
   mimeType: string;
 }
 
-/** When the item was captured, in the person's own clock, so that "by Friday" resolves to a date. */
+/** Capture time in the person's own clock, so that "by Friday" resolves to a date. */
 export interface AttachmentCaptureContext {
-  /** `YYYY-MM-DD`, the Inbox item's `date`. */
   captureDate: string;
-  /** `HH:mm`, the Inbox item's `time`. */
   captureTime: string;
-  /** The tenant's IANA time zone. */
   timezone: string;
 }
 
 export interface AttachmentExtractionDeps {
   gateway: Pick<AiGatewayClientPort, "complete">;
-  /** Opens the bytes stored under `storageKey`; `null` when no storage root has them. */
   openBlob(storageKey: string): Promise<Readable | null>;
-  /** The Semprec project item the gateway call is attributed to. */
   projectItemId: string;
 }
 
@@ -167,7 +152,7 @@ const SYSTEM_PROMPT = [
   "suggestedFileName is a short descriptive name for the file without an extension, and suggestedFileType is the kind of file, such as invoice or receipt.",
 ].join("\n");
 
-/** Reads the whole stream up to `maxBytes` and always closes it. */
+/** Always closes the stream. */
 async function readCapped(stream: Readable, maxBytes: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -185,8 +170,8 @@ async function readCapped(stream: Readable, maxBytes: number): Promise<Buffer> {
 }
 
 /**
- * Removes both delimiters until none is left: one pass can join its neighbours into a new delimiter (removing the
- * inner one from `PERSON_PERSON_TEXT>>>TEXT>>>` leaves `PERSON_TEXT>>>`). Every pass shortens the text, so it ends.
+ * Loops because removing one delimiter can join its neighbours into a new one (`PERSON_PERSON_TEXT>>>TEXT>>>`).
+ * Every pass shortens the text, so it terminates.
  */
 function withoutDelimiters(text: string): string {
   let current = text;
@@ -211,12 +196,9 @@ function hintText(hint: string, context: AttachmentCaptureContext): string {
 }
 
 /**
- * Asks the gateway to read the reduced copy `image` names and returns the validated answer. The bytes come from
- * `deps.openBlob`, capped at `MAX_EXTRACTION_IMAGE_BYTES`; the call is attributed to the Semprec project and carries
- * the person's text (`hint`, cut at `MAX_HINT_CHARS`) and the capture facts as a text block before the image. It holds
- * no transaction and writes nothing: the caller stores the result. A gateway failure propagates as the
- * `AiGatewayFailedError` it is; an answer that is not a valid extraction is an `AiGatewayFailedError` with reason
- * `invalid_response`. Missing bytes, a copy over the cap and a copy that is not a JPEG or PNG throw an `Error`.
+ * Holds no transaction and writes nothing; the caller stores the result. A gateway failure propagates as
+ * `AiGatewayFailedError`; an invalid answer is `AiGatewayFailedError` with reason `invalid_response`. Missing bytes, a
+ * copy over the cap and a non-JPEG/PNG copy throw a plain `Error`.
  */
 export async function extractAttachmentDocument(
   deps: AttachmentExtractionDeps,

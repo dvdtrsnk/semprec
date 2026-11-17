@@ -17,7 +17,7 @@ import {
   recordInboxAttachmentMetadata,
 } from "../inbox/inboxAttachmentsStore.js";
 
-// Issue #1564: `inbox_attachments` rows are tenant-owned, and a row cannot name another tenant's blob.
+// `inbox_attachments` rows are tenant-owned, and a row cannot name another tenant's blob.
 let adminPool: Pool;
 let runtimePool: Pool;
 

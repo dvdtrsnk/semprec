@@ -1,25 +1,14 @@
-// The choke point's relation-edge-changed hook for the Inbox `type` relation (issue #1718), registered by
-// `../domainWriteHooks.ts`. An Inbox item's type is an edge, so writing or deleting it changes neither the item
-// nor its card and fires no item event: this hook is what queues the Inbox tick and the recompute of the day's
-// cached Inbox summary for such a write. It runs inside the edge write's transaction, after the edge row was
-// written or removed, so both jobs commit or roll back with the edge. Whether the type needs a new proposal is
-// the tick's decision (its fingerprint), not this hook's.
-// See docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md.
+// An Inbox item's type is an edge, so changing it fires no item event: this hook queues the Inbox tick and the day's
+// Inbox summary recompute, inside the edge write's transaction so both jobs commit or roll back with the edge. Whether
+// a new proposal is needed is the tick's decision (fingerprint).
 import type { RelationEdgeChangedHook } from "../chokePoint/hooks.js";
 import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
 import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 
 /**
- * Each time the registry reports `op: 'create'` or `op: 'delete'` for an edge of the Inbox `type` relation:
- * fires the Inbox database's `update` heartbeats for the Inbox item and enqueues the recompute of the Journal
- * day that item is linked to. The Inbox item is the stored side of the edge that the Inbox `type` property is
- * on, whichever property the write named.
- *
- * `createRelationWithClient` reports `create` also when the edge already exists: such a repeated create inserts
- * no row, replaces the edge's metadata and leaves the type as it was, and it enqueues both jobs again. So a
- * repeated `PUT` of the type an item already has is not silent. Only `op: 'update'` (`updateRelationWithClient`,
- * the metadata replacement that requires an existing edge) and an edge of any other relation enqueue nothing.
+ * `createRelationWithClient` reports `create` also for an existing edge, so a repeated `PUT` of the same type still
+ * enqueues both jobs. `op: 'update'` (metadata only) and other relations enqueue nothing.
  */
 export const inboxTypeEdgeChangedHook: RelationEdgeChangedHook = async ({
   client,

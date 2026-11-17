@@ -88,6 +88,22 @@ describe("Areas registered write hooks", () => {
       ).rejects.toMatchObject({ status: 400, details: { field: "icon" } });
     }),
   );
+  it("answers a create with the row its position write stored, so the returned version takes the next patch", async () =>
+    runInTenant(tenant, async () => {
+      const created = await cp.createItem({ databaseId, properties: { name: "Fresh" } });
+      const stored = await cp.getItem(databaseId, created.id);
+      expect(created.properties.position).toEqual(expect.any(Number));
+      expect(created.version).toBe(stored?.version);
+
+      const patched = await cp.updateItem({
+        databaseId,
+        itemId: created.id,
+        propertiesPatch: { name: "Renamed" },
+        ifVersion: created.version,
+      });
+      expect(patched.properties.name).toBe("Renamed");
+    }));
+
   it("assigns last position on absent/null, preserves explicit positions and ignores trashed areas", async () =>
     runInTenant(tenant, async () => {
       expect((await create()).properties.position).toBe(1);
@@ -114,7 +130,6 @@ describe("Areas registered write hooks", () => {
   it("validates only written keys, and leaves an explicitly cleared update position unset", async () =>
     runInTenant(tenant, async () => {
       const item = await create();
-      // Legacy data can predate the validation hooks.
       await pool.query("UPDATE items SET properties = properties || $3::jsonb WHERE database_id = $1 AND id = $2", [
         databaseId,
         item.id,

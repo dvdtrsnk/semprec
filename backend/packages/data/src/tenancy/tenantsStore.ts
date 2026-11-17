@@ -16,11 +16,7 @@ function isUserRole(value: unknown): value is UserRole {
   return typeof value === "string" && (USER_ROLES as readonly string[]).includes(value);
 }
 
-/**
- * Inserts a tenant in `status` and returns its id, which the database generates. The row commits or
- * rolls back with the caller's transaction. Invitation acceptance (issue #1087) creates a tenant in
- * `provisioning`; `provisionTenant` moves it to `active`.
- */
+/** The database generates the id. Invitation acceptance creates `provisioning`; `provisionTenant` activates it. */
 export async function createTenant(client: PoolClient, status: TenantStatus): Promise<string> {
   const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ($1) RETURNING id", [
     status,
@@ -29,8 +25,8 @@ export async function createTenant(client: PoolClient, status: TenantStatus): Pr
 }
 
 /**
- * The id of the only tenant, via `app_sole_tenant()`. While the single-tenant guard exists a
- * missing sole tenant is an invariant violation, so it surfaces as a plain `Error` (a 500), never a domain error.
+ * Via `app_sole_tenant()`. While the single-tenant guard exists a missing sole tenant is an invariant
+ * violation, so it is a plain `Error` (500), never a domain error.
  */
 export async function getSoleTenantId(client: Pool | PoolClient): Promise<string> {
   const { rows } = await client.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
@@ -40,10 +36,8 @@ export async function getSoleTenantId(client: Pool | PoolClient): Promise<string
 }
 
 /**
- * The tenant a user belongs to, with that tenant's status and the user's role. The tenant is the
- * user's `users.tenant_id`, which is NOT NULL (#1067). Returns `null` when the user does not exist.
- * An unknown `status` or `role` is a data-integrity failure and throws a plain `Error` (a 500),
- * never a 401.
+ * The user's tenant (`users.tenant_id`, NOT NULL) with its status and the user's role; `null` for an
+ * unknown user. An unknown `status` or `role` throws a plain `Error` (500), never a 401.
  */
 export async function getUserTenantBinding(
   client: Pool | PoolClient,
@@ -61,10 +55,8 @@ export async function getUserTenantBinding(
 }
 
 /**
- * The user with `email` plus the status of the tenant they are bound to, read in one statement so
- * a login for an unknown email makes the same database round trips as one for a registered email.
- * The tenant is the user's `users.tenant_id`, as in `getUserTenantBinding`; `tenantStatus` is `null`
- * when that tenant row cannot be found. An unknown status throws a plain `Error`.
+ * One statement, so a login for an unknown email makes the same round trips as for a registered one.
+ * `tenantStatus` is `null` when the tenant row is missing; an unknown status throws.
  */
 export async function getUserByEmailWithTenantStatus(
   client: Pool | PoolClient,
@@ -100,11 +92,9 @@ export async function getUserByEmailWithTenantStatus(
 }
 
 /**
- * `getUserTenantBinding` for a caller about to write on the strength of the answer (a session,
- * a reset token, a new password hash). It locks the user row `FOR KEY SHARE` and then the tenant
- * row `FOR SHARE`, in the order the admin mutations lock them, so a concurrent `suspendAccount`
- * either commits first and is seen here, or waits for the caller's transaction to commit and then
- * revokes what it wrote (docs/adr/2026-10-17-admin-membership-and-tenant-status-writes.md).
+ * `getUserTenantBinding` for a caller about to write on its answer (a session, reset token, password
+ * hash). Locks the user `FOR KEY SHARE` then the tenant `FOR SHARE`, the admin mutations' order, so a
+ * concurrent `suspendAccount` either commits first and is seen, or waits and then revokes what was written.
  */
 export async function lockUserTenantBinding(
   client: PoolClient,
@@ -127,12 +117,9 @@ export async function lockUserTenantBinding(
 }
 
 /**
- * The only writer of `tenants.status` after provisioning: one conditional `UPDATE` moves the
- * tenant to `to` when its current status is in `from`. Runs on the caller's client, so the change
- * commits or rolls back with the caller's transaction. When no row matches, an existing tenant
- * answers 409 `invalid_account_status` and a missing one `NotFoundError`. The single-writer
- * rule and the lock order its callers follow are recorded in
- * docs/adr/2026-10-17-admin-membership-and-tenant-status-writes.md.
+ * The only writer of `tenants.status` after provisioning: one conditional `UPDATE` from any of `from` to
+ * `to`, in the caller's transaction. No match: an existing tenant is 409 `invalid_account_status`, a
+ * missing one `NotFoundError`.
  */
 export async function transitionTenantStatus(
   client: PoolClient,

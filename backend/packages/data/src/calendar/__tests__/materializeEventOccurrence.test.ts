@@ -41,7 +41,6 @@ const STANDUP = {
 
 const calendarRow = z.object({ id: z.string(), properties: z.object({ name: z.string() }).passthrough() });
 
-/** A tenant with one English-speaking user, so its seeded calendars are named `Personal`, `Work` and so on. */
 async function seededTenant(): Promise<{ tenantId: string; userId: string }> {
   const tenantId = await createTestTenant(admin);
   const user = await createUser(admin, {
@@ -54,7 +53,6 @@ async function seededTenant(): Promise<{ tenantId: string; userId: string }> {
   return { tenantId, userId: user.id };
 }
 
-/** Resolves once a backend of this database waits for an advisory lock, read through `pg_stat_activity`. */
 async function waitForAdvisoryLockWaiter(): Promise<void> {
   for (let attempt = 0; attempt < 250; attempt += 1) {
     const { rows } = await admin.query<{ waiting: number }>(
@@ -86,7 +84,6 @@ describe("materialize an event occurrence (issue gh-1843)", () => {
     await admin.end();
   });
 
-  /** The ids and writes of the tenant in scope; every write of a test goes through the choke point. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -118,7 +115,6 @@ describe("materialize an event occurrence (issue gh-1843)", () => {
         },
         USER,
       );
-    /** An Event in the calendar named `calendarName`, the way a create in a chosen calendar makes one. */
     const eventIn = (calendarName: string, properties: Record<string, unknown>) =>
       withTransaction(runtime, (client) =>
         createEventInCalendar(client, { properties }, calendar(calendarName), { writer: USER }),
@@ -167,11 +163,9 @@ describe("materialize an event occurrence (issue gh-1843)", () => {
         seriesId: series,
         occurrenceDate: "2026-10-14",
       });
-      // No rule of its own, and an iCalendar identity of its own.
       expect(result.item.properties).not.toHaveProperty("recurrence");
       expect(result.item.properties.icalUid).not.toBe((await f.read("events", series))?.properties.icalUid);
       expect(result.item.deletedAt).toBeNull();
-      // The series' calendar, project and people (with the organizer role), and nothing else.
       expect(await f.edgesOf(result.item.id)).toEqual(
         [`calendar:${f.calendar("Work")}`, `project:${project}`, `people:${ann}`, `people:${bob}`].sort(),
       );
@@ -183,7 +177,6 @@ describe("materialize an event occurrence (issue gh-1843)", () => {
           [bob, {}],
         ].sort(),
       );
-      // Further occurrences stay virtual: the only new item is this one, and the series is as it was.
       expect(await f.idsIn("events")).toEqual([...before, result.item.id].sort());
       expect((await f.read("events", series))?.properties).toMatchObject({ date: "2026-10-12", recurrence: WEEKDAYS });
     }));
@@ -227,7 +220,6 @@ describe("materialize an event occurrence (issue gh-1843)", () => {
       const f = await setup();
       const series = await f.eventIn("Work", STANDUP);
       const invited = await f.create("people", { name: "Invited" });
-      // The invitation is written the way the invitation code writes it, with the system writer.
       await f.cp.createRelation({
         relationPropertyId: (await f.property("events", "people")).id,
         callerItemId: series,
@@ -351,7 +343,7 @@ describe("materialize an event occurrence (issue gh-1843)", () => {
           databaseId: f.db("events"),
           itemId: item.id,
           propertiesPatch: { timeFrom: "09:15", timeTo: "09:45" },
-          ifVersion: item.updatedAt,
+          ifVersion: item.version,
         },
         userId,
         userId,
@@ -485,13 +477,13 @@ describe("materialize an event occurrence (issue gh-1843)", () => {
         USER,
       );
       const unreadable = await f.eventIn("Work", STANDUP);
-      // The Events hooks refuse a value that is not a rule, so a stored one is written with SQL, as an old row would be.
+      // The Events hooks refuse a value that is not a rule, so a stored one is written with SQL.
       await admin.query(
         `UPDATE items SET properties = properties || '{"recurrence": {"kind": "sometimes"}}' WHERE id = $1`,
         [unreadable],
       );
       const undated = await f.eventIn("Work", STANDUP);
-      // The Events hooks refuse a date that is not a date, so a stored one is written with SQL, as an old row would be.
+      // The Events hooks refuse a date that is not a date, so a stored one is written with SQL.
       await admin.query(`UPDATE items SET properties = properties || '{"date": "next monday"}' WHERE id = $1`, [
         undated,
       ]);

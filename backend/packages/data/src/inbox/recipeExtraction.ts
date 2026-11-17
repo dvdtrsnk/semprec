@@ -20,17 +20,13 @@ import type { ProposalComputationInput, ProposalComputationResult } from "./inbo
 import { MAX_PAGE_SECTION_ITEMS, MAX_PAGE_SECTION_ITEM_CHARS, type ProposalPageSection } from "./proposalEnvelope.js";
 import { RecipeFetchError, fetchCapped, findHttpsUrl, readPage } from "./recipePageFetch.js";
 
-// The recipe proposal writer (issue gh-1974). When the Inbox item the tick computes for is typed to the `recipes`
-// database, the proposal computation of `semprec-api` asks `proposeRecipe` first: it reads a recipe from a link in the
-// item's text or from an attached photo, through the AI gateway, and answers the proposal of a new Recipes item. It
-// answers `null` when there is no recipe to read, and the computation then goes on as it does for any other database.
+// The recipe proposal writer: for an Inbox item typed to `recipes`, `proposeRecipe` reads a recipe from a link or an
+// attached photo via the AI gateway. `null` means no recipe, and the computation goes on as for any other database.
 
 const logger = createLogger("recipe-extraction");
 
-/** The gateway operation registered by `semprec-ai-gateway` for the Inbox's proposals (`completeHandler.ts`). */
 const INBOX_PROPOSAL_OPERATION = "inbox_proposal";
 
-/** Reading a recipe off a page or a photo is not creative work. */
 const EXTRACTION_TEMPERATURE = 0;
 
 const PAGE_TIMEOUT_MS = 10_000;
@@ -40,7 +36,7 @@ const PHOTO_TIMEOUT_MS = 10_000;
 const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
 const PHOTO_CONTENT_TYPES = ["image/jpeg", "image/png"] as const;
 
-/** The decoded size the gateway accepts for one image block (`completeHandler.ts`); a larger copy is not read. */
+/** The gateway's decoded size cap for one image block; a larger copy is not read. */
 const COPY_MAX_BYTES = 1.5 * 1024 * 1024;
 
 const MAX_NAME_CHARS = 200;
@@ -50,10 +46,7 @@ const MAX_SERVINGS = 1000;
 const PAGE_TEXT_OPEN = "<<<RECIPE_PAGE_TEXT";
 const PAGE_TEXT_CLOSE = "RECIPE_PAGE_TEXT>>>";
 
-/**
- * The model's answer, validated before it leaves this module (`content` is `unknown` at the gateway boundary). A page
- * or photo with no recipe is answered with an empty `name` and empty lists; `cleanAnswer` decides.
- */
+/** Validated before it leaves this module. A source without a recipe gets an empty `name` and lists. */
 const recipeAnswerSchema = z.object({
   name: z.string(),
   ingredients: z.array(z.string()),
@@ -63,7 +56,7 @@ const recipeAnswerSchema = z.object({
   photoUrl: z.string().nullish(),
 });
 
-/** The same shape as `recipeAnswerSchema`, as the Draft 2020-12 JSON Schema the gateway forwards to the provider. */
+/** `recipeAnswerSchema` as the JSON Schema the gateway forwards to the provider. */
 const RECIPE_RESPONSE_SCHEMA = {
   type: "object",
   properties: {
@@ -88,23 +81,19 @@ const SYSTEM_PROMPT = [
   "photoUrl is the image URL the message names as the page image, when it is the recipe's photo; otherwise null.",
 ].join("\n");
 
-/** What the writer needs besides the input of the computation. */
 export interface RecipeProposalPorts {
   pool: Pool;
   gateway: Pick<AiGatewayClientPort, "complete">;
-  /** Opens the bytes stored under `storageKey`; `null` when no storage root has them. */
+  /** `null` when no storage root has the bytes. */
   openBlob(storageKey: string): Promise<Readable | null>;
-  /** Where the photo of a page is stored as a blob. */
   photoStorage: BlobStorageWriter;
   /**
-   * Requests a page or an image. Production passes none: each proposal then builds `createOutboundHttp()`, the client
-   * that resolves a name once, connects only to a vetted address and follows no redirect, and closes it afterwards. A
-   * test passes a stand-in.
+   * Production passes none: each proposal builds `createOutboundHttp()` (resolve once, vetted address only, no
+   * redirects) and closes it afterwards.
    */
   fetch?: OutboundHttp["fetch"];
 }
 
-/** A recipe read from a source, cleaned to what a proposal may carry. */
 interface CleanRecipe {
   name: string;
   ingredients: string[];
@@ -132,9 +121,8 @@ function cleanList(entries: readonly string[]): string[] {
 }
 
 /**
- * The answer as a recipe, or `null` when it holds none: a recipe needs a name, at least one ingredient and at least one
- * step. Texts are cut to one line and to the limits of a page section, the name to `MAX_NAME_CHARS`, and a time or a
- * count that is not a whole number in a plausible range is left out, so a wrong number never reaches the proposal.
+ * The answer as a recipe, or `null` without a name, an ingredient and a step. Texts are cut to one line and the page
+ * section limits; an implausible or non-integer time or count is left out.
  */
 function cleanAnswer(answer: z.infer<typeof recipeAnswerSchema>): CleanRecipe | null {
   const name = singleLine(answer.name, MAX_NAME_CHARS);
@@ -165,9 +153,8 @@ function withoutDelimiters(text: string): string {
 type RecipeMessageContent = Parameters<AiGatewayClientPort["complete"]>[0]["messages"][number]["content"];
 
 /**
- * One gateway call that reads a recipe. A failure of the gateway (`AiGatewayFailedError`: a timeout, a refusal, the
- * budget, an answer that is not JSON) and an answer that does not match the schema both mean "no recipe was read": they
- * are logged by reason or by field name and answered `null`. Any other error is not the gateway's and propagates.
+ * One gateway call. An `AiGatewayFailedError` or a schema mismatch means no recipe: logged by reason or field name
+ * and answered `null`. Other errors propagate.
  */
 async function askForRecipe(
   ports: RecipeProposalPorts,
@@ -201,7 +188,6 @@ async function askForRecipe(
   return cleanAnswer(parsed.data);
 }
 
-/** `fn` with the fetch to use: the port's, or an outbound client built for this call and closed after it. */
 async function withOutboundFetch<T>(
   ports: RecipeProposalPorts,
   fn: (fetch: OutboundHttp["fetch"]) => Promise<T>,
@@ -220,12 +206,9 @@ async function withOutboundFetch<T>(
 }
 
 /**
- * Fetches the photo the page named and stores it as a blob, or answers `null`: the URL must pass the stored-URL
- * baseline, the request the same outbound checks as the page, the bytes must be a JPEG or PNG by their own signature
- * (the server's `Content-Type` is not trusted) and the stored blob an `image/*`. Until the card is confirmed the blob
- * is a standalone one that only the card's envelope names: `blobsUnreferencedSweep` keeps it while the card is open
- * and collects it after the card is rejected
- * ([[2026-11-15-an-open-proposal-keeps-the-blobs-its-envelope-names]]).
+ * Fetches the page's photo and stores it as a blob, or `null`. The URL must pass the stored-URL baseline and outbound
+ * checks, the bytes must be JPEG or PNG by signature (`Content-Type` is not trusted), and the blob an `image/*`. Until
+ * confirm only the card's envelope names it, which keeps it from `blobsUnreferencedSweep` while the card is open.
  */
 async function storePagePhoto(
   ports: RecipeProposalPorts,
@@ -271,17 +254,14 @@ async function storePagePhoto(
   }
 }
 
-/** A recipe read from the link, with the photo of its page when it has one. */
 interface LinkRecipe {
   recipe: CleanRecipe;
   photo: { blobId: string } | null;
 }
 
 /**
- * Reads the recipe the page at `url` holds, or `null`. A URL that fails the stored-URL baseline is never requested. A
- * page that cannot be fetched (`RecipeFetchError`: unreachable, refused by the address policy, not HTML, too large, too
- * slow) and a page with no recipe both give `null`. The page's photo is looked for only when `wantPhoto` is set and
- * only at the image the page's own `og:image` tag names, so the model cannot send the request anywhere else.
+ * The recipe on the page at `url`, or `null` (failed URL baseline, unfetchable page, no recipe). The photo is looked
+ * for only when `wantPhoto` is set and only at the page's own `og:image`, so the model cannot direct the request.
  */
 async function readLinkRecipe(
   ports: RecipeProposalPorts,
@@ -325,29 +305,24 @@ async function readLinkRecipe(
   });
 }
 
-/** `candidate` as an absolute URL against `base`, or `null` when it is not a URL. */
 function safeResolve(candidate: string, base: string): string | null {
   try {
     return new URL(candidate, base).href;
   } catch {
-    // A model answer that is not a URL names no photo.
     return null;
   }
 }
 
-/** The first photo attached to the item that the assistant can read, and what a recipe's `photo` needs of it. */
 interface PhotoAttachment {
   attachmentId: string;
-  /** The blob the attachment names: the value of the recipe's `photo`. `null` when that blob is not an `image/*` as stored. */
+  /** The recipe's `photo`; `null` when that blob is not stored as `image/*`. */
   photoBlobId: string | null;
-  /** The reduced copy the model reads. */
   reduced: { storageKey: string; mimeType: string };
 }
 
 /**
- * The first image attachment of the Inbox item, by position, whose metadata job produced a reduced copy
- * (`classifyForExtraction`), read in a short transaction of its own. A recipe's `photo` takes the attachment's own blob,
- * and only when that blob is stored as an `image/*`, the check the Recipes photo hook makes at confirm.
+ * The first image attachment, by position, with a reduced copy, read in its own short transaction. `photo` takes the
+ * attachment's own blob only when it is stored as `image/*`, as the Recipes photo hook checks at confirm.
  */
 async function findPhotoAttachment(pool: Pool, inboxItemId: string): Promise<PhotoAttachment | null> {
   return withTransaction(pool, async (client) => {
@@ -366,7 +341,6 @@ async function findPhotoAttachment(pool: Pool, inboxItemId: string): Promise<Pho
   });
 }
 
-/** The whole stream when it holds at most `maxBytes`, else `null`; the stream is closed either way. */
 async function readStreamWithin(stream: Readable, maxBytes: number): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -383,10 +357,7 @@ async function readStreamWithin(stream: Readable, maxBytes: number): Promise<Buf
   return Buffer.concat(chunks);
 }
 
-/**
- * Reads the recipe photographed in `attachment`, or `null`. The reduced copy goes to the gateway as an image block;
- * a copy that is not a JPEG or PNG, whose bytes are missing, or that is over the gateway's size cap is not read.
- */
+/** Reads the recipe in `attachment`'s reduced copy, or `null` when it is missing, not JPEG/PNG, or over the size cap. */
 async function readPhotoRecipe(
   ports: RecipeProposalPorts,
   projectItemId: string,
@@ -424,19 +395,10 @@ async function pageSections(recipe: CleanRecipe, locale: string): Promise<Propos
 }
 
 /**
- * The recipe proposal writer (issue gh-1974). For an Inbox item that is computed for the `recipes` database (a typed
- * item, not an untyped one being recognized) it reads a recipe from a link in the item's text, else from the first
- * attached photo the assistant can read, and answers the computation result of a new Recipes item: the `name`,
- * `prepMinutes` and `servings` the source gives, `sourceUrl` when the recipe came from the link, `photo` (the attached
- * photo's blob, else the page's photo stored as a blob) and the page sections "Ingredients" (bulleted) and "Method"
- * (numbered) in the person's language. It writes nothing but that photo blob: the item and its page are written when the
- * card is confirmed.
- *
- * It answers `null`, and the computation proceeds as for any other database, when the input is not a recipe
- * computation, the item has neither an `https:` link nor a readable photo, or no source yields a recipe: a link that
- * fails the URL baseline or the outbound address policy, a page that cannot be fetched or has no recipe, a gateway
- * failure. A link that gives no recipe does not stop the photo from being tried. A failure that is not one of those
- * (the database, the blob store) propagates, so the tick records it as it records any compute failure.
+ * For an Inbox item computed for `recipes`, reads a recipe from an `https:` link in its text, else the first readable
+ * attached photo, and answers a new Recipes item with "Ingredients"/"Method" sections. Writes only a page photo blob.
+ * `null` (no recipe from any source) lets the computation proceed as for any database; database and blob store
+ * failures propagate.
  */
 export async function proposeRecipe(
   ports: RecipeProposalPorts,

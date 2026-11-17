@@ -19,9 +19,8 @@ import { createInboxItemWithClient } from "../inboxStore.js";
 import { linkSourceInboxRelation } from "../inboxCardSourceLink.js";
 import { createConfirmProposalRouteHandler, createItemOriginRouteHandler } from "../inboxRouteHandlers.js";
 
-// Issue gh-1967: `GET /api/items/:id/origin`. Everything runs on the runtime role pool inside a tenant scope, with a
-// second tenant for the cross-tenant case. Origins are written by the real confirm route, and raw SQL is used only for
-// the origin states a confirm cannot write today (a legacy row, a transcript row).
+// `GET /api/items/:id/origin`, on the runtime role pool inside a tenant scope, with a second tenant for the
+// cross-tenant case. Origins are written by the real confirm route; raw SQL only for states a confirm cannot write.
 let adminPool: Pool;
 let runtimePool: Pool;
 let tenantA: string;
@@ -59,7 +58,6 @@ async function failureOf(promise: Promise<unknown>): Promise<unknown> {
   return null;
 }
 
-/** The body of a 200 answer; any other answer shape fails the test. */
 async function bodyOf(tenant: string, id: string): Promise<Record<string, unknown>> {
   const answer = await originOf(tenant, id);
   if (!("body" in answer) || answer.status !== 200) throw new Error("The route did not answer 200 with a body");
@@ -94,7 +92,6 @@ interface Capture {
   cardId: string;
 }
 
-/** An Inbox item and its `proposed` card with the given steps, linked as the tick links them. Nothing is confirmed yet. */
 function propose(tenant: string, steps: Step[], text = "Meeting notes", date = "2026-11-02"): Promise<Capture> {
   return runInTenant(tenant, () =>
     withTransaction(runtimePool, async (client) => {
@@ -126,7 +123,6 @@ function propose(tenant: string, steps: Step[], text = "Meeting notes", date = "
   );
 }
 
-/** The ids of the items one confirm of `cardId` created, by the database of each: `{ companies: [...], people: [...] }`. */
 async function confirm(tenant: string, cardId: string): Promise<{ companies: string[]; people: string[] }> {
   await runInTenant(tenant, () => createConfirmProposalRouteHandler(runtimePool)({ params: { id: cardId }, body: {} }));
   return withTenantTransaction(runtimePool, tenant, async (client) => {
@@ -143,7 +139,6 @@ async function confirm(tenant: string, cardId: string): Promise<{ companies: str
   });
 }
 
-/** An item written by hand, as a user's create does: it has no origin row. */
 function createByHand(tenant: string, moduleId: string, properties: Record<string, unknown>): Promise<string> {
   return runInTenant(tenant, () =>
     withTransaction(runtimePool, async (client) => {
@@ -154,7 +149,6 @@ function createByHand(tenant: string, moduleId: string, properties: Record<strin
   );
 }
 
-/** Moves the item to the Trash through the choke point's delete; its origin row stays. */
 function trash(tenant: string, itemId: string): Promise<void> {
   return runInTenant(tenant, () =>
     withTransaction(runtimePool, async (client) => {
@@ -307,32 +301,6 @@ describe("GET /api/items/:id/origin (issue gh-1967)", () => {
 
       expect(origin.capturedAt).toBeNull();
       expect(origin.captureTimeBasis).toBe("unknown");
-    });
-
-    it("keeps legacyUnverified, with the stored time, for a row written before the basis existed", async () => {
-      const itemId = await createByHand(tenantA, "companies", { name: "Old" });
-      const proposalId = randomUUID();
-      // Raw insert: a row of the old writer, which the confirm path of this release can no longer produce; the column
-      // default is what marks it `legacyUnverified`.
-      await withTenantTransaction(runtimePool, tenantA, (client) =>
-        client.query(
-          `INSERT INTO item_origins (item_id, proposal_id, captured_at, capture_channel)
-           VALUES ($1, $2, '2026-01-01T00:00:00Z', 'inbox')`,
-          [itemId, proposalId],
-        ),
-      );
-
-      const origin = await bodyOf(tenantA, itemId);
-
-      expect(origin).toMatchObject({
-        proposalId,
-        capturedAt: "2026-01-01T00:00:00.000Z",
-        captureTimeBasis: "legacyUnverified",
-        captureChannel: "inbox",
-        inboxItemId: null,
-        sourceText: null,
-        siblings: [],
-      });
     });
   });
 

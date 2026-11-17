@@ -14,7 +14,6 @@ import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
 import { writeComputed } from "../../chokePoint/itemsStore.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
 import { withTransaction } from "../../db/pool.js";
-import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { today } from "../../calendarTime.js";
 import { getSystemTimezone } from "../../systemSettings.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -42,17 +41,13 @@ import {
   readContactMoment,
   recomputePersonLastContact,
 } from "../lastContact.js";
-import { runPeopleLastContactCutoverMigration } from "../peopleLastContactCutoverMigration.js";
 import { findOrphanedOwnerProcessIds } from "../../manifest/moduleRegistryDriftCheck.js";
 import { KNOWN_OWNER_PROCESS_IDS } from "../../manifest/knownActionIds.js";
 
 /**
- * Issue #1660: People `lastContact`, derived from linked Events, Emails and Transcripts. Every production
- * write goes through the choke point or the owning mail writers on a `semprec_data` pool, so row-level
- * security applies; the recompute and the sweep run through the production `createCoreTaskList` handlers
- * drained with `runOnce`, except where a case needs a clock other than the real one (the sweep's next day, an
- * Event's start later today), which calls `recomputePersonLastContact` or `handlePeopleLastContactSweep` with
- * that `now`, the job's own entry point.
+ * Production writes go through the choke point or the mail writers on a `semprec_data` pool, so RLS applies.
+ * Recompute and sweep run through the production handlers drained with `runOnce`, except where a case needs a
+ * different clock and calls the job entry point with that `now`.
  */
 
 let admin: Pool;
@@ -118,7 +113,6 @@ async function catalog(tenant: string): Promise<Catalog> {
   );
 }
 
-/** The calendar date `days` away from today in the tenant zone. */
 function dayFromToday(days: number): string {
   const date = DateTime.fromISO(today(ZONE), { zone: "utc" }).plus({ days }).toISODate();
   if (date === null) throw new Error("invalid day");
@@ -166,7 +160,7 @@ interface QueuedJob {
   queue_name: string | null;
 }
 
-/** The queued `peopleLastContactRecompute` jobs, read through graphile-worker's public `jobs` view. */
+/** Read through graphile-worker's public `jobs` view. */
 async function queuedRecomputes(): Promise<QueuedJob[]> {
   const { rows } = await admin.query<QueuedJob>(
     "SELECT key, queue_name FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -175,7 +169,7 @@ async function queuedRecomputes(): Promise<QueuedJob[]> {
   return rows;
 }
 
-/** Completes every queued job without running it, through graphile-worker's public `complete_jobs`. */
+/** Completes every queued job without running it. */
 async function discardQueuedJobs(): Promise<void> {
   await admin.query(
     "SELECT graphile_worker.complete_jobs(ARRAY(SELECT id FROM graphile_worker.jobs WHERE locked_at IS NULL))",
@@ -190,7 +184,6 @@ async function runRecomputes(): Promise<void> {
   expect(await queuedRecomputes()).toEqual([]);
 }
 
-/** Every queued job of any task, read through graphile-worker's public `jobs` view. */
 async function allQueuedJobs(): Promise<{ task_identifier: string; key: string | null }[]> {
   const { rows } = await admin.query<{ task_identifier: string; key: string | null }>(
     "SELECT task_identifier, key FROM graphile_worker.jobs ORDER BY id",
@@ -198,10 +191,7 @@ async function allQueuedJobs(): Promise<{ task_identifier: string; key: string |
   return rows;
 }
 
-/**
- * One item's whole stored row and its tuple version. `xmin` changes on every UPDATE, even one that writes
- * equal values, so an unchanged pair shows that no write reached the row. Read on the runtime pool in `tenant`.
- */
+/** `xmin` changes on every UPDATE, even of equal values, so an unchanged pair shows no write reached the row. */
 async function storedItem(tenant: string, itemId: string): Promise<{ row: unknown; xmin: string }> {
   const { rows } = await runInTenant(tenant, () =>
     pool.query<{ row: unknown; xmin: string }>(
@@ -214,7 +204,6 @@ async function storedItem(tenant: string, itemId: string): Promise<{ row: unknow
   return stored;
 }
 
-/** Rejects with a message naming `what` when `work` has not settled within `ms`; the timer is cleared either way. */
 async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_resolve, reject) => {
@@ -229,7 +218,7 @@ async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T>
 
 type Outcome = { failed: false } | { failed: true; error: unknown };
 
-/** `work`'s outcome as a value, so a started actor is observed from the start and read when the case is ready. */
+/** Captures the outcome as a value, so a started actor is observed from the start. */
 function outcomeOf(work: Promise<unknown>): Promise<Outcome> {
   return work.then(
     (): Outcome => ({ failed: false }),
@@ -237,7 +226,6 @@ function outcomeOf(work: Promise<unknown>): Promise<Outcome> {
   );
 }
 
-/** Reads `probe` until it returns a value, failing after `ms`. */
 async function pollFor<T>(probe: () => Promise<T | undefined>, ms: number, what: string): Promise<T> {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -248,10 +236,7 @@ async function pollFor<T>(probe: () => Promise<T | undefined>, ms: number, what:
   }
 }
 
-/**
- * Rethrows the case's own failure first: alone, or inside an `AggregateError` with the cleanup failures after it.
- * A thrown falsy value counts, because `primary` wraps it.
- */
+/** Rethrows the case's own failure first (alone or leading an `AggregateError`); a thrown falsy value counts. */
 function settle(primary: { error: unknown } | undefined, cleanupFailures: unknown[]): void {
   if (primary && cleanupFailures.length > 0) {
     throw new AggregateError([primary.error, ...cleanupFailures], "The case and its cleanup failed", {
@@ -264,21 +249,14 @@ function settle(primary: { error: unknown } | undefined, cleanupFailures: unknow
 }
 
 interface ObservedEffects {
-  /** Every realtime invalidation this process emitted: the in-process hook `@semprec/realtime` publishes as NOTIFYs. */
   invalidations: InvalidationEvent[];
-  /** The payload of every graphile-worker `jobs:insert` NOTIFY (sent when it inserts a job) before the sentinel. */
   jobInserts: string[];
 }
 
 /**
- * The side effects `operation` announced. The owners' realtime invalidation callbacks are recorded through
- * `setInvalidationHook`, because this file wires no realtime publisher; that shows what the owners announced,
- * not WebSocket delivery or a realtime NOTIFY. Graphile-worker's job-insert NOTIFYs are observed on a dedicated
- * LISTEN connection subscribed before `operation` runs; afterwards a sentinel is sent on the same channel, and
- * Postgres delivers notifications in commit order, so once the sentinel has arrived every `jobs:insert`
- * committed by `operation` has too. That channel says nothing about other NOTIFYs. The hook and the
- * subscription are removed on every path, and a connection whose UNLISTEN failed is destroyed rather than
- * returned to the pool.
+ * Invalidations are recorded via `setInvalidationHook` (no realtime publisher here). Job-insert NOTIFYs are read on
+ * a LISTEN connection; Postgres delivers notifications in commit order, so once the trailing sentinel arrives every
+ * `jobs:insert` from `operation` has too. A connection whose UNLISTEN failed is destroyed, not returned to the pool.
  */
 async function observeEffects(operation: () => Promise<unknown>): Promise<ObservedEffects> {
   const effects: ObservedEffects = { invalidations: [], jobInserts: [] };
@@ -323,10 +301,6 @@ async function observeEffects(operation: () => Promise<unknown>): Promise<Observ
   return effects;
 }
 
-/**
- * A mailbox with its inbox in `tenant`, and an ingest there of one message, followed by the production
- * `mail.linkPeopleByEmail` action as the Emails onItemEvent heartbeat runs it. Returns the Emails item id.
- */
 async function mailIngest(
   tenant: string,
   c: Catalog,
@@ -385,7 +359,6 @@ async function mailIngest(
     });
 }
 
-/** A transcript dated `date` at 10:00 UTC, written by the transcription owner, with `personId` as its speaker. */
 async function createTranscriptWithSpeaker(
   tenant: string,
   c: Catalog,
@@ -501,7 +474,6 @@ describe("People lastContact (issue #1660)", () => {
     expect(await queuedRecomputes()).toEqual([
       { key: peopleLastContactJobKey(person), queue_name: `people-last-contact:${tenantA}` },
     ]);
-    // The queued job's own entry point at the time it runs.
     await runInTenant(tenantA, () => recomputePersonLastContact(pool, person, { now: nextDay }));
     expect(await lastContactOf(tenantA, c, person)).toBe(tomorrow);
   });
@@ -557,7 +529,7 @@ describe("People lastContact (issue #1660)", () => {
     await runInTenant(tenantA, () => recomputePersonLastContact(pool, person, { now: after }));
     expect(await lastContactOf(tenantA, c, person)).toBe("2025-03-10");
 
-    // The create derived timeTo 16:00 (an hour after 15:00); a later start needs a later end too (issue #1663).
+    // The create derived timeTo 16:00; a later start needs a later end too.
     await runInTenant(tenantA, () =>
       chokePoint.updateItem({
         databaseId: c.eventsId,
@@ -654,7 +626,6 @@ describe("People lastContact (issue #1660)", () => {
             storageKeyPrefix: "test",
           }),
         );
-        // The production `mail.linkPeopleByEmail` action, as the Emails onItemEvent heartbeat runs it.
         await createLinkEmailToPeopleAction(pool)(
           { emailsDatabaseId: c.emailsId, senderPeopleKey: "senderPeople", recipientsPeopleKey: "recipientsPeople" },
           { heartbeatId: "hb", projectItemId: "proj", itemId },
@@ -697,7 +668,6 @@ describe("People lastContact (issue #1660)", () => {
           databaseId: c.transcriptsId,
           properties: { name: "Call" },
         });
-        // The transcription process's own writers: the segments cache and the recording time.
         await writeComputed(client, c.transcriptsId, created.id, "segments", [
           { speaker: "SPEAKER_00", text: "Hello", startsAt: 0, endsAt: 1 },
         ]);
@@ -903,7 +873,6 @@ describe("People lastContact (issue #1660)", () => {
     await runRecomputes();
     expect(await lastContactOf(tenantA, c, person)).toBe(date);
     await discardQueuedJobs();
-    // A second recompute of the same person, queued by the production enqueue before the observation starts.
     await runInTenant(tenantA, () =>
       withTransaction(pool, (client) => enqueuePersonLastContactRecompute(client, person)),
     );
@@ -1008,7 +977,6 @@ describe("People lastContact (issue #1660)", () => {
     let holding = false;
     let recompute: Promise<Outcome> | undefined;
     let linking: Promise<Outcome> | undefined;
-    // The actors whose outcome the case itself already read.
     const read = new Set<Promise<Outcome>>();
     let primary: { error: unknown } | undefined;
     try {
@@ -1079,136 +1047,5 @@ describe("People lastContact (issue #1660)", () => {
       }
     }
     settle(primary, failures);
-  });
-});
-
-/** A tenant provisioned before issue #1660: its People database has no lastContact property. */
-async function removeLastContactProperty(tenant: string, peopleId: string): Promise<void> {
-  // The seed now creates the property and no public writer removes a system property, so a
-  // pre-#1660 People database is produced by deleting the row directly.
-  await admin.query("DELETE FROM properties WHERE tenant_id = $1 AND database_id = $2 AND key = 'lastContact'", [
-    tenant,
-    peopleId,
-  ]);
-}
-
-async function lastContactProperties(tenant: string, peopleId: string) {
-  return runInTenant(tenant, async () => {
-    const { rows } = await pool.query<{ type: string; owner: string; owner_process: string | null; config: unknown }>(
-      "SELECT type, owner, owner_process, config FROM properties WHERE database_id = $1 AND key = 'lastContact'",
-      [peopleId],
-    );
-    return rows;
-  });
-}
-
-describe("People lastContact cutover (issue #1660)", () => {
-  it("run twice on a populated tenant, adds the property once and recomputes every live person; B is untouched", async () => {
-    const a = await catalog(tenantA);
-    const b = await catalog(tenantB);
-    const dateA = dayFromToday(-4);
-    const linked = await createPerson(tenantA, a, "Linked");
-    await linkEvent(tenantA, a, await createEvent(tenantA, a, dateA), linked);
-    const unlinked = await createPerson(tenantA, a, "Unlinked");
-    const trashed = await createPerson(tenantA, a, "Trashed");
-    await runInTenant(tenantA, () => chokePoint.softDeleteItem(a.peopleId, trashed));
-    const personB = await createPerson(tenantB, b, "B");
-    await linkEvent(tenantB, b, await createEvent(tenantB, b, dayFromToday(-6)), personB);
-    await removeLastContactProperty(tenantA, a.peopleId);
-    await discardQueuedJobs();
-
-    await runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool));
-    await runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool));
-
-    expect(await lastContactProperties(tenantA, a.peopleId)).toEqual([
-      { type: "date", owner: "system", owner_process: PEOPLE_MODULE_ID, config: {} },
-    ]);
-    expect(await queuedRecomputes()).toEqual(
-      [linked, unlinked]
-        .sort()
-        .map((id) => ({ key: peopleLastContactJobKey(id), queue_name: `people-last-contact:${tenantA}` })),
-    );
-    await runRecomputes();
-    expect(await lastContactOf(tenantA, a, linked)).toBe(dateA);
-    expect(await lastContactOf(tenantA, a, unlinked)).toBeUndefined();
-    expect(await lastContactOf(tenantB, b, personB)).toBeUndefined();
-  });
-
-  it("hands an existing compatible date property to the people process; a user write is then refused", async () => {
-    const a = await catalog(tenantA);
-    const person = await createPerson(tenantA, a);
-    // A user-owned `lastContact` date property with its own config, as a populated install could hold
-    // before #1660; no public writer adds a property to the schema-locked People database.
-    await admin.query(
-      `UPDATE properties SET owner = 'user', owner_process = NULL, config = '{"includeTime": false}'::jsonb
-       WHERE tenant_id = $1 AND database_id = $2 AND key = 'lastContact'`,
-      [tenantA, a.peopleId],
-    );
-    await runInTenant(tenantA, () =>
-      chokePoint.updateItem({ databaseId: a.peopleId, itemId: person, propertiesPatch: { lastContact: "2020-01-01" } }),
-    );
-    await discardQueuedJobs();
-
-    await runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool));
-
-    expect(await lastContactProperties(tenantA, a.peopleId)).toEqual([
-      { type: "date", owner: "system", owner_process: PEOPLE_MODULE_ID, config: { includeTime: false } },
-    ]);
-    expect(await lastContactOf(tenantA, a, person)).toBe("2020-01-01");
-    await expect(
-      runInTenant(tenantA, () =>
-        chokePoint.updateItem({
-          databaseId: a.peopleId,
-          itemId: person,
-          propertiesPatch: { lastContact: "2021-01-01" },
-        }),
-      ),
-    ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-    await runRecomputes();
-    expect(await lastContactOf(tenantA, a, person)).toBeNull();
-  });
-
-  it("fails a tenant whose lastContact is not a date before writing, queuing or emitting anything", async () => {
-    const a = await catalog(tenantA);
-    const person = await createPerson(tenantA, a);
-    // An incompatible populated state: a text property under the key, which only direct SQL produces now.
-    await admin.query(
-      `UPDATE properties SET type = 'text', owner = 'user', owner_process = NULL
-       WHERE tenant_id = $1 AND database_id = $2 AND key = 'lastContact'`,
-      [tenantA, a.peopleId],
-    );
-    await discardQueuedJobs();
-    const before = await storedItem(tenantA, person);
-
-    const effects = await observeEffects(() =>
-      expect(runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool))).rejects.toThrow(
-        "The People lastContact property has type 'text', not 'date'",
-      ),
-    );
-    expect(effects).toEqual({ invalidations: [], jobInserts: [] });
-    expect(await lastContactProperties(tenantA, a.peopleId)).toEqual([
-      { type: "text", owner: "user", owner_process: null, config: {} },
-    ]);
-    expect(await storedItem(tenantA, person)).toEqual(before);
-    expect(await queuedRecomputes()).toEqual([]);
-    expect(await allQueuedJobs()).toEqual([]);
-  });
-
-  it("is registered in runTenantCutoverMigrations and restores the property in every tenant", async () => {
-    const a = await catalog(tenantA);
-    const b = await catalog(tenantB);
-    await removeLastContactProperty(tenantA, a.peopleId);
-    await removeLastContactProperty(tenantB, b.peopleId);
-
-    await runAsSystem("test:cutovers", () => runTenantCutoverMigrations(pool));
-
-    for (const [tenant, peopleId] of [
-      [tenantA, a.peopleId],
-      [tenantB, b.peopleId],
-    ] as const) {
-      expect(await lastContactProperties(tenant, peopleId)).toEqual([
-        { type: "date", owner: "system", owner_process: PEOPLE_MODULE_ID, config: {} },
-      ]);
-    }
   });
 });

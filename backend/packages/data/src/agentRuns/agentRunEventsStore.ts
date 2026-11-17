@@ -20,10 +20,7 @@ const AGENT_RUN_EVENT_KINDS: readonly AgentRunEventKind[] = [
   "user_message",
 ];
 
-/**
- * The events of a run that one Semp reply owns (issue #1889): `fromEventId` through `throughEventId`, both
- * inclusive; `throughEventId` is `null` for a range that is open at the end.
- */
+/** Both ends inclusive; `throughEventId: null` is open at the end. */
 export interface AgentRunEventRange {
   fromEventId: string;
   throughEventId: string | null;
@@ -37,7 +34,6 @@ export interface AgentRunEventRow {
   at: string;
 }
 
-/** The raw `agent_run_events` row shape this module reads back from Postgres. */
 type AgentRunEventDbRow = { id: string; agent_run_id: string; kind: string; payload: unknown; at: Date };
 
 function mapRow(row: AgentRunEventDbRow): AgentRunEventRow {
@@ -51,25 +47,17 @@ function mapRow(row: AgentRunEventDbRow): AgentRunEventRow {
 }
 
 /**
- * The bound on one `agent_run_events.payload`, measured as UTF-8 bytes of its JSON
- * serialization. Every reconstruction reads a run's payloads back in full, so an unbounded one
- * (an arbitrarily large MCP `tool_result`) is rejected at the write. 1 MiB is sized so a
- * `compaction` checkpoint — the largest legitimate payload — fits.
+ * UTF-8 bytes of the JSON payload. Reconstruction reads payloads in full, so an unbounded one (a huge MCP
+ * `tool_result`) is rejected at the write; 1 MiB fits a `compaction` checkpoint, the largest legitimate payload.
  */
 const MAX_AGENT_RUN_EVENT_PAYLOAD_BYTES = 1024 * 1024;
 
 /**
- * One row per turn_start/user_message/message/tool_use/tool_result/turn_end/run_status — never for
- * message_update deltas. 'compaction' is the one kind never written by the turn loop itself:
- * `@semprec/agent-runtime`'s reconstruction path (#119) inserts it directly, as a checkpoint
- * of a compacted `Entry[]` continuation.
+ * Never written for message_update deltas. `compaction` is inserted by the agent-runtime reconstruction path, not
+ * the turn loop.
  *
- * A finished (`done`/`error`) run's transcript is complete, so only its terminal `run_status`
- * event — written after the close by design — may still be appended; any other kind throws
- * `ConflictError`. The status check is part of the `INSERT` itself, so a close committed
- * concurrently cannot slip in between a check and the write. An unknown run id throws
- * `NotFoundError`, and a payload over `MAX_AGENT_RUN_EVENT_PAYLOAD_BYTES` throws
- * `ValidationError` before any query runs.
+ * A finished run accepts only its terminal `run_status` (written after the close); any other kind throws
+ * `ConflictError`. The status check is part of the `INSERT`, so a concurrent close cannot slip in between.
  */
 export async function insertAgentRunEvent(
   client: Pool | PoolClient,
@@ -101,11 +89,7 @@ export async function insertAgentRunEvent(
   );
 }
 
-/**
- * Appends one durable event and announces its thin reference only after the surrounding
- * transaction commits. The hook belongs to this data owner: realtime wires it to Postgres
- * NOTIFY, so callers never receive or reuse a transaction-scoped client after commit.
- */
+/** Announces the thin reference only after commit, so callers never reuse a transaction-scoped client. */
 export async function insertAndNotifyAgentRunEvent(
   client: Pool | PoolClient,
   agentRunId: string,
@@ -119,7 +103,7 @@ export async function insertAndNotifyAgentRunEvent(
   return event;
 }
 
-/** Transcript reconstruction source: every row for a run, in monotonic event-id order. */
+/** In monotonic event-id order. */
 export async function listAgentRunEvents(client: Pool | PoolClient, agentRunId: string): Promise<AgentRunEventRow[]> {
   const { rows } = await client.query<AgentRunEventDbRow>(
     `SELECT id, agent_run_id, kind, payload, at FROM agent_run_events WHERE agent_run_id = $1 ORDER BY id ASC`,
@@ -128,10 +112,7 @@ export async function listAgentRunEvents(client: Pool | PoolClient, agentRunId: 
   return rows.map(mapRow);
 }
 
-/**
- * The cursor form used by a realtime agent-run watcher. `id` is a Postgres bigint and is kept as
- * a string at the TypeScript boundary so a browser client never loses precision while resuming.
- */
+/** `id` is a bigint kept as a string so a browser client never loses precision while resuming. */
 export async function listAgentRunEventsAfter(
   client: Pool | PoolClient,
   agentRunId: string,
@@ -180,13 +161,9 @@ export async function listAgentRunEventsAfter(
 }
 
 /**
- * The events of one Semp turn that its reply summary is made of (issues #1860 and #1885): the turn's own
- * `turn_start`, `turn_end`, `message`, `tool_use` and `tool_result` events of the run, from the message's
- * `event_from_id` through its `event_to_id`, in id order. A turn that ended in an error stored no
- * `event_to_id`; `throughEventId: null` then reads to the end of the run. That is this turn's last event: the
- * message is still `running` until its error is stored, and its conversation takes the next message only after
- * that. The other kinds are left out in SQL: a user message carries the
- * user's text and references, and a compaction checkpoint is the largest payload a run stores.
+ * A turn that ended in an error stored no `event_to_id`; `throughEventId: null` then reads to the end of the run,
+ * which is this turn's last event because the conversation takes the next message only after the error is stored.
+ * User messages (user text) and compaction checkpoints (the largest payloads) are filtered out in SQL.
  */
 export async function listSempTurnEvents(
   client: Pool | PoolClient,
@@ -206,15 +183,8 @@ export async function listSempTurnEvents(
 }
 
 /**
- * The read behind one page of `GET /api/agent-runs/:id/steps` (issue #1821): the events after
- * `afterEventId` that can produce a step (`AGENT_RUN_STEP_EVENT_KINDS`), in id order, at most
- * `agentRunStepPageRowLimit(stepLimit)` of them. A page of `stepLimit` steps needs at most two events
- * per step, so the limit leaves room for a block of parallel tool calls; it is the bound of the
- * read, never an unbounded set. `hasMore` is true when more events follow the ones returned.
- *
- * With `range` (issue #1889) only the events of that range are read: the page starts at the later of
- * `afterEventId` and the range's first event and ends at its last one, so the cursor and the limit work as
- * they do for the whole run, inside the range.
+ * Reads at most `agentRunStepPageRowLimit(stepLimit)` events: a step needs up to two, and the slack leaves room
+ * for a block of parallel tool calls. With `range`, the cursor and limit work the same inside the range.
  */
 export async function listAgentRunEventsForStepPage(
   client: Pool | PoolClient,
@@ -246,11 +216,8 @@ export async function listAgentRunEventsForStepPage(
 }
 
 /**
- * The number of tool steps and of approval steps in the events of a run still stored (issue #1847), for
- * the summary of its `end` step. A tool step is one `toolCallId` of a stored call or result; an approval
- * step is one whose result carries an `approvalRequestId` (`details` of the stored pi result). The
- * counts are read in SQL because a page holds only some of the run's events. With `range` (issue #1889) only
- * the events of that range are counted.
+ * Counted in SQL because a page holds only some of the run's events. An approval step is a result whose `details`
+ * carry an `approvalRequestId`.
  */
 export async function countAgentRunToolSteps(
   client: Pool | PoolClient,
@@ -274,12 +241,9 @@ export async function countAgentRunToolSteps(
 }
 
 /**
- * Whether events at the start of the run's history are gone (issue #1821): the run's first stored
- * event is not its opening `run_status` of `running`, which every run writes first. Retention
- * (`handleAgentRunEventsRetentionTask`) removes the events of a finished session run that precede a
- * compaction checkpoint, and the checkpoint stays, so the first event left is not the opening one.
- * A run with no event at all is truncated when it is finished, because a finished run has at least
- * its terminal `run_status`; a run that is still `running` is only about to write its first.
+ * Truncated when the first stored event is not the opening `run_status` of `running` (retention keeps the
+ * checkpoint but drops what precedes it). A finished run with no events is truncated; a running one is only about
+ * to write its first.
  */
 export async function isAgentRunHistoryTruncated(
   client: Pool | PoolClient,
@@ -294,7 +258,7 @@ export async function isAgentRunHistoryTruncated(
   return !(first.kind === "run_status" && first.status === "running");
 }
 
-/** Fetches one durable event only when it belongs to the run named by its thin realtime reference. */
+/** Only when the event belongs to the run named by its realtime reference. */
 export async function getAgentRunEventById(
   client: Pool | PoolClient,
   agentRunId: string,
@@ -337,41 +301,25 @@ function validateSempEventScope(scope: { threadId: string; sempMessageId: string
     throw new ValidationError("Invalid Semp event scope");
 }
 
-/**
- * The runs and event ranges of the assistant messages of the thread `$1` that a regeneration replaced (issue gh-1930).
- * A fixed SQL fragment, used only by the thread form of `listSessionAgentRunEventsFromLastCompaction`; a replaced
- * message always has its run and range, which `regenerateSempReply` requires before it sets `replaced_by_message_id`.
- */
+/** A replaced message always has its run and range (`regenerateSempReply` requires them). */
 const REPLACED_REPLY_RANGES = `SELECT agent_run_id, event_from_id, event_to_id FROM semp_messages
          WHERE thread_id = $1 AND role = 'assistant' AND replaced_by_message_id IS NOT NULL
            AND agent_run_id IS NOT NULL AND event_from_id IS NOT NULL AND event_to_id IS NOT NULL`;
 
 /**
- * Reconstruction source for `@semprec/agent-runtime`'s `walkStoredEntries` (#119): every event of
- * one dormant conversation's `unit='session'` runs, bounded to the tail after the latest
- * `compaction` checkpoint. Event ids are a global monotonic `bigserial` and one conversation is
- * woken strictly sequentially, so every event after the latest checkpoint has a larger id than
- * the checkpoint and every event before it a smaller one — the `id >=` bound is therefore exact,
- * not an approximation. The result starts with the `compaction` row itself (when any exists) so
- * the caller's walk still resets on it; with no checkpoint, `COALESCE(..., 0)` returns every
- * event of every session run. Uses `agent_runs_session_wake_idx` (migration 0017) and
- * `agent_run_events_run_idx` (migration 0015).
+ * Event ids are a global monotonic `bigserial` and a conversation is woken strictly sequentially, so the `id >=`
+ * checkpoint bound is exact. The result starts with the checkpoint row so the walk still resets on it; with no
+ * checkpoint every session event is returned.
  *
- * For a thread (issue gh-1930) the events of every assistant message that a regeneration replaced
- * (`semp_messages.replaced_by_message_id` set) are left out: those with the message's `agent_run_id` and an id from its
- * `event_from_id` through its `event_to_id`, the whole turn or none of it. They are left out of the bounded read before
- * its limits are applied, so a replaced answer counts toward no limit. A retried failed attempt has no replacement and
- * stays. The `compaction` rows that the walk resets on are not in such a range (a regeneration is refused once a
- * checkpoint follows the reply) and are read as before.
+ * For a thread, whole turns replaced by a regeneration are excluded before the limits apply. Compaction rows are
+ * never inside such a range (regeneration is refused once a checkpoint follows the reply).
  */
 export async function listSessionAgentRunEventsFromLastCompaction(
   client: Pool | PoolClient,
   filter: SessionAgentRunsFilter,
   bounds?: { maxRows: number; maxBytes: number },
 ): Promise<AgentRunEventRow[]> {
-  // A thread's main conversation is keyed by `thread_id` (agent_runs_thread_wake_idx); the project-item
-  // form never picks those runs up, so a thread's runs and a non-thread session of the same project
-  // item stay separate conversations.
+  // A thread's runs and a non-thread session of the same project item stay separate conversations.
   const isThread = "threadId" in filter;
   const sessionRunsWhere = isThread
     ? `thread_id = $1 AND unit = 'session' AND triggered_by = 'user' AND parent_run_id IS NULL`

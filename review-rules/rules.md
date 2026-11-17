@@ -1,23 +1,20 @@
-- ADR filenames are `YYYY-MM-DD-kebab-case-slug.md`; no sequential numbering. A renamed
-  or moved existing ADR file, or a new ADR with a numeric-prefix filename, is a
-  high-severity finding — it defeats the whole reason this convention exists (see
-  `docs/adr/README.md`): avoiding renumbering churn and merge collisions between
-  parallel PRs.
-- Every ADR has frontmatter with `status`, `date`, `area`, `supersedes`, and
-  `superseded-by` — missing or malformed frontmatter is medium severity.
-- Superseding a decision never rewrites the old ADR's Context/Decision/Consequences —
-  only its frontmatter (`status: superseded`, `superseded-by: <new-slug>`) changes; the
-  new decision gets its own new ADR with `supersedes: [<old-slug>]`. Editing an old
-  ADR's body to reflect the new decision is a high-severity finding: it destroys the
-  historical record an ADR exists to preserve.
-- No hand-maintained index or listing file under `docs/adr/` (beyond `README.md`,
-  which documents the convention, not the decisions) — it reintroduces the
-  merge-conflict/staleness problem the flat, unindexed layout exists to avoid. Medium
-  severity if one appears.
-- An ADR should exist for a decision that shapes future code and had a real
-  alternative; flag (low) an ADR written for a plain hygiene rule with no real
-  alternative (e.g. "never log secrets") — those belong in a platform's
-  `review-rules/rules.md`, not `docs/adr/`.
-- A skill or rules file that restates an existing ADR's rationale at length instead of
-  linking to it (`docs/adr/<slug>.md`) is low severity — the ADR is the source of
-  truth for "why," the skill/rule should point to it.
+- Backend and cross-cutting architecture lives in `docs/architecture/`, updated in place.
+  A document there states current rules only: changelog narration ("now", "previously",
+  "after the cutover"), issue numbers, dates or a section kept for a rule the code no
+  longer follows is medium severity — the next agent executes it as current.
+- A new file under `docs/adr/` for a backend rule, or for a local pattern (one module,
+  one operation, one lock order), is medium: it belongs in the relevant
+  `docs/architecture/` section or in the code. A new ADR is for a mobile or web decision,
+  or a genuinely new cross-cutting decision no architecture document covers.
+- An instruction file or skill that makes agents produce process weight the repository
+  rejects — an ADR per pattern, a test per branch, a docstring per function, issue
+  numbers or ADR citations in code comments — is medium: it contradicts `.bb/AGENTS.md`.
+- ADR filenames are `YYYY-MM-DD-kebab-case-slug.md`, never renamed or moved; a numbered
+  or renamed ADR is high severity (other documents reference it by slug). Every ADR has
+  `status`, `date`, `area`, `supersedes` and `superseded-by` frontmatter; missing or
+  malformed is medium.
+- Superseding an ADR never rewrites the old body; only its frontmatter changes and the
+  new decision is a new file. Editing an accepted ADR's body is high severity.
+- No hand-maintained index under `docs/adr/` beyond `README.md` — medium.
+- A skill or rules file that restates an architecture document at length instead of
+  linking to it is low: the second copy drifts.

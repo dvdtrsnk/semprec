@@ -7,13 +7,11 @@ import { ValidationError } from "../errors.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 
 /**
- * The `status` values of a Processing proposal that is closed: a `confirmed` card's item holds the blob reference from
- * then on and a `rejected` card writes nothing. The same two values as `LOCKED_PROPOSAL_STATUSES` in
- * `inbox/inboxTypesStore.ts`, which this module does not import (a test keeps the two equal).
+ * Closed Processing proposals no longer hold blob references (a confirmed card's item does). Must equal
+ * `LOCKED_PROPOSAL_STATUSES` in `inbox/inboxTypesStore.ts`; a test keeps them equal.
  */
 export const CLOSED_PROPOSAL_STATUSES: readonly string[] = ["confirmed", "rejected"];
 
-/** The raw `blobs` row shape this module reads back from Postgres. */
 type BlobDbRow = {
   id: string;
   mime_type: string;
@@ -47,10 +45,8 @@ export interface CreateBlobInput {
 }
 
 /**
- * Prefixes `key` with the tenant in scope, as `<tenantId>/<key>`. The tenant comes from
- * `app_tenant_default()`, the same function that fills `blobs.tenant_id`, so a key's prefix and
- * its row's tenant always agree. Throws when no tenant is in scope, so a caller resolving the key
- * before writing bytes fails before any byte is written.
+ * Uses `app_tenant_default()`, which also fills `blobs.tenant_id`, so a key's prefix and its row's tenant always agree.
+ * Throws without a tenant in scope, before any byte is written.
  */
 export async function tenantBlobStorageKey(client: Queryable, key: string): Promise<string> {
   const { rows } = await client.query<{ tenant_id: string | null }>("SELECT app_tenant_default()::text AS tenant_id");
@@ -59,7 +55,7 @@ export async function tenantBlobStorageKey(client: Queryable, key: string): Prom
   return `${tenantId}/${key}`;
 }
 
-/** `blobs` is not item/database state (no `properties`/`owner`), so it is written directly, the same way `docs`/`doc_snapshots` are — not through the choke-point. */
+/** Not item state, so written directly rather than through the choke point. Does not dedupe. */
 export async function createBlob(client: Queryable, input: CreateBlobInput): Promise<BlobRow> {
   const { rows } = await client.query<BlobDbRow>(
     `INSERT INTO blobs (mime_type, byte_size, storage_key, source_url, content_hash)
@@ -76,9 +72,8 @@ export async function getBlob(client: Queryable, id: string): Promise<BlobRow | 
 }
 
 /**
- * Row-locks one blob until the caller's transaction ends, and reports whether it exists. A caller
- * that decides from a read of the blob's Files items whether to create one takes this lock first, so
- * a concurrent transaction filing the same bytes waits and then sees the item the first one created.
+ * Taken before deciding from the blob's Files items whether to create one, so a concurrent filing of the same bytes
+ * waits and then sees the first one's item.
  */
 export async function lockBlobById(client: Queryable, id: string): Promise<boolean> {
   const { rows } = await client.query<{ id: string }>(
@@ -89,27 +84,21 @@ export async function lockBlobById(client: Queryable, id: string): Promise<boole
 }
 
 /**
- * SQL for the mime type a blob has when something is attached to it: the type the upload owner verified from the
- * bytes when it recognised them, else the stored `mime_type`. `application/octet-stream` is the detector's "unknown",
- * so it never hides a stored type. A dedup hit keeps its first row's `mime_type`
- * ([[2026-11-04-blob-content-classification-preserves-legacy-metadata]]), which can be a sender's header such as
- * `application/octet-stream` on a mail attachment whose bytes an upload has since shown to be an MP3.
+ * The detected type wins over the stored `mime_type`, which a dedup hit keeps from its first row (possibly a sender's
+ * header). `application/octet-stream` is the detector's "unknown", so it never hides a stored type.
  */
 export function effectiveBlobMimeTypeSql(alias: string): string {
   return `COALESCE(NULLIF(${alias}.detected_mime_type, 'application/octet-stream'), ${alias}.mime_type)`;
 }
 
-/** A blob read to be referenced, with the mime type it has as an attachment (`effectiveBlobMimeTypeSql`). */
 export interface ReferencedBlob {
   id: string;
   mimeType: string;
 }
 
 /**
- * Reads the blobs `ids` names in the tenant in scope and holds `FOR KEY SHARE` on each until the transaction ends, in
- * id order, the lock of [[2026-11-01-blob-reference-writes-coordinate-with-collection]]. A blob of another tenant or
- * one that does not exist is absent from the result. The lock keeps `deleteBlobIfUnreferenced`, which takes the row
- * for update, from deleting a blob between the read and the `inbox_attachments` insert that references it.
+ * `FOR KEY SHARE`, in id order, keeps `deleteBlobIfUnreferenced` (which locks `FOR UPDATE`) from deleting a blob
+ * between this read and the insert that references it. Missing or foreign blobs are absent from the result.
  */
 export async function lockBlobsForReference(client: Queryable, ids: string[]): Promise<ReferencedBlob[]> {
   const { rows } = await client.query<{ id: string; mime_type: string }>(
@@ -139,11 +128,7 @@ export async function recordDetectedBlobMimeType(client: PoolClient, id: string,
   if (result.rowCount !== 0 && result.rowCount !== 1) throw new Error("Unexpected blob classification update count");
 }
 
-/**
- * Looks a blob up by content hash within the tenant in scope: the `tenant_isolation` RLS policy
- * confines the read to that tenant's rows, so identical bytes another tenant stored are invisible
- * here and dedupe is per tenant.
- */
+/** RLS confines this to the tenant in scope, so dedupe is per tenant. */
 export async function getBlobByContentHash(client: Queryable, contentHash: string): Promise<BlobRow | null> {
   const { rows } = await client.query<BlobDbRow>(`SELECT ${BLOB_COLUMNS} FROM blobs WHERE content_hash = $1`, [
     contentHash,
@@ -151,21 +136,13 @@ export async function getBlobByContentHash(client: Queryable, contentHash: strin
   return rows[0] ? mapBlobRow(rows[0]) : null;
 }
 
-/**
- * Content-addressed dedup (issue #26: "the same invoice forwarded three times is stored
- * once") — `createBlob` itself stays a bare insert (issue #24 left dedup enforcement out of
- * its scope on purpose), so this is the one caller-facing entry point that actually dedupes.
- * Dedupe is per tenant: the arbiter is every unique index on `blobs` (the tenant-leading
- * `(tenant_id, content_hash)` index among them), and the read-back after a conflict goes through
- * `getBlobByContentHash`, which RLS confines to the tenant in scope. Without `contentHash` there
- * is nothing to dedupe against, so it falls back to a plain insert.
- */
+/** The one entry point that dedupes by content hash (per tenant); without a hash it is a plain insert. */
 export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput): Promise<BlobRow> {
   if (!input.contentHash) return createBlob(client, input);
 
   const inserted = await client.query<BlobDbRow>(
-    // No conflict target: all unique indexes arbitrate. Migration 0080 removes the legacy global
-    // content-hash index, leaving content deduplication scoped by blobs_tenant_content_hash_uq.
+    // No conflict target: all unique indexes arbitrate, and content deduplication is scoped by
+    // blobs_tenant_content_hash_uq.
     `INSERT INTO blobs (mime_type, byte_size, storage_key, source_url, content_hash)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT DO NOTHING
@@ -180,16 +157,9 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
 }
 
 /**
- * Deletes blob `id` only when nothing references it any more — no item visible to the caller (live
- * or trashed, in any of its databases, archived ones included) whose `properties.file.blobId` or
- * `properties.<key>.blobId` of any `image` property names it, no mail attachment and no
- * `inbox_attachments` row that names it as its blob, its preview or its reduced copy, and no open Processing proposal
- * whose `proposal` or `aiProposal` envelope names its id (a recipe card's `photo`, issue gh-1974; see
- * [[2026-11-15-an-open-proposal-keeps-the-blobs-its-envelope-names]]) — because `findOrCreateBlob`'s content-hash dedup shares one blob between
- * identical uploads. Used by the trash purge (issue #675) in its own transaction, after the
- * referencing item is gone. Returns the
- * deleted row's `storage_key` so the caller can remove the bytes after the commit, or null when the
- * blob is still referenced or already absent.
+ * Content-hash dedup shares one blob between uploads, so it is deleted only when nothing references it: no visible
+ * item (live or trashed), mail or inbox attachment, speech row, or open Processing proposal envelope. Returns the
+ * `storage_key` so the caller removes the bytes after commit; null when still referenced or absent.
  */
 export async function deleteBlobIfUnreferenced(client: Queryable, id: string): Promise<string | null> {
   const locked = await client.query<{ id: string }>(
@@ -197,13 +167,9 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
     [id],
   );
   if (locked.rows.length === 0) return null;
-  // The `database_id` bind prunes the reference lookup to the visible partitions; it does not change
-  // which rows count as references, since every item in those databases is still considered.
-  // The ids are read by an earlier statement, so under READ COMMITTED a database committed in
-  // between would be visible to this DELETE but missing from the list, and an item in it that
-  // references the blob would go unseen. The `databases` guard makes the DELETE a no-op in that
-  // case: the blob is kept, as if still referenced, rather than deleted from under a reference.
-  // A fresh statement after the lock sees references committed while lock acquisition waited.
+  // The `database_id` list prunes partitions. It is read by an earlier statement, so under READ COMMITTED a database
+  // committed in between would be missed; the `databases` guard then keeps the blob rather than deleting it from
+  // under a reference. A fresh statement after the lock sees references committed while the lock waited.
   const result = await client.query<{ storage_key: string }>(
     `DELETE FROM blobs WHERE tenant_id = app_tenant_default() AND id = $1
        AND NOT EXISTS (SELECT 1 FROM databases WHERE tenant_id = app_tenant_default() AND NOT (id = ANY($3::uuid[])))
@@ -248,11 +214,7 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
   return requireSingleRow(result.rows, "unreferenced blob deletion").storage_key;
 }
 
-/**
- * Ids of the tenant-in-scope's standalone upload blobs (storage key `<tenantId>/blobs/...`, see
- * `ingestUploadedBlob`) created before `olderThan`, in keyset pages ordered by id. Whether a
- * candidate is still referenced is decided by `deleteBlobIfUnreferenced`, not here.
- */
+/** Standalone uploads (`<tenantId>/blobs/...`). Candidates only; `deleteBlobIfUnreferenced` decides. */
 export async function listStandaloneBlobIdsCreatedBefore(
   client: Queryable,
   olderThan: Date,
@@ -272,10 +234,8 @@ export async function listStandaloneBlobIdsCreatedBefore(
 }
 
 /**
- * Deletes blob `id` unconditionally and returns its `storage_key` so the caller can remove the
- * bytes after the commit, or null when the row is absent. Only for a derived blob owned one-to-one
- * by the item being purged (the normalized or playback audio of a recording); a blob that
- * content-hash dedup may share between items goes through `deleteBlobIfUnreferenced` instead.
+ * Unconditional: only for a derived blob owned one-to-one by the item being purged (e.g. a recording's playback
+ * audio). A blob dedup may share goes through `deleteBlobIfUnreferenced`.
  */
 export async function deleteDerivedBlob(client: Queryable, id: string): Promise<string | null> {
   const { rows } = await client.query<{ storage_key: string }>(

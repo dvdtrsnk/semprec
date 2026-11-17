@@ -11,9 +11,8 @@ import { describeMailFailure } from "../mail/describeMailFailure.js";
 import { logger } from "./logger.js";
 
 /**
- * Admin-issued account invitations (issue #1040). Only the token's hash is stored, as for
- * password-reset tokens. The raw token leaves the server once, inside `inviteUrl` and the mail.
- * Accepting an invitation is issue #1087's concern; this module never sets `accepted_at`.
+ * Admin-issued account invitations. Only the token hash is stored; the raw token leaves the server once,
+ * in `inviteUrl` and the mail. This module never sets `accepted_at`.
  */
 
 /** A pending invitation expires seven days after it was created. */
@@ -93,12 +92,10 @@ export interface CreatedInvite {
 }
 
 /**
- * Creates a pending invitation and supersedes every earlier pending one for the same address. The
- * per-address advisory lock serializes concurrent `createInvite` calls for one address, so the
- * superseding update and the insert cannot interleave with another invite for it. The lock does not
- * serialize against user creation, which never takes it: the existing-account check refuses an address
- * that already had an account when it ran, and accepting an invitation (#1087) must check again. The
- * mail is dispatched from `runAfterCommit`, so a rolled-back transaction sends nothing.
+ * Creates a pending invitation and supersedes earlier pending ones for the address. A per-address
+ * advisory lock serializes `createInvite` calls for one address. User creation does not take it, so
+ * acceptance must check for an existing account again. The mail is sent from `runAfterCommit`, so a
+ * rollback sends nothing.
  */
 export async function createInvite(client: PoolClient, input: CreateInviteInput): Promise<CreatedInvite> {
   const email = normalizeEmail(input.email);
@@ -159,9 +156,8 @@ export async function listInvites(client: Queryable): Promise<InviteSummary[]> {
 }
 
 /**
- * Revokes one pending invitation with a single conditional update. When it matches no row, a missing
- * id is `NotFoundError`; an accepted, revoked or expired invitation is `invite_not_pending` (409), so
- * the caller learns why nothing changed.
+ * One conditional update. On no match, a missing id is `NotFoundError`; an accepted, revoked or expired
+ * one is `invite_not_pending` (409).
  */
 export async function revokeInvite(client: PoolClient, inviteId: string): Promise<InviteSummary> {
   const result = await client.query<InviteRow>(

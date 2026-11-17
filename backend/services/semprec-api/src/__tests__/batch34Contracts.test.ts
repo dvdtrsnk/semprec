@@ -28,9 +28,8 @@ import {
 import { createDispatcher } from "../app.js";
 
 /**
- * Batch 34 entry-point contracts (gh-1605, gh-1609, gh-2016, gh-1622) through the production dispatcher: real
- * session authentication, the generic REST routes, the application service and the choke point, on a runtime-role
- * pool that row-level security applies to, with two tenants.
+ * Entry-point contracts through the production dispatcher: real session authentication, the generic REST routes, the
+ * application service and the choke point, on a runtime-role pool under row-level security, with two tenants.
  */
 
 const PASSWORD = "s3cret-password";
@@ -45,6 +44,7 @@ const itemEnvelope = z.object({
   databaseId: z.string(),
   properties: z.record(z.string(), z.unknown()),
   updatedAt: z.string(),
+  version: z.string(),
 });
 const propertyEnvelope = z.object({ id: z.string(), key: z.string(), config: z.record(z.string(), z.unknown()) });
 
@@ -176,7 +176,7 @@ describe("batch 34 entry-point contracts", () => {
         databaseId: databaseOf(own, "tasks"),
         properties: { name: "Weekly review", date: "2026-10-12" },
       });
-      // Create a legacy series through the Tasks store and its system choke-point projection.
+      // A series written through the Tasks store and its system choke-point projection.
       await withTransaction(runtime, async (client) => {
         const series = await createTaskRecurrence(client, {
           itemId: created.id,
@@ -249,7 +249,7 @@ describe("batch 34 entry-point contracts", () => {
     for (const patch of [{ seriesId: randomUUID() }, { occurrenceDate: "2026-10-19" }]) {
       const refused = await call("PATCH", `/api/items/${task.id}`, own.headers, {
         properties: patch,
-        ifVersion: before.updatedAt,
+        ifVersion: before.version,
       });
       expect(refused.status).toBe(403);
       expect(errorBody.parse(refused.json).error).toMatchObject({
@@ -259,7 +259,7 @@ describe("batch 34 entry-point contracts", () => {
     }
     const malformed = await call("PATCH", `/api/items/${task.id}`, own.headers, {
       properties: { recurrence: { preset: null, mode: "fixed", rule } },
-      ifVersion: before.updatedAt,
+      ifVersion: before.version,
     });
     expect(malformed.status).toBe(400);
     const after = await call("GET", `/api/items/${task.id}`, own.headers);
@@ -268,7 +268,7 @@ describe("batch 34 entry-point contracts", () => {
     expect(invalidations).toEqual([]);
     const permitted = await call("PATCH", `/api/items/${task.id}`, own.headers, {
       properties: { recurrence: { mode: "fixed", rule } },
-      ifVersion: before.updatedAt,
+      ifVersion: before.version,
     });
     expect(permitted.status).toBe(200);
 
@@ -295,7 +295,7 @@ describe("batch 34 entry-point contracts", () => {
         properties: { name: "Retro", date: "2026-10-16" },
       });
       const project = await cp.createItem({ databaseId: databaseOf(own, "projects"), properties: { name: "Project" } });
-      // The derived edge as its owning process writes it (the event-link sync), through the system choke point.
+      // As its owning process (the event-link sync) writes it, through the system choke point.
       await withTransaction(runtime, (client) =>
         createRelationWithClient(
           client,

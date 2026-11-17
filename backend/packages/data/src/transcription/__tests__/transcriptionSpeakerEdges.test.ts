@@ -42,13 +42,13 @@ function compareJobKeys(a: QueuedJobKey, b: QueuedJobKey): number {
   return order(a.key, b.key);
 }
 
-/** Every queued job's task and key, read through graphile-worker's public `jobs` view, in code-unit order. */
+/** Read through graphile-worker's public `jobs` view. */
 async function queuedJobKeys(): Promise<QueuedJobKey[]> {
   const { rows } = await pool.query<QueuedJobKey>("SELECT task_identifier, key FROM graphile_worker.jobs");
   return rows.map(({ task_identifier, key }) => ({ task_identifier, key })).sort(compareJobKeys);
 }
 
-/** `jobs` with the given keys of `taskIdentifier` added once each, as job-key deduplication leaves them. */
+/** As job-key deduplication leaves them. */
 function withQueuedKeys(jobs: QueuedJobKey[], taskIdentifier: string, keys: string[]): QueuedJobKey[] {
   const added = keys
     .filter((key) => !jobs.some((job) => job.key === key))
@@ -56,7 +56,6 @@ function withQueuedKeys(jobs: QueuedJobKey[], taskIdentifier: string, keys: stri
   return [...jobs, ...added].sort(compareJobKeys);
 }
 
-/** `jobs` with the given search reindex keys added once each, as job-key deduplication leaves them. */
 function withReindexKeys(jobs: QueuedJobKey[], keys: string[]): QueuedJobKey[] {
   return withQueuedKeys(jobs, CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS, keys);
 }
@@ -253,7 +252,6 @@ async function propertyIdFor(databaseId: string, key: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Issue #185: speaker-to-People mappings written through the generic relation operation and composed at read time. */
 describe("Transcript speaker mappings (issue #185)", () => {
   let transcriptsId: string;
   let peopleId: string;
@@ -555,10 +553,9 @@ describe("Transcript speaker mappings (issue #185)", () => {
                 },
               ]);
               events.length = 0;
-              // Issue #1652's search reindex jobs, keyed as `enqueueItemSearchReindex` keys them: the held
-              // rename queued the transcript's referrers, the written edge both ends' documents. Issue #1660's
-              // edge hook queued the People `lastContact` recompute of the person the edge maps. Nothing else
-              // was queued, and the two refusals below must add nothing.
+              // Search reindex jobs (the held rename queued the transcript's referrers, the written edge both
+              // ends' documents) and the People `lastContact` recompute of the mapped person. Nothing else was
+              // queued, and the two refusals below must add nothing.
               const afterEdgeJobs = await queuedJobKeys();
               expect(afterEdgeJobs).toEqual(
                 withQueuedKeys(
@@ -774,7 +771,7 @@ describe("Transcript speaker mappings (issue #185)", () => {
     });
 
     it("leaves other relations' metadata unconstrained", async () => {
-      // A Tasks `people` edge: the Events `people` edge has a metadata shape of its own since issue #1757.
+      // A Tasks `people` edge: the Events `people` edge has a metadata shape of its own.
       const tasksId = await databaseIdFor("tasks");
       const peoplePropertyId = await propertyIdFor(tasksId, "people");
       const taskId = (

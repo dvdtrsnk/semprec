@@ -49,7 +49,6 @@ interface ProcessResult {
   stderr: string;
 }
 
-/** Runs a process to completion with its output bounded; a signal, a spawn error or too much output rejects. */
 function runProcess(
   command: string,
   args: readonly string[],
@@ -87,7 +86,6 @@ function runProcess(
   });
 }
 
-/** Runs one command inside a fixture's container, keeping the exit code and stderr that `fixture.exec` drops. */
 function execInFixture(target: BackupRecoveryFixture, args: readonly string[], input?: Buffer): Promise<ProcessResult> {
   return runProcess("docker", ["exec", "--interactive", target.containerId, ...args], { input });
 }
@@ -375,7 +373,6 @@ describe("offline compatible tenant keys", () => {
     if (stageName) {
       try {
         if (!/^semprec_restore_[a-f0-9]{32}$/.test(stageName)) throw new Error("Invalid owned stage identity");
-        // The stage name is a fixed prefix and UUID hex digits.
         await admin.query(`DROP DATABASE IF EXISTS "${stageName}"`);
         const absence = await admin.query<{ present: boolean }>(
           "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1) AS present",
@@ -809,7 +806,6 @@ describe("offline compatible tenant keys", () => {
       await sqlOn(fixture, database, `INSERT INTO public.tenant_deletions (tenant_id) VALUES ('${TOMBSTONED}')`);
       const url = databaseUrl(fixture.adminUrl, database);
 
-      // semprec_restore holds no privilege on the restored catalog yet.
       expect(await validate(ledgerWith, url)).toEqual({
         code: 1,
         stdout: "",
@@ -821,9 +817,7 @@ describe("offline compatible tenant keys", () => {
         `GRANT USAGE ON SCHEMA public TO semprec_restore;
         GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore`,
       );
-      // The ledger covers the snapshot's tombstone.
       expect(await validate(ledgerWith, url)).toEqual({ code: 0, stdout: "", stderr: "" });
-      // The ledger lacks the snapshot's tombstone.
       expect(await validate(ledgerWithout, url)).toEqual({
         code: 1,
         stdout: "",
@@ -1010,7 +1004,6 @@ exec "$TEST_NODE" "$@"
 
   it("retains an interrupted Docker exec until its held database operation settles", async () => {
     const database = `semprec_restore_${randomUUID().replaceAll("-", "")}`;
-    // The database name is a fixed prefix and UUID hex digits.
     await sql("postgres", `CREATE DATABASE "${database}"`);
     await sql(
       database,
@@ -1104,7 +1097,6 @@ exec "$TEST_NODE" "$@"
   }, 120_000);
   it("retains an exec when its start response is lost until the daemon finishes", async () => {
     const database = `semprec_restore_${randomUUID().replaceAll("-", "")}`;
-    // The database name is a fixed prefix and UUID hex digits.
     await sql("postgres", `CREATE DATABASE "${database}"`);
     await sql(
       database,

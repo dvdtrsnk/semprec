@@ -16,39 +16,33 @@ import {
 } from "@semprec/data";
 import { logger } from "./logger.js";
 
-/** A cached access token counts as expired this long before the provider's stated expiry. */
+/** Counts as expired this long before the provider's stated expiry. */
 const ACCESS_TOKEN_EXPIRY_MARGIN_MS = 60_000;
 
-/** The purposes the sync job records for its own credential reads (mailSyncJob.ts's `syncPurpose` map). */
+/** Must match mailSyncJob.ts's `syncPurpose` map. */
 const GMAIL_SYNC_PURPOSE = "gmail_api_sync";
 const GRAPH_SYNC_PURPOSE = "graph_api_sync";
 
 export interface CreateMailSyncAdaptersOptions {
   pool: Pool;
-  /** The process environment. Only the Gmail and Microsoft Graph OAuth client keys are read. */
+  /** Only the Gmail and Microsoft Graph OAuth client keys are read. */
   env: Readonly<Record<string, string | undefined>>;
-  /** Replaces the global `fetch` for the token endpoints and the provider REST APIs. Tests inject fake providers here. */
+  /** Tests inject fake providers here. */
   fetchImpl?: typeof fetch;
 }
 
-/** One provider's OAuth client keys, as `readOAuthClient` reads them from the environment. */
 export interface OAuthClient {
   clientId: string;
   clientSecret: string;
 }
 
 /**
- * The mail sync transports this api process runs, passed to `createApiCoreTaskList`. Issue #1505 fills
- * `createGmailClient`, issue #1508 fills `createGraphClient`, and issue #1510 fills `createImapClient`.
+ * Passed to `createApiCoreTaskList`. `createImapClient` is always present: an IMAP mailbox names
+ * its own server settings and its password is the stored app-specific password.
  *
- * The IMAP transport needs no OAuth key: an IMAP mailbox names its own host, port, security and
- * username (`mail_account_server_settings`), and its password is the stored app-specific password the
- * sync job passes in. So `createImapClient` is always present.
- *
- * Each OAuth provider is configured on its own. Without a provider's two OAuth keys its client factory is
- * absent, and this logs one warning that names that provider's missing keys (never their values). The
- * process still starts: each account of that mode then fails its sync with the sync job's own
- * "No ... adapter configured for this composition root" message.
+ * Each OAuth provider is configured on its own. Without its two keys its factory is absent and one
+ * warning names the missing keys (never values); the process still starts and each account of that
+ * mode fails its sync with "No ... adapter configured for this composition root".
  */
 export function createMailSyncAdapters(options: CreateMailSyncAdaptersOptions): MailSyncAdapterFactory {
   const { pool, env, fetchImpl } = options;
@@ -56,9 +50,9 @@ export function createMailSyncAdapters(options: CreateMailSyncAdaptersOptions): 
 
   adapters.createImapClient = (mailboxItemId, credential) => openMailboxImapClient(pool, mailboxItemId, credential);
 
-  // Both OAuth transports below ignore the credential the sync job passes to their factory on purpose: the
-  // refresh reads the stored token under its row lock, so a value read before another refresh rotated
-  // it would present a retired refresh token.
+  // Both OAuth transports deliberately ignore the credential the sync job passes: the refresh reads
+  // the stored token under its row lock, so a value read before another refresh rotated it would
+  // present a retired refresh token.
   const gmail = readOAuthClient(env, "GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET");
   if ("missingEnv" in gmail) {
     logger.warn(
@@ -109,13 +103,10 @@ export function createMailSyncAdapters(options: CreateMailSyncAdaptersOptions): 
 }
 
 /**
- * Opens the IMAP connection of one mailbox from its stored server settings (issue #1510). The password is
- * the credential the sync job decrypted for this pass. It goes to the connection and nowhere else: neither
- * the errors below nor the logs carry it.
- *
- * A mailbox with no IMAP settings is a configuration error, not a provider failure, so it is raised here
- * with the mailbox id. The connection goes through `openImapConnection`, which vets the host's address and
- * maps a refused or unreachable server to `MailServerUnreachableError`; that error passes through unchanged.
+ * The password goes to the connection only, never into errors or logs. A mailbox with no IMAP
+ * settings is a configuration error raised with the mailbox id. `openImapConnection` vets the
+ * host's address and maps a refused or unreachable server to `MailServerUnreachableError`, which
+ * passes through unchanged.
  */
 async function openMailboxImapClient(pool: Pool, mailboxItemId: string, password: string): Promise<ImapMailClient> {
   const settings = await getMailServerSettings(pool, mailboxItemId);
@@ -138,10 +129,8 @@ async function openMailboxImapClient(pool: Pool, mailboxItemId: string, password
 }
 
 /**
- * Maps the two connect failures the sync job must handle differently. A provider that refuses the
- * connection for too many open sessions becomes `MailConnectionLimitError`, so the job backs off instead of
- * retrying at once (imapFlowClient.ts's `isImapConnectionLimitError`). A login the server rejects becomes
- * `MailReauthorizationRequiredError`, so the account reads as needing reauthorization. Every other error
+ * Too many open sessions becomes `MailConnectionLimitError`, so the job backs off instead of
+ * retrying at once. A rejected login becomes `MailReauthorizationRequiredError`. Every other error
  * becomes a fixed generic error without claiming a known failure kind.
  */
 function classifyImapConnectError(error: unknown): Error {
@@ -161,7 +150,7 @@ function classifyImapConnectError(error: unknown): Error {
   return new Error("IMAP connection failed unexpectedly");
 }
 
-/** imapflow sets `authenticationFailed` on a login the server rejected (imapflow's commands/login.js). */
+/** imapflow sets `authenticationFailed` on a login the server rejected. */
 function isLoginRejection(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -171,10 +160,7 @@ function isLoginRejection(error: unknown): boolean {
   );
 }
 
-/**
- * Reads one provider's OAuth client keys. An unset or empty key counts as missing. A missing result
- * names the keys that are missing, never their values.
- */
+/** An unset or empty key counts as missing; a missing result names the keys, never their values. */
 export function readOAuthClient(
   env: CreateMailSyncAdaptersOptions["env"],
   idKey: string,
@@ -198,13 +184,11 @@ interface OAuthAccessTokenSourceInput {
 }
 
 /**
- * The `getAccessToken` of one provider REST client. It keeps the last token it obtained for as long as
- * that client lives (one sync pass of one mailbox), and refreshes once the token is within
- * `ACCESS_TOKEN_EXPIRY_MARGIN_MS` of its expiry. Calls that overlap on one client can each refresh;
- * the row lock in `refreshAndPersistAccessToken` serialises those refreshes. A refresh that throws
- * leaves the kept token unchanged, so the next request tries again. A rejected refresh token surfaces
- * as `MailReauthorizationRequiredError`, which the sync job maps to `needsReauthorization`. The refresh
- * sends no `scope`, so the provider keeps the scopes the account already granted.
+ * Keeps the last token for the client's lifetime (one sync pass of one mailbox) and refreshes
+ * within `ACCESS_TOKEN_EXPIRY_MARGIN_MS` of expiry. Overlapping refreshes are serialised by the row
+ * lock in `refreshAndPersistAccessToken`. A failed refresh keeps the old token so the next request
+ * retries; a rejected refresh token surfaces as `MailReauthorizationRequiredError`. No `scope` is
+ * sent, so the provider keeps the scopes already granted.
  */
 function createOAuthAccessTokenSource(input: OAuthAccessTokenSourceInput): () => Promise<string> {
   let kept: { accessToken: string; expiresAt: Date } | undefined;

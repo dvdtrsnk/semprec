@@ -1,8 +1,5 @@
-// The daily sweep of orphaned subpages (issue #1749): a Pages item whose parent's document holds no `page` block for it
-// is sent to the Trash through the choke point's item delete, so it can be restored like any deleted item.
-// Constrained by: docs/adr/2026-10-06-system-work-fans-out-per-tenant.md,
-// docs/adr/2026-09-28-chunked-transactions-for-large-background-sweeps.md,
-// docs/adr/2026-11-10-trashed-pages-leave-the-parent-document-and-record-their-position.md
+// Daily sweep: a Pages item whose parent's document holds no `page` block for it is trashed through the choke point,
+// so it stays restorable.
 import type { Pool, PoolClient } from "pg";
 import { readPageBlocks } from "@semprec/block-model";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -17,21 +14,18 @@ import { logger } from "./logger.js";
 import { PAGES_MODULE_ID } from "./pagesDatabase.js";
 import { assertSweepNotFailedEntirely, type SweepOutcome } from "./sweepOutcome.js";
 
-/** Most pages one transaction of the sweep examines. */
 const PAGE_ORPHAN_SWEEP_CHUNK_SIZE = 200;
 
-/** A page is left alone while the document of its parent was edited less than this many seconds ago. */
+/** A page is left alone while its parent's document was edited more recently than this. */
 const PAGE_ORPHAN_MIN_IDLE_SECONDS = 60 * 60;
 
-/** What the sweep did across all tenants. */
 export interface PageOrphanSweepResult {
-  /** Pages the sweep itself sent to the Trash; the pages that went with them are not counted. */
+  /** Excludes the subpages that went with them. */
   trashed: number;
-  /** Pages whose examination or trash failed and was rolled back; they are tried again by the next run. */
+  /** Retried by the next run. */
   failed: number;
 }
 
-/** Position of the last page of a chunk: the listing order is the parent's item id, then the page's item id. */
 interface Cursor {
   parentItemId: string;
   pageId: string;
@@ -41,13 +35,7 @@ function errorName(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
 }
 
-/**
- * The next chunk of live Pages items after `cursor`, ordered by parent and then id, so the pages of one parent are
- * listed together. Only pages whose parent item has a `page` document that has been idle for the minimum time are
- * listed; every other page is not an orphan candidate. Whether the parent is live is not read here. A read without
- * locks: `trashOrphans` decides again under locks, so a row that changed since this read is judged on its current
- * state.
- */
+/** Ordered by parent so one parent's pages arrive together. Unlocked; `trashOrphans` decides again under locks. */
 async function listCandidatePages(
   client: PoolClient,
   pagesDatabaseId: string,
@@ -73,12 +61,7 @@ async function listCandidatePages(
   return rows.map((row) => ({ id: row.id, parentItemId: row.parent_item_id }));
 }
 
-/**
- * The ids of the pages among `pageIds` that are orphans of the parent `parentItemId`: the parent is live and has a
- * `page` document that has been idle for the minimum time, and the document holds no `page` block with the page's id.
- * Loading the document locks it, and the idle time is read after that, so an edit committed before the lock is seen.
- * Returns no page when the parent is trashed or has no `page` document, or when the document was edited too recently.
- */
+/** The idle time is read after loading (and so locking) the document, so an edit committed before the lock is seen. */
 async function orphansOfParent(
   client: PoolClient,
   parentItemId: string,
@@ -107,13 +90,8 @@ async function orphansOfParent(
 }
 
 /**
- * Sends the orphans among the pages `pageIds` to the Trash, in the caller's transaction, and returns how many pages it
- * trashed itself. The rows of the pages that are still live are locked `FOR UPDATE` in id order before any document
- * is loaded, the order a trash of a single page takes them in (the page, then the document of its parent); each
- * parent's document is then loaded once and judged by `orphansOfParent`. An orphan is trashed with the choke point's
- * `itemDeleteWithClient` as the `system` writer, so the hooks of `pageTrash.ts` trash the pages below it too. An
- * orphan that an earlier trash of this call already took along is not trashed again. A failure rolls the whole call
- * back.
+ * Page rows are locked in id order before any document, matching a single-page trash (page, then parent document).
+ * Trashing through the choke point lets the `pageTrash.ts` hooks take subpages along.
  */
 async function trashOrphans(client: PoolClient, pagesDatabaseId: string, pageIds: readonly string[]): Promise<number> {
   const { rows } = await client.query<{ id: string; parent_item_id: string | null }>(
@@ -147,10 +125,8 @@ async function trashOrphans(client: PoolClient, pagesDatabaseId: string, pageIds
 }
 
 /**
- * Sweeps the current tenant, which the caller has scoped, in chunks of at most `PAGE_ORPHAN_SWEEP_CHUNK_SIZE` pages,
- * each examined and trashed in one transaction of its own. When a chunk fails it is rolled back as a whole and its
- * pages are examined again one transaction each, so one page that cannot be trashed is logged by id and error name
- * (no content) and does not stop the others. Returns what the examined pages came to.
+ * One transaction per chunk; a failed chunk is retried one page per transaction so a single bad page (logged without
+ * content) does not stop the others.
  */
 async function sweepTenantPages(pool: Pool): Promise<SweepOutcome & { trashed: number }> {
   const pagesDatabase = await withTransaction(pool, (client) => getDatabaseByModuleId(client, PAGES_MODULE_ID));
@@ -186,17 +162,8 @@ async function sweepTenantPages(pool: Pool): Promise<SweepOutcome & { trashed: n
 }
 
 /**
- * The `pageOrphanSweep` daily core task (issue #1749): for every active tenant, in that tenant's scope, sends every
- * live Pages item that its parent's document no longer references to the Trash, where it stays recoverable until the
- * normal purge. A page is an orphan when its parent is a live item whose `page` document holds no `page` block with
- * the page's id and was last edited at least `PAGE_ORPHAN_MIN_IDLE_SECONDS` ago. A page is left alone when its parent
- * has no `page` document, is in the Trash, or has a document edited more recently. A page block moved into another
- * document leaves the page's `parentItemId` unchanged (the server does not follow such a move), so its page counts as
- * an orphan of the old parent and is trashed. A page that a run trashed is no longer live, so a later run does not
- * examine it.
- *
- * A tenant in which every examined page failed makes the run reject once all tenants were attempted (see
- * `assertSweepNotFailedEntirely` and `forEachActiveTenant`); a partial failure is logged as a warning.
+ * A page block moved into another document leaves `parentItemId` unchanged (the server does not follow the move), so
+ * that page is an orphan of its old parent and is trashed.
  */
 export async function sweepOrphanedPages(pool: Pool): Promise<PageOrphanSweepResult> {
   const total: PageOrphanSweepResult = { trashed: 0, failed: 0 };

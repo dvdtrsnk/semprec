@@ -197,7 +197,7 @@ describe("deriveReplyOutcome (issue #1890)", () => {
   });
 });
 
-/** A stored step as `projectSempReplySteps` writes it: the one reader of the column (issue #1887) needs it complete. */
+/** As `projectSempReplySteps` writes it; the column reader needs it complete. */
 function storedStep(extra: Record<string, unknown>): Record<string, unknown> {
   return {
     kind: "tool",

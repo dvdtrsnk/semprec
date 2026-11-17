@@ -81,16 +81,12 @@ async function readRefBytes(stream: Readable, cap: number, signal?: AbortSignal)
 }
 
 /**
- * Resolve each stored reference independently; only labels and refs are retained for replay. With
- * `agentProjectItemId` (the Projects item of the run the context is built for, issue #1849) the items a referenced
- * item relates to are read only as far as that project may read their databases: a related item in a database it may
- * not read appears as `{ id, hidden: true }` and is not named. The referenced item itself is read because the user
- * attached it.
+ * Each ref resolves independently; only labels and refs are retained for replay. The referenced
+ * item is read because the user attached it, but its related items only as far as
+ * `agentProjectItemId` may read them (else `{ id, hidden: true }`).
  *
- * A `sleepNight` ref (issue #1853) is the exception, because the sleep databases are sensitive: it is read when the
- * project holds a grant on them, or when `attachedThisTurn` says the refs are those of the turn that is starting, for
- * which the one-run read access of issue #1849 is opened. Otherwise it renders as `sleepNight: unavailable (no
- * access).` and expands nothing from the sleep databases; the other refs and the turn go on.
+ * A `sleepNight` ref (sensitive) needs a grant or `attachedThisTurn`; otherwise it renders as
+ * unavailable and the turn goes on.
  */
 export async function expandSempRefs(
   pool: Pool,

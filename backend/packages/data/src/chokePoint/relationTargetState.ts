@@ -5,12 +5,10 @@ import type { ItemRow } from "../types.js";
 export type RelationTargetBlock = "targetDeleted" | "targetArchived";
 
 /**
- * The state of a relation target that relation validation refuses (issue #1426), evaluated in one place for the edge
- * validation (`assertRelationTargetLinkableWithClient`) and for the proposal options route. A trashed item is
- * `targetDeleted`; a project whose `status` is `archived` is `targetArchived`; a `done` project and an item of
- * another database with the same `status` are linkable. `targetOwnerModuleId` is the `databases.owner_module_id` of
- * the item's database, read by the caller only when `status` is `archived`, which is the only case that needs it.
- * `null` means the item may be linked.
+ * Shared by edge validation and the proposal options route. A trashed item is `targetDeleted`; a
+ * project with `status` `archived` is `targetArchived`; a `done` project, or another database's item
+ * with that status, is linkable. `targetOwnerModuleId` is needed only when `status` is `archived`.
+ * `null` means linkable.
  */
 export function relationTargetBlock(
   target: Pick<ItemRow, "deletedAt" | "properties">,

@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
-// The production hook registrations: this file reaches the choke point by its deep path, not through the barrel.
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -18,8 +17,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
-// Issue gh-1974: a recipe's `sourceUrl` is an outbound URL stored for a later server-side request, so it passes the
-// stored-URL baseline (docs/adr/2026-09-27-ssrf-protection-for-stored-outbound-urls.md).
+// A recipe's `sourceUrl` is fetched server-side later, so it passes the stored-URL SSRF baseline.
 const SEEDING_HOOK_TIMEOUT_MS = 90_000;
 
 const REFUSED = {
@@ -31,7 +29,6 @@ const REFUSED = {
 
 const PUBLIC_URL = "https://recipes.example.com/goulash?utm=feed";
 
-/** Every kind of value the baseline refuses, with the reason it is named by. */
 const REFUSED_VALUES: ReadonlyArray<[string, unknown]> = [
   ["an http URL", "http://recipes.example.com/goulash"],
   ["a URL with a port", "https://recipes.example.com:8443/goulash"],
@@ -65,7 +62,6 @@ async function databaseId(moduleId: string): Promise<string> {
   return database.id;
 }
 
-/** The refusal of a write as the fields an HTTP caller sees; anything but a `ValidationError` is rethrown. */
 async function refusal(write: Promise<unknown>) {
   try {
     await write;
@@ -141,7 +137,6 @@ describe("recipe sourceUrl write hook (issue gh-1974)", () => {
       for (const [, value] of REFUSED_VALUES) {
         expect(await refusal(patchRecipe(recipe.id, { sourceUrl: value }))).toEqual(REFUSED);
       }
-      // Every refused update rolled back: the row is the one the create wrote.
       expect(await recipes()).toEqual([created]);
 
       const untouched = await patchRecipe(recipe.id, { servings: 4 });
@@ -165,7 +160,6 @@ describe("recipe sourceUrl write hook (issue gh-1974)", () => {
 
   // The hook is registered for both registries, so these call it directly to reach each branch on its own.
   describe("called on its own", () => {
-    /** Runs the hook as a create and as an update that set `sourceUrl` in the database `moduleId` of the tenant. */
     async function runHook(sourceUrl: unknown, moduleId = RECIPES_MODULE_ID): Promise<void> {
       const target = await databaseId(moduleId);
       await inTenant(async (client) => {
@@ -206,7 +200,7 @@ describe("recipe sourceUrl write hook (issue gh-1974)", () => {
         if (!database) throw new Error("The recipes database is missing");
         const item = await itemsStore.insertItem(client, {
           databaseId: recipesId,
-          // Written with the raw store, as no choke-point write stores a source that fails the baseline.
+          // Raw store: no choke-point write stores a source that fails the baseline.
           properties: { name: "Fixture", sourceUrl: "http://127.0.0.1/legacy" },
         });
         const context: ItemUpdateHookContext = {

@@ -34,8 +34,8 @@ function insertInboxAttachments(owner: Pool, itemId: string, attachments: Parame
   return withTransaction(owner, (client) => insertWithClient(client, itemId, attachments));
 }
 
-// Issue #1564: an attachment keeps its blob's bytes while it exists, and the trash purge of its Inbox
-// item releases the blob only when nothing else names it.
+// An attachment keeps its blob's bytes while it exists, and the trash purge of its Inbox item releases the blob only
+// when nothing else names it.
 
 /** Captures the backend on the very client that issues the matched production statement. */
 function observeStatementPid(runtime: Pool, statement: RegExp) {
@@ -137,7 +137,7 @@ async function countRows(sql: string, params: unknown[]): Promise<number> {
   return Number(rows[0]?.count);
 }
 
-/** A Files item whose `properties.file.blobId` names `blobId`. Raw update, as `purgeExpiredTrash.test.ts` does, to name a blob from a Files item. */
+/** A Files item whose `properties.file.blobId` names `blobId`, written by a raw update. */
 async function makeFilesItem(blobId: string): Promise<ItemRow> {
   const { id: databaseId } = await chokePoint.createDatabase({ name: `Files ${blobId}` });
   const item = await chokePoint.createItem({ databaseId, properties: {} });
@@ -187,7 +187,6 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
         undefined,
         undefined,
         mail,
-        undefined,
         undefined,
         undefined,
         undefined,
@@ -296,16 +295,16 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
         );
         expect(fileItems.rows).toHaveLength(1);
         await chokePoint.softDeleteItem(emails, message.itemId);
-        // The purge of an Email removes its `mail_attachments` rows (issue gh-1691), so the mail reference
-        // survives the sweep only while the Email is not purged: its trash stays fresh in that scenario.
+        // The purge of an Email removes its `mail_attachments` rows, so the mail reference survives the sweep only while the
+        // Email is not purged: its trash stays fresh in that scenario.
         if (scenario !== "retains the surviving mail reference") await ageDeletion(message.itemId, emails);
         for (const item of fileItems.rows) {
           await chokePoint.softDeleteItem(ids.filesDatabaseId, item.id);
           await ageDeletion(item.id, ids.filesDatabaseId);
         }
         if (scenario === "deletes after fixture-only mail reference removal") {
-          // Fixture only: the purge of the Email removes this reference too (issue gh-1691), but a sweep
-          // that reaches the Files item first still finds it and keeps the blob.
+          // Fixture only: the purge of the Email removes this reference too, but a sweep that reaches the Files item first
+          // still finds it and keeps the blob.
           const released = await runInTenant(getTenantZeroId(), () =>
             withTransaction(runtime, (client) =>
               client.query(
@@ -325,7 +324,6 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
           undefined,
           undefined,
           undefined,
-          undefined,
           files,
           { files: filesDir, mailAttachments: mailDir },
         );
@@ -337,7 +335,6 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
           "SELECT count(*)::int AS count FROM items WHERE id = ANY($1::uuid[])",
           [[message.itemId, ...fileItems.rows.map((item) => item.id)]],
         );
-        // The Files item is purged in both scenarios; the Email only where its trash was aged.
         expect(remainingItems.rows[0]?.count).toBe(scenario === "retains the surviving mail reference" ? 1 : 0);
         const otherRefs = await pool.query<{ count: number }>(
           `SELECT ((SELECT count(*) FROM items WHERE tenant_id = $1 AND properties->'file'->>'blobId' = $2) +
@@ -729,7 +726,6 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
       const live = await createInboxItem("live photo");
       const purgedAttachment = await photoAttachment(purged.id, "shared-purged");
       const liveAttachment = await photoAttachment(live.id, "shared-live");
-      // The same rendering on both attachments: their images have the same bytes, so one blob row holds each.
       await recordDerived(purgedAttachment.attachmentId, "shared", "same");
       await recordDerived(liveAttachment.attachmentId, "shared", "same");
       const liveRow = (await listInboxAttachments(pool, [live.id]))[0];

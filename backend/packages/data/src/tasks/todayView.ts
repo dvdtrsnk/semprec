@@ -1,7 +1,5 @@
-// Owns the single definition of the Tasks "today" list: which tasks are visible, which of them belong to today, the
-// system view that stores that filter, and the count of its open tasks. It does not own the derivation of
-// `effectiveDate`, `hiddenUntil` or the `completedInEvent` edge (taskHostEventState.ts, taskCompletedInEventHook.ts),
-// the `item.count` operation, or the overview route that shows the count.
+// The single definition of the Tasks "today" list: visibility, membership, the system view storing that filter,
+// and its open count. Host state derivation, `item.count` and the overview route live elsewhere.
 import type { PoolClient } from "pg";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
@@ -14,16 +12,15 @@ import { compileFilterNode, resolveFilterCompileContext } from "../views/filterC
 import { buildFilterProperties } from "../views/filterProperties.js";
 import type { FilterNode } from "../views/filterTree.js";
 
-/** The `config.systemKey` of the Today view of the Tasks database; clients find the view by it, never by its name. */
+/** Clients find the view by this key, never by its name. */
 export const TASKS_TODAY_VIEW_KEY = "today";
 
-/** The stored name of the seeded view. It is not a key: nothing looks the view up by it. */
+/** Not a key: nothing looks the view up by it. */
 const TASKS_TODAY_VIEW_NAME = "Today";
 
 /**
- * The tasks that are not hidden: `hiddenUntil` is empty or already passed, and the task has no `completedInEvent`
- * edge. A deleted task is never visible, which the item reads apply on their own. This is the one definition of
- * visibility; the Today view and every count of it use it.
+ * `hiddenUntil` empty or passed, and no `completedInEvent` edge; item reads exclude deleted tasks on their own.
+ * The one visibility definition used by the view and every count.
  */
 export function tasksVisibleFilter(): FilterNode {
   return {
@@ -42,9 +39,8 @@ export function tasksVisibleFilter(): FilterNode {
 }
 
 /**
- * The visible tasks the user looks at today, in the tenant time zone: an unfinished task whose effective day is
- * today, a `notDone` task whose effective day is past, and a `done` task completed today (a `done` task without a
- * `completedOn` falls back to its effective day). `openOnly` keeps only `notDone` tasks of that list.
+ * In the tenant zone: unfinished tasks effective today, `notDone` tasks effective in the past, and `done` tasks
+ * completed today (falling back to the effective day without `completedOn`). `openOnly` keeps only `notDone`.
  */
 export function tasksTodayFilter(options: { openOnly: boolean }): FilterNode {
   const today: FilterNode = {
@@ -91,7 +87,7 @@ export function tasksTodayFilter(options: { openOnly: boolean }): FilterNode {
   return { type: "and", nodes: [today, { type: "equals", property: "status", value: "notDone" }] };
 }
 
-/** Creates the Today system view on the Tasks database. The caller holds the transaction and decides whether it exists. */
+/** The caller holds the transaction and decides whether the view exists. */
 export function createTasksTodayView(
   client: PoolClient,
   tasksDatabaseId: string,
@@ -112,9 +108,8 @@ export function createTasksTodayView(
 }
 
 /**
- * The number of open (`notDone`) tasks of the Today list, the count behind the badge of the overview. It runs the
- * statement `item.count` runs for `tasksTodayFilter({ openOnly: true })` over the Tasks database, in the caller's
- * transaction and tenant. `now` is the clock the relative dates are evaluated at; it defaults to the current time.
+ * The overview badge count: the statement `item.count` runs for `tasksTodayFilter({ openOnly: true })`, in the
+ * caller's transaction. `now` evaluates relative dates; defaults to the current time.
  */
 export async function countTasksToday(client: PoolClient, now?: Date): Promise<number> {
   const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);

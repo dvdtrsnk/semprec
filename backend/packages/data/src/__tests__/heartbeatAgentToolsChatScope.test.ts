@@ -32,7 +32,6 @@ import {
 } from "../testSupport/testDb.js";
 import type { DatabaseRow } from "../types.js";
 
-// Seeding the system databases of one tenant is the slow part of this file.
 const SEEDING_TEST_TIMEOUT_MS = 120_000;
 const DAILY_RULE = { kind: "dailyTime", at: "09:00" } as const;
 
@@ -53,7 +52,6 @@ function inTenantA<T>(fn: () => Promise<T>): Promise<T> {
 const listEntrySchema = z.record(z.string(), z.unknown()).and(z.object({ id: z.string() }));
 const historyEntrySchema = z.object({ id: z.string(), status: z.string(), result: z.string().nullable() });
 
-/** The entries of a successful `heartbeat.list`. */
 function listEntries(outcome: HeartbeatAgentToolResult): z.infer<typeof listEntrySchema>[] {
   expect(outcome.error).toBe(false);
   return z.array(listEntrySchema).parse(JSON.parse(outcome.result));
@@ -77,7 +75,7 @@ async function newHeartbeat(projectItemId: string, name: string, tenantId = tena
   });
 }
 
-/** A run on a fresh Semp chat thread, or a run delegated from `parentRunId`, which inherits the parent's thread (issue #1452). */
+/** A run on a fresh Semp chat thread, or a run delegated from `parentRunId`, which inherits its thread. */
 async function chatRun(projectItemId: string, options: { parentRunId?: string } = {}): Promise<string> {
   return inTenantA(async () => {
     const threadId = options.parentRunId ? undefined : await withTransaction(dataPool, createSempChatThread);
@@ -123,7 +121,6 @@ function removeGrant(projectItemId: string, databaseId: string) {
   );
 }
 
-/** The runs a heartbeat started: the history rows the tool must return. */
 async function startHeartbeatRun(projectItemId: string, heartbeatId: string, result: string): Promise<string> {
   const run = await inTenantA(() =>
     createAgentRun(dataPool, { projectItemId, heartbeatId, triggeredBy: "heartbeat", task: "tick" }),
@@ -266,7 +263,6 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
         const entries = listEntries(await list(run));
         expect(entries.map((entry) => entry.id)).toContain(gardenHeartbeat);
         expect(entries.map((entry) => entry.id)).not.toContain(semprecHeartbeat);
-        // The own-project entry keeps the shape it had before the tenant scope existed.
         const own = entries.find((entry) => entry.id === gardenHeartbeat);
         expect(own).not.toHaveProperty("projectItemId");
         expect(own).not.toHaveProperty("projectName");

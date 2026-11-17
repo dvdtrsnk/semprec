@@ -1,8 +1,5 @@
-// Owns the metadata of an Event participant edge (issue #1757): its shape, the rules a write of it must
-// meet, and how a stored edge is read. A participant edge is an edge of the relation between `Events.people`
-// and its inverse `People.events`, whichever of the two properties a write names.
-// Constrained by: docs/adr/2026-11-11-event-participant-invitations-are-written-by-system-writers.md,
-// docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md
+// Owns the metadata of an Event participant edge: its shape, write rules, and how a stored edge is read. A
+// participant edge is an edge of `Events.people` / `People.events`, whichever side a write names.
 import { isDeepStrictEqual } from "node:util";
 import type { PoolClient } from "pg";
 import { z } from "zod";
@@ -16,12 +13,11 @@ import { ValidationError } from "../errors.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { getSelfPersonId } from "../selfPerson.js";
 
-/** The Events -> People relation property whose edges are an Event's participants. */
 export const EVENT_PEOPLE_PROPERTY_KEY = "people";
 
 const participantRoleSchema = z.enum(["organizer", "attendee"]);
 
-/** The state of the invitation a participant was sent by email. `sentAt` and `respondedAt` are UTC instants. */
+/** `sentAt` and `respondedAt` are UTC instants. */
 const participantInvitationSchema = z
   .object({
     status: z.enum(["pending", "accepted", "tentative", "declined"]),
@@ -41,10 +37,8 @@ export type EventParticipantInvitation = z.infer<typeof participantInvitationSch
 export type EventParticipantMetadata = z.infer<typeof participantMetadataSchema>;
 
 /**
- * The metadata a participant edge write carries, or `validation_failed` on `metadata` with reason
- * `invalidParticipantMetadata`: a key other than `role` and `invitation`, a role that is neither
- * `organizer` nor `attendee`, an `invitation` of another shape, or an `invitation` on an organizer edge.
- * Absent metadata is `{}`: an attendee without an invitation.
+ * Refused (`invalidParticipantMetadata`): keys other than `role`/`invitation`, an unknown role, a malformed
+ * `invitation`, or an `invitation` on an organizer edge. Absent metadata is an attendee without an invitation.
  */
 export function parseEventParticipantMetadata(metadata: Record<string, unknown> | undefined): EventParticipantMetadata {
   const parsed = participantMetadataSchema.safeParse(metadata ?? {});
@@ -64,9 +58,8 @@ export function parseEventParticipantMetadata(metadata: Record<string, unknown> 
 }
 
 /**
- * What a stored participant edge says. A stored role that is not one of the two roles reads as `attendee`,
- * and a stored invitation that is not of the defined shape reads as none: `{}` is every edge written before
- * the write rule existed, and such an edge may also hold other metadata.
+ * Lenient: an unknown role reads as `attendee` and a malformed invitation as none, since stored edges may predate
+ * the write rule or hold other metadata.
  */
 export function readEventParticipantMetadata(metadata: Record<string, unknown>): {
   role: EventParticipantRole;
@@ -83,15 +76,12 @@ interface ParticipantEdgeEnds {
   personId: string;
 }
 
-/** A UUID in its 8-4-4-4-12 text form, in either letter case. */
 const UUID_TEXT_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * `itemId` as Postgres returns a uuid, so that it compares equal to the ids of stored edges: the 8-4-4-4-12
- * form in lower case. Postgres reads more text forms of one uuid than it returns: in braces, and with
- * hyphens left out or placed after any group of four digits. An id in such a form names the same row to the
- * edge write, but it would match no stored edge here, and the write would then be judged as the first write
- * of an edge that is stored. It is refused with `validation_failed` on `field`, reason `nonCanonicalItemId`.
+ * Postgres accepts more uuid text forms than it returns (braces, moved or missing hyphens). Such an id names the
+ * same row to the edge write but would match no stored edge here, so the write would be judged as a first write.
+ * It is refused (`nonCanonicalItemId`).
  */
 function storedTextOfItemId(itemId: string, field: "callerItemId" | "targetItemId"): string {
   if (!UUID_TEXT_FORM.test(itemId)) {
@@ -103,11 +93,7 @@ function storedTextOfItemId(itemId: string, field: "callerItemId" | "targetItemI
   return itemId.toLowerCase();
 }
 
-/**
- * The Event and the person of an edge write on the participant relation, or `null` when the write is on
- * another relation. Both ids are returned as `storedTextOfItemId` gives them, which refuses the write when
- * one of them is in another text form.
- */
+/** `null` for a write on another relation. */
 async function resolveParticipantEdgeEnds(
   client: PoolClient,
   edgeContext: RelationEdgeContext,
@@ -141,26 +127,18 @@ interface ParticipantEdgeWrite extends ParticipantEdgeEnds {
 }
 
 /**
- * Rejects a participant edge write, each time with `validation_failed` on `metadata`:
- * - metadata `parseEventParticipantMetadata` refuses (`invalidParticipantMetadata`);
- * - an organizer edge to a person other than the one linked to the tenant's user, including when no person
- *   is linked (`organizerNotSelf`);
- * - an organizer edge while another edge of the Event is an organizer edge (`organizerAlreadySet`);
- * - from a writer whose kind is not `system`, an `invitation` that is not exactly the stored one, which
- *   includes leaving out a stored one and giving one where none is stored (`invitationReadOnly`). An
- *   insert-only write may leave it out, because such a write stores nothing over an existing edge.
+ * Refusals (`validation_failed` on `metadata`):
+ * - metadata `parseEventParticipantMetadata` refuses;
+ * - an organizer edge to anyone but the tenant user's person (`organizerNotSelf`);
+ * - a second organizer edge (`organizerAlreadySet`);
+ * - from a non-`system` writer, an `invitation` not exactly the stored one (`invitationReadOnly`). An insert-only
+ *   write may omit it, since it stores nothing over an existing edge.
  *
- * Row-locks the Event before it reads the Event's edges, so two participant edge writes of one Event that
- * take the lock run one after the other and the second reads what the first stored. The lock comes before
- * the edge row is written, and so before the People `lastContact` job key that the write's changed-edge
- * hook takes: the order of an Event update. An Event that does not exist (the placeholder caller of a
- * proposed item) has no row to lock and no edges.
+ * Row-locks the Event before reading its edges, so concurrent writes on one Event serialize. The lock comes before
+ * the edge row and so before the People `lastContact` job key the changed-edge hook takes: an Event update's order.
  *
- * An insert-only write that carries no invitation and is not an organizer edge takes no lock and reads no
- * edges: it returns after the metadata check. Nothing about it is decided from the Event's edges, and it
- * stores nothing over a stored edge. The speaker confirmation makes that write after its speakers edge took
- * a person's `lastContact` job key, so a lock there would be taken in the opposite order to an Event update
- * and the two could deadlock.
+ * An insert-only, invitation-less attendee write takes no lock: the speaker confirmation makes it after taking a
+ * person's `lastContact` key, so locking there would invert the order and could deadlock.
  */
 async function assertParticipantEdgeWritable(client: PoolClient, write: ParticipantEdgeWrite): Promise<void> {
   const { role } = parseEventParticipantMetadata(write.metadata);
@@ -203,13 +181,7 @@ async function assertParticipantEdgeWritable(client: PoolClient, write: Particip
   }
 }
 
-/**
- * The choke point's relation-edge-write hook for an Event's participant edges (registered by
- * `../domainWriteHooks.ts`). It runs on an edge add and on a metadata replace, from the Event's side and
- * from the person's side. It refuses a write that names the Event or the person by an id in another text
- * form than 8-4-4-4-12 (`storedTextOfItemId`) and then applies `assertParticipantEdgeWritable`. An edge
- * removal carries no metadata and does not run it.
- */
+/** Runs on edge add and metadata replace from either side; an edge removal carries no metadata and skips it. */
 export const eventParticipantEdgeWriteHook: RelationEdgeWriteHook = async ({
   client,
   edgeContext,

@@ -110,11 +110,8 @@ describe("choke-point propertyOps", () => {
     const db = await chokePoint.createDatabase({ name: "Db" });
     const property = await chokePoint.createProperty({ databaseId: db.id, key: "score", name: "Score", type: "text" });
 
-    // `database_id` has an ON DELETE CASCADE foreign key to `databases`, so deleting the
-    // database would delete this property too rather than orphaning it. Trigger-disable the
-    // constraint check just long enough to point this row at a database id that doesn't
-    // exist, reproducing the orphaned-row state `updatePropertyWithDatabase`'s `!database`
-    // guard exists for without going through any choke-point write path.
+    // The ON DELETE CASCADE fkey would delete the property with its database, so the constraint is
+    // trigger-disabled to reach the orphaned-row state `updatePropertyWithDatabase` guards against.
     const missingDatabaseId = "00000000-0000-0000-0000-000000000000";
     await pool.query("ALTER TABLE properties DISABLE TRIGGER ALL");
     try {

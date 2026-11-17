@@ -70,10 +70,8 @@ export const threadValueEdgeDeleteHook: RelationEdgeDeleteHook = async (context)
 };
 
 /**
- * Announces a change of a thread's company or project (issue gh-1869): each created or deleted edge of the Threads
- * `company` or `project` relation, whoever wrote it (a user, an agent, the link engine, a thread merge), publishes
- * the thin `mailThread` invalidation of the edge's thread after the commit. A thread item bound to no mail thread
- * announces nothing.
+ * After the commit, publishes the thin `mailThread` invalidation for every created or deleted Threads `company` or
+ * `project` edge, whoever wrote it. A thread item bound to no mail thread announces nothing.
  */
 export const threadValueEdgeChangedHook: RelationEdgeChangedHook = async (context) => {
   if (context.op === "update") return;

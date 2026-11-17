@@ -41,13 +41,12 @@ const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
-const itemBody = z.object({ id: z.string(), updatedAt: z.string() }).passthrough();
+const itemBody = z.object({ id: z.string(), updatedAt: z.string(), version: z.string() }).passthrough();
 const storedRow = z.object({ id: z.string(), properties: z.record(z.string(), z.unknown()) });
 const restError = z.object({
   error: z.object({ code: z.string(), details: z.record(z.string(), z.unknown()) }).strict(),
 });
 
-/** A refusal as REST exposes it: the HTTP status and the error body's `code` and `details`. */
 interface Refusal {
   status: number;
   code: string;
@@ -61,7 +60,7 @@ const TRANSPORTS: readonly Transport[] = ["rest", "gateway"];
 const PLAN = { name: "Short nights", wakeDays: ["tue"], bedTime: "23:30", wakeTime: "06:00", alarm: true, position: 2 };
 const SETTINGS_NAME = "Sleep settings";
 
-/** The refused creates: a label, the database, the properties, and the field the 400 names. */
+/** A label, the database, the properties, and the field the 400 names. */
 const CREATE_REFUSALS: Array<[string, ModuleKey, Record<string, unknown>, string]> = [
   ["goalMinutes 485", "sleepSettings", { name: SETTINGS_NAME, goalMinutes: 485 }, "goalMinutes"],
   ["alarmSound gong", "sleepSettings", { name: SETTINGS_NAME, alarmSound: "gong" }, "alarmSound"],
@@ -73,7 +72,7 @@ const CREATE_REFUSALS: Array<[string, ModuleKey, Record<string, unknown>, string
   ["a night alarm yes", "sleepNights", { night: "2026-10-16", alarm: "yes" }, "alarm"],
 ];
 
-/** The refused patches of a stored item: a label, the database, the patch, and the field the 400 names. */
+/** A label, the database, the patch, and the field the 400 names. */
 const PATCH_REFUSALS: Array<[string, ModuleKey, Record<string, unknown>, string]> = [
   ["goalMinutes 485", "sleepSettings", { goalMinutes: 485 }, "goalMinutes"],
   ["wakeDays mon and mon", "sleepPlans", { wakeDays: ["mon", "mon"] }, "wakeDays"],
@@ -130,9 +129,8 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
     const projectItemId = await createTestProjectItem(pool);
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "plan my sleep" });
     agentActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-    // The Sleep databases are sensitive, so the data layer closes them to an agent's project until the user grants
-    // write access (issue gh-1810). The user-only admin store is not exported from `@semprec/data`, so the fixture
-    // stores the decision with the statement of `setAgentDatabaseGrant`.
+    // The Sleep databases are sensitive, so an agent's project needs the user's write grant. The user-only admin store
+    // is not exported from `@semprec/data`, so the fixture uses the statement of `setAgentDatabaseGrant`.
     for (const key of Object.keys(databaseIds) as ModuleKey[]) {
       const grant = await pool.query(
         `INSERT INTO agent_database_grants (project_item_id, database_id, access)
@@ -177,7 +175,7 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
     return { status: response.status, code: parsed.error.code, details: parsed.error.details };
   }
 
-  /** The error the agent gateway throws for the operation, as the same `{ status, code, details }` REST exposes. */
+  /** As the same `{ status, code, details }` REST exposes. */
   async function gatewayRefusal(operation: "item.create" | "item.patch", input: unknown): Promise<Refusal> {
     const error: unknown = await gateway()
       .invoke(operation, agentActor, new Set(CAPABILITY_IDS), input)
@@ -193,17 +191,16 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
     };
   }
 
-  /** The `updatedAt` the API reports for an item, which a patch sends back as `ifVersion`. */
   async function versionOf(itemId: string): Promise<string> {
     const res = await fetch(`${baseUrl}/api/items/${itemId}`, { headers });
     expect(res.status).toBe(200);
-    return itemBody.parse(await res.json()).updatedAt;
+    return itemBody.parse(await res.json()).version;
   }
 
   function refuse(
     transport: Transport,
     operation: "create" | "patch",
-    target: { databaseId: string; itemId?: string; updatedAt?: string },
+    target: { databaseId: string; itemId?: string; updatedAt?: string; version?: string },
     properties: Record<string, unknown>,
   ): Promise<Refusal> {
     if (operation === "create") {
@@ -211,9 +208,9 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
         ? restRefusal("POST", `/api/databases/${target.databaseId}/items`, { properties })
         : gatewayRefusal("item.create", { databaseId: target.databaseId, properties });
     }
-    const input = { itemId: target.itemId, properties, ifVersion: target.updatedAt };
+    const input = { itemId: target.itemId, properties, ifVersion: target.version };
     return transport === "rest"
-      ? restRefusal("PATCH", `/api/items/${target.itemId}`, { properties, ifVersion: target.updatedAt })
+      ? restRefusal("PATCH", `/api/items/${target.itemId}`, { properties, ifVersion: target.version })
       : gatewayRefusal("item.patch", input);
   }
 
@@ -235,14 +232,12 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
     };
   }
 
-  /** The item a patch case starts from: the seeded settings item, or an item the transport itself creates. */
   async function patchTarget(transport: Transport, key: ModuleKey) {
     if (key === "sleepSettings") {
       const [seeded] = await storedItems(key);
       if (!seeded) throw new Error("The seed left no settings item");
       return seeded;
     }
-    // One exception per night, so each transport gets a night of its own.
     const properties =
       key === "sleepPlans"
         ? { ...PLAN, name: `Plan ${transport}` }
@@ -280,7 +275,7 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
         const refusal = await refuse(
           transport,
           "patch",
-          { databaseId: databaseIds[key], itemId: target.id, updatedAt: await versionOf(target.id) },
+          { databaseId: databaseIds[key], itemId: target.id, version: await versionOf(target.id) },
           patch,
         );
 
@@ -358,7 +353,7 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
       const refusal = await refuse(
         transport,
         "patch",
-        { databaseId: databaseIds.sleepNights, itemId: moving.id, updatedAt: moving.updatedAt },
+        { databaseId: databaseIds.sleepNights, itemId: moving.id, version: moving.version },
         { night: "2026-10-16" },
       );
 

@@ -3,13 +3,11 @@ import { wallClockToInstant } from "../calendarTime.js";
 import { ValidationError } from "../errors.js";
 import { assertValidTimezone } from "../timezone.js";
 
-/** The part of the sleep settings item the resolver reads. */
 export interface SleepNightsSettings {
   prepReminder: boolean;
   prepReminderMinutes: number;
 }
 
-/** One non-deleted sleep plan. `wakeDays` holds `mon`..`sun`; `bedTime` and `wakeTime` are wall-clock `HH:MM`. */
 export interface SleepPlan {
   id: string;
   name: string;
@@ -20,7 +18,7 @@ export interface SleepPlan {
   position: number;
 }
 
-/** One exception item: the night it changes (`YYYY-MM-DD`) and the fields it overrides; a null field follows the plan. */
+/** A null field follows the plan. */
 export interface SleepNightException {
   night: string;
   bedTime: string | null;
@@ -32,38 +30,28 @@ export interface ResolveSleepNightsInput {
   settings: SleepNightsSettings;
   plans: readonly SleepPlan[];
   nights: readonly SleepNightException[];
-  /** First night of the range, `YYYY-MM-DD`, inclusive. */
   from: string;
-  /** Last night of the range, `YYYY-MM-DD`, inclusive. */
   to: string;
-  /** IANA zone in which the wall-clock times are read. */
   timezone: string;
 }
 
 export interface ResolvedSleepNight {
-  /** The calendar date of the evening the night starts. */
   night: string;
   planId: string | null;
   planName: string | null;
   bedTime: string;
   wakeTime: string;
   alarm: boolean;
-  /** True when the night's exception overrides at least one field. */
   changed: boolean;
-  /**
-   * The bedtime instant as an ISO string with the zone's offset. The offset is `Z` only for the fixed zone `UTC`
-   * or `GMT`; an IANA zone at offset zero, such as `Etc/UTC`, renders `+00:00`.
-   */
+  /** ISO with the zone's offset; `Z` only for the fixed zones `UTC`/`GMT` (`Etc/UTC` renders `+00:00`). */
   bedAt: string;
-  /** The wake-up instant, rendered like `bedAt`. */
   wakeAt: string;
-  /** Bedtime to wake time as read on a clock, not elapsed time; 0 when the wake time is not after the bedtime. */
+  /** Clock difference, not elapsed time; 0 when the wake time is not after the bedtime. */
   durationMinutes: number;
-  /** `bedAt` minus the reminder lead time, or null when the reminder is off. */
   prepReminderAt: string | null;
 }
 
-/** What a night without a plan starts from when its exception overrides a field. */
+/** Starting point of a night without a plan whose exception overrides a field. */
 const BASE_NIGHT = { bedTime: "23:00", wakeTime: "07:00", alarm: false };
 
 const WAKE_DAY_BY_WEEKDAY: Record<WeekdayNumbers, string> = {
@@ -86,10 +74,7 @@ function parseDay(value: string, field: "from" | "to"): DateTime<true> {
   return day;
 }
 
-/**
- * Minutes after midnight of an `HH:MM` time. For any other value the number means nothing, and
- * `wallClockToInstant` refuses that value before the night is returned.
- */
+/** Meaningless for a non-`HH:MM` value, which `wallClockToInstant` then refuses. */
 function minutesOfDay(time: string): number {
   return Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
 }
@@ -100,28 +85,18 @@ function toIso(instant: DateTime): string {
   return iso;
 }
 
-/** Orders ids by code unit, so the result does not depend on a locale. */
+/** By code unit, so the result does not depend on a locale. */
 function compareIds(a: string, b: string): number {
   return a < b ? -1 : Number(a > b);
 }
 
 /**
- * Turns stored sleep data into the planned nights of `from`..`to` (both inclusive), in ascending order, with
- * the wall-clock times read in `timezone`. Pure: the caller reads the rows and passes them in.
+ * Pure. A night is named by the date of its evening; its plan is the first by `position`, then `id`, whose
+ * `wakeDays` contain the following morning's weekday. The night's exception overrides field by field. A night with
+ * neither a plan nor an overriding exception is left out.
  *
- * A night is named by the calendar date of its evening. Its plan is the first plan, by `position` and then by
- * `id`, whose `wakeDays` contain the weekday of the following morning. The exception of that night overrides
- * the plan field by field, and an exception with every field null changes nothing. A night with neither a plan
- * nor an exception that overrides a field is left out; a night without a plan whose exception overrides a
- * field starts from 23:00, 07:00 and no alarm, with `planId` and `planName` null.
- *
- * The wake time is on the day after `night`. A bedtime of 12:00 or later is on `night`, an earlier one on
- * the day after. Daylight saving follows `calendarTime.wallClockToInstant`: a wall-clock time that does not
- * exist moves forward and an ambiguous one takes its earlier occurrence.
- *
- * Throws `ValidationError` for a `from` or `to` that is not a real `YYYY-MM-DD` date, for `from` after `to`,
- * for an invalid `timezone`, and for a bedtime or wake time of a returned night that `wallClockToInstant`
- * refuses.
+ * The wake time is on the next day; a bedtime of 12:00 or later is on `night`, an earlier one on the next day.
+ * DST follows `wallClockToInstant`: a nonexistent time moves forward, an ambiguous one takes the earlier occurrence.
  */
 export function resolveSleepNights(input: ResolveSleepNightsInput): ResolvedSleepNight[] {
   const { settings, timezone } = input;
@@ -143,7 +118,6 @@ export function resolveSleepNights(input: ResolveSleepNightsInput): ResolvedSlee
     const changed =
       exception !== undefined &&
       (exception.bedTime !== null || exception.wakeTime !== null || exception.alarm !== null);
-    // An exception that overrides nothing counts as no exception, so it does not make a night without a plan exist.
     if (!plan && !changed) continue;
 
     const bedTime = exception?.bedTime ?? plan?.bedTime ?? BASE_NIGHT.bedTime;

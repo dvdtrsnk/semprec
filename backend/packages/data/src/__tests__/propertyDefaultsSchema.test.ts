@@ -22,9 +22,8 @@ function signal() {
   return { promise, resolve };
 }
 
-/** Every queued job, so a refused write's no-effect check also sees issue #1652's search backfill jobs. */
 async function jobs() {
-  // Graphile Worker 0.17.3's public jobs view omits payload; inspect it here to verify migration provenance.
+  // The public jobs view omits payload.
   const { rows } = await pool.query<{ key: string | null; task_identifier: string; payload: unknown }>(
     `SELECT j.key, j.task_identifier, p.payload FROM graphile_worker.jobs j
      JOIN graphile_worker._private_jobs p ON p.id = j.id ORDER BY j.id`,
@@ -32,12 +31,10 @@ async function jobs() {
   return rows;
 }
 
-/** The type-migration jobs alone, for the migration provenance a successful write queues. */
 async function migrationJobs() {
   return (await jobs()).filter((job) => job.task_identifier === "propertyTypeMigration");
 }
 
-/** The search backfill a successful property write queues for its database (issue #1652), keyed by the database. */
 async function backfillJobs(databaseId: string) {
   return (await jobs()).filter(
     (job) => job.task_identifier === "itemSearchBackfill" && job.key?.includes(`:${databaseId}:`) === true,
@@ -153,7 +150,7 @@ describe("property default schema coherence", () => {
       const { property } = await fixture("number");
       await chokePoint.changePropertyType(property.id, "text");
       await chokePoint.updatePropertyConfig(property.id, { default: "old" });
-      // Reproduce a migration that settled partially before the worker acknowledged its job.
+      // A migration that settled partially before the worker acknowledged its job.
       await withTransaction(pool, async (client) => {
         await markPropertyMigrationDroppedValues(client, property.id);
         await settlePropertyMigrationStatus(client, property.id);

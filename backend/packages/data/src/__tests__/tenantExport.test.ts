@@ -51,20 +51,15 @@ let mailStorage: LocalFsBlobStorageWriter;
 let filesDir: string;
 let mailDir: string;
 
-/** What one tenant's seeded data left behind, for the archive assertions. */
 interface SeededTenant {
   email: string;
   itemIds: string[];
   blobIds: string[];
   mailBlobId: string;
-  /** Unique bytes written into this tenant's blobs, one string per blob. */
   blobContents: string[];
 }
 
-/**
- * Reads every entry of a ZIP archive into memory. Uses the central directory, which carries each
- * entry's sizes even when the local header defers them to a data descriptor (as yazl writes them).
- */
+/** Uses the central directory, which carries sizes even when the local header defers them to a data descriptor (yazl). */
 function readZip(archive: Buffer): Map<string, Buffer> {
   const eocd = archive.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
   if (eocd < 0) throw new Error("no end-of-central-directory record");
@@ -124,7 +119,6 @@ async function databaseIdIn(tenantId: string, moduleId: string): Promise<string>
   });
 }
 
-/** Writes items, relations, a doc, mail, blobs in both roots, a credential and a tenant key into `tenantId`. */
 async function seedTenant(tenantId: string, duplicateAttachment = false): Promise<SeededTenant> {
   const email = `${randomUUID()}@example.com`;
   await createUser(adminPool, { email, passwordHash: `hash-${randomUUID()}`, tenantId });
@@ -223,7 +217,6 @@ function archivePath(tenantId: string, exportId: string): string {
   return join(filesDir, `${tenantId}/exports/${exportId}.zip`);
 }
 
-/** The tenant-classified tables the archive must contain, read from the catalog independently of the job. */
 async function expectedTableNames(): Promise<string[]> {
   const { rows } = await adminPool.query<{ relname: string }>(
     `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -276,13 +269,11 @@ describe("tenant data export (issue #1043)", () => {
     }
 
     async function requestAfterFinishingConflicts(userId: string, blockerIds: string[], conflictCount: number) {
-      // Only this dedicated pool's client is instrumented; it is closed before returning.
       const dedicated = await createRuntimeRolePool(adminPool, "semprec_data");
       try {
         return await runInTenant(tenantA, () =>
           withTransaction(dedicated, async (client) => {
             const original = client.query.bind(client);
-            // Select the promise overload used by requestTenantExport; database rows stay unknown.
             const query = client.query.bind(client) as (
               text: string,
               values?: unknown[],
@@ -296,8 +287,7 @@ describe("tenant data export (issue #1043)", () => {
               blockerIds.push(blocker.export.id);
               const result = await query(text, values);
               expect(result.rows).toEqual([]);
-              // A separate transaction completes the active export after the ignored insert,
-              // before requestTenantExport's next READ COMMITTED read-back snapshot.
+              // Another transaction completes the active export before requestTenantExport's next READ COMMITTED read-back.
               await withTransaction(pool, async (other) => {
                 await markTenantExportRunning(other, blocker.export.id);
                 await markTenantExportFailed(other, blocker.export.id);
@@ -381,7 +371,7 @@ describe("tenant data export (issue #1043)", () => {
   it("archives exactly tenant A's data, with every table counted and every blob byte-identical", async () => {
     const seededA = await seedTenant(tenantA);
     const seededB = await seedTenant(tenantB);
-    // Fixture SQL: the stored response of a card action (issue gh-1894), a row the export must leave out.
+    // Fixture SQL: a stored card-action response, which the export must leave out.
     await adminPool.query(
       `INSERT INTO idempotent_responses (tenant_id, user_id, key, route, request_hash, status, body, expires_at)
        VALUES ($1, $2, 'export-probe-key', 'PATCH /api/proposals/:id/values', 'h', 200, '{}'::jsonb, now() + interval '1 hour')`,
@@ -781,8 +771,7 @@ describe("tenant data export (issue #1043)", () => {
       controller.abort();
       return readMailBlob(key, range);
     });
-    // Stands for a concurrent writer that moves the row on before the export is put back, inside the
-    // partial-file delete that runs just before it; no production path does this today.
+    // Stands for a concurrent writer that moves the row on inside the partial-file delete; no production path does this today.
     const deleteFile = filesStorage.delete.bind(filesStorage);
     vi.spyOn(filesStorage, "delete").mockImplementation(async (key) => {
       await adminPool.query("UPDATE tenant_exports SET status = 'failed' WHERE id = $1", [exportId]);
@@ -826,7 +815,6 @@ describe("tenant data export (issue #1043)", () => {
       return exportId;
     }
 
-    /** Moves an export's timestamps back by `days`; no production writer changes them after the fact. */
     async function backdate(exportId: string, days: number): Promise<void> {
       await adminPool.query(
         `UPDATE tenant_exports

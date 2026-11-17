@@ -30,18 +30,13 @@ export interface ImapFetchedMessage {
 export interface ImapFolderSelection {
   uidvalidity: number;
   uidnext: number;
-  /** null = server didn't report `HIGHESTMODSEQ` (no CONDSTORE) — see `mail_folder_sync_state.highestmodseq`. */
+  /** null = no CONDSTORE. */
   highestModSeq: number | null;
 }
 
-/**
- * What a sync-mode-specific transport (real `ImapFlowMailClient`, or a fake in tests) must
- * provide — reconcile logic below only ever talks to this interface, never to `imapflow`
- * directly, so it is fully testable without a live IMAP server.
- */
 export interface ImapFolderRef {
   path: string;
-  /** RFC 6154 special-use attribute (`\Inbox`, `\Sent`, `\Junk`, `\Trash`, `\Drafts`, `\All`, `\Archive`), when the server advertises it. */
+  /** RFC 6154 special-use attribute, when advertised. */
   specialUse?: string;
 }
 
@@ -60,38 +55,18 @@ export interface ImapMailClient {
   getCapabilities(): Promise<Set<string>>;
   listFolders(): Promise<ImapFolderRef[]>;
   selectFolder(path: string): Promise<ImapFolderSelection>;
-  /** Every message with UID >= `sinceUid` — used both for the initial full sync (`sinceUid: 1`) and every incremental pass. */
   fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]>;
-  /** QRESYNC `VANISHED` since the given MODSEQ; `null` when the server doesn't support QRESYNC (caller falls back to `fetchAllUids`). */
+  /** `null` without QRESYNC; the caller then falls back to `fetchAllUids`. */
   fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null>;
-  /** Every UID currently in the folder — the no-QRESYNC deletion-detection fallback (a full UID diff against what this folder's edges already know, see folderMembershipStore.ts). */
+  /** No-QRESYNC deletion detection by full UID diff. */
   fetchAllUids(path: string): Promise<number[]>;
-  /**
-   * Flags for every UID the folder already knows about, re-fetched so a change made on the
-   * provider (not through this codebase's own `setMessageFlag`) is observed rather than only
-   * ever seen for messages new since `uidnext`. `sinceModSeq` non-null (CONDSTORE, and a modseq
-   * already stored from a prior pass) fetches only what changed since then; `null` (no
-   * CONDSTORE, or the first pass after a UIDVALIDITY reset) fetches every UID's current flags.
-   */
+  /** Observes provider-side flag changes on known UIDs; `null` modseq fetches every UID's flags. */
   fetchFlagsChangedSince(path: string, sinceModSeq: number | null): Promise<Array<{ uid: number; flags: string[] }>>;
-  /**
-   * The one place a message flag is ever written on this account — every fetch above must
-   * stay peek-only regardless of caller. Exists so an explicit user triage action (mark
-   * read/unread, flag/unflag — mail/messageFlags.ts maps both onto their IMAP flags) has
-   * somewhere to go that isn't a side effect of background/AI reads; nothing in this module
-   * calls it itself.
-   */
+  /** The only flag write; every fetch above must stay peek-only so reads never mark mail as seen. */
   setMessageFlag(path: string, uid: number, flag: WritableImapFlag, value: boolean): Promise<void>;
-  /**
-   * IMAP APPEND of one complete RFC 5322 message with the given flags. Only the copy of a sent message kept in the
-   * Sent folder uses it (mailTransport.ts, issue #1641); the reconcile pass never calls it.
-   */
+  /** Used only to keep a sent message's copy in the Sent folder. */
   appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void>;
-  /**
-   * Logs out and releases the socket. The sync job calls it once per pass, on success and on failure
-   * (mailSyncJob.ts), and the Sent-copy append calls it once per copy (mailTransport.ts). It never rejects: the
-   * caller is already cleaning up after a pass or an append that may have failed.
-   */
+  /** Never rejects: callers invoke it during cleanup, possibly after a failure. */
   close(): Promise<void>;
 }
 
@@ -104,20 +79,14 @@ export interface ReconcileImapFolderParams {
   attachmentsRelationPropertyId: string;
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
-  /** The Mailbox item this folder belongs to — `ingestEmailMessage`'s per-mailbox dedup scope, and also used by the Gmail label sync below. */
+  /** Scope of per-mailbox dedup. */
   mailboxItemId: string;
   protectedMoveMessageIds?: ReadonlySet<string>;
   moveBaseline?: MailMoveBaseline;
-  /**
-   * Only needed for Gmail-in-IMAP-fallback-mode's label-derived Folder membership (below) —
-   * every other IMAP target (iCloud, generic, Outlook) leaves a fetched message's
-   * `gmailLabels` undefined, so `syncGmailLabelFolders` is never invoked and these two
-   * fields go unused. `reconcileImapAccount` always passes them through since it already has
-   * them for the account-level Folder discovery it does itself.
-   */
+  /** Used only for Gmail label-derived folders (messages with `gmailLabels`). */
   foldersDatabaseId: string;
   mailboxFolderRelationPropertyId: string;
-  /** This mailbox's registered addresses (`Mailboxes.addresses`) — deliveredToAddress's alias-fallback precedence (mail/deliveredTo.ts, issue #93). Defaults to `[]`. */
+  /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
   mailboxAliases?: string[];
 }
 
@@ -131,11 +100,8 @@ const GMAIL_LABEL_TO_PURPOSE: Record<string, string> = {
 };
 
 /**
- * "Gmail in IMAP fallback mode" (issue #26): derives Folder/label membership from `X-GM-LABELS`
- * instead of the physical folder being synced (`[Gmail]/All Mail`, whose own edge is
- * maintained separately, by the UID-based reconcile above — this only ever *adds* label
- * edges alongside it). Only called when `message.gmailLabels` is present, i.e. only when the
- * IMAP server actually advertised X-GM-EXT-1 (Gmail) — a no-op for iCloud/generic/Outlook.
+ * Gmail over IMAP: derives label Folder edges from `X-GM-LABELS`, alongside the All Mail edge the
+ * UID reconcile maintains. Only called when the server reports labels (X-GM-EXT-1).
  */
 async function syncGmailLabelFolders(
   dbClient: PoolClient,
@@ -163,10 +129,8 @@ async function syncGmailLabelFolders(
     );
   }
 
-  // Drop any label-derived edge for a label this message no longer carries — never touches
-  // the physical `params.folderItemId` (All Mail) edge, which isn't label-derived at all;
-  // `folderPaths` restricts this account to syncing only that one physical folder in this
-  // mode, so every *other* edge on this relation is guaranteed to be label-derived.
+  // Drop edges for labels no longer carried. In this mode only All Mail is synced, so every
+  // other edge is label-derived; the All Mail edge itself is never touched.
   const currentEdges = await listRelationsForItem(dbClient, relationDefinitionId, emailItemId);
   for (const edge of currentEdges) {
     const otherFolderId = otherSide(edge, emailItemId);
@@ -181,12 +145,8 @@ async function syncGmailLabelFolders(
 }
 
 /**
- * One folder's reconcile pass (issue #26's IMAP adapter). `UIDVALIDITY` changing between
- * runs invalidates the whole UID cache — the folder was rebuilt server-side — so this always
- * re-derives `sinceUid`/`sinceModSeq` from the (possibly just-reset) sync state rather than
- * trusting a caller-supplied cursor. QRESYNC/CONDSTORE support is a per-call capability
- * check (`CAPABILITY`), not a stored assumption — a server can in principle change what it
- * advertises.
+ * A changed `UIDVALIDITY` invalidates the UID cache, so cursors are always re-derived from the
+ * (possibly reset) sync state. QRESYNC/CONDSTORE support is checked per call, not stored.
  */
 export async function reconcileImapFolder(
   dbClient: PoolClient,
@@ -240,12 +200,8 @@ export async function reconcileImapFolder(
     }
   }
 
-  // Flags on UIDs this folder already knew about, before this pass's new-message fetch above —
-  // those are re-fetched here rather than relying on a later fetchMessagesSince pass to notice
-  // them, since a UID below sinceUid is never fetched again by that call. Skipped on the very
-  // first sync of a folder (state.uidvalidity not yet recorded): there is nothing to converge
-  // into yet, since every UID in that initial fetchMessagesSince pass is being ingested for the
-  // first time with its flags already seeded at creation.
+  // UIDs below sinceUid are never re-fetched, so their flags are refreshed here. Skipped on a
+  // folder's first sync, where every message was just ingested with its flags.
   if (state.uidvalidity) {
     const sinceModSeq = capabilities.has("CONDSTORE") && state.highestmodseq ? Number(state.highestmodseq) : null;
     const changedFlags = await imap.fetchFlagsChangedSince(params.folderPath, sinceModSeq);
@@ -332,19 +288,16 @@ export interface ReconcileImapAccountParams {
   attachmentsRelationPropertyId: string;
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
-  /** Gmail/Outlook in IMAP fallback mode (issue #26): sync only `[Gmail]/All Mail` (or the equivalent `\All` folder) instead of every folder — `folderPaths` lets the composition root pass exactly `["[Gmail]/All Mail"]` for that mode; label membership is then derived from `X-GM-LABELS` by `syncGmailLabelFolders` below (only when the server actually reports labels — a no-op otherwise). Defaults to every folder the server lists, correct for iCloud/generic IMAP (this adapter's actual default target). */
+  /** Restricts the sync, e.g. to `["[Gmail]/All Mail"]` for Gmail over IMAP (labels come from `X-GM-LABELS`). Defaults to every listed folder. */
   folderPaths?: string[];
-  /** This mailbox's registered addresses (`Mailboxes.addresses`) — deliveredToAddress's alias-fallback precedence (mail/deliveredTo.ts, issue #93). Defaults to `[]`. */
+  /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
   mailboxAliases?: string[];
 }
 
 /**
- * One IMAP account's full reconcile pass: discovers/creates Folder items, then reconciles
- * each folder in turn. Deliberately does not catch-and-record its own failures here: this
- * whole pass runs inside one caller-owned transaction (mailSyncJob.ts), so an `UPDATE ...
- * last_error` written on the same client a later error then aborts would itself be rolled
- * back — recording sync failures is the caller's job, in its own separate transaction, after
- * this one has already unwound. See mailSyncJob.ts's `handleSyncMailAccountTask`.
+ * Discovers Folder items, then reconciles each folder. Does not record its own failures: the
+ * pass runs in the caller's transaction, so such a write would be rolled back with it.
+ * mailSyncJob.ts records sync failures in a separate transaction.
  */
 export async function reconcileImapAccount(
   dbClient: PoolClient,
@@ -397,8 +350,7 @@ export async function reconcileImapAccount(
   if (!folderRelationDefinition || !mailboxFolderRelationDefinition) {
     throw new ValidationError("Mail folder relation definitions are missing from the email module schema");
   }
-  // A state observation that equals the desired state has no row in this result, preventing
-  // a reconcile of a provider-originated change from echoing it straight back over STORE.
+  // Rows only exist where observed != desired, so provider changes are not echoed back.
   const writeback = createImapMailFlagWritebackAdapter(imap);
   const pendingWrites = await listPendingImapFlagWrites(dbClient, {
     folderRelationDefinitionId: folderRelationDefinition.id,
@@ -428,9 +380,7 @@ export async function reconcileImapAccount(
     await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }
 
-  // IMAP has no push-vs-poll distinction at this layer — periodic reconcile is the only
-  // mechanism (IDLE, when used, just triggers this same pass earlier); a fixed 30-minute
-  // horizon is within the issue's stated 15-60 minute reconcile window.
+  // Periodic reconcile is the only mechanism here; IDLE just triggers it earlier.
   await recordImapActivity(dbClient, {
     itemId: params.mailboxItemId,
     nextExpectedActivityAt: new Date(Date.now() + 30 * 60 * 1000),

@@ -15,33 +15,16 @@ const payloadSchema = z.object({ itemId: z.uuid() }).strict();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The `pageTitleMirror` task (issue #1715): copies the plain text of the `page` blocks of one item's document onto
- * the `title` of the Pages items they name, in one transaction. The block text is the source and the item title a
- * mirror (`docs/adr/2026-10-29-subpages-are-items-of-a-hidden-pages-database.md`), so the job only ever writes items
- * and never the document. A completed no-op when the item is missing or trashed (checked under a lock on its row),
- * has no page document, or the tenant has no Pages database yet.
- *
- * A block is mirrored only when it names a live Pages item whose `parentItemId` is this document's item: a block that
- * points to a trashed page, to a page of another parent, to an item of another database or to an unknown id is left
- * alone. The mirrored title is the block text through `normalizePageTitle`, cut to the length limit rather than refused.
- * When several blocks name one page the first in document order wins. The `title` is written under the `pages` owner
- * process through the choke point, one row lock per page, taken in id order. Only the pages that name this item as
- * their parent are locked, so a reference to any other page takes no lock of this job.
- * `docs/adr/2026-11-09-page-title-mirror-locks-only-children-it-owns.md` states the premise (only the creation owner
- * sets `parentItemId`, on a fresh row, and it refuses an ancestor cycle) under which that keeps two jobs from waiting on
- * each other's host row, and what it does not claim.
+ * Copies `page` block text onto the `title` of the Pages items they name. The block is the source and the title a
+ * mirror, so this never writes the document. Only live pages whose parent is this item are written (first block
+ * wins). Locking only own children keeps two jobs from waiting on each other's rows, given that only the creation
+ * owner sets `parentItemId` (on a fresh row) and it refuses ancestor cycles.
  */
 export async function handlePageTitleMirrorTask(pool: Pool, payload: unknown): Promise<void> {
   const { itemId } = payloadSchema.parse(payload);
   await withTransaction(pool, async (client) => {
-    // The host row is reserved (blocking `FOR UPDATE`, the lock a trash of the host takes first) and rechecked live
-    // before its document is loaded or any child is written: a trash committed earlier makes this a no-op, and a
-    // trash that starts later waits until this transaction has written the titles. Lock order: host, document, then
-    // the host's own Pages items in id order. The trash or restore of a host that is not a page locks the host first,
-    // its subpages after it, and writes the host's document after that (issue #1763); the trash or restore of a page
-    // locks that page first, its subpages after it, and writes its parent's document last. See
-    // docs/adr/2026-11-10-trashed-pages-leave-the-parent-document-and-record-their-position.md and
-    // docs/adr/2026-11-12-a-trashed-host-takes-its-subpages-into-its-deletion-epoch.md.
+    // Lock order: host row (the lock a trash takes first), document, then own Pages items in id order. An earlier
+    // trash makes this a no-op; a later one waits until the titles are written.
     const [visible] = await getItemsByIds(client, [itemId]);
     const host = visible ? await lockItemById(client, visible.databaseId, itemId) : null;
     if (!host || host.deletedAt !== null) return;
@@ -64,13 +47,11 @@ export async function handlePageTitleMirrorTask(pool: Pool, payload: unknown): P
       ydoc.destroy();
     }
 
-    // The unlocked read selects the pages that currently name this item as their parent; a page that does not is never
-    // locked. The parent is read again under the row lock below, which catches a page trashed or moved since this read.
+    // Unlocked preselect so foreign pages are never locked; rechecked under the row lock below.
     const children = (await getItemsByIds(client, [...titles.keys()]))
       .filter((page) => page.databaseId === pagesDatabase.id && page.properties.parentItemId === itemId)
       .sort((a, b) => a.id.localeCompare(b.id));
     for (const page of children) {
-      // The row lock makes the live and parent checks below the state this update replaces.
       const locked = await lockItemById(client, page.databaseId, page.id);
       const title = titles.get(page.id);
       if (!locked || locked.deletedAt !== null || locked.properties.parentItemId !== itemId) continue;

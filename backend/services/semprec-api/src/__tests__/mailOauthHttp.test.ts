@@ -31,12 +31,10 @@ import { createMailLiveSyncControl } from "../mailLiveSyncControl.js";
 import { logger } from "../logger.js";
 
 /**
- * Issue gh-1686 through the production composition path: the real dispatcher, the mail module's
- * manifest routes behind the REST adapter, and the hand-wired public callback. The data package's
- * `mailOauthRoutes.test.ts` covers every branch of the handlers; this file covers what only the
- * HTTP layer decides: the public callback, the status and body of each error, and the adapter's log.
- * For issue gh-1742 it also composes the mail live-sync root the way `serve.ts` does: the dispatcher
- * gets the control first, and the root is created and bound to it afterwards.
+ * Mail OAuth through the production composition: the real dispatcher, the manifest routes behind the REST adapter
+ * and the hand-wired public callback. Handler branches are covered by the data package's `mailOauthRoutes.test.ts`;
+ * this file covers what only the HTTP layer decides. The live-sync root is composed as `serve.ts` does: the
+ * dispatcher gets the control first, and the root is bound to it afterwards.
  */
 
 const GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
@@ -57,10 +55,8 @@ const originalScopeMode = process.env.SEMPREC_TENANT_SCOPE;
 
 type ProviderRoute = (init: RequestInit | undefined) => Response | Promise<Response>;
 
-/** What the provider answers in the running test; reset after each one. */
 let providerRoutes: Record<string, ProviderRoute> = {};
 
-/** The composition root's outbound `fetch`: every provider request of the routes under test lands here. */
 const outboundHttp: typeof fetch = async (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
   const route = providerRoutes[url];
@@ -68,7 +64,6 @@ const outboundHttp: typeof fetch = async (input, init) => {
   return route(init);
 };
 
-/** The control the dispatcher is mounted with; `beforeAll` binds the live-sync root to it. */
 const liveSync = createMailLiveSyncControl();
 
 const dependencies: CustomRouteDependencies = {
@@ -85,7 +80,6 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-/** Google answering for the account `address`, issuing `refreshToken`. */
 function googleAccount(address: string, refreshToken: string = SECRETS.refreshToken): Record<string, ProviderRoute> {
   return {
     [GOOGLE_TOKEN_URL]: () =>
@@ -103,7 +97,7 @@ let bearer: Record<string, string>;
 let tenantId: string;
 let root: MailLiveSyncRoot;
 
-/** What each hosted lifecycle did, in order; a start records the credential it read, as the real lifecycles do. */
+/** A start records the credential it read, as the real lifecycles do. */
 const lifecycleEvents: Array<{ mailboxItemId: string; event: "start" | "stop"; credential?: string | null }> = [];
 
 const recordingLifecycles: MailLiveSyncLifecycleFactory = (account) => ({
@@ -126,7 +120,6 @@ function eventsOf(mailboxId: string): Array<{ event: "start" | "stop"; credentia
     .map(({ event, credential }) => (event === "start" ? { event, credential } : { event }));
 }
 
-/** The mailbox's stored refresh token, read inside its tenant. */
 function storedToken(mailboxId: string): Promise<string | null> {
   return runInTenant(tenantId, () =>
     getDecryptedCredential(pool, { itemId: mailboxId, actorType: "sync_worker", purpose: "test" }),
@@ -175,7 +168,6 @@ async function request(method: string, path: string, body?: unknown, headers: Re
 const startBody = z.object({ authorizeUrl: z.string() }).strict();
 const completeBody = z.object({ mailboxId: z.uuid() }).strict();
 
-/** Starts a sign-in through the real route and returns the provider URL it answered. */
 async function start(provider: "gmail" | "outlook"): Promise<URL> {
   const answer = await request("POST", "/api/mail/mailboxes/oauth/start", { provider }, bearer);
   expect(answer.status, JSON.stringify(answer.body)).toBe(200);
@@ -192,7 +184,6 @@ function complete(state: string, code: string = SECRETS.code): Promise<Answer> {
   return request("POST", "/api/mail/mailboxes/oauth/complete", { state, code }, bearer);
 }
 
-/** `used_at` of the row of `state`, read as the superuser. */
 async function usedAt(state: string): Promise<Date | null | undefined> {
   const { rows } = await adminPool.query<{ used_at: Date | null }>(
     "SELECT used_at FROM mail_oauth_states WHERE state_hash = $1",
@@ -201,7 +192,6 @@ async function usedAt(state: string): Promise<Date | null | undefined> {
   return rows[0]?.used_at;
 }
 
-/** Counts every statement any pool of this process sends while `fn` runs. */
 async function statementsDuring(fn: () => Promise<void>): Promise<number> {
   const spy = vi.spyOn(pg.Client.prototype, "query");
   try {
@@ -219,7 +209,7 @@ beforeAll(async () => {
   pool = await createRuntimeRolePool(adminPool, "semprec_data");
   server = await listen({ customRouteDependencies: dependencies });
   baseUrl = urlOf(server);
-  // Created after the dispatcher and bound to the control it already holds, in `serve.ts`'s order.
+  // Bound to the control the dispatcher already holds, in `serve.ts`'s order.
   root = createMailLiveSyncRoot(pool, recordingLifecycles);
   liveSync.bind(root);
 
@@ -268,7 +258,7 @@ describe("GET /api/mail/oauth/callback (issue gh-1686)", () => {
     expect(answer?.headers.get("x-content-type-options")).toBe("nosniff");
     expect(answer?.headers.get("referrer-policy")).toBe("no-referrer");
     expect(answer?.headers.get("set-cookie")).toBeNull();
-    // No statement at all: neither a session lookup nor a write.
+    // Neither a session lookup nor a write.
     expect(statements).toBe(0);
     expect(await usedAt(state)).toBeNull();
   });
@@ -413,7 +403,7 @@ describe("the mailbox sign-in routes behind the REST adapter (issue gh-1686)", (
 
     const answer = await complete(stateOf(await start("gmail")));
 
-    // A wrong or expired client secret is this deployment's fault: the caller learns nothing, the operator does.
+    // A wrong or expired client secret is the deployment's fault: the caller learns nothing, the operator does.
     expect(answer.status).toBe(500);
     expect(answer.body).toEqual({ error: { code: "internal_error" } });
     expect(logged).toHaveBeenCalledTimes(1);
@@ -458,7 +448,6 @@ describe("the mailbox sign-in routes behind the REST adapter (issue gh-1686)", (
 });
 
 describe("reauthorizing a mailbox behind the REST adapter, with the live-sync root bound to the routes' control (issue gh-1742)", () => {
-  /** Connects a mailbox for `address` over HTTP and lets a discovery pass host it. */
   async function hostedMailbox(address: string): Promise<string> {
     providerRoutes = googleAccount(address);
     const answer = await complete(stateOf(await start("gmail")));
@@ -473,7 +462,6 @@ describe("reauthorizing a mailbox behind the REST adapter, with the live-sync ro
     return request("POST", `/api/mail/mailboxes/${mailboxId}/reauthorize`, {}, headers);
   }
 
-  /** Starts a reauthorization through the real route and returns the state the provider would hand back. */
   async function reauthorizationState(mailboxId: string): Promise<string> {
     const answer = await reauthorize(mailboxId);
     expect(answer.status, JSON.stringify(answer.body)).toBe(200);
@@ -496,7 +484,6 @@ describe("reauthorizing a mailbox behind the REST adapter, with the live-sync ro
       { event: "stop" },
       { event: "start", credential: SECRETS.newRefreshToken },
     ]);
-    // A discovery pass afterwards finds the replacement hosted and starts nothing more.
     await root.reconcileOnce();
     expect(eventsOf(mailboxId)).toHaveLength(3);
   });
@@ -544,7 +531,6 @@ describe("reauthorizing a mailbox behind the REST adapter, with the live-sync ro
   it("answers a generic 500 when the restart fails after the commit, and logs it without a secret", async () => {
     const address = `${randomUUID()}@gmail.com`;
     const mailboxId = await hostedMailbox(address);
-    // The same composition, except that no root was ever bound to the control.
     const unbound = await listen({
       customRouteDependencies: { ...dependencies, mailLiveSync: createMailLiveSyncControl().control },
     });
@@ -567,7 +553,6 @@ describe("reauthorizing a mailbox behind the REST adapter, with the live-sync ro
     } finally {
       await new Promise<void>((resolve) => unbound.close(() => resolve()));
     }
-    // The token was replaced before the restart was tried; the lifecycle of the bound root was not touched.
     expect(await storedToken(mailboxId)).toBe(SECRETS.newRefreshToken);
     expect(eventsOf(mailboxId)).toEqual([{ event: "start", credential: SECRETS.refreshToken }]);
     expect(logged).toHaveBeenCalledTimes(1);

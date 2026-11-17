@@ -5,11 +5,9 @@ import { assertValidTimezone } from "./timezone.js";
 import { getSystemTimezone } from "./systemSettings.js";
 
 /**
- * Calendar time in the tenant's zone. Events and Tasks store wall-clock values (`date`,
- * `endDate`, `timeFrom`, `timeTo` as "HH:MM"); every function here interprets them in the
- * zone it is given. Daylight saving follows luxon defaults: a non-existent wall-clock moves
- * forward, an ambiguous one takes the earlier offset. Bounds are half-open: `end` is the
- * start of the following day or week, so a day lasts 23, 24 or 25 hours.
+ * Calendar time in the tenant's zone. Events and Tasks store wall-clock values ("HH:MM" times). DST follows luxon:
+ * a non-existent time moves forward, an ambiguous one takes the earlier offset. Bounds are half-open, so a day
+ * lasts 23, 24 or 25 hours.
  */
 
 export type WallClock = { date: string; time: string };
@@ -39,14 +37,13 @@ function dayStart(date: string, zone: string): DateTime {
   return parsed.startOf("day");
 }
 
-/** Current date in `zone` as `YYYY-MM-DD`. */
 export function today(zone: string, at?: Date): string {
   const date = zoned(zone, at).toISODate();
   if (date === null) throw new ValidationError("Invalid calendar instant", { field: "instant" });
   return date;
 }
 
-/** Current wall-clock date and time ("HH:MM") in `zone`. */
+/** Wall-clock date and "HH:MM" time in `zone`. */
 export function now(zone: string, at?: Date): WallClock {
   const dt = zoned(zone, at);
   const date = dt.toISODate();
@@ -54,19 +51,19 @@ export function now(zone: string, at?: Date): WallClock {
   return { date, time: dt.toFormat("HH:mm") };
 }
 
-/** The day containing `date`: start of the day and the start of the next one. */
+/** Half-open bounds of the day containing `date`. */
 export function dayBounds(date: string, zone: string): TimeBounds {
   const start = dayStart(date, zone);
   return { start, end: start.plus({ days: 1 }) };
 }
 
-/** The Monday-to-Sunday week containing `date`: Monday 00:00 and the following Monday 00:00. */
+/** Half-open Monday-to-Monday week containing `date`. */
 export function weekBounds(date: string, zone: string): TimeBounds {
   const start = dayStart(date, zone).startOf("week");
   return { start, end: start.plus({ weeks: 1 }) };
 }
 
-/** Converts a wall-clock date and "HH:MM" time ("24:00" is the midnight ending `date`) to an instant. */
+/** "24:00" is the midnight ending `date`. */
 export function wallClockToInstant(date: string, time: string, zone: string): DateTime {
   const start = dayStart(date, zone);
   if (time === "24:00") return start.plus({ days: 1 });
@@ -75,25 +72,18 @@ export function wallClockToInstant(date: string, time: string, zone: string): Da
   return start.set({ hour, minute });
 }
 
-/** The wall-clock date and time of an instant in `zone`. */
 export function instantToWallClock(instant: Date, zone: string): WallClock {
   return now(zone, instant);
 }
 
-/**
- * When an Event ends: `timeTo` on its last day (`endDate ?? date`), or, with no `timeTo`, the
- * end of that day (its last millisecond).
- */
+/** `timeTo` on the last day (`endDate ?? date`), else the last millisecond of that day. */
 export function eventEnd(event: CalendarEventTimes, zone: string): DateTime {
   const lastDay = event.endDate ?? event.date;
   if (event.timeTo) return wallClockToInstant(lastDay, event.timeTo, zone);
   return dayStart(lastDay, zone).endOf("day");
 }
 
-/**
- * When a Task ends: `timeTo` if set, else for a timed Task its own start (no default length),
- * else the end of its day. Events never use this rule.
- */
+/** `timeTo` if set, else a timed Task's own start (no default length), else the end of its day. Not for Events. */
 export function taskEffectiveEnd(task: CalendarTaskTimes, zone: string): DateTime {
   if (task.timeTo) return wallClockToInstant(task.date, task.timeTo, zone);
   if (task.timeFrom) return wallClockToInstant(task.date, task.timeFrom, zone);

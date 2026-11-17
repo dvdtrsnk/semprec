@@ -56,35 +56,19 @@ export { createListAgentRunsRouteHandler } from "../agentRuns/agentRunsListRoute
 export { createProjectAgentSummaryRouteHandler } from "../mcp/projectAgentSummaryRouteHandler.js";
 
 /**
- * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
- * (this directory) plus the system tables it writes through (`0001_core_schema.sql` — users,
- * databases, properties, relation_definitions, items, item_relations, project_heartbeats,
- * agent_runs, rollup_dependencies, notifications, idempotency_keys). This is
- * the generic engine every other module builds on, not a business database of its own — it
- * declares no `databases` entries. Authoring this manifest changes no behavior: the choke point
- * continues to be called directly everywhere it already is, this only makes its existence
- * loadable and structurally checkable through `ModuleRegistry`.
+ * Manifest for the schema/data core: the choke point plus the system tables it writes through. The
+ * generic engine every module builds on; it declares no `databases`, and this manifest only makes it
+ * loadable and checkable through `ModuleRegistry`.
  *
- * `heartbeat.list`/`heartbeat.history` (issue #135) are its first two agent tools: read-only
- * introspection over `project_heartbeats`/`agent_runs`. They derive their scope from the persisted run
- * (its own project, or the whole tenant for a run of a Semp chat thread minus the projects the
- * sensitive-grant exclusion leaves out, issue #2018), so neither declares a `capability` gate
- * (see `heartbeatAgentTools.ts`). `heartbeat.trigger` (issue #136) joins them on the same terms —
- * availability only, no `capability` gate and no approval requirement beyond that — but stays
- * limited to the calling run's own project.
+ * The `heartbeat.list`/`heartbeat.history`/`heartbeat.trigger` agent tools derive their scope from the
+ * persisted run (`heartbeatAgentTools.ts`), so they declare no `capability` gate; `trigger` stays
+ * limited to the run's own project. `heartbeat.create`/`update`/`setEnabled` are `requiresApproval`:
+ * the handler runs once after approval, and each `snapshotExport`'s canonical JSON is compared again
+ * before it runs (`heartbeatWriteAgentTools.ts`).
  *
- * `heartbeat.create`, `heartbeat.update` and `heartbeat.setEnabled` (issue #1846) are the write tools of the
- * same setup. Each is declared with `requiresApproval`, so a session defers a call to a `moduleTool`
- * approval request and the handler runs once, after approval; `approval: "always"` is only their
- * classification. Each names a `snapshotExport`, whose canonical JSON the request hashes and the executor
- * compares again before the handler runs (`heartbeatWriteAgentTools.ts`).
- *
- * `capabilities` registers the generic-operation capability ids from
- * `CAPABILITY_IDS` (issue #220) — the same `OPERATION_METADATA.requiresCapability` values
- * generic operations are keyed against. The permission manifest excludes page capabilities
- * from automatic project-agent grants; human MCP registration retains the full list.
- * A project's granted subset is what `packages/application`'s `genericOperationGateway.ts` filters AgentTool/MCP
- * discovery and invocation by.
+ * `capabilities` registers `CAPABILITY_IDS`, the values generic operations' `requiresCapability` is
+ * keyed against. Page capabilities are excluded from automatic project-agent grants; human MCP
+ * registration keeps the full list.
  */
 export const manifest: ModuleManifest = {
   id: "schemaCore",
@@ -144,7 +128,8 @@ export const manifest: ModuleManifest = {
       snapshotExport: "createHeartbeatSetEnabledSnapshot",
     },
   ],
-  migrations: ["0001_core_schema.sql"],
+  // The baseline holds the whole schema of every module that existed before the first release.
+  migrations: ["0001_baseline.sql"],
   customRoutes: [
     {
       name: "sempStatus",
@@ -173,8 +158,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/push-subscriptions",
       handlerExport: "createRegisterPushSubscriptionRouteHandler",
-      // Binds the new row to the caller's own session in one transaction with its upsert —
-      // issue #239's "cross-database write in one transaction" justification.
+      // Binds the new row to the caller's session in one transaction with its upsert.
       justification: "transactional-semantics",
     },
     {
@@ -189,8 +173,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/ai-usage",
       handlerExport: "createAiUsageRouteHandler",
-      // An aggregate report over ai_gateway_calls/agent_runs/system settings, outside the item
-      // model entirely — issue #239's "aggregate read outside the item model" justification.
+      // An aggregate report over ai_gateway_calls/agent_runs/system settings, outside the item model.
       justification: "transactional-semantics",
     },
     {
@@ -198,9 +181,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/ai-usage/summary",
       handlerExport: "createAiUsageSummaryRouteHandler",
-      // One read shaped for the caller's own spend against its own caps (issue gh-1456): the budget
-      // row, the system timezone and the gateway's spend. The request carries no input.
-      // The "single-consumer-read" justification.
+      // The caller's spend against its own caps: budget row, system timezone and gateway spend. No input.
       justification: "single-consumer-read",
     },
     {
@@ -208,11 +189,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/system-health",
       handlerExport: "createSystemHealthRouteHandler",
-      // A live snapshot of the caller's own tenant across process_heartbeats/
-      // tenant_observability_checks/graphile_worker/item_automation/agent_runs/
-      // mail_account_sync_state, shaped for exactly one consumer (issue #170's System status
-      // block) — the "single-consumer-read" justification. Operator data is not served here
-      // (issue #1038, GET /api/admin/health).
+      // A live snapshot of the caller's own tenant's process and job health, for the System status block
+      // only. Operator data is served by GET /api/admin/health instead.
       justification: "single-consumer-read",
     },
     {
@@ -220,8 +198,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/overview",
       handlerExport: "createOverviewRouteHandler",
-      // The badges and counts of the Overview screen, its one consumer (issue gh-1837): every number is
-      // computed by the function of its owner, and the route counts nothing itself.
+      // The Overview screen's badges and counts; each number comes from its owner's function.
       justification: "single-consumer-read",
     },
     {
@@ -229,8 +206,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/notification-preferences",
       handlerExport: "createGetNotificationPreferencesRouteHandler",
-      // Shaped for exactly one consumer, the settings screen's notification section: the caller's
-      // own preferences row, or the defaults, and no other table.
+      // The settings screen's notification section: the caller's preferences row, or the defaults.
       justification: "single-consumer-read",
     },
     {
@@ -238,8 +214,7 @@ export const manifest: ModuleManifest = {
       method: "PATCH",
       path: "/api/notification-preferences",
       handlerExport: "createPatchNotificationPreferencesRouteHandler",
-      // The first change inserts the caller's row and the update that sets its fields commits with
-      // it in one transaction, a shape the generic item-write endpoint can't express.
+      // The first change inserts the caller's row and the update commits with it in one transaction.
       justification: "transactional-semantics",
     },
     {
@@ -247,8 +222,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/badge-counts",
       handlerExport: "createBadgeCountsRouteHandler",
-      // Shaped for exactly one consumer, the app icon badge: three counts of what waits for the
-      // caller's decision, not a generic count of items in a database.
+      // The app icon badge: three counts of what waits for the caller's decision.
       justification: "single-consumer-read",
     },
     {
@@ -256,9 +230,7 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/heartbeats/:id/trigger",
       handlerExport: "createTriggerHeartbeatRouteHandler",
-      // The active-run and waiting-job checks and the enqueue commit or roll back together under the
-      // heartbeat's row lock (issue #1453): the transactional shape the generic item-write endpoint
-      // can't express.
+      // The active-run and waiting-job checks and the enqueue commit together under the heartbeat's row lock.
       justification: "transactional-semantics",
     },
     {
@@ -266,8 +238,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/projects/:id/database-grants",
       handlerExport: "createListAgentDatabaseGrantsRouteHandler",
-      // Shaped for exactly one consumer, the Collections list in a project's Semp settings (issue #1841): the
-      // sensitive and the user-created databases with the project's access, and no other table.
+      // The Collections list in a project's Semp settings: sensitive and user-created databases with the
+      // project's access.
       justification: "single-consumer-read",
     },
     {
@@ -275,8 +247,8 @@ export const manifest: ModuleManifest = {
       method: "PATCH",
       path: "/api/projects/:id/database-grants",
       handlerExport: "createPatchAgentDatabaseGrantRouteHandler",
-      // The project and database locks, the removal of a default decision and the upsert of any other commit
-      // together (issue #1841): a shape the generic item-write endpoint can't express.
+      // The project and database locks, the removal of a default decision and the upsert of any other
+      // commit together.
       justification: "transactional-semantics",
     },
     {
@@ -284,9 +256,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/trash/items",
       handlerExport: "createTrashItemsRouteHandler",
-      // The trashed cascade roots of every database of the caller's tenant with their purge day, shaped for
-      // exactly one consumer, the "Recently deleted" screen (issue gh-1851): the generic query reads one
-      // database at a time and knows neither cascade roots nor the retention.
+      // The "Recently deleted" screen's trashed cascade roots across the tenant with their purge day; the
+      // generic query reads one database at a time and knows neither cascade roots nor retention.
       justification: "single-consumer-read",
     },
     {
@@ -294,9 +265,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/trash/databases",
       handlerExport: "createTrashDatabasesRouteHandler",
-      // The archived user databases of the caller's tenant with their live item count, shaped for exactly one
-      // consumer, the "Databases" tab of the "Recently deleted" screen (issue gh-1873): `GET /api/databases` leaves
-      // archived databases out and no generic read lists them.
+      // The "Recently deleted" Databases tab: archived user databases with live item counts, which no
+      // generic read lists.
       justification: "single-consumer-read",
     },
     {
@@ -304,9 +274,8 @@ export const manifest: ModuleManifest = {
       method: "POST",
       path: "/api/trash/restore",
       handlerExport: "createTrashRestoreRouteHandler",
-      // Every selected database and item is restored in its own savepoint of one transaction, so a refused id
-      // (a restore hook's rejection, an archived database) rolls back alone and the rest still restore, and its
-      // announcements are dropped (issue gh-1904): the generic item-write endpoint takes one resource at a time.
+      // Each selected id restores in its own savepoint of one transaction, so a refused id rolls back
+      // (announcements dropped) while the rest still restore.
       justification: "transactional-semantics",
     },
     {
@@ -314,9 +283,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/agent-runs",
       handlerExport: "createListAgentRunsRouteHandler",
-      // The recent runs of one project that the caller started, with the cost and the display status of each,
-      // shaped for exactly one consumer, the project's agent page (issue gh-1909): the run detail route reads one
-      // run by id and no generic read lists agent runs.
+      // A project's agent page: recent runs the caller started with cost and display status; no generic
+      // read lists agent runs.
       justification: "single-consumer-read",
     },
     {
@@ -324,9 +292,7 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/projects/:id/heartbeats",
       handlerExport: "createProjectHeartbeatsRouteHandler",
-      // The automations a person made in one project with each one's rule label, last run outcome and tick thread,
-      // shaped for exactly one consumer, the project's agent screen (issue gh-1910): the generic item reads know
-      // neither `project_heartbeats` nor the runs of its occurrences.
+      // A project's agent screen: the person's automations with rule label, last outcome and tick thread.
       justification: "single-consumer-read",
     },
     {
@@ -334,9 +300,8 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/projects/:id/agent-summary",
       handlerExport: "createProjectAgentSummaryRouteHandler",
-      // The counts behind one row of the project detail, "Semp in this project", and its attention dot (issue
-      // gh-1935), shaped for exactly one consumer. The counts reuse the owners' functions where they exist (grants,
-      // heartbeats, display status); the drift and approval counts are one count query each.
+      // The project detail's "Semp in this project" row and its attention dot. Counts reuse the owners'
+      // functions where they exist.
       justification: "single-consumer-read",
     },
   ],

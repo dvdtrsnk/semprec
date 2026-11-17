@@ -2,20 +2,17 @@ import { createLogger } from "@semprec/shared";
 import { htmlToPlainText } from "../mail/mailPlainText.js";
 import type { OutboundHttp } from "../net/outboundAddressPolicy.js";
 
-// Reading a page a person pasted into the Inbox (issue gh-1974): the request, with a timeout, a size cap and a
-// content-type allow-list, and the readable text of what came back. Everything here is about bytes and text; the
-// outbound address policy is the `fetch` the caller passes (`createOutboundHttp().fetch`, see
-// docs/adr/2026-10-16-connect-time-outbound-address-checks.md), which refuses a denied address and every redirect.
+// Reading a page a person pasted into the Inbox: timeout, size cap, content-type allow-list and readable text. The
+// outbound address policy lives in the caller's `fetch` (`createOutboundHttp().fetch`), which refuses denied
+// addresses and every redirect.
 
 const logger = createLogger("recipe-page-fetch");
 
-/** The readable text sent to the model is cut at this many characters. */
 const MAX_PAGE_TEXT_CHARS = 30_000;
 
-/** Why a request for a page or an image ended without a body the caller can use. */
 export type RecipeFetchFailure = "unreachable" | "timeout" | "status" | "contentType" | "tooLarge";
 
-/** Every failure of `fetchCapped`. Only the reason is carried: the URL and the response are the person's content. */
+/** Only the reason is carried: the URL and the response are the person's content. */
 export class RecipeFetchError extends Error {
   readonly reason: RecipeFetchFailure;
 
@@ -27,24 +24,22 @@ export class RecipeFetchError extends Error {
 }
 
 export interface FetchCappedOptions {
-  /** The value of the `Accept` header. */
   accept: string;
-  /** The media types (lower case, without parameters) the response may have. */
+  /** Lower case, without parameters. */
   contentTypes: readonly string[];
-  /** The most bytes of the body that are read; a larger one is `tooLarge`. */
+  /** A larger body is `tooLarge`. */
   maxBytes: number;
-  /** The deadline of the whole request, the body included. */
   timeoutMs: number;
 }
 
-/** The first `https:` URL in `text`, without the punctuation of the sentence around it, or `null`. */
+/** The first `https:` URL in `text`, without surrounding sentence punctuation, or `null`. */
 export function findHttpsUrl(text: string): string | null {
   const match = /https:\/\/[^\s<>"'`]+/i.exec(text);
   if (!match) return null;
   return match[0].replace(/[.,;:!?)\]}]+$/, "");
 }
 
-/** Releases a response body that is not read to its end; a failure to do so is logged by its name and dropped. */
+/** Releases an unread response body; a failure is logged by name and dropped. */
 async function discardBody(response: Response): Promise<void> {
   try {
     await response.body?.cancel();
@@ -54,7 +49,6 @@ async function discardBody(response: Response): Promise<void> {
   }
 }
 
-/** Cancels `reader` to release the connection; a failure to do so is logged by its name and dropped. */
 async function cancelReader(reader: ReadableStreamDefaultReader): Promise<void> {
   try {
     await reader.cancel();
@@ -67,7 +61,6 @@ async function cancelReader(reader: ReadableStreamDefaultReader): Promise<void> 
   }
 }
 
-/** The whole body when it holds at most `maxBytes`; a larger body is cancelled at the cap and is `tooLarge`. */
 async function readCappedBody(response: Response, maxBytes: number, signal: AbortSignal): Promise<Buffer> {
   if (response.body === null) return Buffer.alloc(0);
   const reader = response.body.getReader();
@@ -78,12 +71,10 @@ async function readCappedBody(response: Response, maxBytes: number, signal: Abor
     try {
       result = await reader.read();
     } catch (error) {
-      // A body that errors part way is an unreachable page, and one cut by the deadline a timeout; the failed stream
-      // has nothing left to release.
+      // A body erroring part way is unreachable, or a timeout when the deadline cut it; it has nothing left to release.
       throw new RecipeFetchError(signal.aborted ? "timeout" : "unreachable", { cause: error });
     }
     if (result.done) break;
-    // The body of a response is a stream of bytes; anything else is not a page.
     if (!(result.value instanceof Uint8Array)) {
       await cancelReader(reader);
       throw new RecipeFetchError("unreachable");
@@ -99,11 +90,10 @@ async function readCappedBody(response: Response, maxBytes: number, signal: Abor
 }
 
 /**
- * Requests `url` with `fetchLike` and returns the body and its media type. The request has a deadline that covers the
- * body, a `Content-Length` over the cap and a body that grows past it are `tooLarge` (the stream is cancelled at the
- * cap, never buffered whole), a status outside 2xx is `status` and a media type outside `options.contentTypes` is
- * `contentType`; any failure of the request itself is `unreachable`, or `timeout` when the deadline ended it. A
- * redirect is a failure of `fetchLike`, which the outbound client never follows. The body is released on every path.
+ * Requests `url` with a deadline covering the body. A `Content-Length` or body over the cap is `tooLarge` (cancelled
+ * at the cap, never buffered whole), non-2xx is `status`, a disallowed media type `contentType`, any request failure
+ * (redirects included, which the outbound client refuses) `unreachable` or `timeout`. The body is released on every
+ * path.
  */
 export async function fetchCapped(
   fetchLike: OutboundHttp["fetch"],
@@ -143,7 +133,6 @@ function decodeEntities(text: string): string {
     .replaceAll("&amp;", "&");
 }
 
-/** The `content` of the `<meta property="og:image">` tag of `html`, resolved against `pageUrl`, or `null`. */
 function findImageUrl(html: string, pageUrl: string): string | null {
   for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
     if (!/\bproperty\s*=\s*["']og:image["']/i.test(tag)) continue;
@@ -160,14 +149,11 @@ function findImageUrl(html: string, pageUrl: string): string | null {
   return null;
 }
 
-/** The tags that start a new line of text: the text on either side of one is never one word. */
+/** Tags that start a new line of text: the text on either side is never one word. */
 const BLOCK_TAG =
   /<(\/?)(p|div|br|hr|li|ul|ol|dl|dt|dd|h[1-6]|tr|td|th|table|section|article|header|footer|blockquote|pre)\b/gi;
 
-/**
- * What a page says, for the model: its visible text (every tag, script and style removed, entities decoded, whitespace
- * collapsed, cut at `MAX_PAGE_TEXT_CHARS`) and the image its `og:image` tag names as an absolute URL, or `null`.
- */
+/** A page's visible text for the model (cut at `MAX_PAGE_TEXT_CHARS`) and its absolute `og:image` URL, or `null`. */
 export function readPage(html: string, pageUrl: string): { text: string; imageUrl: string | null } {
   // Stripping a tag leaves no space behind, so a space goes in front of every block tag first.
   const spaced = html.replace(BLOCK_TAG, " <$1$2");

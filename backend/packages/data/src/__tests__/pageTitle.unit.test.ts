@@ -39,7 +39,6 @@ describe("normalizePageTitle", () => {
     expect(normalizePageTitle("x".repeat(600), { truncate: true })).toBe("x".repeat(500));
     // The cut falls inside a run of spaces: they are not left at the end.
     expect(normalizePageTitle(`${"x".repeat(499)} yyyy`, { truncate: true })).toBe("x".repeat(499));
-    // A title within the limit is only normalized.
     expect(normalizePageTitle(" a\nb ", { truncate: true })).toBe("a b");
     // Code points, not UTF-16 units, are cut.
     expect(Array.from(normalizePageTitle("\u{1F4D3}".repeat(600), { truncate: true }))).toHaveLength(500);

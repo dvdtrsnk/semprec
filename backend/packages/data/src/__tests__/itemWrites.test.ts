@@ -180,7 +180,7 @@ describe("choke-point itemWrites", () => {
       databaseId: db.id,
       itemId: item.id,
       propertiesPatch: { title: "Dune (2021)" },
-      ifVersion: item.updatedAt,
+      ifVersion: item.version,
     });
     expect(updated.properties.title).toBe("Dune (2021)");
 
@@ -189,9 +189,36 @@ describe("choke-point itemWrites", () => {
         databaseId: db.id,
         itemId: item.id,
         propertiesPatch: { title: "Dune Part Two" },
-        ifVersion: item.updatedAt, // stale now
+        ifVersion: item.version, // stale now
       }),
     ).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("updateItem: a stale version is refused even when both writes share one transaction start time", async () => {
+    const db = await makeMoviesDb();
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, async (client) => {
+        // `now()` is the transaction start, so every write below stores the same `updated_at`.
+        const item = await createItemWithClient(client, { databaseId: db.id, properties: { title: "Dune" } });
+        const first = await updateItemWithClient(client, {
+          databaseId: db.id,
+          itemId: item.id,
+          propertiesPatch: { title: "Dune (2021)" },
+          ifVersion: item.version,
+        });
+        expect(first.updatedAt).toBe(item.updatedAt);
+        expect(Number(first.version)).toBe(Number(item.version) + 1);
+
+        await expect(
+          updateItemWithClient(client, {
+            databaseId: db.id,
+            itemId: item.id,
+            propertiesPatch: { title: "Dune Part Two" },
+            ifVersion: item.version,
+          }),
+        ).rejects.toBeInstanceOf(ConflictError);
+      }),
+    );
   });
 
   it("returns previous values of exactly two patched keys, preserving unpatched properties", async () => {
@@ -487,7 +514,9 @@ describe("property defaults on real item writes", () => {
   ] as const)("applies the seeded %s default", async (moduleId, key, value) => {
     await runInTenant(getTenantZeroId(), async () => {
       const item = await chokePoint.createItem({ databaseId: await database(moduleId) });
-      expect(item.properties).toEqual({ [key]: value });
+      // An Area also gets its `position` from the Areas create hook.
+      const { position: _position, ...defaulted } = item.properties;
+      expect(defaulted).toEqual({ [key]: value });
     });
   });
 

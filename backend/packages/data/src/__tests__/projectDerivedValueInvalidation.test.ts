@@ -32,13 +32,9 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { createCoreTaskList } from "../worker.js";
 
 /**
- * Issue #1710: a change of a project's area or company edge queues `derivedValuesInvalidate`, which
- * announces the project's items. Fixtures are written through the choke point and the writers it is built
- * from, on a `semprec_data` pool, so row-level security applies; the job runs through the production
- * `createCoreTaskList` handler drained with `runOnce`. Announcements are recorded through
- * `setInvalidationHook`, the in-process hook `@semprec/realtime` publishes as NOTIFYs, together with the
- * tenant scope the hook was called in; that shows what the job announced and for which tenant, not WebSocket
- * delivery.
+ * A change of a project's area or company edge queues `derivedValuesInvalidate`, which announces the
+ * project's items. Fixtures run on a `semprec_data` pool so RLS applies; announcements are recorded through
+ * `setInvalidationHook` with the tenant scope it was called in (not WebSocket delivery).
  */
 
 let admin: Pool;
@@ -48,7 +44,6 @@ let fanOutTaskList: TaskList;
 let tenantA: string;
 let tenantB: string;
 
-/** The one fan-out handler of `createCoreTaskList` over `handlerPool`, so a drain runs nothing else. */
 function fanOutTaskListOver(handlerPool: Pool): TaskList {
   const handler = createCoreTaskList(handlerPool, createActionRegistry())[CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE];
   if (!handler) throw new Error("createCoreTaskList has no derivedValuesInvalidate handler");
@@ -140,7 +135,6 @@ async function link(tenant: string, relationPropertyId: string, callerItemId: st
   await runInTenant(tenant, () => chokePoint.createRelation({ relationPropertyId, callerItemId, targetItemId }));
 }
 
-/** Replaces the single target of `callerItemId` on a single-valued relation, as a client changing it does. */
 async function setTarget(tenant: string, relationPropertyId: string, callerItemId: string, targetItemId: string) {
   await runInTenant(tenant, () => chokePoint.setRelation({ relationPropertyId, callerItemId, targetItemId }));
 }
@@ -152,7 +146,6 @@ interface QueuedJob {
   max_attempts: number;
 }
 
-/** The queued `derivedValuesInvalidate` jobs, read through graphile-worker's public `jobs` view. */
 async function queuedFanOuts(): Promise<QueuedJob[]> {
   const { rows } = await admin.query<QueuedJob>(
     "SELECT key, queue_name, attempts, max_attempts FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
@@ -161,7 +154,6 @@ async function queuedFanOuts(): Promise<QueuedJob[]> {
   return rows;
 }
 
-/** The job the hook queues for `projectId` in `tenant`, before any attempt. */
 function fanOutJob(tenant: string, projectId: string): QueuedJob {
   return {
     key: `derived-values-invalidate:${projectId}`,
@@ -171,7 +163,6 @@ function fanOutJob(tenant: string, projectId: string): QueuedJob {
   };
 }
 
-/** Completes every queued job without running it, through graphile-worker's public `complete_jobs`. */
 async function discardQueuedJobs(): Promise<void> {
   await admin.query(
     "SELECT graphile_worker.complete_jobs(ARRAY(SELECT id FROM graphile_worker.jobs WHERE locked_at IS NULL))",
@@ -179,15 +170,11 @@ async function discardQueuedJobs(): Promise<void> {
 }
 
 interface Announcement {
-  /** The tenant scope the invalidation hook was called in; `null` outside a tenant scope. */
   tenantId: string | null;
   event: InvalidationEvent;
 }
 
-/**
- * Drains the queued fan-outs once with `taskList` and returns what was announced meanwhile. `onAnnouncement`
- * runs inside the hook, after the announcement was recorded. The hook is removed on every path.
- */
+/** Drains the fan-outs once and returns what was announced; `onAnnouncement` runs inside the hook, which is removed on every path. */
 async function runFanOuts(
   taskList: TaskList = fanOutTaskList,
   onAnnouncement: () => void = () => undefined,
@@ -206,7 +193,6 @@ async function runFanOuts(
   return announcements;
 }
 
-/** The announcement the job owes a live item: its thin `item` update with the `updatedAt` the choke point reads. */
 async function announcementOf(tenant: string, databaseId: string, itemId: string): Promise<Announcement> {
   const item = await runInTenant(tenant, () => chokePoint.getItem(databaseId, itemId));
   if (!item) throw new Error("item not found");
@@ -228,7 +214,6 @@ function announcedItemIds(announcements: Announcement[]): string[] {
   );
 }
 
-/** `steps` with every run of consecutive `announce` entries replaced by one `announce x<length>` entry. */
 function collapseAnnouncements(steps: string[]): string[] {
   const collapsed: string[] = [];
   let run = 0;
@@ -244,7 +229,6 @@ function collapseAnnouncements(steps: string[]): string[] {
   return collapsed;
 }
 
-/** `count` items of `databaseId`, each linked to `projectId` through `relationPropertyId`, written in one transaction. */
 async function createLinkedItems(
   tenant: string,
   databaseId: string,
@@ -312,8 +296,7 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     await link(tenantA, c.healthRecordProjects, healthRecord, project);
     await link(tenantA, c.journalProject, journalDay, project);
 
-    // Not owed an announcement: a trashed task of the project, a task of another project, a task without a
-    // project, and a person of the project (People is not a database that derives a value from its project).
+    // Not owed an announcement: People does not derive a value from its project.
     const trashedTask = await createItem(tenantA, c.tasksId);
     await link(tenantA, c.taskProject, trashedTask, project);
     await runInTenant(tenantA, () => chokePoint.softDeleteItem(c.tasksId, trashedTask));
@@ -380,9 +363,7 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
   });
 
   it("identifies the project when the Projects property is side A of its relation definition", async () => {
-    // A tenant whose `Projects.company` is property A of its definition. The seed always makes it property B
-    // (the inverse of `Companies.projects`), so this tenant is built without the seed, from a bare system
-    // Projects database and a relation property created from the Projects side.
+    // The seed always makes `Projects.company` property B, so this tenant is built without the seed to get property A.
     const tenant = await createTestTenant(admin);
     const { projectsId, vendorsId } = await runInTenant(tenant, () =>
       withTransaction(pool, async (client) => {
@@ -481,8 +462,7 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     const c = await catalog(tenantA);
     const area = await createItem(tenantA, c.areasId);
     const project = await createItem(tenantA, c.projectsId);
-    // 230 items against a batch of 100: three batches, the last one short. Tasks are side B and Files side A of
-    // their project relations; their ids are random, so the two kinds interleave in id order.
+    // 230 items against a batch of 100; random ids interleave Tasks (side B) and Files (side A).
     const ids = [
       ...(await createLinkedItems(tenantA, c.tasksId, c.taskProject, project, 130)),
       ...(await createLinkedItems(tenantA, c.filesId, c.fileProjects, project, 100)),
@@ -490,9 +470,7 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     await discardQueuedJobs();
     await link(tenantA, c.projectArea, project, area);
 
-    // A dedicated pool for the handler, so the statements its connections are asked to run can be recorded
-    // without touching a connection another test will use. Vitest numbers the calls of every mock on one
-    // counter, which orders the handler's transaction statements and the announcements among each other.
+    // A dedicated, traced pool; vitest numbers all mock calls on one counter, ordering statements and announcements.
     const tracedPool = await createRuntimeRolePool(admin, "semprec_data");
     const querySpies: Array<{ mock: { calls: unknown[][]; invocationCallOrder: number[] }; mockRestore(): void }> = [];
     tracedPool.on("connect", (client) => querySpies.push(vi.spyOn(client, "query")));
@@ -501,7 +479,6 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     let steps: Array<{ order: number; step: string }>;
     try {
       announced = await runFanOuts(fanOutTaskListOver(tracedPool), onAnnouncement);
-      // Read before the spies are restored, which also clears what they recorded.
       steps = [
         ...querySpies.flatMap((spy) =>
           spy.mock.calls.flatMap(([text], index) =>
@@ -546,8 +523,7 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     await discardQueuedJobs();
     await link(tenantA, c.projectArea, project, area);
 
-    // A dedicated pool for the failing attempt, ended by the first announcement, which the handler makes only
-    // after the first batch committed: the second batch then cannot open its transaction.
+    // Ended by the first announcement, made only after the first batch committed, so the second batch cannot open.
     const failingPool = await createRuntimeRolePool(admin, "semprec_data");
     let ending: Promise<void> | undefined;
     let firstAttempt: Announcement[];

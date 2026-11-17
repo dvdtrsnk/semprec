@@ -35,11 +35,7 @@ const moduleRegistry = await loadFullModuleRegistry();
 let pool: Pool;
 let chokePoint: ChokePoint;
 
-/**
- * The calls the delete and restore hooks of issue #1601 received. The recorders are registered once for
- * the file (a registry has no unregister); each test starts with empty lists, and `veto` names the item
- * whose hook call rejects.
- */
+/** Registered once for the file (a registry has no unregister); `veto` names the item whose hook call rejects. */
 const calls: { delete: ItemDeleteHookContext[]; restore: ItemRestoreHookContext[] } = { delete: [], restore: [] };
 let veto: string | null = null;
 

@@ -13,25 +13,19 @@ import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import { lockLiveProposal, type ProposalActionConfig } from "./proposalActions.js";
 import { assertProposalVersion } from "./proposalPreconditions.js";
 
-/**
- * The user's request for a new computation of an Inbox card (issue gh-1955), split out of `proposalActions.ts` to keep
- * that file under the ESLint line cap; `proposalActions.ts` re-exports `recomputeProposalWithClient` and
- * `RecomputeProposalInput`, so callers import them from there. The shared helper this module takes from
- * `proposalActions.ts` (`lockLiveProposal`) is used only inside a function, so the import cycle does not matter at
- * module load.
- */
+// The user's request to recompute an Inbox card; re-exported from `proposalActions.ts`. `lockLiveProposal` is used
+// only inside a function, so the import cycle is harmless at module load.
 
-/** The history message of the request; it names no field, because a card's values are user content. */
+/** Names no field, because a card's values are user content. */
 const RECOMPUTE_MESSAGE = "The user asked for a new proposal; the proposal is being recomputed.";
 
 export interface RecomputeProposalInput {
-  /** The card's `updatedAt` as the client read it; a different current value refuses the recompute with a `ConflictError`. */
+  /** A value other than the card's current `updatedAt` refuses the recompute with a `ConflictError`. */
   ifVersion?: string;
-  /** Addresses the realtime invalidation of the write. */
   actingUserId?: string;
 }
 
-/** The live Inbox item the card's `sourceInbox` edge leads to, read without a lock; `null` when the card has no edge or the item is gone or trashed. */
+/** The live source Inbox item via `sourceInbox`, read without a lock; `null` when absent or trashed. */
 async function readLiveSource(
   client: PoolClient,
   config: ProposalActionConfig,
@@ -53,30 +47,14 @@ async function readLiveSource(
 }
 
 /**
- * `POST /api/proposals/:id/recompute` (issue gh-1955): sends a card of an Inbox item back to the tick for a new
- * computation, without touching the source. In the caller's transaction, under the card's row lock, it writes the status
- * `computing` and a `recompute` history entry of the user, and triggers the `update` heartbeats of the source's Inbox
- * database for the source item, which queues the tick. The tick then stores the new proposal and leaves `computing`
- * (`docs/adr/2026-11-14-a-computing-card-is-recomputed-by-the-tick-regardless-of-its-fingerprint.md`). `proposal`,
- * `aiProposal`, `userOverrides` and `userEditedKeys` stay as they were; the tick keeps the manual values over the new
- * proposal. An `invalidReason` goes with a status of `invalid`.
+ * `POST /api/proposals/:id/recompute`: sends an Inbox card back to the tick without touching the source, writing
+ * `computing` and a `recompute` entry under the card's row lock and triggering the source's `update` heartbeats.
+ * Values and overrides stay. An already `computing` card is returned unchanged before the `ifVersion` check, unless
+ * past `COMPUTING_TIMEOUT_MS` (then this is its retry).
  *
- * - A card whose `kind` is not `inbox` is a `ValidationError` on `kind`; a transcript card is recomputed from an
- *   instruction of the user by its own route.
- * - A `confirmed` or `rejected` card is a `ProposalLockedError` (409 `proposal_locked`), and an `invalid` card whose
- *   source Inbox item was deleted (`sourceDeleted`) a `ValidationError`. Every other status is accepted.
- * - A card that is `computing` already is returned unchanged: nothing is written and no job is queued. This answer comes
- *   before the `ifVersion` check, as the `rejected` answer of the reject action does. A card that has been `computing`
- *   past `COMPUTING_TIMEOUT_MS` (`isComputingTimedOut`, issue gh-2026) is not answered so: the card list shows it as
- *   failed, and this is its retry, so it is accepted like any other status. It is written as `computing` again, which
- *   gives it a new `updatedAt`, and the tick is triggered.
- * - An `ifVersion` that is not the card's `updatedAt` is a `ConflictError` carrying the card, and nothing is written.
- * - A card whose source Inbox item is missing or trashed is a `NotFoundError`. The source is read without a lock, only
- *   to name the item and the database the tick is triggered for.
- *
- * The card is locked first and the source is not locked, like the other card actions that start from the card
- * (`reviseProposalWithClient`); the tick and the type change take the source first but reserve the card without waiting,
- * so neither waits for this transaction while holding the source.
+ * The card is locked first and the source is not locked (read only to name it), like the other card actions. The
+ * tick and the type change take the source first but reserve the card without waiting, so neither waits for this
+ * transaction while holding the source.
  */
 export async function recomputeProposalWithClient(
   client: PoolClient,

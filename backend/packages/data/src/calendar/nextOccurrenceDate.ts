@@ -1,9 +1,6 @@
-// The stored `nextOccurrenceDate` of an Event (issue gh-1905): the day a series is shown at in the Events collection.
-// The days of a stored series come from the timeline expansion of gh-1877 (`expandEventOccurrences`), so a cancelled or
-// moved occurrence is treated as the timeline treats it; a series that is not stored yet has no occurrence items and
-// gets its days from the rule matching the expansion itself uses (`occurrenceDatesInRange`).
-// Constrained by: docs/adr/2026-11-14-the-next-occurrence-date-of-an-event-is-a-stored-system-property.md,
-// docs/adr/2026-10-25-task-and-event-recurrence-model.md
+// The stored `nextOccurrenceDate` of an Event: the day a series is shown at in the Events collection. A stored
+// series uses the timeline expansion, so cancelled or moved occurrences match the timeline; an unstored one has no
+// occurrence items and uses the same rule matching directly.
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { latestOccurrenceOnOrBefore, occurrenceDatesInRange } from "../tasks/nextDueDate.js";
@@ -11,17 +8,12 @@ import { expandEventOccurrences } from "./eventOccurrences.js";
 import { readEventSeries } from "./eventSeries.js";
 import type { StoredRow } from "./timelineRead.js";
 
-/** The key of the system-owned Events property that holds the value. */
 export const NEXT_OCCURRENCE_DATE_PROPERTY_KEY = "nextOccurrenceDate";
 
-/**
- * How many days after today the search for the next occurrence looks. Every readable rule has an occurrence within
- * a year (a month date or the fifth weekday of a month recurs within a few months), so a series is not found
- * "ended" because the window was short.
- */
+/** Every readable rule recurs within a year, so a series is never found "ended" because the window was short. */
 export const NEXT_OCCURRENCE_LOOKAHEAD_DAYS = 366;
 
-/** The calendar day (`YYYY-MM-DD`) of the instant `today` in `timeZone`. Throws a `RangeError` for an unknown zone. */
+/** Throws a `RangeError` for an unknown zone. */
 export function calendarDayIn(today: Date, timeZone: string): string {
   const local = DateTime.fromJSDate(today, { zone: timeZone });
   const day = local.toISODate();
@@ -29,7 +21,6 @@ export function calendarDayIn(today: Date, timeZone: string): string {
   return day;
 }
 
-/** The last day of the search: `lookaheadDays` after `day`. */
 function lookaheadEnd(day: string, lookaheadDays: number): string {
   const until = DateTime.fromISO(day, { zone: "utc" }).plus({ days: lookaheadDays }).toISODate();
   if (until === null) throw new RangeError(`Cannot add ${lookaheadDays} days to ${day}`);
@@ -40,17 +31,15 @@ function ownDateOf(event: Record<string, unknown>): string | null {
   return typeof event.date === "string" && event.date !== "" ? event.date : null;
 }
 
-/** What a series with no occurrence in the search window gets: its last occurrence on or before `day`, else its own day. */
+/** Without an upcoming occurrence: the last one on or before `day`, else the Event's own day. */
 function withoutUpcoming(event: Record<string, unknown>, day: string): string | null {
   const series = readEventSeries(event);
   return (series === null ? null : latestOccurrenceOnOrBefore(series.rule, series.startDate, day)) ?? ownDateOf(event);
 }
 
 /**
- * The value of `nextOccurrenceDate` for an Event that is not stored yet (a create) or whose stored occurrence items
- * are not available (a read-only proposal preparation), read on the day of the instant `today` in `timeZone`: the rule
- * matching of the timeline expansion, with no occurrence item to skip. `computeNextOccurrenceDate` is the value of a
- * stored Event.
+ * For an Event not stored yet, or whose occurrence items are unavailable (a read-only proposal preparation): rule
+ * matching only, with no occurrence item to skip.
  */
 export function computeNextOccurrenceDateFromRule(
   event: Record<string, unknown>,
@@ -65,7 +54,6 @@ export function computeNextOccurrenceDateFromRule(
   return upcoming ?? withoutUpcoming(event, day);
 }
 
-/** A stored Events row (as `readLiveEventSeries` returns it) and the database it is in. */
 export interface StoredEventRows {
   client: PoolClient;
   eventsDatabaseId: string;
@@ -73,19 +61,8 @@ export interface StoredEventRows {
 }
 
 /**
- * The value of `nextOccurrenceDate` of each of the stored Events `stored.rows`, by id, read on the day of the instant
- * `today` in `timeZone`, with one expansion for all of them:
- *
- * - An Event that is a recurring series (`readEventSeries`): the date of the first entry of the timeline expansion
- *   (`expandEventOccurrences`) that starts on or after today, searched `lookaheadDays` days ahead. The expansion skips
- *   a rule date whose occurrence item is in the Trash (cancelled) and shows an item moved to another day on that day,
- *   so the value is a day the timeline shows. When there is none, the series' last occurrence on or before today; when
- *   there is none either, the Event's own `date`.
- * - Any other Event (no rule, an unreadable rule or an occurrence item): its own `date`.
- * - `null` for an Event without a `date` text.
- *
- * The rows' `properties` are the ones the value is computed for, which may differ from the stored ones (a write that
- * has not been stored yet); their occurrence items are read in `stored.client`'s transaction.
+ * One expansion for all rows, so the value is always a day the timeline shows. The rows' `properties` may differ
+ * from the stored ones (a write not yet stored); their occurrence items are read in `stored.client`'s transaction.
  */
 export async function computeNextOccurrenceDates(
   stored: StoredEventRows,
@@ -114,20 +91,16 @@ export async function computeNextOccurrenceDates(
   );
 }
 
-/**
- * The value of `nextOccurrenceDate` for the stored Event `stored` whose properties are `event`; see
- * `computeNextOccurrenceDates`.
- */
 export async function computeNextOccurrenceDate(
   event: Record<string, unknown>,
   today: Date,
   timeZone: string,
-  stored: { client: PoolClient; eventsDatabaseId: string; id: string; updatedAt: Date },
+  stored: { client: PoolClient; eventsDatabaseId: string; id: string; updatedAt: Date; version: string },
   lookaheadDays: number = NEXT_OCCURRENCE_LOOKAHEAD_DAYS,
 ): Promise<string | null> {
-  const { client, eventsDatabaseId, id, updatedAt } = stored;
+  const { client, eventsDatabaseId, id, updatedAt, version } = stored;
   const values = await computeNextOccurrenceDates(
-    { client, eventsDatabaseId, rows: [{ id, properties: event, updated_at: updatedAt }] },
+    { client, eventsDatabaseId, rows: [{ id, properties: event, updated_at: updatedAt, version }] },
     today,
     timeZone,
     lookaheadDays,

@@ -12,12 +12,8 @@ export interface GatewayServer {
 }
 
 /**
- * Composes the gateway's HTTP server over `pool`, for `serve.ts` and for the suites that drive the process
- * as it runs. Issue gh-2023: the process announces the first refusal of a tenant's budget window as a Semp
- * status invalidation through the data layer's in-process realtime hooks, whose defaults are no-ops, so the
- * hooks are wired here, over the process's own pool, before any request can reach the server. Keeping the call
- * in this function is what lets a suite fail when it goes missing; `serve.ts` only adds what a running process
- * needs around the server.
+ * Wires the realtime hooks (no-ops by default) before any request arrives, so budget refusals are
+ * announced. Kept here rather than in `serve.ts` so a suite fails if the wiring goes missing.
  */
 export function createGatewayServer(pool: Pool, config: StartupConfig): GatewayServer {
   wireRealtimeHooks(pool);

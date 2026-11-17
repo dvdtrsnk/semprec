@@ -38,7 +38,7 @@ import {
 
 const logger = createLogger("proposal-computation");
 
-/** The gateway operation id registered by `semprec-ai-gateway` (`completeHandler.ts`). */
+/** Registered by `semprec-ai-gateway` (`completeHandler.ts`). */
 const INBOX_PROPOSAL_OPERATION = "inbox_proposal";
 
 /** Low: the proposal fills a form from the user's own words, it should not be creative. */
@@ -50,7 +50,7 @@ const ITEM_TEXT_CLOSE = "INBOX_ITEM_TEXT>>>";
 const TARGET_CATALOG_OPEN = "<<<TARGET_OPTION_CATALOG";
 const TARGET_CATALOG_CLOSE = "TARGET_OPTION_CATALOG>>>";
 
-/** The model's answer, validated before it leaves this module (`content` is `unknown` at the gateway boundary). */
+/** Validated before it leaves this module (`content` is `unknown` at the gateway boundary). */
 const operationSchema = z.object({
   op: z.enum(["create", "update", "link"]),
   database: z.string().min(1).optional(),
@@ -75,7 +75,7 @@ const proposalResultSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
 });
 
-/** The same shape as `proposalResultSchema`, as the Draft 2020-12 JSON Schema the gateway forwards to the provider. */
+/** `proposalResultSchema` as the Draft 2020-12 JSON Schema the gateway forwards to the provider. */
 const PROPOSAL_RESPONSE_SCHEMA = {
   type: "object",
   properties: {
@@ -167,10 +167,10 @@ const PROPOSAL_RESPONSE_SCHEMA = {
 } as const;
 
 /**
- * Keeps the first `MAX_PROPOSAL_OPERATIONS` operations, then drops those no step can be built from: a
- * create without a database of the catalog, an update or link without an item id. Everything else
- * (references, ids, property keys) is `assertValidProposalEnvelope`'s. One operation left is not a
- * list: it is returned as the ordinary single write.
+ * Keeps the first `MAX_PROPOSAL_OPERATIONS`, then drops those no step can be built from (a create
+ * without a catalog database, an update or link without an item id); everything else is
+ * `assertValidProposalEnvelope`'s. A single remaining operation is returned as the ordinary single
+ * write.
  */
 function normalizeOperations(
   parsed: z.infer<typeof proposalResultSchema>,
@@ -280,7 +280,7 @@ function filterModelReferences(
 
 const ICO_DIGITS = /^\d{1,8}$/;
 
-/** The eight-digit form of an IČO: spaces removed, then left-padded with zeros. The check digit is not examined. */
+/** Spaces removed, then left-padded with zeros. The check digit is not examined. */
 function normalizeIco(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const digits = value.replace(/\s+/g, "");
@@ -288,14 +288,12 @@ function normalizeIco(value: unknown): string | null {
 }
 
 /**
- * `result` with the registered name of the company whose `ico` the stored proposal carries (issue gh-1989). The lookup
- * is best effort and runs with no transaction open. It keys on the properties that are stored: for a single write the
- * top-level `properties`, for a multi-step answer the primary operation, the first create into Companies, because
- * `buildProposalEnvelope` takes the envelope's properties from the primary step and ignores the model's top-level
- * ones. A missing `ico` is skipped silently. A malformed one, a number ARES does not know and every failure of the
- * lookup leave `result` as it is and are logged by reason only, never with the card's content. On a hit
- * `properties.name` is the registered name and `properties.ico` its eight digits, on the primary operation and on the
- * top-level properties together, so the two stay in step.
+ * Best effort, with no transaction open. Keys on the stored properties: the top-level `properties`
+ * for a single write, else the primary operation (the first create into Companies), because
+ * `buildProposalEnvelope` takes the envelope's properties from the primary step. A missing `ico` is
+ * skipped; a malformed or unknown one and every lookup failure leave `result` as is and are logged
+ * by reason only, never with card content. On a hit `name` and `ico` are set on both the primary
+ * operation and the top-level properties, keeping them in step.
  */
 async function withRegisteredCompanyName(
   ares: AresClient,
@@ -305,7 +303,8 @@ async function withRegisteredCompanyName(
     result.operations?.findIndex(
       (operation) => operation.op === "create" && operation.database === COMPANIES_MODULE_ID,
     ) ?? -1;
-  // A multi-step answer without a Companies create has no card to verify; its envelope is rejected downstream.
+  // A multi-step answer without a Companies create has no card to verify; its envelope is rejected
+  // downstream.
   if (result.operations && primaryIndex < 0) return result;
   const stored = result.operations ? (result.operations[primaryIndex]?.properties ?? {}) : result.properties;
   const rawIco = stored.ico;
@@ -319,7 +318,7 @@ async function withRegisteredCompanyName(
   try {
     company = await ares.lookupCompanyByIco(ico);
   } catch (error) {
-    // The Task makes the lookup best effort: whatever failed, the computed values stay and the tick goes on.
+    // Best effort: whatever failed, the computed values stay and the tick goes on.
     logger.warn(
       error instanceof AresLookupError
         ? { reason: error.reason, ...(error.status === undefined ? {} : { status: error.status }) }
@@ -346,17 +345,15 @@ async function withRegisteredCompanyName(
   };
 }
 
-/** The addresses of a People `emails` value: one per line, and tolerant of commas, semicolons and spaces. */
+/** One per line, tolerant of commas, semicolons and spaces. */
 function splitEmailAddresses(value: unknown): string[] {
   return typeof value === "string" ? value.split(/[\s,;]+/).filter((address) => address.length > 0) : [];
 }
 
 /**
- * The live item of the database `moduleId` (Companies or People) that the computed `properties` name by an exact
- * match, or `null` (issue gh-1992): the same eight-digit IČO for a company, the same normalized address of
- * `person_email_index` for a person. `person_email_index` keeps the addresses of a person in the Trash, so a hit on a
- * trashed person is skipped like an unknown address and the next address is tried (`getItemsByIds` returns no trashed
- * item). Reads only.
+ * Same eight-digit IČO for a company, same normalized `person_email_index` address for a person.
+ * That index keeps addresses of trashed people, so a trashed hit is skipped and the next address
+ * tried (`getItemsByIds` returns no trashed item). Reads only.
  */
 async function findExistingRecord(
   client: PoolClient,
@@ -377,16 +374,14 @@ async function findExistingRecord(
 const DUPLICATE_CHECKED_MODULES: ReadonlySet<string> = new Set([COMPANIES_MODULE_ID, PEOPLE_MODULE_ID]);
 
 /**
- * `result` with each company or person it would create replaced by a step that refers to the existing record when an
- * exact match finds one (issue gh-1992, `docs/adr/2026-11-15-an-exact-match-duplicate-company-or-person-in-a-proposal-is-a-step-that-writes-nothing-to-the-existing-item.md`).
- * A result without `operations` is read through its top-level `properties` when `targetModuleId` is Companies or
- * People; otherwise every `create` operation into Companies or People is read. The replacement keeps the `alias` of the
- * create and drops its `database`, `properties` and `relations`, so nothing of the existing record is written: the
- * proposal's own record (the first create into `targetModuleId`, which `buildProposalSteps` makes primary) becomes an
- * `update` marked `primary`, a nested record becomes a `link`. Two replacements that name the same existing item, or one
- * that names the item of a `link` or `update` the model gave, are left as they are: `prepareComputedUpdates` then
- * refuses the answer as a repeated mutation of one item. A result that carries `invalidProposal` is returned
- * unchanged. The lookups are plain reads in one short transaction that is closed on return.
+ * Replaces each company or person create with a step that refers to an exact-match existing record,
+ * keeping the create's `alias` and dropping its `database`, `properties` and `relations`, so
+ * nothing of the existing record is written. The proposal's primary record becomes an `update`
+ * marked `primary`; a nested one becomes a `link`. Two replacements naming the same item, or one
+ * naming an item the model already links or updates, are left as is so `prepareComputedUpdates`
+ * refuses the repeated mutation. A result without `operations` is read through its top-level
+ * `properties` when the target is Companies or People. `invalidProposal` results are returned
+ * unchanged. Lookups are plain reads in one short transaction.
  */
 async function withExistingRecordsReferred(
   pool: Pool,
@@ -480,11 +475,9 @@ function buildSystemPrompt(
 }
 
 /**
- * The catalog as the one JSON line between the block delimiters. It holds stored data (text values and option labels
- * that were once captured text), and the delimiters are the only thing marking where the block ends, so no `<` or `>`
- * may reach the line: they are written as the JSON escapes `\u003c` and `\u003e`, which read back as the same string
- * and cannot join into a delimiter. Escaping keeps every value and key exactly as stored, where removing a delimiter
- * would change the value the model is told to reuse.
+ * The catalog holds stored data and the delimiters are the only end marker, so `<` and `>` are
+ * written as `\u003c`/`\u003e`: they read back as the same string and cannot form a delimiter,
+ * where removing them would change the value the model is told to reuse.
  */
 function serializeTargetCatalog(catalog: TargetCatalog): string {
   return JSON.stringify(catalog).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
@@ -501,8 +494,8 @@ function buildUserMessage(
     const value = properties[key];
     return typeof value === "string" ? value : "";
   };
-  // The delimiters are the only thing marking where the data ends, so the text may not contain them. They are removed
-  // until none is left, because one pass can join its neighbours into a new delimiter.
+  // The delimiters are the only end marker, so they are removed until none is left: one pass can
+  // join neighbours into a new delimiter.
   let text = context.text;
   while (text.includes(ITEM_TEXT_OPEN) || text.includes(ITEM_TEXT_CLOSE)) {
     text = text.replaceAll(ITEM_TEXT_OPEN, "").replaceAll(ITEM_TEXT_CLOSE, "");
@@ -535,19 +528,14 @@ function buildUserMessage(
 }
 
 /**
- * The model-backed `ComputeSemprecProposalFn` of the Inbox tick (issue #1434): one structured
- * gateway call per tick, preceded by one call per image attachment that has no stored extraction (issue
- * gh-1970, `resolveAttachmentDocuments`). Reads (the target database's property catalog, in a short read
- * transaction that is closed before the call) and writes only the extraction of an attachment, once,
- * through `recordInboxAttachmentExtraction`. The request carries the capture facts, the bounded and
- * grant-filtered workspace context and, for a recompute, the card's previous state (issue gh-1987,
- * `readProposalContext`). For a target database it also carries a delimited block with the option keys and labels of
- * the database's selects and the text values already in use (issue gh-1990, `buildTargetCatalog`), the values only
- * when the project may read the database; a database with no select gets no block. Every gateway call runs with no
- * transaction open, per the bracket rule. A gateway failure or an answer that does not match the schema propagates, so
- * the heartbeat job fails and retries, or the tick records the failure on the card. An item computed for the Recipes
- * database is first offered to the recipe proposal writer (issue gh-1974, `proposeRecipe`), which answers a proposal
- * of its own or nothing.
+ * One structured gateway call per tick, preceded by one call per image attachment without a stored
+ * extraction. Reads the target catalog in a short transaction closed before the call, and writes
+ * only attachment extractions. The request carries capture facts, the bounded grant-filtered
+ * workspace context, the previous card state on recompute, and for a target database a delimited
+ * block of select options and text values in use (values only when the project may read the
+ * database). Every gateway call runs with no transaction open. A gateway or schema failure
+ * propagates, so the job retries or the tick records the failure on the card. A Recipes item is
+ * first offered to `proposeRecipe`, which answers a proposal or nothing.
  */
 export function createProposalComputation({
   pool,
@@ -561,19 +549,18 @@ export function createProposalComputation({
   openBlob: AttachmentExtractionPorts["openBlob"];
   aresClient: AresClient;
   /**
-   * What the recipe proposal writer needs besides the pool, the gateway and `openBlob` (issue gh-1974): where the
-   * photo of a recipe page is stored and, in a test, a stand-in for the outbound client. Without it the computation has
-   * no recipe writer.
+   * Where a recipe page's photo is stored and, in a test, a stand-in outbound client. Without it
+   * there is no recipe writer.
    */
   recipe?: Pick<RecipeProposalPorts, "photoStorage" | "fetch">;
 }): ComputeSemprecProposalFn {
   return async (input) => {
-    // Issue gh-1974: an item computed for the Recipes database is read as a recipe first (a link or a photo of one).
-    // No recipe read, and the computation goes on below as for any other database.
+    // A Recipes item is read as a recipe first (a link or a photo of one); otherwise the
+    // computation goes on below.
     const recipe = recipePorts ? await proposeRecipe({ pool, gateway, openBlob, ...recipePorts }, input) : null;
     if (recipe) return recipe;
-    // Issue gh-1970: the photos of the item are read first. A failure there propagates like a failure of the proposal
-    // call below, so nothing is proposed from a partial reading.
+    // A failure here propagates like one of the proposal call, so nothing is proposed from a
+    // partial reading.
     const attachmentDocuments = await resolveAttachmentDocuments(
       pool,
       { gateway, openBlob },
@@ -611,10 +598,10 @@ export function createProposalComputation({
       ...normalizeOperations(filtered.value, targets ?? [], targetModule ?? undefined),
       ...(filtered.invalidItem ? { invalidProposal: "workspaceReference" as const } : {}),
     };
-    // Issue gh-1989: the one deterministic lookup besides the model call, after it and with no transaction open.
+    // The one deterministic lookup besides the model call, after it and with no transaction open.
     const verified =
       targetModule === COMPANIES_MODULE_ID ? await withRegisteredCompanyName(aresClient, normalized) : normalized;
-    // Issue gh-1992: the second deterministic step, after the registered name, again with no transaction open.
+    // The second deterministic step, again with no transaction open.
     const deduplicated = await withExistingRecordsReferred(pool, verified, targetModule ?? undefined);
     return {
       ...deduplicated,

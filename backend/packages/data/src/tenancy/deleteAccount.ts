@@ -23,11 +23,8 @@ import { transitionTenantStatus, TENANT_STATUSES } from "./tenantsStore.js";
 import { publishTenantDeactivated } from "./tenantStatusSignal.js";
 
 /**
- * Raised when the password given to confirm an account deletion or a password change (`changePassword`,
- * issue #1701) does not match, or the email+IP pair is locked out. Both also raise it for a password
- * that was replaced after it was verified, and `changePassword` raises it while a reset or another
- * change of the same user holds one of the user's reset tokens. Deliberately not a 401, so the web
- * client's "401 means signed out" handling is not triggered by a typo.
+ * Wrong or stale password, or lockout, on account deletion or `changePassword`. Not a 401, so a typo does
+ * not trigger the web client's signed-out handling.
  */
 export class ReauthenticationFailedError extends ChokePointError {
   constructor() {
@@ -47,18 +44,9 @@ export class SelfDeletionRequiresReauthenticationError extends ChokePointError {
 const USER_ROLES: readonly UserRole[] = ["admin", "member"];
 
 /**
- * Starts the deletion of a tenant on the caller's client, so every step commits or rolls back
- * together: `active`/`suspended` → `deleting`, every session and push registration of the tenant's
- * users revoked, the tenant's `tenant_keys` row deleted, and the deactivation signal published.
- *
- * Crypto-shred guarantee: this transaction deletes the tenant's wrapped data key, so once it commits
- * every credential sealed under that key (`scheme = 'tenant'`) is undecryptable. It does not stop a
- * request that was already in flight from creating a new key afterwards; the purge (#1055) erases
- * the tenant's remaining rows. Credentials sealed under the master key (`scheme = 'master'`) are
- * not covered; credentials written before #1060 and #1062 land are still master-sealed.
- *
- * Must run inside `runInTenant(tenantId, …)`, because `tenant_keys` is only reachable from its own
- * tenant's scope; any other scope throws before any write.
+ * Starts a tenant's deletion in the caller's transaction: `deleting`, sessions and push registrations
+ * revoked, `tenant_keys` deleted (crypto-shred of tenant-sealed credentials), deactivation published. Must
+ * run inside `runInTenant(tenantId, …)`, the only scope that reaches `tenant_keys`.
  */
 export async function beginTenantDeletion(client: PoolClient, tenantId: string): Promise<void> {
   const scope = currentTenantScope();
@@ -79,11 +67,7 @@ export async function beginTenantDeletion(client: PoolClient, tenantId: string):
   await publishTenantDeactivated(client, tenantId);
 }
 
-/**
- * Takes the admin-membership lock, re-reads the user `FOR UPDATE` and applies the last-admin guard
- * when the user currently counts as an active admin. Returns the user's tenant id and the password
- * hash as it is under the lock.
- */
+/** Admin lock, user `FOR UPDATE`, last-admin guard; returns tenant id and password hash as seen under the lock. */
 async function lockUserAndGuardLastAdmin(
   client: PoolClient,
   userId: string,
@@ -113,14 +97,8 @@ export interface DeleteOwnAccountInput {
 }
 
 /**
- * Deletes the caller's own account after re-entering their password. Applies `login`'s lockout
- * check and timing-safe verification: a locked email+IP pair or a wrong password records a failed
- * attempt on the pool (auto-committed, so it survives the throw) and throws
- * `ReauthenticationFailedError`. Then, in one transaction in the tenant's scope, takes the admin
- * membership lock, refuses with `LastAdminError` for the last active admin and runs
- * `beginTenantDeletion`. A password hash that changed between the verification and that
- * transaction is refused with `ReauthenticationFailedError`. No audit row is written for a
- * self-deletion.
+ * Password re-entry with `login`'s lockout and timing-safe check; a failure records an auto-committed attempt.
+ * Then one transaction refuses the last active admin, rejects a hash changed since, and begins deletion.
  */
 export async function deleteOwnAccount(pool: Pool, input: DeleteOwnAccountInput): Promise<void> {
   const user = await getUserById(pool, input.userId);
@@ -143,8 +121,7 @@ export async function deleteOwnAccount(pool: Pool, input: DeleteOwnAccountInput)
   await runInTenant(input.tenantId, () =>
     withTransaction(pool, async (client) => {
       const locked = await lockUserAndGuardLastAdmin(client, input.userId);
-      // The password was verified before this transaction. A password change that committed in
-      // between replaced the hash, so the verified credential is stale and the request is refused.
+      // A password change committed since verification replaced the hash, so the verified credential is stale.
       if (locked.passwordHash !== user.passwordHash) throw new ReauthenticationFailedError();
       await beginTenantDeletion(client, locked.tenantId);
     }),
@@ -157,14 +134,8 @@ export interface DeleteAccountAsAdminInput {
 }
 
 /**
- * Deletes any other account on an admin's behalf. An admin's own account is refused with
- * `SelfDeletionRequiresReauthenticationError` before any query: it goes through `deleteOwnAccount`
- * with password re-authentication. The target's tenant is resolved from `users`, then one
- * transaction in that tenant's scope takes the admin membership lock, refuses with `LastAdminError`
- * for the last active admin, runs `beginTenantDeletion` and records `accountDeletionRequested`.
- * Enters the tenant only for that write transaction and reads no tenant content, only the identity
- * rows (`users`, `tenants`, `sessions`, `push_subscriptions`) the deletion itself touches. Returns the
- * account's summary after the commit.
+ * Deletes another account (the admin's own must use `deleteOwnAccount`): refuses the last active admin, begins
+ * deletion and records `accountDeletionRequested`, reading only identity rows.
  */
 export async function deleteAccountAsAdmin(pool: Pool, input: DeleteAccountAsAdminInput): Promise<AdminAccountSummary> {
   if (input.targetUserId === input.actorUserId) throw new SelfDeletionRequiresReauthenticationError();

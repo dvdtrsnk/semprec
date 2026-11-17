@@ -59,7 +59,6 @@ afterAll(async () => {
 
 const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"];
 
-/** Searches in tenant zero as a person, unless the input says otherwise. */
 function search(q: string, input: Partial<Omit<SearchItemGroupsInput, "q">> = {}): Promise<SearchOutput> {
   return runInTenant(tenant, () => searchItemGroups(pool, { q, scope: ALL_SCOPE, perGroupLimit: 4, ...input }));
 }
@@ -100,7 +99,7 @@ async function link(sourceModuleKey: string, key: string, itemId: string, target
   });
 }
 
-/** Fixes `updated_at` on rows: no write sets it to a chosen instant, and the order under test depends on it. */
+/** No write sets `updated_at` to a chosen instant, and the order under test depends on it. */
 async function setUpdatedAt(itemIds: string[], updatedAt: string): Promise<void> {
   await admin.query("UPDATE items SET updated_at = $2::timestamptz WHERE id = ANY($1::uuid[])", [itemIds, updatedAt]);
 }
@@ -230,7 +229,6 @@ describe("global search: groups, totals and paging", () => {
 });
 
 describe("global search: what is never returned", () => {
-  /** A task that proves the search ran: it matches, is live and is returned. */
   async function liveTask(): Promise<string> {
     return create("tasks", { name: "Faktura živá" });
   }
@@ -268,7 +266,7 @@ describe("global search: what is never returned", () => {
   it("leaves out the items of an archived database", async () => {
     const live = await liveTask();
     const filed = await create("files", { name: "Faktura.pdf" });
-    // Archiving a system database is not offered by the API; the fixture sets the column the archive sets.
+    // The API does not archive system databases; the fixture sets the column directly.
     await admin.query("UPDATE databases SET archived_at = now() WHERE id = $1", [await dbId("files")]);
     const answer = await search("faktura");
     expect(answer.groups.map((group) => group.type)).toEqual(["task"]);
@@ -323,7 +321,6 @@ describe("global search: what is never returned", () => {
 });
 
 describe("global search: the Journal period of a journal result (issue #1859)", () => {
-  /** The Journal entry of a period, created the way the first write to it creates it. */
   async function journalEntry(type: "day" | "week", date: string): Promise<string> {
     return runInTenant(tenant, async () => {
       const journalId = await dbId("journal");
@@ -335,7 +332,6 @@ describe("global search: the Journal period of a journal result (issue #1859)", 
     });
   }
 
-  /** The `journal` of a result, or `undefined` when the result carries none. */
   function journalOf(item: SearchItemResult): unknown {
     return "journal" in item ? item.journal : undefined;
   }
@@ -439,7 +435,7 @@ describe("global search: the Journal period of a journal result (issue #1859)", 
   });
 
   describe("an entry whose type or period is missing or unknown", () => {
-    /** Writes a state the Journal's own writes never produce (type and period are system keys it always sets), directly. */
+    /** Writes a state the Journal's own writes never produce. */
     async function corrupt(itemId: string, statement: string): Promise<void> {
       await admin.query(`UPDATE items SET properties = ${statement} WHERE id = $1`, [itemId]);
     }
@@ -488,14 +484,13 @@ describe("global search: the Journal period of a journal result (issue #1859)", 
 });
 
 describe("global search: an agent's database grants (issue #1810)", () => {
-  /** A Projects item standing for an agent's project. */
   const newAgentProject = () => create("projects", { name: "Agent project" });
 
   it("leaves out the items of a database the agent has no grant for, returns them with a read grant, and never filters a person", async () => {
     const file = await create("files", { name: "Faktura.pdf" });
     const task = await create("tasks", { name: "Faktura úkol" });
     const agent = await newAgentProject();
-    // The seeded Files database is open to agents; the flag that makes it need a grant is set directly, since no API sets it on it.
+    // No API sets the sensitive flag on the seeded Files database.
     await admin.query("UPDATE databases SET sensitive = true WHERE id = $1", [await dbId("files")]);
 
     const denied = await search("faktura", { agentProjectItemId: agent });
@@ -783,7 +778,6 @@ describe("global search: refused input, and what is logged", () => {
       details: { field: "cursor" },
     });
     await expect(search("faktura", { scope: [], cursor })).rejects.toMatchObject({ details: { field: "cursor" } });
-    // The same cursor with one scope type is accepted.
     expect(groupOf(await search("faktura", { scope: ["task"], perGroupLimit: 1, cursor }), "task").items).toHaveLength(
       1,
     );

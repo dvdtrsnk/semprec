@@ -14,30 +14,21 @@ import { getInboxCatalogs } from "./inboxCatalogs.js";
 import type { InboxTypeTargetDatabase } from "./inboxTypeTargets.js";
 import type { ProcessingMethod } from "./inboxTypesStore.js";
 
-/**
- * The key of the System settings property that lists the defaults already seeded (issue gh-1977). It is a system-owned
- * `json` property of the Inbox module, written only by `seedDefaultInboxItemTypes`: `seedSystem.ts` declares it with
- * an empty list for a fresh tenant and `defaultInboxTypesCutoverMigration.ts` adds it to a populated one.
- */
+/** System-owned `json` settings property listing the defaults already seeded; only `seedDefaultInboxItemTypes` writes it. */
 export const SEEDED_DEFAULT_INBOX_TYPES_KEY = "seededDefaultInboxTypes";
 export const SEEDED_DEFAULT_INBOX_TYPES_NAME = "Seeded default Inbox types";
 
 export interface DefaultInboxTypeSpec {
-  /** A stable English camelCase identifier of the default. Only the marker stores it; the type itself does not. */
+  /** Stored only in the marker, not on the type. */
   key: string;
   emoji: string;
   processingMethod: ProcessingMethod;
-  /** Set exactly when `processingMethod` is `database`. */
   targetDatabase?: InboxTypeTargetDatabase;
 }
 
 /**
- * The starting set of Inbox item types (issue gh-1977), in the order they are created. The name of each comes from the
- * Inbox catalog under `seed.inboxTypes.<key>.name`. The targets of `idea`, `thought` and `mood` are product proposals; a
- * type is changed later through the type write path, never here. A module that brings its own default type appends one
- * row: a tenant seeded before it receives that one type at the next run and nothing else. The decision and the contract
- * for a module that adds a row are in
- * `docs/adr/2026-11-15-default-inbox-types-are-seeded-once-per-default-under-the-settings-row-lock.md`.
+ * In creation order; names come from `seed.inboxTypes.<key>.name`. A module bringing its own default appends one row:
+ * an already-seeded tenant receives just that type at the next run.
  */
 export const DEFAULT_INBOX_TYPES: readonly DefaultInboxTypeSpec[] = [
   { key: "idea", emoji: "\u{1F4A1}", processingMethod: "pageContent" },
@@ -52,24 +43,16 @@ export const DEFAULT_INBOX_TYPES: readonly DefaultInboxTypeSpec[] = [
 const seededKeysSchema = z.array(z.string());
 
 /**
- * Creates the default Inbox item types that the tenant has not been given yet and records their keys, in the caller's
- * open transaction. Resolves to the keys it created, in table order.
+ * Runs in the caller's transaction and resolves to the keys it created.
  *
- * The System settings item is locked first (the ADR names it the serialization point), so two concurrent seeders (a
- * deploy cutover and a provisioning) take turns and the second one reads the keys the first recorded. A default whose
- * key is in the marker is never created again, whether or not its type still exists, so a type the user deleted or
- * renamed does not come back. A default whose
- * target database does not exist in the tenant is skipped and not recorded, so the first run after that database exists
- * creates it. Each type is created through the choke point, so the Inbox type write hook validates it, as it does a
- * type a user creates. The names are in the language of the tenant's user, Czech while the tenant has no user, and the
- * language is fixed when the type is created. The marker is written only when a type was created.
+ * The System settings item is locked first as the serialization point, so concurrent seeders of one tenant take turns
+ * and the second reads the first one's marker. A key in the marker is never created again, so a type the user deleted
+ * or renamed does not come back. A default whose target database is missing is skipped and not recorded, so a later
+ * run creates it. Types go through the choke point so the Inbox type write hook validates them. Names use the tenant
+ * user's language (Czech with no user), fixed at creation.
  *
- * `defaults` is the table the run reads; production passes none, a test passes a table with one more row to show what a
- * later module's default does.
- *
- * Does nothing when the tenant has no Inbox item types database. Throws when the tenant has the System settings
- * database without the marker property (the cutover adds it, or the seed declares it) or when the marker holds
- * anything but a list of strings.
+ * `defaults` exists for tests. Throws when the settings database lacks the marker property or the marker is not a
+ * list of strings.
  */
 export async function seedDefaultInboxItemTypes(
   client: PoolClient,

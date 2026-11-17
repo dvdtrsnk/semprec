@@ -79,12 +79,11 @@ async function newTenant(): Promise<string> {
   const tenantId = await createTestTenant(adminPool);
   await createUser(adminPool, { tenantId, email: `${randomUUID()}@example.com`, passwordHash: "unused", locale: "cs" });
   await runInTenant(tenantId, () => seedSystem(dataPool));
-  // The sleep nights of a seeded tenant have their own tests (issue #1806); these keep to events.
+  // The sleep nights of a seeded tenant have their own tests; these keep to events.
   await hideSleepInCalendar(dataPool, tenantId);
   return tenantId;
 }
 
-/** One tenant's fixture writes and timeline reads, each in that tenant's scope on the runtime-role pool. */
 function world(tenantId: string) {
   const chokePoint = createChokePoint(dataPool);
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenantId, fn);
@@ -130,7 +129,6 @@ function world(tenantId: string) {
     return item.id;
   }
 
-  /** A calendar of the user's own, which the user may move to the Trash. */
   async function createOwnCalendar(name: string): Promise<string> {
     const calendars = await databaseId(CALENDARS_MODULE_ID);
     const item = await inTenant(() =>
@@ -184,7 +182,6 @@ function world(tenantId: string) {
     await inTenant(() => chokePoint.softDeleteItem(id, itemId));
   }
 
-  /** Overwrites stored properties with values the write rules would refuse. */
   async function storeRaw(itemId: string, patch: Record<string, unknown>): Promise<void> {
     const id = await databaseId(SUBSCRIBED_EVENTS_MODULE_ID);
     await withTenantTransaction(adminPool, tenantId, async (client) => {
@@ -199,7 +196,6 @@ function world(tenantId: string) {
   const read = (from: string, to: string = from, shape: "full" | "compact" = "full") =>
     inTenant(() => withTransaction(dataPool, (client) => readCalendarTimeline(client, { from, to, shape })));
 
-  /** The subscribed events of a range, in the order the timeline returns them; derived entries have no `databaseId`. */
   async function subscribed(from: string, to: string = from) {
     const subscribedEvents = await databaseId(SUBSCRIBED_EVENTS_MODULE_ID);
     const entries = z.array(z.looseObject({ databaseId: z.string().optional() })).parse((await read(from, to)).items);
@@ -414,7 +410,6 @@ describe("calendar timeline source of subscribed events (issue gh-2005)", () => 
     );
 
     const ids = (await w.read("2026-10-20")).items.map((item) => item.id);
-    // All-day entries first (by title), then timed ones by start time.
     expect(ids).toEqual([allDayEvent, allDaySubscribed, early, middle, late]);
   });
 
@@ -555,7 +550,6 @@ describe("calendar timeline source of subscribed events (issue gh-2005)", () => 
     }
 
     const subscribedEvents = await w.databaseId(SUBSCRIBED_EVENTS_MODULE_ID);
-    /** The number of statements one read sends and the number of subscribed events it returns. */
     const count = (date: string) =>
       w.inTenant(() =>
         withTransaction(dataPool, async (client) => {

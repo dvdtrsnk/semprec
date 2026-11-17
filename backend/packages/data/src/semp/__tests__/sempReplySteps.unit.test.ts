@@ -41,7 +41,6 @@ interface CallOptions {
   targetDatabaseId?: string;
 }
 
-/** The identity and target fields a stored tool event carries next to its call id and name. */
 function metadataOf(options: CallOptions) {
   return {
     ...(options.operation ? { operation: options.operation } : {}),

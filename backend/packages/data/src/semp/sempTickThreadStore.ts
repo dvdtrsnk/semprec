@@ -22,9 +22,8 @@ export interface TickThreadRef {
 }
 
 /**
- * Returns the tick thread of a heartbeat, creating it on first use. `DO UPDATE` (not `DO NOTHING`)
- * so a concurrent or repeated call gets the existing row's id back; it also bumps
- * `last_activity_at`. Rides the partial unique index `semp_threads_tick_heartbeat_uq`.
+ * `DO UPDATE` rather than `DO NOTHING` so a concurrent or repeated call gets the existing id back (and bumps
+ * `last_activity_at`). Relies on the partial unique index `semp_threads_tick_heartbeat_uq`.
  */
 export async function getOrCreateTickThread(client: PoolClient, heartbeatId: string): Promise<TickThreadRef> {
   const { rows } = await client.query<{ id: string; tenant_id: string }>(
@@ -39,10 +38,7 @@ export async function getOrCreateTickThread(client: PoolClient, heartbeatId: str
   return { id: row.id, tenantId: row.tenant_id, heartbeatId };
 }
 
-/**
- * The tick thread of a heartbeat, or `null` while the heartbeat has not run: the thread is created by
- * `getOrCreateTickThread` when a run starts, and this read never creates it.
- */
+/** `null` while the heartbeat has not run; this read never creates the thread. */
 export async function findTickThread(client: PoolClient, heartbeatId: string): Promise<TickThreadRef | null> {
   const { rows } = await client.query<{ id: string; tenant_id: string }>(
     "SELECT id, tenant_id FROM semp_threads WHERE kind = 'tick' AND heartbeat_id = $1",
@@ -56,10 +52,8 @@ export type TickRunOutcome =
   { status: "done"; result: string | null } | { status: "error"; errorCode: AgentRunErrorCode };
 
 /**
- * Whether the reply the run wrote left a failed tool call (issue #1890's `deriveReplyOutcome`), derived from
- * the steps of the run's events between `eventFromId` and `eventToId` as a chat reply's steps are. Nothing the
- * outcome depends on (status, operation, tool, error code, MCP registration) is read from the targets the
- * calls point at, so the lookup of them is left out.
+ * Derived from the run's steps between `eventFromId` and `eventToId` as for a chat reply. The outcome depends
+ * on nothing read from the call targets, so their lookup is skipped.
  */
 async function replyLeftFailedToolCall(
   client: PoolClient,
@@ -76,16 +70,11 @@ async function replyLeftFailedToolCall(
 }
 
 /**
- * Closes a heartbeat run and writes its assistant message into the tick thread, in the caller's
- * transaction: either both land or neither does. An `error` outcome goes through
- * `finishAgentRunWithErrorNotification`, so the `agent_run_error` notification and the heartbeat's problem
- * (issue #1911) stay with the close. A `done` outcome whose reply left a failed tool call raises the same
- * heartbeat problem with the message write, because no `agent_run_error` appears for a run that ended `done`
- * (the tenant's user is who it is shown to; a tenant with none raises nothing, as for the notification).
- * Any other `done` outcome is a recovery (issue #1915) and resolves, with the same message write, the heartbeat's
- * problem and the problem of the run's retry chain; a rolled-back close leaves both active. When the run was
- * already closed by another writer nothing is written and `false` is returned.
- * The message carries no error code yet; the reply error codes arrive with #1907.
+ * Closes a heartbeat run and writes its assistant message in the caller's transaction, so both land or neither.
+ * An `error` outcome goes through `finishAgentRunWithErrorNotification`, keeping the notification and heartbeat
+ * problem with the close. A `done` reply that left a failed tool call raises the heartbeat problem itself, since
+ * no `agent_run_error` exists for it. Any other `done` resolves the heartbeat and retry-chain problems. Returns
+ * `false` and writes nothing when another writer already closed the run.
  */
 export async function finishTickRunWithMessage(
   client: PoolClient,

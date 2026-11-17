@@ -93,12 +93,10 @@ async function expectValidationFailure(write: Promise<unknown>, field: string): 
   expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field } });
 }
 
-/** An item of the Health records database, written by the system the way mail or transcription ingest writes. */
 async function seedHealthRecord(properties: Record<string, unknown>) {
   return choke().create(healthId, { name: "Record", ...properties });
 }
 
-/** A custom database of the tenant: a title `name` and the given properties, so no catalog names its options. */
 async function ownDatabase(
   properties: Array<{
     key: string;

@@ -57,7 +57,6 @@ async function newDay(): Promise<string> {
   );
 }
 
-/** Writes (or rewrites, by id) one text block of the day's page through the block writer and a production doc update. */
 async function writeLine(itemId: string, blockId: string, text: string | TextRun[]): Promise<void> {
   await inTenant(async () => {
     const doc = await withTransaction(pool, (client) => getOrCreateDoc(client, itemId, "page"));
@@ -65,14 +64,14 @@ async function writeLine(itemId: string, blockId: string, text: string | TextRun
   });
 }
 
-/** Drains the queue once with the production API task list, as the worker runs the after-document-update job. */
+/** Runs the after-document-update job as the worker does. */
 async function runPageTextJobs(): Promise<void> {
   const handler = createApiCoreTaskList(pool, createActionRegistry())[taskName];
   if (!handler) throw new Error("Page-text handler missing from production API task list");
   await runOnce({ pgPool: admin }, { [taskName]: handler });
 }
 
-/** The day's `events` edges with their row ids, so a delete-and-recreate of an unchanged edge would show. */
+/** With row ids, so a delete-and-recreate of an unchanged edge would show. */
 async function eventEdges(dayId: string): Promise<Array<{ id: string; target: string }>> {
   return inTenant(() =>
     withTransaction(pool, async (client) => {
@@ -176,7 +175,7 @@ describe("Journal events relation follows the page's event links (issue #2016)",
     const foreign = await runInTenant(other, () =>
       cp.createItem({ databaseId: otherDatabases.events!, properties: { name: "Foreign", date: "2026-10-16" } }),
     );
-    /** Every edge that ends at the foreign Event. Its create left one, to its calendar (issue #1761). */
+    /** Its create left one edge, to its calendar. */
     const foreignEdges = async (): Promise<string[]> => {
       const { rows } = await admin.query<{ id: string }>(
         "SELECT id FROM item_relations WHERE item_a = $1 OR item_b = $1 ORDER BY id",
@@ -220,7 +219,7 @@ describe("Journal events relation follows the page's event links (issue #2016)",
     expect(rows[0]?.n).toBe(0);
 
     const live = await newDay();
-    // A tenant whose locked Journal schema predates issue #1609; the public writer cannot remove the property.
+    // A tenant whose locked Journal schema predates the `events` property; the public writer cannot remove it.
     await inTenant(() =>
       pool.query("DELETE FROM properties WHERE database_id = $1 AND key = 'events'", [databases.journal]),
     );

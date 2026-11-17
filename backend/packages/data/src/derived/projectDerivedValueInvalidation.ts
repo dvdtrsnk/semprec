@@ -1,11 +1,6 @@
-// Issue #1710: the queued fan-out that announces a project's items after the project's area or company
-// changed. Those items show the area, and an Event the company, as a derived value read through the project
-// (`derivedValueReads.ts`); the change writes none of them, so each gets a thin `item` invalidation and
-// clients refetch. The job only reads, so it takes no row lock. It pages through the items in id order, one
-// transaction per batch (the keyset pages of
-// docs/adr/2026-09-28-chunked-transactions-for-large-background-sweeps.md, without a cap on the number of
-// batches: a run pages until a batch comes back short), and announces a batch's items once that batch has
-// committed (docs/adr/2026-09-10-side-effects-follow-the-commit.md).
+// Announces a project's items after its area or company changed: they show those as derived values read through the
+// project, and the change writes none of them. Read-only (no row locks); keyset pages, one transaction each, announced
+// after each commits.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
@@ -23,20 +18,13 @@ const SOURCE_RELATION_ROW = z.object({
   item_is_a: z.boolean(),
 });
 
-/** A project relation of `DERIVED_VALUE_SOURCES` resolved in the current tenant. */
 interface SourceRelation {
   relationDefinitionId: string;
-  /** The system database whose items the relation links to their projects. */
   databaseId: string;
-  /** `a` when the database's project property is side A of the definition, so the project is `item_b`. */
+  /** `a` when the database's project property is side A, so the project is `item_b`. */
   itemSide: "a" | "b";
 }
 
-/**
- * The current tenant's relations behind the project properties of `DERIVED_VALUE_SOURCES`. A database or
- * property the tenant does not have is simply absent. Row-level security and the explicit tenant filter
- * confine the read to the current tenant.
- */
 async function listSourceRelations(client: PoolClient): Promise<SourceRelation[]> {
   const { rows } = await client.query<Record<string, unknown>>(
     `SELECT rd.id AS relation_definition_id, d.id AS database_id, rd.property_id_a = p.id AS item_is_a
@@ -62,18 +50,12 @@ async function listSourceRelations(client: PoolClient): Promise<SourceRelation[]
 
 const RELATED_ITEM_ROW = z.object({ id: z.string(), database_id: z.string(), updated_at: z.date() });
 
-/**
- * One batch in its own transaction: the next `BATCH_SIZE` live items linked to the project through a source
- * relation, in id order after `afterItemId`, each announced once the transaction has committed. Returns the
- * ids it queued for announcement; none when the project is missing or in the Trash.
- */
 async function announceBatch(pool: Pool, projectItemId: string, afterItemId: string | null): Promise<string[]> {
   return withTransaction(pool, async (client) => {
     const [project] = await getItemsByIds(client, [projectItemId]);
     if (!project) return [];
     const relations = await listSourceRelations(client);
-    // Each configured database has one project property, so an item has at most one edge to the project
-    // among these definitions and appears once.
+    // One project property per database, so each item appears at most once.
     const { rows } = await client.query<Record<string, unknown>>(
       `SELECT i.id, i.database_id, i.updated_at
        FROM item_relations ir
@@ -109,13 +91,7 @@ async function announceBatch(pool: Pool, projectItemId: string, afterItemId: str
   });
 }
 
-/**
- * `derivedValuesInvalidate`: runs in the job envelope's tenant and announces every live item linked to the
- * project through a `DERIVED_VALUE_SOURCES` relation, batch by batch until a batch comes back short. The
- * job writes nothing and keeps no cursor between runs: a batch that throws fails the job, the batches before
- * it stay announced, and the retry starts again from the first item, so an item can be announced more than
- * once.
- */
+/** No cursor survives a failure: a retry restarts from the first item, so items may be announced twice. */
 export async function handleDerivedValuesInvalidateTask(pool: Pool, rawPayload: unknown): Promise<void> {
   const { projectItemId } = payloadSchema.parse(rawPayload);
   let afterItemId: string | null = null;

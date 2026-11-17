@@ -1,13 +1,8 @@
 import type { PoolClient } from "pg";
 
-// Kept out of `dependencies.ts` because that module is re-exported whole from the package index, and this query
-// serves the purge of archived databases (issue gh-1875) only.
+// Kept out of `dependencies.ts`, which the package index re-exports whole; only the archived-database purge uses this.
 
-/**
- * The rollup properties of other databases that stop making sense when `databaseId` is deleted: those that run over a
- * relation property of `databaseId` (`relation_definition_id`) and those that aggregate its items
- * (`source_database_id`). A rollup property of `databaseId` itself is not listed; it goes with the database.
- */
+/** Rollups of `databaseId` itself are excluded; they go with the database. */
 export async function findRollupPropertiesOfOtherDatabasesDependingOn(
   client: PoolClient,
   databaseId: string,

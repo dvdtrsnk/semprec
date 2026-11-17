@@ -38,8 +38,7 @@ function parseResult<T>(outcome: { error: boolean; result: string }): T {
 
 interface TriggerJobRow {
   key: string;
-  // Issue #167: `enqueueJob` wraps every job payload in a `{ traceId, payload }` envelope before
-  // it reaches `graphile_worker`'s own `jobs` table.
+  // `enqueueJob` wraps every job payload in a `{ traceId, payload }` envelope.
   payload: { traceId: string; payload: { heartbeatId: string; triggeredByRunId?: string } };
 }
 

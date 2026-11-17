@@ -7,15 +7,9 @@ import {
 } from "../agentGrants/agentDatabaseAccess.js";
 import { closedSensitiveDatabasesOf, hideClosedRollupValues } from "../agentGrants/closedSensitiveAggregationAccess.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
-// Owns the choke point's item reads: single-item lookups (`getItem`, `findItem`,
-// `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, filtered `listItems` /
-// `countItems` together with the filter-tree-to-SQL resolution they share, the batched,
-// optionally grouped `countItemsBatch`, and the transaction of `getDatabaseFacets` (the facets
-// themselves are views/facetQuery.ts). It does not own item writes (itemWrites.ts), trash and
-// restore (itemTrash.ts), or stored-view queries (viewQueryOps.ts).
-// Constrained by:
-// - docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md
-// - docs/adr/2026-09-17-generic-application-service-port.md
+// The choke point's item reads: single-item lookups, the breadcrumb walk `getItemPath`, filtered
+// `listItems`/`countItems` and the filter-tree-to-SQL resolution they share, `countItemsBatch`, and
+// the transaction of `getDatabaseFacets` (facets themselves are views/facetQuery.ts).
 import type { PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
@@ -42,10 +36,8 @@ import { andItemSearchMatch } from "../search/itemSearchMatch.js";
 import { selectOptionKeys } from "../views/sortCompiler.js";
 
 /**
- * Turns a caller-supplied filter tree into the `buildFilterSql` push-down hook the item
- * store expects. This is the one entry point through which a transport adapter (or any
- * other generic caller) filters items ad hoc — a stored view's filter goes the same way,
- * via views/viewQuery.ts — so no caller ever needs its own read path into `items`.
+ * Turns a caller-supplied filter tree into the item store's `buildFilterSql` push-down hook; the one
+ * ad-hoc filter path (stored views go the same way via views/viewQuery.ts).
  */
 async function buildFilterSqlForDatabase(
   client: PoolClient,
@@ -61,22 +53,21 @@ async function buildFilterSqlForDatabase(
   return (params) => compileFilterNode(node, filterProperties, params, context, closedDatabaseIds);
 }
 
-/** The longest breadcrumb chain `getItemPath` returns; a longer one is cut at its root end. */
+/** A longer chain is cut at its root end. */
 const MAX_ITEM_PATH_LENGTH = 1000;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ListItemsInput extends itemsStore.ListItemsOptions {
-  /** A filter tree (views/filterTree.ts), as a transport adapter receives it — validated here, never trusted. */
+  /** A filter tree (views/filterTree.ts) as received from a transport; validated here, never trusted. */
   filter?: unknown;
-  /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
+  /** Defaults to the current time. */
   now?: Date;
   /**
-   * The reader the read needs `read` access to the database for: the Projects item of the reading agent's run
-   * (issue #1810) or an external AI client (issue #1998). For an agent's project the list also leaves out the items of
-   * a database that inherits sensitivity (Files, Transcripts, Inbox) which are linked to a sensitive record it may not
-   * read (issue #1999), refuses a `filter` on a relation property into a sensitive database it may not read or on a
-   * rollup that aggregates one, and reads such a rollup of the listed items as `{ value: null, hidden: true }` (issue #2000).
+   * Needs `read` on the database. For an agent's project the list also leaves out sensitivity-inheriting
+   * items (Files, Transcripts, Inbox) linked to a sensitive record it may not read, refuses a `filter`
+   * on a relation into, or a rollup over, a sensitive database it may not read, and reads such rollups
+   * as `{ value: null, hidden: true }`.
    */
   reader?: DatabaseReader;
 }
@@ -86,43 +77,38 @@ export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "incl
   now?: Date;
 }
 
-/** One count of `countItemsBatch`: a database, and optionally a filter, a grouping and the collection filter. */
 export interface ItemCountEntryInput {
   databaseId: string;
   /** A filter tree (views/filterTree.ts), validated here. */
   filter?: unknown;
-  /** The key of a relation or select property of the database to split the count by. */
+  /** A relation or select property key to split the count by. */
   groupBy?: string;
-  /** Also applies the collection filter the resolver declares for the database, when it declares one. */
+  /** Also applies the resolver's declared collection filter for the database, if any. */
   collection?: boolean;
-  /** Free text (issue #1857): only the items whose search index row matches it are counted, and grouped, ANDed with the filter. */
+  /** Free text: only items whose search index row matches are counted and grouped, ANDed with the filter. */
   q?: string;
 }
 
 export interface CountItemsBatchOptions {
   resolver: Pick<CollectionMetadataResolver, "collectionFilter">;
-  /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
+  /** Defaults to the current time. */
   now?: Date;
   /**
-   * The Projects item of an agent's run (issue #2000): a filter of an entry that reaches a sensitive database this
-   * project may not read, through a relation property or a rollup, and a `groupBy` by a relation property into one,
-   * is refused with a `ForbiddenError`. Set by the
-   * application layer from the run credential, never read from a request. This does not decide the access to the
-   * counted database itself.
+   * An agent run's Projects item, from the run credential: a filter reaching a sensitive database the
+   * project may not read (via relation or rollup), or a `groupBy` relation into one, is a
+   * `ForbiddenError`. Does not decide access to the counted database itself.
    */
   agentProjectItemId?: string;
 }
 
-/** The answer to one `ItemCountEntryInput`; `databaseId` repeats the entry's own value. */
+/** `databaseId` repeats the entry's own value. */
 export interface ItemCountEntry extends itemsStore.GroupedItemCount {
   databaseId: string;
 }
 
 /**
- * Resolves `groupBy` against the database's own properties. A relation property groups by the
- * target items its edges reach and a select property by its stored option. An unknown key, any
- * other property type and a relation property without a resolvable definition or target database
- * are refused on `groupBy`.
+ * A relation property groups by reached target items, a select by stored option. Unknown keys, other
+ * types and relations without a resolvable definition or target are refused on `groupBy`.
  */
 function resolveItemCountGrouping(
   properties: PropertyRow[],
@@ -150,10 +136,7 @@ function resolveItemCountGrouping(
   };
 }
 
-/**
- * Counts one entry in the caller's transaction. The database is resolved first, under the caller's
- * tenant, so an unknown id and another tenant's id fail alike with the not-found a database query gives.
- */
+/** The database is resolved first under the tenant, so an unknown and a foreign id fail alike. */
 async function countItemsEntry(
   client: PoolClient,
   entry: ItemCountEntryInput,
@@ -181,7 +164,7 @@ async function countItemsEntry(
   const filterProperties = await buildFilterProperties(client, properties);
   const grouping =
     entry.groupBy === undefined ? undefined : resolveItemCountGrouping(properties, filterProperties, entry.groupBy);
-  // A grouping by a relation into a closed database would list that database's record ids with a count each (issue #2000).
+  // A grouping by a relation into a closed database would list its record ids with counts.
   if (
     entry.groupBy !== undefined &&
     grouping?.kind === "relation" &&
@@ -202,10 +185,8 @@ async function countItemsEntry(
 }
 
 /**
- * Resolves the one filter a read runs under. `filter` (a tree) and `buildFilterSql` (a raw
- * push-down hook) are two ways of saying the same thing, so a caller passing both is
- * rejected rather than having one of them silently dropped — combining them would also be a
- * guess about whether they were meant to be ANDed.
+ * `filter` and `buildFilterSql` say the same thing two ways, so passing both is rejected rather than
+ * guessing whether to AND them.
  */
 async function resolveFilterSql(
   client: PoolClient,
@@ -227,7 +208,7 @@ async function resolveFilterSql(
 export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
-    /** An agent reads a rollup that aggregates a sensitive database its project may not read as `{ value: null, hidden: true }` (issue #2000). */
+    /** An agent reads a rollup over a sensitive database its project may not read as `{ value: null, hidden: true }`. */
     async getItem(databaseId: string, itemId: string, expansion?: RelationExpansionOptions, reader?: DatabaseReader) {
       return withTransaction(pool, async (client) => {
         if (reader !== undefined) {
@@ -247,16 +228,11 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     },
 
     /**
-     * Cross-partition lookup by id alone (issue #241's `GET /api/items/:id`, whose URL carries no
-     * `databaseId` to route `getItem`'s partitioned lookup through). Backed by the same
-     * `getItemsByIds` scan `assertItemExists` already uses for view membership — acceptable here
-     * for the same reason: a single-row point lookup, not a scan over a large membership list.
+     * Cross-partition lookup by id alone, for URLs that carry no `databaseId`; a single-row point lookup.
      *
-     * An agent (a `reader` that is its project) needs `read` access to the item's database, or, when it also passes
-     * its run (`agentRunId`), a per-turn read allowance for this very item (issue #1849). An external client
-     * (issue #1998) needs a database that is not sensitive, and no allowance applies to it. For an agent a rollup of the
-     * item that aggregates a sensitive database its project may not read is read as `{ value: null, hidden: true }`
-     * (issue #2000).
+     * An agent needs `read` on the item's database or, with `agentRunId`, a per-turn read allowance for
+     * this item. An external client needs a non-sensitive database; no allowance applies to it. An
+     * agent's rollups over sensitive databases it may not read are `{ value: null, hidden: true }`.
      */
     async findItem(itemId: string, expansion?: RelationExpansionOptions, reader?: DatabaseReader, agentRunId?: string) {
       return withTransaction(pool, async (client) => {
@@ -283,12 +259,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
       });
     },
 
-    /**
-     * `findItem`'s counterpart that also resolves an already-trashed item — `DELETE
-     * /api/items/:id` and `POST /api/items/:id/restore` (issue #156) both need an item's
-     * `databaseId` before they can call `softDeleteItem`/`restoreItem`, and unlike `GET
-     * /api/items/:id`, a trashed item is the expected target of either route, not a 404.
-     */
+    /** `findItem` that also resolves a trashed item, the expected target of delete and restore. */
     async findItemIncludingDeleted(itemId: string): Promise<ItemRow | null> {
       return withTransaction(pool, async (client) => {
         const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [itemId]);
@@ -297,28 +268,16 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     },
 
     /**
-     * The breadcrumb chain `GET /api/items/:id?include=path` needs (issue #241): starting at
-     * `itemId`, walks `databases.parent_item_id` outward — from the item's own database to
-     * whichever item (in whichever other database) that database is nested under, and that
-     * item's own database's parent, and so on — so a caller never has to assemble hierarchy
-     * itself. Ordered root-first, ending with `itemId`. Stops (rather than throwing) if an
-     * ancestor's item or database has since gone missing partway up the chain; the caller
-     * already has everything found below that point.
+     * The breadcrumb chain, root-first and ending with `itemId`, walking `databases.parent_item_id`
+     * outward database by database. A missing ancestor item or database ends the walk with what was found.
      *
-     * An item of the hidden Pages database (docs/adr/2026-10-29-subpages-are-items-of-a-hidden-pages-database.md) has
-     * no database parent to follow: its chain continues with its `parentItemId` property, the host item or parent page,
-     * and from a host that is not a Pages item with the host's own database parents. Every subpage of a chain lives in
-     * the same database, so the walk cannot use the repeated-database guard below there; it tracks the item ids
-     * already walked instead, so a stored `parentItemId` cycle ends the walk rather than failing the read, and the
-     * chain is cut at `MAX_ITEM_PATH_LENGTH` elements. A trashed or missing ancestor ends the walk too, with what was found.
+     * A Pages item has no database parent: its chain continues via its `parentItemId` property (host
+     * item or parent page), then via the host's database parents. Subpages share one database, so there
+     * the walk tracks item ids instead of databases; a stored cycle ends the walk, and the chain is cut
+     * at `MAX_ITEM_PATH_LENGTH`. A trashed ancestor ends the walk too.
      *
-     * Guards against a `parent_item_id` cycle (database A's parent item lives in a database
-     * whose own parent item is, transitively, back in database A) by tracking every database
-     * id already walked and stopping the moment one repeats — otherwise a cycle would hang this
-     * loop, and the request, forever.
-     *
-     * Iterative per-level walk rather than a single recursive CTE — the trade-off is recorded in
-     * `docs/adr/2026-09-11-iterative-parent-chain-traversal-in-choke-point.md`.
+     * A database cycle is stopped by tracking every database walked; otherwise it would hang the request.
+     * An iterative per-level walk rather than a recursive CTE (docs/architecture/data-model-and-writes.md#reads).
      */
     async getItemPath(itemId: string, expansion?: RelationExpansionOptions): Promise<ItemRow[]> {
       return withTransaction(pool, async (client) => {
@@ -349,10 +308,10 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
       });
     },
 
-    /** Filter with either `filter` (a filter tree, views/filterTree.ts) or `buildFilterSql`, never both. */
+    /** Filter with either `filter` or `buildFilterSql`, never both. */
     async listItems(databaseId: string, options?: ListItemsInput) {
       return withTransaction(pool, async (client) => {
-        // `filter` is consumed by resolveFilterSql; `rest` is what the store itself takes.
+        // `filter` is consumed by resolveFilterSql; `rest` goes to the store.
         const { filter, now, reader, ...rest } = options ?? {};
         if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, databaseId, "read");
         const closed = await closedSensitiveDatabasesOf(client, reader);
@@ -362,7 +321,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
           buildFilterSql: rest.buildFilterSql,
           closedDatabaseIds: closed,
         });
-        // An agent's list leaves out the items it may not read because of a sensitive record they are linked to (issue #1999).
+        // An agent's list leaves out items linked to a sensitive record it may not read.
         const buildFilterSql =
           typeof reader === "string" ? excludeInheritedSensitiveItems(requestedFilterSql, reader) : requestedFilterSql;
         const page = await itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
@@ -371,7 +330,6 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
       });
     },
 
-    /** The matching count for the same `filter` `listItems` takes — a count without paging the rows in. */
     async countItems(databaseId: string, options?: CountItemsInput): Promise<number> {
       return withTransaction(pool, async (client) => {
         const { filter, now, ...rest } = options ?? {};
@@ -385,14 +343,11 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     },
 
     /**
-     * The counts of `entries` in input order, read in one transaction (issue #1709). The first entry
-     * whose database the caller's tenant does not have fails the whole call with `NotFoundError`, and an
-     * invalid `filter` or `groupBy` fails it with `ValidationError`; `itemsStore.countItemsGrouped`
-     * documents what is counted and how the groups are ordered. An external client (a `reader`, issue #1998) needs
-     * `read` access to the database of every entry, checked in this transaction before the entry is counted, so a
-     * sensitive database refuses the whole call and no group key or count of it is computed. With
-     * `options.agentProjectItemId` an entry whose filter reaches a sensitive database that project may not read, or
-     * whose `groupBy` is a relation into one, is refused with a `ForbiddenError` (issue #2000).
+     * Counts in input order, in one transaction (`itemsStore.countItemsGrouped` documents what and how).
+     * An entry with an unknown database fails the call with `NotFoundError`, an invalid `filter` or
+     * `groupBy` with `ValidationError`. A `reader` needs `read` on every entry's database, checked before
+     * counting it, so a sensitive database refuses the whole call. With `options.agentProjectItemId`, the
+     * same `ForbiddenError` refusals as `ItemCountEntryInput.agentProjectItemId` apply.
      */
     async countItemsBatch(
       entries: ItemCountEntryInput[],
@@ -414,14 +369,11 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     },
 
     /**
-     * The facets of one database in request order, read in one transaction (issue #1759);
-     * `computeDatabaseFacets` documents what each facet lists and counts. The database is resolved first, under
-     * the caller's tenant, so an unknown id and another tenant's id fail alike with the not-found a database
-     * query gives. The manifest metadata is obtained before the transaction opens, so the transaction never
-     * waits for the module manifests to load. An external client (a `reader`, issue #1998) needs `read` access to the
-     * database, checked in this transaction before any facet is computed. With `options.agentProjectItemId` a filter,
-     * a facet or a path that reaches a sensitive database that project may not read is refused with a `ForbiddenError`
-     * (issue #2000).
+     * The facets of one database in request order, in one transaction (see `computeDatabaseFacets`). The
+     * database is resolved first under the tenant, so unknown and foreign ids fail alike. Manifest metadata
+     * is loaded before the transaction opens. A `reader` needs `read` on the database. With
+     * `options.agentProjectItemId`, a filter, facet or path reaching a sensitive database the project may
+     * not read is a `ForbiddenError`.
      */
     async getDatabaseFacets(
       input: DatabaseFacetsInput,

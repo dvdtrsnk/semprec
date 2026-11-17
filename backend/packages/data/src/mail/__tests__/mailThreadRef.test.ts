@@ -1,6 +1,5 @@
-// Issue gh-1933: the `mailThread` Semp message ref. Every fixture row goes through the writers production uses
-// (folder discovery, the ingest writer, the choke point's soft delete); every read runs on the runtime role, inside
-// the scope of one of two tenants.
+// The `mailThread` Semp message ref. Fixture rows go through the production writers; every read runs on the runtime
+// role, inside the scope of one of two tenants.
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -30,7 +29,6 @@ let storage: LocalFsBlobStorageWriter;
 let tenant: string;
 let foreign: string;
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -62,7 +60,6 @@ async function seededIds(tenantId: string): Promise<SeededIds> {
   });
 }
 
-/** One tenant's mail fixture. */
 async function mailFixture(tenantId: string) {
   const ids = await seededIds(tenantId);
   const mailboxId = await inTenant(
@@ -89,7 +86,6 @@ async function mailFixture(tenantId: string) {
       }),
     );
 
-  /** One message through the ingest writer; `references` joins it to an earlier message's thread. */
   const message = (input: {
     folderId: string;
     messageId: string;
@@ -129,7 +125,6 @@ async function mailFixture(tenantId: string) {
       return { itemId, threadId };
     });
 
-  /** Soft-deletes one Emails item through the choke point and fails if nothing was deleted. */
   const softDeleteEmail = async (itemId: string): Promise<void> => {
     const deleted = await runInTenant(tenantId, () =>
       createChokePoint(runtime).softDeleteItem(ids.emailsDatabaseId, itemId),
@@ -137,7 +132,6 @@ async function mailFixture(tenantId: string) {
     if (deleted === null) throw new Error(`item ${itemId} was not soft-deleted`);
   };
 
-  /** Soft-deletes one folder item through the choke point and fails if nothing was deleted. */
   const softDeleteFolder = async (folderId: string): Promise<void> => {
     const deleted = await runInTenant(tenantId, () =>
       createChokePoint(runtime).softDeleteItem(ids.foldersDatabaseId, folderId),
@@ -145,7 +139,6 @@ async function mailFixture(tenantId: string) {
     if (deleted === null) throw new Error(`folder ${folderId} was not soft-deleted`);
   };
 
-  /** The id of the Threads item `mail_threads` binds `threadId` to: not a thread id. */
   const threadItemId = (threadId: string): Promise<string> =>
     inTenant(tenantId, async (client) => {
       const { rows } = await client.query<{ item_id: string | null }>(
@@ -223,7 +216,6 @@ async function mergedThreads(
   return { survivor, merged };
 }
 
-/** The statements `work` runs on its client whose text contains `fragment`. */
 async function countStatements<T>(
   client: PoolClient,
   fragment: string,
@@ -275,7 +267,6 @@ afterAll(async () => {
 
 const threadRef = (threadId: string): SempMessageRef => ({ kind: "mailThread", threadId });
 
-/** The merged thread and the Threads item of a thread seen by tenant `tenantId`, with a foreign tenant's thread. */
 async function threadsOfTwoTenants() {
   const fixture = await mailFixture(tenant);
   const foreignFixture = await mailFixture(foreign);
@@ -443,7 +434,6 @@ describe("resolveMailThreadRefTargets (issue gh-1933)", () => {
 
     const targets = await inTenant(tenant, (client) => resolveMailThreadRefTargets(client, [merged, survivor]));
 
-    // The merged thread's own message is the latest of the merged thread (3 November).
     const expected = { currentThreadId: survivor, label: "translate reply", state: "active" };
     expect(targets).toEqual([expected, expected]);
   });
@@ -566,7 +556,6 @@ describe("resolveMailThreadRefTargets (issue gh-1933)", () => {
 });
 
 describe("a mailThread ref in the Semp thread history (issue gh-1933)", () => {
-  /** Sends one message carrying `context` as `tenantId` and reads its history entry back. */
   async function history(tenantId: string, context: unknown[]) {
     const sent = await inTenant(tenantId, (client) =>
       sendSempMessage(client, { text: "Question", context, hasContext: true }),

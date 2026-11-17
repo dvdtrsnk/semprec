@@ -84,7 +84,7 @@ export async function saveGuidanceSections(
     const findings = await agentGuidanceDriftFindingsStore.listActive(tx, input.projectItemId);
     for (const finding of findings) {
       const { transitionedToResolved } = await agentGuidanceDriftFindingsStore.resolve(tx, finding.id, new Date());
-      // The drift heartbeat is disabled above, so no later drift run exists to close the finding's problem (issue #1915).
+      // The drift heartbeat is disabled above, so no later drift run would close the finding's problem.
       if (transitionedToResolved)
         await resolveGuidanceDriftProblem(tx, { projectItemId: input.projectItemId, fingerprint: finding.fingerprint });
     }

@@ -80,11 +80,7 @@ function invalidEntry(entry: ConversationEntry, reason: string): Error {
   return new Error(`conversation entry ${entry.id} (kind '${entry.message.kind}') ${reason}`);
 }
 
-/**
- * A stored `message` event keeps the assistant's content and stop reason but not the provider
- * bookkeeping pi's `AssistantMessage` carries; the session's own model stands in for it and the
- * usage is zero, since the tokens were already accounted when the original call was made.
- */
+/** Provider bookkeeping is not stored; usage is zero because the original call was already accounted. */
 function toAssistantMessage(entry: ConversationEntry, message: AgentMessage, model: Model<Api>): AssistantMessage {
   if (message.role !== "assistant") throw invalidEntry(entry, "is not an assistant message");
   if (!isAssistantContent(message.content)) throw invalidEntry(entry, "has malformed assistant content");
@@ -144,12 +140,8 @@ function toUserMessage(entry: ConversationEntry, message: AgentMessage): UserMes
 }
 
 /**
- * Converts reconstructed history (this runtime's persisted `AgentMessage` vocabulary) into the pi
- * `Message`s a resumed `Agent` is seeded with. Only `user_message`, `message` and `tool_result` entries carry
- * conversation content: a `tool_use` repeats the `toolCall` block already in the preceding
- * assistant message's content, and turn markers, streaming deltas and run statuses are not part
- * of the model's context. The history is a boundary (stored JSONB, or a compaction adapter's
- * output), so an entry that does not match pi's shape throws instead of being handed to pi.
+ * Only `user_message`, `message` and `tool_result` carry content (a `tool_use` repeats the preceding
+ * assistant message's block). The history is a boundary, so a malformed entry throws.
  */
 export function toPiMessages(entries: ConversationEntry[], model: Model<Api>): Message[] {
   const messages: Message[] = [];

@@ -129,14 +129,8 @@ describe.each(["database.query", "view.query"] as const)("%s generated relation-
   }
 });
 
-// Recorded from the unchanged compiled shared generator at the repair base. `page.get` was re-recorded when issue #1678
-// added the `markdown` format to its `format` enum (an additive change), and `page.createSubpage` (#1676),
-// `page.insert` (#1679), `page.replace` (#1765), `page.changes` (#1680), `page.duplicate` (#1722) and `page.rename`
-// (#1725) were recorded when they joined the catalog, and so was `item.count` (#1709), whose one schema shares local definitions, and so were the
-// REST-only `property.option.add` and `property.option.update` (#1699), whose schemas no MCP listing advertises.
-// `database.patch` was re-recorded when issue #2002 added the optional boolean `overviewHidden` to its patch (an
-// additive change). `database.facets` (#1759) was recorded when it joined the catalog; its one schema shares local
-// definitions under `properties.filter`. `page.ensureJournalPeriod` (#1861) and `page.mergeJournalDuplicates` (#2017) were recorded when they joined the catalog, and so were `search` (#1842) and `relation.related` (#1839). `database.query`, `view.query` and `item.count` were re-recorded when issue #1857 added the optional text `q` (an additive change; on `item.count` it sits on each entry). `page.convertToBlock` (#1876) was recorded when it joined the catalog.
+// Hashes recorded from the shared generator. Re-record an operation's hash whenever its input schema changes, additive
+// changes included.
 const defaultHashes: Record<string, string> = {
   "database.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "database.get": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",

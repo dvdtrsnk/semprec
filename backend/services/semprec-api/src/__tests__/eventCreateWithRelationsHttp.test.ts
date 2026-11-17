@@ -25,7 +25,6 @@ const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
 const DESCRIPTION = "## Agenda\n- [ ] Confirm the budget";
-/** An Event as the calendar creates it: no `type` among its values. */
 const EVENT = {
   name: "Kickoff",
   date: "2026-11-20",
@@ -45,10 +44,6 @@ const errorBody = z.object({
 
 let pool: Pool;
 
-/**
- * `POST /api/databases/:id/items` for an Event with `relations`, through the real dispatcher: the request
- * a signed-in client sends to create an Event with its calendar, project and people in one write.
- */
 describe("an Event created with its calendar and relations over HTTP (issue #1777)", () => {
   let server: Server;
   let baseUrl: string;
@@ -143,14 +138,13 @@ describe("an Event created with its calendar and relations over HTTP (issue #177
     return itemBody.parse(created.body).id;
   }
 
-  /** The live edges of an item from its own side, as `[property key, target id]` pairs in the read's order. */
+  /** As `[property key, target id]` pairs in the read's order. */
   async function edgesOf(itemId: string): Promise<string[][]> {
     const listed = await rest("GET", `/api/items/${itemId}/relations`);
     expect(listed.status).toBe(200);
     return relationsBody.parse(listed.body).relations.map((entry) => [entry.propertyKey, entry.targetItemId]);
   }
 
-  /** The Events of the tenant, the trashed ones included. */
   async function storedEventIds(): Promise<string[]> {
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
       eventsId,
@@ -164,7 +158,7 @@ describe("an Event created with its calendar and relations over HTTP (issue #177
     { propertyKey: "people", targetItemIds: peopleIds },
   ];
 
-  /** The five edges of the Event, in the order the relation list reads them: by property key, then target id. */
+  /** In relation-list order: by property key, then target id. */
   const fiveEdges = (calendarId: string) => [
     ["calendar", calendarId],
     ...[...peopleIds].sort().map((personId) => ["people", personId]),

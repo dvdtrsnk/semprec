@@ -1,7 +1,6 @@
 import type { PoolClient } from "pg";
 import { requireManagedTransaction } from "../db/pool.js";
 
-/** Enforces the transaction assumptions of the rollup archive coordination ADR. */
 export async function requireRollupCoordinationTransaction(client: PoolClient): Promise<void> {
   requireManagedTransaction(client);
   if (client.getTransactionStatus() !== "T") {

@@ -24,7 +24,7 @@ async function get(headers: Record<string, string> | undefined, itemId: string, 
   return { status: response.status, text: await response.text() };
 }
 
-/** A host with a page document, and the database clock read once the document exists. */
+/** The database clock is read once the document exists. */
 async function hostWithPage(): Promise<{ host: string; docId: string; since: string }> {
   const host = await harness.createHost(harness.tenantA);
   await runInTenant(harness.tenantA, () => createDocStore(harness.runtime).getOrCreateDoc(host, "page"));

@@ -1,7 +1,4 @@
-// Retires the Semp drafts a message of the user's own makes outdated (issue gh-1902). Called inside the transaction
-// that finalizes a send (mail/send.ts) and inside the one that ingests a message of the user's own (mail/ingest.ts).
-// Constrained by: docs/adr/2026-11-13-a-discarded-mail-draft-loses-its-row-and-draft-writers-lock-the-item-before-the-row.md,
-// docs/adr/2026-11-14-retiring-an-outdated-semp-draft-takes-the-steps-of-a-discard-as-the-system.md
+// Retires Semp drafts made outdated by the user's own message, inside the send-finalize or ingest transaction.
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { lockItemById } from "../chokePoint/itemsStore.js";
@@ -14,22 +11,17 @@ import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { announceMailThreadChanged } from "./mailThreadActions.js";
 
 export interface RetireSupersededSempDraftsInput {
-  /** The thread of the user's own message. */
   threadId: string;
-  /** When the user's own message was sent or dated. */
   ownMessageDate: Date;
-  /** The draft that is being sent, which stays; absent when the message is not a draft of Semprec's. */
+  /** The draft being sent, which stays. */
   excludeDraftItemId?: string;
 }
 
 const candidateRow = z.object({ emailItemId: z.uuid(), sourceDate: z.string().nullable() });
 
 /**
- * The unsent agent drafts of a thread, with the `date` of their source message. A draft belongs to the thread its
- * `thread_id` names and, once that thread was merged away, to the thread that absorbed it (`mail_thread_aliases`;
- * `reassignThread` does not re-point `mail_drafts.thread_id`), so the thread's own id and the ids merged into it are
- * both matched. Only drafts whose Emails item is not in the trash are listed, and only those with a source message
- * that is an Emails item. Fixed SQL; the parameters are ids.
+ * Unsent agent drafts of a thread with their source message's `date`. Thread merges do not
+ * re-point `mail_drafts.thread_id`, so ids merged into the thread (`mail_thread_aliases`) match too.
  */
 const CANDIDATE_DRAFTS_SQL = `
 SELECT d.email_item_id::text AS "emailItemId", source.properties->>'date' AS "sourceDate"
@@ -46,24 +38,12 @@ WHERE d.tenant_id = app_tenant_default() AND d.created_by = 'agent' AND d.last_e
 ORDER BY d.email_item_id`;
 
 /**
- * Soft-deletes every unsent Semp draft of thread `input.threadId` whose source message is older than
- * `input.ownMessageDate`, in the caller's transaction and tenant, and answers the item ids it retired. A Semp draft is
- * a draft with `created_by` `agent` and `last_edited_by` `agent`: a draft of the user stays, and so does a Semp draft
- * the user has worked on (edited its text or recipients, or attached or removed a file), because the issue leaves
- * retiring drafts the user edited out of scope and their work is not ours to remove. The draft in
- * `input.excludeDraftItemId` stays, a draft that holds the claim of a send in progress stays (its send is delivering
- * it), and so does a draft that has no source message or whose source has no readable `date`, because nothing says
- * the user's message answers it. A draft whose source is as new as the user's message or newer is an answer to something the
- * user has not replied to, and stays.
+ * Trashes every unsent Semp draft (created and last edited by `agent`) whose source message is
+ * older than `ownMessageDate`, and returns the retired item ids. Drafts the user edited, the draft
+ * being sent, drafts held by an in-progress send, and drafts without a dated source stay.
  *
- * Each draft is retired as a discard is (`trashLockedDraft`): its Emails item goes to the trash through the choke
- * point and its `mail_drafts` row is deleted, so the thread no longer has a Semp draft (`hasSempDraft`) and can get a
- * new one. The writer is the system's: the user's message is the cause, not an edit of the draft. The Emails item
- * is locked before the row, as every draft writer does, and the draft is read again under the locks: one the user sent
- * or discarded since the listing stays as that left it.
- *
- * When it retired a draft it announces the thread after the commit, as a draft discard does; a caller that announces
- * the same thread for its own reason adds a second, identical announcement.
+ * Retired as a discard (`trashLockedDraft`) by the system writer. The Emails item is locked before
+ * the row, as every draft writer does, and the draft is re-read under the lock.
  */
 export async function retireSupersededSempDrafts(
   client: PoolClient,

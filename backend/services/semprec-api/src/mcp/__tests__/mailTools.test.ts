@@ -66,7 +66,6 @@ let tenantB: MailTenant;
 let transport: ReturnType<typeof recordingTransport>;
 let servers: Server[];
 
-/** A tenant with a mailbox that has Drafts and Sent folders, the project that owns the mail databases and one that does not. */
 async function seededTenant(): Promise<MailTenant> {
   const tenantId = await createTestTenant(admin);
   const email = `${randomUUID()}@example.test`;
@@ -110,7 +109,7 @@ async function seededTenant(): Promise<MailTenant> {
   });
 }
 
-/** A `/mcp` listener over the given module registry, on the runtime-role pool, that sends through the recording transport. */
+/** On the runtime-role pool, sending through the recording transport. */
 async function startListener(moduleRegistry: ModuleRegistry, withSendAdapters = true): Promise<string> {
   const server = createServer(
     await createMcpRequestListener(
@@ -141,7 +140,6 @@ async function toolNames(endpoint: string, token: string): Promise<string[]> {
   return toolListSchema.parse(await rpc(endpoint, token, "tools/list")).result.tools.map((tool) => tool.name);
 }
 
-/** The text of a tool call that answered, and whether the handler marked it an error. */
 async function callTool(endpoint: string, token: string, name: string, args: unknown) {
   const { result } = toolResultSchema.parse(await rpc(endpoint, token, "tools/call", { name, arguments: args }));
   return { isError: result.isError, text: result.content[0]?.text ?? "" };
@@ -153,7 +151,7 @@ async function humanToken(t: MailTenant): Promise<string> {
 
 const MAIL_CAPABILITIES = ["mail.read", "mail.draft", "mail.send"];
 
-/** A run credential that lists core read access and, by default, the three mail capabilities of the registered module. */
+/** Lists core read access and, by default, the three mail capabilities. */
 async function credentialOf(
   t: MailTenant,
   projectItemId: string,
@@ -179,7 +177,7 @@ interface DraftTrace {
   claims: number;
 }
 
-/** The `mail_drafts` row of a draft and whether a send claimed it; the admin pool only inspects what the tools wrote. */
+/** The admin pool only inspects what the tools wrote. */
 async function traceOf(draftId: string): Promise<DraftTrace> {
   const { rows } = await admin.query<DraftTrace>(
     `SELECT d.created_by, d.last_edited_by, d.agent_run_id, d.sent_at,
@@ -215,7 +213,6 @@ async function requestsOf(t: MailTenant): Promise<RequestRow[]> {
   return rows;
 }
 
-/** A new draft made over `/mcp` with the given token, addressed to Petr. */
 async function createDraft(endpoint: string, token: string, t: MailTenant): Promise<string> {
   const answer = await callTool(endpoint, token, "semprec.mail.draft.create", {
     mode: "new",
@@ -259,7 +256,8 @@ describe("the mail tools on POST /mcp (issue gh-1956)", () => {
 
       const names = await toolNames(endpoint, credential.token);
       expect(names).toEqual(expect.arrayContaining(MAIL_TOOLS));
-      // The fifth mail tool declares no MCP exposure, and a module tool of another capability stays as it was.
+      // The fifth mail tool declares no MCP exposure, and a module tool of another capability stays
+      // as it was.
       expect(names).not.toContain("semprec.mail.thread.proposeTask");
       const tools = toolListSchema.parse(await rpc(endpoint, credential.token, "tools/list")).result.tools;
       expect(tools.find((tool) => tool.name === "semprec.mail.draft.send")?.inputSchema).toMatchObject({
@@ -533,7 +531,7 @@ describe("the mail tools on POST /mcp (issue gh-1956)", () => {
   });
 });
 
-/** The full set of module manifests with only the schema core module active, so the mail module is loaded and inactive. */
+/** Only the schema core module active, so the mail module is loaded and inactive. */
 async function registryWithMailInactive(): Promise<ModuleRegistry> {
   const inactive = new ModuleRegistry(() => new Set(["schemaCore"]));
   await inactive.loadModule(

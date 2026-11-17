@@ -1,10 +1,6 @@
-// Owns the per-database access check of a `DatabaseReader` for an object that is named by its own id and not by the
-// id of its database: a property, a view, and an item with the pages and inline databases it sits under. It resolves
-// the database (or the chain of databases) in the caller's transaction and passes it to `assertReaderDatabaseAccess`.
-// It writes nothing. The reads and writes of an external client (issue #1998) that are keyed by such an id call it.
-// The page operations are not among them: the database that owns a page is found by `resolvePageOwnerDatabase`
-// (`docs/pageOwnerDatabase.ts`), the one resolver for an agent's project and an external client.
-// Constrained by: docs/adr/2026-11-13-an-external-ai-client-on-mcp-is-refused-sensitive-databases.md
+// The per-database access check of a `DatabaseReader` for an object named by its own id rather than
+// its database's: a property, a view, and an item with the pages and inline databases above it. Page
+// operations resolve their owner database through `resolvePageOwnerDatabase` instead.
 import type { PoolClient } from "pg";
 import {
   assertReaderDatabaseAccess,
@@ -24,10 +20,7 @@ interface DatabaseIdRow {
   database_id: string | null;
 }
 
-/**
- * `assertReaderDatabaseAccess` for the database a property belongs to. A property the tenant does not have passes
- * untouched, so the operation answers its own not found.
- */
+/** For a property's database. A property the tenant does not have passes, so the operation answers its own not found. */
 export async function assertReaderPropertyAccess(
   client: PoolClient,
   reader: DatabaseReader,
@@ -40,9 +33,8 @@ export async function assertReaderPropertyAccess(
 }
 
 /**
- * `assertReaderDatabaseAccess` for the database a view belongs to. A curated view has no database and a view the
- * tenant does not have is unknown: both pass untouched, the first because what it lists is filtered by the member's
- * database, the second so the operation answers its own not found.
+ * For a view's database. A curated view (no database; its listing is filtered per member) and an
+ * unknown view both pass, the latter so the operation answers its own not found.
  */
 export async function assertReaderViewAccess(
   client: PoolClient,
@@ -56,12 +48,10 @@ export async function assertReaderViewAccess(
 }
 
 /**
- * `assertReaderDatabaseAccess` for the database of an item and for every database above it, the way `getItemPath`
- * walks: an item of the hidden Pages database continues with its `parentItemId` property, any other item with the
- * parent item of its database (an inline database). It decides where an item is named as a member or a parent: the
- * `viewItem` operations and `database.create` under a `parentItemId`; the page operations use
- * `resolvePageOwnerDatabase` instead. A trashed item is followed like a live one, and an unknown item or a missing
- * ancestor ends the walk with what was checked, so the operation answers its own not found.
+ * For an item's database and every database above it, walking as `getItemPath` does: a Pages item via
+ * its `parentItemId` property, any other item via its database's parent item. A trashed item is
+ * followed like a live one; an unknown item or missing ancestor ends the walk, so the operation
+ * answers its own not found.
  */
 export async function assertReaderItemPathAccess(
   client: PoolClient,

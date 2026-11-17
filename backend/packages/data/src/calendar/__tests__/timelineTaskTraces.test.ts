@@ -44,9 +44,7 @@ const SKIP_MESSAGE = "Calendar timeline left out an item with an invalid stored 
 
 /** 13 October 2026, 10:00 in the seeded zone (Europe/Prague, UTC+2). */
 const ON_THIRTEENTH = "2026-10-13T08:00:00.000Z";
-/** 16 October 2026, 10:00 in the seeded zone. */
 const ON_SIXTEENTH = "2026-10-16T08:00:00.000Z";
-/** 17 October 2026, 10:00 in the seeded zone. */
 const ON_SEVENTEENTH = "2026-10-17T08:00:00.000Z";
 
 async function seededTenant(): Promise<SeededTenant> {
@@ -69,7 +67,6 @@ function setClock(iso: string): void {
 const isTrace = (entry: CalendarTimelineEntry): entry is CalendarTaskTraceTimelineItem => entry.kind === "trace";
 const isTask = (entry: CalendarTimelineEntry): entry is CalendarTimelineItem => entry.kind === "task";
 
-/** The trace the timeline is expected to return. */
 function trace(
   taskId: string,
   day: string,
@@ -91,7 +88,6 @@ function trace(
 const CARRIED: CalendarTaskTraceOutcome = { kind: "carried" };
 const TEN_TO_ELEVEN = { from: "10:00", to: "11:00" };
 
-/** One tenant's fixture writes and timeline reads, each in that tenant's scope on the runtime-role pool. */
 function world(tenant: SeededTenant) {
   const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenant.id, fn);
 
@@ -145,7 +141,7 @@ function world(tenant: SeededTenant) {
     });
   }
 
-  /** Puts the task into the event through the route of issue #1764, which stamps the edge's `addedAt`. */
+  /** Puts the task into the event through the route, which stamps the edge's `addedAt`. */
   const put = (taskId: string, eventId: string) =>
     inTenant(() => createTaskHostEventPutRouteHandler(pool)({ params: { id: taskId, eventId }, body: {}, identity }));
 
@@ -260,7 +256,6 @@ describe("calendar timeline: carry-over and traces (issue gh-1884)", () => {
 
     const items = await w.entries("2026-10-13", "2026-10-20");
 
-    // Today is 16 October: neither it nor the days up to the new date are traced.
     expect(items.filter(isTrace)).toEqual([
       trace(taskId, "2026-10-13", CARRIED, { sinceTime: TEN_TO_ELEVEN }),
       trace(taskId, "2026-10-14", CARRIED),
@@ -311,7 +306,6 @@ describe("calendar timeline: carry-over and traces (issue gh-1884)", () => {
 
   it("returns no trace for a task with a since on or after the day it was completed on, and shows it on that day", async () => {
     const w = world(await seededTenant());
-    // Planned for 20 October with a stored since of 18 October, completed on 16 October, before both.
     const early = await w.task("Send invoice", { date: "2026-10-20" });
     await w.storeRaw(early, { since: "2026-10-18" });
     await w.update(early, { status: "done" });

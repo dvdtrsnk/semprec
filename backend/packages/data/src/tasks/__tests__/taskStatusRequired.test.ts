@@ -17,7 +17,6 @@ function inTenant<T>(fn: () => Promise<T>): Promise<T> {
   return runInTenant(tenant, fn);
 }
 
-/** Every stored Tasks row, deleted or not, with the version stamp the optimistic update checks. */
 async function storedTasks(): Promise<{ id: string; properties: Record<string, unknown>; updated_at: string }[]> {
   return inTenant(async () => {
     const { rows } = await pool.query<{ id: string; properties: Record<string, unknown>; updated_at: string }>(
@@ -96,7 +95,7 @@ describe("a task always has a status (issue sp-9cf1be65)", () => {
         cp.updateItem({
           databaseId: tasks,
           itemId: created.id,
-          ifVersion: created.updatedAt,
+          ifVersion: created.version,
           propertiesPatch: { status },
         }),
       ),
@@ -111,7 +110,7 @@ describe("a task always has a status (issue sp-9cf1be65)", () => {
       cp.updateItem({
         databaseId: tasks,
         itemId: created.id,
-        ifVersion: created.updatedAt,
+        ifVersion: created.version,
         propertiesPatch: { status: "done" },
       }),
     );
@@ -134,7 +133,7 @@ describe("a task always has a status (issue sp-9cf1be65)", () => {
       cp.updateItem({
         databaseId: tasks,
         itemId: legacyId,
-        ifVersion: legacy.updatedAt,
+        ifVersion: legacy.version,
         propertiesPatch: { name: "Renamed" },
       }),
     );

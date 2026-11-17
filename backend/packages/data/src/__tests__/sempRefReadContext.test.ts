@@ -51,7 +51,7 @@ describe("Semp reference turn reads", () => {
     await admin.end();
   });
 
-  // A Projects item: a deleted Tasks item ref expands as unavailable (issue #1771), other trashed items keep the marker.
+  // A deleted Tasks item ref expands as unavailable; other trashed items keep the marker.
   it("reads a real page and sibling blocks while refusing foreign, mismatched and random refs without effects", async () => {
     const tenant = await createTestTenant(admin);
     const foreign = await createTestTenant(admin);
@@ -737,7 +737,7 @@ describe("Semp reference turn reads", () => {
         speakers: [{ speaker: "SPEAKER_00", label: "Speaker" }],
       },
     });
-    // A range past the end of the recording is clamped (issue #1834): the turn gets the ref with no segment.
+    // A range past the end of the recording is clamped: the turn gets the ref with no segment.
     await expect(
       runInTenant(tenant, () =>
         withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, startsAt: 40, endsAt: 41 })),

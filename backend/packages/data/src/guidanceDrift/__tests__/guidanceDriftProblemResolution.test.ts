@@ -13,9 +13,9 @@ import { agentGuidanceDriftFindingsStore } from "../agentGuidanceDriftFindingsSt
 import { resolveGuidanceDriftFinding } from "../resolveGuidanceDriftFinding.js";
 
 /**
- * Every path that ends a guidance drift finding closes its `guidanceDrift` problem in the same transaction
- * (issue #1915): the owner's decision (allow, forbid, dismiss) and the emptying of the project's guidance. The
- * drift passes' own resolves are covered with the real composition in `sempProblemsRecovery.test.ts`.
+ * Every path that ends a drift finding (the owner's allow/forbid/dismiss, emptying the guidance) closes its
+ * `guidanceDrift` problem in the same transaction. The drift passes' own resolves are covered in
+ * `sempProblemsRecovery.test.ts`.
  */
 
 class RollbackSentinel extends Error {}
@@ -46,7 +46,7 @@ const permissionPayload = {
   severity: "warning" as const,
 };
 
-/** The state of the problems of the tenant by dedupe key: `active`, or the resolution kind. */
+/** Problem state by dedupe key: `active`, or the resolution kind. */
 async function problemStates(): Promise<Record<string, string>> {
   const { rows } = await admin.query<{ dedupe_key: string; resolved_at: Date | null; resolution_kind: string | null }>(
     "SELECT dedupe_key, resolved_at, resolution_kind FROM semp_problems WHERE tenant_id = $1",

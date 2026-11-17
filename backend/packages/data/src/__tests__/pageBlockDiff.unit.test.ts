@@ -21,7 +21,6 @@ function next(id: string, text: string | TextRun[], extra: Partial<DiffNewBlock>
   return { id, type: "text", text, ...extra };
 }
 
-/** The ids a diff leaves in place, in the order it names them, for readable expectations. */
 function summary(diff: ReturnType<typeof planBlockDiff>) {
   return {
     insertions: diff.insertions.map(({ afterId, blocks }) => ({ afterId, ids: blocks.map((block) => block.id) })),

@@ -1,48 +1,32 @@
 import type { AreaFilterTemplate, ModuleRegistry } from "@semprec/module-registry";
 import type { DatabaseRow } from "../types.js";
 
-/** Client-facing presentation metadata of one database (issue #1407). */
 export interface CollectionMetadata {
   icon: string | null;
   color: string | null;
   overviewOrder: number | null;
   switcherOrder: number | null;
   clientVisible: boolean;
-  /** True while the user hides the database from the overview (issue #2002); the orders and `clientVisible` do not depend on it. */
+  /** The orders and `clientVisible` do not depend on it. */
   overviewHidden: boolean;
 }
 
-/** Appearance of a user-created database without a stored pick; applied when reading, never written (issue #1528). */
+/** For a user-created database without a stored pick; applied on read, never written. */
 export const DEFAULT_DATABASE_ICON = "database";
 export const DEFAULT_DATABASE_COLOR = "#FF9500";
 
 export interface CollectionMetadataResolver {
-  /** `overviewHidden` is the stored flag of the given row, and false for a caller that passes none. */
+  /** `overviewHidden` is false when no row is passed. */
   resolve(
     database: Pick<DatabaseRow, "key" | "system"> & Partial<Pick<DatabaseRow, "icon" | "color" | "overviewHidden">>,
   ): CollectionMetadata;
-  /**
-   * Whether the user may hide the database from the overview (issue #2002): true for a system database whose
-   * module descriptor declares `overviewHideable: true`, false for every other database.
-   */
+  /** Only system databases whose descriptor declares `overviewHideable: true`. */
   overviewHideable(database: Pick<DatabaseRow, "key" | "system">): boolean;
-  /**
-   * The filter tree of the items that belong in the database's collection, as its module manifest declares
-   * it (issue #1647). `undefined` for a user-created database and for a system database without one.
-   */
+  /** As the module manifest declares it; `undefined` when none. */
   collectionFilter(database: Pick<DatabaseRow, "key" | "system">): Record<string, unknown> | undefined;
-  /**
-   * The order in which the related collections of a record of the database are listed, and the collections left out
-   * of the list, as its module manifest declares them (issue #1517), keeping only keys of active databases.
-   * `undefined` for a user-created database and for a system database that declares none. A resolver without this
-   * method declares none for every database.
-   */
+  /** Related-collection order and exclusions, active databases only; `undefined` when none declared. */
   relatedOrder?(database: Pick<DatabaseRow, "key" | "system">): { order: string[]; omit: string[] } | undefined;
-  /**
-   * The template of the filter that selects the records of the database that belong to one area, as its module
-   * manifest declares it (issue #1597). `undefined` for a user-created database and for a system database that
-   * declares none. A resolver without this method declares none for every database.
-   */
+  /** Per-area filter template; `undefined` when none declared. */
   areaFilter?(database: Pick<DatabaseRow, "key" | "system">): AreaFilterTemplate | undefined;
 }
 
@@ -55,10 +39,8 @@ const NO_METADATA: Omit<CollectionMetadata, "overviewHidden"> = {
 };
 
 /**
- * Reads `getDatabases()` once and resolves a database row to its declared metadata. A system
- * database without a descriptor is not client-visible; a user-created database is client-visible
- * with its stored or default icon and color and no order. `overviewHidden` is read from the row, not
- * from a descriptor.
+ * A system database without a descriptor is not client-visible; a user-created one is, with its
+ * stored or default appearance and no order.
  */
 export async function createCollectionMetadataResolver(
   moduleRegistry: ModuleRegistry,
@@ -127,7 +109,7 @@ function orderGroup(c: OrderableCollection): number {
   return c.switcherOrder !== null ? 0 : c.overviewOrder !== null ? 1 : 2;
 }
 
-/** Rows with a `switcherOrder` ascending, then rows with only an `overviewOrder` ascending, then the rest by name (case-insensitive), ties by id. */
+/** `switcherOrder`, then `overviewOrder`, then name (case-insensitive), ties by id. */
 export function compareCollections(a: OrderableCollection, b: OrderableCollection): number {
   const groupA = orderGroup(a);
   const groupB = orderGroup(b);

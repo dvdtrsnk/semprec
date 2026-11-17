@@ -66,7 +66,6 @@ function isMailResult(item: object): item is SearchMailResult {
   return "itemId" in item;
 }
 
-/** The `mail` group of an answer, or undefined when the answer has none. Every entry must be a mail entry. */
 function mailGroupOf(output: SearchOutput): MailGroup | undefined {
   const group: SearchGroup | undefined = output.groups.find((candidate) => candidate.type === "mail");
   if (group === undefined) return undefined;
@@ -77,7 +76,6 @@ function mailGroupOf(output: SearchOutput): MailGroup | undefined {
   return { total: group.total, items, nextCursor: group.nextCursor };
 }
 
-/** Searches the mail group only, in `asTenant`, as a person unless the input says otherwise. */
 async function searchMail(
   q: string,
   input: { perGroupLimit?: number; cursor?: string; agentProjectItemId?: string; humanActor?: boolean } = {},
@@ -108,7 +106,6 @@ interface IngestInput {
   flags?: string[];
 }
 
-/** The mailboxes and folders of the current tenant, and an `ingest` that writes through the production ingest path. */
 async function setup() {
   const cp = createChokePoint(runtime);
   const databases = await cp.listDatabases();
@@ -591,7 +588,7 @@ describe("the mail group of global search: who may read the Emails database", ()
       const f = await setup();
       await f.ingest({ id: "<closed@example.test>", subject: "Closed thread" });
       const agent = await f.cp.createItem({ databaseId: f.db("projects"), properties: { name: "Agent project" } });
-      // The seeded Emails database is open to agents; the flag that makes it need a grant is set directly, since no API sets it on it.
+      // The seeded Emails database is open to agents; no API sets the flag that makes it need a grant.
       await admin.query("UPDATE databases SET sensitive = true WHERE id = $1", [f.db("emails")]);
 
       expect(await searchMail("closed", { agentProjectItemId: agent.id })).toBeUndefined();
@@ -624,7 +621,7 @@ describe("the mail group of global search: who may read the Emails database", ()
       const senderOf = async (input: { agentProjectItemId?: string }) =>
         (await searchMail("known", input))?.items[0]?.subtitleParts.find((part) => part.kind === "sender");
       const linked = { kind: "sender", value: "Petr Novák", itemId: person.id };
-      // The seeded People database is open to agents; the flag that closes it by default is set directly, since no API sets it on it.
+      // The seeded People database is open to agents; no API sets the flag that closes it by default.
       await admin.query("UPDATE databases SET sensitive = true WHERE id = $1", [f.db("people")]);
 
       expect(await senderOf({ agentProjectItemId: agent.id })).toEqual({ kind: "sender", value: "Petr Novák" });

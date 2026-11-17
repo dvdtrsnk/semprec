@@ -3,21 +3,13 @@ import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import { createMailThread, reassignThread } from "./mailMessageMetaStore.js";
 
 /**
- * JWZ-style (jwz.org/doc/threading.html) conversation threading, adapted to run
- * incrementally per incoming message rather than as a batch rebuild: a `Message-ID` whose
- * ancestor hasn't synced yet gets its own thread (the "dummy container" case) instead of
- * staying unthreaded, and that thread self-heals the moment the missing ancestor arrives —
- * this function checks both directions (do any of *my* `In-Reply-To`/`References` already
- * have a thread? does any *already-synced* message reference *me*?) and merges whatever it
- * finds into one thread. A row with the same `message_id` in another mailbox (the same message
- * delivered to several of the user's mailboxes) is consulted first: its thread (lowest
- * `thread_id` if several differ) becomes the merge target. Must be called and its result stored (via `upsertMailMessageMeta`'s
- * `threadId`) before this message's own `mail_message_meta` row exists, so the "does anyone
- * reference me" query below only sees genuinely prior messages, never itself.
- *
- * `X-GM-THRID` (Gmail's own heuristic threading) is deliberately not consulted here — this
- * is the universal (Gmail + iCloud + generic IMAP) mechanism; the Gmail adapter stores
- * `X-GM-THRID` as `provider_thread_id` purely as an auxiliary cross-check column.
+ * JWZ-style (jwz.org/doc/threading.html) threading, run incrementally per incoming message: a message whose
+ * ancestor has not synced yet starts its own thread, which is merged once the ancestor arrives. Both directions are
+ * checked (do my `In-Reply-To`/`References` have a thread? does an already-synced message reference me?), and another
+ * copy of the same `Message-ID` in another mailbox is consulted first (lowest `thread_id` wins). Must run, and its
+ * result be stored as `upsertMailMessageMeta`'s `threadId`, before this message's own `mail_message_meta` row exists,
+ * so the "does anyone reference me" query never sees itself. `X-GM-THRID` is deliberately not consulted: this is the
+ * provider-independent mechanism.
  */
 export interface ThreadResolutionInput {
   messageId: string;
@@ -51,22 +43,15 @@ export async function resolveThreadId(client: PoolClient, input: ThreadResolutio
     for (const row of rows) if (row.thread_id) foundThreadIds.add(row.thread_id);
   }
 
-  // Self-heal: an already-synced message that names *this* message as its parent/ancestor,
-  // arrived before this one did.
+  // Self-heal: an already-synced message that names this one as its parent or ancestor.
   const { rows: descendantRows } = await client.query<{ thread_id: string | null }>(
     `SELECT thread_id FROM mail_message_meta WHERE thread_id IS NOT NULL AND (in_reply_to = $1 OR $1 = ANY("references"))`,
     [input.messageId],
   );
   for (const row of descendantRows) if (row.thread_id) foundThreadIds.add(row.thread_id);
 
-  // No existing thread to join, so this message starts one. Expressed as the destructuring's
-  // empty case below rather than a separate `size === 0` check, so there is exactly one
-  // statement of the condition.
-  //
-  // Otherwise, more than one distinct thread may have been found (e.g. a message that bridges
-  // two previously separate dummy-container threads): merge them all into the first — an
-  // arbitrary but stable choice, since which one "wins" has no product meaning beyond
-  // "one thread."
+  // No thread found: this message starts one. Several found (a message bridging two threads): merge them all into the
+  // first, an arbitrary but stable choice.
   const [target, ...rest] = [...foundThreadIds];
   if (target === undefined) {
     const thread = await createMailThread(client, input.subjectHint);

@@ -74,11 +74,11 @@ Hard rules:
 - **Behavior, not technology.** The architecture is already fixed by this
   project (choke-point API, ownership model, module contracts, migration
   discipline — see `backend/review-rules/`, the skills in
-  `.bb/skills/`, and the decisions recorded under `docs/adr/`).
+  `.bb/skills/`, and `docs/architecture/`).
   Do not ask which library, which table layout, which endpoint shape. An
   architecture question is legitimate only when the existing architecture
   genuinely does not answer it — and even then, first send a subagent to check
-  both the review-rules/skills and `docs/adr/`.
+  both the review-rules/skills and `docs/architecture/`.
 - **One question per message**, with a recommendation and its reasoning. Batched
   questionnaires get shallow answers.
 - **Persist.** Do not stop at the first "sounds good". You are done only when no
@@ -136,10 +136,10 @@ in the spec, go back to the user — do not fill it silently.
 4. Avoid forward references: an issue's Context may point to its predecessors
    freely, but reference a *later* sibling only when genuinely needed.
 5. If decomposition genuinely requires a new architectural decision (not
-   covered by an existing rule or `docs/adr/` record — this should be rare per
+   covered by an existing rule or `docs/architecture/` — this should be rare per
    "Behavior, not technology" above), name it explicitly in the Task of the
-   issue that introduces it: that issue must add an ADR under `docs/adr/`
-   (format in `docs/adr/README.md`) alongside the implementation.
+   issue that introduces it: that issue updates the relevant
+   `docs/architecture/` document alongside the implementation.
 6. Write the epic per the same document: approved spec and a `## Decisions`
    section preserving the grilling Q&A (question → adopted answer → reason — the
    decision log would otherwise die with this conversation). Do not list the

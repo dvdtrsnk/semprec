@@ -20,13 +20,12 @@ let pool: Pool;
 let chokePoint: ChokePoint;
 
 /**
- * What the delete and restore hooks of issue #1601 saw. The recorders are registered once for the file
- * (a registry has no unregister); each test starts with empty lists, and `veto` names the item whose
- * hook call rejects.
+ * What the delete and restore hooks saw. Registered once for the file (no unregister); each test starts
+ * with empty lists, and `veto` names the item whose hook call rejects.
  */
 const hookCalls: { delete: ItemDeleteHookContext[]; restore: ItemRestoreHookContext[] } = { delete: [], restore: [] };
 let veto: { op: "delete" | "restore"; itemId: string } | null = null;
-/** Holds the restore cascade inside the restore hook of `itemId` until `release` settles (issue #1601). */
+/** Holds the restore cascade inside the restore hook of `itemId` until `release` settles. */
 let pause: { itemId: string; reached: (holderPid: number) => void; release: Promise<void> } | null = null;
 
 describe("choke-point itemTrash", () => {
@@ -201,9 +200,7 @@ describe("choke-point itemTrash", () => {
       const restored = await chokePoint.restoreItem(rootDb.id, rootItem.id);
       expect(restored?.deletedAt).toBeNull();
 
-      // The cascade restored everything it itself trashed, but must leave the independently
-      // deleted row exactly as it found it — restoring it would silently undo an unrelated,
-      // intentional delete.
+      // The cascade restored what it trashed but must leave the independently deleted row as it was.
       const midItemAfter = await chokePoint.getItem(midDb.id, midItem.id);
       expect(midItemAfter?.deletedAt).toBe(independentlyDeleted?.deletedAt);
     });
@@ -322,9 +319,8 @@ describe("choke-point itemTrash", () => {
       const { rootDb, root, midDb, mid, sibling, leaf } = await makePage();
       await chokePoint.softDeleteItem(midDb.id, mid.id);
       await chokePoint.softDeleteItem(rootDb.id, root.id);
-      // Two separate trash transactions starting within one millisecond cannot be produced on demand, so
-      // the two epochs are relabelled on the admin pool to instants one microsecond apart. Each group keeps
-      // one shared value, as a cascade leaves it.
+      // Two trash transactions within one millisecond cannot be produced on demand, so the epochs are relabelled
+      // on the admin pool to instants one microsecond apart. Each group keeps one shared value.
       const cascade = await pool.query(
         "UPDATE items SET deleted_at = '2026-11-07 10:00:00.000100+00' WHERE id = ANY($1::uuid[])",
         [[root.id, sibling.id]],
@@ -345,7 +341,7 @@ describe("choke-point itemTrash", () => {
       await chokePoint.restoreItem(rootDb.id, root.id);
 
       expect(hookCalls.restore.map((call) => call.item.id)).toEqual([root.id, sibling.id]);
-      // Issue #1642: every restore hook receives the epoch at full precision, read before the restore.
+      // Every restore hook receives the epoch at full precision, read before the restore.
       for (const call of hookCalls.restore) {
         expect(call).toMatchObject({
           deletedAt: "2026-11-07T10:00:00.000Z",
@@ -389,7 +385,6 @@ describe("choke-point itemTrash", () => {
         const holderPid = await deadline(atRoot, "the cascade restore to reach the root's hook");
         expect(hookCalls.restore.map((call) => call.item.id)).toEqual([root.id]);
         contender = chokePoint.restoreItem(midDb.id, mid.id);
-        // Bounded: each probe is one short statement, and the probes stop after a fixed number.
         let waiting: number[] = [];
         for (let probe = 0; probe < 2000 && waiting.length === 0; probe += 1) {
           const { rows } = await pool.query<{ pid: number }>(
@@ -467,7 +462,6 @@ describe("choke-point itemTrash", () => {
   describe("joining an earlier trash epoch (issue gh-2029)", () => {
     const EXACT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 
-    /** Each row's `deleted_at` at full precision, and whether Postgres finds it equal to the anchor's. */
     async function epochsAgainst(anchorId: string, ids: string[]) {
       const { rows } = await pool.query<{ id: string; deleted_at: string | null; joined: boolean | null }>(
         `SELECT i.id::text,

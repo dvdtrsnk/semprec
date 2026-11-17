@@ -8,20 +8,9 @@ import {
   patchNotificationPreferences,
   type NotificationPreferencesPatch,
 } from "./notificationPreferencesStore.js";
+import type { CustomRouteResult, RouteBody, RouteUser } from "../customRoute.js";
+import { requireBodyObject } from "../customRoute.js";
 
-/**
- * The custom-route handler shape this file's exports are cast to by `semprec-api`'s mount (issue
- * #239) — duck-typed here, same as `pushRouteHandlers.ts`, so this package has no reason to import
- * that service's HTTP types.
- */
-interface CustomRouteRequestContext {
-  body: unknown;
-  identity: { user: { id: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
-
-/** The boolean fields a PATCH may set, by their API names. */
 const BOOLEAN_FIELDS = [
   "approvals",
   "invites",
@@ -41,17 +30,11 @@ function isProblemsLevel(value: unknown): value is (typeof NOTIFICATION_PROBLEMS
   return typeof value === "string" && (NOTIFICATION_PROBLEMS_LEVELS as readonly string[]).includes(value);
 }
 
-/**
- * Parses a PATCH body into the fields it sets. Anything but a JSON object, an unknown key, a
- * non-boolean boolean field or a `problemsLevel` outside the closed set is a 400; known fields are named;
- * the request writes nothing in that case, because parsing happens before the store is called.
- */
+/** Runs before the store is called, so an invalid body writes nothing. */
 export function parseNotificationPreferencesPatch(body: unknown): NotificationPreferencesPatch {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    throw new ValidationError("Request body must be a JSON object");
-  }
+  const fields = requireBodyObject(body);
   const patch: NotificationPreferencesPatch = {};
-  const entries: [string, unknown][] = Object.entries(body);
+  const entries: [string, unknown][] = Object.entries(fields);
   for (const [field, value] of entries) {
     if (isBooleanField(field)) {
       if (typeof value !== "boolean") {
@@ -72,33 +55,24 @@ export function parseNotificationPreferencesPatch(body: unknown): NotificationPr
   return patch;
 }
 
-/**
- * `GET /api/notification-preferences` (issue #1441) — the caller's own preferences, or the defaults
- * when the caller has no row. Shaped for exactly one consumer, the settings screen's notification
- * section, so it is the "single-consumer-read" justification. Reads nothing but the caller's row.
- */
+/** `GET /api/notification-preferences`: a single-consumer read of the caller's own row. */
 export function createGetNotificationPreferencesRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const preferences = await getNotificationPreferences(pool, ctx.identity.user.id);
     return { status: 200, body: preferences };
   };
 }
 
-/** Whether a PATCH sets a badge switch (issue #1891): the fields whose change changes the number on the app icon. */
 function patchesBadgeSwitch(patch: NotificationPreferencesPatch): boolean {
   return patch.badgeApprovals !== undefined || patch.badgeInvites !== undefined || patch.badgeInbox !== undefined;
 }
 
 /**
- * `PATCH /api/notification-preferences` (issue #1441) — sets the fields the body names on the
- * caller's own row, creating it on the first change. The insert and the update commit together, so
- * the "transactional-semantics" justification applies. Validation runs before the transaction opens.
- * A PATCH that names a badge switch (`badgeApprovals`, `badgeInvites`, `badgeInbox`) also enqueues the
- * badge refresh of the caller in that transaction (issue #1891), whether or not the value differs from
- * the stored one; a PATCH of other fields enqueues none.
+ * `PATCH /api/notification-preferences`. Naming a badge switch enqueues a badge refresh in the same
+ * transaction, even when the value is unchanged.
  */
 export function createPatchNotificationPreferencesRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const patch = parseNotificationPreferencesPatch(ctx.body);
     const preferences = await withTransaction(pool, async (client) => {
       const patched = await patchNotificationPreferences(client, ctx.identity.user.id, patch);

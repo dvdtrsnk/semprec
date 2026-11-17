@@ -1,21 +1,16 @@
 /**
- * Eligibility rules for the monorepo's single release tag — see
- * `docs/adr/2026-09-24-monorepo-release-tag-from-guarded-command.md`. The repository has one
- * version, `vMAJOR.MINOR.PATCH`, carried by a git tag on `main`; no package carries its own.
- *
- * Everything that talks to git or GitHub sits behind `ReleaseHost`, so the rules here are the
- * whole decision and are unit-tested without a network.
+ * Eligibility rules for the monorepo's single release tag `vMAJOR.MINOR.PATCH` on `main`; no package
+ * carries its own version (docs/architecture/delivery-and-operations.md#releases). Git and GitHub
+ * access sits behind `ReleaseHost`, so these rules are unit-tested without a network.
  */
 
 const RELEASE_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/;
 
 /**
- * The `.github/workflows/ci.yml` jobs that run on a push to `main` — every one of them must have
- * succeeded for the exact commit being tagged. `review` and `code-review` are required on the
- * promotion pull request but run only on pull requests, so a pushed commit never carries them;
- * they gated the merge that produced this commit instead. Renaming a job in `ci.yml` is a
- * contract change (`docs/operations/required-checks.md`) that must update this list too.
+ * The `ci.yml` jobs that run on a push to `main`; each must have succeeded on the tagged commit.
+ * `review` and `code-review` run only on pull requests and gated the merge instead. Renaming a job
+ * in `ci.yml` must update this list (`docs/operations/required-checks.md`).
  */
 const REQUIRED_CHECKS = [
   "promotion-source",
@@ -90,12 +85,10 @@ function assertRequiredChecksSucceeded(sha: string, checkRuns: CheckRun[]): void
 }
 
 /**
- * Tags `sha` as `tag` only when all of these hold, checked in this order:
- * `tag` is `vMAJOR.MINOR.PATCH`; `sha` is a full commit SHA; `main` is protected and its head is
- * exactly `sha`; neither `tag` nor any other release tag exists on the remote for `sha`; every
- * `REQUIRED_CHECKS` job succeeded on `sha`. `main`'s head is read again right before tagging, so
- * a commit that stopped being `main`'s head while the checks were read is refused rather than
- * tagged.
+ * Tags `sha` as `tag` only when, in this order: `tag` is `vMAJOR.MINOR.PATCH`; `sha` is a full SHA;
+ * `main` is protected with head exactly `sha`; no release tag exists for `sha` on the remote; every
+ * `REQUIRED_CHECKS` job succeeded on `sha`. `main`'s head is re-read right before tagging, so a
+ * commit that stopped being head meanwhile is refused.
  */
 export async function releaseTag(tag: string, sha: string, host: ReleaseHost): Promise<void> {
   if (!isReleaseTag(tag)) {

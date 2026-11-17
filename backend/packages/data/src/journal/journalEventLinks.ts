@@ -12,15 +12,9 @@ import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "./journalOwnerProcesses.js";
 const JOURNAL_EVENT_LINKS_CONTEXT: SystemRelationWriteContext = { ownerProcess: JOURNAL_EVENT_LINKS_OWNER_PROCESS };
 
 /**
- * Keeps a Journal entry's `events` relation equal to the set of events its page links to (issue #2016): every
- * inline link `semprec://items/<id>` whose id is a live (not trashed) item of the database the relation targets
- * (Events) counts; links to other items are plain content. Missing edges are created and edges to events no longer
- * linked are deleted, through the choke point's relation operations as the `journalEventLinks` process, in the
- * caller's transaction. When the two sets are equal nothing is written and nothing is announced.
- *
- * The entry row is locked before its edges are read, so two syncs of one entry compute their differences one after
- * the other. A missing or trashed entry is left unchanged. Item ids come from the caller's tenant scope only:
- * row-level security hides another tenant's items, so a link to one is not live and creates no edge.
+ * Keeps `events` equal to the live Events the page links to (`semprec://items/<id>`); other links are plain content.
+ * Nothing is written when the sets already match. The entry row is locked before its edges are read, so two syncs
+ * of one entry serialize. RLS hides other tenants' items, so a link to one creates no edge.
  */
 export async function syncJournalEventLinks(
   client: PoolClient,

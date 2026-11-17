@@ -21,14 +21,7 @@ const MANIFEST_PATHS = [
   manifestPath("inbox/inboxModuleManifest.js"),
 ];
 
-/**
- * Proves the acceptance criterion "deactivation removes all projected participation while
- * preserving stored data" (module-contract issue #115) against real, already-seeded rows —
- * not just in-memory fixtures (that part is `moduleRegistryLoadAll.test.ts` and
- * `module-registry`'s own unit tests). Deactivating a module is purely a registry-projection
- * concern (`ActiveModuleIdsSource`, evaluated fresh on every call) — it never touches storage,
- * so the Books/Movies rows `seedSystem` created stay exactly as they were.
- */
+/** Deactivation is a registry projection only; the rows `seedSystem` created stay untouched. */
 describe("module deactivation preserves stored data (module-contract issue #115)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();

@@ -26,7 +26,6 @@ let runtime: Pool;
 let storageRoot: string;
 let storage: LocalFsBlobStorageWriter;
 
-/** Runs `fn` in one transaction of `tenantId`, on the runtime role row-level security applies to. */
 function inTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
   return runInTenant(tenantId, () => withTransaction(runtime, fn));
 }
@@ -58,11 +57,9 @@ async function seededIds(tenantId: string): Promise<SeededIds> {
   });
 }
 
-/** One tenant's mail fixture, every row written through the writers production uses. */
 async function mailFixture(tenantId: string) {
   const ids = await seededIds(tenantId);
 
-  /** A Mailboxes item; `syncStatus` is written the way the sync job writes it. */
   const mailbox = (name: string, syncStatus?: "ok" | "needsReauthorization"): Promise<string> =>
     inTenant(tenantId, async (client) => {
       const item = await createItemWithClient(client, {
@@ -79,7 +76,6 @@ async function mailFixture(tenantId: string) {
       return item.id;
     });
 
-  /** A folder of `mailboxId`, through folder discovery. */
   const folder = (mailboxId: string, specialPurpose: string): Promise<string> =>
     inTenant(tenantId, (client) =>
       ensureFolderItem(client, {
@@ -93,7 +89,6 @@ async function mailFixture(tenantId: string) {
       }),
     );
 
-  /** One message through the ingest writer. `references` joins it to an earlier message's thread. */
   const message = (input: {
     mailboxId: string;
     folderId: string;
@@ -141,7 +136,6 @@ const summaryBody = z
   })
   .strict();
 
-/** `GET /api/mail/summary` as `tenantId`, the way the adapter calls it: inside the session's tenant. */
 async function summary(tenantId: string): Promise<z.infer<typeof summaryBody>> {
   const answer = await runInTenant(tenantId, () => createMailSummaryRouteHandler(runtime)());
   expect(answer.status).toBe(200);
@@ -153,7 +147,6 @@ const listPage = z.object({
   nextCursor: z.string().nullable(),
 });
 
-/** Every thread `GET /api/mail/threads?<query>` returns, following its cursor page by page. */
 async function listedThreadIds(tenantId: string, query: string): Promise<string[]> {
   const handler = createMailThreadListRouteHandler(runtime);
   const ids: string[] = [];
@@ -168,9 +161,9 @@ async function listedThreadIds(tenantId: string, query: string): Promise<string[
 }
 
 /**
- * The scenario of the count tests: one mailbox whose own address is `OWN_ADDRESS`, and threads that
- * differ in exactly the properties the inbox, unread and flagged predicates read. Three threads are
- * unread in the inbox and two are flagged outside Junk.
+ * The count tests' scenario: one mailbox whose own address is `OWN_ADDRESS`, and threads that differ in
+ * exactly the properties the inbox, unread and flagged predicates read. Three threads are unread in the
+ * inbox and two are flagged outside Junk.
  */
 async function seedThreads(tenantId: string, prefix: string): Promise<string> {
   const fixture = await mailFixture(tenantId);

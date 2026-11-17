@@ -5,12 +5,8 @@ import { getTraceContext } from "./traceContext.js";
 export type { Logger } from "pino";
 
 /**
- * Issue #166's redaction contract: identifiers may be logged, but property
- * values, mail bodies, tool arguments, and decrypted credentials may not.
- * These paths cover every shape a secret has been seen at a log call site —
- * an inbound `Authorization` header, a stored password/token/credential
- * field, however deep it sits in a logged object — using pino's wildcard
- * (`*`) path segments so a new nesting level doesn't silently bypass them.
+ * Identifiers may be logged; property values, mail bodies, tool arguments and decrypted credentials may not. Wildcard
+ * (`*`) path segments catch secrets at any nesting level, so a new level cannot bypass redaction.
  */
 const SECRET_FIELD_NAMES = [
   "authorization",
@@ -25,9 +21,8 @@ const SECRET_FIELD_NAMES = [
 ];
 const AUTHORIZATION_HEADER_NAMES = ["authorization", "Authorization"];
 
-// `fast-redact`, which pino uses, supports a wildcard segment but not an unbounded
-// recursive wildcard. Keep the supported nesting deliberately bounded and explicit:
-// application log payloads have at most eight object wrappers before sensitive data.
+// `fast-redact` supports a wildcard segment but no recursive wildcard, so the nesting is bounded explicitly: log
+// payloads have at most eight object wrappers before sensitive data.
 const MAX_REDACTION_DEPTH = 8;
 const REDACT_PATHS = Array.from({ length: MAX_REDACTION_DEPTH + 1 }, (_, depth) => {
   const prefix = Array.from({ length: depth }, () => "*");
@@ -61,29 +56,22 @@ function serializeError(value: unknown): unknown {
     return typeof value === "string" ? redactErrorText(value) : value;
   }
 
-  // pino's standard serializer retains `Error.cause` objects. Redact every string
-  // in that serialized tree, not merely the top-level message and stack.
+  // pino's serializer keeps `Error.cause`; redact every string in that tree, not just message and stack.
   return redactSerializedError(pino.stdSerializers.err(value));
 }
 
 /**
- * Log-level semantics for every Semprec process:
+ * Log levels for every Semprec process:
  *
- * - `info` records normal lifecycle milestones and completed work.
- * - `warn` records an unexpected but recoverable degradation or retry.
- * - `error` records failed work that the current request or job cannot complete.
- * - `fatal` records a process-terminating failure: the shared fatal handlers
- *   below, and a service's `registerShutdownSignals` when its `shutdown()`
- *   rejects immediately before `process.exit(1)`
- *   (`docs/adr/2026-10-18-fatal-shutdown-rejection-and-mail-failure-logs.md`).
- * - `debug` and `trace` are opt-in diagnostics, enabled only through
- *   `LOG_LEVEL`; they must follow the same identity-not-content rule.
+ * - `info`: lifecycle milestones and completed work.
+ * - `warn`: unexpected but recoverable degradation or retry.
+ * - `error`: failed work the current request or job cannot complete.
+ * - `fatal`: process-terminating failure (the fatal handlers below, and a rejected `shutdown()` right before
+ *   `process.exit(1)`).
+ * - `debug` / `trace`: opt-in via `LOG_LEVEL`, under the same identity-not-content rule.
  */
 
-/**
- * Read fresh on every `createLogger` call (never cached at module scope) so a
- * changed `LOG_LEVEL` takes effect on the next process restart without a rebuild.
- */
+/** Read on every `createLogger` call, never cached at module scope. */
 function resolveLogLevel(): string {
   const raw = process.env.LOG_LEVEL;
   if (!raw) return DEFAULT_LEVEL;
@@ -91,12 +79,8 @@ function resolveLogLevel(): string {
 }
 
 /**
- * Builds a named root logger for one process type (`"semprec-api"`,
- * `"agents"`, `"transcribe"`, `"semprec-ai-gateway"`, `"mail-sync"`, ...).
- * Emits newline-delimited JSON to stdout only — no file, no aggregator
- * transport — with every record carrying the process name under `name` so
- * multiplexed stdout (journald, `docker logs`) can still be told apart.
- * `debug` is opt-in only, via `LOG_LEVEL`; everything else defaults to `info`.
+ * Newline-delimited JSON to stdout only, every record carrying the process name under `name` so multiplexed stdout can
+ * be told apart. Defaults to `info`; `LOG_LEVEL` overrides.
  */
 export function createLogger(name: string): Logger {
   return pino({
@@ -104,13 +88,9 @@ export function createLogger(name: string): Logger {
     level: resolveLogLevel(),
     redact: { paths: REDACT_PATHS, censor: "[REDACTED]" },
     serializers: { err: serializeError },
-    // Issue #167: every record picks up the active trace context (traceId and whichever of
-    // agentRunId/jobName/jobId/mailboxId are bound) without every call site passing it explicitly.
-    // Every record written inside a tenant scope also carries `tenantId`, read from the tenant scope
-    // (`currentTenantScope()` in tenantScope.ts) — the single source of truth for the tenant, so it is
-    // deliberately not a trace binding. System scope and no scope add no tenant field.
-    // A field a call site also passes explicitly (e.g. gateway.ts's own `agentRunId` or `tenantId`) wins,
-    // since pino merges the log object over the mixin result.
+    // Every record picks up the active trace context and, inside a tenant scope, `tenantId` from `currentTenantScope()`
+    // (the single source of truth, deliberately not a trace binding). A field the call site passes explicitly wins:
+    // pino merges the log object over the mixin result.
     mixin: () => {
       const trace = getTraceContext() ?? {};
       const scope = currentTenantScope();
@@ -120,11 +100,8 @@ export function createLogger(name: string): Logger {
 }
 
 /**
- * Installs the shared fatal-failure path for one process: an uncaught
- * exception or unhandled promise rejection logs exactly one fatal record
- * through the given root logger, then exits non-zero. Call once, from the
- * process's own entrypoint (`serve.ts`) — never from a module a test file
- * also imports, or a test's own uncaught rejection would kill the test runner.
+ * An uncaught exception or unhandled rejection logs one fatal record, then exits non-zero. Call once from the process
+ * entrypoint, never from a module tests import, or a test's own rejection would kill the runner.
  */
 export function installFatalHandlers(logger: Logger): void {
   process.once("uncaughtException", (err) => {

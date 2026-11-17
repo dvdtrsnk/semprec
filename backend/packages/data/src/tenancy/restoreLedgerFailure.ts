@@ -55,12 +55,10 @@ function inspectedFailures(root: unknown): Failure[] {
 }
 
 /**
- * Maps a failure of the restore ledger validator to one fixed line that carries no tenant id, SQL
- * text or error message, so the line can be printed into a journal that is not tenant scoped.
- * The validator's own verdict decides first: a mismatch can only be raised after the query ran, so
- * a connection error beside it in an aggregate is incidental (a pool cleanup, an idle client). A
- * missing privilege comes next and an unreachable or refusing database last. Anything else,
- * including an invalid ledger file, gets the generic line.
+ * Maps a validator failure to a fixed line with no tenant id, SQL or message, safe for a journal that is
+ * not tenant-scoped. The validator's verdict wins (a mismatch is raised only after the query ran, so a
+ * connection error beside it is incidental), then a missing privilege, then an unreachable database;
+ * anything else gets the generic line.
  */
 export function restoreLedgerFailureMessage(error: unknown): string {
   const failures = inspectedFailures(error);

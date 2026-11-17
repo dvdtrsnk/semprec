@@ -14,19 +14,19 @@ export interface OutgoingMailMessage {
   subject: string;
   text?: string;
   html?: string;
-  /** Set as the actual outgoing Message-ID header — must match what mail/send.ts stores in mail_message_meta so the later synced copy dedups onto the same item. */
+  /** Must match what send.ts stores in `mail_message_meta`, so the synced copy dedups onto the same item. */
   messageId: string;
   inReplyTo?: string;
   references?: string[];
 }
 
-/** The SMTP envelope of a raw message: the MAIL FROM address and every RCPT TO address, bcc included. */
+/** bcc included in the RCPT TO addresses. */
 export interface RawMailEnvelope {
   from: string;
   recipients: string[];
 }
 
-/** A complete RFC 5322 message, submitted byte for byte with its envelope (mail/outgoingMime.ts builds it). */
+/** Submitted byte for byte with its envelope. */
 export interface RawMailMessage {
   raw: Buffer;
   envelope: RawMailEnvelope;
@@ -40,13 +40,9 @@ export interface MailSmtpClient {
 const DEFAULT_SEND_TIMEOUT_MS = 30_000;
 
 /**
- * Real `MailSmtpClient` (mail/mailTransport.ts) backed by `nodemailer`, over a transporter from
- * `createSmtpTransporter` (mail/mailServerConnections.ts), so every connection goes through the outbound
- * address policy. Building the transporter is a composition root's job, not this class's. `timeoutMs` is
- * enforced here regardless of whatever socket/connection timeout the transporter itself may or may not
- * have configured, so an unresponsive SMTP server can't hold a send open indefinitely. A timeout rejects
- * with `MailServerUnreachableError`, and a message the server accepts for only some recipients rejects
- * with `MailRecipientRejectedError`.
+ * Uses a policy-checked transporter built by the composition root. `timeoutMs` is enforced here whatever
+ * the transporter's own timeouts, so an unresponsive server cannot hold a send open; a timeout rejects
+ * with `MailServerUnreachableError`, a partial acceptance with `MailRecipientRejectedError`.
  */
 export class NodemailerSmtpClient implements MailSmtpClient {
   constructor(
@@ -80,7 +76,6 @@ export class NodemailerSmtpClient implements MailSmtpClient {
     );
   }
 
-  /** Races one send against `timeoutMs`, then reports a refused recipient as an error. */
   private async deliver(send: Promise<{ refusedRecipientCount: number }>): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     try {

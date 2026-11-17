@@ -18,37 +18,25 @@ export interface GmailPubSubNotification {
 }
 
 /**
- * What a real Gmail Pub/Sub transport (a `users.watch()`-backed registrar plus a Cloud Pub/Sub
- * pull-subscription client) must provide (issue #197). Deliberately narrower than
- * `GmailMailClient` (gmailReconcile.ts): this module never calls `history.list` or ingests a
- * message itself — the only thing a notification is allowed to do is ask the existing
- * idempotent `enqueueMailAccountSync` job path to reconcile, the same "no direct Email mutation
- * in callback" discipline issue #196 established for IMAP IDLE.
+ * Gmail watch + Pub/Sub pull transport. A notification never mutates mail directly; it only
+ * enqueues the idempotent `enqueueMailAccountSync` reconcile.
  */
 export interface GmailWatchTransport {
-  /**
-   * Calls Gmail's `users.watch` for this account against the already-provisioned topic (GCP
-   * topic/subscription creation is explicitly out of scope for this issue) and returns its
-   * `historyId`/`expiration`. Safe to call repeatedly — Google's own semantics: a fresh call
-   * simply resets the (up to) seven-day expiry clock, it does not create a second watch.
-   */
+  /** Idempotent: a repeat `users.watch` call resets the up-to-seven-day expiry, not a second watch. */
   registerWatch(mailboxItemId: string, credential: string): Promise<GmailWatchRegistration>;
   /**
-   * One pull request against the deployment's shared Cloud Pub/Sub subscription — an empty array is
-   * an ordinary empty poll, not an error. The subscription belongs to the deployment, not to a
-   * mailbox: it carries every watched account's notifications, with `emailAddress` in each payload
-   * naming the account, and the one `createGmailPubSubDispatcher` routes each to its mailboxes.
+   * One pull from the deployment-wide subscription carrying every watched account's notifications;
+   * an empty array is an ordinary empty poll.
    */
   pull(): Promise<GmailPubSubNotification[]>;
-  /** Acknowledges exactly the notifications the dispatcher has durably handed off to `enqueueMailAccountSync` for every matching mailbox — never one still in flight or partly handed off. */
+  /** Only ids durably handed off to every matching mailbox are acknowledged. */
   acknowledge(ackIds: string[]): Promise<void>;
 }
 
-/** Renewed daily (issue #197's Task), well inside Google's up-to-seven-day watch validity — not tied to the actual remaining validity so a missed renewal never has to race the expiry itself. */
+/** Daily, well inside the seven-day watch validity, so a missed renewal never races the expiry. */
 const DEFAULT_RENEWAL_INTERVAL_MS = 24 * 60 * 60 * 1000;
-/** How long an empty pull backs off before trying again — bounded so this loop never hot-spins against an idle subscription. */
 const DEFAULT_PULL_EMPTY_BACKOFF_MS = 5_000;
-/** Bounded reconnect for a failing pull/watch call: capped exponential backoff, not a tight retry loop and not a permanent give-up — mirrors imapIdleLifecycle.ts's `reconnectBackoffDelayMs`. */
+/** Capped exponential backoff for a failing pull. */
 const DEFAULT_PULL_ERROR_BASE_DELAY_MS = 5_000;
 const DEFAULT_PULL_ERROR_MAX_DELAY_MS = 5 * 60 * 1000;
 
@@ -61,12 +49,11 @@ function sleep(ms: number): Promise<void> {
 }
 
 export interface CreateGmailWatchLifecycleFactoryOptions {
-  /** Decrypted per-account Gmail OAuth credential, fetched fresh on every `start()` — never cached across a stop/restart, same discipline as imapIdleLifecycle.ts's `getCredential`. */
+  /** Fetched fresh on every `start()`, never cached across restarts. */
   getCredential: (mailboxItemId: string) => Promise<string>;
   /**
-   * The address of the Google account the credential authenticates — the address Gmail puts in
-   * each notification for this watch, and what the dispatcher routes on. Never `Mailboxes.addresses`:
-   * that property is user-editable, so routing on it would let one tenant claim another's pushes.
+   * The authenticated Google account's address, which the dispatcher routes on. Never
+   * `Mailboxes.addresses`: it is user-editable, so one tenant could claim another's pushes.
    */
   getAccountEmailAddress: (mailboxItemId: string) => Promise<string>;
   renewalIntervalMs?: number;
@@ -74,17 +61,9 @@ export interface CreateGmailWatchLifecycleFactoryOptions {
 }
 
 /**
- * Builds the Gmail Pub/Sub `MailAccountLifecycle` for one account (issue #197) — the Gmail-mode
- * analogue of `createBoundedImapIdleLifecycleFactory` (issue #196). `start()` enqueues an immediate
- * reconcile and hosts one long-lived renewal loop that registers/renews the `users.watch`
- * subscription daily and persists its expiry, the watched account's normalized address
- * (`gmail_watch_email_address`, the routing key) and — only when the account had no cursor yet —
- * its history cursor via `recordGmailWatchRegistration`. Renewal survives a restart by
- * construction: a fresh `start()` always re-registers immediately rather than trusting an
- * in-memory timer that a restart would lose.
- *
- * Pulling the shared subscription is not done here: `createGmailPubSubDispatcher` runs one puller
- * for the whole deployment and routes each notification to every mailbox watching its address.
+ * `start()` enqueues an immediate reconcile and runs a renewal loop that re-registers the watch
+ * right away and then daily, persisting expiry and routing address. Pulling is done by the single
+ * `createGmailPubSubDispatcher`, not here.
  */
 export function createGmailWatchLifecycleFactory(
   pool: Pool,
@@ -96,8 +75,6 @@ export function createGmailWatchLifecycleFactory(
   return (account: MailLiveSyncAccount): MailAccountLifecycle => {
     let stopped = false;
     let stopResolve: (value: "stop") => void = () => {};
-    // A single promise shared by every in-flight wait (rather than one per call) so `stop()`
-    // only ever needs to resolve one thing, regardless of how many loops happen to be waiting.
     let stopPromise = new Promise<"stop">((resolve) => {
       stopResolve = resolve;
     });
@@ -130,9 +107,6 @@ export function createGmailWatchLifecycleFactory(
         stopPromise = new Promise((resolve) => {
           stopResolve = resolve;
         });
-        // A newly (re)activated account gets an immediate reconcile rather than waiting on its
-        // first notification or the periodic sweep — same rationale as the noop factory
-        // (mailLiveSyncRoot.ts) and the bounded IMAP IDLE lifecycle (imapIdleLifecycle.ts).
         await enqueueMailAccountSync(pool, account.mailboxItemId);
 
         const [credential, accountEmailAddress] = await Promise.all([
@@ -154,7 +128,7 @@ export interface CreateGmailPubSubDispatcherOptions {
   pullEmptyBackoffMs?: number;
   pullErrorBaseDelayMs?: number;
   pullErrorMaxDelayMs?: number;
-  /** `target` is `null` for a failure that belongs to no one mailbox (the pull, the routing lookup, the acknowledge). */
+  /** `target` is `null` for failures not tied to one mailbox. */
   onError?: (
     target: GmailRouteTarget | null,
     phase: "pull" | "route" | "enqueue" | "acknowledge",
@@ -168,19 +142,11 @@ export interface GmailPubSubDispatcher {
 }
 
 /**
- * The one process-wide puller of the deployment's shared Gmail Pub/Sub subscription
- * (docs/adr/2026-10-07-cross-tenant-router-functions.md). `start()` launches the loop in system
- * scope (`runAsSystem`, so it must be called with no scope or from a system scope) and returns;
- * `stop()` ends the wait the loop is in and awaits it.
- *
- * For each notification the address goes through `routeGmailAddress` (its own transaction) to every
- * `(tenant, mailbox)` watching it, and each target's `enqueueMailAccountSync` runs inside that
- * target's tenant, so the job envelope carries it. The enqueue is the durable hand-off: a
- * notification is acknowledged only once every target was handed off, so a failed routing lookup or
- * enqueue leaves it for Pub/Sub to redeliver (the job's own `jobKey` dedup makes the repeat for
- * the targets that already succeeded harmless). A notification no mailbox watches is acknowledged
- * too — redelivering it forever helps no one. All ack ids of one pull go out in one `acknowledge`
- * call. A failing pull backs off with a capped exponential delay that resets after a success.
+ * The one process-wide puller of the shared subscription, run in system scope (see
+ * docs/architecture/tenancy-and-security.md#cross-tenant-router-functions). Each notification is
+ * routed to every watching `(tenant, mailbox)` and enqueued inside that tenant. It is acknowledged
+ * only after every target was handed off, so failures are redelivered (jobKey dedup makes repeats
+ * harmless); unwatched notifications are acknowledged too.
  */
 export function createGmailPubSubDispatcher(
   pool: Pool,
@@ -226,8 +192,7 @@ export function createGmailPubSubDispatcher(
           }
         });
       } catch (err) {
-        // An enqueue failure was already reported inside the target's tenant scope; anything else
-        // (the tenant scope itself failing to open) was not. The other targets still run.
+        // Report only failures not already reported inside the tenant scope; other targets still run.
         if (!reported) options.onError?.(target, "enqueue", err);
         handedOff = false;
       }

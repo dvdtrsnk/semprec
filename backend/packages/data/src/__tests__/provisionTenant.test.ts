@@ -14,14 +14,13 @@ let dataPool: Pool;
 
 const B_MODULES = [SYSTEM_SETTINGS_MODULE_ID, "projects", "tasks", "emails", "mcpServers", "inbox"];
 
-async function counts(tenantId: string): Promise<{ databases: number; items: number; migrations: number }> {
-  const { rows } = await adminPool.query<{ databases: number; items: number; migrations: number }>(
+async function counts(tenantId: string): Promise<{ databases: number; items: number }> {
+  const { rows } = await adminPool.query<{ databases: number; items: number }>(
     `SELECT (SELECT count(*)::int FROM databases WHERE tenant_id = $1) AS databases,
-            (SELECT count(*)::int FROM items WHERE tenant_id = $1) AS items,
-            (SELECT count(*)::int FROM module_migrations WHERE tenant_id = $1) AS migrations`,
+            (SELECT count(*)::int FROM items WHERE tenant_id = $1) AS items`,
     [tenantId],
   );
-  return rows[0] ?? { databases: -1, items: -1, migrations: -1 };
+  return rows[0] ?? { databases: -1, items: -1 };
 }
 
 async function statusOf(tenantId: string): Promise<{ status: string; changedAt: Date }> {
@@ -110,23 +109,6 @@ describe("provisionTenant (issue #1005)", () => {
       [b, SYSTEM_SETTINGS_MODULE_ID],
     );
     expect(rows[0]?.n).toBe(1);
-  });
-
-  it("records the tenant's module_migrations rows visible only in its own scope", async () => {
-    const zero = getTenantZeroId();
-    const b = await createTestTenant(adminPool, { status: "provisioning" });
-    await provisionTenant(dataPool, b);
-
-    expect((await counts(b)).migrations).toBeGreaterThan(0);
-    expect((await counts(zero)).migrations).toBe(0);
-    const visibleToZero = await runInTenant(zero, () =>
-      dataPool.query<{ n: number }>("SELECT count(*)::int AS n FROM module_migrations"),
-    );
-    expect(visibleToZero.rows[0]?.n).toBe(0);
-    const visibleToB = await runInTenant(b, () =>
-      dataPool.query<{ n: number }>("SELECT count(*)::int AS n FROM module_migrations"),
-    );
-    expect(visibleToB.rows[0]?.n).toBe((await counts(b)).migrations);
   });
 
   it("seeds a suspended tenant and leaves it suspended", async () => {

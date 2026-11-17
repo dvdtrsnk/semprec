@@ -23,10 +23,8 @@ let pool: Pool;
 let runtimePool: Pool;
 
 /**
- * Creates one tenant and a user in it through the admin pool. Each test then seeds that tenant's
- * own rows through the `semprec_data` runtime pool inside `runInTenant`, and writes the global
- * tables (`process_heartbeats`, `observability_checks`) and the queue through the admin pool;
- * `enqueueJob` stamps the job's tenant from the scope it runs in.
+ * One tenant and user via the admin pool. Tenant rows are seeded through the `semprec_data` pool inside
+ * `runInTenant`; global tables and the queue through the admin pool.
  */
 async function seedTenant(): Promise<{ tenantId: string; userId: string }> {
   const tenantId = await createTestTenant(pool);
@@ -34,10 +32,9 @@ async function seedTenant(): Promise<{ tenantId: string; userId: string }> {
   return { tenantId, userId: user.id };
 }
 
-/** One errored `item_automation` row on a fresh Tasks item in `tenantId`; returns the item's database id. */
 async function seedAutomationError(tenantId: string): Promise<string | undefined> {
   return runInTenant(tenantId, async () => {
-    // A Tasks item needs the seeded Tasks catalog: its pre-write transform stores the derived `time` key.
+    // The Tasks pre-write transform needs the seeded Tasks catalog.
     await seedSystem(runtimePool);
     const itemId = await createTestModuleItem(runtimePool, TASKS_MODULE_ID);
     // Raw insert: no production writer sets an `item_automation` error on a fixture item.
@@ -192,7 +189,7 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
     const databaseId = await seedAutomationError(a.tenantId);
     const trashedDatabaseId = await seedAutomationError(a.tenantId);
     if (!databaseId || databaseId !== trashedDatabaseId) throw new Error("fixtures must share a database");
-    // Raw update: soft-deleting through the choke point is not what this query is being tested for.
+    // Raw update: soft-deleting through the choke point is not what this test covers.
     await pool.query(
       `UPDATE items SET deleted_at = now()
        WHERE id = (SELECT item_id FROM item_automation WHERE tenant_id = $1 ORDER BY item_id LIMIT 1)`,
@@ -220,9 +217,8 @@ describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
       [a.tenantId],
     );
 
-    // The admin pool is a superuser, so RLS filters nothing here: only the queries' own
-    // `tenant_id = app_current_tenant()` predicates keep A's rows out of B's report. Processes and
-    // mailboxes rely on RLS alone and are not asserted.
+    // The admin pool bypasses RLS, so only the queries' own `tenant_id = app_current_tenant()` predicates keep A's
+    // rows out of B's report. Processes and mailboxes rely on RLS alone and are not asserted.
     const reportB = await withTenantTransaction(pool, b.tenantId, (client) => getSystemHealthReport(client));
 
     expect(reportB.itemAutomationErrorsByDatabase).toEqual([]);

@@ -5,6 +5,7 @@ import { NotFoundError } from "../errors.js";
 import { defaultSyncModeForProvider, MAIL_SYNC_FAILURE_KINDS, SYNC_MODES } from "./mailAccountSyncStateStore.js";
 import { imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
 import { listAutonomousSendProjects } from "./mailAutonomousSendRouteHandlers.js";
+import type { RouteParams } from "../customRoute.js";
 
 const mailboxRow = z.object({
   id: z.uuid(),
@@ -27,8 +28,7 @@ async function readMailboxes(client: PoolClient, id: string | null) {
       ORDER BY i.id`,
     [id],
   );
-  // Issue #1635: the permission is per project, not per mailbox, so every mailbox shows the length of
-  // the same list `GET /api/mail/autonomous-send-projects` returns.
+  // The permission is per project, not per mailbox, so every mailbox shows the same count.
   const autonomousSendProjectCount = (await listAutonomousSendProjects(client)).length;
   return result.rows.map((raw) => {
     const row = mailboxRow.parse(raw);
@@ -75,7 +75,7 @@ export function createMailboxListRouteHandler(pool: Pool) {
 }
 
 export function createMailboxDetailRouteHandler(pool: Pool) {
-  return async (ctx: { params: Record<string, string> }) => {
+  return async (ctx: RouteParams) => {
     const id = z.uuid().safeParse(ctx.params.id);
     const rows = id.success ? await withTransaction(pool, (client) => readMailboxes(client, id.data)) : [];
     if (!rows[0]) throw new NotFoundError("Mailbox not found");

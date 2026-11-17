@@ -88,7 +88,6 @@ function inTenant<T>(t: MailTenant, fn: () => Promise<T>): Promise<T> {
   return runInTenant(t.tenantId, fn);
 }
 
-/** A tenant with a mailbox that has Inbox, Drafts and Sent folders, and the mail project that owns the mail databases. */
 async function seededTenant(locale: string): Promise<MailTenant> {
   const tenantId = await createTestTenant(admin);
   const user = await createUser(admin, {
@@ -138,7 +137,6 @@ async function seededTenant(locale: string): Promise<MailTenant> {
   });
 }
 
-/** Ingests a received message into the Inbox of the tenant's mailbox as the sync worker does; answers its thread. */
 async function receive(t: MailTenant, subject: string): Promise<{ emailId: string; threadId: string }> {
   const emailId = await inTenant(t, async () => {
     const cp = createChokePoint(runtime);
@@ -185,7 +183,6 @@ async function receive(t: MailTenant, subject: string): Promise<{ emailId: strin
   return { emailId, threadId };
 }
 
-/** A draft written as the user through the draft operation, as the compose window does. */
 async function userDraft(t: MailTenant, overrides: { to?: (typeof PETR)[] } = {}): Promise<EmailDraftView> {
   return inTenant(t, () =>
     withTransaction(runtime, (client) =>
@@ -231,7 +228,6 @@ interface DraftTrace {
   claims: number;
 }
 
-/** The `mail_drafts` row of a draft and whether a send claimed it; the admin pool only inspects what the tools wrote. */
 async function traceOf(draftId: string): Promise<DraftTrace> {
   const { rows } = await admin.query<DraftTrace>(
     `SELECT d.created_by, d.last_edited_by, d.agent_run_id, d.sent_at,
@@ -295,8 +291,8 @@ describe("the mail tools of a human /mcp session and of a run credential (issue 
         "mail.draft.create",
         "mail.draft.update",
         "mail.draft.send",
-        // The calendar read tool (issue gh-1952) and the calendar write tools (issue gh-1957). The write tools are gated
-        // for a run, so a session gets them only through their `mcp` declaration.
+        // The calendar read and write tools. The write tools are gated for a run, so a session gets them only through their
+        // `mcp` declaration.
         "calendar.timeline",
         "calendar.respondToInvitation",
         "calendar.placeTaskInEvent",

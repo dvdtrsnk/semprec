@@ -23,7 +23,6 @@ async function propertyIdFor(databaseId: string, key: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Issue #1470: project, company and people relations on Transcripts, on a fresh install. */
 describe("Transcript project, company and people relations (issue #1470)", () => {
   let chokePoint: ChokePoint;
   let ids: Record<"transcripts" | "projects" | "companies" | "people" | "events", string>;
@@ -46,7 +45,7 @@ describe("Transcript project, company and people relations (issue #1470)", () =>
     await pool?.end();
   });
 
-  /** An empty item; an Event gets the date its create requires (issue #1663). */
+  /** An Event gets the date its create requires. */
   async function createItem(databaseId: string) {
     return chokePoint.createItem({ databaseId, properties: databaseId === ids.events ? { date: "2026-10-16" } : {} });
   }

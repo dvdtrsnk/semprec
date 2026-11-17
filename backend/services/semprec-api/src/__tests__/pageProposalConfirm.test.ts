@@ -38,10 +38,8 @@ async function databases(): Promise<Databases> {
 }
 
 /**
- * A page-content card for `target` through the production path: an active `pageContent` Inbox type, an Inbox item of
- * that type and one tick whose computation answers the v2 envelope. The shared owner fixture of the data package
- * (`createMarkdownPageContentProposal`) is not part of that package's exports, so this test builds the same card with
- * the exported pieces.
+ * Through the production path: an active `pageContent` Inbox type, an item of it and one tick answering the v2
+ * envelope. The data package's `createMarkdownPageContentProposal` is not exported, so this builds the same card.
  */
 async function createCard(ids: Databases, target: string, properties: Record<string, unknown>): Promise<string> {
   return runInTenant(harness.tenantA, async () => {
@@ -111,7 +109,6 @@ async function cardStatus(cardId: string): Promise<string | undefined> {
   return rows[0]?.status;
 }
 
-/** The stored properties of a card, shown when a precondition about it fails. */
 async function cardProperties(cardId: string): Promise<string> {
   const { rows } = await runInTenant(harness.tenantA, () =>
     harness.runtime.query<{ properties: unknown }>(`SELECT properties FROM items WHERE id = $1`, [cardId]),
@@ -146,7 +143,7 @@ describe("POST /api/proposals/:id/confirm for page content (issue #1681)", () =>
       markdown: "- first\n- second",
       placement: { afterHeading: headingId },
     });
-    // Remove the heading the card names, as a client editing the page meanwhile would.
+    // As a client editing the page meanwhile would.
     const docId = await harness.docIdOf(harness.tenantA, host);
     await runInTenant(harness.tenantA, () =>
       mutateYDoc(harness.runtime, docId, "user", (doc) => {

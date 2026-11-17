@@ -30,16 +30,13 @@ async function readHead(storage: BlobStorageWriter, storageKey: string, byteSize
 }
 
 export interface IngestUploadedFileInput {
-  /** The seeded system Files database's id (`getDatabaseByModuleId(client, FILES_MODULE_ID)`). */
   filesDatabaseId: string;
-  /** From the upload's `X-Filename` header — becomes the Files item's `name` (title) property. */
   filename: string;
-  /** From the upload's `Content-Type` header — accepted but ignored: the stored mime and Files `type` come from the bytes. */
+  /** Ignored: the stored mime and Files `type` come from the bytes. */
   contentType: string;
   source: Readable;
-  /** Namespacing prefix for the storage key, e.g. `"files"` — keeps this upload path's keys apart from mail attachments'. */
   storageKeyPrefix: string;
-  /** Hard cap enforced while streaming — see `BlobStorageWriter.writeStream`'s `maxBytes`. */
+  /** Enforced while streaming. */
   maxBytes: number;
   storage: BlobStorageWriter;
 }
@@ -47,30 +44,18 @@ export interface IngestUploadedFileInput {
 export interface IngestUploadedFileResult {
   item: ItemRow;
   blob: BlobRow;
-  /** `false` when an identical upload (same content hash) already had a Files item, and this call reused it instead of creating a second one. */
+  /** `false` when an identical upload already had a Files item and it was reused. */
   created: boolean;
 }
 
 /**
- * `POST /api/files`'s (issue #158) upload-to-Files-item pipeline: stream the request body to
- * storage (hashing/counting bytes as they flow, see `BlobStorageWriter.writeStream`), then, in one
- * transaction, dedupe the resulting blob by content hash and either reuse the Files item an
- * earlier identical upload already created for it or create a new one — the same
- * write-then-dedupe-in-a-transaction shape `mail/attachments.ts`'s `ingestAttachments` already
- * uses, minus the relation link (an upload through this route isn't attached to a source item).
+ * `POST /api/files`: streams bytes to storage, then dedupes by content hash and reuses or creates the Files item in
+ * one transaction. The blob is locked before checking for an existing Files item, so a concurrent filing waits and
+ * then sees the committed item.
  *
- * Filing a deduplicated blob locks that blob before checking for an existing Files item, so a
- * concurrent filing waits and then reads the committed item in a fresh statement.
- *
- * `docs/adr/2026-09-10-side-effects-follow-the-commit.md`: writing the bytes has to happen before
- * the transaction (the content hash driving the dedup only exists once they're written), so both
- * ways that leaves storage and rows out of step are handled by ordering the cleanup around the
- * commit rather than by avoiding the early write. If the transaction throws, the bytes just
- * streamed are always garbage — nothing committed references them — so they're deleted after the
- * rollback, from the `catch` below. If a dedup hit means the transaction instead keeps a
- * *different* key's bytes, the ones just streamed are deleted only once that transaction has
- * committed (`runAfterCommit`), because a delete that ran inside the transaction and then failed
- * would abort a transaction whose database work was otherwise fine.
+ * Bytes must be written before the transaction because the hash only exists afterwards. On rollback they are garbage
+ * and deleted from the `catch`; on a dedup hit they are deleted after commit, because a failed delete inside the
+ * transaction would abort otherwise-good database work.
  */
 export async function ingestUploadedFile(
   pool: Pool,
@@ -85,7 +70,7 @@ export async function ingestUploadedFileWithTransaction<T>(
   input: IngestUploadedFileInput,
   afterFile: (client: PoolClient, result: IngestUploadedFileResult) => Promise<T>,
 ): Promise<{ result: IngestUploadedFileResult; value: T }> {
-  // Resolved before streaming, so a missing tenant fails before any byte is written.
+  // Before streaming, so a missing tenant fails before any byte is written.
   const storageKey = await tenantBlobStorageKey(
     pool,
     `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(input.filename)}`,
@@ -98,9 +83,7 @@ export async function ingestUploadedFileWithTransaction<T>(
       maxBytes: input.maxBytes,
     }));
   } catch (err) {
-    // The write already failed (and cleaned up its own partial bytes) — draining whatever the
-    // client still has queued keeps the connection reusable for its next request instead of the
-    // socket having to be torn down mid-body.
+    // The write cleaned up its partial bytes; draining the rest keeps the connection reusable.
     input.source.resume();
     throw err;
   }
@@ -115,10 +98,7 @@ export async function ingestUploadedFileWithTransaction<T>(
         storageKey,
         contentHash,
       });
-      // A content-hash dedup hit means `blob` already existed under a different storageKey — the
-      // bytes just streamed above are an unneeded duplicate on disk, not the ones kept. Deleted
-      // only once this transaction commits: a delete that ran here and then failed would abort a
-      // transaction whose database work was otherwise fine.
+      // Dedup hit: the streamed bytes are a duplicate; delete them only after commit.
       if (blob.storageKey !== storageKey) {
         runAfterCommit(client, () => {
           void input.storage.delete(storageKey).catch((err) => {
@@ -154,8 +134,7 @@ export async function ingestUploadedFileWithTransaction<T>(
       }
     });
   } catch (err) {
-    // A rolled-back transaction kept nothing, so the bytes streamed above are always garbage on
-    // this path.
+    // Nothing committed references these bytes.
     try {
       await input.storage.delete(storageKey);
     } catch (deleteErr) {
@@ -168,51 +147,38 @@ export async function ingestUploadedFileWithTransaction<T>(
   }
 }
 
-/**
- * The mime types a standalone blob may have (issue gh-1963): every Inbox attachment type, plus HEIC, which was
- * accepted before the allowlist existed and which a capture then refuses with its own error. An exception to the
- * unknown-bytes-accepted rule of [[2026-11-04-blob-content-classification-preserves-legacy-metadata]], recorded in
- * [[2026-11-14-a-standalone-blob-upload-accepts-only-the-inbox-attachment-types]].
- */
+/** Every Inbox attachment type plus HEIC, which a capture then refuses with its own error. */
 const BLOB_UPLOAD_MIME_TYPES: ReadonlySet<string> = new Set([...INBOX_ATTACHMENT_MIME_TYPES, "image/heic"]);
 
-/** The mime type of an uploaded blob, decided from its leading bytes: audio first, then documents and images. */
+/** Audio first, then documents and images. */
 function detectBlobMimeType(head: Buffer): string | null {
   return detectAudioMimeType(head) ?? detectFileType(head)?.mimeType ?? null;
 }
 
 export interface IngestUploadedBlobInput {
-  /** The caller's declared content type, already checked to be well formed; the stored mime comes from the bytes and ignores it. */
+  /** Ignored for storage: the stored mime comes from the bytes. */
   mimeType: string;
   source: Readable;
-  /** Hard cap enforced while streaming — see `BlobStorageWriter.writeStream`'s `maxBytes`. */
+  /** Enforced while streaming. */
   maxBytes: number;
   storage: BlobStorageWriter;
 }
 
 export interface IngestUploadedBlobResult {
   blob: BlobRow;
-  /** `false` when identical bytes (same content hash) already had a blob and this call reused it. */
+  /** `false` when identical bytes already had a blob and it was reused. */
   created: boolean;
 }
 
 /**
- * `POST /api/blobs`'s upload pipeline: the streaming, size cap, content-hash dedup and
- * duplicate-bytes cleanup of `ingestUploadedFile`, but no item is created. Bytes go under the
- * `blobs/` key prefix (`<tenantId>/blobs/<uuid>`), which is how `blobsUnreferencedSweep` tells a
- * standalone blob from one a Files item, a library cover or a recording owns.
- *
- * The stored mime type comes from the bytes, never from `input.mimeType`. A dedup hit keeps its first row's
- * `mime_type` and answers it unchanged ([[2026-11-04-blob-content-classification-preserves-legacy-metadata]]); the
- * verified type recorded beside it is what a capture then judges the blob by (`effectiveBlobMimeTypeSql`). Bytes
- * whose type is not one of `BLOB_UPLOAD_MIME_TYPES` (or is not recognised at all) are removed again and refused with
- * `UnsupportedMediaTypeError`, before any row is written.
+ * `POST /api/blobs`: like `ingestUploadedFile` but creates no item. The `blobs/` key prefix is how the unreferenced
+ * sweep tells a standalone blob from an owned one. A dedup hit keeps its first row's `mime_type`; the detected type
+ * recorded beside it is what captures judge by. Unrecognised or disallowed bytes are refused before any row is written.
  */
 export async function ingestUploadedBlob(
   pool: Pool,
   input: IngestUploadedBlobInput,
 ): Promise<IngestUploadedBlobResult> {
-  // Resolved before streaming, so a missing tenant fails before any byte is written.
   const storageKey = await tenantBlobStorageKey(pool, `blobs/${randomUUID()}`);
 
   let byteSize: number;
@@ -243,7 +209,7 @@ export async function ingestUploadedBlob(
       }
       await recordDetectedBlobMimeType(client, blob.id, detectedMimeType);
       if (blob.storageKey === storageKey) return { blob, created: true };
-      // A dedup hit: the bytes just streamed duplicate the existing blob's; drop them once this commits.
+      // Dedup hit: delete the duplicate bytes after commit.
       runAfterCommit(client, () => {
         void input.storage.delete(storageKey).catch((err) => {
           logger.error(

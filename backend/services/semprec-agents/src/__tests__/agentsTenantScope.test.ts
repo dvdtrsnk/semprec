@@ -37,7 +37,6 @@ function inTenantZero<T>(fn: () => Promise<T>): Promise<T> {
   return runInTenant(tenantZero, fn);
 }
 
-/** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

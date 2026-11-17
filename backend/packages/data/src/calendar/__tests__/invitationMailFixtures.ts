@@ -16,10 +16,8 @@ import { createTestTenant } from "../../testSupport/testDb.js";
 import { createInvitationIngestAction } from "../invitationIngestAction.js";
 import { createRespondToInvitationRouteHandler } from "../invitationRouteHandlers.js";
 
-/** The address the messages of `receive` come from unless a test names another one: the organizer of `ics`. */
 export const ORGANIZER_ADDRESS = "olga@example.test";
 
-/** A storage that keeps the bytes it was given, so the ingest reads back what mail ingest wrote. */
 function memoryStorage(): BlobStorageWriter {
   const blobs = new Map<string, Buffer>();
   return {
@@ -52,7 +50,6 @@ export interface IcsOptions {
   dtStart?: string;
   /** `null` leaves DTEND out. */
   dtEnd?: string | null;
-  /** The ORGANIZER line; defaults to the organizer `ORGANIZER_ADDRESS`. */
   organizer?: string;
 }
 
@@ -80,15 +77,12 @@ export function ics(options: IcsOptions = {}): string {
   ].join("\r\n");
 }
 
-/** One seeded tenant with its one English-speaking user and its mail world. */
 export interface MailTenant {
   world: World;
   userId: string;
 }
 
-/** The mail side of an invitation test: messages that arrive, the ingest action that reads them and the user's answer. */
 export interface InvitationMail {
-  /** A seeded tenant with one user, so the invitations it receives are notified. */
   tenant(admin: Pool): Promise<MailTenant>;
   /**
    * A message arrives through the sync writer with one calendar part per text, in that order; `from` is its sender,
@@ -102,9 +96,7 @@ export interface InvitationMail {
     from?: string | null,
     deliveredTo?: string,
   ): Promise<string>;
-  /** Fires the ingest heartbeat action for `emailItemId` the way the heartbeat of the Emails database does. */
   ingest(world: World, emailItemId: string): Promise<void>;
-  /** `receive` followed by `ingest`; returns the Emails item id. */
   deliver(
     world: World,
     messageId: string,
@@ -112,11 +104,9 @@ export interface InvitationMail {
     from?: string | null,
     deliveredTo?: string,
   ): Promise<string>;
-  /** `POST /api/calendar/invitations/:id/respond` as the session user of the tenant. */
   respond(tenant: MailTenant, invitationId: string, response: string): Promise<unknown>;
 }
 
-/** The mail side of an invitation test, over `runtime`, a pool of the runtime role, and a storage of its own. */
 export function createInvitationMail(runtime: Pool): InvitationMail {
   const storage = memoryStorage();
   const mail: InvitationMail = {

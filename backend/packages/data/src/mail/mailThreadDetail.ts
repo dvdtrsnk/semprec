@@ -34,13 +34,10 @@ const messageRow = z.object({
   ),
 });
 
-/** What an attachment that has no Files item shows as its project and links (issue gh-1922). */
+/** What an attachment that has no Files item shows as its project and links. */
 const NO_ATTACHMENT_PROJECT: MailAttachmentProjects = { project: null, links: {} };
 
-/**
- * A normalized envelope address list: entries that are objects with a string `address`, in their
- * stored order, `name` defaulting to "". `field` is one of the fixed envelope keys below, never input.
- */
+/** `field` is one of the fixed envelope keys below, never input. */
 function addressList(field: "to" | "cc" | "replyTo"): string {
   return `COALESCE((SELECT jsonb_agg(jsonb_build_object('name', COALESCE(e.value->>'name', ''), 'address', e.value->>'address') ORDER BY e.ordinality)
     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.envelope->'${field}') = 'array' THEN d.envelope->'${field}' ELSE '[]'::jsonb END)
@@ -49,12 +46,9 @@ function addressList(field: "to" | "cc" | "replyTo"): string {
 }
 
 /**
- * Every live Emails copy of the thread, in any folder or mailbox (Drafts included), one per
- * `message_id`. Among the copies of one message the same one the thread list counts is kept (latest
- * activity, then highest item id). A copy's `folderPurpose` is the special purpose of its folders in
- * the order drafts, sent, inbox, archive, junk, trash, all, none (a Gmail message has several labels),
- * `null` without a folder. Attachments are the copy's `mail_attachments` rows, each paired with the
- * live Files item the Emails `attachments` edge links that has the same blob and file name.
+ * Every live Emails copy of the thread (Drafts included), one per `message_id`, keeping the copy the
+ * thread list counts (latest activity, then highest item id). `folderPurpose` picks one purpose in the
+ * order drafts, sent, inbox, archive, junk, trash, all, none (a Gmail message has several labels).
  */
 const MESSAGES_SQL = `
 WITH schema_ids AS (
@@ -119,10 +113,7 @@ LEFT JOIN LATERAL (
 ORDER BY d.message_date ASC NULLS LAST, d.item_id ASC
 `;
 
-/**
- * A project or a person of a task: live with its name, or in the trash as the marker alone (issue sp-9cf1be65;
- * the `state` of `SempRefResolution`).
- */
+/** A project or person of a task: live with its name, or in the trash as the marker alone. */
 const namedItem = z.discriminatedUnion("state", [
   z.object({ id: z.uuid(), state: z.literal("active"), name: z.string() }),
   z.object({ id: z.uuid(), state: z.literal("trashed") }),
@@ -136,18 +127,12 @@ const taskRow = z.object({
   people: z.array(namedItem),
 });
 
-/** The Tasks properties whose link state the detail reports (issue gh-1692). */
 const TASK_LINK_KEYS = ["project", "people"] as const;
 
 /**
- * The not-deleted Tasks items that have a `Threads.tasks` edge from the Threads item of mail thread `$1`,
- * each with its project (through `Tasks.project`) and its people (through `Tasks.people`). A project or a
- * person is `{ id, state: 'active', name }`, or `{ id, state: 'trashed' }` with no name when it is in the
- * trash; live people come first by name and then id, people in the trash after them by id. Tasks with
- * status `notDone` come first and every other task after them; inside each of the two groups tasks go by
- * `date` ascending with undated ones last, then by creation time and id. A task always has a status
- * (docs/adr/2026-11-13-a-task-always-has-a-status.md), so the order has no branch for a missing one. One
- * statement whatever the number of tasks.
+ * Tasks linked from the thread's Threads item, with project and people. Order: `notDone` first, then
+ * by `date` (undated last), creation time and id. A task always has a status, so there is no branch
+ * for a missing one. One statement whatever the number of tasks.
  */
 const THREAD_TASKS_SQL = `
 WITH schema_ids AS (
@@ -210,14 +195,7 @@ ORDER BY (l.properties->>'status' = 'notDone') DESC, NULLIF(l.properties->>'date
   l.created_at ASC, l.id ASC
 `;
 
-/**
- * The tasks made from mail thread `threadId` (issue gh-1692): exactly the tasks `THREAD_TASKS_SQL`
- * selects, in its order, with each task's `project` and `people` as `THREAD_TASKS_SQL` builds them (a
- * project or a person in the trash is listed as `{ id, state: 'trashed' }`). `links` carries the task's value-link entries (the shape of issue #1403) for
- * `project` and `people` only, and only for a property that has a value-link row. The tasks with their
- * projects and people are one statement and the links one batched read (`getValueLinksForItems`), so
- * the number of statements does not grow with the number of tasks.
- */
+/** Tasks and their projects/people in one statement, the links in one batched read. */
 async function listThreadTasks(client: PoolClient, threadId: string) {
   const { rows } = await client.query<{ task: unknown }>(THREAD_TASKS_SQL, [threadId]);
   const tasks = rows.map((row) => taskRow.parse(row.task));
@@ -236,23 +214,14 @@ async function listThreadTasks(client: PoolClient, threadId: string) {
 }
 
 /**
- * `GET /api/mail/threads/:threadId` (issue #1632): a merged-away id is translated to its target; an
- * unknown id, another tenant's id and a thread with no live message answer the same 404. The header
- * is the list query's row for this thread in its detail-only mode: the list's aggregate rules over
- * every live copy, drafts included (the list itself leaves drafts out), so a draft-only thread is
- * shown too, with the same `project` and `company` (`{ id, name }` or `null`, also `null` for one in the
- * Trash) and `links` (issue gh-1897). `tasks` are the tasks linked to the thread (`listThreadTasks`, issue gh-1692), each with a
- * string `status` and its project and people marked `state: 'active'` or `state: 'trashed'` (issue
- * sp-9cf1be65); a trashed task is not listed. Each attachment of a message carries the `project` of its Files item
- * (`{ id, name }`, `null` for none or one in the Trash) and its `links` (`project` only for a file with a value-link
- * row), as `readMailAttachmentProjects` reads them in one batch for the whole thread (issue gh-1922). Header,
- * messages and tasks are read in the caller's transaction, so with REPEATABLE READ all come from one
- * snapshot.
+ * `GET /api/mail/threads/:threadId`: a merged-away id is translated to its target; an unknown id,
+ * another tenant's id and a thread with no live message answer the same 404. The header uses the list
+ * query's detail-only mode (drafts included), so a draft-only thread is shown too. Everything is read
+ * in the caller's transaction, so with REPEATABLE READ it comes from one snapshot.
  *
- * Emails stores one `body`: the HTML part, else the text part (mail/ingest.ts). `bodyHtml` is that
- * body through `sanitizeMailHtml`, with remote images only when `allowRemoteImages` is set; there is
- * no separate stored text body, so `bodyText` is always `htmlToPlainText` of the same body. Nothing
- * sanitized is stored.
+ * Emails stores one `body` (HTML part, else text part). `bodyHtml` is that body sanitized, with remote
+ * images only when `allowRemoteImages` is set; `bodyText` is `htmlToPlainText` of the same body.
+ * Nothing sanitized is stored.
  */
 export async function getMailThreadDetail(client: PoolClient, threadId: string, allowRemoteImages: boolean) {
   const targetId = await resolveMergedThreadId(client, threadId);
@@ -267,7 +236,6 @@ export async function getMailThreadDetail(client: PoolClient, threadId: string, 
   if (!header) throw new NotFoundError("Thread not found");
   const { rows } = await client.query<{ message: unknown }>(MESSAGES_SQL, [targetId]);
   const parsed = rows.map((row) => messageRow.parse(row.message));
-  // The projects and links of the files of every message of the thread in one batch (issue gh-1922).
   const attachmentProjects = await readMailAttachmentProjects(
     client,
     parsed.flatMap((message) =>

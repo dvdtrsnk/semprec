@@ -1,7 +1,5 @@
-// Issue gh-1880: the task-in-event state of the calendar timeline. After the sources have been read, the Events of
-// the timeline get the tasks that sit in them with their states and counts, and each Task gets the host event that
-// decided its day. The states are those of `GET /api/events/:id/tasks` (`readEventsTasks`), read for every Event of
-// the range and every host event in one batch.
+// Task-in-event state, added after the sources are read: Events get their tasks and counts, Tasks the host event
+// that decided their day. States match `GET /api/events/:id/tasks`, read in one batch.
 import type { PoolClient } from "pg";
 import { eventEnd } from "../calendarTime.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -22,26 +20,20 @@ import type {
   CalendarTimelineItem,
 } from "./timelineSources.js";
 
-/**
- * The stored Event whose tasks an Event entry shows: its own item, or the series Event for a virtual occurrence.
- * `null` for an entry that is not a stored row and not an occurrence either (a source's own entry: its `id` is no
- * item id).
- */
+/** The series Event for a virtual occurrence; `null` for a source's own entry, whose `id` is no item id. */
 function storedEventId(entry: CalendarTimelineItem | CalendarEventOccurrence): string | null {
   if ("overridden" in entry) return entry.overridden ? entry.id : entry.seriesId;
   return entry.readOnly ? null : entry.id;
 }
 
-/** A host event of a task with the name the timeline shows. */
 export interface NamedHostEvent extends TaskHostEvent {
   title: string;
   date: string;
 }
 
 /**
- * The live host event that decided the day of each of `taskIds`: the one the task was added to last among the live
- * Events that have a `date` (`computeTaskHostState` ignores an Event without one). A task in no such Event has no
- * entry. The number of statements does not depend on the number of tasks.
+ * The live dated Event each task was added to last; `computeTaskHostState` ignores undated Events too. The number
+ * of statements does not depend on the number of tasks.
  */
 export async function readDecidingHostEvents(
   client: PoolClient,
@@ -73,13 +65,7 @@ export async function readDecidingHostEvents(
   return deciding;
 }
 
-/**
- * Adds the task-in-event state to the entries of one timeline read and returns them in the order they came in. An
- * Event entry gets `tasks` and `counts`, those of its stored Event (`storedEventId`); a Task entry gets `hostEvent`
- * when it sits in a live Event with a date, `null` otherwise. Entries that are not stored Events or Tasks are
- * returned as they are, and so are the Event and Task entries a source made up (`readOnly` and no occurrence). The
- * number of statements does not depend on the number of Events or Tasks.
- */
+/** Keeps the input order. The number of statements does not depend on the number of Events or Tasks. */
 export async function attachTaskInEventState(
   client: PoolClient,
   entries: CalendarTimelineEntry[],

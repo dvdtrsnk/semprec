@@ -23,7 +23,6 @@ const summariesBodySchema = z.record(
   z.object({ count: z.number().int(), doneCount: z.number().int() }).strict(),
 );
 
-/** Parses the handler body at the boundary, so every assertion reads a checked shape. */
 function bodyOf(result: { status: number; body: unknown }) {
   expect(result.status).toBe(200);
   return summariesBodySchema.parse(JSON.parse(JSON.stringify(result.body)));
@@ -53,7 +52,7 @@ describe("GET /api/transcript-summaries (issue #1693)", () => {
     await admin.end();
   });
 
-  /** The writes a fixture is built from, in the tenant in scope: Events through the choke point, transcripts with the transcription process's system key `status`. */
+  /** Events through the choke point, transcripts with the transcription process's system key `status`. */
   async function setup() {
     const cp = createChokePoint(runtime);
     const databases = await cp.listDatabases();
@@ -66,7 +65,6 @@ describe("GET /api/transcript-summaries (issue #1693)", () => {
     if (!eventProperty) throw new Error("Missing Transcripts.event");
     const event = async (name: string) =>
       (await cp.createItem({ databaseId: db("events"), properties: { name, date: "2026-10-16T08:00:00Z" } })).id;
-    /** A transcript with `status`, linked to `eventId` through its `event` relation. */
     const transcript = (eventId: string, status: string) =>
       withTransaction(runtime, async (client) => {
         const item = await createItemWithClient(
@@ -87,7 +85,6 @@ describe("GET /api/transcript-summaries (issue #1693)", () => {
   const summaries = (query: string, pool: Pool = runtime) =>
     createTranscriptSummariesRouteHandler(pool)({ req: { url: `/api/transcript-summaries${query}` } });
 
-  /** A pool whose connections record every statement they run, to count what one request issues. */
   function recordingPool(statements: string[]): Pool {
     return new Proxy(runtime, {
       get(target, property, receiver) {

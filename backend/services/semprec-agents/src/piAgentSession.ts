@@ -22,10 +22,7 @@ export interface PiAgentSessionFactoryOptions {
   toolEventMetadata: ReadonlyMap<string, ToolEventMetadata>;
   /** The default prompt a session's `systemPromptOverride` receives, and the one used without it. */
   systemPrompt: string;
-  /**
-   * Pending system messages of the thread since the last turn (approval outcomes), prepended to
-   * the next prompt text. Called once per turn; absent means none.
-   */
+  /** Pending system messages (approval outcomes), prepended to the next prompt. Called once per turn. */
   pendingSystemMessages?: () => readonly string[];
   /** Whether a failed assistant message came from a call the gateway refused for the budget. */
   isBudgetRefusal?: (message: AssistantMessage) => boolean;
@@ -43,9 +40,8 @@ function assistantText(message: AssistantMessage): string {
 }
 
 /**
- * The databases and items a tool call's arguments name, as the call's events carry them. A relation operation acts
- * on its `callerItemId` (it has no `itemId`), so that is the item its events name: it survives the redaction of the
- * arguments of a later call in a turn (`sensitiveTurnRedaction.ts`), which the reply summaries read it from.
+ * A relation operation names its `callerItemId` (it has no `itemId`). Targets survive argument
+ * redaction (`sensitiveTurnRedaction.ts`), and the reply summaries read them from here.
  */
 function targetsOf(args: unknown): { targetDatabaseId?: string; targetItemId?: string } {
   if (typeof args !== "object" || args === null || Array.isArray(args)) return {};
@@ -59,9 +55,8 @@ function targetsOf(args: unknown): { targetDatabaseId?: string; targetItemId?: s
 }
 
 /**
- * The `toolCall` blocks of an assistant message that are generic operations, with their operation and targets
- * (issue #2001): pi emits the message before it starts the calls, so the run log needs them to store a content-bearing
- * write to a sensitive database redacted in the message too. A call of any other tool is not listed.
+ * pi emits the assistant message before it starts the calls, so the run log needs the generic
+ * operations' targets here to redact a sensitive write in the message too.
  */
 function toolCallTargetsOfContent(
   content: AssistantMessage["content"],
@@ -75,10 +70,8 @@ function toolCallTargetsOfContent(
 }
 
 /**
- * Maps one pi-agent-core `AgentEvent` onto the runtime's `AgentMessage` vocabulary, or `null` for
- * an event the run log does not record: agent/message start markers, a tool's partial progress,
- * and every non-assistant `message_end` — a user message is persisted by `promptMessages` itself, and a tool
- * result message duplicates the `tool_result` its `tool_execution_end` produced.
+ * `null` for events the run log does not record, including non-assistant `message_end`: user
+ * messages are persisted by `promptMessages`, and tool results duplicate `tool_execution_end`.
  */
 function toAgentMessage(
   event: AgentEvent,
@@ -155,10 +148,7 @@ function toAgentMessage(
   }
 }
 
-/**
- * pi reports a failed or aborted model call as a final assistant message rather than a rejected
- * `prompt()`; turn that into a thrown error so the caller closes the run as `error`.
- */
+/** pi reports a failed model call as an assistant message, not a rejection; throw so the run closes as `error`. */
 function assertModelSucceeded(
   agent: Agent,
   isBudgetRefusal: ((message: AssistantMessage) => boolean) | undefined,
@@ -172,10 +162,8 @@ function assertModelSucceeded(
 }
 
 /**
- * Bridges pi's push-based `subscribe` into the pull-based `AsyncIterable` the lifecycle adapter
- * consumes: every mapped event is queued and yielded in arrival order, and the iteration completes
- * once `prompt()` settles and the agent is idle (after `agent_end`). A consumer that stops early
- * (its own write failed) aborts the agent rather than leaving it running unobserved.
+ * Push-to-pull bridge; completes once `prompt()` settles and the agent is idle. A consumer that
+ * stops early aborts the agent rather than leaving it running unobserved.
  */
 async function* promptMessages(
   agent: Agent,
@@ -252,17 +240,11 @@ async function* promptMessages(
 }
 
 /**
- * The pi-agent-core-backed `CreateAgentSession` (issue #647). Lives in this composition root
- * rather than `packages/agent-runtime`, which only declares the port: see the
- * `pi-only-in-agent-runtime`/`no-agent-runtime-provider-internals` rules in
- * `dependency-cruiser.rules.json`.
+ * The pi-agent-core-backed `CreateAgentSession`; `packages/agent-runtime` only declares the port.
  *
- * A tool whose `execute` throws aborts the prompt and fails the session with that error — a
- * thrown tool is an infrastructure failure, not an answer for the model. A tool that returns an
- * error result (the generic-operation tools' `details.error`) is ordinary model input.
- *
- * A session given `initialState.messages` resumes from that reconstructed history, converted by
- * {@link toPiMessages}; history that does not convert fails the factory call.
+ * A tool that throws fails the session (an infrastructure failure, not model input); a tool that
+ * returns an error result is ordinary model input. History in `initialState.messages` that does
+ * not convert via {@link toPiMessages} fails the factory call.
  */
 export function createPiAgentSessionFactory(options: PiAgentSessionFactoryOptions): CreateAgentSession {
   return (sessionOptions) => {

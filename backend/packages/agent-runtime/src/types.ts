@@ -3,10 +3,7 @@ import type { LabeledSempMessageRef } from "@semprec/shared";
 export type AgentMessageKind =
   "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "message_update" | "user_message";
 
-/**
- * One context ref attached to a user turn, stored as sent: the ref object (item, block,
- * transcript segment, ...) plus its label at send time. Expanded ref content is never stored.
- */
+/** A context ref of a user turn, stored as sent with its label at send time; expanded content is never stored. */
 export type UserTurnContextRef = LabeledSempMessageRef;
 
 /** Ephemeral image input for a model prompt; never written to a run event. */
@@ -17,10 +14,9 @@ export interface AgentImage {
 }
 
 /**
- * What a session knows about one tool call of an assistant `message` before the call starts (issue #2001): the id of
- * its `toolCall` block, the generic operation its tool name maps to and the databases and items its arguments name.
- * A session that maps tool names to operations carries these on its `message` events as `toolCallTargets`, so the
- * block can be stored redacted when its operation is a content-bearing write to a sensitive database.
+ * What a session knows about one tool call before it starts: the `toolCall` block id, the generic operation and the
+ * databases and items its arguments name. Carried on `message` events as `toolCallTargets` so the block can be stored
+ * redacted when it is a content-bearing write to a sensitive database.
  */
 export interface ToolCallTarget {
   toolCallId: string;
@@ -30,11 +26,8 @@ export interface ToolCallTarget {
 }
 
 /**
- * The full pi-agent-core message shape, persisted verbatim into `agent_run_events.payload` — except a
- * `tool_result` of a sensitive database (issue #1827) and, in the turn of such a result or for a content-bearing
- * write to a sensitive database, tool call arguments and assistant messages (issue #2001), which are stored
- * redacted (`createSensitiveTurnRedactor`). An assistant `message` may carry `toolCallTargets`
- * (`ToolCallTarget[]`); they steer that redaction and are never stored.
+ * The pi-agent-core message shape, persisted verbatim into `agent_run_events.payload`, except sensitive content
+ * (`createSensitiveTurnRedactor`). `toolCallTargets` steer that redaction and are never stored.
  */
 export interface AgentMessage {
   kind: AgentMessageKind;
@@ -42,10 +35,8 @@ export interface AgentMessage {
 }
 
 /**
- * pi-agent-core's own transcript-tree node shape: `parentId` links each entry back to the one
- * before it (a linear chain for every conversation this codebase reconstructs, never a real
- * branch) and `seq` is its position in that chain. #119's reconstruction path is the producer;
- * `AgentSessionOptions.initialState` is the consumer.
+ * pi-agent-core's transcript-tree node: `parentId` links to the previous entry (always a linear chain here) and `seq`
+ * is its position.
  */
 export interface ConversationEntry {
   id: string;
@@ -53,7 +44,6 @@ export interface ConversationEntry {
   seq: number;
   timestamp: number;
   message: AgentMessage;
-  /** Rebuilt for this wake only and never stored with the event. */
   images?: readonly AgentImage[];
 }
 
@@ -62,34 +52,27 @@ export interface AgentSessionOptions {
   /** Context refs sent with the wake turn's `task`; persisted on its `user_message` event. */
   context?: readonly UserTurnContextRef[];
   images?: readonly AgentImage[];
-  /** Cancels the underlying agent, including a prompt blocked waiting for its next event. */
+  /** Also cancels a prompt blocked waiting for its next event. */
   signal?: AbortSignal;
-  /** pi-agent-core's system-prompt override hook: given its default prompt, returns the one to use. */
+  /** Given pi-agent-core's default prompt, returns the one to use. */
   systemPromptOverride?: (defaultPrompt: string) => string;
   /**
-   * Seeds a freshly created session with a prior conversation's reconstructed (and, when
-   * oversized, already-compacted) history, so pi-agent-core resumes with full context instead
-   * of starting cold. Absent on a conversation's very first-ever wake.
+   * Prior reconstructed (and, if oversized, compacted) history, so pi-agent-core resumes with context. Absent on a
+   * conversation's first wake.
    */
   initialState?: { messages: ConversationEntry[] };
 }
 
 /**
- * The subset of pi-agent-core's public session surface this adapter is written against:
- * an ordered async sequence of `AgentMessage`s for one run, ending when the run is done.
- * pi-agent-core has not published TypeScript types yet, so this interface is the contract
- * to satisfy with the real `createAgentSession` once it ships a matching shape.
+ * The subset of pi-agent-core's session surface this adapter uses: an ordered async sequence of messages for one run.
+ * pi-agent-core publishes no TypeScript types, so this interface is the contract.
  */
 export interface AgentSession {
   /** This session's first turn, started as soon as `createAgentSession` returns it. */
   messages(): AsyncIterable<AgentMessage>;
   /**
-   * Continues this same conversation with a new turn. The delegation registry (#229) and
-   * Semp's own conversation registry (#118) are the first callers: both reuse a still-open
-   * `AgentSession` for a later message instead of starting a fresh one, so pi-agent-core
-   * keeps prior turns as context — only the new turn's messages are yielded here, not the
-   * whole transcript again. Optional because every session up to #228/#117 only ever ran
-   * one turn to completion and never needed it.
+   * Continues the same conversation with a new turn, yielding only that turn's messages; pi-agent-core keeps prior
+   * turns as context. Optional because single-turn sessions never need it.
    */
   send?(
     task: string,

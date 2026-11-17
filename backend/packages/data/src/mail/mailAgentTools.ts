@@ -1,19 +1,7 @@
-// Issue gh-1927: the three draft agent tools of the mail module, declared in `mailModuleManifest.ts`. `mail.thread.get`
-// reads a conversation as text, `mail.draft.create` starts a draft (a new mail, a reply, a reply-all or a forward) and
-// `mail.draft.update` rewrites the text of an open one. A draft is kept in Semprec and these three never send it, so
-// none of them needs an approval (docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md). Issue gh-1949 adds
-// `mail.draft.send`, which does not send either: it files the approval request of the send. The handlers take the run,
-// its project and its user from the stored run, never from an argument, and answer in the shape of the other module
-// tools: a result string that holds JSON (the send tool's is the sentence of a deferred tool), and an `error` flag. Every
-// write goes through the draft operations of `draft.ts` and `mailDraftPrefill.ts`, and so through the choke point.
-// Issue gh-1956 offers the four tools over `/mcp`: a run credential runs the handlers above as its run, and a human
-// session runs the `...UserTool` handlers below as its user (`MailToolCaller`), which the manifest names as the `mcp`
-// `humanHandlerExport` of each tool.
-// Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md,
-// docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md,
-// docs/adr/2026-11-14-an-agents-mail-send-is-an-approval-request-of-its-own-kind-sent-as-the-user.md,
-// docs/adr/2026-11-14-the-mail-send-tool-is-declared-without-deferral-and-files-its-own-approval-request.md,
-// docs/adr/2026-11-14-mail-tools-over-mcp-run-as-their-run-or-as-the-session-user.md
+// Mail module agent tools. Drafting tools never send, so they need no approval; `mail.draft.send`
+// for a run only files a send approval request. Run, project and user always come from the stored
+// run, never from arguments. Over `/mcp` a human session runs the `...UserTool` variants as its
+// user. See docs/architecture/domain-mail-and-inbox.md#agent-sends-and-mcp-mail-tools.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { getAgentRun, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
@@ -42,22 +30,16 @@ import { requestMailSendApproval } from "./mailSendApproval.js";
 import { getMailThreadDetail } from "./mailThreadDetail.js";
 import { proposeThreadTask, threadTaskProposalNameSchema } from "./threadTaskProposals.js";
 
-/** The most of one message's text that `mail.thread.get` returns. */
 const MAX_MESSAGE_TEXT_LENGTH = 20_000;
-/** The most text of all messages that `mail.thread.get` returns; the newest messages are served first. */
+/** Total across messages; the newest are served first. */
 const MAX_THREAD_TEXT_LENGTH = 200_000;
 
 export const mailThreadGetArgsSchema = z.strictObject({ threadId: z.uuid() });
 
 /**
- * The arguments of `mail.draft.create`. A `new` draft takes `mailboxId` and the recipients, the subject and the body as
- * given. `reply`, `replyAll` and `forward` take the source message from `sourceEmailId`, or from `threadId`, whose newest
- * message that is neither a draft nor sent by the user is answered (the newest one that is not a draft when there is
- * none), and derive the mailbox and the sending address from it: a `mailboxId` given for those is ignored. `to`, `cc`,
- * `bcc` and `subject` are the agent's to give in every mode (the agent has no other step to address a forward): in a
- * prefilled mode a value that is given replaces the one computed from the source (`to: []` clears the recipients, a
- * `subject` is taken as it is, without a `Re: ` prefix) and one that is left out stays as computed. `body` is the
- * agent's own text, which the quote of the source follows.
+ * Reply modes derive mailbox and sender from the source message (`mailboxId` is ignored). In
+ * prefilled modes a given `to`/`cc`/`bcc`/`subject` replaces the computed value as-is (`to: []`
+ * clears, no `Re: ` added); omitted ones stay computed.
  */
 export const mailDraftCreateArgsSchema = z.strictObject({
   mode: z.enum(MAIL_DRAFT_MODES),
@@ -74,16 +56,13 @@ export const mailDraftCreateArgsSchema = z.strictObject({
 export const mailDraftUpdateArgsSchema = z.strictObject({
   draftId: z.uuid(),
   body: draftBody,
-  // The write refuses a blank subject (its title rule); refusing it here keeps that refusal ahead of the body frame.
+  // Refused here too so the refusal precedes the body frame.
   subject: draftSubject.refine((value) => value.trim() !== "").optional(),
 });
 
 export const mailDraftSendArgsSchema = z.strictObject({ draftId: z.uuid() });
 
-/**
- * The arguments of `mail.thread.proposeTask` (issue gh-2035). The description is what the model reads of the tool: the
- * session passes this schema to it as the tool's parameters.
- */
+/** The descriptions are what the model reads: this schema is the tool's parameters. */
 export const mailThreadProposeTaskArgsSchema = z
   .strictObject({
     threadId: z.uuid().describe("The id of the mail thread the task is suggested from."),
@@ -100,22 +79,17 @@ export const mailThreadProposeTaskArgsSchema = z
 export interface MailAgentToolResult {
   error: boolean;
   result: string;
-  /**
-   * The id of the approval request the call filed (issue gh-1949: `mail.draft.send` alone). The session writes it into the
-   * tool result's `details.approvalRequestId`, which is what makes the run timeline show the step as an approval.
-   */
+  /** Set by `mail.draft.send`; makes the run timeline show the step as an approval. */
   approvalRequestId?: string;
 }
 
 export type MailAgentTool = (runId: string, args: unknown) => Promise<MailAgentToolResult>;
 
-/** A mail tool as a human `/mcp` session runs it: as the session's user, who has no run (issue gh-1956). */
+/** A mail tool run by a human `/mcp` session as its user, with no run. */
 export type MailUserTool = (userId: string, args: unknown) => Promise<MailAgentToolResult>;
 
-/** Who calls a mail tool: a run (an agent session or a run credential) or the user of a human `/mcp` session. */
 type MailToolCaller = { kind: "run"; runId: string } | { kind: "user"; userId: string };
 
-/** The body of a mail tool, written once for both callers. */
 type MailToolCore = (caller: MailToolCaller, args: unknown) => Promise<MailAgentToolResult>;
 
 function asRunTool(core: MailToolCore): MailAgentTool {
@@ -126,11 +100,7 @@ function asUserTool(core: MailToolCore): MailUserTool {
   return (userId, args) => core({ kind: "user", userId }, args);
 }
 
-/**
- * Raised by `mail.draft.create` in a reply mode when the source message's thread already has an open agent draft
- * (issue gh-1941). It names that draft in `details.draftId`, which the refusal puts in its answer, so the agent updates
- * the draft with `mail.draft.update` instead of making another.
- */
+/** Names the open agent draft so the agent updates it instead of making another. */
 class OpenAgentDraftConflictError extends ConflictError {
   constructor(draftId: string) {
     super(
@@ -142,10 +112,7 @@ class OpenAgentDraftConflictError extends ConflictError {
   }
 }
 
-/**
- * Raised by `mail.draft.update` when a run that no person asked for (a heartbeat run, or one a heartbeat run delegated to)
- * would replace a draft whose last editor is the user (issue gh-1941). It names the draft in `details.draftId`.
- */
+/** A heartbeat-started run would overwrite a draft the user edited last. */
 class DraftEditedByUserError extends ConflictError {
   constructor(draftId: string) {
     super(
@@ -157,14 +124,12 @@ class DraftEditedByUserError extends ConflictError {
   }
 }
 
-/** The member `key` of a refusal's `details` when it is a string, else `undefined`. */
 function detailText(error: ChokePointError, key: "field" | "draftId"): string | undefined {
   if (typeof error.details !== "object" || error.details === null || !(key in error.details)) return undefined;
   const value: unknown = Reflect.get(error.details, key);
   return typeof value === "string" ? value : undefined;
 }
 
-/** The error result of a refusal: the HTTP status the route would answer, its error code and message. */
 function refusal(error: ChokePointError): MailAgentToolResult {
   const field = detailText(error, "field");
   const draftId = detailText(error, "draftId");
@@ -180,11 +145,7 @@ function refusal(error: ChokePointError): MailAgentToolResult {
   };
 }
 
-/**
- * Runs `work`, answering a `ChokePointError` it throws (a 400, 403, 404 or 409 of the checks and of the operations) as
- * an error result. Whatever else it throws is not an answer of this tool and propagates, so the session reports a failed
- * tool and the transaction of `work` is rolled back.
- */
+/** Only `ChokePointError`s become error results; anything else propagates and rolls back. */
 async function answering(work: () => Promise<MailAgentToolResult>): Promise<MailAgentToolResult> {
   try {
     return await work();
@@ -195,17 +156,14 @@ async function answering(work: () => Promise<MailAgentToolResult>): Promise<Mail
 }
 
 interface RunContext {
-  /** The caller's run; `null` for the user of a human `/mcp` session, who has none. */
+  /** `null` for a human `/mcp` session. */
   run: AgentRunRow | null;
   writer: MailDraftWriter;
   actorUserId: string;
   conversationId?: string;
 }
 
-/**
- * The run's stored project, user and Semp thread. An unknown run is a 404 and a run without a project a 403: the
- * capabilities of the tools are granted per project, so a run that has none holds none.
- */
+/** A run without a project is a 403: capabilities are granted per project. */
 async function runContext(client: PoolClient, runId: string): Promise<RunContext> {
   const run = await getAgentRun(client, runId);
   if (!run) throw new NotFoundError("Run not found");
@@ -224,10 +182,9 @@ async function runContext(client: PoolClient, runId: string): Promise<RunContext
 }
 
 /**
- * What a caller writes as. A run writes as the agent of its run. The user of a human `/mcp` session writes as an agent
- * for that user with the external-client marker and no run or project, the writer of every other write of that session
- * (docs/adr/2026-11-13-an-external-ai-client-on-mcp-is-refused-sensitive-databases.md): the marker keeps the session
- * out of every sensitive database, and the Emails database is not one.
+ * A human `/mcp` session writes as an agent for its user with the external-client marker, which
+ * keeps it out of sensitive databases (Emails is not one); see
+ * docs/architecture/agents-approvals-and-ai.md#sensitive-databases.
  */
 async function callerContext(client: PoolClient, caller: MailToolCaller): Promise<RunContext> {
   if (caller.kind === "run") return runContext(client, caller.runId);
@@ -238,10 +195,7 @@ async function callerContext(client: PoolClient, caller: MailToolCaller): Promis
   };
 }
 
-/**
- * Whether `run`, or the run it was delegated from, was started by a heartbeat: nobody asked for it, so what it writes is
- * the agent's own initiative. A run of a chat turn or of an MCP client is a person's request.
- */
+/** A heartbeat run (or one delegated from it) is the agent's own initiative, not a person's request. */
 async function startedByHeartbeat(client: PoolClient, run: AgentRunRow): Promise<boolean> {
   const visited = new Set<string>();
   let current: AgentRunRow | null = run;
@@ -253,26 +207,19 @@ async function startedByHeartbeat(client: PoolClient, run: AgentRunRow): Promise
   return false;
 }
 
-/** The cut of `text` to at most `max` code points, never half of a surrogate pair. */
+/** Cuts by code points, never splitting a surrogate pair. */
 function cutText(text: string, max: number): string {
   return Array.from(text).slice(0, max).join("");
 }
 
 /**
- * `mail.thread.get { threadId }` (issue gh-1927): the thread as `GET /api/mail/threads/:threadId` reads it, with every
- * message as text. A merged-away thread id resolves to the thread that absorbed it, and an unknown one, another
- * tenant's and a thread without a live message are the same 404. The answer is the thread's `threadId`, `subject`,
- * `lastMessageAt`, `messageCount`, `participants` (the people who wrote or received), `senderPerson`, `company`
- * and `project`, and its `messages`, oldest first: the `emailId`, `mailboxId`, `folderPurpose`, `isOwn`, `from`, `to`,
- * `cc`, `date`, the plain `bodyText` and the file names of the `attachments`. A body is cut to 20000 characters and the
- * bodies of all messages to 200000, the newest messages first; a message whose text was cut has `bodyTruncated`.
- * Nothing is written. It is read in one REPEATABLE READ transaction, so the answer describes one state of the thread.
+ * Read-only, in one REPEATABLE READ transaction so the answer is one consistent state. Merged-away
+ * ids resolve to the absorbing thread; unknown, foreign and empty threads are the same 404.
  */
 export function createMailThreadGetTool(pool: Pool): MailAgentTool {
   return asRunTool(mailThreadGet(pool));
 }
 
-/** `mail.thread.get` for the user of a human `/mcp` session (issue gh-1956): the same answer, with no run to check. */
 export function createMailThreadGetUserTool(pool: Pool): MailUserTool {
   return asUserTool(mailThreadGet(pool));
 }
@@ -332,11 +279,8 @@ interface SourceMessage {
 }
 
 /**
- * The message a reply, reply-all or forward starts from, and the mailbox it is in. With `sourceEmailId` that message,
- * which must belong to `threadId` when that is given too (a 400 naming `sourceEmailId` otherwise); without it the newest
- * message of the thread that is not a draft and was not sent by the user, else the newest that is not a draft.
- * An unknown message or thread, and a thread without such a message, is a 404; a message that belongs to no mailbox
- * (one of the legacy migration) is a 400.
+ * Without `sourceEmailId`: the newest non-draft message not sent by the user, else the newest
+ * non-draft. A given `sourceEmailId` must belong to `threadId` when both are given.
  */
 async function findSourceMessage(
   client: PoolClient,
@@ -372,10 +316,8 @@ async function findSourceMessage(
 }
 
 /**
- * Refuses a reply to the message `sourceEmailId` when its thread already has an open agent draft (issue gh-1941): the
- * 409 `mail_agent_draft_exists` names that draft. The read takes no lock; a draft made by a concurrent call between this
- * read and the insert is still refused, by the unique index `mail_drafts_one_unsent_agent_per_thread_uq`, with the 409
- * of the draft store that names no draft.
+ * Unlocked read; a concurrent draft is still refused by the unique index
+ * `mail_drafts_one_unsent_agent_per_thread_uq` (with a 409 that names no draft).
  */
 async function refuseSecondAgentDraft(client: PoolClient, sourceEmailId: string): Promise<void> {
   const meta = await getMailMessageMetaByItemId(client, sourceEmailId);
@@ -386,33 +328,16 @@ async function refuseSecondAgentDraft(client: PoolClient, sourceEmailId: string)
 }
 
 /**
- * `mail.draft.create { mode, threadId?, sourceEmailId?, mailboxId?, to?, cc?, bcc?, subject?, body }` (issue gh-1927):
- * creates the draft as an agent in one transaction, with the run's id and Semp thread recorded on its row, and answers
- * the draft as `GET /api/mail/drafts/:id` shows it. Nothing else is written, and the draft is not sent.
- *
- * - `new` needs `mailboxId` (an unknown mailbox is a 404) and sends from the mailbox's primary address, its first one. It
- *   takes the recipients, the subject and the body as given and has no thread unless `threadId` names one. It takes no
- *   `sourceEmailId` (a 400).
- * - `reply`, `replyAll` and `forward` are prefilled from the source message (`createPrefilledEmailDraft`, issue gh-1899):
- *   the mailbox is the one the source is in, the sending address the one it was delivered to, and the recipients and
- *   the subject are computed unless the call gives `to`, `cc`, `bcc` or `subject`, which then replace them. A forward
- *   copies the source's attachments under the limit of the mailbox's provider and, for a mailbox without one, under
- *   `MAX_FILE_SIZE_MB` (`readMaxFileSizeBytes`, the limit of the HTTP forward), so one over it is refused with the 413
- *   `mail_attachment_too_large` and writes nothing; `options.maxFileSizeBytes` replaces that setting in a test. A
- *   second unsent draft of an agent for one thread is refused: a `reply` or `replyAll` for a thread that has an open
- *   agent draft with the 409 `mail_agent_draft_exists`, whose answer carries that draft's id as `draftId` (issue
- *   gh-1941), and any other mode with the 409 of the draft store.
- *
- * A refusal writes nothing.
+ * Creates the draft as an agent in one transaction, recording run and Semp thread; never sends.
+ * `new` sends from the mailbox's primary address. Reply modes are prefilled from the source,
+ * sending from the address it was delivered to. A forward copies attachments within the
+ * provider's (or `MAX_FILE_SIZE_MB`) limit, else 413. One unsent agent draft per thread.
  */
 export function createMailDraftCreateTool(pool: Pool, options: { maxFileSizeBytes?: number } = {}): MailAgentTool {
   return asRunTool(mailDraftCreate(pool, options));
 }
 
-/**
- * `mail.draft.create` for the user of a human `/mcp` session (issue gh-1956): the draft is written as an agent for that
- * user with no run, so its row records `created_by` agent and no run id, and the draft belongs to no Semp thread.
- */
+/** Written as an agent for the user with no run id and no Semp thread. */
 export function createMailDraftCreateUserTool(pool: Pool): MailUserTool {
   return asUserTool(mailDraftCreate(pool, {}));
 }
@@ -485,36 +410,19 @@ function mailDraftCreate(pool: Pool, options: { maxFileSizeBytes?: number }): Ma
 }
 
 /**
- * `mail.draft.update { draftId, body, subject? }` (issue gh-1927): replaces the body, and the subject when it is given, of
- * an open draft and records the agent as the draft's last editor. It answers the draft as the draft routes show it. The
- * draft is locked before its version is read, so the update is made against the state it saw. A draft that does not
- * exist, one that is discarded and another tenant's are the same 404; a sent draft is a 409
- * `mail_draft_already_sent` and a message without a draft row a 409 `mail_draft_not_editable`. Recipients, sender,
- * mailbox and thread stay as they are.
+ * Replaces body (and subject) of an open draft, locked before its version is read. A
+ * heartbeat-started run never overwrites a draft the user edited last; the check runs under the
+ * locks so a later user edit is seen.
  *
- * A run that was started by a heartbeat, directly or through a delegation, never replaces a draft whose last editor is
- * the user (issue gh-1941): the 409 `mail_draft_edited_by_user` names the draft and nothing is written. The check reads
- * the draft row after the draft's locks are taken, so an edit that the user saved after the run started is seen; a run a
- * person asked for (a chat turn that names the draft, an MCP client) may rewrite it, because the person asked.
- *
- * When the run belongs to a Semp thread (it was started from a chat turn), the new body is published to the run's
- * watchers as an ephemeral `agent:delta` frame `{ kind: "mailDraftBody", draftId, body }` (issue gh-1948,
- * `MailDraftBodyDelta` in `@semprec/realtime`), once the refusals that are known beforehand have passed (arguments,
- * including a blank subject, and a draft that is open) and before the update is written, so it precedes the commit of
- * the durable change. Those refusals publish nothing. The write's access check cannot refuse here: Emails is a system
- * database that is not sensitive, which every project may write whatever the grants say. A failure inside the write
- * itself (a statement error, say) rolls the update back after the frame was sent and leaves an unstored frame, which the
- * run's end clears; the frame is best effort, the durable change is the draft update and its invalidation. A run
- * without a thread, such as an MCP run, publishes none.
+ * For a run in a Semp thread, the new body is published as an ephemeral `agent:delta` frame after
+ * the known refusals and before the write. A later write failure leaves a stale frame that the
+ * run's end clears; the frame is best effort.
  */
 export function createMailDraftUpdateTool(pool: Pool): MailAgentTool {
   return asRunTool(mailDraftUpdate(pool));
 }
 
-/**
- * `mail.draft.update` for the user of a human `/mcp` session (issue gh-1956): written as an agent for that user, and
- * never refused as the edit of a run nobody asked for, because the session's user asked.
- */
+/** Never refused as an unrequested edit: the session's user asked. */
 export function createMailDraftUpdateUserTool(pool: Pool): MailUserTool {
   return asUserTool(mailDraftUpdate(pool));
 }
@@ -529,8 +437,7 @@ function mailDraftUpdate(pool: Pool): MailToolCore {
         const run = await callerContext(client, caller);
         const { emailsDatabaseId } = await resolveMailModuleIds(client);
         const { item, draft: locked } = await lockUnsentDraft(client, emailsDatabaseId, args.data.draftId);
-        // The gate of the heartbeat that drafts a reply (`answerExpectedFilter.ts`) checks the draft when the run starts;
-        // the run lasts a whole agent session, so the check that holds is this one, made under the draft's locks.
+        // The heartbeat gate checks at run start; this check under the locks is the one that holds.
         if (locked.lastEditedBy === "user" && run.run !== null && (await startedByHeartbeat(client, run.run))) {
           throw new DraftEditedByUserError(args.data.draftId);
         }
@@ -544,7 +451,7 @@ function mailDraftUpdate(pool: Pool): MailToolCore {
           client,
           {
             draftItemId: args.data.draftId,
-            ifVersion: item.updatedAt,
+            ifVersion: item.version,
             body: args.data.body,
             ...(args.data.subject === undefined ? {} : { subject: args.data.subject }),
           },
@@ -556,29 +463,15 @@ function mailDraftUpdate(pool: Pool): MailToolCore {
   };
 }
 
-/**
- * What a deferred module tool call answers the model (issue #1791, `moduleToolPendingApprovalText` in
- * `semprec-agents/src/agentSessionComposition.ts`): the same sentence, so the model reads one wording for every call
- * that waits for a person.
- */
+/** Same wording as `moduleToolPendingApprovalText` in semprec-agents, so the model sees one phrasing. */
 function pendingApprovalText(toolName: string, approvalRequestId: string): string {
   return `Tool '${toolName}' requires human approval before it can run. Approval request ${approvalRequestId} has been created and is awaiting a decision; this call has not been executed.`;
 }
 
 /**
- * `mail.draft.send { draftId }` (issue gh-1949): asks for the send of a saved draft and never sends it. The run is the
- * agent actor of the send flow of issue gh-1913 (`requestMailSendApproval`, the request `sendDraftEmail` creates for
- * an `ai_agent` actor), whatever permission the run's project holds: in v1 no permission lets an agent send without
- * approval. The answer is the sentence of a deferred tool naming the pending approval request, risk class `outbound`,
- * that holds the draft's hash, and the request's id as `approvalRequestId`, the structured half of the shape of a
- * deferred tool (the session stores it in the tool result's details, so the run's step is an approval step). The mail
- * leaves only when its owner approves that request (the executor of
- * `mailSendApprovalExecution.ts` sends it, as the user). This handler holds no mail transport, so it cannot send.
- *
- * A draft that already has a pending request answers with that request and creates no second one. A draft that is
- * unknown, discarded or another tenant's is the same 404; a sent draft is a 409 `mail_draft_already_sent`, a message
- * without a draft row a 409 `mail_draft_not_editable`, a draft without a recipient a 400, and a run that is unknown (404)
- * or has no project (403) is refused as by the other mail tools. A refusal writes nothing.
+ * Never sends: files (or reuses) an `outbound` approval request holding the draft's hash, whatever
+ * the project's permissions. The mail leaves only when the owner approves; it is then sent as the
+ * user. This handler holds no transport.
  */
 export function createMailDraftSendTool(pool: Pool): MailAgentTool {
   return async function mailDraftSend(runId, rawArgs) {
@@ -597,15 +490,8 @@ export function createMailDraftSendTool(pool: Pool): MailAgentTool {
 }
 
 /**
- * `mail.draft.send { draftId }` for the user of a human `/mcp` session (issue gh-1956): sends the saved draft as the
- * user and asks nobody, as the send route does (`sendMailDraft`, issue gh-1896). The answer is the route's body
- * `{ emailId, threadId, sentAt, mailbox }` as JSON. The refusals are those of the route as error results: 400 for a
- * draft without a recipient, 403 `from_address_not_registered`, 404 for a draft that is unknown, discarded or another
- * tenant's (the same answer), 409 `mail_draft_already_sent`, `mail_draft_not_editable`, `mail_reauthorization_required`
- * and `mail_sent_folder_missing`, 422 `mail_recipient_rejected`, and 400 `mail_auth_failed` and
- * `mail_server_unreachable`. A failure before or during delivery leaves the draft unsent. The transports come from
- * `dependencies`, the container of the composition root; a root that configured none fails the call with a plain error
- * and the draft stays as it was. The dependency is read when the tool runs, so listing the tool needs none.
+ * Sends as the user without approval, exactly like the send route, with the route's answers and
+ * refusals. Transports are read from `dependencies` at call time, so listing needs none.
  */
 export function createMailDraftSendUserTool(pool: Pool, dependencies: MailDraftSendRouteDependencies): MailUserTool {
   return async function mailDraftSendAsUser(_userId, rawArgs) {
@@ -619,15 +505,8 @@ export function createMailDraftSendUserTool(pool: Pool, dependencies: MailDraftS
 }
 
 /**
- * `mail.thread.proposeTask { threadId, name }` (issue gh-2035): proposes a task for a mail thread and answers
- * `{ proposalId, status }` as JSON, the id of the Processing proposals card in the user's Inbox and its status
- * `proposed`. It writes only that card and its edge to the thread (`proposeThreadTask`): no task and no `Threads.tasks`
- * edge, which the user's confirm of the card creates. For that reason it needs no approval. The tool takes no due date,
- * because the user sets it. A call for a thread that already has a `proposed` card of the same name (after trimming and
- * case folding) answers that card and writes nothing. A merged-away thread id proposes for the current thread; an
- * unknown thread, another tenant's and one in the Trash are the same 404, a run that is unknown (404) or has no project
- * (403) is refused as by the other mail tools, and an empty name, one over 500 characters or an argument that is not
- * one of the two is a 400. A refusal writes nothing.
+ * Writes only an Inbox proposal card and its thread edge; the task itself is created when the user
+ * confirms, so no approval is needed. A same-named pending card (trimmed, case-folded) is reused.
  */
 export function createMailThreadProposeTaskTool(pool: Pool): MailAgentTool {
   return async function mailThreadProposeTask(runId, rawArgs) {

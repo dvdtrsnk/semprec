@@ -19,7 +19,6 @@ async function countTasks(): Promise<number> {
   return Number(rows[0]!.count);
 }
 
-/** A task on 13 October 2026 with a 10:00 to 11:00 window, the fixture most rejection tests start from. */
 async function timedTask(): Promise<string> {
   const task = await chokePoint.createItem({
     databaseId: tasksDatabaseId,
@@ -446,8 +445,7 @@ describe("Tasks title, date and time rules (issue gh-1536)", () => {
     );
 
     it("leaves an unrelated patch alone on a stored row that predates these rules", async () => {
-      // A row with a start time and no date cannot come from the API any more: it is the stored state that
-      // #1657 repairs. It is inserted raw on purpose, so the test proves an unrelated patch still succeeds.
+      // Raw insert of a start time without a date, a state the API no longer produces: an unrelated patch must succeed.
       const legacy = await itemsStore.insertItem(pool, {
         databaseId: tasksDatabaseId,
         properties: { name: "Old", timeFrom: "10:00", time: "10:00" },

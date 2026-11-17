@@ -1,8 +1,5 @@
-// The approval snapshot of an agent's `page.mergeJournalDuplicates` (issue #2017), shaped like the choke point's own
-// destructive checks and like the page replace's (`docs/pageReplaceApproval.ts`): the gateway asks for it when the
-// agent calls the operation and again when the approved request is executed, and the two must agree. The merge itself
-// is `mergeJournalDuplicates` (issue #1726), run through `mergeJournalDuplicatesForWriter`.
-// Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
+// Approval snapshot of an agent's `page.mergeJournalDuplicates`: computed when the agent calls the operation and
+// again when the approved request executes, and the two must agree.
 import type { PoolClient } from "pg";
 import { listDatabaseLabelsByIds } from "../chokePoint/databasesStore.js";
 import { buildResourceSnapshot, type DestructiveResourceProjection } from "../chokePoint/destructiveProjection.js";
@@ -18,15 +15,14 @@ import {
 } from "./journalMergeForWriter.js";
 import { findJournalDuplicatePair } from "./journalStore.js";
 
-/** The approval-gated check of `page.mergeJournalDuplicates`. */
 export interface JournalMergeCheck {
   operation: "page.mergeJournalDuplicates";
   input: JournalMergePeriod;
-  /** The agent's project: its `write` access to the Journal database is checked as the merge itself checks it. */
+  /** Its `write` access to the Journal database is checked as the merge itself checks it. */
   agentProjectItemId?: string;
 }
 
-/** What an approval request for a merge was computed from: the period and the two entries it would merge, `null` for each when the period has no two live entries. */
+/** Ids are `null` when the period has no two live entries. */
 interface JournalMergeProjection {
   type: string;
   period: string;
@@ -48,20 +44,16 @@ function pairOfProjection(projection: unknown): ApprovedJournalPair | null {
   throw new Error("Invalid Journal merge projection");
 }
 
-/** The stored title of an entry, or `null` for an entry without one. Page content never reaches the description. */
+/** Page content never reaches the description. */
 function titleOf(item: ItemRow | undefined, titleKey: string): string | null {
   const title = item?.properties[titleKey];
   return typeof title === "string" ? title : null;
 }
 
 /**
- * Authorizes and projects a `page.mergeJournalDuplicates` without writing: the agent's project needs write access to
- * the Journal database and `period` has to be a canonical key of `type` (`requireJournalForMerge`), so a call that
- * would be refused creates no approval request. A period with no two live entries is projected too, with no pair: its
- * approved request replays as `{ merged: false }`, or as a conflict when a duplicate appeared in between.
- *
- * The snapshot holds the period and the ids of the two entries; the description names the period and the two entries'
- * stored titles, and holds no page content.
+ * Authorizes without writing, so a call that would be refused creates no approval request. A period with no pair is
+ * projected too: its approved request replays as `{ merged: false }`, or a conflict if a duplicate appeared since.
+ * The description holds stored titles only, no page content.
  */
 export async function computeJournalMergeProjection(
   client: PoolClient,
@@ -105,10 +97,7 @@ export async function computeJournalMergeProjection(
   };
 }
 
-/**
- * Runs an approved merge in the replay's transaction: the entries the projection of the replay found (`currentResource`
- * of `computeJournalMergeProjection`) are the ones the merge has to take, see `mergeJournalDuplicatesForWriter`.
- */
+/** The merge must take the entries the replay's projection found (`currentResource`). */
 export function mergeApprovedJournalDuplicates(
   client: PoolClient,
   period: JournalMergePeriod,

@@ -67,14 +67,12 @@ export async function fetchLibraryJson(
 
 export type LibraryCoverDownload = (url: string) => Promise<DownloadedLibraryCover | undefined>;
 
-/** Why a cover image could not be fetched from a host that was allowed to be asked. */
 export type LibraryCoverUnavailableReason = "timeout" | "network" | "status";
 
 /**
- * How a cover download ended, for a caller that must tell the caller's mistake from a failure of the host.
- * `refused`: the URL is not a baseline outbound URL or its host resolves to an address the outbound policy denies,
- * so nothing was fetched. `unusable`: the host answered, but not with a usable image (not an image type, empty, over
- * the size cap). `unavailable`: the host could not be reached or did not answer with a success status.
+ * Distinguishes the caller's mistake from a host failure. `refused`: not a baseline outbound URL or the address
+ * policy denies its host, nothing fetched. `unusable`: answered, but not a usable image. `unavailable`: unreachable
+ * or non-success status.
  */
 export type LibraryCoverDownloadOutcome =
   | { kind: "downloaded"; cover: DownloadedLibraryCover }

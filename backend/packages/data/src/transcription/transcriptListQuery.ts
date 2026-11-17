@@ -11,14 +11,13 @@ export type TranscriptPairing = (typeof TRANSCRIPT_PAIRINGS)[number];
 
 export interface TranscriptListFilters {
   eventId: string | null;
-  /** A speaker (`speakers`) or a participant (`people`) of the transcript (issue #1581). */
+  /** A speaker (`speakers`) or a participant (`people`) of the transcript. */
   personId: string | null;
-  /** The transcript's `project` (issue #1581). */
   projectId: string | null;
   pairing: TranscriptPairing | null;
 }
 
-/** A page position: the last row's sort date (UTC, microseconds; `null` for an undated row) and id. */
+/** The last row's sort date (UTC, microseconds; `null` when undated) and id. */
 export interface TranscriptListCursor {
   at: string | null;
   id: string;
@@ -37,7 +36,7 @@ const rowSchema = z.object({
   questions: z.array(z.object({ proposalId: z.uuid(), speaker: z.string() })),
   speakerKeys: z.array(z.string()).nullable(),
   meetingNotes: z.unknown(),
-  /** The tenant's `timezone` setting, `null` while it holds none; the time of "Recording D. M. HH:MM" is read in it. */
+  /** `null` while unset; the time of "Recording D. M. HH:MM" is read in it. */
   timezone: z.string().nullable(),
   mappedSpeakers: z
     .array(z.object({ speaker: z.string(), personId: z.uuid(), name: z.string().nullable() }))
@@ -53,34 +52,20 @@ const rowSchema = z.object({
 });
 
 /**
- * `GET /api/transcripts` (issue #1636) as one SQL statement over `items`, `item_relations`,
- * `item_automation`, the Processing proposals database and the System settings database (the tenant's
- * `timezone` setting, issue #1830). Every relation endpoint counts only when
- * it is a live item of the expected database, so an unknown, foreign or trashed filter target
- * yields an empty list.
+ * `GET /api/transcripts` as one SQL statement. Every relation endpoint counts only when it is a live
+ * item of the expected database, so an unknown, foreign or trashed filter target yields an empty list.
  *
- * Pairing, in this precedence: `processing` while `status` is `processing`; `none` while it is
- * `error`; `event` when the `event` edge targets a live Event; `awaitingEvent` (with that card's
- * `proposalId`, the oldest by `created_at` then id) when a `transcript` card in `proposed` or
- * `needsClarification` links the transcript through `sourceTranscript` and carries a `database`
- * envelope on Events or a `relation` envelope on `event`; otherwise `none`. A rejected card is in
- * neither status, so it pairs nothing. The open questions are the transcript's speaker cards in those
- * statuses: a `relation` envelope on `speakers` (its metadata names the speaker) or a `speaker`
- * context; the speaker keys of the segments, in first-appearance order, are read only for a
- * transcript that has such a card or stored `meetingNotes`, to number the questions and to render the
- * stored notes, whose speaker tokens are named from the mapped speakers: the rendered notes supply the
- * `shortSummary` and the generated title behind `suggestedName`. `segments` itself is never returned.
+ * Pairing precedence: `processing` while processing; `none` on `error`; `event` with a live Event
+ * edge; `awaitingEvent` (oldest card by `created_at`, id) when a `proposed`/`needsClarification`
+ * `transcript` card carries a `database` envelope on Events or a `relation` envelope on `event`;
+ * otherwise `none`. A rejected card pairs nothing. Segment speaker keys are read only for transcripts
+ * with an open speaker card or stored notes (to number questions and render notes); `segments` itself
+ * is never returned.
  *
- * Names (issue #1830): `displayName` is `resolveTranscriptDisplayName` (the user's `name`, else the live
- * linked Event's name, else "Recording D. M. HH:MM" read in the tenant `timezone` setting, the default zone
- * while it holds none) and `suggestedName` is `resolveTranscriptSuggestedName` (the rendered generated
- * title, only while there is no user-entered `name` and no live Event). Both are resolved per row, after
- * the statement, from the facts it returned.
+ * `displayName` and `suggestedName` are resolved per row after the statement.
  *
- * Order: by recording `date`, descending by default (`asc` on request), then id in the same
- * direction; an undated transcript sorts after every dated one in both directions. The keyset
- * cursor is the last row's `(date, id)`. `limit + 1` rows are read so the caller can tell whether
- * another page follows.
+ * Order: recording `date` (desc by default), then id in the same direction; undated rows sort last in
+ * both directions. Keyset cursor is `(date, id)`; `limit + 1` rows tell whether a page follows.
  */
 export async function listTranscriptsPage(
   client: Queryable,
@@ -89,7 +74,6 @@ export async function listTranscriptsPage(
     order: "asc" | "desc";
     cursor: TranscriptListCursor | null;
     filters: TranscriptListFilters;
-    /** The reader's locale, for the speaker labels of the rendered notes text. */
     locale: string;
   },
 ) {
@@ -242,7 +226,7 @@ ORDER BY p.sort_at IS NULL, p.sort_at ${direction}, p.id ${direction}
         cursor: { at: parsed.sortAt, id: parsed.id },
         transcript: {
           id: parsed.id,
-          // Issue #1830: the user's name, else the live Event's name, else "Recording D. M. HH:MM".
+          // The user's name, else the live Event's name, else "Recording D. M. HH:MM".
           displayName: await resolveTranscriptDisplayName(
             { ...nameFacts, date: parsed.date },
             parsed.timezone ?? DEFAULT_TIMEZONE,
@@ -264,10 +248,7 @@ ORDER BY p.sort_at IS NULL, p.sort_at ${direction}, p.id ${direction}
   );
 }
 
-/**
- * Issue #1695: the stored notes' title and short summary rendered with `renderMeetingNotes`, from the speaker
- * keys and the mapped speakers the same statement returned, so it costs no further query; `null` without notes.
- */
+/** From the speaker data the same statement returned, so it costs no further query; `null` without notes. */
 async function renderNotes(
   row: z.infer<typeof rowSchema>,
   speakerKeys: string[],

@@ -40,7 +40,7 @@ import {
 } from "@semprec/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
-/** Issue #1758: an agent write that would end a value link waits for approval, and the replay revalidates the link. */
+/** An agent write that would end a value link waits for approval, and the replay revalidates the link. */
 
 const metadataResolver: CollectionMetadataResolver = {
   resolve: () => ({
@@ -138,7 +138,7 @@ async function linkState(runtime: Pool, itemId: string, propertyKey: string) {
 async function versionOf(itemId: string): Promise<string> {
   const item = await cp.findItem(itemId);
   if (!item) throw new Error("Item not found");
-  return item.updatedAt;
+  return item.version;
 }
 
 async function agent(runtime: Pool): Promise<AuthenticatedActor> {

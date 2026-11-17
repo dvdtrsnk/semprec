@@ -2,14 +2,10 @@ const IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const CODE_PATTERN = /^[A-Z0-9_]{1,32}$/;
 
 /**
- * The log fields for a failed module agent tool call: only the error's class name and, when it has
- * one, its code (a Postgres SQLSTATE such as `23505`, or a Node code such as `ECONNRESET`). A module
- * handler writes user content, so the error it raises can carry that content: a Postgres `detail`
- * holds the offending column values and a `ZodError` holds the rejected input. The shared `err`
- * serializer writes every enumerable field and redacts only secret-shaped text, and logs are not
- * tenant-scoped, so the error object itself is never logged
- * (`docs/adr/2026-10-18-fatal-shutdown-rejection-and-mail-failure-logs.md` states the same rule for
- * mail). A name or code that is not a short identifier is dropped, because it could hold text.
+ * Log fields for a failed module tool call: only the error's class name and code (SQLSTATE, Node code). The error
+ * object itself is never logged: a handler writes user content, so a Postgres `detail` or `ZodError` can carry it,
+ * the `err` serializer only redacts secret-shaped text, and logs are not tenant-scoped. A name or code that is not a
+ * short identifier is dropped.
  */
 export function describeModuleToolFailure(err: unknown): { errorName: string; errorCode?: string } {
   if (!(err instanceof Error)) return { errorName: typeof err };

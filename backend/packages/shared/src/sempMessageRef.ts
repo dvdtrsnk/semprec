@@ -43,9 +43,8 @@ const mailAttachmentRefSchema = z.strictObject({
 });
 
 /**
- * A mail thread, named by its public thread id (not the id of its Threads item, which no client addresses). The id is
- * stored as given: a thread merged away keeps resolving through its alias and is translated when the ref is read or
- * expanded, not when it is sent.
+ * A mail thread by its public thread id (no client addresses its Threads item). Stored as given: a merged-away thread
+ * resolves through its alias when the ref is read or expanded.
  */
 const mailThreadRefSchema = z.strictObject({
   kind: z.literal("mailThread"),
@@ -64,9 +63,8 @@ const approvalRequestRefSchema = z.strictObject({
 });
 
 /**
- * A future occurrence of a repeating task that exists only as a computed day: named by its series and day, with no item
- * id (docs/adr/2026-10-25-task-and-event-recurrence-model.md). `seriesId` is any non-empty string here; only a series
- * of the caller's tenant makes a reference valid.
+ * A future occurrence of a repeating task that exists only as a computed day: series plus day, no item id. Only a
+ * series of the caller's tenant makes the ref valid.
  */
 const taskOccurrenceRefSchema = z.strictObject({
   kind: z.literal("taskOccurrence"),
@@ -83,8 +81,8 @@ const taskTraceRefSchema = z.strictObject({
 });
 
 /**
- * One night of sleep, named by the calendar day of its evening: the plan of the wake day merged with an optional
- * exception is a computed value, not an item, so the ref carries no item id. It is virtual: no row has to exist for it.
+ * One night of sleep, named by the day of its evening. The wake day's plan merged with an optional exception is
+ * computed, not an item, so no row has to exist.
  */
 const sleepNightRefSchema = z.strictObject({
   kind: z.literal("sleepNight"),
@@ -107,7 +105,6 @@ export const sempMessageRefSchema = z.discriminatedUnion("kind", [
 
 export type SempMessageRef = z.infer<typeof sempMessageRefSchema>;
 
-/** A stored user-turn reference with the label captured when it was sent. */
 export const labeledSempMessageRefSchema = z.discriminatedUnion("kind", [
   itemRefSchema.safeExtend({ label: z.string() }),
   blockRefSchema.safeExtend({ label: z.string() }),
@@ -159,13 +156,10 @@ export const SEMP_MESSAGE_REF_KINDS = [
 ] as const satisfies readonly SempMessageRef["kind"][];
 
 /**
- * Dedup identity of a ref: the kind plus its id fields, the block id for
- * blocks, the range for segments and the night for a sleep night. `messageId`
- * of an agent run ref is part of the identity (issue gh-1936): it selects one
- * answer of a chat run, so a whole-run ref and each answer ref of the run are
- * distinct refs, and only the same answer posted twice is a duplicate. A mail
- * thread is keyed by the id as given, so a merged-away thread id and the id of
- * the thread that absorbed it are two refs.
+ * Dedup identity of a ref: kind plus id fields, the block id for blocks, the range for segments, the night for a sleep
+ * night. An agent run ref's `messageId` is part of it: a whole-run ref and each answer ref are distinct, and only the
+ * same answer posted twice is a duplicate. A mail thread is keyed by the id as given, so a merged-away id and its
+ * survivor's id are two refs.
  */
 export function messageRefKey(ref: SempMessageRef): string {
   switch (ref.kind) {

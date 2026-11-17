@@ -3,8 +3,6 @@ import { runInTenant } from "@semprec/shared";
 import { createComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { requireAffectedRows, withTransaction, type Queryable } from "../db/pool.js";
-import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
-import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
 import { seedDefaultInboxItemTypes } from "../inbox/defaultInboxTypes.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { logger } from "./logger.js";
@@ -14,9 +12,8 @@ function errorName(err: unknown): string {
 }
 
 /**
- * Throws unless row-level security applies to the connection's role. Provisioning reads "is this
- * tenant already seeded?" and writes its rows; as a superuser or table owner RLS is bypassed and
- * those reads would see every tenant.
+ * Throws unless RLS applies to the connection's role: provisioning reads "already seeded?", which a
+ * superuser or table owner would answer across every tenant.
  */
 export async function assertRowSecurityActive(queryable: Queryable): Promise<void> {
   const { rows } = await queryable.query<{ active: boolean }>(
@@ -30,22 +27,19 @@ export async function assertRowSecurityActive(queryable: Queryable): Promise<voi
 }
 
 /**
- * Creates one tenant's system databases and activates the tenant: seeds the system databases,
- * runs every module's data migrations, seeds the default Inbox item types (issue gh-1977), then moves a
- * `provisioning` tenant to `active`. A `suspended` tenant is seeded and stays suspended; a `deleting` or unknown
- * tenant rejects.
- * Everything runs inside the tenant's scope, and the pool must connect as a role RLS applies to.
+ * Seeds the tenant's system databases and default Inbox item types, then moves `provisioning` to
+ * `active`. A `suspended` tenant is seeded and stays suspended; `deleting` or unknown rejects. Runs in
+ * the tenant's scope on a role RLS applies to.
  *
- * Resolves `"created"` exactly when this call wrote the structural seed, so of two concurrent
- * calls for one tenant exactly one reports it.
+ * Resolves `"created"` exactly when this call wrote the structural seed, so of two concurrent calls
+ * exactly one reports it.
  */
 export async function provisionTenant(pool: Pool, tenantId: string): Promise<"created" | "already-provisioned"> {
   return runInTenant(tenantId, async () => {
     await assertRowSecurityActive(pool);
     const seeded = await seedSystem(pool, createViewTypeRegistry(), createComputedKeyRegistry());
-    await runModuleDataMigrations(pool, await loadFullModuleRegistry());
-    // After the system seed and the module data migrations: the defaults target databases the seed creates. The step
-    // creates only the defaults the tenant's marker does not list, so a provisioning that is repeated adds none.
+    // After the system seed, whose databases the defaults target. Only defaults the tenant's marker does not
+    // list are created, so a repeated provisioning adds none.
     await withTransaction(pool, async (client) => {
       await seedDefaultInboxItemTypes(client);
     });
@@ -69,10 +63,8 @@ export async function provisionTenant(pool: Pool, tenantId: string): Promise<"cr
 }
 
 /**
- * Runs `fn` once for every tenant a deploy must keep current — `provisioning` (to finish it),
- * `active` and `suspended` (to keep its data shape current), never `deleting` — each inside that
- * tenant's scope, one after another. A failing tenant does not stop the others; afterwards one
- * `AggregateError` naming the failed tenant ids is thrown.
+ * Runs `fn` sequentially in the scope of every `provisioning`, `active` and `suspended` tenant (never
+ * `deleting`). A failure does not stop the rest; an `AggregateError` naming the failed ids follows.
  */
 export async function forEachMaintainedTenant(pool: Pool, fn: (tenantId: string) => Promise<void>): Promise<void> {
   const { rows } = await pool.query<{ id: string }>(

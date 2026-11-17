@@ -3,13 +3,7 @@ import type { Pool } from "pg";
 import { loadBlobMetadataForItems, withTransaction } from "@semprec/data";
 import type { ItemBlobMetadata, ItemRow, ItemValueLinks } from "@semprec/data";
 
-/**
- * The wire shape every successful item read or write returns (issue #238) — always the full
- * authoritative row, never an empty 204. `computed` is read-only from this envelope's point of
- * view (a write attempt to it is rejected upstream with `computed_readonly`). `updatedAt` doubles
- * as the `ifVersion` token a caller passes back on its next write; there is no separate version
- * counter.
- */
+/** Always the full authoritative row, never an empty 204. `version` is the `ifVersion` token. */
 export interface ItemEnvelope {
   derived?: Item["derived"];
   automation?: Item["automation"];
@@ -19,22 +13,20 @@ export interface ItemEnvelope {
   databaseId: string;
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
-  /** Set by the database on insert; additive, so a client that ignores it is unaffected. */
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  version: string;
   fromInbox?: boolean;
-  /** Present only when the read asked for `include=links` (issue #1403). */
+  /** Present only when the read asked for `include=links`. */
   links?: ItemValueLinks;
   /**
    * Per property key, the size, type and filename of the blob a `file`/`image` property points at.
-   * Omitted when the item has no such property with a blob the caller can see; `properties` is
-   * unchanged either way.
+   * Omitted when the item has no blob the caller can see.
    */
   blobs?: ItemBlobMetadata;
 }
 
-/** The one place an `ItemRow` (the choke-point's internal row shape) is projected onto the public envelope. */
 export function toItemEnvelope(
   item: ItemRow & {
     derived?: Item["derived"];
@@ -55,6 +47,7 @@ export function toItemEnvelope(
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     deletedAt: item.deletedAt,
+    version: item.version,
     ...(item.fromInbox === undefined ? {} : { fromInbox: item.fromInbox }),
     ...(item.links === undefined ? {} : { links: item.links }),
     ...(item.derived === undefined ? {} : { derived: item.derived }),
@@ -63,9 +56,8 @@ export function toItemEnvelope(
 }
 
 /**
- * `toItemEnvelope` for every item of a response, plus the `blobs` field — filled by one lookup for
- * all of them, so a response never issues a blob query per item. Must run inside the caller's
- * tenant scope. The returned envelopes keep the order of `items`.
+ * One blob lookup for all items, never one per item. Must run inside the caller's tenant scope;
+ * keeps the order of `items`.
  */
 export async function toItemEnvelopes(
   pool: Pool,
@@ -79,7 +71,6 @@ export async function toItemEnvelopes(
   });
 }
 
-/** Single-item form of `toItemEnvelopes`. */
 export async function toItemEnvelopeWithBlobs(
   pool: Pool,
   item: ItemRow & {
@@ -95,7 +86,7 @@ export async function toItemEnvelopeWithBlobs(
   return envelope;
 }
 
-/** `GET /api/items/:id?include=path`'s wire shape (issue #241): the item envelope plus the server-assembled breadcrumb, root-first, ending with the item itself — omitted entirely when `?include=path` wasn't requested. */
+/** The breadcrumb is root-first and ends with the item itself. */
 export interface ItemDetailEnvelope extends ItemEnvelope {
   path?: ItemEnvelope[];
 }

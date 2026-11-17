@@ -39,11 +39,11 @@ interface Session {
   speechController: AbortController | undefined;
   textState: VoiceTextState;
   /**
-   * The turn whose answer is being spoken: its run and assistant message, which the speech calls carry so that their
-   * usage counts for that reply (issue #2020). Set when a turn begins to be spoken and cleared when the turn ends.
+   * Its run and assistant message, which the speech calls carry so their usage counts for that
+   * reply. Set when a turn starts being spoken, cleared when it ends.
    */
   speechTurn: { runId: string; assistantMessageId: string } | undefined;
-  /** The assistant messages this session asked to cancel; a cancelled reply among them ends its turn quietly. */
+  /** A cancelled reply among them ends its turn quietly. */
   stoppedTurns: Set<string>;
   speaking: boolean;
   dispose: (() => Promise<void>) | undefined;
@@ -68,7 +68,6 @@ function isSessionCancellation(error: unknown, signal: AbortSignal): boolean {
   );
 }
 
-/** Bounded, ephemeral sentence and streamed-prefix state for one voice session. */
 export class VoiceTextState {
   private hash = createHash("sha256");
   private units = 0;
@@ -149,7 +148,7 @@ export class VoiceTextState {
   }
 }
 
-/** `heartbeatRuleKinds` resolves the active modules' rule kinds for the thread detail (`resolveModuleRuleKinds`). */
+/** `heartbeatRuleKinds` resolves the active modules' rule kinds for the thread detail. */
 export function createVoiceSessionHandler(
   pool: Pool,
   gateway: HttpAiGatewayClientConfig,
@@ -176,9 +175,9 @@ export function createVoiceSessionHandler(
     }
   }
   /**
-   * Handles a stop command: speech output stops at once, and every running turn of the session's thread is asked to
-   * cancel. The lookup runs after the admissions already queued, so `threadId` is the thread of the earlier utterances;
-   * with no thread or no running turn nothing else happens. The command is never stored as a message.
+   * Speech output stops at once and every running turn of the session's thread is asked to cancel.
+   * The lookup runs after already queued admissions, so `threadId` is that of the earlier
+   * utterances. The command is never stored as a message.
    */
   function stopCommand(session: Session): void {
     stopSpeech(session);
@@ -211,7 +210,7 @@ export function createVoiceSessionHandler(
       while (session.textState.hasSentences && !signal.aborted) {
         const text = session.textState.takeSentence();
         if (!text) continue;
-        // Read together with the sentence: the queue holds only the sentences of the turn that is set here.
+        // Read together with the sentence: the queue holds only the sentences of this turn.
         const speechTurn = session.speechTurn;
         const audio = await synthesizeSpeech(gateway, {
           text,
@@ -264,9 +263,9 @@ export function createVoiceSessionHandler(
       ),
     );
     session.threadId = result.threadId;
-    // The speech-to-text rows reserved since the previous question belong to this turn. A stream that is already
-    // closed cannot receive the message (the provider finished after the client ended it), so the rows of that
-    // last utterance stay unattributed (see the ADR consequences) and a false answer needs no handling.
+    // The speech-to-text rows reserved since the previous question belong to this turn. A stream
+    // already closed (the provider finished after the client ended it) cannot receive the message,
+    // so that last utterance's rows stay unattributed and a false answer needs no handling.
     session.stream?.attribute(result.assistantMessageId);
     return result;
   }
@@ -277,7 +276,6 @@ export function createVoiceSessionHandler(
       runInTenant(session.identity.tenantId, () =>
         getSempVoiceDelivery(pool, result.threadId, result.assistantMessageId),
       );
-    /** True for a reply that ended as the cancellation this session asked for with a stop command. */
     const stoppedByCommand = (reply: Awaited<ReturnType<typeof readDelivery>>): boolean =>
       reply?.status === "error" &&
       reply.errorCode === "cancelled" &&
@@ -289,7 +287,7 @@ export function createVoiceSessionHandler(
     }
     signal.throwIfAborted();
     if (stoppedByCommand(delivery)) {
-      // The command landed before the turn had a run to watch: the cancellation answers it, nothing is left to speak.
+      // The command landed before the turn had a run to watch: the cancellation answers it.
       stopSpeech(session);
       session.stoppedTurns.delete(result.assistantMessageId);
       return;
@@ -362,14 +360,14 @@ export function createVoiceSessionHandler(
           },
         });
       } catch (watchError) {
-        // The watch refuses a reply that was cancelled before it started: when this session's stop command did that,
-        // the turn is over and nothing failed. Any other refusal is the failure it reports.
+        // The watch refuses a reply cancelled before it started: when this session's stop command
+        // did that, nothing failed.
         if (signal.aborted || !session.stoppedTurns.has(result.assistantMessageId)) throw watchError;
         let cancelled: boolean;
         try {
           cancelled = stoppedByCommand(await readDelivery());
         } catch (readError) {
-          // The refusal of the watch stays primary; the failed lookup is kept next to it.
+          // The watch refusal stays primary; the failed lookup is kept next to it.
           throw new AggregateError([watchError, readError], "Voice run watch and reply lookup failed", {
             // eslint-disable-next-line preserve-caught-error
             cause: watchError,
@@ -385,7 +383,7 @@ export function createVoiceSessionHandler(
         signal.throwIfAborted();
         if (!delivery) throw new Error("Voice turn unavailable");
         if (delivery.status === "error") {
-          // A turn this session stopped by voice ends as a cancellation: that answers the command, it is no failure.
+          // A turn this session stopped by voice ends as a cancellation, which is no failure.
           if (!stoppedByCommand(delivery)) throw new Error("Voice turn unavailable");
           stopped = true;
           break;

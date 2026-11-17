@@ -8,11 +8,8 @@ import type { ItemRow } from "../types.js";
 import type { InboxFingerprintV2Input } from "./fingerprint.js";
 import { z } from "zod";
 /**
- * The attachment hashes that version 2 of the fingerprint covers (issue #1606): one per attachment
- * reference of the item, the blob's `content_hash`. A blob without a content hash is covered by its id
- * instead, so adding or removing it still changes the value; uploads always store a hash
- * (`blobs/fileUploadStore.ts`). Read on the caller's client, so it belongs to the tick's read
- * transaction, and never taken from a job payload.
+ * A blob without a content hash is covered by its id, so adding or removing it still changes the value. Read on the
+ * caller's client inside the tick's read transaction, never taken from a job payload.
  */
 async function readAttachmentHashes(client: PoolClient, inboxItemId: string): Promise<string[]> {
   const { rows } = await client.query<{ attachment_hash: string }>(
@@ -25,7 +22,6 @@ async function readAttachmentHashes(client: PoolClient, inboxItemId: string): Pr
   return rows.map((row) => row.attachment_hash);
 }
 
-/** The version 2 fingerprint input of an Inbox item and its recognized type (issue #1606). */
 export async function inboxFingerprintInput(
   client: PoolClient,
   item: ItemRow,
@@ -49,10 +45,8 @@ export async function getRelationDefinitionByKey(client: PoolClient, databaseId:
 }
 
 /**
- * Resolves the Inbox item's linked, recognized type (issue #223's "recognized type" gate):
- * `null` for any case `createSemprecTickAction` below turns into `needsClarification`
- * (issue #104) — no `type` relation, a dangling/deleted target, or a type missing a valid
- * `processingMethod`.
+ * `null` for every case the tick turns into `needsClarification`: no `type` relation, a dangling or deleted target,
+ * or a type without a valid `processingMethod`.
  */
 export async function resolveRecognizedType(
   client: PoolClient,

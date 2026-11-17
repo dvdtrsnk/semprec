@@ -23,10 +23,9 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 }
 
 /**
- * Emails/Folders are schema-locked, owner:'system' databases — their rows are written by the
- * sync worker through the stores, not through the generic create path — so these fixtures
- * insert directly, exactly the way mail/ingest.ts does. Everything the mailbox *reads* below
- * still goes through the generic choke-point operations.
+ * Emails/Folders are schema-locked, owner:'system' databases written by the sync worker through the
+ * stores, so these fixtures insert directly as mail/ingest.ts does. Everything the mailbox reads goes
+ * through the generic choke-point operations.
  */
 async function insertSystemItem(databaseId: string, properties: Record<string, unknown>): Promise<string> {
   const client = await pool.connect();
@@ -45,7 +44,10 @@ async function relationPropertyId(databaseId: string, key: string): Promise<stri
   return property.id;
 }
 
-/** Folders' `mailbox`/Emails' `folder` relations are `owner: 'system'` (seed/seedEmailModule.ts) — writable only through the protected entry point with the module's own context, same as `insertSystemItem` above bypasses the generic create path. */
+/**
+ * Folders' `mailbox`/Emails' `folder` relations are `owner: 'system'`: writable only through the
+ * protected entry point with the module's own context.
+ */
 async function createSystemRelation(
   relationPropertyId: string,
   callerItemId: string,
@@ -86,8 +88,8 @@ describe("mailbox client view (issue #96)", () => {
         flaggedPropertyKey: "flagged",
       });
 
-      // The registered view type is what the client resolves the renderer through — the
-      // backend itself never interprets `clientComponent`.
+      // The client resolves the renderer through the registered view type; the backend never interprets
+      // `clientComponent`.
       expect(viewTypeRegistry.get(MAILBOX_CLIENT_VIEW_TYPE)?.clientComponent).toBe("mailboxClient");
     });
 

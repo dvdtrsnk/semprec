@@ -8,7 +8,6 @@ import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.j
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import * as viewsStore from "../../chokePoint/viewsStore.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
-import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { withTransaction } from "../../db/pool.js";
 import { ConflictError } from "../../errors.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -18,7 +17,6 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import type { ViewRow } from "../../types.js";
 import { createTaskHostEventPutRouteHandler } from "../taskHostEventRouteHandlers.js";
 import { countTasksToday, TASKS_TODAY_VIEW_KEY, tasksTodayFilter } from "../todayView.js";
-import { runTasksTodayViewCutoverMigration } from "../todayViewCutoverMigration.js";
 
 interface SeededTenant {
   id: string;
@@ -70,19 +68,17 @@ async function event(properties: Record<string, unknown>): Promise<string> {
 const updateTask = (taskId: string, propertiesPatch: Record<string, unknown>) =>
   runInTenant(tenant.id, () => cp.updateItem({ databaseId: tenant.tasksId, itemId: taskId, propertiesPatch }));
 
-/** Puts the task into the event through the route of issue #1764, which stamps the edge's `addedAt` from the clock. */
+/** Through the host-event route, which stamps `addedAt` from the clock. */
 const putInEvent = (taskId: string, eventId: string) =>
   runInTenant(tenant.id, () =>
     createTaskHostEventPutRouteHandler(pool)({ params: { id: taskId, eventId }, body: {}, identity }),
   );
 
-/** The Today views of the Tasks database of `owner`, found by their `systemKey` as a client finds them. */
 async function todayViews(owner: SeededTenant = tenant): Promise<ViewRow[]> {
   const views = await runInTenant(owner.id, () => cp.listViewsByDatabase(owner.tasksId));
   return views.filter((view) => view.config.systemKey === TASKS_TODAY_VIEW_KEY);
 }
 
-/** The ids the Today view lists at the current (faked) clock. */
 async function todayList(owner: SeededTenant = tenant): Promise<string[]> {
   const [view] = await todayViews(owner);
   if (!view) throw new Error("The Today view is missing");
@@ -94,7 +90,6 @@ function openCount(owner: SeededTenant = tenant, now?: Date): Promise<number> {
   return runInTenant(owner.id, () => withTransaction(pool, (client) => countTasksToday(client, now)));
 }
 
-/** All views of the tenant that carry any `systemKey`, as the unique index sees them. */
 async function systemKeyViewCount(owner: SeededTenant = tenant): Promise<number> {
   return runInTenant(owner.id, async () => {
     const { rows } = await pool.query<{ count: number }>(
@@ -234,7 +229,7 @@ describe("the Today list of the Tasks database (issue #1798)", () => {
   it("falls back to the effective day for a done task without a completedOn", async () => {
     const [dueToday, dueBefore] = [await task({ date: "2026-10-16" }), await task({ date: "2026-10-14" })];
     for (const id of [dueToday, dueBefore]) await updateTask(id, { status: "done" });
-    // Synthetic state: a task completed before issue #1544 stores no completedOn, and the Tasks transform always writes one.
+    // Synthetic state: a legacy completed task without completedOn, which the Tasks transform always writes now.
     await runInTenant(tenant.id, () =>
       pool.query("UPDATE items SET properties = properties - 'completedOn' WHERE id = ANY($1::uuid[])", [
         [dueToday, dueBefore],
@@ -318,56 +313,6 @@ describe("the Today system view (issue #1798)", () => {
     expect(await systemKeyViewCount()).toBe(1);
     const all = await runInTenant(tenant.id, () => cp.listViewsByDatabase(tenant.tasksId));
     expect(all.filter((view) => view.isDefault)).toHaveLength(1);
-  });
-
-  describe("cutover for a tenant seeded before it", () => {
-    async function removeTodayView(): Promise<void> {
-      // Synthetic state: the write path refuses to delete a system view, and a tenant seeded before this issue has none.
-      await runInTenant(tenant.id, () => pool.query("DELETE FROM views WHERE config ? 'systemKey'"));
-      expect(await todayViews()).toHaveLength(0);
-    }
-
-    it("creates the view on the first run and nothing on the second", async () => {
-      await removeTodayView();
-      await runInTenant(tenant.id, () => runTasksTodayViewCutoverMigration(pool));
-      const [created] = await todayViews();
-      expect(created).toMatchObject({
-        databaseId: tenant.tasksId,
-        type: "table",
-        createdBy: "system",
-        isDefault: false,
-        config: { systemKey: TASKS_TODAY_VIEW_KEY, filter: tasksTodayFilter({ openOnly: false }) },
-      });
-      await runInTenant(tenant.id, () => runTasksTodayViewCutoverMigration(pool));
-      const after = await todayViews();
-      expect(after.map((view) => view.id)).toEqual([created?.id]);
-      expect(await systemKeyViewCount()).toBe(1);
-    });
-
-    it("leaves a view that exists untouched", async () => {
-      const [before] = await todayViews();
-      await runInTenant(tenant.id, () => runTasksTodayViewCutoverMigration(pool));
-      expect(await todayViews()).toEqual([before]);
-    });
-
-    it("skips a tenant that has no Tasks database", async () => {
-      const unseeded = await createTestTenant(admin);
-      await runInTenant(unseeded, () => runTasksTodayViewCutoverMigration(pool));
-      expect(await systemKeyViewCount({ id: unseeded, tasksId: "", eventsId: "" })).toBe(0);
-    });
-
-    it("runs as a step of runTenantCutoverMigrations", async () => {
-      await removeTodayView();
-      await runTenantCutoverMigrations(pool);
-      expect(await todayViews()).toHaveLength(1);
-    }, 120_000);
-
-    it("serves the list through the view it created", async () => {
-      await removeTodayView();
-      await runInTenant(tenant.id, () => runTasksTodayViewCutoverMigration(pool));
-      const taskId = await task({ date: "2026-10-16" });
-      expect(await todayList()).toContain(taskId);
-    });
   });
 
   describe("unique key index", () => {

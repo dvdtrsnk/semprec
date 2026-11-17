@@ -24,7 +24,7 @@ async function pendingMailSyncJobCount(mailboxItemId: string): Promise<number> {
   return Number(rows[0]?.count ?? 0);
 }
 
-/** A connection that only ever ends when the test explicitly ends it — models a healthy, indefinitely-idling IMAP session. */
+/** A connection that ends only when the test ends it: a healthy, indefinitely idling IMAP session. */
 class FakeConnection implements ImapIdleConnection {
   closed = false;
   closeCalls = 0;
@@ -94,7 +94,6 @@ function ownedIdleClient() {
 
 interface FakeTransportOptions {
   folders?: ImapIdleFolderTarget[];
-  /** Returns either a fresh connection or throws to simulate a failed connect attempt — called once per connect() invocation. */
   onConnect?: (folderPath: string, attemptNumber: number) => FakeConnection | "reject";
 }
 
@@ -165,8 +164,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
     const conn = connections.get("INBOX")![0]!;
     conn.onSignal(); // simulates an EXISTS/EXPUNGE/flags notification observed while idling
-    // The signal only ever re-enqueues through the same idempotent jobKey — never a second,
-    // parallel job — so the pending count for this account stays at exactly one.
+    // The signal re-enqueues through the same idempotent jobKey, so exactly one job is pending.
     await vi.waitFor(async () => expect(await pendingMailSyncJobCount("mailbox-1")).toBe(1));
 
     await lifecycle.stop();
