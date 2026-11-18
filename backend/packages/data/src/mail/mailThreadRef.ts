@@ -57,6 +57,8 @@ export async function resolveMailThreadRefTargets(
   LEFT JOIN LATERAL (
     SELECT bool_and(COALESCE(folder.properties->>'specialPurpose' = 'trash', false)) AS all_trash
     FROM folder_definition fd JOIN item_relations r ON r.tenant_id = m.tenant_id AND r.relation_definition_id = fd.id
+      -- The OR lets the item_a and item_b indexes find the edges; the CASE keeps the email's own side.
+      AND (r.item_a = i.id OR r.item_b = i.id)
       AND (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) = i.id
     JOIN items folder ON folder.tenant_id = m.tenant_id AND folder.database_id = (SELECT folders FROM schema_ids)
       AND folder.id = CASE WHEN fd.email_is_a THEN r.item_b ELSE r.item_a END AND folder.deleted_at IS NULL
