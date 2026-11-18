@@ -195,6 +195,7 @@ import {
   peopleLastContactItemRestoreHook,
   peopleLastContactItemUpdateHook,
 } from "./people/lastContactHooks.js";
+import { projectAttachmentAreaEdgeChangedHook } from "./derived/projectAttachmentAreaHook.js";
 import { projectDerivedValueEdgeChangedHook } from "./derived/projectDerivedValueHook.js";
 import { hostItemDeleteHook, hostItemRestoreHook, pageItemDeleteHook, pageItemRestoreHook } from "./docs/pageTrash.js";
 import { mailboxItemRestoreHook } from "./mail/mailboxRestoreHook.js";
@@ -459,6 +460,8 @@ const relationEdgeChangedHooks: readonly RelationEdgeChangedHook[] = [
   // After `linkRuleEdgeHook`, which recomputes the links that are `on`.
   taskSourceEventLinkDetachEdgeChangedHook,
   projectDerivedValueEdgeChangedHook,
+  // An item that gets a project loses its own area edge: the area is derived from the project.
+  projectAttachmentAreaEdgeChangedHook,
   // Each reported create or delete of an Inbox type edge (a repeated create included) queues the Inbox tick and
   // the recompute of the item's Journal day.
   inboxTypeEdgeChangedHook,

@@ -266,6 +266,18 @@ empties the write registries.
 - Realtime relation invalidations collapse to one final event per item/property key per transaction
   (`runAfterCommitKeyed`).
 
+### Values derived from a project
+
+- An item's area (and an Event's company) is read through its project (`data/derived/`). Tasks and
+  mail threads have no area of their own; Files, Health records, Events and Journal days keep an own
+  `area` edge only for an item without a live project.
+- While an item has a live project, the choke point refuses a new own `area`/`company` edge
+  (`assertNotDerivedValueWrite`, `GUARDED_DERIVED_VALUE_SOURCES`).
+- When such an item gets a project edge (from either side), its own `area` edges are deleted in the
+  same transaction by the same writer (`projectAttachmentAreaEdgeChangedHook`), so the project's
+  area is the only one left. An Event's own `company` edge is not removed.
+- An Inbox card offers no field for a value derived from the project.
+
 ### Value links
 
 - A value link (`value_links`, `data/chokePoint/valueLinksStore.ts`) lets the `valueLinks` process

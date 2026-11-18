@@ -78,7 +78,7 @@ describe("loadCardEditorRules (issue #1928)", () => {
     expect(rules).not.toBeNull();
     if (!rules) return;
     expect(fieldKeys(rules)).toContain("followDate");
-    expect([...rules.pseudoKeys].sort()).toEqual(["allDay", "area", "followDate", "followupTask"]);
+    expect([...rules.pseudoKeys].sort()).toEqual(["allDay", "followDate", "followupTask"]);
   });
 
   it("gives an Events card from a transcript the event schema", async () => {

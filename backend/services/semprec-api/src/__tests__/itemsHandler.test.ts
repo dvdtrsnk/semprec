@@ -415,7 +415,8 @@ describe("item routes", () => {
         ((await inZero(() => createChokePoint(runtime).listItemRelations(itemId))) ?? []).map(
           (edge) => edge.targetItemId,
         );
-      expect(await targets(f.event.id)).toContain(f.first.id);
+      // The event lost its own area when it got the project.
+      expect(await targets(f.event.id)).not.toContain(f.first.id);
       for (const itemId of [f.event.id, f.file.id, f.health.id]) {
         expect(await targets(itemId)).not.toContain(f.second.id);
       }

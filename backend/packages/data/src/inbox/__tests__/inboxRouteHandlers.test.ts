@@ -3885,6 +3885,8 @@ describe("inbox custom route handlers", () => {
         timeHiddenWhen: { field: "allDay", equals: true },
       });
       expect(fieldOf(listed, "project")).toMatchObject({ control: "select", optionsSource: "project" });
+      // A task's area is derived from its project, so the card offers no area of its own.
+      expect(fieldsOf(listed).map((field) => field.key)).not.toContain("area");
       expect(fieldOf(listed, "followDate")).toMatchObject({
         control: "date",
         required: true,
@@ -3922,7 +3924,6 @@ describe("inbox custom route handlers", () => {
         "allDay",
         "status",
         "project",
-        "area",
         "followupTask",
         "followDate",
       ]);

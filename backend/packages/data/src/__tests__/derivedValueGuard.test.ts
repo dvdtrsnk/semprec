@@ -141,33 +141,70 @@ describe("derived value creation guard", () => {
       }
     });
   });
-  it("retains and allows deletion of an older manual edge after project attachment", async () => {
+  it.each([
+    { owner: "files", projectKey: "projects", via: "its project property" },
+    { owner: "files", projectKey: null, via: "the project's inverse property" },
+    { owner: "healthRecords", projectKey: "projects", via: "its project property" },
+    { owner: "events", projectKey: "project", via: "its project property" },
+  ] as const)(
+    "removes a $owner item's own area edge when it gets a project through $via",
+    async ({ owner, projectKey }) => {
+      await runInTenant(tenant, async () => {
+        const { cp, db, property } = await fixture();
+        const item = await cp.createItem({ databaseId: db(owner), properties: { name: "Item", ...dated(owner) } });
+        const other = await cp.createItem({ databaseId: db(owner), properties: { name: "Other", ...dated(owner) } });
+        const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+        const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+        const areaProperty = await property(owner, "area");
+        for (const id of [item.id, other.id])
+          await cp.createRelation({ relationPropertyId: areaProperty, callerItemId: id, targetItemId: area.id });
+
+        await (projectKey === null
+          ? cp.createRelation({
+              relationPropertyId: await property("projects", owner),
+              callerItemId: project.id,
+              targetItemId: item.id,
+            })
+          : cp.createRelation({
+              relationPropertyId: await property(owner, projectKey),
+              callerItemId: item.id,
+              targetItemId: project.id,
+            }));
+
+        const edges = await cp.listItemRelations(item.id);
+        expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(true);
+        expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(false);
+        expect((await cp.listItemRelations(other.id))?.some((edge) => edge.targetItemId === area.id)).toBe(true);
+      });
+    },
+  );
+  it("keeps the own area edge when the project link rolls back", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
       const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
       const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
-      const areaProperty = await property("files", "area");
-      await cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id });
       await cp.createRelation({
-        relationPropertyId: await property("files", "projects"),
-        callerItemId: file.id,
-        targetItemId: project.id,
-      });
-      expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === area.id)).toBe(true);
-      const updated = await cp.updateRelation({
-        relationPropertyId: areaProperty,
+        relationPropertyId: await property("files", "area"),
         callerItemId: file.id,
         targetItemId: area.id,
-        metadata: { note: "retained" },
       });
-      expect(updated.metadata).toEqual({ note: "retained" });
-      await cp.deleteRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id });
-      expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === area.id)).toBe(false);
-      await cp.softDeleteItem(db("projects"), project.id);
+      const projects = await property("files", "projects");
+
       await expect(
-        cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
-      ).resolves.toBeDefined();
+        withTransaction(data, async (client) => {
+          await createRelationWithClient(client, {
+            relationPropertyId: projects,
+            callerItemId: file.id,
+            targetItemId: project.id,
+          });
+          throw new Error("rolled back");
+        }),
+      ).rejects.toThrow("rolled back");
+
+      const edges = await cp.listItemRelations(file.id);
+      expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(true);
+      expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(false);
     });
   });
   it("refuses an inverse company edge and does not consult foreign items", async () => {
@@ -265,7 +302,7 @@ describe("derived value creation guard", () => {
       expect(await cp.listItemRelations(event.id)).toEqual(before);
     });
   });
-  it("refuses a changed set before removing its old edge while preserving no-op and delete", async () => {
+  it("refuses a set of the area of an item with a project, and allows clearing it", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
       const event = await cp.createItem({
@@ -273,22 +310,17 @@ describe("derived value creation guard", () => {
         properties: { name: "Event", date: "2026-10-16" },
       });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
-      const first = await cp.createItem({ databaseId: db("areas"), properties: { name: "First" } });
-      const second = await cp.createItem({ databaseId: db("areas"), properties: { name: "Second" } });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
       const relationPropertyId = await property("events", "area");
-      await cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: first.id });
       await cp.createRelation({
         relationPropertyId: await property("events", "project"),
         callerItemId: event.id,
         targetItemId: project.id,
       });
       await expect(
-        cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: second.id }),
+        cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: area.id }),
       ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
-      expect((await cp.listItemRelations(event.id))?.some((edge) => edge.targetItemId === first.id)).toBe(true);
-      await expect(
-        cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: first.id }),
-      ).resolves.toBeDefined();
+      expect((await cp.listItemRelations(event.id))?.some((edge) => edge.targetItemId === area.id)).toBe(false);
       await expect(
         cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: null }),
       ).resolves.toBeNull();
@@ -492,7 +524,7 @@ describe("derived value creation guard", () => {
         () => [holder, ...(waiter ? [waiter] : [])],
       );
       const edges = await cp.listItemRelations(file.id);
-      expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(true);
+      expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(false);
       expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(true);
     });
   });
