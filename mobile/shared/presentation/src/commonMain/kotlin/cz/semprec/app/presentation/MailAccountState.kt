@@ -23,6 +23,8 @@ data class MailAccountDetail(
     val connectionLimit: Int,
     val connectionLimitApplies: Boolean,
     val autonomousSendProjectCount: Int,
+    /** The messages downloaded so far while the first sync runs. */
+    val syncedMessageCount: Int? = null,
 )
 
 data class MailAccountState(

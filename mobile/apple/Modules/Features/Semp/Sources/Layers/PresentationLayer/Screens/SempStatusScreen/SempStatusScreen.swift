@@ -229,6 +229,7 @@ private extension SempStatusScreen {
         case .chat: Text("semp.status.link.chat", bundle: .module)
         case .thread: Text("semp.status.link.thread", bundle: .module)
         case .project: Text("semp.status.link.project", bundle: .module)
+        case .mailbox: Text("semp.status.link.mailbox", bundle: .module)
         }
     }
 }

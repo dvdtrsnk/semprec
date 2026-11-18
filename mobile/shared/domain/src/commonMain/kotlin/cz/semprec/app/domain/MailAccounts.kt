@@ -16,6 +16,8 @@ data class MailAccount(
     val connectionLimit: Int,
     val connectionLimitApplies: Boolean,
     val autonomousSendProjectCount: Int,
+    /** The messages downloaded so far while the first sync runs; `null` once it is done or when unknown. */
+    val syncedMessageCount: Int? = null,
 )
 
 /** A folder or label of a mailbox with its unread thread count and its message count. */

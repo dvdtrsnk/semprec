@@ -17,6 +17,7 @@ final class SempRouterSpy: SempRouting {
         case status
         case item(String, String?)
         case project(String)
+        case mailbox(String)
         case itemThread(String, String, String?)
     }
 
@@ -33,6 +34,7 @@ final class SempRouterSpy: SempRouting {
     func showStatus() { calls.append(.status) }
     func showItem(itemId: String, databaseKey: String?) { calls.append(.item(itemId, databaseKey)) }
     func showProject(projectId: String) { calls.append(.project(projectId)) }
+    func showMailbox(mailboxId: String) { calls.append(.mailbox(mailboxId)) }
     func showItemThread(inboxItemId: String, title: String, meta: String?) {
         calls.append(.itemThread(inboxItemId, title, meta))
     }
@@ -107,22 +109,23 @@ final class SempViewModelTests: XCTestCase {
 
     // MARK: - Status
     @MainActor
-    func testTheStatusRoutesTheChatTheThreadAndTheProject() async throws {
+    func testTheStatusRoutesTheChatTheThreadTheProjectAndTheMailbox() async throws {
         let model = ScriptedSempStatusScreenModel(
             state: SempStatusState(phase: .ready),
             effects: [
                 .openChat(threadId: "t", messageId: "m"),
                 .openThread(threadId: "h"),
-                .openProject(projectId: "p")
+                .openProject(projectId: "p"),
+                .openMailbox(mailboxId: "mb")
             ]
         )
         let router = SempRouterSpy()
         let viewModel = SempStatusViewModel(model: model, router: router)
         let observer = Task { await viewModel.observe() }
 
-        try await eventually { router.calls.count == 3 }
+        try await eventually { router.calls.count == 4 }
         observer.cancel()
-        XCTAssertEqual(router.calls, [.chat("t", "m"), .thread("h", .tick, nil), .project("p")])
+        XCTAssertEqual(router.calls, [.chat("t", "m"), .thread("h", .tick, nil), .project("p"), .mailbox("mb")])
         viewModel.send(.fix(issueId: "p1"))
         XCTAssertEqual(model.actions, [.fix(issueId: "p1")])
     }

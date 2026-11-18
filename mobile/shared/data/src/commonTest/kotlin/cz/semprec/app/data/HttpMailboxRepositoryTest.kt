@@ -8,6 +8,7 @@ import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailRemovalImpact
 import cz.semprec.app.domain.MailSyncStatus
 import cz.semprec.app.domain.RepositoryResult
+import io.ktor.client.plugins.HttpTimeoutCapability
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -137,6 +138,22 @@ class HttpMailboxRepositoryTest {
         assertEquals("generic", body.getValue("provider").jsonPrimitive.content)
         assertEquals("imap.firma.cz", body.getValue("imapHost").jsonPrimitive.content)
         assertEquals("smtp.firma.cz", body.getValue("smtpHost").jsonPrimitive.content)
+    }
+
+    @Test
+    fun connectingWaitsForTheServersChecksWhileOtherRequestsKeepTheDefaultBound() = runTest {
+        val server = MailTestServer(::routes)
+
+        server.mailboxes().connect(
+            MailPasswordAccount(MailPasswordProvider.GENERIC, "me@firma.cz", "pw", "imap.firma.cz", "smtp.firma.cz"),
+        )
+        server.mailboxes().mailboxes()
+
+        val (connect, list) =
+            server.requests.map { it.getCapabilityOrNull(HttpTimeoutCapability)?.requestTimeoutMillis }
+        // Two protocols, each on up to two ports that may each take 45 s to time out on the server.
+        assertTrue(connect != null && connect >= 180_000L)
+        assertEquals(30_000L, list)
     }
 
     @Test

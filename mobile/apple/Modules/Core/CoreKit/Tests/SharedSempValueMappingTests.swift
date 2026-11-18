@@ -209,8 +209,12 @@ final class SharedSempValueMappingTests: XCTestCase {
             [.retry, .disableAutomation]
         )
         XCTAssertEqual(
-            [SharedSDK.SempIssueLink.chat, .thread, .project].map(SempIssueLink.init),
-            [.chat, .thread, .project]
+            [SharedSDK.SempIssueLink.chat, .thread, .project, .mailbox].map(SempIssueLink.init),
+            [.chat, .thread, .project, .mailbox]
+        )
+        XCTAssertEqual(
+            SharedSempStatusScreenModel.effect(SharedSDK.SempStatusEffectOpenMailbox(mailboxId: "mb")),
+            .openMailbox(mailboxId: "mb")
         )
         XCTAssertEqual(
             [SharedSDK.SempChatsFilter.all, .chats, .ticks].map(SempChatsFilter.init),

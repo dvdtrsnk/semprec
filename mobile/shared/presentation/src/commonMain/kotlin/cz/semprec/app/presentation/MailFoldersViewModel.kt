@@ -10,19 +10,22 @@ import cz.semprec.app.domain.MailSyncStatus
 import cz.semprec.app.domain.MailboxRepository
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 /**
  * The mailboxes: smart boxes with their counts, then every account with its folders. A folder that cannot be read
  * leaves its account without folders and the rest of the screen as it is; a failed summary or account list is an
- * error. Opening a row raises the thread list it stands for as the effect.
+ * error. Opening a row raises the thread list it stands for as the effect. While an account syncs on the server the
+ * screen is read again, so its status, folders and counts follow the server's.
  */
 class MailFoldersViewModel internal constructor(
     private val mail: MailRepository,
     private val mailboxes: MailboxRepository,
 ) : ScreenViewModel<MailFoldersState, MailFoldersAction, MailFoldersEffect>(MailFoldersState()) {
     private var loadJob: Job? = null
+    private var pollJob: Job? = null
     private var collapsed: Set<String> = emptySet()
 
     init {
@@ -63,6 +66,16 @@ class MailFoldersViewModel internal constructor(
             }
             ensureActive()
             update { it.after(accounts, summary, folders) }
+            pollWhileSyncing()
+        }
+    }
+
+    private fun pollWhileSyncing() {
+        pollJob?.cancel()
+        if (state.value.accounts.none { it.status == MailAccountStatus.SYNCING }) return
+        pollJob = viewModelScope.launch {
+            delay(MAIL_SYNC_POLL_MILLIS)
+            if (loadJob?.isActive != true) load(showWait = false)
         }
     }
 

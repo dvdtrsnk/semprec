@@ -28,7 +28,8 @@ final class OverviewViewModelTests: XCTestCase {
         viewModel.retry()
         viewModel.open(.tasks)
         viewModel.open(.area(id: "work"))
-        XCTAssertEqual(model.actions, [.retry, .open(.tasks), .open(.area(id: "work"))])
+        viewModel.reload()
+        XCTAssertEqual(model.actions, [.retry, .open(.tasks), .open(.area(id: "work")), .refresh])
     }
 
     @MainActor

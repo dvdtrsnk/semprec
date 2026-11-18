@@ -3953,6 +3953,22 @@
         }
       }
     },
+    "semp.status.link.mailbox" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevřít schránku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open the mailbox"
+          }
+        }
+      }
+    },
     "semp.status.link.project" : {
       "localizations" : {
         "cs" : {

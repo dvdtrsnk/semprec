@@ -205,6 +205,7 @@ internal data class MailMailboxDto(
     val failingSince: String? = null,
     val connectionLimit: MailConnectionLimitDto,
     val autonomousSendProjectCount: Int = 0,
+    val syncedMessageCount: Int? = null,
 )
 
 @Serializable

@@ -5,6 +5,7 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.MailSyncStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -35,6 +36,43 @@ class MailAccountViewModelTest : MainDispatcherTest() {
         assertEquals(listOf("m1"), boxes.one.asked)
         vm.close()
     }
+
+    @Test fun `a syncing account follows the server's status and keeps a name changed meanwhile`() =
+        runTest(dispatcher) {
+            val boxes = ScriptedMailboxRepository(
+                one = MailCall(
+                    mailContent(mailAccount(initial = true).copy(syncedMessageCount = 10, lastSuccessfulSyncAt = null)),
+                    mailFailure(FailureKind.UNAVAILABLE),
+                    mailContent(mailAccount(initial = true).copy(name = "Server name", syncedMessageCount = 20)),
+                    mailContent(mailAccount()),
+                ),
+            )
+            val vm = viewModel(boxes)
+            runCurrent()
+            assertEquals(MailAccountStatus.SYNCING, vm.state.value.account?.status)
+            assertEquals(10, vm.state.value.account?.syncedMessageCount)
+            vm.onAction(MailAccountAction.Rename("Work"))
+            runCurrent()
+
+            advanceTimeBy(10_001)
+            runCurrent()
+            assertEquals(10, vm.state.value.account?.syncedMessageCount)
+            assertEquals(MailAccountPhase.CONTENT, vm.state.value.phase)
+            advanceTimeBy(10_001)
+            runCurrent()
+            assertEquals(20, vm.state.value.account?.syncedMessageCount)
+            assertEquals("2026-10-19T08:12:00.000Z", vm.state.value.account?.lastSuccessfulSyncAt)
+            assertEquals("Work", vm.state.value.account?.name)
+            advanceTimeBy(10_001)
+            runCurrent()
+            assertEquals(MailAccountStatus.OK, vm.state.value.account?.status)
+            assertEquals("Work", vm.state.value.account?.name)
+
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertEquals(4, boxes.one.count)
+            vm.close()
+        }
 
     @Test fun `an error shows its kind and retry loads again`() = runTest(dispatcher) {
         val boxes =

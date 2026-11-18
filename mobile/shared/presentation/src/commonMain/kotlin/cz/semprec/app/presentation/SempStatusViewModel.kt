@@ -22,7 +22,7 @@ enum class SempStatusPhase { LOADING, READY, ERROR }
 enum class SempIssueFix { RETRY, DISABLE_AUTOMATION }
 
 /** Where the link of a problem leads. */
-enum class SempIssueLink { CHAT, THREAD, PROJECT }
+enum class SempIssueLink { CHAT, THREAD, PROJECT, MAILBOX }
 
 /** A problem that needs attention. [title] and [text] are the server's, in the person's language. */
 data class SempIssue(
@@ -70,6 +70,8 @@ sealed interface SempStatusEffect {
     data class OpenThread(val threadId: String) : SempStatusEffect
 
     data class OpenProject(val projectId: String) : SempStatusEffect
+
+    data class OpenMailbox(val mailboxId: String) : SempStatusEffect
 }
 
 /** What the status screen does about a problem. */
@@ -160,8 +162,11 @@ class SempStatusViewModel internal constructor(
         is SempProblemAction.RetryRun -> fixes.retryRun(action.runId)
         is SempProblemAction.RetryPrompt -> fixes.retryReply(action.threadId, action.messageId)
         is SempProblemAction.DisableHeartbeat -> fixes.agent.setTaskEnabled(action.heartbeatId, false)
-        is SempProblemAction.OpenChat, is SempProblemAction.OpenThread, is SempProblemAction.OpenProject ->
-            RepositoryResult.Failure(FailureKind.REJECTED)
+        is SempProblemAction.OpenChat,
+        is SempProblemAction.OpenThread,
+        is SempProblemAction.OpenProject,
+        is SempProblemAction.OpenMailbox,
+        -> RepositoryResult.Failure(FailureKind.REJECTED)
     }
 
     private fun open(issueId: String) {
@@ -170,6 +175,7 @@ class SempStatusViewModel internal constructor(
                 is SempProblemAction.OpenChat -> SempStatusEffect.OpenChat(action.threadId, action.messageId)
                 is SempProblemAction.OpenThread -> SempStatusEffect.OpenThread(action.threadId)
                 is SempProblemAction.OpenProject -> SempStatusEffect.OpenProject(action.projectId)
+                is SempProblemAction.OpenMailbox -> SempStatusEffect.OpenMailbox(action.mailboxId)
                 else -> null
             }
         } ?: return
@@ -195,12 +201,17 @@ class SempStatusViewModel internal constructor(
 private fun SempProblemAction.fixKind(): SempIssueFix? = when (this) {
     is SempProblemAction.RetryRun, is SempProblemAction.RetryPrompt -> SempIssueFix.RETRY
     is SempProblemAction.DisableHeartbeat -> SempIssueFix.DISABLE_AUTOMATION
-    is SempProblemAction.OpenChat, is SempProblemAction.OpenThread, is SempProblemAction.OpenProject -> null
+    is SempProblemAction.OpenChat,
+    is SempProblemAction.OpenThread,
+    is SempProblemAction.OpenProject,
+    is SempProblemAction.OpenMailbox,
+    -> null
 }
 
 private fun SempProblemAction.linkKind(): SempIssueLink? = when (this) {
     is SempProblemAction.OpenChat -> SempIssueLink.CHAT
     is SempProblemAction.OpenThread -> SempIssueLink.THREAD
     is SempProblemAction.OpenProject -> SempIssueLink.PROJECT
+    is SempProblemAction.OpenMailbox -> SempIssueLink.MAILBOX
     is SempProblemAction.RetryRun, is SempProblemAction.RetryPrompt, is SempProblemAction.DisableHeartbeat -> null
 }
