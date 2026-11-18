@@ -169,11 +169,11 @@ private extension CalendarDayView {
     /// How far below the header the backdrop still takes colour from, so its lower edge does not fade to nothing.
     static var backdropBleed: CGFloat { 48 }
 
-    /// A line of the header, a full point thick so it reads over the coloured backdrop.
+    /// A line of the header, one and a half points thick so it reads over the coloured backdrop.
     var headerDivider: some View {
         Rectangle()
             .fill(.separator)
-            .frame(height: 1)
+            .frame(height: 1.5)
     }
 
     /// The week the day is in, quietly at the end of the date line.
