@@ -32,7 +32,7 @@ struct CalendarWeekStrip: View {
             }
             .scrollTargetLayout()
         }
-        .scrollTargetBehavior(OneWeekPaging())
+        .scrollTargetBehavior(OnePagePaging())
         .scrollIndicators(.hidden)
         .fixedSize(horizontal: false, vertical: true)
         .scrollPosition(id: $visibleWeek)
@@ -124,21 +124,5 @@ private extension CalendarWeekStrip {
     func circleColor(_ day: String) -> Color {
         guard day == selectedDay else { return .clear }
         return day == today ? .red : .primary
-    }
-}
-
-/// Paging that settles at most one page away from where the swipe started: the page the swipe would come to rest
-/// on, rounded, and clamped to the neighbouring pages. A scroll the strip makes itself has no velocity and may
-/// travel further.
-private struct OneWeekPaging: ScrollTargetBehavior {
-
-    func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
-        let width = context.containerSize.width
-        guard width > 0 else { return }
-        let start = (context.originalTarget.rect.minX / width).rounded()
-        let proposed = target.rect.minX / width
-        let isProgrammatic = context.velocity == .zero && abs(proposed - start) > 1.5
-        let page = isProgrammatic ? proposed.rounded() : start + min(max((proposed - start).rounded(), -1), 1)
-        target.rect.origin.x = page * width
     }
 }

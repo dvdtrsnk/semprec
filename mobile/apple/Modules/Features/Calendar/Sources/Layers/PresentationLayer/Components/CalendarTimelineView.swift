@@ -173,6 +173,7 @@ private extension CalendarTimelineView {
                         .foregroundStyle(.secondary)
                         .frame(width: CalendarGeometry.gutter - 6, alignment: .trailing)
                         .offset(y: -7)
+                        .opacity(isCoveredByNow(hour) ? 0 : 1)
                     Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 0.5)
                 }
                 .frame(height: CalendarGeometry.hourHeight, alignment: .top)
@@ -181,18 +182,25 @@ private extension CalendarTimelineView {
         }
     }
 
+    /// Whether the current time's capsule sits over this hour's label, which then gives way to it.
+    func isCoveredByNow(_ hour: Int) -> Bool {
+        isToday && abs(hour * 60 - nowMinutes) < 20
+    }
+
+    /// The current time in a red capsule over the hour labels, and the red line from it across the day.
     func nowLine(width: CGFloat) -> some View {
         HStack(spacing: 0) {
             Text(CalendarDates.clock(minutes: nowMinutes))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.red)
-                .frame(width: CalendarGeometry.gutter - 6, alignment: .trailing)
-                .padding(.trailing, 6)
-            Circle().fill(Color.red).frame(width: 8, height: 8).offset(x: -4)
+                .font(.caption2.weight(.bold).monospacedDigit())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.red))
+                .frame(width: CalendarGeometry.gutter, alignment: .trailing)
             Rectangle().fill(Color.red).frame(height: 1)
         }
-        .frame(height: 12)
-        .offset(y: CalendarGeometry.y(minutes: nowMinutes) - 6)
+        .frame(height: 18)
+        .offset(y: CalendarGeometry.y(minutes: nowMinutes) - 9)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
