@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { ProviderCallError } from "../types.js";
 import { createAnthropicStructuredProvider } from "../anthropicProvider.js";
 
@@ -72,6 +73,22 @@ describe("createAnthropicStructuredProvider", () => {
         ],
       },
     ]);
+  });
+
+  it.each([
+    ["claude-sonnet-4-6", true],
+    ["claude-haiku-5-5", false],
+  ])("sends %s a temperature only when the model accepts one", async (model, sendsTemperature) => {
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => successResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createAnthropicStructuredProvider("test-api-key").complete({ ...REQUEST, model, temperature: 0.2 });
+
+    const sent = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(z.string().parse(fetchMock.mock.calls[0]?.[1].body)));
+    expect(sent.model).toBe(model);
+    expect("temperature" in sent).toBe(sendsTemperature);
   });
 
   it("throws ProviderCallError, not a TypeError, when the 200 response body has no content array", async () => {

@@ -7,6 +7,7 @@ import {
   fauxToolCall,
   type Context,
   type FauxResponseStep,
+  type JsonObject,
 } from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions } from "@semprec/agent-runtime";
 import { runInTenant, type LabeledSempMessageRef } from "@semprec/shared";
@@ -68,7 +69,7 @@ function liveToolResultText(messages: Context["messages"], toolCallId: string): 
   return undefined;
 }
 
-const toolCall = (name: string, args: Record<string, unknown>, id: string) =>
+const toolCall = (name: string, args: JsonObject, id: string) =>
   fauxAssistantMessage([fauxToolCall(name, args, { id })], { stopReason: "toolUse" });
 
 /** Queues a user message with the refs, like the send route does. */

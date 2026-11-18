@@ -1,3 +1,4 @@
+import { toolsOf } from "./transcriptContext.js";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm, stat } from "node:fs/promises";
@@ -10,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Client, type Pool, type PoolClient } from "pg";
 import sharp from "sharp";
 import { closeIdleThreadSessions, createBoundedSempHistory, SempConversation } from "@semprec/agent-runtime";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   claimSempMessage,
@@ -1681,9 +1682,9 @@ describe("queued Semp messages", () => {
   it("runs a rejected tick outcome without tools and restores tools for the next user turn", async () => {
     const faux = fauxProvider();
     const observed: Array<{ tools: string[]; messages: string }> = [];
-    const observe = (context: { tools?: Array<{ name: string }>; messages: unknown }) =>
+    const observe = (context: TranscriptContext) =>
       observed.push({
-        tools: (context.tools ?? []).map((tool) => tool.name),
+        tools: toolsOf(context).map((tool) => tool.name),
         messages: JSON.stringify(context.messages),
       });
     const task = createSempMessageTask(pool, registry, fauxGateway(faux), createInFlightAgentRuns());

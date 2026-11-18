@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, type JsonObject } from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions } from "@semprec/agent-runtime";
 import { runInTenant, type LabeledSempMessageRef } from "@semprec/shared";
 import {
@@ -193,7 +193,7 @@ async function toolOutcome(
   return { isError: row.is_error === "true", text: row.text ?? "" };
 }
 
-const toolCall = (name: string, args: Record<string, unknown>, id: string) =>
+const toolCall = (name: string, args: JsonObject, id: string) =>
   fauxAssistantMessage([fauxToolCall(name, args, { id })], { stopReason: "toolUse" });
 
 describe("a sleepNight reference in the agent turn (issue #1853)", () => {

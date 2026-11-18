@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { hasApi, type Models } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   ProviderCallError,
   type StructuredCompletionMessage,
@@ -111,8 +113,19 @@ function toAnthropicMessage(message: StructuredCompletionMessage) {
   };
 }
 
-/** Real Anthropic adapter. `apiKey` is read once at process startup, never per request. */
-export function createAnthropicStructuredProvider(apiKey: string): StructuredCompletionProvider {
+function acceptsTemperature(models: Models, modelId: string): boolean {
+  const model = models.getModel("anthropic", modelId);
+  return !(model && hasApi(model, "anthropic-messages") && model.compat?.supportsTemperature === false);
+}
+
+/**
+ * Real Anthropic adapter. `apiKey` is read once at process startup, never per request. A model the registry marks as
+ * not supporting `temperature` (Claude Haiku 5.5, Opus 5) is sent none, which Anthropic would otherwise refuse.
+ */
+export function createAnthropicStructuredProvider(
+  apiKey: string,
+  models: Models = builtinModels(),
+): StructuredCompletionProvider {
   return {
     id: "anthropic",
     supportsJsonSchemaStructuredOutput: true,
@@ -125,7 +138,7 @@ export function createAnthropicStructuredProvider(apiKey: string): StructuredCom
       const requestBody = JSON.stringify({
         model: request.model,
         max_tokens: MAX_OUTPUT_TOKENS,
-        temperature: request.temperature,
+        ...(acceptsTemperature(models, request.model) ? { temperature: request.temperature } : {}),
         system: request.system,
         messages: request.messages.map(toAnthropicMessage),
         tools: [

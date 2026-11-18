@@ -10,6 +10,7 @@ import {
   type Context,
   type FauxProviderHandle,
   type FauxResponseStep,
+  type JsonObject,
 } from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions } from "@semprec/agent-runtime";
 import { runInTenant, type LabeledSempMessageRef } from "@semprec/shared";
@@ -166,7 +167,7 @@ function draftRef(t: MailTenant, draftId: string): LabeledSempMessageRef {
   return { kind: "item", itemId: draftId, databaseId: t.emailsDatabaseId, label: "Draft" };
 }
 
-const toolCall = (name: string, args: Record<string, unknown>, id: string) =>
+const toolCall = (name: string, args: JsonObject, id: string) =>
   fauxAssistantMessage([fauxToolCall(name, args, { id })], { stopReason: "toolUse" });
 
 function userTexts(context: Context): string {

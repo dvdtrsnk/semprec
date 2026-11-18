@@ -1,3 +1,4 @@
+import { systemPromptOf, toolsOf } from "./transcriptContext.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -223,7 +224,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
         let prompt: string | undefined;
         faux.setResponses([
           (context) => {
-            prompt = context.systemPrompt;
+            prompt = systemPromptOf(context);
             return fauxAssistantMessage("done");
           },
         ]);
@@ -278,7 +279,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
           let names: string[] = [];
           faux.setResponses([
             (context) => {
-              names = context.tools?.map((tool) => tool.name) ?? [];
+              names = toolsOf(context).map((tool) => tool.name) ?? [];
               return fauxAssistantMessage("done");
             },
           ]);
