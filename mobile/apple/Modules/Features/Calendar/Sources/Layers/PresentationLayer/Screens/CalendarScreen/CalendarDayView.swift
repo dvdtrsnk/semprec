@@ -158,7 +158,7 @@ private extension CalendarDayView {
         .clipped()
         .blur(radius: 24)
         .saturation(1.8)
-        .overlay(.background.opacity(0.2))
+        .overlay(.background.opacity(0.12))
         .frame(height: topBarsHeight + headerHeight, alignment: .top)
         .clipped()
         // It covers the bars above the day view too, so the glass looks the same from the top of the screen down.
