@@ -47,7 +47,7 @@ class CalendarViewModel internal constructor(
             is CalendarAction.Navigation.Show -> CalendarDay.parse(action.day)?.let { navigate(action.zoom, it) }
             is CalendarAction.Navigation.Page -> page(action.steps)
             CalendarAction.Navigation.GoToday ->
-                CalendarDay.parse(state.value.today)?.let { navigate(state.value.zoom, it) }
+                CalendarDay.parse(state.value.today)?.let { navigate(state.value.zoomForToday(it), it) }
         }
     }
 
@@ -155,4 +155,18 @@ private fun pasteSchedule(
     action.allDay && entry.schedule.allDay -> ScheduleEditing.toDay(entry.schedule, day)
     action.allDay -> ScheduleEditing.toAllDay(entry.schedule, day)
     else -> ScheduleEditing.moveTo(entry.kind, entry.schedule, day, action.rawStart)
+}
+
+/**
+ * Today shows the year or the month that holds today; when that is already shown, it goes one level deeper: from
+ * today's year to its month, from today's month to the day. A day stays a day.
+ */
+private fun CalendarState.zoomForToday(today: CalendarDay): CalendarZoom {
+    val shown = CalendarDay.parse(selectedDay)
+    val sameYear = shown?.year == today.year
+    return when (zoom) {
+        CalendarZoom.YEAR -> if (sameYear) CalendarZoom.MONTH else CalendarZoom.YEAR
+        CalendarZoom.MONTH -> if (sameYear && shown?.month == today.month) CalendarZoom.DAY else CalendarZoom.MONTH
+        CalendarZoom.DAY -> CalendarZoom.DAY
+    }
 }
