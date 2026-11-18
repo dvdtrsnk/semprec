@@ -8,8 +8,8 @@ struct CalendarGeometry: Equatable {
 
     // MARK: - Constants
     static let standardHourHeight: CGFloat = 56
-    static let minimumHourHeight: CGFloat = 24
-    static let maximumHourHeight: CGFloat = 200
+    static let minimumHourHeight: CGFloat = 32
+    static let maximumHourHeight: CGFloat = 112
     static let minutesPerDay = 24 * 60
     /// The width reserved for the hour labels at the leading edge of the timeline.
     static let gutter: CGFloat = 52

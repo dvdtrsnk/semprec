@@ -14,36 +14,59 @@ struct CalendarDayView: View {
     @State private var viewportFrame = CGRect.zero
     @State private var eventFrames: [String: CGRect] = [:]
     @State private var lastAutoScroll = Date.distantPast
-    /// The day the pages are laid out around; moved when the pager nears either end.
-    @State private var anchorDay: String?
-    /// The day of the page the pager shows or settles on.
-    @State private var visibleDay: String?
-    /// The day a settled swipe asked for, until the selected day becomes it.
-    @State private var requestedDay: String?
-    @State private var phase = ScrollPhase.idle
     /// The height of an hour the person pinched the timeline to, kept for the next time.
     @AppStorage("calendarHourHeight")
     private var hourHeight = Double(CalendarGeometry.standardHourHeight)
+    /// Counts the day changes that tick: a turn of the day pager, a tap on a day, or a day selected elsewhere.
+    @State private var dayTicks = 0
+    /// The day this view already ticked for, whose arrival from the shared state then ticks no more.
+    @State private var tickedDay: String?
     /// Set while the week strip turns to another week, whose new day comes without a haptic.
     @State private var isTurningWeek = false
+    /// Where the fingers of a zoom are, in global coordinates, while one is under way.
+    @State private var pinchY: CGFloat?
+    /// The day a turn or a tap just chose, shown at once until the shared state arrives at it.
+    @State private var chosenDay: String?
 
     // MARK: - Body
     var body: some View {
         VStack(spacing: 0) {
             CalendarWeekStrip(
-                selectedDay: state.selectedDay,
+                selectedDay: shownDay,
                 today: state.today,
-                onPick: { viewModel.navigate(.show(zoom: .day, day: $0)) },
-                onPage: {
+                onPick: { day in
+                    tick(for: day)
+                    chosenDay = day
+                    viewModel.navigate(.show(zoom: .day, day: day))
+                },
+                onPage: { steps in
                     isTurningWeek = true
-                    viewModel.navigate(.page(steps: $0))
+                    chosenDay = CalendarDates.shifted(shownDay, by: steps)
+                    viewModel.navigate(.page(steps: steps))
                 }
             )
             .padding(.top, 4)
-            pager
+            CalendarPager(
+                current: shownDay,
+                neighbour: { CalendarDates.shifted($0, by: $1) },
+                isEnabled: state.drag == nil && state.selectedItemId == nil,
+                onTurn: { steps in
+                    let day = CalendarDates.shifted(shownDay, by: steps)
+                    tick(for: day)
+                    chosenDay = day
+                    viewModel.navigate(.page(steps: steps))
+                },
+                page: page
+            )
+            .modifier(CalendarVerticalPinch(hourHeight: $hourHeight, pinchY: $pinchY))
         }
-        .sensoryFeedback(.selection, trigger: state.selectedDay) { _, _ in !isTurningWeek }
-        .onChange(of: state.selectedDay) { isTurningWeek = false }
+        .sensoryFeedback(.impact(weight: .light), trigger: dayTicks)
+        .onChange(of: state.selectedDay) { _, new in
+            if new == chosenDay { chosenDay = nil }
+            defer { isTurningWeek = false }
+            if new == tickedDay || isTurningWeek { return }
+            tick(for: new)
+        }
         .coordinateSpace(.calendarDay)
         .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
         .accessibilityIdentifier(CalendarIdentifiers.screen)
@@ -53,64 +76,13 @@ struct CalendarDayView: View {
 // MARK: - Subviews
 private extension CalendarDayView {
 
-    static let duration = 0.3
-    /// Pages on each side of the anchor; the pager recenters before a swipe can reach the last one.
-    static let daysAround = 366
+    /// The selected day as this view shows it: the one just chosen, ahead of the shared state.
+    var shownDay: String { chosenDay ?? state.selectedDay }
 
-    /// The days as pages that follow the finger: a slow drag past half the width or a short fast flick turns to the
-    /// next or the previous day, never further; a shorter drag springs back. A day selected elsewhere scrolls into
-    /// view from its side. Nothing turns while an item is held or selected.
-    var pager: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(spacing: 0) {
-                ForEach(pageDays, id: \.self) { key in
-                    page(key)
-                        .containerRelativeFrame(.horizontal)
-                }
-            }
-            .scrollTargetLayout()
-        }
-        .scrollTargetBehavior(OnePagePaging())
-        .scrollIndicators(.hidden)
-        .scrollPosition(id: $visibleDay)
-        .scrollDisabled(state.drag != nil || state.selectedItemId != nil)
-        .onScrollPhaseChange { _, newPhase in
-            phase = newPhase
-            if newPhase == .idle { settle() }
-        }
-        // The page can be reported after the scroll came to rest, so a late report settles too.
-        .onChange(of: visibleDay) {
-            if phase == .idle { settle() }
-        }
-        .onAppear {
-            anchorDay = state.selectedDay
-            visibleDay = state.selectedDay
-        }
-        .onChange(of: state.selectedDay) {
-            requestedDay = nil
-            guard visibleDay != state.selectedDay else { return }
-            recenterIfNeeded(on: state.selectedDay)
-            withAnimation(.easeInOut(duration: Self.duration)) { visibleDay = state.selectedDay }
-        }
-    }
-
-    var pageDays: [String] {
-        let center = anchorDay ?? state.selectedDay
-        return (-Self.daysAround...Self.daysAround).map { CalendarDates.shifted(center, by: $0) }
-    }
-
-    /// Shows the day the pager settled on.
-    func settle() {
-        let current = requestedDay ?? state.selectedDay
-        guard let visibleDay, visibleDay != current else { return }
-        requestedDay = visibleDay
-        recenterIfNeeded(on: visibleDay)
-        viewModel.navigate(.page(steps: CalendarDates.days(from: current, to: visibleDay)))
-    }
-
-    func recenterIfNeeded(on day: String) {
-        let center = anchorDay ?? state.selectedDay
-        if abs(CalendarDates.days(from: center, to: day)) > Self.daysAround - 14 { anchorDay = day }
+    /// Plays the light haptic of a new day the moment the change is decided.
+    func tick(for day: String) {
+        tickedDay = day
+        dayTicks += 1
     }
 
     func dayState(_ key: String) -> CalendarDayState {
@@ -162,7 +134,11 @@ private extension CalendarDayView {
     }
 
     func timeline(_ scroll: ScrollViewProxy, day key: String) -> some View {
-        CalendarZoomableTimeline(hourHeight: $hourHeight, startMinutes: startHour(day: key) * 60) { geometry in
+        CalendarZoomableTimeline(
+            hourHeight: hourHeight,
+            pinchY: pinchY,
+            startMinutes: startHour(day: key) * 60
+        ) { geometry in
             CalendarTimelineView(
                 day: dayState(key),
                 geometry: geometry,
