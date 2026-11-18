@@ -10,7 +10,8 @@ struct CalendarMonthCell: View {
     let items: [CalendarItem]
     let today: String
     let selected: Bool
-    let inMonth: Bool
+    /// A day from Monday to Friday; a weekend day is drawn dimmer.
+    let isWeekday: Bool
     let maxChips: Int
     let onOpen: () -> Void
     let onDrop: (String) -> Void
@@ -70,7 +71,7 @@ private extension CalendarMonthCell {
 
     var numberStyle: AnyShapeStyle {
         if date == today { return AnyShapeStyle(Color.white) }
-        return inMonth ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary)
+        return isWeekday ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
     }
 
     @ViewBuilder
@@ -87,7 +88,6 @@ private extension CalendarMonthCell {
         .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(item.isTask ? AnyShapeStyle(.primary) : AnyShapeStyle(item.tint))
         .background(item.tint.opacity(item.isTask ? 0.0 : 0.18), in: RoundedRectangle(cornerRadius: 4))
-        .opacity(inMonth ? 1 : 0.55)
         .contentShape(Rectangle())
         .onTapGesture { onOpenItem(item.id) }
         .accessibilityLabel(item.title)

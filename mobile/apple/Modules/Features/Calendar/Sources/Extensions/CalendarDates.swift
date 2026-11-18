@@ -87,6 +87,35 @@ enum CalendarDates {
         return Self.key(first)
     }
 
+    /// The first day of the month `months` away from the month of `key`.
+    static func shiftedMonth(_ key: String, by months: Int) -> String {
+        guard let first = date(firstOfMonth(key)), let moved = calendar.date(byAdding: .month, value: months, to: first)
+        else { return key }
+        return Self.key(moved)
+    }
+
+    /// The day of the month of `month` with the day number of `key`, or the month's last day when it is shorter.
+    static func sameDay(as key: String, inMonthOf month: String) -> String {
+        let first = firstOfMonth(month)
+        return shifted(first, by: min(dayNumber(key), monthLength(first)) - 1)
+    }
+
+    /// How many days the month of `key` has.
+    static func monthLength(_ key: String) -> Int {
+        guard let date = date(key), let days = calendar.range(of: .day, in: .month, for: date) else { return 0 }
+        return days.count
+    }
+
+    /// The days of the month of `key` by week, Monday first; a place before the 1st or after the last day is `nil`.
+    static func weeks(ofMonth key: String) -> [[String?]] {
+        let first = firstOfMonth(key)
+        let leading = isoWeekday(first) - 1
+        let days: [String?] = Array(repeating: nil, count: leading)
+            + (0..<monthLength(first)).map { shifted(first, by: $0) }
+        let padded = days + Array(repeating: nil, count: (7 - days.count % 7) % 7)
+        return stride(from: 0, to: padded.count, by: 7).map { Array(padded[$0..<$0 + 7]) }
+    }
+
     // MARK: - Titles
     /// `pátek 16. října`, capitalized.
     static func dayTitle(_ key: String) -> String {
@@ -102,6 +131,12 @@ enum CalendarDates {
     static func monthName(month: Int) -> String {
         let symbols = calendar.standaloneMonthSymbols
         return capitalized(symbols[(month - 1 + symbols.count) % symbols.count])
+    }
+
+    /// `Říj`, the short name of the month of `key`.
+    static func monthShortName(_ key: String) -> String {
+        let symbols = calendar.shortStandaloneMonthSymbols
+        return capitalized(symbols[(month(key) - 1 + symbols.count) % symbols.count])
     }
 
     /// `Po`, from the ISO weekday (1 for Monday up to 7 for Sunday).

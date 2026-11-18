@@ -1,32 +1,53 @@
 import CoreKit
 import SwiftUI
 
-/// A year as twelve small months. A tap on a month shows it; a swipe shows the next or the previous year.
+/// Years one after another in a vertical scroll, as the system Calendar shows them: each year its title and twelve
+/// small months. A year scrolled to the top becomes the selected one; a tap on a month shows it.
 struct CalendarYearView: View {
 
     // MARK: - Dependencies
     let state: CalendarState
     let viewModel: CalendarViewModel
 
+    // MARK: - State
+    /// The year at the top of the scroll.
+    @State private var topYear: Int?
+    /// The year the scroll's years are laid out around; moved when the scroll nears either end.
+    @State private var anchor: Int
+    /// Set while a finger moves the scroll or it coasts after one; only then does the year at the top select itself.
+    @State private var isScrolledByFinger = false
+
+    // MARK: - Init
+    init(state: CalendarState, viewModel: CalendarViewModel) {
+        self.state = state
+        self.viewModel = viewModel
+        let year = CalendarDates.year(state.selectedDay)
+        _topYear = State(initialValue: year)
+        _anchor = State(initialValue: year)
+    }
+
     // MARK: - Body
     var body: some View {
         ScrollView {
-            Text(verbatim: "\(CalendarDates.year(state.selectedDay))")
-                .font(.largeTitle.bold())
-                .foregroundStyle(.red)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .accessibilityAddTraits(.isHeader)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 12) {
-                ForEach(state.months) { month in
-                    Button { show(month) } label: { miniMonth(month) }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(CalendarDates.monthName(month: month.month)) \(month.year)")
+            LazyVStack(spacing: 28) {
+                ForEach(years, id: \.self) { year in
+                    section(year)
                 }
             }
-            .padding(16)
+            .scrollTargetLayout()
         }
-        .gesture(swipe)
+        .scrollIndicators(.hidden)
+        .scrollPosition(id: $topYear, anchor: .top)
+        .onScrollPhaseChange { _, phase in
+            isScrolledByFinger = phase == .tracking || phase == .interacting || phase == .decelerating
+            if phase == .idle { selectTopYear(force: true) }
+        }
+        .onChange(of: topYear) { selectTopYear(force: false) }
+        .onChange(of: selectedYear) { _, year in
+            guard year != topYear else { return }
+            if abs(year - anchor) > Self.yearsAround - 3 { anchor = year }
+            withAnimation(.smooth(duration: 0.35)) { topYear = year }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(CalendarIdentifiers.yearGrid)
     }
@@ -35,55 +56,87 @@ struct CalendarYearView: View {
 // MARK: - Subviews
 private extension CalendarYearView {
 
-    func miniMonth(_ month: CalendarMonthState) -> some View {
+    /// Years laid out on each side of the anchor.
+    static var yearsAround: Int { 30 }
+
+    var selectedYear: Int { CalendarDates.year(state.selectedDay) }
+
+    var years: [Int] { ((anchor - Self.yearsAround)...(anchor + Self.yearsAround)).map { $0 } }
+
+    func section(_ year: Int) -> some View {
+        VStack(spacing: 12) {
+            Text(verbatim: "\(year)")
+                .font(.largeTitle.bold())
+                .foregroundStyle(year == CalendarDates.year(state.today) ? Color.red : .primary)
+                .frame(maxWidth: .infinity)
+                .accessibilityAddTraits(.isHeader)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 12) {
+                ForEach(1...12, id: \.self) { month in
+                    let first = String(format: "%04d-%02d-01", year, month)
+                    Button { show(first) } label: { miniMonth(first) }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(CalendarDates.monthName(month: month)) \(year)")
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
+
+    func miniMonth(_ first: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(CalendarDates.monthName(month: month.month))
+            Text(CalendarDates.monthShortName(first))
                 .font(.headline)
-                .foregroundStyle(isCurrent(month) ? Color.red : .primary)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 7), spacing: 1) {
-                // The blanks before the 1st count down from -1, apart from the days, which count up from 1.
-                ForEach((0..<month.leading).map { -1 - $0 }, id: \.self) { _ in Color.clear.frame(height: 13) }
-                ForEach(1...month.length, id: \.self) { day in
-                    Text("\(day)")
-                        .font(.system(size: 8.5, weight: isToday(month, day) ? .bold : .medium))
-                        .foregroundStyle(isToday(month, day) ? AnyShapeStyle(Color.white) : AnyShapeStyle(.primary))
-                        .frame(maxWidth: .infinity, minHeight: 13)
-                        .background(
-                            Circle().fill(isToday(month, day) ? Color.red : .clear).frame(width: 13, height: 13)
-                        )
+                .foregroundStyle(isCurrent(first) ? Color.red : .primary)
+            VStack(spacing: 1) {
+                ForEach(Array(CalendarDates.weeks(ofMonth: first).enumerated()), id: \.offset) { _, week in
+                    HStack(spacing: 0) {
+                        ForEach(week.indices, id: \.self) { column in
+                            day(week[column])
+                        }
+                    }
                 }
             }
         }
         .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
         .contentShape(Rectangle())
         .background {
-            GeometryReader { proxy in
-                Color.clear.preference(
-                    key: CalendarMonthFramesKey.self,
-                    value: [month.month: proxy.frame(in: .named(CalendarZoomTransition.space))]
-                )
+            // The small months of the selected year are where a change to and from a month zooms.
+            if CalendarDates.year(first) == selectedYear {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: CalendarMonthFramesKey.self,
+                        value: [CalendarDates.month(first): proxy.frame(in: .named(CalendarZoomTransition.space))]
+                    )
+                }
             }
         }
     }
 
-    func isCurrent(_ month: CalendarMonthState) -> Bool {
-        CalendarDates.year(state.today) == month.year && CalendarDates.month(state.today) == month.month
+    func day(_ date: String?) -> some View {
+        let isToday = date == state.today
+        return Text(date.map { "\(CalendarDates.dayNumber($0))" } ?? "")
+            .font(.system(size: 8.5, weight: isToday ? .bold : .medium))
+            .foregroundStyle(isToday ? AnyShapeStyle(Color.white) : AnyShapeStyle(.primary))
+            .frame(maxWidth: .infinity, minHeight: 13)
+            .background(Circle().fill(isToday ? Color.red : .clear).frame(width: 13, height: 13))
     }
 
-    func isToday(_ month: CalendarMonthState, _ day: Int) -> Bool {
-        isCurrent(month) && CalendarDates.dayNumber(state.today) == day
+    func isCurrent(_ first: String) -> Bool {
+        first == CalendarDates.firstOfMonth(state.today)
     }
 
-    func show(_ month: CalendarMonthState) {
-        let first = String(format: "%04d-%02d-01", month.year, month.month)
-        let keepsDay = isCurrent(month) ? state.today : first
-        viewModel.navigate(.show(zoom: .month, day: keepsDay))
+    func show(_ first: String) {
+        viewModel.navigate(.show(zoom: .month, day: isCurrent(first) ? state.today : first))
     }
 
-    var swipe: some Gesture {
-        DragGesture(minimumDistance: 30).onEnded { value in
-            guard abs(value.translation.width) > abs(value.translation.height) * 2 else { return }
-            viewModel.navigate(.page(steps: value.translation.width < 0 ? 1 : -1))
-        }
+    /// Selects the year a finger brought to the top, on the selected day's date in it; at rest (`force`), also the
+    /// one a scroll that ended without a finger left there, and lays the years out around it again when it nears
+    /// either end.
+    func selectTopYear(force: Bool) {
+        guard let topYear, isScrolledByFinger || force, topYear != selectedYear else { return }
+        let month = String(format: "%04d-%02d-01", topYear, CalendarDates.month(state.selectedDay))
+        viewModel.navigate(.show(zoom: .year, day: CalendarDates.sameDay(as: state.selectedDay, inMonthOf: month)))
+        if force, abs(topYear - anchor) > Self.yearsAround - 3 { anchor = topYear }
     }
 }
