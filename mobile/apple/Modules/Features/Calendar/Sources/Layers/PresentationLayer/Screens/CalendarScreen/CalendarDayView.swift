@@ -85,8 +85,8 @@ private extension CalendarDayView {
         state.days.first { $0.date == key } ?? CalendarDayState(date: key)
     }
 
-    /// The week strip, the date and the all-day items of the shown day on one glass pane, which reaches up under the
-    /// navigation bar. It changes to a new day at once, while the timeline below slides to it.
+    /// The week strip, the date and the all-day items of the shown day, over `headerBackdrop`, which reaches up under
+    /// the navigation bar. It changes to a new day at once, while the timeline below slides to it.
     func header(_ scroll: ScrollViewProxy) -> some View {
         VStack(spacing: 0) {
             CalendarWeekStrip(
@@ -120,17 +120,12 @@ private extension CalendarDayView {
                 handlers: handlers(scroll, day: shownDay)
             )
         }
-        .background {
-            // Clear glass over `headerBackdrop`, which already diffuses the timeline below into its colours.
-            Color.clear
-                .glassEffect(.clear, in: Rectangle())
-                .ignoresSafeArea(edges: .top)
-        }
     }
 
     /// What of the shown day's timeline lies under the header and the bars above it, blurred until only its colours
-    /// remain, made a little more vivid and veiled a little, so the glass glows with the items it covers without
-    /// showing their shapes. It is a picture only: it takes no touches and reports none of its frames.
+    /// remain, made a little more vivid and veiled a little, so the header glows with the items it covers without
+    /// showing their shapes, on white in light mode and on black in dark mode. It is a picture only: it takes no
+    /// touches and reports none of its frames.
     var headerBackdrop: some View {
         let geometry = CalendarGeometry(hourHeight: CGFloat(hourHeight))
         return CalendarTimelineView(
@@ -156,7 +151,7 @@ private extension CalendarDayView {
         .frame(height: topBarsHeight + headerHeight + Self.backdropBleed, alignment: .top)
         .background(.background)
         .clipped()
-        .blur(radius: 24)
+        .blur(radius: 24, opaque: true)
         .saturation(1.8)
         .overlay(.background.opacity(0.12))
         .frame(height: topBarsHeight + headerHeight, alignment: .top)
