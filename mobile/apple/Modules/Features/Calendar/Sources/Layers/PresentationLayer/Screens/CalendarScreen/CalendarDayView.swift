@@ -9,6 +9,8 @@ struct CalendarDayView: View {
     // MARK: - Dependencies
     let state: CalendarState
     let viewModel: CalendarViewModel
+    /// Changes with each tap on Today, which overrides a day this view chose ahead of the shared state.
+    let todayRequests: Int
 
     // MARK: - State
     @State private var contentFrame = CGRect.zero
@@ -56,12 +58,15 @@ struct CalendarDayView: View {
             }
         }
         .sensoryFeedback(.impact(weight: .light), trigger: dayTicks)
-        .onChange(of: state.selectedDay) { _, new in
-            if new == chosenDay { chosenDay = nil }
+        .onChange(of: state.selectedDay) { old, new in
+            // The chosen day is dropped when the shared state reaches it, or moves somewhere a turn towards it
+            // would not pass through.
+            if let chosen = chosenDay, new == chosen || !Self.lies(new, between: old, and: chosen) { chosenDay = nil }
             defer { isTurningWeek = false }
             if new == tickedDay || isTurningWeek { return }
             tick(for: new)
         }
+        .onChange(of: todayRequests) { chosenDay = nil }
         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { topBarsHeight = $0 })
         .coordinateSpace(.calendarDay)
         .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
@@ -71,6 +76,11 @@ struct CalendarDayView: View {
 
 // MARK: - Subviews
 private extension CalendarDayView {
+
+    /// Whether `day` lies strictly between `start` and `end`, in either order.
+    static func lies(_ day: String, between start: String, and end: String) -> Bool {
+        min(start, end) < day && day < max(start, end)
+    }
 
     /// The selected day as this view shows it: the one just chosen, ahead of the shared state.
     var shownDay: String { chosenDay ?? state.selectedDay }

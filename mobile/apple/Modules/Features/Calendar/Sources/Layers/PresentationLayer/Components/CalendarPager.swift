@@ -23,6 +23,8 @@ struct CalendarPager<Page: View>: View {
     @State private var turnedTo: String?
     @State private var tracker = CalendarPagerTracker()
     @State private var pageWidth: CGFloat = 0
+    /// Set while a finger's drag has not been decided yet; only such a drag may turn the page when the scroll rests.
+    @State private var isUndecidedDrag = false
 
     // MARK: - Body
     var body: some View {
@@ -40,7 +42,10 @@ struct CalendarPager<Page: View>: View {
         .scrollPosition($position)
         .scrollDisabled(!isEnabled)
         .onScrollPhaseChange { _, phase in
-            if phase == .interacting { tracker.isDragging = true }
+            if phase == .interacting {
+                tracker.isDragging = true
+                isUndecidedDrag = true
+            }
             if phase == .idle {
                 tracker.isDragging = false
                 settleOnRest()
@@ -62,7 +67,7 @@ struct CalendarPager<Page: View>: View {
                 return
             }
             turnedTo = nil
-            guard new != position.viewID(type: String.self) else { return }
+            isUndecidedDrag = false
             recenterIfNeeded(on: new)
             withAnimation(Self.slide) { position.scrollTo(id: new) }
         }
@@ -83,6 +88,7 @@ private extension CalendarPager {
 
     /// The finger lifted and the turn settles on `page`, counted from the first laid-out page.
     func decide(page index: Int) {
+        isUndecidedDrag = false
         let keys = keys
         guard keys.indices.contains(index) else { return }
         let target = keys[index]
@@ -95,17 +101,24 @@ private extension CalendarPager {
         recenterIfNeeded(on: target)
     }
 
-    /// A scroll that came to rest on another page than the chosen one, without a decided lift, turns to it.
+    /// When the scroll comes to rest: an undecided drag that left another page in view turns to it; otherwise a
+    /// scroll that stopped off the chosen page, cut short by another, slides back onto it.
     func settleOnRest() {
+        defer { isUndecidedDrag = false }
         let keys = keys
         guard pageWidth > 0 else { return }
         let index = Int((tracker.offset / pageWidth).rounded())
         let base = turnedTo ?? current
-        guard keys.indices.contains(index), let from = keys.firstIndex(of: base), index != from else { return }
-        let resting = keys[index]
-        turnedTo = resting
-        onTurn(index - from)
-        recenterIfNeeded(on: resting)
+        guard keys.indices.contains(index), let from = keys.firstIndex(of: base) else { return }
+        if isUndecidedDrag, index != from {
+            let resting = keys[index]
+            turnedTo = resting
+            onTurn(index - from)
+            recenterIfNeeded(on: resting)
+            withAnimation(Self.slide) { position.scrollTo(id: resting) }
+        } else if abs(tracker.offset - CGFloat(from) * pageWidth) > 0.5 {
+            withAnimation(Self.slide) { position.scrollTo(id: base) }
+        }
     }
 
     func recenterIfNeeded(on key: String) {

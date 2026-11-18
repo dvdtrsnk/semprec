@@ -13,6 +13,8 @@ struct CalendarScreen: View {
 
     // MARK: - State
     @State private var hasAppeared = false
+    /// Counts the taps on Today, so the day view drops a day it chose that the shared state has not reached.
+    @State private var todayRequests = 0
 
     // MARK: - Init
     init(viewModel: @autoclosure @escaping () -> CalendarViewModel) {
@@ -32,7 +34,10 @@ struct CalendarScreen: View {
                     CalendarBottomBar(
                         pendingInvitations: viewModel.state.pendingInvitations,
                         clipboard: viewModel.state.clipboard,
-                        onToday: { viewModel.navigate(.goToday) },
+                        onToday: {
+                            todayRequests += 1
+                            viewModel.navigate(.goToday)
+                        },
                         onCalendars: { viewModel.open(.calendars) },
                         onInvitations: { viewModel.open(.invitations) }
                     )
@@ -80,7 +85,7 @@ private extension CalendarScreen {
             )
         case .content:
             switch viewModel.state.zoom {
-            case .day: CalendarDayView(state: viewModel.state, viewModel: viewModel)
+            case .day: CalendarDayView(state: viewModel.state, viewModel: viewModel, todayRequests: todayRequests)
             case .month: CalendarMonthView(state: viewModel.state, viewModel: viewModel)
             case .year: CalendarYearView(state: viewModel.state, viewModel: viewModel)
             }
