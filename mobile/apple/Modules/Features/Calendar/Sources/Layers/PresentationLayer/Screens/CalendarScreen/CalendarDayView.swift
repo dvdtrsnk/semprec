@@ -119,7 +119,7 @@ private extension CalendarDayView {
             Text(CalendarDates.dayTitle(shownDay))
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity)
-                .overlay(alignment: .trailing) { weekNumber(shownDay) }
+                .overlay(alignment: .leading) { weekNumber(shownDay) }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .accessibilityAddTraits(.isHeader)
@@ -187,7 +187,7 @@ private extension CalendarDayView {
             .frame(height: 0.5)
     }
 
-    /// The week the day is in, quietly at the end of the date line.
+    /// The week the day is in, quietly at the start of the date line.
     func weekNumber(_ key: String) -> some View {
         let format = String(localized: "calendar.weekNumber", bundle: .module)
         return Text(String(format: format, locale: .current, CalendarDates.isoWeek(key)))
