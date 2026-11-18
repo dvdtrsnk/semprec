@@ -21,6 +21,11 @@ struct CalendarDayView: View {
     /// The day a settled swipe asked for, until the selected day becomes it.
     @State private var requestedDay: String?
     @State private var phase = ScrollPhase.idle
+    /// The height of an hour the person pinched the timeline to, kept for the next time.
+    @AppStorage("calendarHourHeight")
+    private var hourHeight = Double(CalendarGeometry.standardHourHeight)
+    /// Set while the week strip turns to another week, whose new day comes without a haptic.
+    @State private var isTurningWeek = false
 
     // MARK: - Body
     var body: some View {
@@ -29,11 +34,16 @@ struct CalendarDayView: View {
                 selectedDay: state.selectedDay,
                 today: state.today,
                 onPick: { viewModel.navigate(.show(zoom: .day, day: $0)) },
-                onPage: { viewModel.navigate(.page(steps: $0)) }
+                onPage: {
+                    isTurningWeek = true
+                    viewModel.navigate(.page(steps: $0))
+                }
             )
             .padding(.top, 4)
             pager
         }
+        .sensoryFeedback(.selection, trigger: state.selectedDay) { _, _ in !isTurningWeek }
+        .onChange(of: state.selectedDay) { isTurningWeek = false }
         .coordinateSpace(.calendarDay)
         .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
         .accessibilityIdentifier(CalendarIdentifiers.screen)
@@ -152,9 +162,10 @@ private extension CalendarDayView {
     }
 
     func timeline(_ scroll: ScrollViewProxy, day key: String) -> some View {
-        ScrollView {
+        CalendarZoomableTimeline(hourHeight: $hourHeight, startMinutes: startHour(day: key) * 60) { geometry in
             CalendarTimelineView(
                 day: dayState(key),
+                geometry: geometry,
                 isToday: key == state.today,
                 nowMinutes: state.nowMinutes,
                 selectedItemId: state.selectedItemId,
@@ -177,7 +188,6 @@ private extension CalendarDayView {
         // Several pages are laid out at once; only the selected day's page measures the timeline.
         .onPreferenceChange(CalendarContentFrameKey.self) { if key == state.selectedDay { contentFrame = $0 } }
         .onPreferenceChange(CalendarViewportFrameKey.self) { if key == state.selectedDay { viewportFrame = $0 } }
-        .onAppear { scrollToStart(scroll, day: key) }
     }
 }
 
@@ -215,7 +225,7 @@ private extension CalendarDayView {
 
     /// The minutes of the day at a vertical place of the day view; not snapped, the shared layer does that.
     func minutes(at position: CGFloat) -> Int {
-        Int(((position - contentFrame.minY) / CalendarGeometry.hourHeight * 60).rounded())
+        Int(((position - contentFrame.minY) / CGFloat(hourHeight) * 60).rounded())
     }
 
     /// Where the top of the held item is: the finger's place less the distance it grabbed the item below its top.
@@ -228,19 +238,16 @@ private extension CalendarDayView {
         eventFrames.first { $0.key != id && $0.value.contains(location) }?.key
     }
 
-    func scrollToStart(_ scroll: ScrollViewProxy, day key: String) {
-        let hour = key == state.today ? max(state.nowMinutes / 60 - 2, 0) : 7
-        // The timeline is not laid out yet when the day appears, so the scroll waits for the next turn.
-        Task { @MainActor in
-            scroll.scrollTo(CalendarGeometry.hourId(hour), anchor: .top)
-        }
+    /// The hour a day opens at: two hours before now on today, seven in the morning otherwise.
+    func startHour(day key: String) -> Int {
+        key == state.today ? max(state.nowMinutes / 60 - 2, 0) : 7
     }
 
     /// Scrolls the timeline an hour when the finger holding an item is near its top or bottom edge.
     func autoScroll(_ scroll: ScrollViewProxy, finger: CGPoint) {
         let edge: CGFloat = 48
         guard Date().timeIntervalSince(lastAutoScroll) > 0.3, viewportFrame != .zero else { return }
-        let top = Int(((viewportFrame.minY - contentFrame.minY) / CalendarGeometry.hourHeight).rounded(.down))
+        let top = Int(((viewportFrame.minY - contentFrame.minY) / CGFloat(hourHeight)).rounded(.down))
         let target: Int
         if finger.y > viewportFrame.minY, finger.y < viewportFrame.minY + edge {
             target = max(top - 1, 0)

@@ -98,13 +98,23 @@ final class CalendarItemCopyTests: XCTestCase {
 
     // MARK: - Geometry
     func testMinutesAndPointsConvertBothWays() {
-        XCTAssertEqual(CalendarGeometry.y(minutes: 60), 56)
-        XCTAssertEqual(CalendarGeometry.minutes(position: 56), 60)
-        XCTAssertEqual(CalendarGeometry.minutes(position: -10), 0)
-        XCTAssertEqual(CalendarGeometry.minutes(position: 100_000), 1440)
-        XCTAssertEqual(CalendarGeometry.height, 56 * 24)
-        XCTAssertEqual(CalendarGeometry.blockHeight(start: 600, end: 601), 22)
-        XCTAssertEqual(CalendarGeometry.blockHeight(start: 600, end: 660), 56)
+        let geometry = CalendarGeometry()
+        XCTAssertEqual(geometry.y(minutes: 60), 56)
+        XCTAssertEqual(geometry.minutes(position: 56), 60)
+        XCTAssertEqual(geometry.minutes(position: -10), 0)
+        XCTAssertEqual(geometry.minutes(position: 100_000), 1440)
+        XCTAssertEqual(geometry.height, 56 * 24)
+        XCTAssertEqual(geometry.blockHeight(start: 600, end: 601), 22)
+        XCTAssertEqual(geometry.blockHeight(start: 600, end: 660), 56)
         XCTAssertEqual(CalendarGeometry.hourId(7), "hour-7")
+    }
+
+    func testAPinchedHourHeightScalesTheDayWithinItsRange() {
+        let tall = CalendarGeometry(hourHeight: 112)
+        XCTAssertEqual(tall.y(minutes: 90), 168)
+        XCTAssertEqual(tall.minutes(position: 168), 90)
+        XCTAssertEqual(tall.height, 112 * 24)
+        XCTAssertEqual(CalendarGeometry(hourHeight: 1).hourHeight, CalendarGeometry.minimumHourHeight)
+        XCTAssertEqual(CalendarGeometry(hourHeight: 10_000).hourHeight, CalendarGeometry.maximumHourHeight)
     }
 }
