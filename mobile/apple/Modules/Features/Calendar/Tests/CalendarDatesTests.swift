@@ -29,6 +29,14 @@ final class CalendarDatesTests: XCTestCase {
         XCTAssertEqual(CalendarDates.days(from: "never", to: "2026-11-16"), 0)
     }
 
+    func testTheIsoWeekNumber() {
+        XCTAssertEqual(CalendarDates.isoWeek("2026-11-18"), 47)
+        XCTAssertEqual(CalendarDates.isoWeek("2026-11-22"), 47)
+        XCTAssertEqual(CalendarDates.isoWeek("2026-11-23"), 48)
+        XCTAssertEqual(CalendarDates.isoWeek("2027-01-01"), 53)
+        XCTAssertEqual(CalendarDates.isoWeek("2027-01-04"), 1)
+    }
+
     // MARK: - Parts
     func testPartsOfADay() {
         XCTAssertEqual(CalendarDates.dayNumber("2026-10-16"), 16)

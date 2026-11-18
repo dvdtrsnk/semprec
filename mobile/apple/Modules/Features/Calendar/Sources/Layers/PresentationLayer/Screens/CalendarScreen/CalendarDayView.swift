@@ -113,7 +113,8 @@ private extension CalendarDayView {
             VStack(spacing: 0) {
                 Text(CalendarDates.dayTitle(key))
                     .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .overlay(alignment: .trailing) { weekNumber(key) }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
                     .accessibilityAddTraits(.isHeader)
@@ -129,6 +130,14 @@ private extension CalendarDayView {
             }
             .background(.background)
         }
+    }
+
+    /// The week the day is in, quietly at the end of the date line.
+    func weekNumber(_ key: String) -> some View {
+        let format = String(localized: "calendar.weekNumber", bundle: .module)
+        return Text(String(format: format, locale: .current, CalendarDates.isoWeek(key)))
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
     }
 
     /// The items without a time, and the item that is held over the all-day row.

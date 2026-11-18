@@ -1525,6 +1525,7 @@
         "calendar.trace.done",
         "calendar.trace.missed",
         "calendar.trace.movedToEvent",
+        "calendar.weekNumber",
         "calendars.add",
         "calendars.add.defaultName",
         "calendars.color.blue",

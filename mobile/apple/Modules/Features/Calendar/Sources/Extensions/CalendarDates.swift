@@ -64,6 +64,13 @@ enum CalendarDates {
         return (calendar.component(.weekday, from: date) + 5) % 7 + 1
     }
 
+    /// The ISO 8601 week number: weeks start on Monday and week 1 holds the year's first Thursday.
+    static func isoWeek(_ key: String) -> Int {
+        var iso = Calendar(identifier: .iso8601)
+        iso.timeZone = calendar.timeZone
+        return date(key).map { iso.component(.weekOfYear, from: $0) } ?? 0
+    }
+
     static func year(_ key: String) -> Int {
         date(key).map { calendar.component(.year, from: $0) } ?? 0
     }

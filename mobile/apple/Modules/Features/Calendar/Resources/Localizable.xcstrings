@@ -689,6 +689,22 @@
         }
       }
     },
+    "calendar.weekNumber" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "T%lld"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W%lld"
+          }
+        }
+      }
+    },
     "failure.invalidData" : {
       "localizations" : {
         "cs" : {
