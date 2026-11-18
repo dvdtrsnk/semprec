@@ -100,6 +100,8 @@ private extension CalendarDayView {
                 }
             )
             .padding(.top, 4)
+            .padding(.bottom, 6)
+            Divider()
             Text(CalendarDates.dayTitle(shownDay))
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity)
@@ -115,8 +117,11 @@ private extension CalendarDayView {
             )
         }
         .background {
-            Color.clear
-                .glassEffect(.regular, in: Rectangle())
+            // Clear glass lets the timeline below show through; a light veil of the background keeps the header
+            // readable over it.
+            Rectangle()
+                .fill(.background.opacity(0.55))
+                .glassEffect(.clear, in: Rectangle())
                 .ignoresSafeArea(edges: .top)
         }
     }
