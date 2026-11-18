@@ -228,6 +228,40 @@ describe("the options of a proposal card", () => {
       expect(ids).not.toContain(trashed);
     });
 
+    /** The projects the seeded system modules own, which the Projects collection hides from the user. */
+    const systemProjects = (): Promise<string[]> =>
+      inA(async (client) => {
+        const { rows } = await client.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties ? 'systemActive'",
+          [await databaseId(client, "projects")],
+        );
+        return rows.map((row) => row.id);
+      });
+
+    it.each([
+      ["project", false],
+      ["page", false],
+      ["mcpProjects", true],
+    ] as const)(
+      "lists a system module's project for %s only when it is the card's value, unless the field is mcpProjects",
+      async (field, listsAll) => {
+        const system = await systemProjects();
+        expect(system.length).toBeGreaterThan(1);
+        const [held, ...others] = system as [string, ...string[]];
+        const own = await createProject("Own project");
+        const plain = await createCard({ proposal: await taskEnvelope() });
+        const holding = await createCard({ proposal: await taskEnvelope({ project: [held] }) });
+
+        const ids = (await optionsOf(plain, field)).map((option) => option.id);
+        const heldIds = (await optionsOf(holding, "project")).map((option) => option.id);
+
+        expect(ids).toContain(own);
+        for (const id of system) expect(ids.includes(id)).toBe(listsAll);
+        expect(heldIds[0]).toBe(held);
+        for (const id of others) expect(heldIds).not.toContain(id);
+      },
+    );
+
     it("hides a done project that is not the card's value, and lists it as an ordinary choice with includeDone", async () => {
       const done = await createProject("Done project");
       await setStatus("projects", done, "done");

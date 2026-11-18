@@ -158,7 +158,8 @@ interface RankedOption {
  * The picker choices of `field` for the card, in display order: current value, then the assistant's suggestion
  * (`aiProposal`), then by edge usage, then by name. The none choice is last for `project`/`company`, first for
  * `area`, absent otherwise. A trashed or archived target is listed only as the current value, `disabled`; a `done`
- * project only as the current value or with `includeDone`. Steps that would create an item in the field's database
+ * project only as the current value or with `includeDone`. A system module's project (Email, Calendar), which the
+ * Projects collection hides, is listed only as the current value, except for `mcpProjects`. Steps that would create an item in the field's database
  * are listed by `ref`. Read-only, unlocked; unknown, trashed and other-tenant cards (RLS) are all `NotFoundError`.
  */
 export async function listProposalOptions(
@@ -204,7 +205,13 @@ export async function listProposalOptions(
     const ownerModuleId = moduleOfDatabase.get(item.databaseId) ?? null;
     const block = relationTargetBlock(item, ownerModuleId);
     const isDoneProject = ownerModuleId === PROJECTS_MODULE_ID && item.properties.status === "done";
-    if (!isCurrent && (block !== null || (isDoneProject && !includeDone))) return [];
+    // A system module's project carries `systemActive` (true, or false once deactivated); a user's project has none.
+    const isHiddenSystemProject =
+      field !== "mcpProjects" &&
+      ownerModuleId === PROJECTS_MODULE_ID &&
+      item.properties.systemActive !== undefined &&
+      item.properties.systemActive !== null;
+    if (!isCurrent && (block !== null || (isDoneProject && !includeDone) || isHiddenSystemProject)) return [];
     return [{ item, isCurrent, block, ownerModuleId }];
   });
 
