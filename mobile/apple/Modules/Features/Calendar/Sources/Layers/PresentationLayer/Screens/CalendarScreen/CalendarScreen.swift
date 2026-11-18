@@ -95,9 +95,15 @@ private extension CalendarScreen {
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
             if let back = backLabel {
+                // The arrow and the month or year it goes to, as a navigation back button shows them; a toolbar
+                // would reduce a `Label` to its icon.
                 Button { goBack() } label: {
-                    Label { Text(back) } icon: { Image(systemName: "chevron.backward") }
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.backward")
+                        Text(back)
+                    }
                 }
+                .accessibilityLabel(Text(back))
                 .accessibilityIdentifier(CalendarIdentifiers.back)
             }
         }
