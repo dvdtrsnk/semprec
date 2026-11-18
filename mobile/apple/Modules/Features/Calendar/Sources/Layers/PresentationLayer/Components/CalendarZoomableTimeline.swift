@@ -14,6 +14,8 @@ struct CalendarZoomableTimeline<Content: View>: View {
     let startId: String
     /// The height of the header over the top of the scroll.
     let topInset: CGFloat
+    /// Each change scrolls the day back to its start, wherever the person scrolled it.
+    let startRequests: Int
     let content: (CalendarGeometry) -> Content
 
     // MARK: - State
@@ -44,6 +46,9 @@ struct CalendarZoomableTimeline<Content: View>: View {
         // The header is measured after the first page appears; its start then moves below the header.
         .onChange(of: topInset) {
             if !hasScrolled { scrollToStart() }
+        }
+        .onChange(of: startRequests) {
+            withAnimation(.smooth(duration: 0.4)) { scrollToStart() }
         }
         .onChange(of: pinchY == nil) { _, ended in
             guard !ended, let pinchY else {

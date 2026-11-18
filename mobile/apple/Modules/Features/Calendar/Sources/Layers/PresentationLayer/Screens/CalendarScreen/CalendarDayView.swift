@@ -211,7 +211,9 @@ private extension CalendarDayView {
             hourHeight: hourHeight,
             pinchY: pinchY,
             startId: CalendarGeometry.hourId(startHour(day: key), day: key),
-            topInset: headerHeight
+            topInset: headerHeight,
+            // Today brings today's timeline back to the current time.
+            startRequests: key == state.today ? todayRequests : 0
         ) { geometry in
             CalendarTimelineView(
                 day: dayState(key),
