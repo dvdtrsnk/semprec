@@ -119,6 +119,8 @@ private extension CalendarDayView {
                 drag: state.drag,
                 handlers: handlers(scroll, day: shownDay)
             )
+            // Ends the header: below it is the timeline itself.
+            Divider()
         }
     }
 
