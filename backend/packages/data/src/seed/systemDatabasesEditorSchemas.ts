@@ -10,7 +10,7 @@ import type {
  * placeholders are in `seed/i18n/{cs,en}.json`.
  *
  * A field `key` is the owning database's property key where one exists; otherwise a pseudo key
- * (`allDay`, `followupTask`, `followDate`, `day`, `page`, `placement`, `heading`, `area`, `markdown`).
+ * (`allDay`, `followupTask`, `followDate`, `day`, `page`, `placement`, `heading`, `markdown`).
  * `required`, `when` and `timeHiddenWhen` are not evaluated yet.
  */
 
@@ -69,10 +69,7 @@ export const SYSTEM_DATABASES_EDITOR_SCHEMAS: Record<string, EditorSchemaDescrip
     },
     {
       key: "links",
-      fields: [
-        field("task", "project", "select", { optionsSource: "project" }),
-        field("task", "area", "select", { optionsSource: "area" }),
-      ],
+      fields: [field("task", "project", "select", { optionsSource: "project" })],
     },
     followupGroup("task"),
   ),
