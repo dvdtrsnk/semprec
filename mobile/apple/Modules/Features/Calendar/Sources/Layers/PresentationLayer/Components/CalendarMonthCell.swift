@@ -2,7 +2,7 @@ import CoreKit
 import SwiftUI
 
 /// One day of the month view: its number and a few chips of what is on it. A chip of an item that can be edited is
-/// held and dropped on another day to move the item there; a tap on the cell opens the day.
+/// held and dropped on another day to move the item there; a tap anywhere on the cell, a chip too, opens the day.
 struct CalendarMonthCell: View {
 
     // MARK: - Dependencies
@@ -15,7 +15,6 @@ struct CalendarMonthCell: View {
     let maxChips: Int
     let onOpen: () -> Void
     let onDrop: (String) -> Void
-    let onOpenItem: (String) -> Void
 
     // MARK: - State
     @State private var targeted = false
@@ -89,7 +88,7 @@ private extension CalendarMonthCell {
         .foregroundStyle(item.isTask ? AnyShapeStyle(.primary) : AnyShapeStyle(item.tint))
         .background(item.tint.opacity(item.isTask ? 0.0 : 0.18), in: RoundedRectangle(cornerRadius: 4))
         .contentShape(Rectangle())
-        .onTapGesture { onOpenItem(item.id) }
+        .onTapGesture(perform: onOpen)
         .accessibilityLabel(item.title)
         .accessibilityIdentifier(CalendarIdentifiers.item(item.id))
         .sempTarget(of: item, meta: nil)

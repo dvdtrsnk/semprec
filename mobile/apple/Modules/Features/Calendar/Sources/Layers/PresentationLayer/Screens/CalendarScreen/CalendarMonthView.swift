@@ -144,8 +144,7 @@ private extension CalendarMonthView {
             isWeekday: CalendarDates.isoWeekday(date) < 6,
             maxChips: max(Int((rowHeight - 34) / 14), 0),
             onOpen: { viewModel.navigate(.show(zoom: .day, day: date)) },
-            onDrop: { viewModel.gesture(.moveToDay(itemId: $0, day: date)) },
-            onOpenItem: { viewModel.gesture(.tap(itemId: $0)) }
+            onDrop: { viewModel.gesture(.moveToDay(itemId: $0, day: date)) }
         )
     }
 
