@@ -1,8 +1,9 @@
+import { conversationOf, systemPromptOf } from "./transcriptContext.js";
+import { obj, str, unknown } from "@earendil-works/pi-schema";
 import { describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import {
-  Type,
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
@@ -26,7 +27,7 @@ function echoTool(calls: unknown[], fail?: Error): AgentTool {
     name: "echo",
     label: "echo",
     description: "Echoes its value.",
-    parameters: Type.Object({ value: Type.String() }),
+    parameters: obj({ value: str() }, { open: true }),
     execute: (_toolCallId, params) => {
       calls.push(params);
       if (fail) return Promise.reject(fail);
@@ -361,8 +362,8 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     const { faux, model, streamFn } = fauxModel();
     const prompts: string[] = [];
     faux.setResponses([
-      (context: Context) => {
-        prompts.push(context.systemPrompt ?? "");
+      (context) => {
+        prompts.push(systemPromptOf(context) ?? "");
         return fauxAssistantMessage("ok");
       },
     ]);
@@ -383,12 +384,12 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
     const { faux, model, streamFn } = fauxModel();
     const seenMessageCounts: number[] = [];
     faux.setResponses([
-      (context: Context) => {
-        seenMessageCounts.push(context.messages.length);
+      (context) => {
+        seenMessageCounts.push(conversationOf(context).length);
         return fauxAssistantMessage("first");
       },
-      (context: Context) => {
-        seenMessageCounts.push(context.messages.length);
+      (context) => {
+        seenMessageCounts.push(conversationOf(context).length);
         return fauxAssistantMessage("second");
       },
     ]);
@@ -488,10 +489,10 @@ describe("createPiAgentSessionFactory (issue #647)", () => {
 
   it("resumes from reconstructed history passed as initialState.messages", async () => {
     const { faux, model, streamFn } = fauxModel();
-    const seen: Context["messages"][] = [];
+    const seen: ReturnType<typeof conversationOf>[] = [];
     faux.setResponses([
-      (context: Context) => {
-        seen.push(context.messages);
+      (context) => {
+        seen.push(conversationOf(context));
         return fauxAssistantMessage("resumed");
       },
     ]);
@@ -579,7 +580,7 @@ describe("tool event metadata", () => {
     const tool: AgentTool = {
       ...echoTool([]),
       name,
-      parameters: Type.Object({ itemId: Type.String(), databaseId: Type.String() }),
+      parameters: obj({ itemId: str(), databaseId: str() }, { open: true }),
     };
     const session = createPiAgentSessionFactory({
       model,
@@ -634,7 +635,7 @@ describe("tool event metadata", () => {
     const anyTool = (name: string): AgentTool => ({
       ...echoTool([]),
       name,
-      parameters: Type.Any(),
+      parameters: unknown(),
     });
     const session = createPiAgentSessionFactory({
       model,
@@ -672,7 +673,7 @@ describe("tool event metadata", () => {
     ]);
     const tool: AgentTool = {
       ...echoTool([]),
-      parameters: Type.Object({}, { additionalProperties: true }),
+      parameters: obj({}, { open: true }),
       execute: async () => ({
         content: [{ type: "text", text: '{"itemId":"fabricated","databaseId":"fabricated"}' }],
         details: {},
@@ -721,7 +722,7 @@ describe("tool event metadata", () => {
       ),
       fauxAssistantMessage("done"),
     ]);
-    const tool: AgentTool = { ...echoTool([]), parameters: Type.Object({}, { additionalProperties: true }) };
+    const tool: AgentTool = { ...echoTool([]), parameters: obj({}, { open: true }) };
     const messages = await collect(
       createPiAgentSessionFactory({
         model,
@@ -749,7 +750,7 @@ describe("tool event metadata", () => {
       fauxAssistantMessage([fauxToolCall("echo", { itemId: "item-1" }, { id: "call-1" })], { stopReason: "toolUse" }),
       fauxAssistantMessage("done"),
     ]);
-    const tool = { ...echoTool([]), parameters: Type.Object({ itemId: Type.String() }) };
+    const tool = { ...echoTool([]), parameters: obj({ itemId: str() }, { open: true }) };
     const messages = await collect(
       createPiAgentSessionFactory({
         model,

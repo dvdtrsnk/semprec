@@ -10,6 +10,7 @@ import type {
   ToolCall,
   ToolResultMessage,
   UserMessage,
+  JsonValue,
 } from "@earendil-works/pi-ai";
 import type { AgentMessage, ConversationEntry } from "@semprec/agent-runtime";
 
@@ -109,12 +110,21 @@ function toAssistantMessage(entry: ConversationEntry, message: AgentMessage, mod
   };
 }
 
+/** `undefined` (no details) or a value JSON can hold, as the stored conversation does. */
+function isJsonValue(value: unknown): value is JsonValue | undefined {
+  if (value === undefined || value === null) return true;
+  if (typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every((item) => item !== undefined && isJsonValue(item));
+  return isRecord(value) && Object.values(value).every((item) => isJsonValue(item));
+}
+
 function toToolResultMessage(entry: ConversationEntry, message: AgentMessage): ToolResultMessage {
   const { toolCallId, name, isError, result } = message;
   if (typeof toolCallId !== "string" || typeof name !== "string" || typeof isError !== "boolean") {
     throw invalidEntry(entry, "is missing its toolCallId, name or isError");
   }
-  if (!isRecord(result) || !isToolResultContent(result.content)) {
+  if (!isRecord(result) || !isToolResultContent(result.content) || !isJsonValue(result.details)) {
     throw invalidEntry(entry, "has a malformed tool result");
   }
   return {

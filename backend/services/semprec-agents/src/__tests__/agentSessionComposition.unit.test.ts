@@ -1,9 +1,11 @@
+import { systemPromptOf, toolsOf } from "./transcriptContext.js";
+import { obj } from "@earendil-works/pi-schema";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Pool, Client } from "pg";
 import { ModuleRegistry } from "@semprec/module-registry";
 import type { AgentRunRow, McpInvokeResult, McpToolGrantForProject } from "@semprec/data";
-import { Type, fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxProvider, fauxAssistantMessage, fauxToolCall, type JsonObject } from "@earendil-works/pi-ai";
 import { createAgentSessionFactoryForRun, mcpModelToolName, withUniqueNames } from "../agentSessionComposition.js";
 import { logger } from "../logger.js";
 import * as piSession from "../piAgentSession.js";
@@ -26,7 +28,7 @@ function fakeTool(name: string, label: string): AgentTool {
     name,
     label,
     description: `fake ${label}`,
-    parameters: Type.Object({}),
+    parameters: obj({}, { open: true }),
     async execute() {
       return { content: [{ type: "text", text: "ok" }], details: {} };
     },
@@ -579,7 +581,7 @@ it.each([true, false])(
     const names: string[][] = [];
     faux.setResponses([
       (context) => {
-        names.push(context.tools?.map((tool) => tool.name) ?? []);
+        names.push(toolsOf(context).map((tool) => tool.name) ?? []);
         return fauxAssistantMessage(
           [
             fauxToolCall("item_patch", { itemId: "item-1", properties: {} }, { id: "generic-call" }),
@@ -684,11 +686,11 @@ describe("mcpModelToolName (issue #1533)", () => {
     const offered: string[][] = [];
     faux.setResponses([
       (context) => {
-        offered.push(context.tools?.map((tool) => tool.name) ?? []);
+        offered.push(toolsOf(context).map((tool) => tool.name) ?? []);
         return fauxAssistantMessage("done");
       },
       (context) => {
-        offered.push(context.tools?.map((tool) => tool.name) ?? []);
+        offered.push(toolsOf(context).map((tool) => tool.name) ?? []);
         return fauxAssistantMessage("done");
       },
     ]);
@@ -738,7 +740,7 @@ describe("MCP tool catalog of inactive servers (issue #1447)", () => {
     let names: string[] = [];
     faux.setResponses([
       (context) => {
-        names = context.tools?.map((tool) => tool.name) ?? [];
+        names = toolsOf(context).map((tool) => tool.name) ?? [];
         return fauxAssistantMessage("done");
       },
     ]);
@@ -822,7 +824,7 @@ describe("agent-only approval reason (issue #1420)", () => {
     actorUserId: "user-1",
   };
 
-  async function runCalls(args: Record<string, unknown>) {
+  async function runCalls(args: JsonObject) {
     fixtures.operations = ["item.patch", "item.delete"];
     fixtures.calls = [];
     const pool = new Pool();
@@ -830,7 +832,7 @@ describe("agent-only approval reason (issue #1420)", () => {
     const schemas: Record<string, unknown> = {};
     faux.setResponses([
       (context) => {
-        for (const tool of context.tools ?? []) schemas[tool.name] = tool.parameters;
+        for (const tool of toolsOf(context)) schemas[tool.name] = tool.parameters;
         return fauxAssistantMessage([fauxToolCall("item_delete", args, { id: "call" })], { stopReason: "toolUse" });
       },
       fauxAssistantMessage("done"),
@@ -987,7 +989,7 @@ describe("agent language instruction (issue #1388)", () => {
     let prompt = "";
     faux.setResponses([
       (context) => {
-        prompt = context.systemPrompt ?? "";
+        prompt = systemPromptOf(context) ?? "";
         return fauxAssistantMessage("done");
       },
     ]);
@@ -1092,18 +1094,15 @@ describe("MCP failure classification in the tool result (issue #1444)", () => {
     actorUserId: "user-1",
   };
 
-  async function mcpToolResultDetails(mcpResult: typeof fixtures.mcpResult, args: unknown = { databaseId: "db-1" }) {
+  async function mcpToolResultDetails(mcpResult: typeof fixtures.mcpResult, args: JsonObject = { databaseId: "db-1" }) {
     fixtures.grants = [grant("first-reg", "first-server")];
     fixtures.mcpResult = mcpResult;
     const pool = new Pool();
     const faux = fauxProvider();
     faux.setResponses([
-      fauxAssistantMessage(
-        [fauxToolCall(mcpModelToolName("search", "first-server"), args as Record<string, unknown>, { id: "call" })],
-        {
-          stopReason: "toolUse",
-        },
-      ),
+      fauxAssistantMessage([fauxToolCall(mcpModelToolName("search", "first-server"), args, { id: "call" })], {
+        stopReason: "toolUse",
+      }),
       fauxAssistantMessage("done"),
     ]);
     try {

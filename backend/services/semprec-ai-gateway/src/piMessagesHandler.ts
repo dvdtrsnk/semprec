@@ -7,12 +7,13 @@ import { BudgetExceededError, complete, type GlobalAiCaps } from "@semprec/ai-ga
 import type {
   Api,
   AssistantMessageEvent,
+  AssistantMessageEventStream,
+  Context,
   Message,
   Model,
   Models,
   PiMessagesEvent,
   SimpleStreamOptions,
-  StreamFunction,
   Tool,
 } from "@earendil-works/pi-ai";
 import { ProviderCallError } from "./structuredProviders/types.js";
@@ -39,7 +40,7 @@ export interface PiMessagesHandlerOptions {
   models: Models;
   apiKey: string;
   /** pi-ai's provider-dispatching stream (`streamSimple` from `@earendil-works/pi-ai/compat` in production). */
-  streamFn: StreamFunction<Api, SimpleStreamOptions>;
+  streamFn: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
   /** Test seam; defaults to `STREAM_TIMEOUT_MS`. */
   streamTimeoutMs?: number;
   /** Operator-wide caps across all tenants' spend. */
@@ -50,11 +51,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Shape check only: the message is handed to pi unchanged. */
-function isMessageShaped(value: unknown): value is Message {
-  return isRecord(value) && (value.role === "user" || value.role === "assistant" || value.role === "toolResult");
-}
-
 /** Shape check only: `parameters` is passed to the provider as-is. */
 function isToolShaped(value: unknown): value is Tool {
   return (
@@ -63,6 +59,22 @@ function isToolShaped(value: unknown): value is Tool {
     typeof value.description === "string" &&
     isRecord(value.parameters)
   );
+}
+
+/** pi's client sends the prompt and the tools it declares as `system` messages of the transcript. */
+function isSystemMessageShaped(value: Record<string, unknown>): boolean {
+  const { content, toolsAdded } = value;
+  return (
+    (typeof content === "string" || Array.isArray(content)) &&
+    (toolsAdded === undefined || (Array.isArray(toolsAdded) && toolsAdded.every(isToolShaped)))
+  );
+}
+
+/** Shape check only: the message is handed to pi unchanged. */
+function isMessageShaped(value: unknown): value is Message {
+  if (!isRecord(value)) return false;
+  if (value.role === "system") return isSystemMessageShaped(value);
+  return value.role === "user" || value.role === "assistant" || value.role === "toolResult";
 }
 
 const requestBodySchema = z.object({

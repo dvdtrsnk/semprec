@@ -22,7 +22,6 @@ import {
   type PiMessagesEvent,
   type RegisterFauxProviderOptions,
   type SimpleStreamOptions,
-  type StreamFunction,
 } from "@earendil-works/pi-ai";
 import { stream as piClientStream } from "@earendil-works/pi-ai/compat";
 import {
@@ -130,7 +129,7 @@ function withCalculatedCost(model: Model<Api>, source: AssistantMessageEventStre
   return out;
 }
 
-function fauxStreamFn(): StreamFunction<Api, SimpleStreamOptions> {
+function fauxStreamFn(): PiMessagesHandlerOptions["streamFn"] {
   return (model, context, options) => {
     streamCalls.push(options);
     return withCalculatedCost(model, models.streamSimple(model, context, options));
@@ -138,7 +137,7 @@ function fauxStreamFn(): StreamFunction<Api, SimpleStreamOptions> {
 }
 
 function startServer(
-  streamFn: StreamFunction<Api, SimpleStreamOptions> = fauxStreamFn(),
+  streamFn: PiMessagesHandlerOptions["streamFn"] = fauxStreamFn(),
   overrides: Partial<PiMessagesHandlerOptions> = {},
   servingPool: Pool = pool,
 ): void {
@@ -209,7 +208,7 @@ function pointedModel(): Model<"pi-messages"> {
 }
 
 /** A hand-built provider stream, for event shapes the faux provider never produces. */
-function scriptedStreamFn(events: AssistantMessageEvent[]): StreamFunction<Api, SimpleStreamOptions> {
+function scriptedStreamFn(events: AssistantMessageEvent[]): PiMessagesHandlerOptions["streamFn"] {
   return () => {
     const out = createAssistantMessageEventStream();
     queueMicrotask(() => {
@@ -673,6 +672,11 @@ describe("POST /internal/pi/messages", () => {
       "context.systemPrompt",
     ],
     ["a malformed tool", { model: MODEL_ID, context: { ...CONTEXT, tools: [{ name: "t" }] } }, "context.tools.0"],
+    [
+      "a system message declaring a malformed tool",
+      { model: MODEL_ID, context: { messages: [{ role: "system", content: "base", toolsAdded: [{ name: "t" }] }] } },
+      "context.messages.0",
+    ],
     [
       "a non-integer maxTokens",
       { model: MODEL_ID, context: CONTEXT, options: { maxTokens: 1.5 } },

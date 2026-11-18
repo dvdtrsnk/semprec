@@ -1,24 +1,25 @@
+import { unsafe } from "@earendil-works/pi-schema";
 import { describe, expect, it } from "vitest";
-import { Type, validateToolArguments } from "@earendil-works/pi-ai";
+import { validateToolArguments, type JsonObject, type JsonValue } from "@earendil-works/pi-ai";
 import { GENERIC_OPERATION_BINDINGS, GENERIC_OPERATION_NAMES, operationInputJsonSchema } from "@semprec/shared";
 import { boundGatewayImagePayload } from "../modelComposition.js";
 
 const uuid = "11111111-1111-4111-8111-111111111111";
 const relation = { type: "relation_path_contains", path: ["project", "area"], value: uuid };
-const nested = (depth: number): unknown => (depth === 0 ? relation : { type: "not", node: nested(depth - 1) });
+const nested = (depth: number): JsonValue => (depth === 0 ? relation : { type: "not", node: nested(depth - 1) });
 
 describe.each(["database.query", "view.query"] as const)("%s compact agent schema", (operation) => {
   const schema = operationInputJsonSchema(operation, "agent-query-compact");
-  const tool = { name: "query", description: "query", parameters: Type.Unsafe(schema) };
+  const tool = { name: "query", description: "query", parameters: unsafe(schema) };
   const before = {
     name: "query",
     description: "query",
-    parameters: Type.Unsafe(GENERIC_OPERATION_BINDINGS[operation].input.toJSONSchema({ io: "input", reused: "ref" })),
+    parameters: unsafe(GENERIC_OPERATION_BINDINGS[operation].input.toJSONSchema({ io: "input", reused: "ref" })),
   };
-  const identity = operation === "database.query" ? { databaseId: "db1" } : { viewId: "view1" };
-  const validate = (args: Record<string, unknown>): unknown =>
+  const identity: JsonObject = operation === "database.query" ? { databaseId: "db1" } : { viewId: "view1" };
+  const validate = (args: JsonObject): unknown =>
     validateToolArguments(tool, { type: "toolCall", id: "test", name: "query", arguments: args });
-  const validateBefore = (args: Record<string, unknown>): unknown =>
+  const validateBefore = (args: JsonObject): unknown =>
     validateToolArguments(before, { type: "toolCall", id: "test", name: "query", arguments: args });
 
   it("validates real generated pointers and preserves the input's optional fields", () => {
@@ -52,12 +53,13 @@ describe.each(["database.query", "view.query"] as const)("%s compact agent schem
   });
 
   it("accepts bounded group fanout and scalar filter branches", () => {
-    for (const filter of [
+    const filters: JsonObject[] = [
       { type: "and", nodes: Array.from({ length: 20 }, () => relation) },
       { type: "or", nodes: [relation] },
       { type: "equals", property: "name", value: "x" },
       { type: "is_empty", property: "name" },
-    ]) {
+    ];
+    for (const filter of filters) {
       const input = { ...identity, filter };
       expect(GENERIC_OPERATION_BINDINGS[operation].input.safeParse(input).success).toBe(true);
       expect(validate(input)).toEqual(input);
@@ -82,9 +84,9 @@ describe.each(["database.query", "view.query"] as const)("%s compact agent schem
 
 describe("item.count agent schema", () => {
   const schema = operationInputJsonSchema("item.count");
-  const tool = { name: "count", description: "count", parameters: Type.Unsafe(schema) };
+  const tool = { name: "count", description: "count", parameters: unsafe(schema) };
   const databaseId = "22222222-2222-4222-8222-222222222222";
-  const validate = (args: Record<string, unknown>): unknown =>
+  const validate = (args: JsonObject): unknown =>
     validateToolArguments(tool, { type: "toolCall", id: "test", name: "count", arguments: args });
 
   it("validates real generated pointers through the pi validator, for one and for twenty entries", () => {
@@ -115,9 +117,9 @@ describe("item.count agent schema", () => {
 
 describe("database.facets agent schema", () => {
   const schema = operationInputJsonSchema("database.facets");
-  const tool = { name: "facets", description: "facets", parameters: Type.Unsafe(schema) };
+  const tool = { name: "facets", description: "facets", parameters: unsafe(schema) };
   const databaseId = "22222222-2222-4222-8222-222222222222";
-  const validate = (args: Record<string, unknown>): unknown =>
+  const validate = (args: JsonObject): unknown =>
     validateToolArguments(tool, { type: "toolCall", id: "test", name: "facets", arguments: args });
 
   it("validates real generated pointers through the pi validator, for the filter, the open filter and twenty facets", () => {

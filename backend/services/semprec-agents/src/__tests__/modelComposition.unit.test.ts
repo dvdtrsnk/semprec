@@ -1,6 +1,7 @@
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { boundGatewayImagePayload, createGatewayModel } from "../modelComposition.js";
 
@@ -65,7 +66,7 @@ describe("createGatewayModel (issue #647)", () => {
     });
     const reply = await gateway.streamFn(
       gateway.model,
-      { messages: [{ role: "user", content: "hi", timestamp: 0 }] },
+      normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 0 }] }),
       { headers: { "x-semprec-agent-run-id": "run-1" } },
     );
     const message = await reply.result();
@@ -118,7 +119,7 @@ describe("createGatewayModel (issue #647)", () => {
       await scope(async () => {
         const reply = await gateway.streamFn(
           gateway.model,
-          { messages: [{ role: "user", content: "hi", timestamp: 0 }] },
+          normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 0 }] }),
           { headers: callerHeaders },
         );
         await reply.result();
@@ -153,7 +154,7 @@ describe("createGatewayModel (issue #647)", () => {
   });
 
   describe("budget refusal capture", () => {
-    const REQUEST = { messages: [{ role: "user" as const, content: "hi", timestamp: 0 }] };
+    const REQUEST = normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 0 }] });
 
     async function listenWith(handler: (url: string, res: import("node:http").ServerResponse) => void) {
       server = createServer((req, res) => {

@@ -5,7 +5,7 @@ import {
 } from "@semprec/data";
 import type { Pool } from "pg";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
-import { Type } from "@earendil-works/pi-ai";
+import { obj, opt, str, unsafe } from "@earendil-works/pi-schema";
 import {
   createApprovalGatedMcpInvokeTool,
   createGenericOperationAgentTools,
@@ -76,12 +76,12 @@ const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
 const SEMP_MESSAGE_ID_HEADER = "x-semprec-semp-message-id";
 
 /** `resolveMcpInvocation` validates against the registration's schema on every call. */
-const MCP_TOOL_PARAMETERS = Type.Object({}, { additionalProperties: true });
+const MCP_TOOL_PARAMETERS = obj({}, { open: true });
 
 /** Plus the optional `reason` for an approval-gated tool. */
-const APPROVAL_GATED_MCP_TOOL_PARAMETERS = Type.Object(
-  { semprecReason: Type.Optional(Type.String({ maxLength: APPROVAL_REQUEST_REASON_MAX_LENGTH })) },
-  { additionalProperties: true },
+const APPROVAL_GATED_MCP_TOOL_PARAMETERS = obj(
+  { semprecReason: opt(str({ maxLength: APPROVAL_REQUEST_REASON_MAX_LENGTH })) },
+  { open: true },
 );
 
 /** The optional argument an approval-gated generic operation's tool schema adds; it never reaches the operation input. */
@@ -162,7 +162,7 @@ async function createModuleTools(
         name: toModelToolName(definition.name),
         label: definition.name,
         description: `Semprec module tool '${definition.name}'.`,
-        parameters: Type.Unsafe(definition.argumentSchema),
+        parameters: unsafe(definition.argumentSchema),
         async execute(toolCallId, params) {
           if (!definition.acceptsArguments(params))
             return { content: [{ type: "text", text: "Invalid tool arguments." }], details: { error: true } };
@@ -221,7 +221,7 @@ async function createGenericOperationTools(
     label: operation,
     toolEventMetadata: { operation },
     description: `Semprec generic operation '${operation}'.`,
-    parameters: Type.Unsafe(genericOperationToolSchema(operation)),
+    parameters: unsafe(genericOperationToolSchema(operation)),
     async execute(toolCallId, params) {
       const split = splitGenericOperationReason(operation, params);
       if (!split.ok) {

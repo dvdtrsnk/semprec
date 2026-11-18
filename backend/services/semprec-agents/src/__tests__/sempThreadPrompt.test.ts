@@ -1,3 +1,4 @@
+import { systemPromptOf, toolsOf } from "./transcriptContext.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
@@ -282,7 +283,7 @@ describe("Semp thread live prompt", () => {
     faux.setResponses([
       (context) => {
         prompts.push(JSON.stringify(context.messages));
-        tools.push((context.tools ?? []).map((tool) => tool.name));
+        tools.push(toolsOf(context).map((tool) => tool.name));
         return fauxAssistantMessage([fauxToolCall("heartbeat_list", {}, { id: "tick-list" })], {
           stopReason: "toolUse",
         });
@@ -307,7 +308,7 @@ describe("Semp thread live prompt", () => {
       () => fauxAssistantMessage("system continuation answered"),
       (context) => {
         prompts.push(JSON.stringify(context.messages));
-        tools.push((context.tools ?? []).map((tool) => tool.name));
+        tools.push(toolsOf(context).map((tool) => tool.name));
         return fauxAssistantMessage("chat answer");
       },
     ]);
@@ -473,8 +474,8 @@ describe("Semp thread live prompt", () => {
     const faux = fauxProvider();
     faux.setResponses(
       Array.from({ length: 3 }, () => (context) => {
-        prompts.push(context.systemPrompt ?? "");
-        toolLists.push((context.tools ?? []).map((tool) => tool.name));
+        prompts.push(systemPromptOf(context) ?? "");
+        toolLists.push(toolsOf(context).map((tool) => tool.name));
         userInputs.push(JSON.stringify(context.messages));
         return fauxAssistantMessage("answer");
       }),

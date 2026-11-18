@@ -9,8 +9,9 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.85.1",
-    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-schema": "1.5.2",
     "@semprec/agent-runtime": "workspace:*",
     "@semprec/ai-gateway-client": "workspace:*",
     "@semprec/block-model": "workspace:*",

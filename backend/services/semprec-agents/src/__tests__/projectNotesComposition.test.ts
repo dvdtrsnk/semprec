@@ -1,3 +1,4 @@
+import { systemPromptOf } from "./transcriptContext.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -71,7 +72,7 @@ describe("project notes session composition", () => {
     const faux = fauxProvider();
     faux.setResponses(
       [0, 1, 2].map(() => (context) => {
-        prompts.push(context.systemPrompt ?? "");
+        prompts.push(systemPromptOf(context) ?? "");
         return fauxAssistantMessage("answer");
       }),
     );
