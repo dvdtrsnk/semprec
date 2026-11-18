@@ -13,7 +13,7 @@ class CalendarTodayNavigationTest : MainDispatcherTest() {
         onWindow = { _, _ -> RepositoryResult.Content(window(emptyList(), listOf(calendarInfo("work")), 0)) }
     }
 
-    @Test fun `today shows its year or month, and one level deeper when that is already shown`() =
+    @Test fun `today shows its year or month and one level deeper when that is already shown`() =
         runTest(dispatcher) {
             val vm = CalendarViewModelFactory(
                 repository,
