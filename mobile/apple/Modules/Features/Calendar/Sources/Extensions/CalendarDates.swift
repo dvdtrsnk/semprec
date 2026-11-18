@@ -41,6 +41,17 @@ enum CalendarDates {
         return Self.key(moved)
     }
 
+    /// The Monday of the week `key` is in.
+    static func monday(of key: String) -> String {
+        shifted(key, by: 1 - isoWeekday(key))
+    }
+
+    /// How many days `end` is after `start`; negative when it is before.
+    static func days(from start: String, to end: String) -> Int {
+        guard let start = date(start), let end = date(end) else { return 0 }
+        return calendar.dateComponents([.day], from: start, to: end).day ?? 0
+    }
+
     // MARK: - Parts
     /// The day of the month, `16`.
     static func dayNumber(_ key: String) -> Int {

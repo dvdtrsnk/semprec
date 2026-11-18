@@ -14,36 +14,36 @@ struct CalendarDayView: View {
     @State private var viewportFrame = CGRect.zero
     @State private var eventFrames: [String: CGRect] = [:]
     @State private var lastAutoScroll = Date.distantPast
+    /// The day the page below the strip shows; it follows the selected day one animation later.
+    @State private var shownDay: String?
+    /// Whether the selected day moved forward, so the new page slides in from the trailing edge.
+    @State private var forward = true
 
     // MARK: - Body
     var body: some View {
-        ScrollViewReader { scroll in
-            VStack(spacing: 0) {
-                CalendarWeekStrip(
-                    selectedDay: state.selectedDay,
-                    today: state.today,
-                    onPick: { viewModel.navigate(.show(zoom: .day, day: $0)) },
-                    onPage: { viewModel.navigate(.page(steps: $0)) }
-                )
-                .padding(.top, 4)
-                Text(CalendarDates.dayTitle(state.selectedDay))
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .accessibilityAddTraits(.isHeader)
-                Divider()
-                CalendarAllDayRow(
-                    items: allDayItems,
-                    selectedItemId: state.selectedItemId,
-                    drag: state.drag,
-                    handlers: handlers(scroll)
-                )
-                Divider()
-                timeline(scroll)
+        VStack(spacing: 0) {
+            CalendarWeekStrip(
+                selectedDay: state.selectedDay,
+                today: state.today,
+                onPick: { viewModel.navigate(.show(zoom: .day, day: $0)) },
+                onPage: { viewModel.navigate(.page(steps: $0)) }
+            )
+            .padding(.top, 4)
+            ZStack {
+                page(displayedDay)
+                    .id(displayedDay)
+                    .transition(.push(from: forward ? .trailing : .leading))
             }
-            .coordinateSpace(.calendarDay)
-            .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
+        }
+        .coordinateSpace(.calendarDay)
+        .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
+        .onAppear { shownDay = state.selectedDay }
+        .onChange(of: state.selectedDay) { old, new in
+            forward = new > old
+            // The page leaving reads the new direction before it is replaced, so the change waits one turn.
+            Task { @MainActor in
+                withAnimation(.easeInOut(duration: 0.3)) { shownDay = new }
+            }
         }
         .accessibilityIdentifier(CalendarIdentifiers.screen)
     }
@@ -52,12 +52,39 @@ struct CalendarDayView: View {
 // MARK: - Subviews
 private extension CalendarDayView {
 
-    var day: CalendarDayState {
-        state.days.first { $0.date == state.selectedDay } ?? CalendarDayState(date: state.selectedDay)
+    var displayedDay: String { shownDay ?? state.selectedDay }
+
+    func dayState(_ key: String) -> CalendarDayState {
+        state.days.first { $0.date == key } ?? CalendarDayState(date: key)
+    }
+
+    /// The date, the row of all-day items and the timeline of one day.
+    func page(_ key: String) -> some View {
+        ScrollViewReader { scroll in
+            VStack(spacing: 0) {
+                Text(CalendarDates.dayTitle(key))
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .accessibilityAddTraits(.isHeader)
+                Divider()
+                CalendarAllDayRow(
+                    items: allDayItems(key),
+                    selectedItemId: state.selectedItemId,
+                    drag: state.drag,
+                    handlers: handlers(scroll, day: key)
+                )
+                Divider()
+                timeline(scroll, day: key)
+            }
+            .background(.background)
+        }
     }
 
     /// The items without a time, and the item that is held over the all-day row.
-    var allDayItems: [CalendarItem] {
+    func allDayItems(_ key: String) -> [CalendarItem] {
+        let day = dayState(key)
         var items = day.items.filter { $0.allDay || $0.startMinutes == nil }
         if let drag = state.drag, drag.allDay, let held = day.items.first(where: { $0.id == drag.itemId }),
             !items.contains(where: { $0.id == held.id }) {
@@ -66,15 +93,15 @@ private extension CalendarDayView {
         return items
     }
 
-    func timeline(_ scroll: ScrollViewProxy) -> some View {
+    func timeline(_ scroll: ScrollViewProxy, day key: String) -> some View {
         ScrollView {
             CalendarTimelineView(
-                day: day,
-                isToday: state.selectedDay == state.today,
+                day: dayState(key),
+                isToday: key == state.today,
                 nowMinutes: state.nowMinutes,
                 selectedItemId: state.selectedItemId,
                 drag: state.drag,
-                handlers: handlers(scroll),
+                handlers: handlers(scroll, day: key),
                 onResize: { item, edge, location in
                     viewModel.gesture(.dragResize(itemId: item.id, edge: edge, rawMinutes: minutes(at: location.y)))
                 },
@@ -83,17 +110,17 @@ private extension CalendarDayView {
                 onDeselect: { viewModel.gesture(.tapBackground) },
                 onOpenSleep: { viewModel.open(.sleep(night: $0)) },
                 onPaste: state.clipboard == nil ? nil : { location in
-                    viewModel.edit(.paste(day: state.selectedDay, rawStart: minutes(at: location.y), allDay: false))
+                    viewModel.edit(.paste(day: key, rawStart: minutes(at: location.y), allDay: false))
                 }
             )
             .onTapGesture { viewModel.gesture(.tapBackground) }
         }
         .reportsFrame(CalendarViewportFrameKey.self)
-        .onPreferenceChange(CalendarContentFrameKey.self) { contentFrame = $0 }
-        .onPreferenceChange(CalendarViewportFrameKey.self) { viewportFrame = $0 }
+        // While two pages pass each other, only the page of the shown day measures the timeline.
+        .onPreferenceChange(CalendarContentFrameKey.self) { if key == displayedDay { contentFrame = $0 } }
+        .onPreferenceChange(CalendarViewportFrameKey.self) { if key == displayedDay { viewportFrame = $0 } }
         .simultaneousGesture(swipe)
-        .onAppear { scrollToStart(scroll) }
-        .onChange(of: state.selectedDay) { scrollToStart(scroll) }
+        .onAppear { scrollToStart(scroll, day: key) }
     }
 
     /// A swipe sideways shows the next or the previous day; it is left alone while something is held.
@@ -109,14 +136,14 @@ private extension CalendarDayView {
 // MARK: - Gestures
 private extension CalendarDayView {
 
-    func handlers(_ scroll: ScrollViewProxy) -> CalendarItemHandlers {
+    func handlers(_ scroll: ScrollViewProxy, day key: String) -> CalendarItemHandlers {
         CalendarItemHandlers(
             tap: { viewModel.gesture(.tap(itemId: $0.id)) },
             select: { viewModel.gesture(.select(itemId: $0.id)) },
             move: { item, location, start in
                 viewModel.gesture(.dragMove(
                     itemId: item.id,
-                    day: state.selectedDay,
+                    day: key,
                     rawStart: rawStart(item, location: location, start: start),
                     overAllDayRow: location.y < viewportFrame.minY,
                     overEventId: item.isTask ? eventId(at: location, excluding: item.id) : nil
@@ -153,8 +180,8 @@ private extension CalendarDayView {
         eventFrames.first { $0.key != id && $0.value.contains(location) }?.key
     }
 
-    func scrollToStart(_ scroll: ScrollViewProxy) {
-        let hour = state.selectedDay == state.today ? max(state.nowMinutes / 60 - 2, 0) : 7
+    func scrollToStart(_ scroll: ScrollViewProxy, day key: String) {
+        let hour = key == state.today ? max(state.nowMinutes / 60 - 2, 0) : 7
         // The timeline is not laid out yet when the day appears, so the scroll waits for the next turn.
         Task { @MainActor in
             scroll.scrollTo(CalendarGeometry.hourId(hour), anchor: .top)
