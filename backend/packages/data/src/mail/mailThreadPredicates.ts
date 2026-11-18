@@ -12,7 +12,7 @@ export interface MailThreadFilters {
 type FolderIdSql = `$${number}::uuid` | "mf.id";
 
 const threadInFolder = (folderId: FolderIdSql) =>
-  `EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND ${folderId} = ANY(c.folder_ids))`;
+  `l.thread_id IN (SELECT c.thread_id FROM copies c WHERE ${folderId} = ANY(c.folder_ids))`;
 
 type ThreadIdSql = "l.thread_id" | "p.thread_id";
 
@@ -34,16 +34,16 @@ export const mailThreadHasSempDraft = (threadId: ThreadIdSql) =>
       AND d.created_by = 'agent' AND d.sent_at IS NULL)`;
 
 export const mailThreadPredicates = {
-  inbox: "EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND c.has_inbox)",
-  flagged: "EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND c.flagged AND c.has_non_junk)",
+  inbox: "l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.has_inbox)",
+  flagged: "l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.flagged AND c.has_non_junk)",
   /** Like `flagged`, needs a counted message outside Junk and Trash. */
   sempDrafts: `(${mailThreadHasSempDraft("l.thread_id")}
-    AND EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND c.has_non_junk))`,
+    AND l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.has_non_junk))`,
   inFolder: (parameter: number) => threadInFolder(`$${parameter}::uuid`),
   inFolderRow: threadInFolder("mf.id"),
   unread: "cs.unread",
   inMailbox: (parameter: number) =>
-    `EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND c.mailbox_item_id = $${parameter}::uuid)`,
+    `l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.mailbox_item_id = $${parameter}::uuid)`,
 } as const;
 
 export function matchesSearch(query: ParsedMailSearchQuery, firstParameter: number) {

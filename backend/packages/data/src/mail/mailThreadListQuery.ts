@@ -79,6 +79,8 @@ export function mailThreadCopyCtes(threadIdParameter: number): string {
       bool_or(COALESCE(folder.properties->>'specialPurpose' NOT IN ('junk', 'trash'), true)) AS has_non_junk,
       array_agg(folder.id) AS folder_ids
     FROM folder_definition fd JOIN item_relations r ON r.relation_definition_id = fd.id AND r.tenant_id = m.tenant_id
+      -- The OR lets the item_a and item_b indexes find the edges; the CASE keeps the email's own side.
+      AND (r.item_a = i.id OR r.item_b = i.id)
       AND (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) = i.id
     JOIN items folder ON folder.tenant_id = m.tenant_id AND folder.database_id = (SELECT folders FROM schema_ids)
       AND folder.id = CASE WHEN fd.email_is_a THEN r.item_b ELSE r.item_a END AND folder.deleted_at IS NULL
@@ -103,6 +105,8 @@ export const MAIL_SEARCH_MESSAGES_CTE = `search_messages AS (
     COALESCE(i.properties->'flagged' = 'true'::jsonb, false) AS flagged,
     EXISTS (SELECT 1 FROM mail_attachments a WHERE a.tenant_id = m.tenant_id AND a.message_item_id = m.item_id) AS attached,
     EXISTS (SELECT 1 FROM folder_definition fd JOIN item_relations r ON r.tenant_id = m.tenant_id AND r.relation_definition_id = fd.id
+      -- The OR lets the item_a and item_b indexes find the edges; the CASE keeps the email's own side.
+      AND (r.item_a = i.id OR r.item_b = i.id)
       AND (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) = i.id
       JOIN items f ON f.tenant_id = m.tenant_id AND f.database_id = (SELECT folders FROM schema_ids)
         AND f.id = CASE WHEN fd.email_is_a THEN r.item_b ELSE r.item_a END AND f.deleted_at IS NULL
