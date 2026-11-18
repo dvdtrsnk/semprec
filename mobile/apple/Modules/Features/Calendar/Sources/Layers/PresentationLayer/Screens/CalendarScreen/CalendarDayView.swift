@@ -30,6 +30,8 @@ struct CalendarDayView: View {
     @State private var chosenDay: String?
     /// The height of the glass header, which the timeline starts below and scrolls on under.
     @State private var headerHeight: CGFloat = 0
+    /// How far the day view sits below the top of the screen, under the status and navigation bars.
+    @State private var topBarsHeight: CGFloat = 0
 
     // MARK: - Body
     var body: some View {
@@ -60,6 +62,7 @@ struct CalendarDayView: View {
             if new == tickedDay || isTurningWeek { return }
             tick(for: new)
         }
+        .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { topBarsHeight = $0 })
         .coordinateSpace(.calendarDay)
         .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
         .accessibilityIdentifier(CalendarIdentifiers.screen)
@@ -125,9 +128,9 @@ private extension CalendarDayView {
         }
     }
 
-    /// What of the shown day's timeline lies under the header, blurred until only its colours remain and made a
-    /// little more vivid, so the glass header glows with the items it covers without showing their shapes. It is a
-    /// picture only: it takes no touches and reports none of its frames.
+    /// What of the shown day's timeline lies under the header and the bars above it, blurred until only its colours
+    /// remain, made a little more vivid and veiled a little, so the glass glows with the items it covers without
+    /// showing their shapes. It is a picture only: it takes no touches and reports none of its frames.
     var headerBackdrop: some View {
         let geometry = CalendarGeometry(hourHeight: CGFloat(hourHeight))
         return CalendarTimelineView(
@@ -149,14 +152,17 @@ private extension CalendarDayView {
             onPaste: nil
         )
         .frame(height: geometry.height)
-        .offset(y: contentFrame.minY)
-        .frame(height: headerHeight + Self.backdropBleed, alignment: .top)
+        .offset(y: topBarsHeight + contentFrame.minY)
+        .frame(height: topBarsHeight + headerHeight + Self.backdropBleed, alignment: .top)
         .background(.background)
         .clipped()
         .blur(radius: 24)
         .saturation(1.8)
-        .frame(height: headerHeight, alignment: .top)
+        .overlay(.background.opacity(0.12))
+        .frame(height: topBarsHeight + headerHeight, alignment: .top)
         .clipped()
+        // It covers the bars above the day view too, so the glass looks the same from the top of the screen down.
+        .offset(y: -topBarsHeight)
         .transformPreference(CalendarContentFrameKey.self) { $0 = .zero }
         .transformPreference(CalendarEventFramesKey.self) { $0 = [:] }
         .allowsHitTesting(false)
