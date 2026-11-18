@@ -8,6 +8,7 @@ struct CalendarTimelineView: View {
 
     // MARK: - Dependencies
     let day: CalendarDayState
+    let geometry: CalendarGeometry
     let isToday: Bool
     let nowMinutes: Int
     let selectedItemId: String?
@@ -37,12 +38,12 @@ struct CalendarTimelineView: View {
                     nowLine(width: width)
                 }
             }
-            .frame(width: proxy.size.width, height: CalendarGeometry.height, alignment: .topLeading)
+            .frame(width: proxy.size.width, height: geometry.height, alignment: .topLeading)
             .contentShape(Rectangle())
             .gesture(pasteGesture)
             .reportsFrame(CalendarContentFrameKey.self)
         }
-        .frame(height: CalendarGeometry.height)
+        .frame(height: geometry.height)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(CalendarIdentifiers.timeline)
     }
@@ -74,7 +75,7 @@ private extension CalendarTimelineView {
         let range = place(item)
         let columns = max(item.columns, 1)
         let columnWidth = width / CGFloat(columns)
-        let height = CalendarGeometry.blockHeight(start: range.start, end: range.end)
+        let height = geometry.blockHeight(start: range.start, end: range.end)
         let selected = selectedItemId == item.id
         let dragging = drag?.itemId == item.id
         let target = drag?.intoEventId == item.id
@@ -105,7 +106,7 @@ private extension CalendarTimelineView {
         .background(item.kind == .event ? AnyView(EventFrameReporter(id: item.id)) : AnyView(EmptyView()))
         .offset(
             x: CalendarGeometry.gutter + CGFloat(item.column) * columnWidth,
-            y: CalendarGeometry.y(minutes: range.start)
+            y: geometry.y(minutes: range.start)
         )
         .zIndex(raised ? 2 : 1)
     }
@@ -173,26 +174,34 @@ private extension CalendarTimelineView {
                         .foregroundStyle(.secondary)
                         .frame(width: CalendarGeometry.gutter - 6, alignment: .trailing)
                         .offset(y: -7)
+                        .opacity(isCoveredByNow(hour) ? 0 : 1)
                     Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 0.5)
                 }
-                .frame(height: CalendarGeometry.hourHeight, alignment: .top)
-                .id(CalendarGeometry.hourId(hour))
+                .frame(height: geometry.hourHeight, alignment: .top)
+                .id(CalendarGeometry.hourId(hour, day: day.date))
             }
         }
     }
 
+    /// Whether the current time's capsule sits over this hour's label, which then gives way to it.
+    func isCoveredByNow(_ hour: Int) -> Bool {
+        isToday && abs(hour * 60 - nowMinutes) < 20
+    }
+
+    /// The current time in a red capsule over the hour labels, and the red line from it across the day.
     func nowLine(width: CGFloat) -> some View {
         HStack(spacing: 0) {
             Text(CalendarDates.clock(minutes: nowMinutes))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.red)
-                .frame(width: CalendarGeometry.gutter - 6, alignment: .trailing)
-                .padding(.trailing, 6)
-            Circle().fill(Color.red).frame(width: 8, height: 8).offset(x: -4)
+                .font(.caption2.weight(.bold).monospacedDigit())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.red))
+                .frame(width: CalendarGeometry.gutter, alignment: .trailing)
             Rectangle().fill(Color.red).frame(height: 1)
         }
-        .frame(height: 12)
-        .offset(y: CalendarGeometry.y(minutes: nowMinutes) - 6)
+        .frame(height: 18)
+        .offset(y: geometry.y(minutes: nowMinutes) - 9)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -224,12 +233,12 @@ private extension CalendarTimelineView {
             }
             .foregroundStyle(sleepTint)
             .padding(6)
-            .frame(width: width, height: max(CalendarGeometry.y(minutes: end) - CalendarGeometry.y(minutes: start), 0),
+            .frame(width: width, height: max(geometry.y(minutes: end) - geometry.y(minutes: start), 0),
                 alignment: evening ? .topLeading : .bottomLeading)
             .background(sleepTint.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .offset(x: CalendarGeometry.gutter, y: CalendarGeometry.y(minutes: start))
+        .offset(x: CalendarGeometry.gutter, y: geometry.y(minutes: start))
         .accessibilityLabel(Text("calendar.sleep.title", bundle: .module))
     }
 
@@ -250,7 +259,7 @@ private extension CalendarTimelineView {
             .frame(width: width, height: 18, alignment: .leading)
         }
         .buttonStyle(.plain)
-        .offset(x: CalendarGeometry.gutter, y: CalendarGeometry.y(minutes: minutes) - 9)
+        .offset(x: CalendarGeometry.gutter, y: geometry.y(minutes: minutes) - 9)
     }
 
     var sleepTint: Color { Theme.Colors.sleep }

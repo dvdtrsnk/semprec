@@ -18,6 +18,25 @@ final class CalendarDatesTests: XCTestCase {
         XCTAssertEqual(CalendarDates.shifted("never", by: 1), "never")
     }
 
+    func testTheMondayOfAWeekAndTheDaysBetweenTwoDays() {
+        XCTAssertEqual(CalendarDates.monday(of: "2026-11-18"), "2026-11-16")
+        XCTAssertEqual(CalendarDates.monday(of: "2026-11-16"), "2026-11-16")
+        XCTAssertEqual(CalendarDates.monday(of: "2026-11-22"), "2026-11-16")
+        XCTAssertEqual(CalendarDates.monday(of: "2027-01-01"), "2026-12-28")
+        XCTAssertEqual(CalendarDates.days(from: "2026-11-16", to: "2026-11-23"), 7)
+        XCTAssertEqual(CalendarDates.days(from: "2026-11-16", to: "2026-11-02"), -14)
+        XCTAssertEqual(CalendarDates.days(from: "2026-12-28", to: "2027-01-04"), 7)
+        XCTAssertEqual(CalendarDates.days(from: "never", to: "2026-11-16"), 0)
+    }
+
+    func testTheIsoWeekNumber() {
+        XCTAssertEqual(CalendarDates.isoWeek("2026-11-18"), 47)
+        XCTAssertEqual(CalendarDates.isoWeek("2026-11-22"), 47)
+        XCTAssertEqual(CalendarDates.isoWeek("2026-11-23"), 48)
+        XCTAssertEqual(CalendarDates.isoWeek("2027-01-01"), 53)
+        XCTAssertEqual(CalendarDates.isoWeek("2027-01-04"), 1)
+    }
+
     // MARK: - Parts
     func testPartsOfADay() {
         XCTAssertEqual(CalendarDates.dayNumber("2026-10-16"), 16)

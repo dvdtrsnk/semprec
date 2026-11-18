@@ -41,6 +41,17 @@ enum CalendarDates {
         return Self.key(moved)
     }
 
+    /// The Monday of the week `key` is in.
+    static func monday(of key: String) -> String {
+        shifted(key, by: 1 - isoWeekday(key))
+    }
+
+    /// How many days `end` is after `start`; negative when it is before.
+    static func days(from start: String, to end: String) -> Int {
+        guard let start = date(start), let end = date(end) else { return 0 }
+        return calendar.dateComponents([.day], from: start, to: end).day ?? 0
+    }
+
     // MARK: - Parts
     /// The day of the month, `16`.
     static func dayNumber(_ key: String) -> Int {
@@ -51,6 +62,13 @@ enum CalendarDates {
     static func isoWeekday(_ key: String) -> Int {
         guard let date = date(key) else { return 1 }
         return (calendar.component(.weekday, from: date) + 5) % 7 + 1
+    }
+
+    /// The ISO 8601 week number: weeks start on Monday and week 1 holds the year's first Thursday.
+    static func isoWeek(_ key: String) -> Int {
+        var iso = Calendar(identifier: .iso8601)
+        iso.timeZone = calendar.timeZone
+        return date(key).map { iso.component(.weekOfYear, from: $0) } ?? 0
     }
 
     static func year(_ key: String) -> Int {
@@ -67,6 +85,35 @@ enum CalendarDates {
             let first = calendar.date(from: calendar.dateComponents([.year, .month], from: date))
         else { return key }
         return Self.key(first)
+    }
+
+    /// The first day of the month `months` away from the month of `key`.
+    static func shiftedMonth(_ key: String, by months: Int) -> String {
+        guard let first = date(firstOfMonth(key)), let moved = calendar.date(byAdding: .month, value: months, to: first)
+        else { return key }
+        return Self.key(moved)
+    }
+
+    /// The day of the month of `month` with the day number of `key`, or the month's last day when it is shorter.
+    static func sameDay(as key: String, inMonthOf month: String) -> String {
+        let first = firstOfMonth(month)
+        return shifted(first, by: min(dayNumber(key), monthLength(first)) - 1)
+    }
+
+    /// How many days the month of `key` has.
+    static func monthLength(_ key: String) -> Int {
+        guard let date = date(key), let days = calendar.range(of: .day, in: .month, for: date) else { return 0 }
+        return days.count
+    }
+
+    /// The days of the month of `key` by week, Monday first; a place before the 1st or after the last day is `nil`.
+    static func weeks(ofMonth key: String) -> [[String?]] {
+        let first = firstOfMonth(key)
+        let leading = isoWeekday(first) - 1
+        let days: [String?] = Array(repeating: nil, count: leading)
+            + (0..<monthLength(first)).map { shifted(first, by: $0) }
+        let padded = days + Array(repeating: nil, count: (7 - days.count % 7) % 7)
+        return stride(from: 0, to: padded.count, by: 7).map { Array(padded[$0..<$0 + 7]) }
     }
 
     // MARK: - Titles
@@ -86,9 +133,21 @@ enum CalendarDates {
         return capitalized(symbols[(month - 1 + symbols.count) % symbols.count])
     }
 
+    /// `Říj`, the short name of the month of `key`.
+    static func monthShortName(_ key: String) -> String {
+        let symbols = calendar.shortStandaloneMonthSymbols
+        return capitalized(symbols[(month(key) - 1 + symbols.count) % symbols.count])
+    }
+
     /// `Po`, from the ISO weekday (1 for Monday up to 7 for Sunday).
     static func weekdayShort(_ isoWeekday: Int) -> String {
         let symbols = calendar.shortStandaloneWeekdaySymbols
+        return capitalized(symbols[isoWeekday % symbols.count])
+    }
+
+    /// `P`, from the ISO weekday (1 for Monday up to 7 for Sunday).
+    static func weekdayInitial(_ isoWeekday: Int) -> String {
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
         return capitalized(symbols[isoWeekday % symbols.count])
     }
 
