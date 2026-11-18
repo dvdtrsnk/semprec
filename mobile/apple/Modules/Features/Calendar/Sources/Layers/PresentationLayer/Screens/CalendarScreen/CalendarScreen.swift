@@ -15,6 +15,20 @@ struct CalendarScreen: View {
     @State private var hasAppeared = false
     /// Counts the taps on Today, so the day view drops a day it chose that the shared state has not reached.
     @State private var todayRequests = 0
+    /// The zoom on screen; it follows the shared state inside the animation of the change.
+    @State private var shownZoom: CalendarZoom?
+    @State private var zoomChanges = CalendarZoomChanges()
+    /// Counts the changes of zoom, the layer of the view coming in.
+    @State private var zoomLayer = 0.0
+    /// The small months of the year view the last time it was laid out, and the size of the zoom space.
+    @State private var monthFrames: [Int: CGRect] = [:]
+    @State private var zoomSpaceSize = CGSize.zero
+    /// Where the selected day's digits were last in the day's week strip and in the month's grid.
+    @State private var stripDay: CGRect?
+    @State private var monthDay: CGRect?
+    @State private var monthRow: CGRect?
+    /// Which of the month's six rows `monthRow` was; a day since moved to another week moves the row by as many rows.
+    @State private var monthRowIndex = 0
 
     // MARK: - Init
     init(viewModel: @autoclosure @escaping () -> CalendarViewModel) {
@@ -26,7 +40,8 @@ struct CalendarScreen: View {
         content
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(CalendarIdentifiers.screen)
-            .navigationTitle(Text(title))
+            // A month and a year carry their large title in the content, as the system Calendar does.
+            .navigationTitle(Text(verbatim: ""))
             .inlineNavigationTitle()
             .toolbar { toolbar }
             .safeAreaInset(edge: .bottom) {
@@ -84,10 +99,57 @@ private extension CalendarScreen {
                 .failure(message: Text(FailureKind.message(for: failure)), retry: { viewModel.navigate(.retry) })
             )
         case .content:
-            switch viewModel.state.zoom {
-            case .day: CalendarDayView(state: viewModel.state, viewModel: viewModel, todayRequests: todayRequests)
-            case .month: CalendarMonthView(state: viewModel.state, viewModel: viewModel)
-            case .year: CalendarYearView(state: viewModel.state, viewModel: viewModel)
+            // The view coming in is drawn above the one going out, which keeps the layer it had.
+            ZStack {
+                switch displayedZoom {
+                case .day:
+                    CalendarDayView(
+                        state: viewModel.state,
+                        viewModel: viewModel,
+                        todayRequests: todayRequests
+                    )
+                    .transition(zoomChanges.transition(for: .day))
+                    .zIndex(zoomLayer)
+                case .month:
+                    CalendarMonthView(state: viewModel.state, viewModel: viewModel)
+                        .transition(zoomChanges.transition(for: .month))
+                        .zIndex(zoomLayer)
+                case .year:
+                    CalendarYearView(state: viewModel.state, viewModel: viewModel)
+                        .transition(zoomChanges.transition(for: .year))
+                        .zIndex(zoomLayer)
+                }
+            }
+            .coordinateSpace(.named(CalendarZoomTransition.space))
+            .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { zoomSpaceSize = $0 })
+            .onPreferenceChange(CalendarMonthFramesKey.self) { frames in
+                if !frames.isEmpty { monthFrames = frames }
+            }
+            .onPreferenceChange(CalendarStripDayFrameKey.self) { frame in
+                if frame != .zero { stripDay = frame }
+            }
+            .onPreferenceChange(CalendarMonthDayFrameKey.self) { frame in
+                if frame != .zero { monthDay = frame }
+            }
+            .onPreferenceChange(CalendarMonthRowFrameKey.self) { frame in
+                guard frame != .zero else { return }
+                monthRow = frame
+                monthRowIndex = rowIndex
+            }
+            .onAppear { shownZoom = viewModel.state.zoom }
+            .onChange(of: viewModel.state.zoom) { old, new in
+                zoomChanges.current = CalendarZoomTransition(
+                    source: old,
+                    target: new,
+                    month: CalendarDates.month(viewModel.state.selectedDay),
+                    monthFrame: monthFrames[CalendarDates.month(viewModel.state.selectedDay)],
+                    space: zoomSpaceSize,
+                    stripDay: stripDay,
+                    monthDay: monthDay?.offsetBy(dx: 0, dy: rowMove),
+                    monthRow: monthRow?.offsetBy(dx: 0, dy: rowMove)
+                )
+                zoomLayer += 1
+                withAnimation(CalendarZoomTransition.animation) { shownZoom = new }
             }
         }
     }
@@ -100,8 +162,12 @@ private extension CalendarScreen {
                 Button { goBack() } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.backward")
+                        // The name blurs into the next one, as a navigation back button's does.
                         Text(back)
+                            .id(back)
+                            .transition(.blurReplace)
                     }
+                    .animation(CalendarZoomTransition.animation, value: back)
                 }
                 .accessibilityLabel(Text(back))
                 .accessibilityIdentifier(CalendarIdentifiers.back)
@@ -135,13 +201,13 @@ private extension CalendarScreen {
         viewModel.navigate(.show(zoom: zoom, day: viewModel.state.selectedDay))
     }
 
-    var title: String {
-        switch viewModel.state.zoom {
-        case .day: ""
-        case .month: CalendarDates.monthName(viewModel.state.selectedDay)
-        case .year: "\(CalendarDates.year(viewModel.state.selectedDay))"
-        }
-    }
+    /// The row of the month grid the selected day is in.
+    var rowIndex: Int { (viewModel.state.monthGrid.firstIndex(of: viewModel.state.selectedDay) ?? 0) / 7 }
+
+    /// How far the selected day's row lies from the row last measured.
+    var rowMove: CGFloat { CGFloat(rowIndex - monthRowIndex) * (monthRow?.height ?? 0) }
+
+    var displayedZoom: CalendarZoom { shownZoom ?? viewModel.state.zoom }
 
     var deleting: Binding<Bool> {
         Binding(

@@ -27,6 +27,7 @@ struct CalendarMonthCell: View {
                 .foregroundStyle(numberStyle)
                 .frame(width: 24, height: 24)
                 .background(Circle().fill(date == today ? Color.red : .clear))
+                .reportsZoomFrame(CalendarMonthDayFrameKey.self, if: selected)
             ForEach(shown, id: \.identity) { item in
                 chip(item)
             }

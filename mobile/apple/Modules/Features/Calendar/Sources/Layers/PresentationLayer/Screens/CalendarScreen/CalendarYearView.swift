@@ -11,7 +11,13 @@ struct CalendarYearView: View {
     // MARK: - Body
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 3), spacing: 16) {
+            Text(verbatim: "\(CalendarDates.year(state.selectedDay))")
+                .font(.largeTitle.bold())
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .accessibilityAddTraits(.isHeader)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 12) {
                 ForEach(state.months) { month in
                     Button { show(month) } label: { miniMonth(month) }
                         .buttonStyle(.plain)
@@ -30,25 +36,34 @@ struct CalendarYearView: View {
 private extension CalendarYearView {
 
     func miniMonth(_ month: CalendarMonthState) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(CalendarDates.monthName(month: month.month))
                 .font(.headline)
                 .foregroundStyle(isCurrent(month) ? Color.red : .primary)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 7), spacing: 2) {
-                ForEach(0..<month.leading, id: \.self) { _ in Color.clear.frame(height: 15) }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 7), spacing: 1) {
+                // The blanks before the 1st count down from -1, apart from the days, which count up from 1.
+                ForEach((0..<month.leading).map { -1 - $0 }, id: \.self) { _ in Color.clear.frame(height: 13) }
                 ForEach(1...month.length, id: \.self) { day in
                     Text("\(day)")
-                        .font(.system(size: 9.5, weight: isToday(month, day) ? .bold : .medium))
+                        .font(.system(size: 8.5, weight: isToday(month, day) ? .bold : .medium))
                         .foregroundStyle(isToday(month, day) ? AnyShapeStyle(Color.white) : AnyShapeStyle(.primary))
-                        .frame(maxWidth: .infinity, minHeight: 15)
+                        .frame(maxWidth: .infinity, minHeight: 13)
                         .background(
-                            Circle().fill(isToday(month, day) ? Color.red : .clear).frame(width: 15, height: 15)
+                            Circle().fill(isToday(month, day) ? Color.red : .clear).frame(width: 13, height: 13)
                         )
                 }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
         .contentShape(Rectangle())
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: CalendarMonthFramesKey.self,
+                    value: [month.month: proxy.frame(in: .named(CalendarZoomTransition.space))]
+                )
+            }
+        }
     }
 
     func isCurrent(_ month: CalendarMonthState) -> Bool {

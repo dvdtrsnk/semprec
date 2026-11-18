@@ -41,6 +41,7 @@ private extension CalendarWeekStrip {
                             .foregroundStyle(numberStyle(day))
                             .frame(width: 34, height: 34)
                             .background(Circle().fill(circleColor(day)))
+                            .reportsZoomFrame(CalendarStripDayFrameKey.self, if: day == selectedDay)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(CalendarDates.dayTitle(day))

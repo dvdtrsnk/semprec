@@ -110,6 +110,12 @@ enum CalendarDates {
         return capitalized(symbols[isoWeekday % symbols.count])
     }
 
+    /// `P`, from the ISO weekday (1 for Monday up to 7 for Sunday).
+    static func weekdayInitial(_ isoWeekday: Int) -> String {
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
+        return capitalized(symbols[isoWeekday % symbols.count])
+    }
+
     /// `pá 16. 10.`, the way the board writes a date next to a time.
     static func shortDate(_ key: String) -> String {
         guard let date = date(key) else { return key }

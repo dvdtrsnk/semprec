@@ -12,17 +12,25 @@ struct CalendarMonthView: View {
     // MARK: - Body
     var body: some View {
         VStack(spacing: 0) {
+            Text(CalendarDates.monthName(state.selectedDay))
+                .font(.largeTitle.bold())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 4)
+                .accessibilityAddTraits(.isHeader)
             weekdays
             GeometryReader { proxy in
                 let rowHeight = proxy.size.height / 6
                 VStack(spacing: 0) {
                     ForEach(0..<6, id: \.self) { week in
+                        let dates = days(in: week)
                         HStack(spacing: 0) {
-                            ForEach(days(in: week), id: \.self) { date in
+                            ForEach(dates, id: \.self) { date in
                                 cell(date, rowHeight: rowHeight)
                             }
                         }
                         .frame(height: rowHeight)
+                        .reportsZoomFrame(CalendarMonthRowFrameKey.self, if: dates.contains(state.selectedDay))
                     }
                 }
             }
@@ -40,7 +48,7 @@ private extension CalendarMonthView {
     var weekdays: some View {
         HStack(spacing: 0) {
             ForEach(1...7, id: \.self) { weekday in
-                Text(CalendarDates.weekdayShort(weekday))
+                Text(CalendarDates.weekdayInitial(weekday))
                     .font(.caption2)
                     .foregroundStyle(weekday >= 6 ? .tertiary : .secondary)
                     .frame(maxWidth: .infinity)
