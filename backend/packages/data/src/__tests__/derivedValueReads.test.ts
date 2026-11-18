@@ -89,7 +89,7 @@ describe("derived values through project relations", () => {
         (await cp.listItemRelations(file.id))?.some(
           (entry) => entry.propertyKey === "area" && entry.targetItemId === home.id,
         ),
-      ).toBe(true);
+      ).toBe(false);
       expect((await cp.getValueLinksForItems([file.id])).get(file.id)?.area).toBeUndefined();
       expect((await cp.getValueLinksForItems([file.id], true)).get(file.id)?.area).toMatchObject({
         valueKind: "derived",
