@@ -105,7 +105,7 @@ private extension CalendarDayView {
             )
             .padding(.top, 4)
             .padding(.bottom, 6)
-            Divider()
+            headerDivider
             Text(CalendarDates.dayTitle(shownDay))
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity)
@@ -120,7 +120,7 @@ private extension CalendarDayView {
                 handlers: handlers(scroll, day: shownDay)
             )
             // Ends the header: below it is the timeline itself.
-            Divider()
+            headerDivider
         }
     }
 
@@ -168,6 +168,13 @@ private extension CalendarDayView {
 
     /// How far below the header the backdrop still takes colour from, so its lower edge does not fade to nothing.
     static var backdropBleed: CGFloat { 48 }
+
+    /// A line of the header, a full point thick so it reads over the coloured backdrop.
+    var headerDivider: some View {
+        Rectangle()
+            .fill(.separator)
+            .frame(height: 1)
+    }
 
     /// The week the day is in, quietly at the end of the date line.
     func weekNumber(_ key: String) -> some View {

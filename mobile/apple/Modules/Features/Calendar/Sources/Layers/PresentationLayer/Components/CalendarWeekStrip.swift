@@ -60,7 +60,8 @@ private extension CalendarWeekStrip {
     static let duration = 0.25
 
     func numberStyle(_ day: String) -> AnyShapeStyle {
-        if day == selectedDay { return AnyShapeStyle(.background) }
+        // Today's red circle always carries white digits; another selected day inverts the text colour.
+        if day == selectedDay { return day == today ? AnyShapeStyle(Color.white) : AnyShapeStyle(.background) }
         if day == today { return AnyShapeStyle(Color.red) }
         return CalendarDates.isoWeekday(day) >= 6 ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary)
     }
