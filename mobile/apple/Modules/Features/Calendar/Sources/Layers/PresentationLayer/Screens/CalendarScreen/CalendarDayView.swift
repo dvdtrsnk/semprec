@@ -48,6 +48,7 @@ struct CalendarDayView: View {
                     page: { timeline(scroll, day: $0) }
                 )
                 .modifier(CalendarVerticalPinch(hourHeight: $hourHeight, pinchY: $pinchY))
+                headerBackdrop
                 header(scroll)
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { headerHeight = $0 })
             }
@@ -117,14 +118,53 @@ private extension CalendarDayView {
             )
         }
         .background {
-            // Clear glass lets the timeline below show through; a light veil of the background keeps the header
-            // readable over it.
-            Rectangle()
-                .fill(.background.opacity(0.55))
+            // Clear glass over `headerBackdrop`, which already diffuses the timeline below into its colours.
+            Color.clear
                 .glassEffect(.clear, in: Rectangle())
                 .ignoresSafeArea(edges: .top)
         }
     }
+
+    /// What of the shown day's timeline lies under the header, blurred until only its colours remain and made a
+    /// little more vivid, so the glass header glows with the items it covers without showing their shapes. It is a
+    /// picture only: it takes no touches and reports none of its frames.
+    var headerBackdrop: some View {
+        let geometry = CalendarGeometry(hourHeight: CGFloat(hourHeight))
+        return CalendarTimelineView(
+            day: dayState(shownDay),
+            geometry: geometry,
+            isToday: shownDay == state.today,
+            nowMinutes: state.nowMinutes,
+            selectedItemId: nil,
+            drag: nil,
+            handlers: CalendarItemHandlers(
+                tap: { _ in }, select: { _ in }, move: { _, _, _ in }, end: { _, _ in }, toggle: { _ in },
+                openTask: { _ in }
+            ),
+            onResize: { _, _, _ in },
+            onResizeEnd: {},
+            onMenu: { _, _ in },
+            onDeselect: {},
+            onOpenSleep: { _ in },
+            onPaste: nil
+        )
+        .frame(height: geometry.height)
+        .offset(y: contentFrame.minY)
+        .frame(height: headerHeight + Self.backdropBleed, alignment: .top)
+        .background(.background)
+        .clipped()
+        .blur(radius: 24)
+        .saturation(1.8)
+        .frame(height: headerHeight, alignment: .top)
+        .clipped()
+        .transformPreference(CalendarContentFrameKey.self) { $0 = .zero }
+        .transformPreference(CalendarEventFramesKey.self) { $0 = [:] }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// How far below the header the backdrop still takes colour from, so its lower edge does not fade to nothing.
+    static var backdropBleed: CGFloat { 48 }
 
     /// The week the day is in, quietly at the end of the date line.
     func weekNumber(_ key: String) -> some View {
@@ -175,8 +215,8 @@ private extension CalendarDayView {
         }
         .reportsFrame(CalendarViewportFrameKey.self)
         // Several pages are laid out at once; only the selected day's page measures the timeline.
-        .onPreferenceChange(CalendarContentFrameKey.self) { if key == state.selectedDay { contentFrame = $0 } }
-        .onPreferenceChange(CalendarViewportFrameKey.self) { if key == state.selectedDay { viewportFrame = $0 } }
+        .onPreferenceChange(CalendarContentFrameKey.self) { if key == shownDay { contentFrame = $0 } }
+        .onPreferenceChange(CalendarViewportFrameKey.self) { if key == shownDay { viewportFrame = $0 } }
     }
 }
 
