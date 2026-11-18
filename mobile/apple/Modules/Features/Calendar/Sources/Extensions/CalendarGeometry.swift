@@ -46,6 +46,7 @@ struct CalendarGeometry: Equatable {
         min(max(hourHeight, minimumHourHeight), maximumHourHeight)
     }
 
-    /// The identity of the hour line `hour` (0 to 24), which the day view scrolls to.
-    static func hourId(_ hour: Int) -> String { "hour-\(hour)" }
+    /// The identity of the hour line `hour` (0 to 24) of `day`, which the day view scrolls to. The day keeps it
+    /// apart from the same hour of the neighbouring days laid out beside it.
+    static func hourId(_ hour: Int, day: String) -> String { "\(day)-hour-\(hour)" }
 }

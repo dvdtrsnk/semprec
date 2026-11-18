@@ -178,7 +178,7 @@ private extension CalendarTimelineView {
                     Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 0.5)
                 }
                 .frame(height: geometry.hourHeight, alignment: .top)
-                .id(CalendarGeometry.hourId(hour))
+                .id(CalendarGeometry.hourId(hour, day: day.date))
             }
         }
     }

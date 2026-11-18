@@ -106,7 +106,7 @@ final class CalendarItemCopyTests: XCTestCase {
         XCTAssertEqual(geometry.height, 56 * 24)
         XCTAssertEqual(geometry.blockHeight(start: 600, end: 601), 22)
         XCTAssertEqual(geometry.blockHeight(start: 600, end: 660), 56)
-        XCTAssertEqual(CalendarGeometry.hourId(7), "hour-7")
+        XCTAssertEqual(CalendarGeometry.hourId(7, day: "2026-11-18"), "2026-11-18-hour-7")
     }
 
     func testAPinchedHourHeightScalesTheDayWithinItsRange() {

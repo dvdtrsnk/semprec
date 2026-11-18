@@ -1,8 +1,9 @@
 import CoreKit
 import SwiftUI
 
-/// One day: the week strip, the date, the row of all-day items and the timeline. Every gesture reports where the
-/// finger is; this view turns that into raw minutes of the day and the shared ViewModel decides what they mean.
+/// One day: the timeline, which scrolls on under a glass header of the week strip, the date and the row of all-day
+/// items. Every gesture reports where the finger is; this view turns that into raw minutes of the day and the shared
+/// ViewModel decides what they mean.
 struct CalendarDayView: View {
 
     // MARK: - Dependencies
@@ -27,38 +28,29 @@ struct CalendarDayView: View {
     @State private var pinchY: CGFloat?
     /// The day a turn or a tap just chose, shown at once until the shared state arrives at it.
     @State private var chosenDay: String?
+    /// The height of the glass header, which the timeline starts below and scrolls on under.
+    @State private var headerHeight: CGFloat = 0
 
     // MARK: - Body
     var body: some View {
-        VStack(spacing: 0) {
-            CalendarWeekStrip(
-                selectedDay: shownDay,
-                today: state.today,
-                onPick: { day in
-                    tick(for: day)
-                    chosenDay = day
-                    viewModel.navigate(.show(zoom: .day, day: day))
-                },
-                onPage: { steps in
-                    isTurningWeek = true
-                    chosenDay = CalendarDates.shifted(shownDay, by: steps)
-                    viewModel.navigate(.page(steps: steps))
-                }
-            )
-            .padding(.top, 4)
-            CalendarPager(
-                current: shownDay,
-                neighbour: { CalendarDates.shifted($0, by: $1) },
-                isEnabled: state.drag == nil && state.selectedItemId == nil,
-                onTurn: { steps in
-                    let day = CalendarDates.shifted(shownDay, by: steps)
-                    tick(for: day)
-                    chosenDay = day
-                    viewModel.navigate(.page(steps: steps))
-                },
-                page: page
-            )
-            .modifier(CalendarVerticalPinch(hourHeight: $hourHeight, pinchY: $pinchY))
+        ScrollViewReader { scroll in
+            ZStack(alignment: .top) {
+                CalendarPager(
+                    current: shownDay,
+                    neighbour: { CalendarDates.shifted($0, by: $1) },
+                    isEnabled: state.drag == nil && state.selectedItemId == nil,
+                    onTurn: { steps in
+                        let day = CalendarDates.shifted(shownDay, by: steps)
+                        tick(for: day)
+                        chosenDay = day
+                        viewModel.navigate(.page(steps: steps))
+                    },
+                    page: { timeline(scroll, day: $0) }
+                )
+                .modifier(CalendarVerticalPinch(hourHeight: $hourHeight, pinchY: $pinchY))
+                header(scroll)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { headerHeight = $0 })
+            }
         }
         .sensoryFeedback(.impact(weight: .light), trigger: dayTicks)
         .onChange(of: state.selectedDay) { _, new in
@@ -89,28 +81,43 @@ private extension CalendarDayView {
         state.days.first { $0.date == key } ?? CalendarDayState(date: key)
     }
 
-    /// The date, the row of all-day items and the timeline of one day.
-    func page(_ key: String) -> some View {
-        ScrollViewReader { scroll in
-            VStack(spacing: 0) {
-                Text(CalendarDates.dayTitle(key))
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .overlay(alignment: .trailing) { weekNumber(key) }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .accessibilityAddTraits(.isHeader)
-                Divider()
-                CalendarAllDayRow(
-                    items: allDayItems(key),
-                    selectedItemId: state.selectedItemId,
-                    drag: state.drag,
-                    handlers: handlers(scroll, day: key)
-                )
-                Divider()
-                timeline(scroll, day: key)
-            }
-            .background(.background)
+    /// The week strip, the date and the all-day items of the shown day on one glass pane, which reaches up under the
+    /// navigation bar. It changes to a new day at once, while the timeline below slides to it.
+    func header(_ scroll: ScrollViewProxy) -> some View {
+        VStack(spacing: 0) {
+            CalendarWeekStrip(
+                selectedDay: shownDay,
+                today: state.today,
+                onPick: { day in
+                    tick(for: day)
+                    chosenDay = day
+                    viewModel.navigate(.show(zoom: .day, day: day))
+                },
+                onPage: { steps in
+                    isTurningWeek = true
+                    chosenDay = CalendarDates.shifted(shownDay, by: steps)
+                    viewModel.navigate(.page(steps: steps))
+                }
+            )
+            .padding(.top, 4)
+            Text(CalendarDates.dayTitle(shownDay))
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .trailing) { weekNumber(shownDay) }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .accessibilityAddTraits(.isHeader)
+            CalendarAllDayRow(
+                items: allDayItems(shownDay),
+                selectedItemId: state.selectedItemId,
+                drag: state.drag,
+                handlers: handlers(scroll, day: shownDay)
+            )
+        }
+        .background {
+            Color.clear
+                .glassEffect(.regular, in: Rectangle())
+                .ignoresSafeArea(edges: .top)
         }
     }
 
@@ -137,7 +144,8 @@ private extension CalendarDayView {
         CalendarZoomableTimeline(
             hourHeight: hourHeight,
             pinchY: pinchY,
-            startMinutes: startHour(day: key) * 60
+            startId: CalendarGeometry.hourId(startHour(day: key), day: key),
+            topInset: headerHeight
         ) { geometry in
             CalendarTimelineView(
                 day: dayState(key),
@@ -179,10 +187,10 @@ private extension CalendarDayView {
                     itemId: item.id,
                     day: key,
                     rawStart: rawStart(item, location: location, start: start),
-                    overAllDayRow: location.y < viewportFrame.minY,
+                    overAllDayRow: location.y < headerHeight,
                     overEventId: item.isTask ? eventId(at: location, excluding: item.id) : nil
                 ))
-                autoScroll(scroll, finger: location)
+                autoScroll(scroll, day: key, finger: location)
             },
             end: { _, moved in viewModel.gesture(.endDrag(commit: moved)) },
             toggle: { viewModel.gesture(.toggleDone(itemId: $0)) },
@@ -219,13 +227,14 @@ private extension CalendarDayView {
         key == state.today ? max(state.nowMinutes / 60 - 2, 0) : 7
     }
 
-    /// Scrolls the timeline an hour when the finger holding an item is near its top or bottom edge.
-    func autoScroll(_ scroll: ScrollViewProxy, finger: CGPoint) {
+    /// Scrolls the timeline an hour when the finger holding an item is near the header or the bottom edge.
+    func autoScroll(_ scroll: ScrollViewProxy, day key: String, finger: CGPoint) {
         let edge: CGFloat = 48
         guard Date().timeIntervalSince(lastAutoScroll) > 0.3, viewportFrame != .zero else { return }
-        let top = Int(((viewportFrame.minY - contentFrame.minY) / CGFloat(hourHeight)).rounded(.down))
+        let visibleTop = max(viewportFrame.minY, headerHeight)
+        let top = Int(((visibleTop - contentFrame.minY) / CGFloat(hourHeight)).rounded(.down))
         let target: Int
-        if finger.y > viewportFrame.minY, finger.y < viewportFrame.minY + edge {
+        if finger.y > visibleTop, finger.y < visibleTop + edge {
             target = max(top - 1, 0)
         } else if finger.y > viewportFrame.maxY - edge {
             target = min(top + 1, 23)
@@ -233,6 +242,10 @@ private extension CalendarDayView {
             return
         }
         lastAutoScroll = Date()
-        withAnimation(.linear(duration: 0.25)) { scroll.scrollTo(CalendarGeometry.hourId(target), anchor: .top) }
+        let below = viewportFrame.height > 0 ? (visibleTop - viewportFrame.minY) / viewportFrame.height : 0
+        let anchor = UnitPoint(x: 0, y: below)
+        withAnimation(.linear(duration: 0.25)) {
+            scroll.scrollTo(CalendarGeometry.hourId(target, day: key), anchor: anchor)
+        }
     }
 }
