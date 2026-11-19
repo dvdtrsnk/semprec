@@ -7,6 +7,7 @@ enum AccountIdentifiers {
     static let profileDone = "profile.done"
     static let profileRowPrefix = "profile.row."
     static let profileLanguage = "profile.language"
+    static let appearance = "appearance.screen"
     static let profilePassword = "profile.password"
 
     static let devicesScreen = "devices.screen"
