@@ -59,7 +59,7 @@ final class NoteInteraction: ObservableObject {
     var visible = CGRect.infinite
 
     /// The height of one menu option.
-    static let optionHeight: CGFloat = 48
+    static let optionHeight: CGFloat = 36
     /// How far off its block a finger goes before the swipe stops and its menu opens.
     static let offRow: CGFloat = 16
 
@@ -84,7 +84,6 @@ final class NoteInteraction: ObservableObject {
         _ block: NoteEditorBlock,
         by translation: CGSize,
         at location: CGPoint,
-        offersSubpages: Bool,
         editing: Bool = false
     ) {
         guard held == nil else { return }
@@ -107,7 +106,7 @@ final class NoteInteraction: ObservableObject {
             choose(from: kind, for: block.id, row: row, at: location)
         } else {
             menu = menu?.pinned == true ? menu : nil
-            let step = NoteSwipeStep.reached(translation.width, offersSubpages: offersSubpages, editing: editing)
+            let step = NoteSwipeStep.reached(translation.width, editing: editing)
             swipe = NoteSwipeState(blockId: block.id, translation: translation.width, step: step)
         }
     }
@@ -131,7 +130,6 @@ final class NoteInteraction: ObservableObject {
         case .outdent: return [.shiftIndent(blockIds: [block.id], delta: -1)]
         case .indent: return [.shiftIndent(blockIds: [block.id], delta: 1)]
         case .todo: return [.toggleType(blockIds: [block.id], type: .todo)]
-        case .subpage: return [.makeSubpage(blockId: block.id)]
         case .select:
             startSelecting(with: block.id)
             return []

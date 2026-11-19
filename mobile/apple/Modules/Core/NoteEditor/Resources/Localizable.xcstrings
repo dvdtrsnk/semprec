@@ -481,38 +481,6 @@
         }
       }
     },
-    "noteEditor.menu.list.bullet2" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bullet, level 2"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odrážka 2. úrovně"
-          }
-        }
-      }
-    },
-    "noteEditor.menu.list.bullet3" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bullet, level 3"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odrážka 3. úrovně"
-          }
-        }
-      }
-    },
     "noteEditor.menu.list.none" : {
       "localizations" : {
         "en" : {
@@ -541,22 +509,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Číslovaný seznam"
-          }
-        }
-      }
-    },
-    "noteEditor.menu.list.number2" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Numbered, level 2"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Číslovaný 2. úrovně"
           }
         }
       }
@@ -857,22 +809,6 @@
         }
       }
     },
-    "noteEditor.swipe.alreadyPage" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Already a page"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Už je stránka"
-          }
-        }
-      }
-    },
     "noteEditor.swipe.list" : {
       "localizations" : {
         "en" : {
@@ -885,22 +821,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odrážka"
-          }
-        }
-      }
-    },
-    "noteEditor.swipe.page" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Page"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stránka"
           }
         }
       }

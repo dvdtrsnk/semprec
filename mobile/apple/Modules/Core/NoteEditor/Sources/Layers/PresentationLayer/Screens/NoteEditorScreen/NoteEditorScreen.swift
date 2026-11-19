@@ -134,7 +134,6 @@ private extension NoteEditorScreen {
                     block,
                     by: $0,
                     at: $1,
-                    offersSubpages: viewModel.variant.offersSubpages,
                     editing: viewModel.editingBlockId == block.id
                 )
             },

@@ -32,20 +32,19 @@ final class NoteInteractionTests: XCTestCase {
         interaction.dragged(
             block,
             by: CGSize(width: width, height: height),
-            at: CGPoint(x: width, y: top),
-            offersSubpages: true
+            at: CGPoint(x: width, y: top)
         )
     }
 
     func testTheThresholdsReachTheStepsOnEachSide() {
-        XCTAssertNil(NoteSwipeStep.reached(39, offersSubpages: true))
-        XCTAssertEqual(NoteSwipeStep.reached(40, offersSubpages: true), .listMenu)
-        XCTAssertEqual(NoteSwipeStep.reached(105, offersSubpages: true), .styleMenu)
-        XCTAssertEqual(NoteSwipeStep.reached(190, offersSubpages: true), .subpage)
-        XCTAssertEqual(NoteSwipeStep.reached(190, offersSubpages: false), .styleMenu)
-        XCTAssertEqual(NoteSwipeStep.reached(-40, offersSubpages: true), .outdent)
-        XCTAssertEqual(NoteSwipeStep.reached(-105, offersSubpages: true), .todo)
-        XCTAssertEqual(NoteSwipeStep.reached(-190, offersSubpages: false), .select)
+        XCTAssertNil(NoteSwipeStep.reached(39))
+        XCTAssertEqual(NoteSwipeStep.reached(40), .indent)
+        XCTAssertEqual(NoteSwipeStep.reached(105), .listMenu)
+        XCTAssertEqual(NoteSwipeStep.reached(190), .styleMenu)
+        XCTAssertEqual(NoteSwipeStep.reached(-40), .outdent)
+        XCTAssertEqual(NoteSwipeStep.reached(-105), .todo)
+        XCTAssertEqual(NoteSwipeStep.reached(-190), .select)
+        XCTAssertEqual(NoteSwipeStep.reached(190, editing: true), .indent)
     }
 
     func testAStepThatCannotApplyDoesNothing() {
@@ -53,11 +52,13 @@ final class NoteInteractionTests: XCTestCase {
         drag(interaction, blocks[0], -60, 0, at: 0)
         XCTAssertEqual(interaction.swipe?.step, .outdent)
         XCTAssertEqual(interaction.released(blocks[0]), [])
-        XCTAssertFalse(NoteSwipeStep.subpage.isValid(for: blocks[3]))
+        XCTAssertFalse(NoteSwipeStep.listMenu.isValid(for: blocks[3]))
     }
 
     func testReleasedStepsEditTheBlockOrSelectIt() {
         let interaction = interaction()
+        drag(interaction, blocks[1], 60, 0, at: 0)
+        XCTAssertEqual(interaction.released(blocks[1]), [.shiftIndent(blockIds: ["b"], delta: 1)])
         drag(interaction, blocks[1], -60, 0, at: 0)
         XCTAssertEqual(interaction.released(blocks[1]), [.shiftIndent(blockIds: ["b"], delta: -1)])
         drag(interaction, blocks[2], -120, 0, at: 0)
@@ -70,17 +71,17 @@ final class NoteInteractionTests: XCTestCase {
 
     func testLeavingTheBlockFreezesTheSwipeAndTheOptionAsFarAsTheFingerApplies() {
         let interaction = interaction()
-        drag(interaction, blocks[2], 60, 0, at: 100)
-        drag(interaction, blocks[2], 60, 40, at: 140)
+        drag(interaction, blocks[2], 120, 0, at: 100)
+        drag(interaction, blocks[2], 120, 40, at: 140)
         XCTAssertEqual(interaction.menu?.kind, .list)
         XCTAssertEqual(interaction.menu?.below, true)
         XCTAssertEqual(interaction.menu?.highlighted, 0)
-        drag(interaction, blocks[2], 90, 126, at: 226)
-        XCTAssertEqual(interaction.swipe, NoteSwipeState(blockId: "c", translation: 60, step: .listMenu, frozen: true))
+        drag(interaction, blocks[2], 150, 126, at: 226)
+        XCTAssertEqual(interaction.swipe, NoteSwipeState(blockId: "c", translation: 120, step: .listMenu, frozen: true))
         XCTAssertEqual(interaction.menu?.highlighted, 2)
         XCTAssertEqual(
             interaction.released(blocks[2]),
-            [.setType(blockIds: ["c"], type: .bullet), .shiftIndent(blockIds: ["c"], delta: 1)]
+            [.setType(blockIds: ["c"], type: .number)]
         )
         XCTAssertNil(interaction.menu)
         XCTAssertNil(interaction.swipe)
@@ -89,16 +90,16 @@ final class NoteInteractionTests: XCTestCase {
     func testAMenuWithoutRoomOnTheFingersSideOpensOnTheOtherSideMirrored() {
         let interaction = interaction()
         interaction.visible = CGRect(x: 0, y: 0, width: 300, height: 200)
-        drag(interaction, blocks[2], 60, 0, at: 100)
-        drag(interaction, blocks[2], 60, 88, at: 188)
+        drag(interaction, blocks[2], 120, 0, at: 100)
+        drag(interaction, blocks[2], 120, 88, at: 188)
         XCTAssertEqual(interaction.menu?.below, false)
         XCTAssertEqual(interaction.menu?.highlighted, 1)
     }
 
     func testBackOnTheBlockTheMenuClosesAndASwipePulledBackChangesNothing() {
         let interaction = interaction()
-        drag(interaction, blocks[2], 60, 0, at: 100)
-        drag(interaction, blocks[2], 60, 60, at: 160)
+        drag(interaction, blocks[2], 120, 0, at: 100)
+        drag(interaction, blocks[2], 120, 60, at: 160)
         XCTAssertNotNil(interaction.menu)
         drag(interaction, blocks[2], 20, 0, at: 100)
         XCTAssertNil(interaction.menu)
@@ -109,8 +110,8 @@ final class NoteInteractionTests: XCTestCase {
 
     func testAGestureTheSystemTookOverStopsWithoutAChangeAndLeavesThePageScrollable() {
         let interaction = interaction()
-        drag(interaction, blocks[2], 60, 0, at: 100)
-        drag(interaction, blocks[2], 60, 60, at: 160)
+        drag(interaction, blocks[2], 120, 0, at: 100)
+        drag(interaction, blocks[2], 120, 60, at: 160)
         XCTAssertTrue(interaction.isActive)
         interaction.cancelled()
         XCTAssertNil(interaction.swipe)
@@ -122,18 +123,18 @@ final class NoteInteractionTests: XCTestCase {
         let interaction = NoteInteraction()
         let long = NoteEditorBlock(id: "l", type: .text)
         interaction.rowFrames = ["l": CGRect(x: 0, y: 0, width: 300, height: 400)]
-        drag(interaction, long, 60, 0, at: 100)
-        drag(interaction, long, 60, 40, at: 140)
+        drag(interaction, long, 120, 0, at: 100)
+        drag(interaction, long, 120, 40, at: 140)
         XCTAssertEqual(interaction.menu?.row.maxY, 122)
         XCTAssertEqual(interaction.menu?.highlighted, 0)
     }
 
     func testAnEditedBlockSwipedShowsAndChangesOnlyItsIndent() {
         let interaction = interaction()
-        interaction.dragged(blocks[1], by: CGSize(width: 50, height: 0), at: .zero, offersSubpages: true, editing: true)
+        interaction.dragged(blocks[1], by: CGSize(width: 50, height: 0), at: .zero, editing: true)
         XCTAssertEqual(interaction.swipe?.step, .indent)
         XCTAssertEqual(interaction.released(blocks[1]), [.shiftIndent(blockIds: ["b"], delta: 1)])
-        interaction.dragged(blocks[1], by: CGSize(width: 20, height: 0), at: .zero, offersSubpages: true, editing: true)
+        interaction.dragged(blocks[1], by: CGSize(width: 20, height: 0), at: .zero, editing: true)
         XCTAssertEqual(interaction.released(blocks[1]), [])
     }
 
@@ -156,7 +157,7 @@ final class NoteInteractionTests: XCTestCase {
 
     func testAMenuLeftWithoutAChoiceStaysOpenForATap() {
         let interaction = interaction()
-        drag(interaction, blocks[0], 120, 0, at: 20)
+        drag(interaction, blocks[0], 200, 0, at: 20)
         XCTAssertEqual(interaction.released(blocks[0]), [])
         XCTAssertEqual(interaction.menu?.kind, .style)
         XCTAssertEqual(interaction.menu?.pinned, true)

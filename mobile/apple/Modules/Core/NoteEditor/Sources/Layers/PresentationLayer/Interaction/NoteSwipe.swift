@@ -2,14 +2,13 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// What a swipe on a block does at each of its three thresholds. To the right: the list menu, the style menu and
-/// making a subpage; to the left: outdenting, switching a to-do and selecting. While a block is edited a swipe only
-/// indents (right) or outdents (left) it by one level.
+/// What a swipe on a block does at each of its three thresholds. To the right: indenting, the list menu and the style
+/// menu; to the left: outdenting, switching a to-do and selecting. A short swipe so moves a list item a level deeper
+/// or back. While a block is edited a swipe only indents (right) or outdents (left) it by one level.
 enum NoteSwipeStep: Equatable {
 
     case listMenu
     case styleMenu
-    case subpage
     case outdent
     case todo
     case select
@@ -18,14 +17,13 @@ enum NoteSwipeStep: Equatable {
     /// How far a swipe goes to reach the first, second and third threshold.
     static let thresholds: [CGFloat] = [40, 105, 190]
 
-    /// The step a swipe of `translation` reached, if any; the light variant has no third step to the right, and an
-    /// edited block has only its indent.
-    static func reached(_ translation: CGFloat, offersSubpages: Bool, editing: Bool = false) -> NoteSwipeStep? {
+    /// The step a swipe of `translation` reached, if any; an edited block has only its indent.
+    static func reached(_ translation: CGFloat, editing: Bool = false) -> NoteSwipeStep? {
         let level = thresholds.filter { abs(translation) >= $0 }.count
         let steps: [NoteSwipeStep] = switch (translation > 0, editing) {
         case (true, true): [.indent]
         case (false, true): [.outdent]
-        case (true, false): offersSubpages ? [.listMenu, .styleMenu, .subpage] : [.listMenu, .styleMenu]
+        case (true, false): [.indent, .listMenu, .styleMenu]
         case (false, false): [.outdent, .todo, .select]
         }
         return level == 0 ? nil : steps[min(level, steps.count) - 1]
@@ -36,7 +34,7 @@ enum NoteSwipeStep: Equatable {
         switch self {
         case .outdent: block.indent > 0
         case .indent: block.indent < 5
-        case .listMenu, .styleMenu, .todo, .subpage: block.type != .page
+        case .listMenu, .styleMenu, .todo: block.type != .page
         case .select: true
         }
     }
@@ -45,7 +43,6 @@ enum NoteSwipeStep: Equatable {
         switch self {
         case .listMenu: "noteEditor.swipe.list"
         case .styleMenu: "noteEditor.bar.style"
-        case .subpage: block.type == .page ? "noteEditor.swipe.alreadyPage" : "noteEditor.swipe.page"
         case .outdent: "noteEditor.bar.outdent"
         case .indent: "noteEditor.bar.indent"
         case .todo: block.type == .todo ? "noteEditor.swipe.untodo" : "noteEditor.bar.todo"
@@ -57,7 +54,6 @@ enum NoteSwipeStep: Equatable {
         switch self {
         case .listMenu: "list.bullet"
         case .styleMenu: "paragraphsign"
-        case .subpage: "doc.badge.plus"
         case .outdent: "decrease.indent"
         case .indent: "increase.indent"
         case .todo: "checkmark.square"
@@ -69,7 +65,6 @@ enum NoteSwipeStep: Equatable {
         switch self {
         case .listMenu: .blue
         case .styleMenu: .indigo
-        case .subpage: .purple
         case .outdent: .orange
         case .indent: .orange
         case .todo: .green
@@ -87,21 +82,16 @@ enum NoteSwipeStep: Equatable {
     }
 }
 
-/// One choice of a swipe menu: the type it sets and, for a list of a level, the indent it sets too.
+/// One choice of a swipe menu: the type it sets; the block keeps its indent.
 struct NoteMenuOption: Equatable, Identifiable {
 
     let id: Int
     let title: LocalizedStringKey
     let type: NoteEditorBlockType
-    let indent: Int?
 
-    /// The edits that give `block` this option's type (and indent).
+    /// The edits that give `block` this option's type.
     func edits(for block: NoteEditorBlock) -> [NoteEditorBlockEdit] {
-        var edits: [NoteEditorBlockEdit] = [.setType(blockIds: [block.id], type: type)]
-        if let indent, indent != block.indent {
-            edits.append(.shiftIndent(blockIds: [block.id], delta: indent - block.indent))
-        }
-        return edits
+        [.setType(blockIds: [block.id], type: type)]
     }
 }
 
@@ -115,21 +105,18 @@ enum NoteMenuKind: Equatable {
         switch self {
         case .list:
             [
-                NoteMenuOption(id: 0, title: "noteEditor.menu.list.none", type: .text, indent: nil),
-                NoteMenuOption(id: 1, title: "noteEditor.menu.list.bullet", type: .bullet, indent: 0),
-                NoteMenuOption(id: 2, title: "noteEditor.menu.list.bullet2", type: .bullet, indent: 1),
-                NoteMenuOption(id: 3, title: "noteEditor.menu.list.bullet3", type: .bullet, indent: 2),
-                NoteMenuOption(id: 4, title: "noteEditor.menu.list.number", type: .number, indent: 0),
-                NoteMenuOption(id: 5, title: "noteEditor.menu.list.number2", type: .number, indent: 1),
-                NoteMenuOption(id: 6, title: "noteEditor.type.todo", type: .todo, indent: nil)
+                NoteMenuOption(id: 0, title: "noteEditor.menu.list.none", type: .text),
+                NoteMenuOption(id: 1, title: "noteEditor.menu.list.bullet", type: .bullet),
+                NoteMenuOption(id: 2, title: "noteEditor.menu.list.number", type: .number),
+                NoteMenuOption(id: 3, title: "noteEditor.type.todo", type: .todo)
             ]
         case .style:
             [
-                NoteMenuOption(id: 0, title: "noteEditor.type.text", type: .text, indent: nil),
-                NoteMenuOption(id: 1, title: "noteEditor.type.heading1", type: .heading1, indent: nil),
-                NoteMenuOption(id: 2, title: "noteEditor.type.heading2", type: .heading2, indent: nil),
-                NoteMenuOption(id: 3, title: "noteEditor.type.heading3", type: .heading3, indent: nil),
-                NoteMenuOption(id: 4, title: "noteEditor.type.quote", type: .quote, indent: nil)
+                NoteMenuOption(id: 0, title: "noteEditor.type.text", type: .text),
+                NoteMenuOption(id: 1, title: "noteEditor.type.heading1", type: .heading1),
+                NoteMenuOption(id: 2, title: "noteEditor.type.heading2", type: .heading2),
+                NoteMenuOption(id: 3, title: "noteEditor.type.heading3", type: .heading3),
+                NoteMenuOption(id: 4, title: "noteEditor.type.quote", type: .quote)
             ]
         }
     }

@@ -75,12 +75,12 @@ private extension NoteSwipeMenuView {
     }
 
     func isCurrent(_ option: NoteMenuOption) -> Bool {
-        option.type == block.type && (option.indent == nil || option.indent == block.indent)
+        option.type == block.type
     }
 }
 
 /// A menu option shown as the block it makes: a heading in its size, a quote with its bar, a list item with its
-/// bullet, number or checkbox at its level.
+/// bullet, number or checkbox.
 struct NoteMenuOptionLabel: View {
 
     let option: NoteMenuOption
@@ -89,9 +89,9 @@ struct NoteMenuOptionLabel: View {
         HStack(spacing: 6) {
             switch option.type {
             case .bullet:
-                Text(verbatim: ["●", "○", "■"][(option.indent ?? 0) % 3]).font(.system(size: 9))
+                Text(verbatim: "●").font(.system(size: 9))
             case .number:
-                Text(verbatim: (option.indent ?? 0) == 0 ? "1." : "1.1.").monospacedDigit()
+                Text(verbatim: "1.").monospacedDigit()
             case .todo:
                 Image(systemName: "square").foregroundStyle(Theme.Colors.secondaryText)
             case .quote:
@@ -105,6 +105,5 @@ struct NoteMenuOptionLabel: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }
-        .padding(.leading, CGFloat(option.indent ?? 0) * 12)
     }
 }
