@@ -54,6 +54,10 @@ object NoteRuns {
     fun link(runs: List<InlineRun>, start: Int, end: Int, href: String?): List<InlineRun> =
         restyle(runs, start, end) { it.copy(link = href) }
 
+    /** [start]..[end] as plain text: no format and no link. */
+    fun clear(runs: List<InlineRun>, start: Int, end: Int): List<InlineRun> =
+        restyle(runs, start, end) { InlineRun(it.text) }
+
     private fun restyle(
         runs: List<InlineRun>,
         start: Int,

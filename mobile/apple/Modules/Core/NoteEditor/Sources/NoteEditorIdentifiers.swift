@@ -9,9 +9,9 @@ enum NoteEditorIdentifiers {
     static let selectionBar = "noteEditor.selectionBar"
     static let breadcrumb = "noteEditor.breadcrumb"
     static let focusDone = "noteEditor.focusDone"
+    static let formatBar = "noteEditor.formatBar"
 
     static func block(_ id: String) -> String { "noteEditor.block.\(id)" }
     static func checkbox(_ id: String) -> String { "noteEditor.checkbox.\(id)" }
-    static func handle(_ id: String) -> String { "noteEditor.handle.\(id)" }
     static func pageLink(_ id: String) -> String { "noteEditor.page.\(id)" }
 }

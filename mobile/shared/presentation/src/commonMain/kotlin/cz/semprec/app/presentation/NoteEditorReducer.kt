@@ -35,6 +35,7 @@ internal object NoteEditorReducer {
                 NotePaste.paste(blocks, NoteCaret(action.blockId, action.offset), action.text, newId).moved()
             is NoteEditorAction.ToggleMark -> toggleMark(blocks, action)
             is NoteEditorAction.SetLink -> setLink(blocks, action)
+            is NoteEditorAction.ClearFormat -> clearFormat(blocks, action)
             else -> null
         }
 
@@ -66,6 +67,13 @@ internal object NoteEditorReducer {
     private fun setRuns(blocks: List<NoteBlock>, action: NoteEditorAction.SetRuns): NoteReduction {
         val typed = NoteStructure.setRuns(blocks, action.blockId, action.runs.map { it.toDomain() })
         return NoteTyping.applyPrefix(typed, action.blockId)?.moved() ?: NoteReduction(typed)
+    }
+
+    private fun clearFormat(blocks: List<NoteBlock>, action: NoteEditorAction.ClearFormat): NoteReduction {
+        val cleared = blocks.map {
+            if (it.id == action.blockId) it.copy(runs = NoteRuns.clear(it.runs, action.start, action.end)) else it
+        }
+        return NoteReduction(cleared)
     }
 
     private fun toggleMark(blocks: List<NoteBlock>, action: NoteEditorAction.ToggleMark): NoteReduction {

@@ -162,6 +162,8 @@ public enum NoteEditorTyping: Equatable, Sendable {
     case paste(blockId: String, offset: Int, text: String)
     /// An empty range inside a word formats the word.
     case toggleMark(blockId: String, start: Int, end: Int, mark: NoteEditorMark)
+    /// Takes every format and link off the stretch.
+    case clearFormat(blockId: String, start: Int, end: Int)
     /// A `nil` address takes the link away.
     case setLink(blockId: String, start: Int, end: Int, address: String?)
 }

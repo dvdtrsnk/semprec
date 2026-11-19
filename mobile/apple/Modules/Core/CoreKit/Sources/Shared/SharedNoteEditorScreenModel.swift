@@ -109,6 +109,8 @@ private extension SharedNoteEditorScreenModel {
             SharedSDK.NoteEditorActionToggleMark(
                 blockId: blockId, start: Int32(start), end: Int32(end), mark: mark.shared
             )
+        case .clearFormat(let blockId, let start, let end):
+            SharedSDK.NoteEditorActionClearFormat(blockId: blockId, start: Int32(start), end: Int32(end))
         case .setLink(let blockId, let start, let end, let address):
             SharedSDK.NoteEditorActionSetLink(blockId: blockId, start: Int32(start), end: Int32(end), address: address)
         }

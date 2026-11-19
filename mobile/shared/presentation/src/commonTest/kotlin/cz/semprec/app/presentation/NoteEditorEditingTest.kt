@@ -112,6 +112,14 @@ class NoteEditorEditingTest : NoteEditorTest() {
         vm.close()
     }
 
+    @Test fun `clearing the format of a selection leaves it plain`() = runTest(dispatcher) {
+        val vm = loaded()
+        vm.onAction(NoteEditorAction.ToggleMark(vm.block(1).id, 0, 5, NoteEditorMark.BOLD))
+        vm.onAction(NoteEditorAction.ClearFormat(vm.block(1).id, 0, 10))
+        assertEquals(listOf(NoteEditorRun("First idea")), vm.block(1).runs)
+        vm.close()
+    }
+
     @Test fun `deleting the last block leaves one empty text block`() = runTest(dispatcher) {
         pages.put("p1", "Only")
         val vm = loaded()

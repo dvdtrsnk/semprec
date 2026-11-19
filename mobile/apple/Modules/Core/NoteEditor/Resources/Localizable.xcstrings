@@ -209,6 +209,86 @@
         }
       }
     },
+    "noteEditor.format.bold" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bold"
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tučně"
+          }
+        }
+      }
+    },
+    "noteEditor.format.clear" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear formatting"
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zrušit formátování"
+          }
+        }
+      }
+    },
+    "noteEditor.format.code" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Code"
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kód"
+          }
+        }
+      }
+    },
+    "noteEditor.format.italic" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Italic"
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kurzíva"
+          }
+        }
+      }
+    },
+    "noteEditor.format.link" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Link"
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odkaz"
+          }
+        }
+      }
+    },
     "noteEditor.hint.editing" : {
       "localizations" : {
         "en" : {
@@ -230,13 +310,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tap to select · drag sideways, then up or down for more · ≡ moves"
+            "value" : "Tap to select · drag sideways, then up or down for more · hold and drag to move"
           }
         },
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Klepnutím vybereš · táhni do strany a pak nahoru či dolů pro víc · ≡ přesune"
+            "value" : "Klepnutím vybereš · táhni do strany a pak nahoru či dolů pro víc · podrž a táhni pro přesun"
           }
         }
       }
@@ -597,22 +677,6 @@
                 }
               }
             }
-          }
-        }
-      }
-    },
-    "noteEditor.selection.move" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Move"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Přesunout"
           }
         }
       }

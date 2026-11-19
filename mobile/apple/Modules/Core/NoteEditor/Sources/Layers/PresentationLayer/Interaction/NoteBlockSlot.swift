@@ -14,8 +14,8 @@ struct NoteSlotPresentation: Equatable {
 }
 
 /// A block's place in the note: the coloured tray a swipe uncovers with its step, a hold that selects the block or,
-/// dragged along the page, moves it, and in selection mode the selection mark, a tap that selects and the handle that
-/// moves. It reports where the block is laid out.
+/// dragged along the page, moves it (with the rest of the selection when it is selected), and in selection mode the
+/// selection mark and a tap that selects. It reports where the block is laid out.
 struct NoteBlockSlot<Row: View>: View {
 
     // MARK: - Dependencies
@@ -30,8 +30,6 @@ struct NoteBlockSlot<Row: View>: View {
     /// A gesture on the block stopped without its end: the system took it over.
     let onCancelled: @MainActor () -> Void
     let onToggle: @MainActor () -> Void
-    let onHandleMoved: @MainActor (CGPoint) -> Void
-    let onHandleDropped: @MainActor () -> Void
     @ViewBuilder let row: () -> Row
 
     // MARK: - Body
@@ -65,7 +63,7 @@ struct NoteBlockSlot<Row: View>: View {
             )
             .holdAndDrag(
                 in: NoteEditorMetrics.space,
-                isEnabled: !isEditing && !presentation.selecting,
+                isEnabled: !isEditing,
                 began: onHold,
                 RowGestureActions(changed: { onHoldMoved($0.location) }, ended: onHoldEnded, cancelled: onCancelled)
             )
@@ -80,23 +78,39 @@ private extension NoteBlockSlot {
     var isLifted: Bool { presentation.isHeld && !presentation.isDragged }
 
     var slot: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.small) {
-            if presentation.selecting {
-                Image(systemName: presentation.isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(presentation.isSelected ? Theme.Colors.accent : Theme.Colors.secondaryText)
-                    .padding(.vertical, NoteEditorMetrics.editorInset.height + 2)
-                    .accessibilityHidden(true)
-            }
+        HStack(alignment: .center, spacing: Theme.Spacing.small) {
             row()
-                .overlay {
-                    if presentation.selecting {
-                        Color.clear.contentShape(Rectangle()).onTapGesture(perform: onToggle)
-                    }
-                }
-            if presentation.selecting { handle }
+            if presentation.selecting { mark }
         }
+        .overlay {
+            if presentation.selecting {
+                Color.clear.contentShape(Rectangle()).onTapGesture(perform: onToggle)
+            }
+        }
+        .padding(.trailing, presentation.selecting ? Theme.Spacing.small : 0)
+        .background(
+            presentation.isSelected ? Theme.Colors.accent.opacity(0.14) : .clear,
+            in: .rect(cornerRadius: 10)
+        )
         .background(Theme.Colors.groupedBackground.opacity(presentation.swipe == nil ? 0 : 1))
+        .animation(.snappy(duration: 0.15), value: presentation.isSelected)
         .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
+    }
+
+    /// The mark of selection mode on the right: a soft dot when the block is selected, a ring when not.
+    @ViewBuilder var mark: some View {
+        if presentation.isSelected {
+            Circle()
+                .fill(Theme.Colors.accent.opacity(0.75))
+                .frame(width: 16, height: 16)
+                .frame(width: 22, height: 22)
+                .accessibilityHidden(true)
+        } else {
+            Circle()
+                .strokeBorder(Theme.Colors.secondaryText.opacity(0.5), lineWidth: 1.5)
+                .frame(width: 22, height: 22)
+                .accessibilityHidden(true)
+        }
     }
 
     @ViewBuilder var tray: some View {
@@ -117,20 +131,6 @@ private extension NoteBlockSlot {
                 in: .rect(cornerRadius: 10)
             )
         }
-    }
-
-    var handle: some View {
-        Image(systemName: "line.3.horizontal")
-            .foregroundStyle(Theme.Colors.secondaryText)
-            .frame(width: 36, height: 36)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .named(NoteEditorMetrics.space))
-                    .onChanged { onHandleMoved($0.location) }
-                    .onEnded { _ in onHandleDropped() }
-            )
-            .accessibilityLabel(Text("noteEditor.selection.move", bundle: .module))
-            .accessibilityIdentifier(NoteEditorIdentifiers.handle(block.id))
     }
 }
 

@@ -37,6 +37,15 @@ class NoteRunsTest {
         assertNull(NoteLinks.range(two, 2))
     }
 
+    @Test fun `clearing a stretch takes its formats and its link off and leaves the rest`() {
+        val linked = NoteRuns.link(runs, 6, 16, "https://x.cz")
+        val cleared = NoteRuns.clear(linked, 3, 12)
+        assertEquals(
+            listOf(InlineRun("Hello bold w"), InlineRun("orld", link = "https://x.cz")),
+            cleared,
+        )
+    }
+
     @Test fun `inserted text takes the format before it`() {
         val expected = listOf(InlineRun("Hello "), InlineRun("boldly", bold = true), InlineRun(" world"))
         assertEquals(expected, NoteRuns.insert(runs, 10, "ly"))

@@ -81,6 +81,9 @@ sealed interface NoteEditorAction {
     data class ToggleMark(val blockId: String, val start: Int, val end: Int, val mark: NoteEditorMark) :
         NoteEditorAction
 
+    /** Takes every format and link off [start]..[end] of a block. */
+    data class ClearFormat(val blockId: String, val start: Int, val end: Int) : NoteEditorAction
+
     /** Links [start]..[end] to [address] (a scheme is added when missing), or unlinks with `null`. */
     data class SetLink(val blockId: String, val start: Int, val end: Int, val address: String?) : NoteEditorAction
 

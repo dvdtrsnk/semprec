@@ -31,6 +31,7 @@ struct NoteEditorScreen: View {
     // MARK: - Body
     var body: some View {
         content
+            .keyboardBar { formatBar }
             .safeAreaInset(edge: .bottom) { selectionBar }
             .sheet(isPresented: styledBinding) { styleList }
             .modifier(NoteLinkDialog(draft: $link) { address in saveLink(address) })
@@ -142,8 +143,6 @@ private extension NoteEditorScreen {
             onHoldEnded: { perform(interaction.holdEnded(in: state.blocks)) },
             onCancelled: { interaction.cancelled() },
             onToggle: { interaction.toggle(block.id) },
-            onHandleMoved: { interaction.moved(block, to: $0, in: state.blocks) },
-            onHandleDropped: { perform(interaction.dropped(in: state.blocks)) },
             row: { row(block) }
         )
     }
@@ -209,6 +208,13 @@ private extension NoteEditorScreen {
             .accessibilityAddTraits(.isButton)
             .accessibilityLabel(Text("noteEditor.tapBelow", bundle: .module))
             .accessibilityIdentifier(NoteEditorIdentifiers.tapBelow)
+    }
+
+    /// Shown while part of the edited block's text is selected.
+    @ViewBuilder var formatBar: some View {
+        if let selection, !selection.isEmpty, selection.blockId == viewModel.editingBlockId {
+            NoteFormatBar(selection: selection, onTyping: { viewModel.typing($0) }, onLink: { openLink() })
+        }
     }
 
     @ViewBuilder var selectionBar: some View {
