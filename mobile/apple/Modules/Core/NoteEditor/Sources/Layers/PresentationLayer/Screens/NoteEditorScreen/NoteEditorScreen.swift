@@ -4,19 +4,21 @@ import SwiftUI
 
 /// The note editor: a full page with its title and meta line, or a light note inside another screen. Blocks follow
 /// each other; a tap below the last adds a line or goes into an empty last one; the bar above the keyboard formats
-/// the edited block.
+/// the edited block. Blocks are swiped, selected and moved by touch (`NoteInteraction`).
 struct NoteEditorScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: NoteEditorViewModel
+    @StateObject private var interaction = NoteInteraction()
 
     // MARK: - State
     @State private var selection: NoteSelection?
-    @State private var styledBlockId: String?
+    @State private var styledIds: [String]?
     @State private var link: NoteLinkDraft?
     @State private var renaming: NoteEditorBlock?
     @State private var renameTitle = ""
     @State private var confirmations = 0
+    @State private var hasAppeared = false
 
     // MARK: - Init
     /// `viewModel` runs once per editor, when SwiftUI creates the state object.
@@ -27,12 +29,9 @@ struct NoteEditorScreen: View {
     // MARK: - Body
     var body: some View {
         content
-            .safeAreaInset(edge: .bottom) { accessoryBar }
-            .sheet(item: styledBinding) { block in
-                NoteStyleList(current: block.type, offersSubpages: viewModel.variant.offersSubpages) { type in
-                    pick(type, for: block)
-                }
-            }
+            .keyboardBar { accessoryBar }
+            .safeAreaInset(edge: .bottom) { selectionBar }
+            .sheet(isPresented: styledBinding) { styleList }
             .modifier(NoteLinkDialog(draft: $link) { address in saveLink(address) })
             .alert(
                 Text("noteEditor.menu.rename", bundle: .module),
@@ -43,9 +42,17 @@ struct NoteEditorScreen: View {
                 Button(role: .cancel) {} label: { Text("noteEditor.cancel", bundle: .module) }
             }
             .sensoryFeedback(.success, trigger: confirmations)
+            .sensoryFeedback(.selection, trigger: interaction.swipe?.step)
+            .sensoryFeedback(.selection, trigger: interaction.menu?.highlighted)
+            .sensoryFeedback(.impact(weight: .light), trigger: interaction.drag?.target)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(NoteEditorIdentifiers.editor)
             .task { await viewModel.observe() }
+            .onAppear {
+                // A page shown again reads what its subpages changed in it.
+                if hasAppeared { viewModel.send(.refresh) }
+                hasAppeared = true
+            }
             .onDisappear { viewModel.endEditing() }
     }
 }
@@ -62,24 +69,73 @@ private extension NoteEditorScreen {
         case .failure(let kind):
             StatusView(.failure(message: Text(FailureKind.message(for: kind)), retry: { viewModel.send(.retry) }))
         case .content:
-            if viewModel.variant == .full {
-                ScrollView { page }.scrollDismissesKeyboard(.interactively)
-            } else {
-                page
+            Group {
+                if viewModel.variant == .full {
+                    ScrollView { page }
+                        .scrollDismissesKeyboard(.interactively)
+                        .scrollDisabled(interaction.isActive)
+                } else {
+                    page
+                }
             }
+            .coordinateSpace(.named(NoteEditorMetrics.space))
+            .onPreferenceChange(NoteRowFramesKey.self) { frames in
+                MainActor.assumeIsolated { interaction.rowFrames = frames }
+            }
+            .overlay(alignment: .topLeading) { overlays }
         }
     }
 
     var page: some View {
         VStack(alignment: .leading, spacing: 0) {
             if viewModel.variant == .full {
-                NoteEditorHeader(state: state) { viewModel.send(.setTitle($0)) }
+                NoteEditorHeader(
+                    state: state,
+                    trail: viewModel.trail,
+                    hint: hint,
+                    focusTitle: viewModel.focusTitle,
+                    onRename: { viewModel.send(.setTitle($0)) },
+                    onFirstBlock: { if let first = state.blocks.first { viewModel.beginEditing(first.id, at: 0) } }
+                )
             }
             if let problem = state.problem { NoteProblemBanner(problem: problem) { viewModel.send(.dismissProblem) } }
-            ForEach(state.blocks) { block in row(block) }
-            tapBelow
+            ForEach(state.blocks) { block in slot(block) }
+            if !interaction.selecting { tapBelow }
         }
         .padding(.horizontal, viewModel.variant == .full ? Theme.Spacing.medium : 0)
+    }
+
+    var hint: LocalizedStringKey? {
+        if interaction.selecting { return "noteEditor.hint.selecting" }
+        return viewModel.editingBlockId == nil ? nil : "noteEditor.hint.editing"
+    }
+
+    func slot(_ block: NoteEditorBlock) -> some View {
+        NoteBlockSlot(
+            block: block,
+            presentation: presentation(of: block),
+            isEditing: viewModel.editingBlockId == block.id,
+            onDragged: { interaction.dragged(block, by: $0, at: $1, offersSubpages: viewModel.variant.offersSubpages) },
+            onReleased: { perform(interaction.released(block)) },
+            onIndent: { edit(.shiftIndent(blockIds: [block.id], delta: $0)) },
+            onToggle: { interaction.toggle(block.id) },
+            onHandleMoved: { interaction.moved(block, to: $0, in: state.blocks) },
+            onHandleDropped: { perform(interaction.dropped(in: state.blocks)) },
+            row: { row(block) }
+        )
+        .animation(.snappy(duration: 0.2), value: interaction.drag?.target)
+    }
+
+    func presentation(of block: NoteEditorBlock) -> NoteSlotPresentation {
+        let drag = interaction.drag
+        let isTarget = drag.map { $0.target < state.blocks.count && state.blocks[$0.target].id == block.id } ?? false
+        return NoteSlotPresentation(
+            selecting: interaction.selecting,
+            isSelected: interaction.selected.contains(block.id),
+            swipe: interaction.swipe?.blockId == block.id ? interaction.swipe : nil,
+            isDragged: drag?.blockIds.contains(block.id) ?? false,
+            gapAbove: isTarget ? NoteInteraction.optionHeight : 0
+        )
     }
 
     func row(_ block: NoteEditorBlock) -> some View {
@@ -97,6 +153,24 @@ private extension NoteEditorScreen {
             onEdit: { edit($0) },
             onRequest: { request($0, block: block) }
         )
+    }
+
+    @ViewBuilder var overlays: some View {
+        if let menu = interaction.menu, let block = state.blocks.first(where: { $0.id == menu.blockId }) {
+            GeometryReader { proxy in
+                NoteSwipeMenuView(
+                    menu: menu,
+                    block: block,
+                    height: proxy.size.height,
+                    onPick: { perform(interaction.pick($0, for: block)) },
+                    onClose: { interaction.closeMenu() }
+                )
+            }
+        }
+        if let drag = interaction.drag, let first = state.blocks.first(where: { $0.id == drag.blockIds.first }) {
+            NoteDragPreview(block: first, count: drag.blockIds.count)
+                .offset(x: Theme.Spacing.large, y: drag.location.y - 22)
+        }
     }
 
     var tapBelow: some View {
@@ -117,17 +191,37 @@ private extension NoteEditorScreen {
                 offersSubpages: viewModel.variant.offersSubpages,
                 onTyping: { viewModel.typing($0) },
                 onEdit: { edit($0) },
-                onStyle: { styledBlockId = id },
+                onStyle: { styledIds = [id] },
                 onLink: { openLink() },
                 onDone: { viewModel.endEditing() }
             )
         }
     }
 
-    var styledBinding: Binding<NoteEditorBlock?> {
-        Binding(
-            get: { styledBlockId.flatMap { id in state.blocks.first { $0.id == id } } },
-            set: { styledBlockId = $0?.id }
+    @ViewBuilder var selectionBar: some View {
+        if interaction.selecting {
+            NoteSelectionBar(
+                count: interaction.selected.count,
+                allSelected: interaction.selected.count == state.blocks.count,
+                onSelectAll: { interaction.selectAll(state.blocks) },
+                onStyle: { styledIds = interaction.selectedIds(in: state.blocks) },
+                onEdit: { bulk in bulkEdit(bulk) },
+                onDone: { interaction.stopSelecting() }
+            )
+        }
+    }
+
+    var styledBinding: Binding<Bool> {
+        Binding(get: { styledIds != nil }, set: { if !$0 { styledIds = nil } })
+    }
+
+    var styleList: some View {
+        let blocks = state.blocks.filter { styledIds?.contains($0.id) == true }
+        let types = Set(blocks.map(\.type))
+        return NoteStyleList(
+            current: types.count == 1 ? types.first : nil,
+            offersSubpages: viewModel.variant.offersSubpages && blocks.count == 1,
+            onPick: { pick($0, for: blocks.map(\.id)) }
         )
     }
 }
@@ -139,9 +233,20 @@ private extension NoteEditorScreen {
         if case .makeSubpage = edit, !viewModel.variant.offersSubpages { return }
         viewModel.edit(edit)
         switch edit {
-        case .duplicate, .delete, .makeSubpage: confirmations += 1
+        case .duplicate, .delete, .makeSubpage, .move: confirmations += 1
         default: break
         }
+    }
+
+    func perform(_ edits: [NoteEditorBlockEdit]) {
+        edits.forEach(edit)
+    }
+
+    func bulkEdit(_ bulk: NoteBulkEdit) {
+        let ids = interaction.selectedIds(in: state.blocks)
+        guard !ids.isEmpty else { return }
+        edit(bulk.edit(ids))
+        if bulk == .delete { interaction.stopSelecting() }
     }
 
     func key(key: NoteEditorKey, block: NoteEditorBlock) {
@@ -156,18 +261,21 @@ private extension NoteEditorScreen {
 
     func request(_ request: NoteBlockRequest, block: NoteEditorBlock) {
         switch request {
-        case .style: styledBlockId = block.id
+        case .style: styledIds = [block.id]
         case .rename:
             renameTitle = block.text
             renaming = block
+        case .select:
+            viewModel.endEditing()
+            interaction.startSelecting(with: block.id)
         }
     }
 
-    func pick(_ type: NoteEditorBlockType, for block: NoteEditorBlock) {
-        if type == .page {
-            edit(.makeSubpage(blockId: block.id))
+    func pick(_ type: NoteEditorBlockType, for ids: [String]) {
+        if type == .page, let id = ids.first {
+            edit(.makeSubpage(blockId: id))
         } else {
-            edit(.setType(blockIds: [block.id], type: type))
+            edit(.setType(blockIds: ids, type: type))
         }
     }
 
@@ -185,7 +293,7 @@ private extension NoteEditorScreen {
 
     /// Editing ends when the edited block loses focus, unless the style list or the link dialog took it.
     func blurred(_ blockId: String) {
-        guard viewModel.editingBlockId == blockId, styledBlockId == nil, link == nil else { return }
+        guard viewModel.editingBlockId == blockId, styledIds == nil, link == nil else { return }
         viewModel.endEditing()
     }
 

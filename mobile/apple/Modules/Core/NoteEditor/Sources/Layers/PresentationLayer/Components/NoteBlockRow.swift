@@ -7,6 +7,7 @@ enum NoteBlockRequest: Equatable {
 
     case style
     case rename
+    case select
 }
 
 /// One block: its marker, its text (edited in place, or shown with a tap that starts editing under the finger) or its
@@ -107,6 +108,7 @@ private extension NoteBlockRow {
         } else {
             item("noteEditor.menu.edit", "character.cursor.ibeam") { onBeginEditing(block.text.utf16.count) }
         }
+        item("noteEditor.swipe.select", "checkmark.circle") { onRequest(.select) }
         item("noteEditor.menu.style", "textformat") { onRequest(.style) }
         item("noteEditor.menu.duplicate", "plus.square.on.square") { onEdit(.duplicate(blockIds: [block.id])) }
         item(

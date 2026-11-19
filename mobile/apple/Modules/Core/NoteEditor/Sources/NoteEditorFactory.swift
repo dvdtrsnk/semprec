@@ -6,9 +6,13 @@ import SwiftUI
 @MainActor
 public enum NoteEditorFactory {
 
-    /// `onTextChanged` receives the Markdown of a note kept as text (`NoteEditorSource.text`) after each change.
+    /// `trail` names the pages above a subpage, outermost first; `focusTitle` puts the cursor into the title of a
+    /// page just made from an empty block. `onTextChanged` receives the Markdown of a note kept as text
+    /// (`NoteEditorSource.text`) after each change.
     public static func editor(
         variant: NoteEditorVariant,
+        trail: [String] = [],
+        focusTitle: Bool = false,
         makeModel: @escaping @MainActor () -> any NoteEditorScreenModel,
         router: any NoteEditorRouting,
         onTextChanged: @escaping @MainActor (String) -> Void = { _ in }
@@ -16,6 +20,8 @@ public enum NoteEditorFactory {
         NoteEditorScreen(
             viewModel: NoteEditorViewModel(
                 variant: variant,
+                trail: trail,
+                focusTitle: focusTitle,
                 model: makeModel(),
                 router: router,
                 onTextChanged: onTextChanged

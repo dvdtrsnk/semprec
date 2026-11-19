@@ -64,6 +64,9 @@ data class NoteEditorState(
 
 sealed interface NoteEditorAction {
     data object Retry : NoteEditorAction
+
+    /** Reads the page again in place, as it is shown again, unless a change of its own waits to be written. */
+    data object Refresh : NoteEditorAction
     data object DismissProblem : NoteEditorAction
 
     /** Typing: the block's text as the person left it; a Markdown prefix at the start of a text block applies. */

@@ -19,6 +19,10 @@ final class NoteEditorViewModel: ObservableObject {
 
     // MARK: - Dependencies
     let variant: NoteEditorVariant
+    /// The titles of the pages above this one, outermost first.
+    let trail: [String]
+    /// Set when the page was just made from an empty block: its title takes the focus.
+    let focusTitle: Bool
     private let model: any NoteEditorScreenModel
     private let router: any NoteEditorRouting
     private let onTextChanged: @MainActor (String) -> Void
@@ -36,11 +40,15 @@ final class NoteEditorViewModel: ObservableObject {
     // MARK: - Init
     init(
         variant: NoteEditorVariant,
+        trail: [String] = [],
+        focusTitle: Bool = false,
         model: any NoteEditorScreenModel,
         router: any NoteEditorRouting,
         onTextChanged: @escaping @MainActor (String) -> Void
     ) {
         self.variant = variant
+        self.trail = trail
+        self.focusTitle = focusTitle
         self.model = model
         self.router = router
         self.onTextChanged = onTextChanged

@@ -143,6 +143,27 @@ class NoteEditorViewModelTest : NoteEditorTest() {
         vm.close()
     }
 
+    @Test fun `a page shown again reads what changed in it without loading`() = runTest(dispatcher) {
+        val vm = loaded()
+        pages.put("p1", "Renamed elsewhere")
+        vm.onAction(NoteEditorAction.Refresh)
+        assertEquals(NoteEditorPhase.CONTENT, vm.state.value.phase)
+        runCurrent()
+        assertEquals(listOf("Renamed elsewhere"), vm.texts())
+        assertNull(vm.state.value.problem)
+        vm.close()
+    }
+
+    @Test fun `a page waiting to write its change is not read again`() = runTest(dispatcher) {
+        val vm = loaded()
+        vm.onAction(NoteEditorAction.SetRuns(vm.block(1).id, listOf(NoteEditorRun("Mine"))))
+        pages.put("p1", "Elsewhere")
+        vm.onAction(NoteEditorAction.Refresh)
+        runCurrent()
+        assertEquals("Mine", vm.texts()[1])
+        vm.close()
+    }
+
     @Test fun `a failed write is reported and the next change writes it again`() = runTest(dispatcher) {
         val vm = loaded()
         pages.failing = "replace"

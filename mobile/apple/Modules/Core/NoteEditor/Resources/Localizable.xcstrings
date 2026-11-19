@@ -337,6 +337,38 @@
         }
       }
     },
+    "noteEditor.hint.editing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Swipe left and right to change the indent"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Swipe vlevo a vpravo mění odsazení"
+          }
+        }
+      }
+    },
+    "noteEditor.hint.selecting": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap to select · drag sideways, then up or down for more · ≡ moves"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klepnutím vybereš · táhni do strany a pak nahoru či dolů pro víc · ≡ přesune"
+          }
+        }
+      }
+    },
     "noteEditor.link.add": {
       "localizations": {
         "en": {
@@ -461,6 +493,102 @@
           "stringUnit": {
             "state": "translated",
             "value": "Upravit"
+          }
+        }
+      }
+    },
+    "noteEditor.menu.list.bullet": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bullet"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odrážka"
+          }
+        }
+      }
+    },
+    "noteEditor.menu.list.bullet2": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bullet, level 2"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odrážka 2. úrovně"
+          }
+        }
+      }
+    },
+    "noteEditor.menu.list.bullet3": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bullet, level 3"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odrážka 3. úrovně"
+          }
+        }
+      }
+    },
+    "noteEditor.menu.list.none": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Žádná"
+          }
+        }
+      }
+    },
+    "noteEditor.menu.list.number": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Numbered list"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Číslovaný seznam"
+          }
+        }
+      }
+    },
+    "noteEditor.menu.list.number2": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Numbered, level 2"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Číslovaný 2. úrovně"
           }
         }
       }
@@ -661,6 +789,106 @@
         }
       }
     },
+    "noteEditor.selection.all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select all"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vybrat vše"
+          }
+        }
+      }
+    },
+    "noteEditor.selection.count": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld block"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld blocks"
+                }
+              }
+            }
+          }
+        },
+        "cs": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld blok"
+                }
+              },
+              "few": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld bloky"
+                }
+              },
+              "many": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld bloku"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld bloků"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "noteEditor.selection.move": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Přesunout"
+          }
+        }
+      }
+    },
+    "noteEditor.selection.none": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deselect all"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zrušit výběr"
+          }
+        }
+      }
+    },
     "noteEditor.style.blocks": {
       "localizations": {
         "en": {
@@ -705,6 +933,86 @@
           "stringUnit": {
             "state": "translated",
             "value": "Text"
+          }
+        }
+      }
+    },
+    "noteEditor.swipe.alreadyPage": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Already a page"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Už je stránka"
+          }
+        }
+      }
+    },
+    "noteEditor.swipe.list": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bullet"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odrážka"
+          }
+        }
+      }
+    },
+    "noteEditor.swipe.page": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Page"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stránka"
+          }
+        }
+      }
+    },
+    "noteEditor.swipe.select": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vybrat"
+          }
+        }
+      }
+    },
+    "noteEditor.swipe.untodo": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not a to-do"
+          }
+        },
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zrušit úkol"
           }
         }
       }
@@ -789,7 +1097,7 @@
         }
       }
     },
-    "noteEditor.type.h1": {
+    "noteEditor.type.heading1": {
       "localizations": {
         "en": {
           "stringUnit": {
@@ -805,7 +1113,7 @@
         }
       }
     },
-    "noteEditor.type.h2": {
+    "noteEditor.type.heading2": {
       "localizations": {
         "en": {
           "stringUnit": {
@@ -821,7 +1129,7 @@
         }
       }
     },
-    "noteEditor.type.h3": {
+    "noteEditor.type.heading3": {
       "localizations": {
         "en": {
           "stringUnit": {

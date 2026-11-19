@@ -139,6 +139,8 @@ public struct NoteEditorState: Equatable, Sendable {
 public enum NoteEditorAction: Equatable, Sendable {
 
     case retry
+    /// Reads the page again in place, as it is shown again.
+    case refresh
     case dismissProblem
     case typing(NoteEditorTyping)
     case blocks(NoteEditorBlockEdit)

@@ -64,6 +64,7 @@ extension SharedNoteEditorScreenModel {
     static func action(_ action: NoteEditorAction) -> any SharedSDK.NoteEditorAction {
         switch action {
         case .retry: SharedSDK.NoteEditorActionRetry.shared
+        case .refresh: SharedSDK.NoteEditorActionRefresh.shared
         case .dismissProblem: SharedSDK.NoteEditorActionDismissProblem.shared
         case .typing(let typing): Self.typing(typing)
         case .blocks(let edit): Self.blocks(edit)

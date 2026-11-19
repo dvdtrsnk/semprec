@@ -49,6 +49,17 @@ internal class NotePageStore(
         }
     }
 
+    /** Reads the page again in place; nothing happens while a change waits to be written or the page is not shown. */
+    fun reread() {
+        if (host.state.phase != NoteEditorPhase.CONTENT || host.state.saving || source is NoteEditorSource.Text) return
+        loadJob?.cancel()
+        loadJob = host.scope.launch {
+            val answered = reads.fetch()
+            ensureActive()
+            if (answered is Answer.Done && !host.state.saving) apply(answered.value)
+        }
+    }
+
     /** Shows [next] and writes it after the pause. */
     fun change(next: List<NoteBlock>) {
         blocks = next
@@ -82,7 +93,7 @@ internal class NotePageStore(
             true
         }
         is Answer.Rejected -> {
-            failed(answered)
+            host.update { it.failed(answered.kind) }
             false
         }
     }
@@ -123,7 +134,7 @@ internal class NotePageStore(
         val token = etag
         if (id == null || token == null) return false
         return when (val answered = answer { repositories.pages.replace(id, markdown, token) }) {
-            is Answer.Rejected -> failed(answered).let { false }
+            is Answer.Rejected -> host.update { it.failed(answered.kind) }.let { false }
             is Answer.Done -> when (val written = answered.value) {
                 PageWrite.Conflict -> {
                     if (refresh()) host.update { it.reloaded() }
@@ -153,7 +164,7 @@ internal class NotePageStore(
             is Answer.Done -> reads.document(made.value, "", null)
         }
         return when (document) {
-            is Answer.Rejected -> failed(document).let { null }
+            is Answer.Rejected -> host.update { it.failed(document.kind) }.let { null }
             is Answer.Done -> if (document.value.markdown.isBlank()) {
                 itemId = document.value.itemId
                 etag = document.value.etag
@@ -165,8 +176,6 @@ internal class NotePageStore(
             }
         }
     }
-
-    private fun failed(rejected: Answer.Rejected) = host.update { it.failed(rejected.kind) }
 }
 
 /** The page was read again because it changed elsewhere; editing ends. */

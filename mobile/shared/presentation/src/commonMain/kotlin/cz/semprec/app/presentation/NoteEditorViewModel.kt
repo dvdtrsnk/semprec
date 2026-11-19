@@ -36,6 +36,7 @@ class NoteEditorViewModel internal constructor(
         if (isClosed) return
         when (action) {
             NoteEditorAction.Retry -> store.load()
+            NoteEditorAction.Refresh -> store.reread()
             NoteEditorAction.DismissProblem -> update { it.copy(problem = null, problemFailure = null) }
             NoteEditorAction.Flush -> store.flush()
             is NoteEditorAction.MakeSubpage -> subpages.makeSubpage(action.blockId)

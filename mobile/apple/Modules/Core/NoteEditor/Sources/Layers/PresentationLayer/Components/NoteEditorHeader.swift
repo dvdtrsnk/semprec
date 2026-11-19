@@ -8,18 +8,33 @@ struct NoteEditorHeader: View {
 
     // MARK: - Dependencies
     let state: NoteEditorState
+    /// The titles of the pages above this one, outermost first.
+    let trail: [String]
+    /// What the meta line says instead while blocks are edited or selected.
+    let hint: LocalizedStringKey?
+    let focusTitle: Bool
     let onRename: (String) -> Void
+    /// Return in the title goes to the first block.
+    let onFirstBlock: () -> Void
 
     // MARK: - State
     @State private var title = ""
+    @FocusState private var isTitleFocused: Bool
 
     // MARK: - Body
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if !trail.isEmpty { breadcrumb }
             if state.titleEditable {
-                TextField(text: $title, axis: .vertical) { Text("noteEditor.title.placeholder", bundle: .module) }
+                TextField(text: $title) { Text("noteEditor.title.placeholder", bundle: .module) }
                     .font(.largeTitle.bold())
-                    .onSubmit { onRename(title) }
+                    .focused($isTitleFocused)
+                    .submitLabel(.next)
+                    .onSubmit {
+                        onRename(title)
+                        onFirstBlock()
+                    }
+                    .onChange(of: isTitleFocused) { _, focused in if !focused { onRename(title) } }
                     .accessibilityIdentifier(NoteEditorIdentifiers.title)
             } else if !state.title.isEmpty {
                 Text(verbatim: state.title)
@@ -30,7 +45,10 @@ struct NoteEditorHeader: View {
         }
         .padding(.horizontal, NoteEditorMetrics.editorInset.width)
         .padding(.bottom, Theme.Spacing.small)
-        .onAppear { title = state.title }
+        .onAppear {
+            title = state.title
+            if focusTitle { isTitleFocused = true }
+        }
         .onChange(of: state.title) { _, next in title = next }
     }
 }
@@ -38,10 +56,22 @@ struct NoteEditorHeader: View {
 // MARK: - Subviews
 private extension NoteEditorHeader {
 
-    var meta: some View {
-        Text(metaLine)
+    @ViewBuilder var meta: some View {
+        Group {
+            if let hint { Text(hint, bundle: .module) } else { Text(metaLine) }
+        }
+        .font(.footnote)
+        .foregroundStyle(Theme.Colors.secondaryText)
+    }
+
+    /// The pages above this one and this one, as "Notes › Release checklist › …".
+    var breadcrumb: some View {
+        Text(verbatim: (trail + [title.isEmpty ? "…" : title]).joined(separator: " › "))
             .font(.footnote)
             .foregroundStyle(Theme.Colors.secondaryText)
+            .lineLimit(1)
+            .truncationMode(.head)
+            .accessibilityIdentifier(NoteEditorIdentifiers.breadcrumb)
     }
 
     var metaLine: String {

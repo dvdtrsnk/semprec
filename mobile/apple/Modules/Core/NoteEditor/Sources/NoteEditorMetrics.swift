@@ -8,4 +8,7 @@ enum NoteEditorMetrics {
 
     /// The width of the place in front of a block's text that holds its bullet, number or checkbox.
     static let markerWidth: CGFloat = 24
+
+    /// The coordinate space of the blocks, where gestures and the blocks' frames are measured.
+    static let space = "noteEditor.blocks"
 }
