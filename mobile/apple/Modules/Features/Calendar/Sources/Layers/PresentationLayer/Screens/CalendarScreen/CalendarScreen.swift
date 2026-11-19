@@ -103,14 +103,19 @@ private extension CalendarScreen {
                         viewModel: viewModel,
                         todayRequests: todayRequests
                     )
+                    // Measured in its own copy of the zoom space, beneath the transition: a view moving in or out
+                    // reports where it rests, not where the change has carried it.
+                    .coordinateSpace(.named(CalendarZoomTransition.space))
                     .transition(zoomChanges.transition(for: .day))
                     .zIndex(zoomLayer)
                 case .month:
                     CalendarMonthView(state: viewModel.state, viewModel: viewModel)
+                        .coordinateSpace(.named(CalendarZoomTransition.space))
                         .transition(zoomChanges.transition(for: .month))
                         .zIndex(zoomLayer)
                 case .year:
                     CalendarYearView(state: viewModel.state, viewModel: viewModel)
+                        .coordinateSpace(.named(CalendarZoomTransition.space))
                         .transition(zoomChanges.transition(for: .year))
                         .zIndex(zoomLayer)
                 }
