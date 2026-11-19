@@ -20,6 +20,7 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     /// `initialDay` is the device's current day, `YYYY-MM-DD`; the server's answer names today.
     func makeJournal(initialDay: String) -> any JournalScreenModel
     func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel
+    func makeNoteEditor(source: NoteEditorSource) -> any NoteEditorScreenModel
     /// The capture row of the diary's Inbox.
     func makeInboxCapture() -> any InboxCaptureScreenModel
     /// The calendar as a list from `day` (`YYYY-MM-DD`) on.

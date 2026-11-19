@@ -33,6 +33,8 @@ final class SignedInModels: ScreenModelFactory {
         real.makeJournalSubpage(itemId: itemId)
     }
 
+    func makeNoteEditor(source: NoteEditorSource) -> any NoteEditorScreenModel { real.makeNoteEditor(source: source) }
+
     func makeInboxCapture() -> any InboxCaptureScreenModel { real.makeInboxCapture() }
 
     func makeCalendarAgenda(from day: String) -> any CalendarAgendaScreenModel { real.makeCalendarAgenda(from: day) }
