@@ -16,6 +16,14 @@ struct CalendarMonthCell: View {
     let onOpen: () -> Void
     let onDrop: (String) -> Void
 
+    /// Where a change of zoom finds the places it moves between.
+    @Environment(\.calendarZoomMeasures)
+    private var zoomMeasures
+
+    /// Where the day's number sits in its cell: its top and its size.
+    static let digitTop: CGFloat = 4
+    static let digitSize: CGFloat = 24
+
     // MARK: - State
     @State private var targeted = false
 
@@ -25,9 +33,9 @@ struct CalendarMonthCell: View {
             Text("\(CalendarDates.dayNumber(date))")
                 .font(.footnote.weight(emphasized ? .semibold : .regular))
                 .foregroundStyle(numberStyle)
-                .frame(width: 24, height: 24)
+                .frame(width: Self.digitSize, height: Self.digitSize)
                 .background(Circle().fill(date == today ? Color.red : .clear))
-                .reportsZoomFrame(CalendarMonthDayFrameKey.self, if: selected)
+                .measuresZoomFrame(if: selected) { zoomMeasures?.monthDay = $0 }
             ForEach(shown, id: \.identity) { item in
                 chip(item)
             }
@@ -38,7 +46,7 @@ struct CalendarMonthCell: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.top, 4)
+        .padding(.top, Self.digitTop)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(targeted ? Color.accentColor.opacity(0.15) : Color.clear)
         .overlay(alignment: .top) { Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 0.5) }

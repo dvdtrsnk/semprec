@@ -41,7 +41,6 @@ struct CalendarTimelineView: View {
             .frame(width: proxy.size.width, height: geometry.height, alignment: .topLeading)
             .contentShape(Rectangle())
             .gesture(pasteGesture)
-            .reportsFrame(CalendarContentFrameKey.self)
         }
         .frame(height: geometry.height)
         .accessibilityElement(children: .contain)

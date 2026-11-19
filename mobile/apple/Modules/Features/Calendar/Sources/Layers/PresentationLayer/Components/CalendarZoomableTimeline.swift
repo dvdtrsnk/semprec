@@ -20,8 +20,9 @@ struct CalendarZoomableTimeline<Content: View>: View {
 
     // MARK: - State
     @State private var position = ScrollPosition(edge: .top)
-    @State private var offset: CGFloat = 0
-    @State private var viewportTop: CGFloat = 0
+    /// Where the scroll and the visible part are, kept outside SwiftUI's state: they change with every frame of a
+    /// scroll and are read only when a zoom begins.
+    @State private var place = Place()
     @State private var anchor: Anchor?
     /// Set once the person scrolled the day, after which a new header height no longer moves it to its start.
     @State private var hasScrolled = false
@@ -37,8 +38,8 @@ struct CalendarZoomableTimeline<Content: View>: View {
         .scrollEdgeEffectHidden(true, for: .top)
         .scrollPosition($position)
         .scrollDisabled(pinchY != nil)
-        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, new in offset = new })
-        .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { viewportTop = $0 })
+        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, new in place.offset = new })
+        .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { place.viewportTop = $0 })
         .onScrollPhaseChange { _, phase in
             if phase == .interacting { hasScrolled = true }
         }
@@ -55,8 +56,8 @@ struct CalendarZoomableTimeline<Content: View>: View {
                 anchor = nil
                 return
             }
-            let viewportY = pinchY - viewportTop
-            anchor = Anchor(minutes: (offset + viewportY) / geometry.hourHeight * 60, viewportY: viewportY)
+            let viewportY = pinchY - place.viewportTop
+            anchor = Anchor(minutes: (place.offset + viewportY) / geometry.hourHeight * 60, viewportY: viewportY)
         }
         .onChange(of: hourHeight) {
             guard let anchor else { return }
@@ -67,6 +68,11 @@ struct CalendarZoomableTimeline<Content: View>: View {
 
 // MARK: - Private
 private extension CalendarZoomableTimeline {
+
+    final class Place {
+        var offset: CGFloat = 0
+        var viewportTop: CGFloat = 0
+    }
 
     /// The minute of the day between the fingers when a zoom began, and its place in the visible part.
     struct Anchor {

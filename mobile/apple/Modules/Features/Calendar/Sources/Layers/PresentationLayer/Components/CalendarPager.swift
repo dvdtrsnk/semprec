@@ -18,6 +18,8 @@ struct CalendarPager<Page: View>: View {
     // MARK: - State
     /// The key the pages are laid out around; moved when the pager nears either end.
     @State private var anchor: String?
+    /// The pages around the anchor, worked out again only when the anchor moves.
+    @State private var cache = CalendarKeyCache()
     @State private var position = ScrollPosition(idType: String.self)
     /// The page a turn decided on, until `current` arrives at it.
     @State private var turnedTo: String?
@@ -79,11 +81,12 @@ private extension CalendarPager {
 
     static var slide: Animation { .easeOut(duration: 0.18) }
     /// Pages on each side of the anchor; the pager recenters before a swipe can reach the last one.
-    static var pagesAround: Int { 200 }
+    static var pagesAround: Int { 30 }
 
     var keys: [String] {
-        let center = anchor ?? current
-        return (-Self.pagesAround...Self.pagesAround).map { neighbour(center, $0) }
+        cache.keys(around: anchor ?? current) { center in
+            (-Self.pagesAround...Self.pagesAround).map { neighbour(center, $0) }
+        }
     }
 
     /// The finger lifted and the turn settles on `page`, counted from the first laid-out page.

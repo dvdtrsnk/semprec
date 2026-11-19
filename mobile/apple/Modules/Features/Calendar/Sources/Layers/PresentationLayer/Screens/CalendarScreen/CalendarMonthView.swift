@@ -11,6 +11,10 @@ struct CalendarMonthView: View {
     let state: CalendarState
     let viewModel: CalendarViewModel
 
+    /// Where a change of zoom finds the places it moves between.
+    @Environment(\.calendarZoomMeasures)
+    private var zoomMeasures
+
     // MARK: - State
     /// The first day of the month at the top of the scroll.
     @State private var topMonth: String?
@@ -18,6 +22,7 @@ struct CalendarMonthView: View {
     @State private var anchor: String
     /// Set while a finger moves the scroll or it coasts after one; only then does the month at the top select itself.
     @State private var isScrolledByFinger = false
+    @State private var cache = CalendarKeyCache()
 
     // MARK: - Init
     init(state: CalendarState, viewModel: CalendarViewModel) {
@@ -31,21 +36,15 @@ struct CalendarMonthView: View {
     // MARK: - Body
     var body: some View {
         VStack(spacing: 0) {
-            Text(CalendarDates.monthName(topMonth ?? selectedMonth))
-                .font(.largeTitle.bold())
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 4)
-                .accessibilityAddTraits(.isHeader)
-            weekdays
-            Divider()
+            CalendarMonthHeader(title: CalendarDates.monthName(topMonth ?? selectedMonth))
             GeometryReader { proxy in
                 // Six weeks fill the height, so a row's height is known before the first month is laid out.
-                let rowHeight = max((proxy.size.height / 6).rounded(), 44)
+                let rowHeight = Self.rowHeight(gridHeight: proxy.size.height)
+                let items = itemsByDate
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(months, id: \.self) { month in
-                            section(month, rowHeight: rowHeight)
+                            section(month, rowHeight: rowHeight, items: items)
                         }
                     }
                     .scrollTargetLayout()
@@ -62,7 +61,7 @@ struct CalendarMonthView: View {
             .onChange(of: topMonth) { selectTopMonth(force: false) }
             .onChange(of: selectedMonth) { _, month in
                 guard month != topMonth else { return }
-                if abs(offset(of: month)) > Self.monthsAround - 12 { anchor = month }
+                if abs(offset(of: month)) > Self.monthsAround - 4 { anchor = month }
                 withAnimation(.smooth(duration: 0.35)) { topMonth = month }
             }
         }
@@ -71,11 +70,21 @@ struct CalendarMonthView: View {
     }
 }
 
+// MARK: - Layout
+extension CalendarMonthView {
+
+    /// The height of a week: six of them fill the grid below the header.
+    static func rowHeight(gridHeight: CGFloat) -> CGFloat {
+        max((gridHeight / 6).rounded(), 44)
+    }
+}
+
 // MARK: - Subviews
 private extension CalendarMonthView {
 
-    /// Months laid out on each side of the anchor.
-    static var monthsAround: Int { 120 }
+    /// Months laid out on each side of the anchor. The scroll measures every month before the one it shows, so the
+    /// months are few and laid out again around the shown one when it nears either end.
+    static var monthsAround: Int { 12 }
 
     /// The height of a month's short name above its first week.
     static var labelHeight: CGFloat { 34 }
@@ -83,23 +92,18 @@ private extension CalendarMonthView {
     var selectedMonth: String { CalendarDates.firstOfMonth(state.selectedDay) }
 
     var months: [String] {
-        (-Self.monthsAround...Self.monthsAround).map { CalendarDates.shiftedMonth(anchor, by: $0) }
+        cache.keys(around: anchor) { center in
+            (-Self.monthsAround...Self.monthsAround).map { CalendarDates.shiftedMonth(center, by: $0) }
+        }
     }
 
-    var weekdays: some View {
-        HStack(spacing: 0) {
-            ForEach(1...7, id: \.self) { weekday in
-                Text(CalendarDates.weekdayInitial(weekday))
-                    .font(.caption2)
-                    .foregroundStyle(weekday >= 6 ? .tertiary : .secondary)
-                    .frame(maxWidth: .infinity)
-            }
-        }
-        .padding(.vertical, 6)
+    /// The items of the loaded days by their date, looked up once per update rather than once per day.
+    var itemsByDate: [String: [CalendarItem]] {
+        Dictionary(state.days.map { ($0.date, $0.items) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// One month: its short name above the column of its 1st, then its weeks.
-    func section(_ month: String, rowHeight: CGFloat) -> some View {
+    func section(_ month: String, rowHeight: CGFloat, items: [String: [CalendarItem]]) -> some View {
         let weeks = CalendarDates.weeks(ofMonth: month)
         let isCurrent = month == CalendarDates.firstOfMonth(state.today)
         return VStack(spacing: 0) {
@@ -113,30 +117,36 @@ private extension CalendarMonthView {
                 }
             }
             .frame(height: Self.labelHeight, alignment: .bottom)
+            .modifier(CalendarZoomFade())
             .accessibilityHidden(true)
             ForEach(weeks.indices, id: \.self) { index in
-                week(weeks[index], rowHeight: rowHeight)
+                week(weeks[index], index: index, rowHeight: rowHeight, items: items)
             }
         }
     }
 
-    func week(_ dates: [String?], rowHeight: CGFloat) -> some View {
-        HStack(spacing: 0) {
+    func week(_ dates: [String?], index: Int, rowHeight: CGFloat, items: [String: [CalendarItem]]) -> some View {
+        let isKept = dates.contains(state.selectedDay)
+        return HStack(spacing: 0) {
             ForEach(dates.indices, id: \.self) { column in
                 if let date = dates[column] {
-                    cell(date, rowHeight: rowHeight)
+                    cell(date, rowHeight: rowHeight, items: items[date] ?? [])
                 } else {
                     Color.clear.frame(maxWidth: .infinity)
                 }
             }
         }
         .frame(height: rowHeight)
-        .reportsZoomFrame(CalendarMonthRowFrameKey.self, if: dates.contains(state.selectedDay))
+        // The row of the selected day stays whole while the month changes to or from that day.
+        .modifier(CalendarZoomFade(isKept: isKept))
+        .measuresZoomFrame(if: isKept) { frame in
+            zoomMeasures?.monthRow = frame
+            zoomMeasures?.monthRowIndex = index
+        }
     }
 
-    func cell(_ date: String, rowHeight: CGFloat) -> some View {
-        let items = state.days.first { $0.date == date }?.items ?? []
-        return CalendarMonthCell(
+    func cell(_ date: String, rowHeight: CGFloat, items: [CalendarItem]) -> some View {
+        CalendarMonthCell(
             date: date,
             items: items,
             today: state.today,
@@ -160,6 +170,6 @@ private extension CalendarMonthView {
     func selectTopMonth(force: Bool) {
         guard let topMonth, isScrolledByFinger || force, topMonth != selectedMonth else { return }
         viewModel.navigate(.show(zoom: .month, day: CalendarDates.sameDay(as: state.selectedDay, inMonthOf: topMonth)))
-        if force, abs(offset(of: topMonth)) > Self.monthsAround - 12 { anchor = topMonth }
+        if force, abs(offset(of: topMonth)) > Self.monthsAround - 4 { anchor = topMonth }
     }
 }
