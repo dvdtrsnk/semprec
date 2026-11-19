@@ -63,8 +63,6 @@ final class NoteInteraction: ObservableObject {
     /// How far off its block a finger goes before the swipe stops and its menu opens.
     static let offRow: CGFloat = 16
 
-    /// Set once a drag on a block went sideways (`true`) or along the page (`false`).
-    private var sideways: Bool?
     /// The selection a range drag started from, and the block it started on.
     private var rangeStart: (base: Set<String>, blockId: String)?
     /// Where the finger of a hold was when it began.
@@ -80,7 +78,8 @@ final class NoteInteraction: ObservableObject {
         swipe != nil || drag != nil || held != nil || rangeStart != nil || (menu.map { !$0.pinned } ?? false)
     }
 
-    /// A drag on `block` moved by `translation` to `location`.
+    /// A sideways drag on `block` moved by `translation` to `location`; the gesture that reports it has decided it
+    /// is sideways.
     func dragged(
         _ block: NoteEditorBlock,
         by translation: CGSize,
@@ -89,8 +88,6 @@ final class NoteInteraction: ObservableObject {
         editing: Bool = false
     ) {
         guard held == nil else { return }
-        if sideways == nil { sideways = abs(translation.width) > 2 * abs(translation.height) }
-        guard sideways == true else { return }
         if selecting {
             selectRange(from: block.id, to: location)
             return
@@ -119,7 +116,6 @@ final class NoteInteraction: ObservableObject {
     /// block showed what would be.
     func released(_ block: NoteEditorBlock) -> [NoteEditorBlockEdit] {
         defer {
-            sideways = nil
             rangeStart = nil
             swipe = nil
             swipeY = nil
@@ -168,7 +164,6 @@ final class NoteInteraction: ObservableObject {
     /// A gesture on a block ended without the finger lifting from it (the system took it over): whatever it was
     /// doing stops, and nothing is changed. A menu left open for a tap stays.
     func cancelled() {
-        sideways = nil
         rangeStart = nil
         swipe = nil
         swipeY = nil

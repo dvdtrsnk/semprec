@@ -31,9 +31,9 @@ public struct RowGestureActions {
 extension View {
 
     /// A drag that starts sideways. A drag that starts along the page is left to the scroll view around the row, so
-    /// the page still scrolls from the row. On iOS a system pan recognizer decides this before it begins (a SwiftUI
-    /// drag inside a scroll view takes the scroll's touches too); a macOS window scrolls with the wheel, so a drag
-    /// there is a SwiftUI drag.
+    /// the page still scrolls from the row, and one that started sideways keeps the page still to its end. On iOS a
+    /// system pan recognizer decides this before it begins (a SwiftUI drag inside a scroll view takes the scroll's
+    /// touches too); a macOS window scrolls with the wheel, so a drag there is a SwiftUI drag.
     public func sidewaysDrag(in space: String, isEnabled: Bool = true, _ actions: RowGestureActions) -> some View {
         #if os(iOS)
             gesture(SidewaysPan(space: space, isEnabled: isEnabled, actions: actions))
@@ -80,7 +80,9 @@ extension View {
 }
 
 #if os(iOS)
-    /// A pan that begins only when the finger first moves more sideways than along the page.
+    /// A pan that begins only when the finger has gone at least as far sideways as along the page, as SwipeCellKit
+    /// decides it for table cells. The scroll view's own pan waits for this one to fail, so a drag that starts
+    /// sideways never scrolls the page however it moves afterwards, and one that starts along the page scrolls.
     private struct SidewaysPan: UIGestureRecognizerRepresentable {
 
         let space: String
@@ -103,51 +105,64 @@ extension View {
 
         func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
             switch recognizer.state {
-            case .began:
-                stopScrolling(around: recognizer.view)
-                report(recognizer, context: context)
-            case .changed:
-                report(recognizer, context: context)
-            case .ended: actions.ended()
-            case .cancelled, .failed: actions.cancelled()
+            case .began, .changed:
+                if recognizer.state == .began { context.coordinator.holdPage(around: recognizer.view) }
+                // From where the finger touched down: the pan itself counts only from where it began.
+                let start = context.coordinator.touchDown ?? .zero
+                let now = recognizer.location(in: nil)
+                actions.changed(RowGestureValue(
+                    translation: CGSize(width: now.x - start.x, height: now.y - start.y),
+                    location: context.converter.location(in: .named(space))
+                ))
+            case .ended:
+                context.coordinator.releasePage()
+                actions.ended()
+            case .cancelled, .failed:
+                context.coordinator.releasePage()
+                actions.cancelled()
             default: break
             }
         }
-
-        func report(_ recognizer: UIPanGestureRecognizer, context: Context) {
-            let translation = recognizer.translation(in: recognizer.view)
-            actions.changed(RowGestureValue(
-                translation: CGSize(width: translation.x, height: translation.y),
-                location: context.converter.location(in: .named(space))
-            ))
-        }
-
-        /// The scroll view around the row lets go of this touch, so the page stays still under a sideways drag.
-        func stopScrolling(around view: UIView?) {
-            var ancestor = view?.superview
-            while let current = ancestor, !(current is UIScrollView) { ancestor = current.superview }
-            guard let scroll = ancestor as? UIScrollView else { return }
-            scroll.panGestureRecognizer.isEnabled = false
-            scroll.panGestureRecognizer.isEnabled = true
-        }
     }
 
-    /// Lets a pan begin only when it starts more sideways than along the page, alongside the scroll view's own pan,
-    /// which would otherwise take every drag first.
+    /// Decides whether a pan is sideways, keeps where its finger touched down, and makes the scroll view around the
+    /// row wait for it.
     final class SidewaysDelegate: NSObject, UIGestureRecognizerDelegate {
 
+        /// Where the finger touched down, in window coordinates.
+        var touchDown: CGPoint?
+        /// The scroll view kept still while the pan goes on.
+        private weak var heldPage: UIScrollView?
+
+        /// The page around the row does not scroll until the pan ends, wherever the finger goes.
+        func holdPage(around view: UIView?) {
+            var ancestor = view?.superview
+            while let current = ancestor, !(current is UIScrollView) { ancestor = current.superview }
+            heldPage = ancestor as? UIScrollView
+            heldPage?.isScrollEnabled = false
+        }
+
+        func releasePage() {
+            heldPage?.isScrollEnabled = true
+            heldPage = nil
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            touchDown = touch.location(in: nil)
+            return true
+        }
+
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
-            // A finger is never quite level, so the distance it went decides rather than its speed at that moment.
-            let translation = pan.translation(in: pan.view)
-            return abs(translation.x) > abs(translation.y)
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer, let start = touchDown else { return true }
+            let now = pan.location(in: nil)
+            return abs(now.y - start.y) <= abs(now.x - start.x)
         }
 
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
-            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool {
-            otherGestureRecognizer.view is UIScrollView
+            otherGestureRecognizer.view is UIScrollView && otherGestureRecognizer is UIPanGestureRecognizer
         }
     }
 
