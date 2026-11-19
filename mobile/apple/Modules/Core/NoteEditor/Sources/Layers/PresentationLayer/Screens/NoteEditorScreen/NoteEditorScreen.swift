@@ -3,8 +3,8 @@ import DesignSystem
 import SwiftUI
 
 /// The note editor: a full page with its title and meta line, or a light note inside another screen. Blocks follow
-/// each other; a tap below the last adds a line or goes into an empty last one; the bar above the keyboard formats
-/// the edited block. Blocks are swiped, selected and moved by touch (`NoteInteraction`).
+/// each other; a tap below the last adds a line or goes into an empty last one. Blocks are swiped, selected and moved
+/// by touch (`NoteInteraction`).
 struct NoteEditorScreen: View {
 
     // MARK: - Dependencies
@@ -31,7 +31,6 @@ struct NoteEditorScreen: View {
     // MARK: - Body
     var body: some View {
         content
-            .keyboardBar { accessoryBar }
             .safeAreaInset(edge: .bottom) { selectionBar }
             .sheet(isPresented: styledBinding) { styleList }
             .modifier(NoteLinkDialog(draft: $link) { address in saveLink(address) })
@@ -210,21 +209,6 @@ private extension NoteEditorScreen {
             .accessibilityAddTraits(.isButton)
             .accessibilityLabel(Text("noteEditor.tapBelow", bundle: .module))
             .accessibilityIdentifier(NoteEditorIdentifiers.tapBelow)
-    }
-
-    @ViewBuilder var accessoryBar: some View {
-        if let id = viewModel.editingBlockId, let block = state.blocks.first(where: { $0.id == id }) {
-            NoteAccessoryBar(
-                block: block,
-                selection: selection?.blockId == id ? selection : nil,
-                offersSubpages: viewModel.variant.offersSubpages,
-                onTyping: { viewModel.typing($0) },
-                onEdit: { edit($0) },
-                onStyle: { styledIds = [id] },
-                onLink: { openLink() },
-                onDone: { viewModel.endEditing() }
-            )
-        }
     }
 
     @ViewBuilder var selectionBar: some View {

@@ -4,7 +4,6 @@ enum NoteEditorIdentifiers {
     static let editor = "noteEditor"
     static let title = "noteEditor.title"
     static let tapBelow = "noteEditor.tapBelow"
-    static let accessoryBar = "noteEditor.accessoryBar"
     static let done = "noteEditor.done"
     static let linkAddress = "noteEditor.link.address"
     static let selectionBar = "noteEditor.selectionBar"

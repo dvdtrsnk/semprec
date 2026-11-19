@@ -97,86 +97,6 @@
         }
       }
     },
-    "noteEditor.bar.back" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Back"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zpět"
-          }
-        }
-      }
-    },
-    "noteEditor.bar.bold" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bold"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tučně"
-          }
-        }
-      }
-    },
-    "noteEditor.bar.bullet" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bullet"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odrážka"
-          }
-        }
-      }
-    },
-    "noteEditor.bar.code" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Code"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kód"
-          }
-        }
-      }
-    },
-    "noteEditor.bar.format" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Text format"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Formát textu"
-          }
-        }
-      }
-    },
     "noteEditor.bar.indent" : {
       "localizations" : {
         "en" : {
@@ -189,38 +109,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odsadit"
-          }
-        }
-      }
-    },
-    "noteEditor.bar.italic" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Italic"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kurzíva"
-          }
-        }
-      }
-    },
-    "noteEditor.bar.link" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Link"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odkaz"
           }
         }
       }
@@ -253,22 +141,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Styl"
-          }
-        }
-      }
-    },
-    "noteEditor.bar.subpage" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Subpage"
-          }
-        },
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podstránka"
           }
         }
       }
