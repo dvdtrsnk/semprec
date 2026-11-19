@@ -137,6 +137,9 @@ class HomeSDK(
     /** The diary and its subpages. */
     val journal: JournalSDK = JournalSDK(auth.api)
 
+    /** The note editor of pages, Journal periods and texts kept elsewhere. */
+    val noteEditor: NoteEditorSDK = NoteEditorSDK(auth.api)
+
     /** The sleep plans, night exceptions and settings. */
     val sleep: SleepSDK = SleepSDK(auth.api)
 
