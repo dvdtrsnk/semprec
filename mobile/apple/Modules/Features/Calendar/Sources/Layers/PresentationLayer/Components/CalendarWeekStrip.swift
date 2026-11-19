@@ -12,6 +12,10 @@ struct CalendarWeekStrip: View {
     let onPick: (String) -> Void
     let onPage: (Int) -> Void
 
+    /// Where a change of zoom finds the places it moves between.
+    @Environment(\.calendarZoomMeasures)
+    private var zoomMeasures
+
     // MARK: - Body
     var body: some View {
         CalendarPager(
@@ -41,7 +45,7 @@ private extension CalendarWeekStrip {
                             .foregroundStyle(numberStyle(day))
                             .frame(width: 34, height: 34)
                             .background(Circle().fill(circleColor(day)))
-                            .reportsZoomFrame(CalendarStripDayFrameKey.self, if: day == selectedDay)
+                            .measuresZoomFrame(if: day == selectedDay) { zoomMeasures?.stripDay = $0 }
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(CalendarDates.dayTitle(day))

@@ -21,14 +21,9 @@ struct CalendarScreen: View {
     /// Counts the changes of zoom, the layer of the view coming in.
     @State private var zoomLayer = 0.0
     /// The small months of the year view the last time it was laid out, and the size of the zoom space.
-    @State private var monthFrames: [Int: CGRect] = [:]
     @State private var zoomSpaceSize = CGSize.zero
-    /// Where the selected day's digits were last in the day's week strip and in the month's grid.
-    @State private var stripDay: CGRect?
-    @State private var monthDay: CGRect?
-    @State private var monthRow: CGRect?
-    /// Which of the month's six rows `monthRow` was; a day since moved to another week moves the row by as many rows.
-    @State private var monthRowIndex = 0
+    /// Where the views last laid out the places a change of zoom moves between.
+    @State private var zoomMeasures = CalendarZoomMeasures()
 
     // MARK: - Init
     init(viewModel: @autoclosure @escaping () -> CalendarViewModel) {
@@ -122,31 +117,17 @@ private extension CalendarScreen {
             }
             .coordinateSpace(.named(CalendarZoomTransition.space))
             .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { zoomSpaceSize = $0 })
-            .onPreferenceChange(CalendarMonthFramesKey.self) { frames in
-                if !frames.isEmpty { monthFrames = frames }
-            }
-            .onPreferenceChange(CalendarStripDayFrameKey.self) { frame in
-                if frame != .zero { stripDay = frame }
-            }
-            .onPreferenceChange(CalendarMonthDayFrameKey.self) { frame in
-                if frame != .zero { monthDay = frame }
-            }
-            .onPreferenceChange(CalendarMonthRowFrameKey.self) { frame in
-                guard frame != .zero else { return }
-                monthRow = frame
-                monthRowIndex = rowIndex
-            }
+            .environment(\.calendarZoomMeasures, zoomMeasures)
             .onAppear { shownZoom = viewModel.state.zoom }
             .onChange(of: viewModel.state.zoom) { old, new in
                 zoomChanges.current = CalendarZoomTransition(
                     source: old,
                     target: new,
                     month: CalendarDates.month(viewModel.state.selectedDay),
-                    monthFrame: monthFrames[CalendarDates.month(viewModel.state.selectedDay)],
+                    monthFrame: zoomMeasures.monthFrames[CalendarDates.month(viewModel.state.selectedDay)],
                     space: zoomSpaceSize,
-                    stripDay: stripDay,
-                    monthDay: monthDay?.offsetBy(dx: 0, dy: rowMove),
-                    monthRow: monthRow?.offsetBy(dx: 0, dy: rowMove)
+                    stripDay: zoomMeasures.stripDay,
+                    monthDay: zoomMeasures.monthDay?.offsetBy(dx: 0, dy: rowMove)
                 )
                 zoomLayer += 1
                 withAnimation(CalendarZoomTransition.animation) { shownZoom = new }
@@ -205,7 +186,9 @@ private extension CalendarScreen {
     var rowIndex: Int { (viewModel.state.monthGrid.firstIndex(of: viewModel.state.selectedDay) ?? 0) / 7 }
 
     /// How far the selected day's row lies from the row last measured.
-    var rowMove: CGFloat { CGFloat(rowIndex - monthRowIndex) * (monthRow?.height ?? 0) }
+    var rowMove: CGFloat {
+        CGFloat(rowIndex - zoomMeasures.monthRowIndex) * (zoomMeasures.monthRow?.height ?? 0)
+    }
 
     var displayedZoom: CalendarZoom { shownZoom ?? viewModel.state.zoom }
 

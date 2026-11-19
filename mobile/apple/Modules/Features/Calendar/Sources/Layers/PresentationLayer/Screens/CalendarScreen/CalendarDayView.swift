@@ -13,8 +13,8 @@ struct CalendarDayView: View {
     let todayRequests: Int
 
     // MARK: - State
-    @State private var contentFrame = CGRect.zero
-    @State private var viewportFrame = CGRect.zero
+    /// Where the shown day's timeline is, read by gestures and followed by the header's backdrop.
+    @State private var frames = CalendarDayFrames()
     @State private var eventFrames: [String: CGRect] = [:]
     @State private var lastAutoScroll = Date.distantPast
     /// The height of an hour the person pinched the timeline to, kept for the next time.
@@ -134,32 +134,19 @@ private extension CalendarDayView {
         }
     }
 
-    /// What of the shown day's timeline lies under the header and the bars above it, blurred until only its colours
-    /// remain, made a little more vivid and veiled a little, so the header glows with the items it covers without
-    /// showing their shapes, on white in light mode and on black in dark mode. It is a picture only: it takes no
-    /// touches and reports none of its frames.
+    /// The colours of the shown day's timeline that lie under the header and the bars above it, blurred until only the
+    /// colours remain, made a little more vivid and veiled a little, so the header glows with the items it covers
+    /// without showing their shapes, on white in light mode and on black in dark mode. Only the follower inside it
+    /// redraws as the day scrolls. It is a picture only and takes no touches.
     var headerBackdrop: some View {
-        let geometry = CalendarGeometry(hourHeight: CGFloat(hourHeight))
-        return CalendarTimelineView(
-            day: dayState(shownDay),
-            geometry: geometry,
-            isToday: shownDay == state.today,
-            nowMinutes: state.nowMinutes,
-            selectedItemId: nil,
-            drag: nil,
-            handlers: CalendarItemHandlers(
-                tap: { _ in }, select: { _ in }, move: { _, _, _ in }, end: { _, _ in }, toggle: { _ in },
-                openTask: { _ in }
-            ),
-            onResize: { _, _, _ in },
-            onResizeEnd: {},
-            onMenu: { _, _ in },
-            onDeselect: {},
-            onOpenSleep: { _ in },
-            onPaste: nil
+        CalendarTimelineFollower(
+            frames: frames,
+            base: topBarsHeight,
+            content: CalendarTimelineColors(
+                day: dayState(shownDay),
+                geometry: CalendarGeometry(hourHeight: CGFloat(hourHeight))
+            )
         )
-        .frame(height: geometry.height)
-        .offset(y: topBarsHeight + contentFrame.minY)
         .frame(height: topBarsHeight + headerHeight + Self.backdropBleed, alignment: .top)
         .background(.background)
         .clipped()
@@ -170,8 +157,6 @@ private extension CalendarDayView {
         .clipped()
         // It covers the bars above the day view too, so the glass looks the same from the top of the screen down.
         .offset(y: -topBarsHeight)
-        .transformPreference(CalendarContentFrameKey.self) { $0 = .zero }
-        .transformPreference(CalendarEventFramesKey.self) { $0 = [:] }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -235,11 +220,14 @@ private extension CalendarDayView {
                 }
             )
             .onTapGesture { viewModel.gesture(.tapBackground) }
+            // Several pages are laid out at once; only the selected day's page measures the timeline.
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .calendarDay) }, action: { frame in
+                if key == shownDay { frames.update(content: frame) }
+            })
         }
-        .reportsFrame(CalendarViewportFrameKey.self)
-        // Several pages are laid out at once; only the selected day's page measures the timeline.
-        .onPreferenceChange(CalendarContentFrameKey.self) { if key == shownDay { contentFrame = $0 } }
-        .onPreferenceChange(CalendarViewportFrameKey.self) { if key == shownDay { viewportFrame = $0 } }
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .calendarDay) }, action: { frame in
+            if key == shownDay { frames.viewport = frame }
+        })
     }
 }
 
@@ -277,7 +265,7 @@ private extension CalendarDayView {
 
     /// The minutes of the day at a vertical place of the day view; not snapped, the shared layer does that.
     func minutes(at position: CGFloat) -> Int {
-        Int(((position - contentFrame.minY) / CGFloat(hourHeight) * 60).rounded())
+        Int(((position - frames.content.minY) / CGFloat(hourHeight) * 60).rounded())
     }
 
     /// Where the top of the held item is: the finger's place less the distance it grabbed the item below its top.
@@ -298,9 +286,10 @@ private extension CalendarDayView {
     /// Scrolls the timeline an hour when the finger holding an item is near the header or the bottom edge.
     func autoScroll(_ scroll: ScrollViewProxy, day key: String, finger: CGPoint) {
         let edge: CGFloat = 48
+        let viewportFrame = frames.viewport
         guard Date().timeIntervalSince(lastAutoScroll) > 0.3, viewportFrame != .zero else { return }
         let visibleTop = max(viewportFrame.minY, headerHeight)
-        let top = Int(((visibleTop - contentFrame.minY) / CGFloat(hourHeight)).rounded(.down))
+        let top = Int(((visibleTop - frames.content.minY) / CGFloat(hourHeight)).rounded(.down))
         let target: Int
         if finger.y > visibleTop, finger.y < visibleTop + edge {
             target = max(top - 1, 0)

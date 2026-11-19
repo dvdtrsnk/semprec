@@ -16,6 +16,10 @@ struct CalendarMonthCell: View {
     let onOpen: () -> Void
     let onDrop: (String) -> Void
 
+    /// Where a change of zoom finds the places it moves between.
+    @Environment(\.calendarZoomMeasures)
+    private var zoomMeasures
+
     // MARK: - State
     @State private var targeted = false
 
@@ -27,7 +31,7 @@ struct CalendarMonthCell: View {
                 .foregroundStyle(numberStyle)
                 .frame(width: 24, height: 24)
                 .background(Circle().fill(date == today ? Color.red : .clear))
-                .reportsZoomFrame(CalendarMonthDayFrameKey.self, if: selected)
+                .measuresZoomFrame(if: selected) { zoomMeasures?.monthDay = $0 }
             ForEach(shown, id: \.identity) { item in
                 chip(item)
             }

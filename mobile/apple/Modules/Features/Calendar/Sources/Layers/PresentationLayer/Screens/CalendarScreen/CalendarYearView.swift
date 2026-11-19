@@ -9,6 +9,10 @@ struct CalendarYearView: View {
     let state: CalendarState
     let viewModel: CalendarViewModel
 
+    /// Where a change of zoom finds the places it moves between.
+    @Environment(\.calendarZoomMeasures)
+    private var zoomMeasures
+
     // MARK: - State
     /// The year at the top of the scroll.
     @State private var topYear: Int?
@@ -45,7 +49,7 @@ struct CalendarYearView: View {
         .onChange(of: topYear) { selectTopYear(force: false) }
         .onChange(of: selectedYear) { _, year in
             guard year != topYear else { return }
-            if abs(year - anchor) > Self.yearsAround - 3 { anchor = year }
+            if abs(year - anchor) > Self.yearsAround - 2 { anchor = year }
             withAnimation(.smooth(duration: 0.35)) { topYear = year }
         }
         .accessibilityElement(children: .contain)
@@ -56,8 +60,9 @@ struct CalendarYearView: View {
 // MARK: - Subviews
 private extension CalendarYearView {
 
-    /// Years laid out on each side of the anchor.
-    static var yearsAround: Int { 30 }
+    /// Years laid out on each side of the anchor. The scroll measures every year before the one it shows, so the
+    /// years are few and laid out again around the shown one when it nears either end.
+    static var yearsAround: Int { 5 }
 
     var selectedYear: Int { CalendarDates.year(state.selectedDay) }
 
@@ -88,38 +93,17 @@ private extension CalendarYearView {
             Text(CalendarDates.monthShortName(first))
                 .font(.headline)
                 .foregroundStyle(isCurrent(first) ? Color.red : .primary)
-            VStack(spacing: 1) {
-                ForEach(Array(CalendarDates.weeks(ofMonth: first).enumerated()), id: \.offset) { _, week in
-                    HStack(spacing: 0) {
-                        ForEach(week.indices, id: \.self) { column in
-                            day(week[column])
-                        }
-                    }
-                }
-            }
+            CalendarMiniMonthGrid(
+                weeks: CalendarDates.weeks(ofMonth: first).map { week in week.map { $0.map(CalendarDates.dayNumber) } },
+                today: isCurrent(first) ? CalendarDates.dayNumber(state.today) : nil
+            )
         }
         .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
         .contentShape(Rectangle())
-        .background {
-            // The small months of the selected year are where a change to and from a month zooms.
-            if CalendarDates.year(first) == selectedYear {
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: CalendarMonthFramesKey.self,
-                        value: [CalendarDates.month(first): proxy.frame(in: .named(CalendarZoomTransition.space))]
-                    )
-                }
-            }
+        // The small months of the selected year are where a change to and from a month zooms.
+        .measuresZoomFrame(if: CalendarDates.year(first) == selectedYear) { frame in
+            zoomMeasures?.monthFrames[CalendarDates.month(first)] = frame
         }
-    }
-
-    func day(_ date: String?) -> some View {
-        let isToday = date == state.today
-        return Text(date.map { "\(CalendarDates.dayNumber($0))" } ?? "")
-            .font(.system(size: 8.5, weight: isToday ? .bold : .medium))
-            .foregroundStyle(isToday ? AnyShapeStyle(Color.white) : AnyShapeStyle(.primary))
-            .frame(maxWidth: .infinity, minHeight: 13)
-            .background(Circle().fill(isToday ? Color.red : .clear).frame(width: 13, height: 13))
     }
 
     func isCurrent(_ first: String) -> Bool {
@@ -137,6 +121,6 @@ private extension CalendarYearView {
         guard let topYear, isScrolledByFinger || force, topYear != selectedYear else { return }
         let month = String(format: "%04d-%02d-01", topYear, CalendarDates.month(state.selectedDay))
         viewModel.navigate(.show(zoom: .year, day: CalendarDates.sameDay(as: state.selectedDay, inMonthOf: month)))
-        if force, abs(topYear - anchor) > Self.yearsAround - 3 { anchor = topYear }
+        if force, abs(topYear - anchor) > Self.yearsAround - 2 { anchor = topYear }
     }
 }

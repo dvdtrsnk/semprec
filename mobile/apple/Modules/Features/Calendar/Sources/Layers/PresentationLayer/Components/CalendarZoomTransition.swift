@@ -20,8 +20,6 @@ struct CalendarZoomTransition: Equatable {
     /// Where the selected day's digits are in the day's week strip and in the month's grid, when both were laid out.
     let stripDay: CGRect?
     let monthDay: CGRect?
-    /// The month's row of the selected day, which stays whole while the rest of the month fades.
-    let monthRow: CGRect?
 
     // MARK: - Methods
     /// The animation of a change of zoom.
@@ -36,7 +34,7 @@ struct CalendarZoomTransition: Equatable {
         if let shift = weekShift {
             return CalendarZoomEffect(
                 offset: zoom == .month ? -shift : shift,
-                keptRow: zoom == .month ? monthRow ?? .zero : .zero
+                keepsRow: zoom == .month
             )
         }
         guard isBetweenYearAndMonth else { return CalendarZoomEffect() }
