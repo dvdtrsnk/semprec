@@ -115,6 +115,16 @@ private extension CalendarScreen {
                         .zIndex(zoomLayer)
                 }
             }
+            // A hidden month header tells how tall the real one is, so a first change from a day to a month knows
+            // where the month's row of the day lies.
+            .background(alignment: .top) {
+                CalendarMonthHeader(title: CalendarDates.monthName(viewModel.state.selectedDay))
+                    .hidden()
+                    .accessibilityHidden(true)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { height in
+                        zoomMeasures.monthHeaderHeight = height
+                    })
+            }
             .coordinateSpace(.named(CalendarZoomTransition.space))
             .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { zoomSpaceSize = $0 })
             .environment(\.calendarZoomMeasures, zoomMeasures)
@@ -127,7 +137,7 @@ private extension CalendarScreen {
                     monthFrame: zoomMeasures.monthFrames[CalendarDates.month(viewModel.state.selectedDay)],
                     space: zoomSpaceSize,
                     stripDay: zoomMeasures.stripDay,
-                    monthDay: zoomMeasures.monthDay?.offsetBy(dx: 0, dy: rowMove)
+                    monthDay: zoomMeasures.monthDay?.offsetBy(dx: 0, dy: rowMove) ?? estimatedMonthDay
                 )
                 zoomLayer += 1
                 withAnimation(CalendarZoomTransition.animation) { shownZoom = new }
@@ -188,6 +198,15 @@ private extension CalendarScreen {
     /// How far the selected day's row lies from the row last measured.
     var rowMove: CGFloat {
         CGFloat(rowIndex - zoomMeasures.monthRowIndex) * (zoomMeasures.monthRow?.height ?? 0)
+    }
+
+    /// Where the selected day's number lies in a month that was not shown yet: below the header, in its week's row,
+    /// at the top of the cell, with the selected month scrolled to the top as a month view first shows it.
+    var estimatedMonthDay: CGRect? {
+        guard let header = zoomMeasures.monthHeaderHeight, zoomSpaceSize.height > header else { return nil }
+        let rowHeight = CalendarMonthView.rowHeight(gridHeight: zoomSpaceSize.height - header)
+        let top = header + CGFloat(rowIndex) * rowHeight + CalendarMonthCell.digitTop
+        return CGRect(x: 0, y: top, width: CalendarMonthCell.digitSize, height: CalendarMonthCell.digitSize)
     }
 
     var displayedZoom: CalendarZoom { shownZoom ?? viewModel.state.zoom }

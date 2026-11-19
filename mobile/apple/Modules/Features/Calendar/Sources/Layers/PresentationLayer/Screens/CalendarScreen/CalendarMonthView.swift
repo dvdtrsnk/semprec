@@ -36,20 +36,10 @@ struct CalendarMonthView: View {
     // MARK: - Body
     var body: some View {
         VStack(spacing: 0) {
-            Text(CalendarDates.monthName(topMonth ?? selectedMonth))
-                .font(.largeTitle.bold())
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 4)
-                .accessibilityAddTraits(.isHeader)
-                .modifier(CalendarZoomFade())
-            weekdays
-                .modifier(CalendarZoomFade())
-            Divider()
-                .modifier(CalendarZoomFade())
+            CalendarMonthHeader(title: CalendarDates.monthName(topMonth ?? selectedMonth))
             GeometryReader { proxy in
                 // Six weeks fill the height, so a row's height is known before the first month is laid out.
-                let rowHeight = max((proxy.size.height / 6).rounded(), 44)
+                let rowHeight = Self.rowHeight(gridHeight: proxy.size.height)
                 let items = itemsByDate
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -80,6 +70,15 @@ struct CalendarMonthView: View {
     }
 }
 
+// MARK: - Layout
+extension CalendarMonthView {
+
+    /// The height of a week: six of them fill the grid below the header.
+    static func rowHeight(gridHeight: CGFloat) -> CGFloat {
+        max((gridHeight / 6).rounded(), 44)
+    }
+}
+
 // MARK: - Subviews
 private extension CalendarMonthView {
 
@@ -101,18 +100,6 @@ private extension CalendarMonthView {
     /// The items of the loaded days by their date, looked up once per update rather than once per day.
     var itemsByDate: [String: [CalendarItem]] {
         Dictionary(state.days.map { ($0.date, $0.items) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    var weekdays: some View {
-        HStack(spacing: 0) {
-            ForEach(1...7, id: \.self) { weekday in
-                Text(CalendarDates.weekdayInitial(weekday))
-                    .font(.caption2)
-                    .foregroundStyle(weekday >= 6 ? .tertiary : .secondary)
-                    .frame(maxWidth: .infinity)
-            }
-        }
-        .padding(.vertical, 6)
     }
 
     /// One month: its short name above the column of its 1st, then its weeks.

@@ -14,6 +14,8 @@ final class CalendarZoomMeasures {
     /// Which week of its month `monthRow` is.
     var monthRowIndex = 0
     var monthFrames: [Int: CGRect] = [:]
+    /// The height of the month view's header, known from a hidden copy before a month is first shown.
+    var monthHeaderHeight: CGFloat?
 }
 
 // MARK: - Measuring
