@@ -7,7 +7,6 @@ final class JournalViewModelTests: XCTestCase {
 
     // MARK: - Properties
     private let selection = JournalSelection(kind: .day, start: "2026-10-16")
-    private let ref = JournalPageRef(kind: .day, period: "2026-10-16")
 
     private var loading: JournalState {
         JournalState(phase: .loading, selection: selection, today: "2026-10-16")
@@ -49,23 +48,13 @@ final class JournalViewModelTests: XCTestCase {
         viewModel.showAxis(around: "2029-03-10")
         viewModel.openEvent(JournalEvent(id: "e1", title: "Standup"))
         viewModel.openInbox()
-        viewModel.openPage(pageId: "jv1", title: "Trip")
-        viewModel.setText(page: ref, index: 1, text: "x")
-        viewModel.toggleDone(page: ref, index: 2)
-        viewModel.addBlock(page: ref, kind: .bullet, text: "y")
-        viewModel.dismissProblem()
         XCTAssertEqual(model.actions, [
             .retry,
             .select(kind: .month, start: "2026-10-01"),
             .goToday,
             .showAxisAround(day: "2029-03-10"),
             .openEvent(id: "e1"),
-            .openInbox,
-            .openPage(pageId: "jv1", title: "Trip"),
-            .setText(page: ref, index: 1, text: "x"),
-            .toggleDone(page: ref, index: 2),
-            .addBlock(page: ref, kind: .bullet, text: "y"),
-            .dismissProblem
+            .openInbox
         ])
         XCTAssertTrue(router.calls.isEmpty, "Only an effect of the shared ViewModel navigates")
     }
@@ -82,9 +71,8 @@ final class JournalViewModelTests: XCTestCase {
         }
         try await eventually { router.calls.count == 1 }
         model.emit(.openInbox)
-        model.emit(.openPage(pageId: "jv1", title: "Trip"))
-        try await eventually { router.calls.count == 3 }
-        XCTAssertEqual(router.calls, ["event e1", "inbox", "page jv1 Trip"])
+        try await eventually { router.calls.count == 2 }
+        XCTAssertEqual(router.calls, ["event e1", "inbox"])
         observer.cancel()
         await fulfillment(of: [ended], timeout: 5)
     }

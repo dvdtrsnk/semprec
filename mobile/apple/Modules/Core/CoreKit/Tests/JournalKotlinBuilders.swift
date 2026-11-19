@@ -27,15 +27,12 @@ enum JournalKotlin {
     static func state(
         _ phase: SharedSDK.JournalPhase,
         failure: SharedSDK.FailureKind? = nil,
-        saving: Bool = false,
         page: SharedSDK.JournalPageState? = nil,
         weeks: [SharedSDK.JournalWeekState] = [],
         events: [SharedSDK.JournalEventState] = [],
         birthdays: [SharedSDK.JournalBirthdayState] = [],
         inbox: [SharedSDK.JournalInboxState] = [],
-        axis: [SharedSDK.JournalAxisRowState] = [],
-        editProblem: SharedSDK.JournalEditProblem? = nil,
-        editFailure: SharedSDK.FailureKind? = nil
+        axis: [SharedSDK.JournalAxisRowState] = []
     ) -> SharedSDK.JournalState {
         SharedSDK.JournalState(
             phase: phase,
@@ -47,24 +44,7 @@ enum JournalKotlin {
             weeks: weeks,
             events: events,
             birthdays: birthdays,
-            inbox: inbox,
-            saving: saving,
-            editProblem: editProblem,
-            editFailure: editFailure
-        )
-    }
-
-    static func subpageState(
-        _ phase: SharedSDK.JournalPhase,
-        failure: SharedSDK.FailureKind? = nil,
-        blocks: [SharedSDK.JournalBlock] = [],
-        saving: Bool = false,
-        editProblem: SharedSDK.JournalEditProblem? = nil,
-        editFailure: SharedSDK.FailureKind? = nil
-    ) -> SharedSDK.JournalSubpageState {
-        SharedSDK.JournalSubpageState(
-            phase: phase, failure: failure, blocks: blocks, saving: saving,
-            editProblem: editProblem, editFailure: editFailure
+            inbox: inbox
         )
     }
 

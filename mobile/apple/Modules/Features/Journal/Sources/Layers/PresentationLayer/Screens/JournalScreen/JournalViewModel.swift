@@ -53,26 +53,6 @@ final class JournalViewModel: ObservableObject {
     func openInbox() {
         model.send(.openInbox)
     }
-
-    func openPage(pageId: String, title: String) {
-        model.send(.openPage(pageId: pageId, title: title))
-    }
-
-    func setText(page: JournalPageRef, index: Int, text: String) {
-        model.send(.setText(page: page, index: index, text: text))
-    }
-
-    func toggleDone(page: JournalPageRef, index: Int) {
-        model.send(.toggleDone(page: page, index: index))
-    }
-
-    func addBlock(page: JournalPageRef, kind: JournalBlockKind, text: String) {
-        model.send(.addBlock(page: page, kind: kind, text: text))
-    }
-
-    func dismissProblem() {
-        model.send(.dismissProblem)
-    }
 }
 
 // MARK: - Private
@@ -82,7 +62,6 @@ private extension JournalViewModel {
         switch effect {
         case .openEvent(let id): router.showEvent(id: id)
         case .openInbox: router.showInbox()
-        case .openPage(let pageId, let title): router.showPage(itemId: pageId, title: title)
         }
     }
 }

@@ -13,6 +13,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
+/** A block of the summary `GET /api/items/:id/page` answers; the note editor reads only its id. */
+@Serializable
+internal data class NoteBlockDto(val id: String)
+
 /** The summary `GET /api/items/:id/page` answers, the fields the note editor reads. */
 @Serializable
 internal data class NotePageInfoDto(

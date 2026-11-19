@@ -3,14 +3,10 @@ package cz.semprec.app.presentation
 import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarDay
-import cz.semprec.app.domain.EditJournalPage
 import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.JournalPeriodPage
 import cz.semprec.app.domain.JournalPeriodType
 import cz.semprec.app.domain.LoadJournalPeriod
-import cz.semprec.app.domain.PageEdit
-import cz.semprec.app.domain.PageEditOutcome
-import cz.semprec.app.domain.PageTarget
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.journalAxis
 import cz.semprec.app.domain.startOf
@@ -26,24 +22,19 @@ private val FALLBACK_DAY = CalendarDay(2000, 1, 1)
 
 /**
  * The diary: the selected period of the time axis with its note, and for a day its events, birthdays and Inbox. A
- * change of selection supersedes the load before it. A change to a note is read, applied and written by
- * [EditJournalPage] and answers with the page as the server now has it; while one is written further changes are
- * ignored.
+ * change of selection supersedes the load before it. The notes themselves are edited in the note editor.
  */
 class JournalViewModel internal constructor(
     initialDay: String,
     private val loadPeriod: LoadJournalPeriod,
-    private val editPage: EditJournalPage,
     changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<JournalState, JournalAction, JournalEffect>(initialState(initialDay)) {
     private var loadJob: Job? = null
-    private var editJob: Job? = null
-    private var itemIds: Map<JournalPageRef, String> = emptyMap()
 
     init {
         // After a write elsewhere in the window, what the shown period lists around its page (its weeks, events,
-        // birthdays and Inbox) is read again. The page, the axis and an edit in flight stay as they are, and a load
-        // already running is not interrupted.
+        // birthdays and Inbox) is read again. The page and the axis stay as they are, and a load already running is
+        // not interrupted.
         reloadOnChanges(changes) {
             if (state.value.phase == JournalPhase.CONTENT && loadJob?.isActive != true) {
                 val period = state.value.selection.toPeriod()
@@ -74,11 +65,6 @@ class JournalViewModel internal constructor(
             JournalAction.GoToday -> select(JournalPeriodKind.DAY, state.value.today)
             is JournalAction.OpenEvent -> emit(JournalEffect.OpenEvent(action.id))
             JournalAction.OpenInbox -> emit(JournalEffect.OpenInbox)
-            is JournalAction.OpenPage -> emit(JournalEffect.OpenPage(action.pageId, action.title))
-            is JournalAction.SetText -> setText(action)
-            is JournalAction.ToggleDone -> toggleDone(action)
-            is JournalAction.AddBlock -> addBlock(action)
-            JournalAction.DismissProblem -> update { it.copy(editProblem = null, editFailure = null) }
         }
     }
 
@@ -105,8 +91,6 @@ class JournalViewModel internal constructor(
 
     private fun load() {
         loadJob?.cancel()
-        editJob?.cancel()
-        itemIds = emptyMap()
         val selection = state.value.selection
         val period = selection.toPeriod()
         update { loading(it) }
@@ -130,12 +114,6 @@ class JournalViewModel internal constructor(
     private fun show(page: JournalPeriodPage) {
         val ref = JournalPageRef(page.period.type.toKind(), page.period.key)
         val own = if (page.period.type == JournalPeriodType.MONTH) null else pageState(ref, page.markdown)
-        itemIds = buildMap {
-            page.itemId?.let { put(ref, it) }
-            for (week in page.weeks) {
-                week.itemId?.let { put(JournalPageRef(JournalPeriodKind.WEEK, week.period), it) }
-            }
-        }
         update {
             it.copy(
                 phase = JournalPhase.CONTENT,
@@ -149,67 +127,6 @@ class JournalViewModel internal constructor(
                 inbox = page.inbox.map { entry -> entry.toState() },
             )
         }
-    }
-
-    private fun setText(action: JournalAction.SetText) {
-        val block = blockOf(action.page, action.index)
-        val expected = block?.runs?.joinToString("") { it.text }
-        if (block != null && block.kind != JournalBlockKind.PAGE && expected != action.text) {
-            edit(action.page, PageEdit.SetText(action.index, expected.orEmpty(), action.text))
-        }
-    }
-
-    private fun toggleDone(action: JournalAction.ToggleDone) {
-        val block = blockOf(action.page, action.index)
-        if (block != null && block.kind == JournalBlockKind.TODO) {
-            edit(action.page, PageEdit.ToggleDone(action.index, block.runs.joinToString("") { it.text }))
-        }
-    }
-
-    private fun addBlock(action: JournalAction.AddBlock) {
-        if (action.kind != JournalBlockKind.PAGE && action.text.isNotBlank()) {
-            edit(action.page, PageEdit.Append(action.kind.toType(), action.text))
-        }
-    }
-
-    private fun edit(ref: JournalPageRef, change: PageEdit) {
-        if (state.value.saving || state.value.phase != JournalPhase.CONTENT) return
-        update { it.copy(saving = true, editProblem = null, editFailure = null) }
-        val target = PageTarget.OfPeriod(JournalPeriod(ref.kind.toType(), ref.period), itemIds[ref])
-        editJob = viewModelScope.launch {
-            val result = try {
-                editPage(target, change)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                null
-            }
-            ensureActive()
-            when (result) {
-                is RepositoryResult.Content -> applyOutcome(ref, result.value)
-                is RepositoryResult.Failure -> update {
-                    it.copy(saving = false, editProblem = JournalEditProblem.FAILED, editFailure = result.kind)
-                }
-                null -> update { it.copy(saving = false, editProblem = JournalEditProblem.FAILED) }
-            }
-        }
-    }
-
-    private fun applyOutcome(ref: JournalPageRef, outcome: PageEditOutcome) {
-        when (outcome) {
-            is PageEditOutcome.Saved -> {
-                itemIds = itemIds + (ref to outcome.itemId)
-                val written = pageState(ref, outcome.markdown)
-                update { it.withPage(written).copy(saving = false) }
-            }
-            PageEditOutcome.Stale -> update { it.copy(saving = false, editProblem = JournalEditProblem.STALE) }
-        }
-    }
-
-    private fun blockOf(ref: JournalPageRef, index: Int): JournalBlock? {
-        val current = state.value
-        val pages = listOfNotNull(current.page) + current.weeks.map { it.page }
-        return pages.firstOrNull { it.ref == ref }?.blocks?.getOrNull(index)
     }
 }
 
@@ -243,19 +160,10 @@ private fun loading(state: JournalState) = state.copy(
     events = emptyList(),
     birthdays = emptyList(),
     inbox = emptyList(),
-    saving = false,
-    editProblem = null,
-    editFailure = null,
 )
 
 private fun failed(state: JournalState, failure: FailureKind?) =
     loading(state).copy(phase = JournalPhase.ERROR, failure = failure)
-
-/** The state with the page [written] in place of the page of the same period, wherever the screen shows it. */
-private fun JournalState.withPage(written: JournalPageState): JournalState = copy(
-    page = page?.let { if (it.ref == written.ref) written else it },
-    weeks = weeks.map { if (it.page.ref == written.ref) it.copy(page = written) else it },
-)
 
 /** [this] with what [page] lists around its own page: its weeks, events, birthdays and Inbox. */
 private fun JournalState.around(page: JournalPeriodPage) = copy(

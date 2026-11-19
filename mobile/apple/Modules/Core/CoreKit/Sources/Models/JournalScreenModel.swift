@@ -197,8 +197,6 @@ public struct JournalState: Equatable, Sendable {
     public var events: [JournalEvent]
     public var birthdays: [JournalBirthday]
     public var inbox: [JournalInboxItem]
-    public var saving: Bool
-    public var editProblem: JournalEditProblem?
 
     public init(
         phase: JournalPhase,
@@ -209,9 +207,7 @@ public struct JournalState: Equatable, Sendable {
         weeks: [JournalWeek] = [],
         events: [JournalEvent] = [],
         birthdays: [JournalBirthday] = [],
-        inbox: [JournalInboxItem] = [],
-        saving: Bool = false,
-        editProblem: JournalEditProblem? = nil
+        inbox: [JournalInboxItem] = []
     ) {
         self.phase = phase
         self.selection = selection
@@ -222,8 +218,6 @@ public struct JournalState: Equatable, Sendable {
         self.events = events
         self.birthdays = birthdays
         self.inbox = inbox
-        self.saving = saving
-        self.editProblem = editProblem
     }
 }
 
@@ -237,20 +231,12 @@ public enum JournalAction: Equatable, Sendable {
     case showAxisAround(day: String)
     case openEvent(id: String)
     case openInbox
-    case openPage(pageId: String, title: String)
-    /// Replaces the text of block `index` of `page` with the plain `text` typed.
-    case setText(page: JournalPageRef, index: Int, text: String)
-    case toggleDone(page: JournalPageRef, index: Int)
-    case addBlock(page: JournalPageRef, kind: JournalBlockKind, text: String)
-    /// Hides the message about the last failed change.
-    case dismissProblem
 }
 
 public enum JournalEffect: Equatable, Sendable {
 
     case openEvent(id: String)
     case openInbox
-    case openPage(pageId: String, title: String)
 }
 
 public typealias JournalScreenModel = ScreenModel<JournalState, JournalAction, JournalEffect>

@@ -40,6 +40,7 @@ extension AppScene {
     static func detailsView(_ target: ItemDetailsTarget, composition: AppComposition) -> some View {
         TasksScreenFactory.details(
             makeModel: { composition.models.makeItemDetails(kind: target.kind, itemId: target.id) },
+            makeNote: { composition.models.makeNoteEditor(source: $0) },
             openEventPage: eventPageOpener(for: target, composition: composition)
         )
     }

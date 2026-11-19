@@ -1,15 +1,17 @@
 import CoreKit
 import DesignSystem
+import NoteEditor
 import SwiftUI
 
 /// The diary: a time axis of years, quarters, months and days, and below it the note of the selected period. A day
-/// also shows its week, events, Inbox and note; a month lists its weeks. Every change to a note goes to the shared
-/// ViewModel, which writes it through the page API.
+/// also shows its week, events, Inbox and note; a month lists its weeks. Each note is edited in the light note
+/// editor, which writes it itself.
 struct JournalScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: JournalViewModel
     @StateObject private var capture: JournalCaptureViewModel
+    private let notes: JournalNotes
 
     // MARK: - State
     /// How far the page is scrolled, which folds the rows of the axis away.
@@ -22,10 +24,12 @@ struct JournalScreen: View {
     // MARK: - Init
     init(
         viewModel: @autoclosure @escaping () -> JournalViewModel,
-        capture: @autoclosure @escaping () -> JournalCaptureViewModel
+        capture: @autoclosure @escaping () -> JournalCaptureViewModel,
+        notes: JournalNotes
     ) {
         _viewModel = StateObject(wrappedValue: viewModel())
         _capture = StateObject(wrappedValue: capture())
+        self.notes = notes
     }
 
     // MARK: - Body
@@ -54,15 +58,6 @@ struct JournalScreen: View {
                 )
                 .padding(.vertical, Self.axisPadding)
                 .background(.bar)
-            }
-            .safeAreaInset(edge: .bottom) {
-                if let problem = viewModel.state.editProblem {
-                    JournalProblemBanner(
-                        problem: problem,
-                        onReload: viewModel.retry,
-                        onDismiss: viewModel.dismissProblem
-                    )
-                }
             }
             .task { await viewModel.observe() }
     }
@@ -132,7 +127,7 @@ private extension JournalScreen {
         inboxSection
         if let page = viewModel.state.page {
             section(Text("journal.notes", bundle: .module)) {
-                editor(page, placeholder: "journal.placeholder.day")
+                notes.editor(page)
             }
         }
     }
@@ -196,7 +191,7 @@ private extension JournalScreen {
     // MARK: Quarter and year
     @ViewBuilder var periodNote: some View {
         if let page = viewModel.state.page {
-            card { editor(page, placeholder: placeholderKey) }
+            card { notes.editor(page) }
         }
     }
 
@@ -218,7 +213,7 @@ private extension JournalScreen {
             .accessibilityValue(Text(isOpen ? "journal.week.expanded" : "journal.week.collapsed", bundle: .module))
             .accessibilityIdentifier(JournalIdentifiers.weekTogglePrefix + String(week.number))
             if isOpen {
-                editor(week.page, placeholder: "journal.placeholder.week")
+                notes.editor(week.page)
             }
         }
         .padding(Theme.Spacing.medium)
@@ -235,20 +230,6 @@ private extension JournalScreen {
 
     func weekTitle(_ week: JournalWeek) -> String {
         String(format: String(localized: "journal.week", bundle: .module), week.number)
-    }
-
-    func editor(_ page: JournalPage, placeholder: String) -> some View {
-        JournalPageEditor(
-            identifierPrefix: page.ref.period,
-            blocks: page.blocks,
-            placeholder: String(localized: String.LocalizationValue(placeholder), bundle: .module),
-            saving: viewModel.state.saving,
-            hasProblem: viewModel.state.editProblem != nil,
-            onSetText: { viewModel.setText(page: page.ref, index: $0, text: $1) },
-            onToggle: { viewModel.toggleDone(page: page.ref, index: $0) },
-            onAdd: { viewModel.addBlock(page: page.ref, kind: $0, text: $1) },
-            onOpenPage: { viewModel.openPage(pageId: $0, title: $1) }
-        )
     }
 
     func section<Content: View>(
@@ -320,10 +301,6 @@ private extension JournalScreen {
         case .year: return String(localized: "journal.subtitle.year", bundle: .module)
         }
     }
-
-    var placeholderKey: String {
-        selection.kind == .quarter ? "journal.placeholder.quarter" : "journal.placeholder.year"
-    }
 }
 
 private extension JournalWeek {
@@ -340,7 +317,7 @@ private extension JournalWeek {
         JournalScreen(viewModel: JournalViewModel(
             model: ScriptedJournalScreenModel(state: .previewDay),
             router: PreviewJournalRouter()
-        ), capture: .preview)
+        ), capture: .preview, notes: .preview)
     }
 }
 
@@ -351,7 +328,7 @@ private extension JournalWeek {
                 phase: .loading, selection: .previewDay, today: "2026-10-16", axis: .previewAxis
             )),
             router: PreviewJournalRouter()
-        ), capture: .preview)
+        ), capture: .preview, notes: .preview)
     }
 }
 
@@ -362,7 +339,22 @@ private extension JournalWeek {
                 phase: .failure(.unavailable), selection: .previewDay, today: "2026-10-16", axis: .previewAxis
             )),
             router: PreviewJournalRouter()
-        ), capture: .preview)
+        ), capture: .preview, notes: .preview)
+    }
+}
+
+private extension JournalNotes {
+
+    static var preview: JournalNotes {
+        JournalNotes(
+            makeModel: { _ in
+                ScriptedNoteEditorScreenModel(state: NoteEditorState(
+                    phase: .content,
+                    blocks: [NoteEditorBlock(id: "b1", type: .text, runs: [NoteEditorRun("A quiet day")])]
+                ))
+            },
+            router: NoSubpagesRouter()
+        )
     }
 }
 

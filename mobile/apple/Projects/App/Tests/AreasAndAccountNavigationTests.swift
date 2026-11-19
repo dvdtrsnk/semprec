@@ -55,16 +55,15 @@ final class AreasAndAccountNavigationTests: XCTestCase {
 
     // MARK: - Notes
     @MainActor
-    func testASubpageOpensAnotherNotesScreenAndThePageAsTextOpensTheEditorOfTheItem() {
+    func testASubpageOpensAnotherNotesPageWithTheTitlesAboveIt() {
         let context = NavigationContext()
         let calendar = AreaStackSpy()
         context.register(calendar, for: .calendar)
         let router = AppNotesRouter(context: context, tab: .calendar)
-        router.showPage(itemId: "page-1")
-        router.showAsText(itemId: "p1")
+        router.showPage(itemId: "page-1", trail: ["Notes", "Trip"], focusTitle: true)
         XCTAssertEqual(
             calendar.pushed,
-            [.notes(itemId: "page-1", tab: .calendar), .collectionItem(itemId: "p1", databaseKey: nil)]
+            [.notes(itemId: "page-1", tab: .calendar, trail: ["Notes", "Trip"], focusTitle: true)]
         )
     }
 

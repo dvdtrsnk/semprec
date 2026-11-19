@@ -3,7 +3,7 @@ package cz.semprec.app.presentation
 /** The kinds of period the Journal keeps a page for; the time axis shows every kind but [WEEK]. */
 enum class JournalPeriodKind { YEAR, QUARTER, MONTH, WEEK, DAY }
 
-/** Which page an edit is for: the period it belongs to, named by its canonical key (`2026-Q4`, `2026-W42`). */
+/** Which page of the diary: the period it belongs to, named by its canonical key (`2026-Q4`, `2026-W42`). */
 data class JournalPageRef(val kind: JournalPeriodKind, val period: String)
 
 enum class JournalBlockKind { TEXT, H1, H2, H3, BULLET, NUMBER, TODO, QUOTE, PAGE }
@@ -18,7 +18,7 @@ data class JournalRun(
 )
 
 /**
- * One block of a page. [index] is its place in the page, which an edit names. [ordinal] is the number of a
+ * One block of a page. [index] is its place in the page. [ordinal] is the number of a
  * numbered item within its list (1 for the first), 0 for other blocks. For a [JournalBlockKind.PAGE] block the
  * caption is in [runs] and the subpage is [pageId].
  */
@@ -80,12 +80,3 @@ data class JournalAxisCellState(
 )
 
 data class JournalAxisRowState(val kind: JournalPeriodKind, val cells: List<JournalAxisCellState>)
-
-/** Why the last change to a page did not go through. */
-enum class JournalEditProblem {
-    /** The page changed on the server since it was read; reloading shows what is there now. */
-    STALE,
-
-    /** The write failed; [JournalState.editFailure] says how when the reason is an expected one. */
-    FAILED,
-}

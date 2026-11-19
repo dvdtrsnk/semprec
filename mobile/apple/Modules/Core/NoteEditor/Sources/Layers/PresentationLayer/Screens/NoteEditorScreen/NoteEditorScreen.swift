@@ -15,8 +15,6 @@ struct NoteEditorScreen: View {
     @State private var selection: NoteSelection?
     @State private var styledIds: [String]?
     @State private var link: NoteLinkDraft?
-    @State private var renaming: NoteEditorBlock?
-    @State private var renameTitle = ""
     @State private var confirmations = 0
     @State private var hasAppeared = false
 
@@ -33,18 +31,12 @@ struct NoteEditorScreen: View {
             .safeAreaInset(edge: .bottom) { selectionBar }
             .sheet(isPresented: styledBinding) { styleList }
             .modifier(NoteLinkDialog(draft: $link) { address in saveLink(address) })
-            .alert(
-                Text("noteEditor.menu.rename", bundle: .module),
-                isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
-            ) {
-                TextField(text: $renameTitle) { Text("noteEditor.type.page", bundle: .module) }
-                Button { rename() } label: { Text("noteEditor.link.save", bundle: .module) }
-                Button(role: .cancel) {} label: { Text("noteEditor.cancel", bundle: .module) }
-            }
+            .modifier(NotePageTitle(title: viewModel.variant == .full ? state.title : nil))
             .sensoryFeedback(.success, trigger: confirmations)
             .sensoryFeedback(.selection, trigger: interaction.swipe?.step)
             .sensoryFeedback(.selection, trigger: interaction.menu?.highlighted)
             .sensoryFeedback(.impact(weight: .light), trigger: interaction.drag?.target)
+            .sensoryFeedback(.impact(weight: .light), trigger: interaction.holds)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(NoteEditorIdentifiers.editor)
             .task { await viewModel.observe() }
@@ -82,6 +74,9 @@ private extension NoteEditorScreen {
             .onPreferenceChange(NoteRowFramesKey.self) { frames in
                 MainActor.assumeIsolated { interaction.rowFrames = frames }
             }
+            .onGeometryChange(for: CGSize.self, of: \.size) { size in
+                interaction.visible = CGRect(origin: .zero, size: size)
+            }
             .overlay(alignment: .topLeading) { overlays }
         }
     }
@@ -100,6 +95,7 @@ private extension NoteEditorScreen {
             }
             if let problem = state.problem { NoteProblemBanner(problem: problem) { viewModel.send(.dismissProblem) } }
             ForEach(state.blocks) { block in slot(block) }
+                .animation(.snappy(duration: 0.3), value: state.blocks.map(\.id))
             if !interaction.selecting { tapBelow }
         }
         .padding(.horizontal, viewModel.variant == .full ? Theme.Spacing.medium : 0)
@@ -115,26 +111,33 @@ private extension NoteEditorScreen {
             block: block,
             presentation: presentation(of: block),
             isEditing: viewModel.editingBlockId == block.id,
-            onDragged: { interaction.dragged(block, by: $0, at: $1, offersSubpages: viewModel.variant.offersSubpages) },
+            onDragged: {
+                interaction.dragged(
+                    block,
+                    by: $0,
+                    at: $1,
+                    offersSubpages: viewModel.variant.offersSubpages,
+                    editing: viewModel.editingBlockId == block.id
+                )
+            },
             onReleased: { perform(interaction.released(block)) },
-            onIndent: { edit(.shiftIndent(blockIds: [block.id], delta: $0)) },
+            onHold: { interaction.hold(block) },
+            onHoldMoved: { interaction.holdMoved(block, to: $0, in: state.blocks) },
+            onHoldEnded: { perform(interaction.holdEnded(in: state.blocks)) },
             onToggle: { interaction.toggle(block.id) },
             onHandleMoved: { interaction.moved(block, to: $0, in: state.blocks) },
             onHandleDropped: { perform(interaction.dropped(in: state.blocks)) },
             row: { row(block) }
         )
-        .animation(.snappy(duration: 0.2), value: interaction.drag?.target)
     }
 
     func presentation(of block: NoteEditorBlock) -> NoteSlotPresentation {
-        let drag = interaction.drag
-        let isTarget = drag.map { $0.target < state.blocks.count && state.blocks[$0.target].id == block.id } ?? false
-        return NoteSlotPresentation(
+        NoteSlotPresentation(
             selecting: interaction.selecting,
             isSelected: interaction.selected.contains(block.id),
             swipe: interaction.swipe?.blockId == block.id ? interaction.swipe : nil,
-            isDragged: drag?.blockIds.contains(block.id) ?? false,
-            gapAbove: isTarget ? NoteInteraction.optionHeight : 0
+            isDragged: interaction.drag?.blockIds.contains(block.id) ?? false,
+            isHeld: interaction.held == block.id
         )
     }
 
@@ -150,8 +153,7 @@ private extension NoteEditorScreen {
             onKey: { key(key: $0, block: block) },
             onSelection: { selection = $0 },
             onBlur: { blurred(block.id) },
-            onEdit: { edit($0) },
-            onRequest: { request($0, block: block) }
+            onEdit: { edit($0) }
         )
     }
 
@@ -161,16 +163,25 @@ private extension NoteEditorScreen {
                 NoteSwipeMenuView(
                     menu: menu,
                     block: block,
-                    height: proxy.size.height,
+                    width: proxy.size.width,
                     onPick: { perform(interaction.pick($0, for: block)) },
                     onClose: { interaction.closeMenu() }
                 )
             }
         }
         if let drag = interaction.drag, let first = state.blocks.first(where: { $0.id == drag.blockIds.first }) {
-            NoteDragPreview(block: first, count: drag.blockIds.count)
-                .offset(x: Theme.Spacing.large, y: drag.location.y - 22)
+            NoteDropLine(top: dropLineY(drag), inset: viewModel.variant == .full ? Theme.Spacing.medium : 0)
+            NoteDragPreview(block: first, count: drag.blockIds.count, width: interaction.visible.width)
+                .offset(y: drag.location.y - (interaction.rowFrames[first.id]?.height ?? 44) / 2)
         }
+    }
+
+    /// Where the line showing the place the dragged blocks go to is: at the top of the block they go before, or
+    /// under the last block.
+    func dropLineY(_ drag: NoteDragState) -> CGFloat {
+        let blocks = state.blocks
+        if drag.target < blocks.count { return interaction.rowFrames[blocks[drag.target].id]?.minY ?? 0 }
+        return blocks.last.flatMap { interaction.rowFrames[$0.id]?.maxY } ?? 0
     }
 
     var tapBelow: some View {
@@ -259,18 +270,6 @@ private extension NoteEditorScreen {
         }
     }
 
-    func request(_ request: NoteBlockRequest, block: NoteEditorBlock) {
-        switch request {
-        case .style: styledIds = [block.id]
-        case .rename:
-            renameTitle = block.text
-            renaming = block
-        case .select:
-            viewModel.endEditing()
-            interaction.startSelecting(with: block.id)
-        }
-    }
-
     func pick(_ type: NoteEditorBlockType, for ids: [String]) {
         if type == .page, let id = ids.first {
             edit(.makeSubpage(blockId: id))
@@ -295,11 +294,5 @@ private extension NoteEditorScreen {
     func blurred(_ blockId: String) {
         guard viewModel.editingBlockId == blockId, styledIds == nil, link == nil else { return }
         viewModel.endEditing()
-    }
-
-    func rename() {
-        guard let block = renaming else { return }
-        viewModel.typing(.setRuns(blockId: block.id, runs: [NoteEditorRun(renameTitle)]))
-        renaming = nil
     }
 }

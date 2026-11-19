@@ -46,6 +46,8 @@ thresholds with haptics, drag to reorder and the keyboard accessory bar.
 ## Consequences
 
 - The stored block model, its Markdown and every backend route are unchanged.
-- The Journal, Notes and item page editors of the Apple apps are replaced by the shared note editor.
+- The Journal and Notes editors of the Apple apps are replaced by the shared note editor. A task's description and
+  the page content of an Inbox card stay text fields; the light editor writes them as canonical Markdown.
+- The Markdown view and raw editor of a generic item's page in Collections are not changed by this decision.
 - An edit lost to a conflict is lost on the device that wrote second; the page it reloads shows the other write.
 - Android is not affected by this decision.

@@ -2,16 +2,8 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// What a block's context menu asks of the editor beyond a change of blocks.
-enum NoteBlockRequest: Equatable {
-
-    case style
-    case rename
-    case select
-}
-
 /// One block: its marker, its text (edited in place, or shown with a tap that starts editing under the finger) or its
-/// subpage link, indented by its level. A long press shows what can be done with it.
+/// subpage link, indented by its level.
 struct NoteBlockRow: View {
 
     // MARK: - Dependencies
@@ -26,7 +18,6 @@ struct NoteBlockRow: View {
     let onSelection: (NoteSelection) -> Void
     let onBlur: () -> Void
     let onEdit: (NoteEditorBlockEdit) -> Void
-    let onRequest: (NoteBlockRequest) -> Void
 
     // MARK: - Body
     var body: some View {
@@ -42,7 +33,6 @@ struct NoteBlockRow: View {
         .padding(.leading, CGFloat(block.indent) * NoteBlockStyle.indentWidth)
         .padding(.top, NoteBlockStyle.spacing(above: block.type))
         .contentShape(Rectangle())
-        .contextMenu { if !isEditing { menu } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(NoteEditorIdentifiers.block(block.id))
     }
@@ -99,35 +89,5 @@ private extension NoteBlockRow {
         .padding(.horizontal, NoteEditorMetrics.editorInset.width)
         .padding(.vertical, NoteEditorMetrics.editorInset.height)
         .contentShape(Rectangle())
-    }
-
-    @ViewBuilder var menu: some View {
-        if block.type == .page {
-            item("noteEditor.menu.open", "arrow.up.right") { onEdit(.openPage(blockId: block.id)) }
-            item("noteEditor.menu.rename", "pencil") { onRequest(.rename) }
-        } else {
-            item("noteEditor.menu.edit", "character.cursor.ibeam") { onBeginEditing(block.text.utf16.count) }
-        }
-        item("noteEditor.swipe.select", "checkmark.circle") { onRequest(.select) }
-        item("noteEditor.menu.style", "textformat") { onRequest(.style) }
-        item("noteEditor.menu.duplicate", "plus.square.on.square") { onEdit(.duplicate(blockIds: [block.id])) }
-        item(
-            block.type == .page ? "noteEditor.menu.deletePage" : "noteEditor.menu.delete",
-            "trash",
-            role: .destructive
-        ) {
-            onEdit(.delete(blockIds: [block.id]))
-        }
-    }
-
-    func item(
-        _ title: LocalizedStringKey,
-        _ systemImage: String,
-        role: ButtonRole? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(role: role, action: action) {
-            Label { Text(title, bundle: .module) } icon: { Image(systemName: systemImage) }
-        }
     }
 }

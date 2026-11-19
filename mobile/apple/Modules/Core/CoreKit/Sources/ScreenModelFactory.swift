@@ -19,7 +19,6 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     // Journal slice
     /// `initialDay` is the device's current day, `YYYY-MM-DD`; the server's answer names today.
     func makeJournal(initialDay: String) -> any JournalScreenModel
-    func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel
     func makeNoteEditor(source: NoteEditorSource) -> any NoteEditorScreenModel
     /// The capture row of the diary's Inbox.
     func makeInboxCapture() -> any InboxCaptureScreenModel
@@ -46,8 +45,6 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     // MARK: - Areas
     func makeArea(areaId: String) -> any AreaScreenModel
 
-    // MARK: - Notes
-    func makeNotes(itemId: String) -> any NotesScreenModel
     // MARK: - Inbox
     func makeInbox() -> any InboxScreenModel
     // MARK: - Mail

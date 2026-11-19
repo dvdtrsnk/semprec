@@ -16,7 +16,7 @@ final class NotesPageRouter {
 // MARK: - Protocol conformance
 extension NotesPageRouter: NoteEditorRouting {
 
-    func showPage(pageId: String, title: String, focusTitle: Bool) {
-        router.showPage(itemId: pageId)
+    func showPage(pageId: String, title: String, trail: [String], focusTitle: Bool) {
+        router.showPage(itemId: pageId, trail: trail, focusTitle: focusTitle)
     }
 }

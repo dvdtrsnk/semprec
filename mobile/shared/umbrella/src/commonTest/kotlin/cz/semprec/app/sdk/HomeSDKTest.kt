@@ -73,11 +73,8 @@ class HomeSDKTest {
     @Test fun `every diary call returns a new ViewModel`() = runTest(dispatcher) {
         val sdk = HomeSDK()
         val diaries = sdk.journal.journalViewModel("2026-10-16") to sdk.journal.journalViewModel("2026-10-16")
-        val subpages = sdk.journal.journalSubpageViewModel("page-1") to sdk.journal.journalSubpageViewModel("page-1")
         assertNotSame(diaries.first, diaries.second)
-        assertNotSame(subpages.first, subpages.second)
         listOf(diaries.first, diaries.second).forEach { it.close() }
-        listOf(subpages.first, subpages.second).forEach { it.close() }
     }
 
     @Test fun `the diary without a session is unauthorized without a request`() = runTest(dispatcher) {

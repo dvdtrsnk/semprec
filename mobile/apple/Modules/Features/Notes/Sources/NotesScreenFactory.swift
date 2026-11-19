@@ -1,5 +1,4 @@
 import CoreKit
-import DesignSystem
 import NoteEditor
 import SwiftUI
 
@@ -9,22 +8,20 @@ import SwiftUI
 public enum NotesScreenFactory {
 
     // MARK: - Screens
-    /// The page of notes of the item `itemId` (a project, an area or a subpage).
-    public static func notes(
-        itemId: String,
-        makeModel: @escaping @MainActor () -> any NotesScreenModel,
-        router: any NotesRouting
-    ) -> some View {
-        NotesScreen(viewModel: NotesViewModel(itemId: itemId, model: makeModel(), router: router))
-    }
-
-    /// A page in the note editor; a subpage opens as another page.
+    /// A page of notes in the note editor, under the pages of `trail` (outermost first); a subpage opens as another
+    /// page. `focusTitle` puts the cursor into the title of a page just made from an empty block.
     public static func page(
+        trail: [String],
+        focusTitle: Bool,
         makeModel: @escaping @MainActor () -> any NoteEditorScreenModel,
         router: any NotesRouting
     ) -> some View {
-        NoteEditorFactory.editor(variant: .full, makeModel: makeModel, router: NotesPageRouter(router: router))
-            .navigationTitle(Text(verbatim: ""))
-            .inlineNavigationTitle()
+        NoteEditorFactory.editor(
+            variant: .full,
+            trail: trail,
+            focusTitle: focusTitle,
+            makeModel: makeModel,
+            router: NotesPageRouter(router: router)
+        )
     }
 }

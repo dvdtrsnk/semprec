@@ -123,7 +123,7 @@ final class NoteEditorViewModel: ObservableObject {
     private func route(_ effect: NoteEditorEffect) {
         switch effect {
         case .openPage(let pageId, let title, let focusTitle):
-            router.showPage(pageId: pageId, title: title, focusTitle: focusTitle)
+            router.showPage(pageId: pageId, title: title, trail: trail + [state.title], focusTitle: focusTitle)
         case .pendingMark(let mark):
             requests += 1
             pendingMark = (mark, requests)

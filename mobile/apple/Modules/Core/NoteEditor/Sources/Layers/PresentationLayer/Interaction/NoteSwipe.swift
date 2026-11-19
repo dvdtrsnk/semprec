@@ -3,7 +3,8 @@ import DesignSystem
 import SwiftUI
 
 /// What a swipe on a block does at each of its three thresholds. To the right: the list menu, the style menu and
-/// making a subpage; to the left: outdenting, switching a to-do and selecting.
+/// making a subpage; to the left: outdenting, switching a to-do and selecting. While a block is edited a swipe only
+/// indents (right) or outdents (left) it by one level.
 enum NoteSwipeStep: Equatable {
 
     case listMenu
@@ -12,16 +13,21 @@ enum NoteSwipeStep: Equatable {
     case outdent
     case todo
     case select
+    case indent
 
     /// How far a swipe goes to reach the first, second and third threshold.
     static let thresholds: [CGFloat] = [40, 105, 190]
 
-    /// The step a swipe of `translation` reached, if any; the light variant has no third step to the right.
-    static func reached(_ translation: CGFloat, offersSubpages: Bool) -> NoteSwipeStep? {
+    /// The step a swipe of `translation` reached, if any; the light variant has no third step to the right, and an
+    /// edited block has only its indent.
+    static func reached(_ translation: CGFloat, offersSubpages: Bool, editing: Bool = false) -> NoteSwipeStep? {
         let level = thresholds.filter { abs(translation) >= $0 }.count
-        let steps: [NoteSwipeStep] = translation > 0
-            ? (offersSubpages ? [.listMenu, .styleMenu, .subpage] : [.listMenu, .styleMenu])
-            : [.outdent, .todo, .select]
+        let steps: [NoteSwipeStep] = switch (translation > 0, editing) {
+        case (true, true): [.indent]
+        case (false, true): [.outdent]
+        case (true, false): offersSubpages ? [.listMenu, .styleMenu, .subpage] : [.listMenu, .styleMenu]
+        case (false, false): [.outdent, .todo, .select]
+        }
         return level == 0 ? nil : steps[min(level, steps.count) - 1]
     }
 
@@ -29,6 +35,7 @@ enum NoteSwipeStep: Equatable {
     func isValid(for block: NoteEditorBlock) -> Bool {
         switch self {
         case .outdent: block.indent > 0
+        case .indent: block.indent < 5
         case .listMenu, .styleMenu, .todo, .subpage: block.type != .page
         case .select: true
         }
@@ -40,6 +47,7 @@ enum NoteSwipeStep: Equatable {
         case .styleMenu: "noteEditor.bar.style"
         case .subpage: block.type == .page ? "noteEditor.swipe.alreadyPage" : "noteEditor.swipe.page"
         case .outdent: "noteEditor.bar.outdent"
+        case .indent: "noteEditor.bar.indent"
         case .todo: block.type == .todo ? "noteEditor.swipe.untodo" : "noteEditor.bar.todo"
         case .select: "noteEditor.swipe.select"
         }
@@ -51,6 +59,7 @@ enum NoteSwipeStep: Equatable {
         case .styleMenu: "paragraphsign"
         case .subpage: "doc.badge.plus"
         case .outdent: "decrease.indent"
+        case .indent: "increase.indent"
         case .todo: "checkmark.square"
         case .select: "checkmark.circle"
         }
@@ -62,6 +71,7 @@ enum NoteSwipeStep: Equatable {
         case .styleMenu: .indigo
         case .subpage: .purple
         case .outdent: .orange
+        case .indent: .orange
         case .todo: .green
         case .select: .teal
         }

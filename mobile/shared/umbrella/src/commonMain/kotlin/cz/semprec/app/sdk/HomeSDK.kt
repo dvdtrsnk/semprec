@@ -106,9 +106,6 @@ class HomeSDK(
         auth.api.changes,
     )
 
-    /** The notes screen over the page API. */
-    val notes: NotesSDK = NotesSDK.create(auth.api)
-
     /** The Tasks screen. [today] is `yyyy-MM-dd`, asked again whenever the screen groups its tasks. */
     fun tasksViewModel(today: () -> String, start: TasksStart): TasksViewModel =
         workViewModels.tasksViewModel(today, start)
@@ -134,7 +131,7 @@ class HomeSDK(
 
     fun loginViewModel(): LoginViewModel = viewModels.loginViewModel()
 
-    /** The diary and its subpages. */
+    /** The diary. */
     val journal: JournalSDK = JournalSDK(auth.api)
 
     /** The note editor of pages, Journal periods and texts kept elsewhere. */

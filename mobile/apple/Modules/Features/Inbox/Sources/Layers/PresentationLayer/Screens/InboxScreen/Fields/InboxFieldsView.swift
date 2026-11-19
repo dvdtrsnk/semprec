@@ -35,6 +35,8 @@ private extension InboxFieldsView {
         switch field.type {
         case .text:
             InboxTextRow(cardId: card.id, field: field, focus: focus, send: send)
+        case .area where field.key == InboxPageRow.key:
+            InboxPageRow(cardId: card.id, field: field, send: send)
         case .area:
             InboxAreaRow(cardId: card.id, field: field, focus: focus, send: send)
         case .secret:

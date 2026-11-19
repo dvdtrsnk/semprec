@@ -9,12 +9,13 @@ struct NoteSlotPresentation: Equatable {
     var isSelected = false
     var swipe: NoteSwipeState?
     var isDragged = false
-    /// The room left open above the block for blocks being moved there.
-    var gapAbove: CGFloat = 0
+    /// Set while a finger holds the block, before it lifts or moves it.
+    var isHeld = false
 }
 
-/// A block's place in the note: the coloured tray a swipe uncovers with its step, and in selection mode the
-/// selection mark, a tap that selects and the handle that moves. It reports where the block is laid out.
+/// A block's place in the note: the coloured tray a swipe uncovers with its step, a hold that selects the block or,
+/// dragged along the page, moves it, and in selection mode the selection mark, a tap that selects and the handle that
+/// moves. It reports where the block is laid out.
 struct NoteBlockSlot<Row: View>: View {
 
     // MARK: - Dependencies
@@ -23,7 +24,9 @@ struct NoteBlockSlot<Row: View>: View {
     let isEditing: Bool
     let onDragged: (CGSize, CGPoint) -> Void
     let onReleased: () -> Void
-    let onIndent: (Int) -> Void
+    let onHold: () -> Void
+    let onHoldMoved: (CGPoint) -> Void
+    let onHoldEnded: () -> Void
     let onToggle: () -> Void
     let onHandleMoved: (CGPoint) -> Void
     let onHandleDropped: () -> Void
@@ -32,9 +35,6 @@ struct NoteBlockSlot<Row: View>: View {
     // MARK: - Body
     var body: some View {
         VStack(spacing: 0) {
-            if presentation.gapAbove > 0 {
-                Color.clear.frame(height: presentation.gapAbove)
-            }
             ZStack(alignment: (presentation.swipe?.translation ?? 0) >= 0 ? .leading : .trailing) {
                 tray
                 slot.offset(x: presentation.swipe?.translation ?? 0)
@@ -47,15 +47,21 @@ struct NoteBlockSlot<Row: View>: View {
                     )
                 }
             }
+            .scaleEffect(isLifted ? 1.02 : 1)
+            .shadow(color: .black.opacity(presentation.isHeld ? 0.15 : 0), radius: 10, y: 4)
             .opacity(presentation.isDragged ? 0.3 : 1)
-            .simultaneousGesture(swipe, isEnabled: !isEditing)
-            .simultaneousGesture(indent, isEnabled: isEditing)
+            .animation(.snappy(duration: 0.2), value: presentation.isHeld)
+            .simultaneousGesture(swipe)
+            .simultaneousGesture(hold, isEnabled: !isEditing && !presentation.selecting)
         }
     }
 }
 
 // MARK: - Subviews
 private extension NoteBlockSlot {
+
+    /// Held, and not yet moved away from its place.
+    var isLifted: Bool { presentation.isHeld && !presentation.isDragged }
 
     var slot: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.small) {
@@ -117,15 +123,17 @@ private extension NoteBlockSlot {
             .onEnded { _ in onReleased() }
     }
 
-    /// While a block is edited, a swipe only changes its indent by one level.
-    var indent: some Gesture {
-        DragGesture(minimumDistance: 30)
+    /// A finger held still on the block: when it lifts the block is selected; moved along the page it moves the
+    /// block.
+    var hold: some Gesture {
+        LongPressGesture(minimumDuration: 0.4)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(NoteEditorMetrics.space)))
+            .onChanged { value in
+                guard case .second(true, let drag) = value else { return }
+                if let drag { onHoldMoved(drag.location) } else { onHold() }
+            }
             .onEnded { value in
-                let width = value.translation.width
-                guard abs(width) >= NoteSwipeStep.thresholds[0], abs(width) > 2 * abs(value.translation.height) else {
-                    return
-                }
-                onIndent(width > 0 ? 1 : -1)
+                if case .second(true, _) = value { onHoldEnded() }
             }
     }
 }

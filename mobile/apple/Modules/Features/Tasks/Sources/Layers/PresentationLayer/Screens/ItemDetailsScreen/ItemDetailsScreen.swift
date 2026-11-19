@@ -1,24 +1,27 @@
 import CoreKit
 import DesignSystem
+import NoteEditor
 import SwiftUI
 
 /// Podrobnosti: the sheet that edits a task or an event. A task has done, day, times, repeat and a flag; an event
 /// has a place, an all-day switch, start and end and a company derived from its project. Both have a description, a
 /// project, people (attendees), attachments and delete. The pickers push inside the sheet. Text typed into a field
-/// stays in this view until the field is left; the shared ViewModel gets it then.
+/// stays in this view until the field is left; the shared ViewModel gets it then. The description is a note in the
+/// light note editor, kept as Markdown, which hands each change to the shared ViewModel.
 struct ItemDetailsScreen: View {
 
     // MARK: - Dependencies
     @StateObject var viewModel: ItemDetailsViewModel
     /// Opens the page of the event this sheet edits; nil where the app has no such page. The sheet closes first.
     let openEventPage: (@MainActor () -> Void)?
+    /// Makes the model of the description's note editor.
+    let makeNote: @MainActor (NoteEditorSource) -> any NoteEditorScreenModel
 
     // MARK: - State
     @Environment(\.dismiss)
     private var dismiss
     @State var path: [ItemDetailsPage] = []
     @State private var titleDraft: String?
-    @State private var descriptionDraft: String?
     @State private var placeDraft: String?
     @State private var confirmingDelete = false
     @FocusState private var focus: Field?
@@ -30,13 +33,17 @@ struct ItemDetailsScreen: View {
 
     fileprivate enum Field: Hashable {
         case title
-        case description
         case place
     }
 
     // MARK: - Init
-    init(viewModel: @autoclosure @escaping () -> ItemDetailsViewModel, openEventPage: (@MainActor () -> Void)? = nil) {
+    init(
+        viewModel: @autoclosure @escaping () -> ItemDetailsViewModel,
+        makeNote: @escaping @MainActor (NoteEditorSource) -> any NoteEditorScreenModel,
+        openEventPage: (@MainActor () -> Void)? = nil
+    ) {
         _viewModel = StateObject(wrappedValue: viewModel())
+        self.makeNote = makeNote
         self.openEventPage = openEventPage
     }
 
@@ -135,11 +142,12 @@ private extension ItemDetailsScreen {
                 }
                 .focused($focus, equals: .place)
             }
-            TextField(text: text(\.description, draft: $descriptionDraft), axis: .vertical) {
-                Text("details.description", bundle: .module)
-            }
-            .lineLimit(2...8)
-            .focused($focus, equals: .description)
+            NoteEditorFactory.editor(
+                variant: .light,
+                makeModel: { makeNote(.text(state.description)) },
+                router: NoSubpagesRouter(),
+                onTextChanged: { viewModel.send(.setDescription($0)) }
+            )
         }
         .onChange(of: focus) { old, _ in commit(old) }
     }
@@ -260,7 +268,6 @@ private extension ItemDetailsScreen {
     func commit(_ field: Field?) {
         switch field {
         case .title: finish(&titleDraft, current: state.title, ItemDetailsAction.setTitle)
-        case .description: finish(&descriptionDraft, current: state.description, ItemDetailsAction.setDescription)
         case .place: finish(&placeDraft, current: state.place, ItemDetailsAction.setPlace)
         case nil: break
         }
@@ -284,15 +291,31 @@ private extension ItemDetailsScreen {
 
 // MARK: - Preview
 #Preview("Task") {
-    ItemDetailsScreen(viewModel: ItemDetailsViewModel(model: ScriptedItemDetailsScreenModel(state: .previewTask)))
+    ItemDetailsScreen(
+        viewModel: ItemDetailsViewModel(model: ScriptedItemDetailsScreenModel(state: .previewTask)),
+        makeNote: ItemDetailsState.previewNote
+    )
 }
 
 #Preview("Event") {
-    ItemDetailsScreen(viewModel: ItemDetailsViewModel(model: ScriptedItemDetailsScreenModel(state: .previewEvent)))
+    ItemDetailsScreen(
+        viewModel: ItemDetailsViewModel(model: ScriptedItemDetailsScreenModel(state: .previewEvent)),
+        makeNote: ItemDetailsState.previewNote
+    )
 }
 
 // MARK: - Preview content
 extension ItemDetailsState {
+
+    /// The note editor of a preview's description: its text as one block.
+    @MainActor
+    static func previewNote(_ source: NoteEditorSource) -> any NoteEditorScreenModel {
+        let text = if case .text(let markdown) = source { markdown } else { "" }
+        return ScriptedNoteEditorScreenModel(state: NoteEditorState(
+            phase: .content,
+            blocks: [NoteEditorBlock(id: "b1", type: .text, runs: text.isEmpty ? [] : [NoteEditorRun(text)])]
+        ))
+    }
 
     /// The canonical task of the boards, for previews.
     static var previewTask: ItemDetailsState {

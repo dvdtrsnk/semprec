@@ -26,6 +26,9 @@ extension AppJournalRouter: JournalRouting {
     }
 
     func showPage(itemId: String, title: String) {
-        context.push(.journalPage(itemId: itemId, title: title), in: .journal)
+        context.push(
+            .notes(itemId: itemId, tab: .journal, trail: [String(localized: "tab.journal")], focusTitle: false),
+            in: .journal
+        )
     }
 }

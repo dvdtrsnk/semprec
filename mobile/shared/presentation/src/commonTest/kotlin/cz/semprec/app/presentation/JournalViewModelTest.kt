@@ -4,8 +4,6 @@ import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.JournalPeriodType
-import cz.semprec.app.domain.PageDocument
-import cz.semprec.app.domain.PageWrite
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -15,12 +13,10 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val DIARY = "Morning **note**\n\n- [ ] Boots\n\n1. one\n1. two\n\n[Trip](semprec://page/jv1)"
-private val DAY_REF = JournalPageRef(JournalPeriodKind.DAY, "2026-10-16")
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class JournalViewModelTest : MainDispatcherTest() {
@@ -34,7 +30,6 @@ class JournalViewModelTest : MainDispatcherTest() {
 
     private fun withDiary() {
         repository.onPeriod = { content(periodPage(it, markdown = DIARY, itemId = "item-day")) }
-        repository.onPage = { content(PageDocument(DIARY, "\"v1\"")) }
     }
 
     @Test fun `starts loading on the given day with the axis around it`() = runTest(dispatcher) {
@@ -276,185 +271,20 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `opening an event the inbox or a subpage is an effect delivered once`() = runTest(dispatcher) {
+    @Test fun `opening an event or the inbox is an effect delivered once`() = runTest(dispatcher) {
         val vm = loaded()
         vm.onAction(JournalAction.OpenEvent("e1"))
         vm.onAction(JournalAction.OpenInbox)
-        vm.onAction(JournalAction.OpenPage("jv1", "Trip"))
         val received = mutableListOf<JournalEffect>()
         val collector = launch { vm.effects.collect { received += it } }
         runCurrent()
         collector.cancel()
-        assertEquals(
-            listOf(JournalEffect.OpenEvent("e1"), JournalEffect.OpenInbox, JournalEffect.OpenPage("jv1", "Trip")),
-            received,
-        )
+        assertEquals(listOf(JournalEffect.OpenEvent("e1"), JournalEffect.OpenInbox), received)
         val again = mutableListOf<JournalEffect>()
         val second = launch { vm.effects.collect { again += it } }
         runCurrent()
         second.cancel()
         assertEquals(emptyList(), again)
-        vm.close()
-    }
-
-    // --- editing ---
-
-    @Test fun `editing a block writes the page the server has and shows the result`() = runTest(dispatcher) {
-        withDiary()
-        val vm = loaded()
-        vm.onAction(JournalAction.SetText(DAY_REF, 0, "Evening note"))
-        assertTrue(vm.state.value.saving)
-        runCurrent()
-        assertFalse(vm.state.value.saving)
-        val expected = DIARY.replace("Morning **note**", "Evening **note**")
-        assertEquals(Triple("item-day", expected, "\"v1\""), repository.replaced.single())
-        assertEquals(JournalRun("note", true, false, false, null), vm.state.value.page?.blocks?.first()?.runs?.last())
-        assertEquals(emptyList(), repository.ensureCalls)
-        vm.close()
-    }
-
-    @Test fun `the first write to an empty period creates its page`() = runTest(dispatcher) {
-        repository.onPeriod = { content(periodPage(it, markdown = null, itemId = null)) }
-        repository.onPage = { content(PageDocument("", "\"v0\"")) }
-        val vm = loaded()
-        vm.onAction(JournalAction.AddBlock(DAY_REF, JournalBlockKind.TEXT, "First line"))
-        runCurrent()
-        assertEquals(listOf(JournalPeriod(JournalPeriodType.DAY, "2026-10-16")), repository.ensureCalls)
-        assertEquals(Triple("item-new", "First line", "\"v0\""), repository.replaced.single())
-        assertEquals("First line", vm.state.value.page?.blocks?.single()?.runs?.single()?.text)
-        vm.onAction(JournalAction.AddBlock(DAY_REF, JournalBlockKind.BULLET, "Second"))
-        runCurrent()
-        assertEquals(1, repository.ensureCalls.size)
-        assertEquals("item-new", repository.replaced.last().first)
-        vm.close()
-    }
-
-    @Test fun `a week note is edited through its own page`() = runTest(dispatcher) {
-        repository.onPeriod = { content(periodPage(it, weekMarkdown = "Week plan", weekItemId = "item-week")) }
-        repository.onPage = { content(PageDocument("Week plan", "\"w1\"")) }
-        val vm = loaded()
-        val weekRef = JournalPageRef(JournalPeriodKind.WEEK, "2026-W42")
-        vm.onAction(JournalAction.SetText(weekRef, 0, "Week plan 2"))
-        runCurrent()
-        assertEquals("item-week", repository.replaced.single().first)
-        assertEquals("Week plan 2", vm.state.value.weeks.single().page.blocks.single().runs.single().text)
-        vm.close()
-    }
-
-    @Test fun `toggling a todo changes its marker`() = runTest(dispatcher) {
-        withDiary()
-        val vm = loaded()
-        vm.onAction(JournalAction.ToggleDone(DAY_REF, 1))
-        runCurrent()
-        assertTrue(vm.state.value.page?.blocks?.get(1)?.done == true)
-        assertTrue(repository.replaced.single().second.contains("- [x] Boots"))
-        vm.close()
-    }
-
-    @Test fun `changes that cannot apply are ignored without a request`() = runTest(dispatcher) {
-        withDiary()
-        val vm = loaded()
-        vm.onAction(JournalAction.ToggleDone(DAY_REF, 0))
-        vm.onAction(JournalAction.SetText(DAY_REF, 4, "x"))
-        vm.onAction(JournalAction.SetText(DAY_REF, 9, "x"))
-        vm.onAction(JournalAction.SetText(DAY_REF, 0, "Morning note"))
-        vm.onAction(JournalAction.AddBlock(DAY_REF, JournalBlockKind.TEXT, "  "))
-        vm.onAction(JournalAction.AddBlock(DAY_REF, JournalBlockKind.PAGE, "x"))
-        vm.onAction(JournalAction.SetText(JournalPageRef(JournalPeriodKind.DAY, "2020-01-01"), 0, "x"))
-        runCurrent()
-        assertTrue(repository.replaced.isEmpty())
-        assertFalse(vm.state.value.saving)
-        vm.close()
-    }
-
-    @Test fun `a block that changed on the server makes the edit stale`() = runTest(dispatcher) {
-        withDiary()
-        repository.onPage = { content(PageDocument("Somebody else wrote this\n\n- [ ] Boots", "\"v9\"")) }
-        val vm = loaded()
-        vm.onAction(JournalAction.SetText(DAY_REF, 0, "Mine"))
-        runCurrent()
-        assertEquals(JournalEditProblem.STALE, vm.state.value.editProblem)
-        assertFalse(vm.state.value.saving)
-        assertTrue(repository.replaced.isEmpty())
-        vm.onAction(JournalAction.DismissProblem)
-        assertNull(vm.state.value.editProblem)
-        vm.close()
-    }
-
-    @Test fun `a version conflict at write time makes the edit stale and retry reloads`() = runTest(dispatcher) {
-        withDiary()
-        repository.onReplace = { _, _, _ -> content(PageWrite.Conflict) }
-        val vm = loaded()
-        vm.onAction(JournalAction.ToggleDone(DAY_REF, 1))
-        runCurrent()
-        assertEquals(JournalEditProblem.STALE, vm.state.value.editProblem)
-        vm.onAction(JournalAction.Retry)
-        runCurrent()
-        assertNull(vm.state.value.editProblem)
-        assertEquals(2, repository.periodCalls.size)
-        vm.close()
-    }
-
-    @Test fun `a failed write is a problem with its kind`() = runTest(dispatcher) {
-        withDiary()
-        repository.onReplace = { _, _, _ -> journalFailure(FailureKind.REJECTED) }
-        val vm = loaded()
-        vm.onAction(JournalAction.ToggleDone(DAY_REF, 1))
-        runCurrent()
-        assertEquals(JournalEditProblem.FAILED, vm.state.value.editProblem)
-        assertEquals(FailureKind.REJECTED, vm.state.value.editFailure)
-        vm.close()
-    }
-
-    @Test fun `an unexpected exception while writing is a failed problem without a kind`() = runTest(dispatcher) {
-        withDiary()
-        repository.onPage = { error("boom") }
-        val vm = loaded()
-        vm.onAction(JournalAction.ToggleDone(DAY_REF, 1))
-        runCurrent()
-        assertEquals(JournalEditProblem.FAILED, vm.state.value.editProblem)
-        assertNull(vm.state.value.editFailure)
-        vm.close()
-    }
-
-    @Test fun `a second change while one is written is ignored`() = runTest(dispatcher) {
-        withDiary()
-        val gate = CompletableDeferred<Unit>()
-        repository.onReplace = { _, _, _ -> repository.late(gate, content(PageWrite.Saved("\"v2\""))) }
-        val vm = loaded()
-        vm.onAction(JournalAction.ToggleDone(DAY_REF, 1))
-        runCurrent()
-        vm.onAction(JournalAction.SetText(DAY_REF, 0, "Another"))
-        runCurrent()
-        assertEquals(1, repository.replaced.size)
-        gate.complete(Unit)
-        runCurrent()
-        assertFalse(vm.state.value.saving)
-        vm.close()
-    }
-
-    @Test fun `a change while the page is loading is ignored`() = runTest(dispatcher) {
-        withDiary()
-        val vm = viewModel()
-        vm.onAction(JournalAction.AddBlock(DAY_REF, JournalBlockKind.TEXT, "too early"))
-        runCurrent()
-        assertTrue(repository.replaced.isEmpty())
-        vm.close()
-    }
-
-    @Test fun `selecting another period drops a write in flight`() = runTest(dispatcher) {
-        withDiary()
-        val gate = CompletableDeferred<Unit>()
-        repository.onReplace = { _, _, _ -> repository.late(gate, content(PageWrite.Saved("\"v2\""))) }
-        val vm = loaded()
-        vm.onAction(JournalAction.ToggleDone(DAY_REF, 1))
-        runCurrent()
-        vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
-        runCurrent()
-        gate.complete(Unit)
-        runCurrent()
-        assertFalse(vm.state.value.saving)
-        assertEquals("2026-10-17", vm.state.value.selection.start)
         vm.close()
     }
 

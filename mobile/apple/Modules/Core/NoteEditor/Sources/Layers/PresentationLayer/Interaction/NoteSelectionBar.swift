@@ -82,16 +82,21 @@ private extension NoteSelectionBar {
     }
 }
 
-/// The blocks being moved, under the finger: the first one's text and, for several, how many there are.
+/// The blocks being moved, lifted under the finger: the first one as it looks in the note and, for several, how many
+/// there are.
 struct NoteDragPreview: View {
 
     let block: NoteEditorBlock
     let count: Int
+    /// The width of the space the blocks are shown in.
+    let width: CGFloat
 
     var body: some View {
-        HStack(spacing: Theme.Spacing.small) {
-            Image(systemName: "line.3.horizontal").foregroundStyle(Theme.Colors.secondaryText)
-            Text(verbatim: block.text.isEmpty ? " " : block.text).lineLimit(1)
+        HStack(alignment: .top, spacing: Theme.Spacing.small) {
+            Text(NoteText.attributed(block.runs))
+                .font(NoteBlockStyle.font(block.type))
+                .foregroundStyle(NoteBlockStyle.color(block))
+                .frame(maxWidth: .infinity, alignment: .leading)
             if count > 1 {
                 Text(verbatim: "\(count)")
                     .font(.caption.weight(.bold))
@@ -102,10 +107,29 @@ struct NoteDragPreview: View {
             }
         }
         .padding(.horizontal, Theme.Spacing.medium)
-        .frame(height: 44)
-        .frame(maxWidth: 300, alignment: .leading)
-        .background(.regularMaterial, in: .rect(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+        .padding(.vertical, Theme.Spacing.small)
+        .frame(width: max(width - 2 * Theme.Spacing.small, 0), alignment: .leading)
+        .background(Theme.Colors.card, in: .rect(cornerRadius: 8))
+        .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+        .offset(x: Theme.Spacing.small)
         .allowsHitTesting(false)
+    }
+}
+
+/// The line showing where blocks being moved go when the finger lifts.
+struct NoteDropLine: View {
+
+    /// Where in the blocks' space the line is.
+    let top: CGFloat
+    let inset: CGFloat
+
+    var body: some View {
+        Capsule()
+            .fill(Theme.Colors.accent)
+            .frame(height: 3)
+            .padding(.horizontal, inset)
+            .offset(y: top - 1.5)
+            .animation(.snappy(duration: 0.2), value: top)
+            .allowsHitTesting(false)
     }
 }

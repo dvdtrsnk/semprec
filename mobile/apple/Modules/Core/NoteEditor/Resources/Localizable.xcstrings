@@ -1,723 +1,643 @@
 {
-  "sourceLanguage": "en",
-  "strings": {
-    "failure.invalidData": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Server poslal data, kterým aplikace nerozumí."
+  "sourceLanguage" : "en",
+  "strings" : {
+    "failure.invalidData" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server poslal data, kterým aplikace nerozumí."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The server sent something the app cannot read."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The server sent something the app cannot read."
           }
         }
       }
     },
-    "failure.notFound": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tohle už neexistuje."
+    "failure.notFound" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tohle už neexistuje."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "That no longer exists."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That no longer exists."
           }
         }
       }
     },
-    "failure.rejected": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Server to nepřijal."
+    "failure.rejected" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server to nepřijal."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The server did not accept that."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The server did not accept that."
           }
         }
       }
     },
-    "failure.unauthorized": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Jsi odhlášený. Přihlas se znovu."
+    "failure.unauthorized" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jsi odhlášený. Přihlas se znovu."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "You are signed out. Sign in again."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "You are signed out. Sign in again."
           }
         }
       }
     },
-    "failure.unavailable": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Server není dostupný. Zkus to za chvíli znovu."
+    "failure.unavailable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server není dostupný. Zkus to za chvíli znovu."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The server could not be reached. Try again in a moment."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The server could not be reached. Try again in a moment."
           }
         }
       }
     },
-    "failure.unexpected": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Něco se nepovedlo."
+    "failure.unexpected" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Něco se nepovedlo."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Something went wrong."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Something went wrong."
           }
         }
       }
     },
-    "noteEditor.bar.back": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Back"
+    "noteEditor.bar.back" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Back"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zpět"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zpět"
           }
         }
       }
     },
-    "noteEditor.bar.bold": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bold"
+    "noteEditor.bar.bold" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bold"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tučně"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tučně"
           }
         }
       }
     },
-    "noteEditor.bar.bullet": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bullet"
+    "noteEditor.bar.bullet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bullet"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odrážka"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrážka"
           }
         }
       }
     },
-    "noteEditor.bar.code": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Code"
+    "noteEditor.bar.code" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Code"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kód"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kód"
           }
         }
       }
     },
-    "noteEditor.bar.format": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text format"
+    "noteEditor.bar.format" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text format"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Formát textu"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formát textu"
           }
         }
       }
     },
-    "noteEditor.bar.indent": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Indent"
+    "noteEditor.bar.indent" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indent"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odsadit"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odsadit"
           }
         }
       }
     },
-    "noteEditor.bar.italic": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Italic"
+    "noteEditor.bar.italic" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Italic"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kurzíva"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kurzíva"
           }
         }
       }
     },
-    "noteEditor.bar.link": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Link"
+    "noteEditor.bar.link" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Link"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odkaz"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odkaz"
           }
         }
       }
     },
-    "noteEditor.bar.outdent": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Outdent"
+    "noteEditor.bar.outdent" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Outdent"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Předsadit"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Předsadit"
           }
         }
       }
     },
-    "noteEditor.bar.style": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Style"
+    "noteEditor.bar.style" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Style"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Styl"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Styl"
           }
         }
       }
     },
-    "noteEditor.bar.subpage": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Subpage"
+    "noteEditor.bar.subpage" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Subpage"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Podstránka"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podstránka"
           }
         }
       }
     },
-    "noteEditor.bar.todo": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "To-do"
+    "noteEditor.bar.todo" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To-do"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Úkol"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Úkol"
           }
         }
       }
     },
-    "noteEditor.cancel": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancel"
+    "noteEditor.cancel" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zrušit"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zrušit"
           }
         }
       }
     },
-    "noteEditor.dismiss": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dismiss"
+    "noteEditor.dismiss" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dismiss"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zavřít"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zavřít"
           }
         }
       }
     },
-    "noteEditor.done": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Done"
+    "noteEditor.done" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hotovo"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hotovo"
           }
         }
       }
     },
-    "noteEditor.hint.editing": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Swipe left and right to change the indent"
+    "noteEditor.hint.editing" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Swipe left and right to change the indent"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Swipe vlevo a vpravo mění odsazení"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Swipe vlevo a vpravo mění odsazení"
           }
         }
       }
     },
-    "noteEditor.hint.selecting": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tap to select · drag sideways, then up or down for more · ≡ moves"
+    "noteEditor.hint.selecting" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap to select · drag sideways, then up or down for more · ≡ moves"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Klepnutím vybereš · táhni do strany a pak nahoru či dolů pro víc · ≡ přesune"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klepnutím vybereš · táhni do strany a pak nahoru či dolů pro víc · ≡ přesune"
           }
         }
       }
     },
-    "noteEditor.link.add": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add link"
+    "noteEditor.link.add" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add link"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Přidat odkaz"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat odkaz"
           }
         }
       }
     },
-    "noteEditor.link.edit": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edit link"
+    "noteEditor.link.edit" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit link"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Upravit odkaz"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Upravit odkaz"
           }
         }
       }
     },
-    "noteEditor.link.remove": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Remove"
+    "noteEditor.link.remove" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odebrat"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odebrat"
           }
         }
       }
     },
-    "noteEditor.link.save": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save"
+    "noteEditor.link.save" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Uložit"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uložit"
           }
         }
       }
     },
-    "noteEditor.menu.delete": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Delete"
+    "noteEditor.menu.delete" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Smazat"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smazat"
           }
         }
       }
     },
-    "noteEditor.menu.deletePage": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Delete page"
+    "noteEditor.menu.duplicate" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Duplicate"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Smazat stránku"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Duplikovat"
           }
         }
       }
     },
-    "noteEditor.menu.duplicate": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Duplicate"
+    "noteEditor.menu.list.bullet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bullet"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Duplikovat"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrážka"
           }
         }
       }
     },
-    "noteEditor.menu.edit": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edit"
+    "noteEditor.menu.list.bullet2" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bullet, level 2"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Upravit"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrážka 2. úrovně"
           }
         }
       }
     },
-    "noteEditor.menu.list.bullet": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bullet"
+    "noteEditor.menu.list.bullet3" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bullet, level 3"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odrážka"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrážka 3. úrovně"
           }
         }
       }
     },
-    "noteEditor.menu.list.bullet2": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bullet, level 2"
+    "noteEditor.menu.list.none" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "None"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odrážka 2. úrovně"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Žádná"
           }
         }
       }
     },
-    "noteEditor.menu.list.bullet3": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bullet, level 3"
+    "noteEditor.menu.list.number" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Numbered list"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odrážka 3. úrovně"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Číslovaný seznam"
           }
         }
       }
     },
-    "noteEditor.menu.list.none": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "None"
+    "noteEditor.menu.list.number2" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Numbered, level 2"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Žádná"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Číslovaný 2. úrovně"
           }
         }
       }
     },
-    "noteEditor.menu.list.number": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Numbered list"
+    "noteEditor.meta.edited" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edited %1$@ · %2$@"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Číslovaný seznam"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Upraveno %1$@ · %2$@"
           }
         }
       }
     },
-    "noteEditor.menu.list.number2": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Numbered, level 2"
+    "noteEditor.meta.justNow" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "just now"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Číslovaný 2. úrovně"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "právě teď"
           }
         }
       }
     },
-    "noteEditor.menu.open": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open"
-          }
-        },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Otevřít"
-          }
-        }
-      }
-    },
-    "noteEditor.menu.rename": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rename"
-          }
-        },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Přejmenovat"
-          }
-        }
-      }
-    },
-    "noteEditor.menu.style": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Style…"
-          }
-        },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Styl…"
-          }
-        }
-      }
-    },
-    "noteEditor.meta.edited": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edited %1$@ · %2$@"
-          }
-        },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Upraveno %1$@ · %2$@"
-          }
-        }
-      }
-    },
-    "noteEditor.meta.justNow": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "just now"
-          }
-        },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "právě teď"
-          }
-        }
-      }
-    },
-    "noteEditor.meta.words": {
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld word"
+    "noteEditor.meta.words" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld word"
                 }
               },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld words"
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld words"
                 }
               }
             }
           }
         },
-        "cs": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld slovo"
+        "cs" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld slovo"
                 }
               },
-              "few": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld slova"
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld slova"
                 }
               },
-              "many": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld slova"
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld slova"
                 }
               },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld slov"
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld slov"
                 }
               }
             }
@@ -725,131 +645,131 @@
         }
       }
     },
-    "noteEditor.page.untitled": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Untitled"
+    "noteEditor.page.untitled" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Untitled"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bez názvu"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez názvu"
           }
         }
       }
     },
-    "noteEditor.placeholder.empty": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Start writing…"
+    "noteEditor.placeholder.empty" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start writing…"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Začni psát…"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Začni psát…"
           }
         }
       }
     },
-    "noteEditor.placeholder.text": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Write, or try - , 1. , [] , # , >"
+    "noteEditor.placeholder.text" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Write, or try - , 1. , [] , # , >"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Piš, nebo zkus - , 1. , [] , # , >"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Piš, nebo zkus - , 1. , [] , # , >"
           }
         }
       }
     },
-    "noteEditor.problem.reloaded": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The page changed elsewhere and was loaded again."
+    "noteEditor.problem.reloaded" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The page changed elsewhere and was loaded again."
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Stránka se mezitím změnila jinde a načetla se znovu."
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stránka se mezitím změnila jinde a načetla se znovu."
           }
         }
       }
     },
-    "noteEditor.selection.all": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Select all"
+    "noteEditor.selection.all" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select all"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vybrat vše"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vybrat vše"
           }
         }
       }
     },
-    "noteEditor.selection.count": {
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld block"
+    "noteEditor.selection.count" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld block"
                 }
               },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld blocks"
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld blocks"
                 }
               }
             }
           }
         },
-        "cs": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld blok"
+        "cs" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld blok"
                 }
               },
-              "few": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld bloky"
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld bloky"
                 }
               },
-              "many": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld bloku"
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld bloku"
                 }
               },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld bloků"
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld bloků"
                 }
               }
             }
@@ -857,374 +777,374 @@
         }
       }
     },
-    "noteEditor.selection.move": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move"
+    "noteEditor.selection.move" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Move"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Přesunout"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přesunout"
           }
         }
       }
     },
-    "noteEditor.selection.none": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Deselect all"
+    "noteEditor.selection.none" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deselect all"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zrušit výběr"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zrušit výběr"
           }
         }
       }
     },
-    "noteEditor.style.blocks": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Blocks"
+    "noteEditor.style.blocks" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Blocks"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bloky"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bloky"
           }
         }
       }
     },
-    "noteEditor.style.lists": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lists"
+    "noteEditor.style.lists" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lists"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Seznamy"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Seznamy"
           }
         }
       }
     },
-    "noteEditor.style.text": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text"
+    "noteEditor.style.text" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text"
           }
         }
       }
     },
-    "noteEditor.swipe.alreadyPage": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Already a page"
+    "noteEditor.swipe.alreadyPage" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Already a page"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Už je stránka"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Už je stránka"
           }
         }
       }
     },
-    "noteEditor.swipe.list": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bullet"
+    "noteEditor.swipe.list" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bullet"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odrážka"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odrážka"
           }
         }
       }
     },
-    "noteEditor.swipe.page": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Page"
+    "noteEditor.swipe.page" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Page"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Stránka"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stránka"
           }
         }
       }
     },
-    "noteEditor.swipe.select": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Select"
+    "noteEditor.swipe.select" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vybrat"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vybrat"
           }
         }
       }
     },
-    "noteEditor.swipe.untodo": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Not a to-do"
+    "noteEditor.swipe.untodo" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not a to-do"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zrušit úkol"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zrušit úkol"
           }
         }
       }
     },
-    "noteEditor.tapBelow": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add a line"
+    "noteEditor.tapBelow" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add a line"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Přidat řádek"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat řádek"
           }
         }
       }
     },
-    "noteEditor.title.placeholder": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Title"
+    "noteEditor.title.placeholder" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Title"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Název"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Název"
           }
         }
       }
     },
-    "noteEditor.todo.done": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Done"
+    "noteEditor.todo.done" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hotovo"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hotovo"
           }
         }
       }
     },
-    "noteEditor.todo.open": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Not done"
+    "noteEditor.todo.open" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not done"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nehotovo"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nehotovo"
           }
         }
       }
     },
-    "noteEditor.type.bullet": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "List"
+    "noteEditor.type.bullet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "List"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Seznam"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Seznam"
           }
         }
       }
     },
-    "noteEditor.type.heading1": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Heading 1"
+    "noteEditor.type.heading1" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Heading 1"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nadpis 1"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nadpis 1"
           }
         }
       }
     },
-    "noteEditor.type.heading2": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Heading 2"
+    "noteEditor.type.heading2" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Heading 2"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nadpis 2"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nadpis 2"
           }
         }
       }
     },
-    "noteEditor.type.heading3": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Heading 3"
+    "noteEditor.type.heading3" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Heading 3"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nadpis 3"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nadpis 3"
           }
         }
       }
     },
-    "noteEditor.type.number": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Numbered list"
+    "noteEditor.type.number" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Numbered list"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Číslovaný seznam"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Číslovaný seznam"
           }
         }
       }
     },
-    "noteEditor.type.page": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Page title"
+    "noteEditor.type.page" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Page title"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Název stránky"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Název stránky"
           }
         }
       }
     },
-    "noteEditor.type.quote": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quote"
+    "noteEditor.type.quote" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quote"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Citace"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Citace"
           }
         }
       }
     },
-    "noteEditor.type.text": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text"
+    "noteEditor.type.text" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text"
           }
         }
       }
     },
-    "noteEditor.type.todo": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "To-do"
+    "noteEditor.type.todo" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To-do"
           }
         },
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Úkol"
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Úkol"
           }
         }
       }
     }
   },
-  "version": "1.0"
+  "version" : "1.0"
 }

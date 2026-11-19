@@ -15,10 +15,13 @@ final class JournalNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testASubpageIsPushedWithItsTitle() {
+    func testASubpageOpensInTheNoteEditorUnderTheJournal() {
         let (router, stack) = makeRouter()
         router.showPage(itemId: "p1", title: "Notes")
-        XCTAssertEqual(stack.pushed, [.journalPage(itemId: "p1", title: "Notes")])
+        XCTAssertEqual(
+            stack.pushed,
+            [.notes(itemId: "p1", tab: .journal, trail: [String(localized: "tab.journal")], focusTitle: false)]
+        )
         XCTAssertTrue(stack.sheets.isEmpty)
     }
 
