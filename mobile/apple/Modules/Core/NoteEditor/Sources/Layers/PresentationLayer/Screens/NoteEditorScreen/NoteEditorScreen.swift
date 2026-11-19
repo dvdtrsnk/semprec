@@ -1,3 +1,4 @@
+import Combine
 import CoreKit
 import DesignSystem
 import SwiftUI
@@ -10,6 +11,7 @@ struct NoteEditorScreen: View {
     // MARK: - Dependencies
     @StateObject private var viewModel: NoteEditorViewModel
     @StateObject private var interaction = NoteInteraction()
+    private let focus: NoteEditorFocus?
 
     // MARK: - State
     @State private var selection: NoteSelection?
@@ -20,8 +22,9 @@ struct NoteEditorScreen: View {
 
     // MARK: - Init
     /// `viewModel` runs once per editor, when SwiftUI creates the state object.
-    init(viewModel: @autoclosure @escaping () -> NoteEditorViewModel) {
+    init(viewModel: @autoclosure @escaping () -> NoteEditorViewModel, focus: NoteEditorFocus? = nil) {
         _viewModel = StateObject(wrappedValue: viewModel())
+        self.focus = focus
     }
 
     // MARK: - Body
@@ -46,6 +49,10 @@ struct NoteEditorScreen: View {
                 hasAppeared = true
             }
             .onDisappear { viewModel.endEditing() }
+            .onChange(of: viewModel.editingBlockId) { _, id in focus?.isEditing = id != nil }
+            .onReceive(focus?.$endRequests.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
+                viewModel.endEditing()
+            }
     }
 }
 
@@ -124,6 +131,7 @@ private extension NoteEditorScreen {
             onHold: { interaction.hold(block) },
             onHoldMoved: { interaction.holdMoved(block, to: $0, in: state.blocks) },
             onHoldEnded: { perform(interaction.holdEnded(in: state.blocks)) },
+            onCancelled: { interaction.cancelled() },
             onToggle: { interaction.toggle(block.id) },
             onHandleMoved: { interaction.moved(block, to: $0, in: state.blocks) },
             onHandleDropped: { perform(interaction.dropped(in: state.blocks)) },

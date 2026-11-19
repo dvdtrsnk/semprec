@@ -11,6 +11,8 @@ struct JournalScreen: View {
     // MARK: - Dependencies
     @StateObject private var viewModel: JournalViewModel
     @StateObject private var capture: JournalCaptureViewModel
+    /// Set while a note is edited: the diary then shows only the page, and a check ends the editing.
+    @StateObject private var noteFocus = NoteEditorFocus()
     private let notes: JournalNotes
 
     // MARK: - State
@@ -41,30 +43,43 @@ struct JournalScreen: View {
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button(action: viewModel.goToday) { Text("journal.today", bundle: .module) }
-                        .accessibilityIdentifier(JournalIdentifiers.today)
+                    if noteFocus.isEditing {
+                        Button { noteFocus.end() } label: { Image(systemName: "checkmark") }
+                            .buttonStyle(.glassProminent)
+                            .accessibilityLabel(Text("journal.notes.done", bundle: .module))
+                            .accessibilityIdentifier(JournalIdentifiers.notesDone)
+                    } else {
+                        Button(action: viewModel.goToday) { Text("journal.today", bundle: .module) }
+                            .accessibilityIdentifier(JournalIdentifiers.today)
+                    }
                 }
             }
             // An overlay, not a safe area inset: the axis folds while the page scrolls, and an inset that changed with
             // it would move the page and the fold again, without end. The page keeps room for the whole axis instead.
             .overlay(alignment: .top) {
-                JournalAxisView(
-                    rows: viewModel.state.axis,
-                    selectionStart: viewModel.state.selection.start,
-                    selectionKind: viewModel.state.selection.kind,
-                    scrolled: scrolled,
-                    onSelect: viewModel.select,
-                    onMove: viewModel.showAxis(around:)
-                )
-                .padding(.vertical, Self.axisPadding)
-                .background(.bar)
+                if !noteFocus.isEditing { axis }
             }
+            .animation(.snappy(duration: 0.3), value: noteFocus.isEditing)
             .task { await viewModel.observe() }
     }
 }
 
 // MARK: - Subviews
 private extension JournalScreen {
+
+    var axis: some View {
+        JournalAxisView(
+            rows: viewModel.state.axis,
+            selectionStart: viewModel.state.selection.start,
+            selectionKind: viewModel.state.selection.kind,
+            scrolled: scrolled,
+            onSelect: viewModel.select,
+            onMove: viewModel.showAxis(around:)
+        )
+        .padding(.vertical, Self.axisPadding)
+        .background(.bar)
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
 
     @ViewBuilder var content: some View {
         switch viewModel.state.phase {
@@ -94,7 +109,7 @@ private extension JournalScreen {
             .contentMargins(.bottom, bottomRoom, for: .scrollContent)
             .contentMargins(
                 .top,
-                JournalAxisView.height(of: viewModel.state.axis) + Self.axisPadding * 2,
+                noteFocus.isEditing ? 0 : JournalAxisView.height(of: viewModel.state.axis) + Self.axisPadding * 2,
                 for: .scrollContent
             )
             .onScrollGeometryChange(
@@ -127,7 +142,7 @@ private extension JournalScreen {
         inboxSection
         if let page = viewModel.state.page {
             section(Text("journal.notes", bundle: .module)) {
-                notes.editor(page)
+                notes.editor(page, focus: noteFocus)
             }
         }
     }
@@ -191,7 +206,7 @@ private extension JournalScreen {
     // MARK: Quarter and year
     @ViewBuilder var periodNote: some View {
         if let page = viewModel.state.page {
-            card { notes.editor(page) }
+            card { notes.editor(page, focus: noteFocus) }
         }
     }
 
@@ -213,7 +228,7 @@ private extension JournalScreen {
             .accessibilityValue(Text(isOpen ? "journal.week.expanded" : "journal.week.collapsed", bundle: .module))
             .accessibilityIdentifier(JournalIdentifiers.weekTogglePrefix + String(week.number))
             if isOpen {
-                notes.editor(week.page)
+                notes.editor(week.page, focus: noteFocus)
             }
         }
         .padding(Theme.Spacing.medium)

@@ -22,14 +22,16 @@ struct NoteBlockSlot<Row: View>: View {
     let block: NoteEditorBlock
     let presentation: NoteSlotPresentation
     let isEditing: Bool
-    let onDragged: (CGSize, CGPoint) -> Void
-    let onReleased: () -> Void
-    let onHold: () -> Void
-    let onHoldMoved: (CGPoint) -> Void
-    let onHoldEnded: () -> Void
-    let onToggle: () -> Void
-    let onHandleMoved: (CGPoint) -> Void
-    let onHandleDropped: () -> Void
+    let onDragged: @MainActor (CGSize, CGPoint) -> Void
+    let onReleased: @MainActor () -> Void
+    let onHold: @MainActor () -> Void
+    let onHoldMoved: @MainActor (CGPoint) -> Void
+    let onHoldEnded: @MainActor () -> Void
+    /// A gesture on the block stopped without its end: the system took it over.
+    let onCancelled: @MainActor () -> Void
+    let onToggle: @MainActor () -> Void
+    let onHandleMoved: @MainActor (CGPoint) -> Void
+    let onHandleDropped: @MainActor () -> Void
     @ViewBuilder let row: () -> Row
 
     // MARK: - Body
@@ -51,8 +53,20 @@ struct NoteBlockSlot<Row: View>: View {
             .shadow(color: .black.opacity(presentation.isHeld ? 0.15 : 0), radius: 10, y: 4)
             .opacity(presentation.isDragged ? 0.3 : 1)
             .animation(.snappy(duration: 0.2), value: presentation.isHeld)
-            .simultaneousGesture(swipe)
-            .simultaneousGesture(hold, isEnabled: !isEditing && !presentation.selecting)
+            .sidewaysDrag(
+                in: NoteEditorMetrics.space,
+                RowGestureActions(
+                    changed: { onDragged($0.translation, $0.location) },
+                    ended: onReleased,
+                    cancelled: onCancelled
+                )
+            )
+            .holdAndDrag(
+                in: NoteEditorMetrics.space,
+                isEnabled: !isEditing && !presentation.selecting,
+                began: onHold,
+                RowGestureActions(changed: { onHoldMoved($0.location) }, ended: onHoldEnded, cancelled: onCancelled)
+            )
         }
     }
 }
@@ -115,26 +129,6 @@ private extension NoteBlockSlot {
             )
             .accessibilityLabel(Text("noteEditor.selection.move", bundle: .module))
             .accessibilityIdentifier(NoteEditorIdentifiers.handle(block.id))
-    }
-
-    var swipe: some Gesture {
-        DragGesture(minimumDistance: 12, coordinateSpace: .named(NoteEditorMetrics.space))
-            .onChanged { onDragged($0.translation, $0.location) }
-            .onEnded { _ in onReleased() }
-    }
-
-    /// A finger held still on the block: when it lifts the block is selected; moved along the page it moves the
-    /// block.
-    var hold: some Gesture {
-        LongPressGesture(minimumDuration: 0.4)
-            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(NoteEditorMetrics.space)))
-            .onChanged { value in
-                guard case .second(true, let drag) = value else { return }
-                if let drag { onHoldMoved(drag.location) } else { onHold() }
-            }
-            .onEnded { value in
-                if case .second(true, _) = value { onHoldEnded() }
-            }
     }
 }
 

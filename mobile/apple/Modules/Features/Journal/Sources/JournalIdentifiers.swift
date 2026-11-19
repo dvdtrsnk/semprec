@@ -4,6 +4,7 @@ enum JournalIdentifiers {
 
     static let screen = "journal.screen"
     static let today = "journal.today"
+    static let notesDone = "journal.notes.done"
     /// Followed by the start day of the period, e.g. `journal.axis.day.2026-10-16`.
     static let axisCellPrefix = "journal.axis."
     /// Followed by the ISO week number.

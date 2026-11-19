@@ -69,6 +69,11 @@ final class NoteInteraction: ObservableObject {
     private var rangeStart: (base: Set<String>, blockId: String)?
     /// Where the finger of a hold was when it began.
     private var holdStart: CGPoint?
+    /// Where along the page a swipe went sideways; the menu opens when the finger leaves the band around it.
+    private var swipeY: CGFloat?
+
+    /// How far above and below the place a swipe started the finger stays on the block.
+    static let band: CGFloat = 22
 
     // MARK: - Methods
     var isActive: Bool {
@@ -90,7 +95,16 @@ final class NoteInteraction: ObservableObject {
             selectRange(from: block.id, to: location)
             return
         }
-        let row = rowFrames[block.id] ?? .zero
+        let blockFrame = rowFrames[block.id] ?? .zero
+        if swipeY == nil { swipeY = location.y }
+        // A long block is left along the page near where the swipe started, not at its far edges.
+        let center = swipeY ?? location.y
+        let row = CGRect(
+            x: blockFrame.minX,
+            y: max(center - Self.band, blockFrame.minY),
+            width: blockFrame.width,
+            height: min(center + Self.band, blockFrame.maxY) - max(center - Self.band, blockFrame.minY)
+        )
         let offRow = location.y > row.maxY + Self.offRow || location.y < row.minY - Self.offRow
         if offRow, let swipe, let kind = swipe.step?.menu, swipe.step?.isValid(for: block) == true {
             choose(from: kind, for: block.id, row: row, at: location)
@@ -108,6 +122,7 @@ final class NoteInteraction: ObservableObject {
             sideways = nil
             rangeStart = nil
             swipe = nil
+            swipeY = nil
         }
         guard held == nil else { return [] }
         if let open = menu, !open.pinned {
@@ -148,6 +163,19 @@ final class NoteInteraction: ObservableObject {
 
     func closeMenu() {
         menu = nil
+    }
+
+    /// A gesture on a block ended without the finger lifting from it (the system took it over): whatever it was
+    /// doing stops, and nothing is changed. A menu left open for a tap stays.
+    func cancelled() {
+        sideways = nil
+        rangeStart = nil
+        swipe = nil
+        swipeY = nil
+        held = nil
+        holdStart = nil
+        drag = nil
+        if menu?.pinned == false { menu = nil }
     }
 
     // MARK: - Holding

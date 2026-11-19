@@ -107,6 +107,27 @@ final class NoteInteractionTests: XCTestCase {
         XCTAssertEqual(interaction.released(blocks[2]), [])
     }
 
+    func testAGestureTheSystemTookOverStopsWithoutAChangeAndLeavesThePageScrollable() {
+        let interaction = interaction()
+        drag(interaction, blocks[2], 60, 0, at: 100)
+        drag(interaction, blocks[2], 60, 60, at: 160)
+        XCTAssertTrue(interaction.isActive)
+        interaction.cancelled()
+        XCTAssertNil(interaction.swipe)
+        XCTAssertNil(interaction.menu)
+        XCTAssertFalse(interaction.isActive)
+    }
+
+    func testOnALongBlockTheMenuOpensNearWhereTheSwipeStarted() {
+        let interaction = NoteInteraction()
+        let long = NoteEditorBlock(id: "l", type: .text)
+        interaction.rowFrames = ["l": CGRect(x: 0, y: 0, width: 300, height: 400)]
+        drag(interaction, long, 60, 0, at: 100)
+        drag(interaction, long, 60, 40, at: 140)
+        XCTAssertEqual(interaction.menu?.row.maxY, 122)
+        XCTAssertEqual(interaction.menu?.highlighted, 0)
+    }
+
     func testAnEditedBlockSwipedShowsAndChangesOnlyItsIndent() {
         let interaction = interaction()
         interaction.dragged(blocks[1], by: CGSize(width: 50, height: 0), at: .zero, offersSubpages: true, editing: true)

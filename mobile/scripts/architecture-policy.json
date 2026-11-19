@@ -1063,6 +1063,7 @@
       "apple": "JournalFeature",
       "keys": [],
       "appleOnly": [
+        "journal.notes.done",
         "failure.invalidData",
         "failure.notFound",
         "failure.rejected",

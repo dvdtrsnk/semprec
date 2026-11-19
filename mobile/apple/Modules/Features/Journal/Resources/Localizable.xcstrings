@@ -545,6 +545,22 @@
         }
       }
     },
+    "journal.notes.done" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done editing"
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hotovo"
+          }
+        }
+      }
+    },
     "journal.problem.dismiss" : {
       "localizations" : {
         "cs" : {

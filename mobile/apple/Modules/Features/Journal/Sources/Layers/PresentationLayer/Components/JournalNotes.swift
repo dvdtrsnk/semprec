@@ -9,10 +9,12 @@ struct JournalNotes {
     let makeModel: @MainActor (NoteEditorSource) -> any NoteEditorScreenModel
     let router: any NoteEditorRouting
 
-    /// The note of `page`'s period; a note of another period is another editor.
-    func editor(_ page: JournalPage) -> some View {
+    /// The note of `page`'s period; a note of another period is another editor. `focus` tells the diary while the
+    /// note is edited.
+    func editor(_ page: JournalPage, focus: NoteEditorFocus) -> some View {
         NoteEditorFactory.editor(
             variant: .light,
+            focus: focus,
             makeModel: { makeModel(.journal(kind: page.ref.kind, period: page.ref.period)) },
             router: router
         )
