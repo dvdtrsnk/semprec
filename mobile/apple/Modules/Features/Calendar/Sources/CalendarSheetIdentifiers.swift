@@ -51,4 +51,11 @@ enum CalendarSheetIdentifiers {
     static let newItemPlace = "newItem.place"
     static let newItemCalendar = "newItem.calendar"
     static let newItemFailure = "newItem.failure"
+    static let newItemSchedule = "newItem.schedule"
+    static let newItemRepeat = "newItem.repeat"
+    static let newItemAlert = "newItem.alert"
+    static let newItemTravel = "newItem.travel"
+    static let newItemNotes = "newItem.notes"
+    static let newItemUrl = "newItem.url"
+    static let newItemFlag = "newItem.flag"
 }

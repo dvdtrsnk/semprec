@@ -86,11 +86,32 @@ class CreateCalendarItem(private val repository: CalendarRepository) {
     suspend operator fun invoke(draft: NewCalendarItem): RepositoryResult<String> {
         val kindFits = draft.kind == CalendarEntryKind.EVENT || draft.kind == CalendarEntryKind.TASK
         val title = draft.title.trim()
-        return if (kindFits && title.isNotEmpty()) {
-            repository.create(draft.copy(title = title, place = draft.place?.trim()?.ifEmpty { null }))
+        return if (kindFits && title.isNotEmpty() && draft.optionsFit()) {
+            repository.create(
+                draft.copy(
+                    title = title,
+                    place = draft.place?.trim()?.ifEmpty { null },
+                    notes = draft.notes?.trim()?.ifEmpty { null },
+                    url = draft.url?.trim()?.ifEmpty { null },
+                ),
+            )
         } else {
             RepositoryResult.Failure(FailureKind.REJECTED)
         }
+    }
+}
+
+/**
+ * An alert and a travel time are an event's, within the server's ranges; an event repeats at most monthly. A task
+ * has neither.
+ */
+private fun NewCalendarItem.optionsFit(): Boolean {
+    val alertFits = alertMinutes == null || alertMinutes in 0..NewCalendarItem.MAX_ALERT_MINUTES
+    val travelFits = travelMinutes == null || travelMinutes in NewCalendarItem.TRAVEL_MINUTES
+    return if (kind == CalendarEntryKind.EVENT) {
+        alertFits && travelFits && repeat != CalendarRepeat.YEARLY
+    } else {
+        alertMinutes == null && travelMinutes == null
     }
 }
 

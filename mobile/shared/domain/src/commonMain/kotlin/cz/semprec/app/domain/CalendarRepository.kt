@@ -79,14 +79,38 @@ interface CalendarRepository {
     suspend fun create(draft: NewCalendarItem): RepositoryResult<String>
 }
 
-/** What a person types into the new item sheet; the schedule is judged by the server's write rules. */
+/**
+ * What a person types into the new item sheet; the schedule is judged by the server's write rules. [place],
+ * [calendarId], [url], [alertMinutes] and [travelMinutes] belong to an event, [flagged] to a task; [notes] and
+ * [repeat] to both. [alertMinutes] counts the minutes before the start, [travelMinutes] the travel before it.
+ */
 data class NewCalendarItem(
     val kind: CalendarEntryKind,
     val title: String,
     val schedule: CalendarSchedule,
     val place: String?,
     val calendarId: String?,
-)
+    val notes: String? = null,
+    val url: String? = null,
+    val alertMinutes: Int? = null,
+    val travelMinutes: Int? = null,
+    val repeat: CalendarRepeat = CalendarRepeat.NEVER,
+    val flagged: Boolean = false,
+) {
+    companion object {
+        /** An alert comes at most four weeks before the start, as the server allows. */
+        const val MAX_ALERT_MINUTES = 40_320
+
+        /** Travel takes at least a minute and at most a day. */
+        val TRAVEL_MINUTES = 1..1_440
+    }
+}
+
+/**
+ * How a new item repeats from its day: every day, Monday to Friday, on its weekday, on its day of the month, or on
+ * its date every year. An event does not repeat yearly.
+ */
+enum class CalendarRepeat { NEVER, DAILY, WEEKDAYS, WEEKLY, MONTHLY, YEARLY }
 
 /** The calendars list, the colours, visibility and notifications of each, and adding and removing calendars. */
 interface CalendarCatalogRepository {

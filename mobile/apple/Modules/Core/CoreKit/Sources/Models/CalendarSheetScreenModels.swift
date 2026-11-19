@@ -322,7 +322,9 @@ public struct NewItemState: Equatable, Sendable {
 }
 
 /// The values of the new item form. The times are minutes of the day and are read only when `timed` (the end only
-/// when `hasEnd`); an empty `calendarId` is the default calendar.
+/// when `hasEnd`); an empty `calendarId` is the default calendar and an empty `endDay` an event that ends on `day`.
+/// `url`, `alertMinutes` (before the start) and `travelMinutes` belong to an event, `flagged` to a task; `nil` is no
+/// alert or no travel time.
 public struct NewItemDraft: Equatable, Sendable {
 
     public let kind: NewItemKind
@@ -334,6 +336,13 @@ public struct NewItemDraft: Equatable, Sendable {
     public let endMinutes: Int
     public let place: String
     public let calendarId: String
+    public let endDay: String
+    public let notes: String
+    public let url: String
+    public let alertMinutes: Int?
+    public let travelMinutes: Int?
+    public let repeatRule: NewItemRepeat
+    public let flagged: Bool
 
     public init(
         kind: NewItemKind,
@@ -344,7 +353,14 @@ public struct NewItemDraft: Equatable, Sendable {
         hasEnd: Bool,
         endMinutes: Int,
         place: String,
-        calendarId: String
+        calendarId: String,
+        endDay: String = "",
+        notes: String = "",
+        url: String = "",
+        alertMinutes: Int? = nil,
+        travelMinutes: Int? = nil,
+        repeatRule: NewItemRepeat = .never,
+        flagged: Bool = false
     ) {
         self.kind = kind
         self.title = title
@@ -355,6 +371,13 @@ public struct NewItemDraft: Equatable, Sendable {
         self.endMinutes = endMinutes
         self.place = place
         self.calendarId = calendarId
+        self.endDay = endDay
+        self.notes = notes
+        self.url = url
+        self.alertMinutes = alertMinutes
+        self.travelMinutes = travelMinutes
+        self.repeatRule = repeatRule
+        self.flagged = flagged
     }
 }
 

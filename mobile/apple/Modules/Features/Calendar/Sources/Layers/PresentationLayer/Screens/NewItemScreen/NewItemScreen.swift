@@ -83,7 +83,8 @@ private extension NewItemScreen {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .fixedSize()
+            // As wide as the system Calendar draws its Event and Reminder switch between the two buttons.
+            .frame(width: 230)
             .disabled(saving)
             .accessibilityIdentifier(CalendarSheetIdentifiers.newItemKind)
         }

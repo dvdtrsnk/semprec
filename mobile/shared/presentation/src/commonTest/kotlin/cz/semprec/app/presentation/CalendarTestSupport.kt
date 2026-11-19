@@ -107,6 +107,7 @@ class FakeCalendarRepository(val changes: CalendarChanges = CalendarChanges()) :
         { _, _ -> RepositoryResult.Content(window(emptyList())) }
     var writeResult: RepositoryResult<Unit> = RepositoryResult.Content(Unit)
     var lastSchedule: CalendarSchedule? = null
+    var lastDraft: NewCalendarItem? = null
 
     override suspend fun window(from: CalendarDay, to: CalendarDay): RepositoryResult<CalendarWindow> {
         calls += "window"
@@ -145,6 +146,7 @@ class FakeCalendarRepository(val changes: CalendarChanges = CalendarChanges()) :
     }
 
     override suspend fun create(draft: NewCalendarItem): RepositoryResult<String> {
+        lastDraft = draft
         calls += "create ${draft.kind} ${draft.title} ${draft.schedule.date} ${draft.schedule.timeFrom} " +
             "${draft.schedule.timeTo} ${draft.place} ${draft.calendarId}"
         return when (val result = write()) {

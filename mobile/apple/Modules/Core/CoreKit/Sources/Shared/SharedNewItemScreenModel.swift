@@ -65,7 +65,14 @@ extension SharedNewItemScreenModel {
                 hasEnd: draft.hasEnd,
                 endMinutes: Int32(draft.endMinutes),
                 place: draft.place,
-                calendarId: draft.calendarId
+                calendarId: draft.calendarId,
+                endDay: draft.endDay,
+                notes: draft.notes,
+                url: draft.url,
+                alertMinutes: draft.alertMinutes.map { KotlinInt(int: Int32($0)) },
+                travelMinutes: draft.travelMinutes.map { KotlinInt(int: Int32($0)) },
+                repeat: draft.repeatRule.shared,
+                flagged: draft.flagged
             )
         case .edited: SharedSDK.NewItemActionEdited.shared
         }
