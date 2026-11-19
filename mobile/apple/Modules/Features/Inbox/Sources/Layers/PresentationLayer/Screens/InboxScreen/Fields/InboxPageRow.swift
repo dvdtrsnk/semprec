@@ -7,6 +7,9 @@ extension EnvironmentValues {
 
     /// Makes the model of the note editor of a card's page content; `nil` where the Inbox is shown without one.
     @Entry var makeInboxNote: (@MainActor @Sendable (NoteEditorSource) -> any NoteEditorScreenModel)?
+
+    /// The focus of the Inbox's note editors, which its toolbar watches.
+    @Entry var inboxNoteFocus: NoteEditorFocus?
 }
 
 /// The page content a card writes, in the light note editor under its label; each change goes to the card's field
@@ -20,6 +23,8 @@ struct InboxPageRow: View {
 
     @Environment(\.makeInboxNote)
     private var makeNote
+    @Environment(\.inboxNoteFocus)
+    private var focus
 
     /// The key of the field that holds the content a card writes into a page.
     static let key = "markdown"
@@ -39,6 +44,7 @@ struct InboxPageRow: View {
             if let makeNote {
                 NoteEditorFactory.editor(
                     variant: .light,
+                    focus: focus,
                     makeModel: { makeNote(.text(field.text)) },
                     router: NoSubpagesRouter(),
                     onTextChanged: { send(.setText(cardId: cardId, key: field.key, text: $0)) }

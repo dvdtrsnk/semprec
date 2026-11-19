@@ -24,6 +24,8 @@ struct ItemDetailsScreen: View {
     @State private var titleDraft: String?
     @State private var placeDraft: String?
     @State private var confirmingDelete = false
+    /// Set while the description is edited or its blocks are selected; the check then ends that instead of closing.
+    @StateObject private var descriptionFocus = NoteEditorFocus()
     @FocusState private var focus: Field?
 
     enum TimeField: Hashable {
@@ -60,8 +62,12 @@ struct ItemDetailsScreen: View {
                             .accessibilityIdentifier(TasksIdentifiers.detailsClose)
                     }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button { dismiss() } label: { Image(systemName: "checkmark") }
-                            .accessibilityLabel(Text("details.done", bundle: .module))
+                        if descriptionFocus.isActive {
+                            NoteFocusDoneButton(focus: descriptionFocus)
+                        } else {
+                            Button { dismiss() } label: { Image(systemName: "checkmark") }
+                                .accessibilityLabel(Text("details.done", bundle: .module))
+                        }
                     }
                 }
                 .navigationDestination(for: ItemDetailsPage.self) { page in pageView(page) }
@@ -144,6 +150,7 @@ private extension ItemDetailsScreen {
             }
             NoteEditorFactory.editor(
                 variant: .light,
+                focus: descriptionFocus,
                 makeModel: { makeNote(.text(state.description)) },
                 router: NoSubpagesRouter(),
                 onTextChanged: { viewModel.send(.setDescription($0)) }

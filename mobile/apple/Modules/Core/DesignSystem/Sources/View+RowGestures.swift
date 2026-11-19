@@ -132,14 +132,15 @@ extension View {
         }
     }
 
-    /// Lets a pan begin only when it starts clearly sideways, alongside the scroll view's own pan, which would
-    /// otherwise take every drag first.
+    /// Lets a pan begin only when it starts more sideways than along the page, alongside the scroll view's own pan,
+    /// which would otherwise take every drag first.
     final class SidewaysDelegate: NSObject, UIGestureRecognizerDelegate {
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
-            let velocity = pan.velocity(in: pan.view)
-            return abs(velocity.x) > abs(velocity.y) * 1.5
+            // A finger is never quite level, so the distance it went decides rather than its speed at that moment.
+            let translation = pan.translation(in: pan.view)
+            return abs(translation.x) > abs(translation.y)
         }
 
         func gestureRecognizer(

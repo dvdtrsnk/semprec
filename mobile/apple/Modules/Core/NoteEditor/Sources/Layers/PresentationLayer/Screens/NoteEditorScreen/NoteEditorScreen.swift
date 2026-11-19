@@ -1,4 +1,3 @@
-import Combine
 import CoreKit
 import DesignSystem
 import SwiftUI
@@ -11,7 +10,9 @@ struct NoteEditorScreen: View {
     // MARK: - Dependencies
     @StateObject private var viewModel: NoteEditorViewModel
     @StateObject private var interaction = NoteInteraction()
-    private let focus: NoteEditorFocus?
+    /// The focus the screen around the note watches; a full page keeps its own.
+    @StateObject private var ownFocus = NoteEditorFocus()
+    private let givenFocus: NoteEditorFocus?
 
     // MARK: - State
     @State private var selection: NoteSelection?
@@ -24,7 +25,7 @@ struct NoteEditorScreen: View {
     /// `viewModel` runs once per editor, when SwiftUI creates the state object.
     init(viewModel: @autoclosure @escaping () -> NoteEditorViewModel, focus: NoteEditorFocus? = nil) {
         _viewModel = StateObject(wrappedValue: viewModel())
-        self.focus = focus
+        givenFocus = focus
     }
 
     // MARK: - Body
@@ -49,9 +50,17 @@ struct NoteEditorScreen: View {
                 hasAppeared = true
             }
             .onDisappear { viewModel.endEditing() }
-            .onChange(of: viewModel.editingBlockId) { _, id in focus?.isEditing = id != nil }
-            .onReceive(focus?.$endRequests.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
+            .onChange(of: viewModel.editingBlockId) { _, id in focus.isEditing = id != nil }
+            .onChange(of: interaction.selecting) { _, selecting in focus.isSelecting = selecting }
+            .onReceive(focus.$endRequests.dropFirst()) { _ in
                 viewModel.endEditing()
+                interaction.stopSelecting()
+            }
+            .toolbar {
+                // A full page is a screen of its own, so it shows the check that ends its focus itself.
+                if viewModel.variant == .full, givenFocus == nil, ownFocus.isActive {
+                    ToolbarItem(placement: .confirmationAction) { NoteFocusDoneButton(focus: ownFocus) }
+                }
             }
     }
 }
@@ -60,6 +69,8 @@ struct NoteEditorScreen: View {
 private extension NoteEditorScreen {
 
     var state: NoteEditorState { viewModel.state }
+
+    var focus: NoteEditorFocus { givenFocus ?? ownFocus }
 
     @ViewBuilder var content: some View {
         switch state.phase {

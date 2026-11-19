@@ -52,6 +52,8 @@ struct NoteBlockSlot<Row: View>: View {
             .scaleEffect(isLifted ? 1.02 : 1)
             .shadow(color: .black.opacity(presentation.isHeld ? 0.15 : 0), radius: 10, y: 4)
             .opacity(presentation.isDragged ? 0.3 : 1)
+            // The whole width of the block takes a swipe or a hold, not only where it has text.
+            .contentShape(Rectangle())
             .animation(.snappy(duration: 0.2), value: presentation.isHeld)
             .sidewaysDrag(
                 in: NoteEditorMetrics.space,

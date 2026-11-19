@@ -11,7 +11,7 @@ struct JournalScreen: View {
     // MARK: - Dependencies
     @StateObject private var viewModel: JournalViewModel
     @StateObject private var capture: JournalCaptureViewModel
-    /// Set while a note is edited: the diary then shows only the page, and a check ends the editing.
+    /// Set while a note is edited or its blocks are selected: the diary then shows only the page, and a check ends it.
     @StateObject private var noteFocus = NoteEditorFocus()
     private let notes: JournalNotes
 
@@ -43,11 +43,8 @@ struct JournalScreen: View {
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    if noteFocus.isEditing {
-                        Button { noteFocus.end() } label: { Image(systemName: "checkmark") }
-                            .buttonStyle(.glassProminent)
-                            .accessibilityLabel(Text("journal.notes.done", bundle: .module))
-                            .accessibilityIdentifier(JournalIdentifiers.notesDone)
+                    if noteFocus.isActive {
+                        NoteFocusDoneButton(focus: noteFocus)
                     } else {
                         Button(action: viewModel.goToday) { Text("journal.today", bundle: .module) }
                             .accessibilityIdentifier(JournalIdentifiers.today)
@@ -57,9 +54,9 @@ struct JournalScreen: View {
             // An overlay, not a safe area inset: the axis folds while the page scrolls, and an inset that changed with
             // it would move the page and the fold again, without end. The page keeps room for the whole axis instead.
             .overlay(alignment: .top) {
-                if !noteFocus.isEditing { axis }
+                if !noteFocus.isActive { axis }
             }
-            .animation(.snappy(duration: 0.3), value: noteFocus.isEditing)
+            .animation(.snappy(duration: 0.3), value: noteFocus.isActive)
             .task { await viewModel.observe() }
     }
 }
@@ -109,7 +106,7 @@ private extension JournalScreen {
             .contentMargins(.bottom, bottomRoom, for: .scrollContent)
             .contentMargins(
                 .top,
-                noteFocus.isEditing ? 0 : JournalAxisView.height(of: viewModel.state.axis) + Self.axisPadding * 2,
+                noteFocus.isActive ? 0 : JournalAxisView.height(of: viewModel.state.axis) + Self.axisPadding * 2,
                 for: .scrollContent
             )
             .onScrollGeometryChange(
