@@ -2,6 +2,7 @@ package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.JournalPeriodType
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -111,6 +112,21 @@ class NoteEditorViewModelTest : NoteEditorTest() {
         assertEquals("NOW", vm.state.value.lastEditedAt)
         typed(vm, 1, "Second draft")
         assertEquals(NOTE_PAGE.replace("First idea", "Second draft"), pages.markdown["p1"])
+        vm.close()
+    }
+
+    @Test fun `typing while a write is under way keeps the version that write made`() = runTest(dispatcher) {
+        val vm = loaded()
+        val gate = CompletableDeferred<Unit>()
+        pages.replaceGate = gate
+        typed(vm, 1, "Sent")
+        vm.onAction(NoteEditorAction.SetRuns(vm.block(1).id, listOf(NoteEditorRun("Sent and more"))))
+        runCurrent()
+        pages.replaceGate = null
+        gate.complete(Unit)
+        settle()
+        assertNull(vm.state.value.problem)
+        assertEquals(NOTE_PAGE.replace("First idea", "Sent and more"), pages.markdown["p1"])
         vm.close()
     }
 

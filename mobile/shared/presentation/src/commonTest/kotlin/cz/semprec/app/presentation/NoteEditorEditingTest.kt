@@ -101,6 +101,17 @@ class NoteEditorEditingTest : NoteEditorTest() {
         vm.close()
     }
 
+    @Test fun `a block is never made a page by a change of type`() = runTest(dispatcher) {
+        val vm = loaded()
+        val before = vm.state.value.blocks
+        vm.onAction(NoteEditorAction.SetType(listOf(vm.block(1).id), NoteEditorBlockType.PAGE))
+        vm.onAction(NoteEditorAction.ToggleType(listOf(vm.block(1).id), NoteEditorBlockType.PAGE))
+        assertEquals(before, vm.state.value.blocks)
+        vm.onAction(NoteEditorAction.SetType(listOf(vm.block(1).id), NoteEditorBlockType.QUOTE))
+        assertEquals(NoteEditorBlockType.QUOTE, vm.block(1).type)
+        vm.close()
+    }
+
     @Test fun `deleting the last block leaves one empty text block`() = runTest(dispatcher) {
         pages.put("p1", "Only")
         val vm = loaded()

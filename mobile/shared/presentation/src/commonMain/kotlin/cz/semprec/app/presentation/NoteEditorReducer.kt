@@ -40,6 +40,9 @@ internal object NoteEditorReducer {
 
     fun structure(blocks: List<NoteBlock>, action: NoteEditorAction, newId: () -> String): NoteReduction? =
         when (action) {
+            // A block becomes a page only through the subpage operation.
+            is NoteEditorAction.SetType if action.type == NoteEditorBlockType.PAGE -> NoteReduction(blocks)
+            is NoteEditorAction.ToggleType if action.type == NoteEditorBlockType.PAGE -> NoteReduction(blocks)
             is NoteEditorAction.SetType ->
                 NoteReduction(NoteStructure.setType(blocks, action.blockIds.toSet(), action.type.toDomain()))
             is NoteEditorAction.ToggleType ->

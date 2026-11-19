@@ -10,6 +10,7 @@ let workspace = Workspace(
         "Modules/Core/CoreKit",
         "Modules/Core/Dependencies",
         "Modules/Core/DesignSystem",
+        "Modules/Core/NoteEditor",
         "Modules/Features/Account",
         "Modules/Features/Areas",
         "Modules/Features/Auth",
@@ -34,6 +35,7 @@ let workspace = Workspace(
                 [
                     .testableTarget(target: .project(path: "Modules/Core/CoreKit", target: "CoreKitTests")),
                     .testableTarget(target: .project(path: "Modules/Core/DesignSystem", target: "DesignSystemTests")),
+                    .testableTarget(target: .project(path: "Modules/Core/NoteEditor", target: "NoteEditorTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Account", target: "AccountFeatureTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Areas", target: "AreasFeatureTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Auth", target: "AuthFeatureTests")),

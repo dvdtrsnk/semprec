@@ -57,7 +57,9 @@ internal class NotePageStore(
         waitJob?.cancel()
         waitJob = host.scope.launch {
             delay(settings.saveDelayMillis)
-            persist(ensurePage = false)
+            // Typing cancels only the pause: a write already sent may have reached the server, and its new version
+            // must be kept.
+            host.scope.launch { persist(ensurePage = false) }
         }
     }
 

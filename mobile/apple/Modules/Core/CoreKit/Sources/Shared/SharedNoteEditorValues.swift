@@ -6,9 +6,9 @@ extension NoteEditorBlockType {
     init(_ type: SharedSDK.NoteEditorBlockType) {
         switch type {
         case .text: self = .text
-        case .h1: self = .h1
-        case .h2: self = .h2
-        case .h3: self = .h3
+        case .h1: self = .heading1
+        case .h2: self = .heading2
+        case .h3: self = .heading3
         case .bullet: self = .bullet
         case .number: self = .number
         case .todo: self = .todo
@@ -20,9 +20,9 @@ extension NoteEditorBlockType {
     var shared: SharedSDK.NoteEditorBlockType {
         switch self {
         case .text: .text
-        case .h1: .h1
-        case .h2: .h2
-        case .h3: .h3
+        case .heading1: .h1
+        case .heading2: .h2
+        case .heading3: .h3
         case .bullet: .bullet
         case .number: .number
         case .todo: .todo

@@ -1,14 +1,17 @@
 import Foundation
 
 public enum NoteEditorBlockType: Equatable, Hashable, Sendable, CaseIterable {
-    case text, h1, h2, h3, bullet, number, todo, quote, page
+
+    case text, heading1, heading2, heading3, bullet, number, todo, quote, page
 }
 
 public enum NoteEditorMark: Equatable, Hashable, Sendable, CaseIterable {
+
     case bold, italic, code
 }
 
 public enum NoteEditorPhase: Equatable, Sendable {
+
     case loading
     case content
     case failure(FailureKind?)
@@ -34,6 +37,7 @@ public struct NoteEditorRun: Equatable, Hashable, Sendable {
 
 /// What a block shows in front of its text: a bullet whose glyph follows `level`, or a number's label ("1.1.").
 public enum NoteEditorMarker: Equatable, Hashable, Sendable {
+
     case bullet(level: Int)
     case number(String)
 }
@@ -84,6 +88,7 @@ public struct NoteEditorCaret: Equatable, Sendable {
 
 /// Why the note shows a notice: the page changed elsewhere and was read again, or a write failed.
 public enum NoteEditorProblem: Equatable, Sendable {
+
     case reloaded
     case failed(FailureKind?)
 }
@@ -185,6 +190,7 @@ public enum NoteEditorEffect: Equatable, Sendable {
 
 /// Where a note lives: a page of an item, the page of a Journal period, or Markdown its owner keeps and saves.
 public enum NoteEditorSource: Equatable, Hashable, Sendable {
+
     case page(itemId: String, titleEditable: Bool)
     case journal(kind: JournalPeriodKind, period: String)
     case text(String)

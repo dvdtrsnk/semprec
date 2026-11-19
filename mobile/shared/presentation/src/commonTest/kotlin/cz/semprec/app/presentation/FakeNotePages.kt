@@ -9,6 +9,7 @@ import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.note.NoteDocument
 import cz.semprec.app.domain.note.NotePageInfo
 import cz.semprec.app.domain.note.NotePageRepository
+import kotlinx.coroutines.CompletableDeferred
 
 /**
  * A server of pages kept as Markdown with a version each. A replacement quoting an old version is a conflict, a
@@ -19,6 +20,9 @@ class FakeNotePages : NotePageRepository {
     private val versions = mutableMapOf<String, Int>()
     val calls = mutableListOf<String>()
     var failing: String? = null
+
+    /** When set, a replacement is written at once but answered only once it completes, as a slow server does. */
+    var replaceGate: CompletableDeferred<Unit>? = null
 
     fun put(itemId: String, page: String) {
         markdown[itemId] = page
@@ -40,7 +44,13 @@ class FakeNotePages : NotePageRepository {
     override suspend fun read(itemId: String): RepositoryResult<PageDocument> =
         answer("read $itemId") { PageDocument(markdown[itemId].orEmpty(), etag(itemId)) }
 
-    override suspend fun replace(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite> =
+    override suspend fun replace(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite> {
+        val written = replaced(itemId, markdown, etag)
+        replaceGate?.await()
+        return written
+    }
+
+    private fun replaced(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite> =
         answer("replace $itemId") {
             if (etag != etag(itemId)) {
                 PageWrite.Conflict

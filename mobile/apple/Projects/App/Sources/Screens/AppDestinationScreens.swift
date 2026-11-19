@@ -90,9 +90,8 @@ struct NotesDestination: View {
     let composition: AppComposition
 
     var body: some View {
-        NotesScreenFactory.notes(
-            itemId: itemId,
-            makeModel: { composition.models.makeNotes(itemId: itemId) },
+        NotesScreenFactory.page(
+            makeModel: { composition.models.makeNoteEditor(source: .page(itemId: itemId, titleEditable: false)) },
             router: composition.notesRouter(in: tab)
         )
     }

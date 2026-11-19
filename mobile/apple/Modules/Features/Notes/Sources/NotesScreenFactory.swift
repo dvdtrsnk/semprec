@@ -1,4 +1,6 @@
 import CoreKit
+import DesignSystem
+import NoteEditor
 import SwiftUI
 
 /// The screens of the Notes feature. A screen calls `makeModel` once, when SwiftUI creates its `@StateObject`, and
@@ -14,5 +16,15 @@ public enum NotesScreenFactory {
         router: any NotesRouting
     ) -> some View {
         NotesScreen(viewModel: NotesViewModel(itemId: itemId, model: makeModel(), router: router))
+    }
+
+    /// A page in the note editor; a subpage opens as another page.
+    public static func page(
+        makeModel: @escaping @MainActor () -> any NoteEditorScreenModel,
+        router: any NotesRouting
+    ) -> some View {
+        NoteEditorFactory.editor(variant: .full, makeModel: makeModel, router: NotesPageRouter(router: router))
+            .navigationTitle(Text(verbatim: ""))
+            .inlineNavigationTitle()
     }
 }
