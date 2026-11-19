@@ -71,6 +71,7 @@ struct ItemDetailsScreen: View {
                     }
                 }
                 .navigationDestination(for: ItemDetailsPage.self) { page in pageView(page) }
+                .noteFormatBar(descriptionFocus)
         }
         .onChange(of: viewModel.deleted) { _, deleted in
             if deleted { dismiss() }

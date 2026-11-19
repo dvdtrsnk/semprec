@@ -31,7 +31,7 @@ struct NoteEditorScreen: View {
     // MARK: - Body
     var body: some View {
         content
-            .keyboardBar { formatBar }
+            .modifier(NoteOwnFormatBar(focus: givenFocus == nil ? ownFocus : nil))
             .safeAreaInset(edge: .bottom) { selectionBar }
             .sheet(isPresented: styledBinding) { styleList }
             .modifier(NoteLinkDialog(draft: $link) { address in saveLink(address) })
@@ -52,6 +52,16 @@ struct NoteEditorScreen: View {
             .onDisappear { viewModel.endEditing() }
             .onChange(of: viewModel.editingBlockId) { _, id in focus.isEditing = id != nil }
             .onChange(of: interaction.selecting) { _, selecting in focus.isSelecting = selecting }
+            .onChange(of: formattable) { _, selection in
+                focus.formatting = selection.map { selection in
+                    NoteFormatting(
+                        selection: selection,
+                        apply: { viewModel.typing($0) },
+                        link: { openLink() },
+                        done: { viewModel.endEditing() }
+                    )
+                }
+            }
             .onReceive(focus.$endRequests.dropFirst()) { _ in
                 viewModel.endEditing()
                 interaction.stopSelecting()
@@ -71,6 +81,12 @@ private extension NoteEditorScreen {
     var state: NoteEditorState { viewModel.state }
 
     var focus: NoteEditorFocus { givenFocus ?? ownFocus }
+
+    /// The selected stretch of the edited block's text, when there is one to format.
+    var formattable: NoteSelection? {
+        guard let selection, !selection.isEmpty, selection.blockId == viewModel.editingBlockId else { return nil }
+        return selection
+    }
 
     @ViewBuilder var content: some View {
         switch state.phase {
@@ -210,13 +226,6 @@ private extension NoteEditorScreen {
             .accessibilityIdentifier(NoteEditorIdentifiers.tapBelow)
     }
 
-    /// Shown while part of the edited block's text is selected.
-    @ViewBuilder var formatBar: some View {
-        if let selection, !selection.isEmpty, selection.blockId == viewModel.editingBlockId {
-            NoteFormatBar(selection: selection, onTyping: { viewModel.typing($0) }, onLink: { openLink() })
-        }
-    }
-
     @ViewBuilder var selectionBar: some View {
         if interaction.selecting {
             NoteSelectionBar(
@@ -302,5 +311,16 @@ private extension NoteEditorScreen {
     func blurred(_ blockId: String) {
         guard viewModel.editingBlockId == blockId, styledIds == nil, link == nil else { return }
         viewModel.endEditing()
+    }
+}
+
+/// A note that is a screen of its own shows its format bar itself; a note inside another screen leaves it to that
+/// screen, whose bar spans the screen.
+private struct NoteOwnFormatBar: ViewModifier {
+
+    let focus: NoteEditorFocus?
+
+    func body(content: Content) -> some View {
+        if let focus { content.noteFormatBar(focus) } else { content }
     }
 }

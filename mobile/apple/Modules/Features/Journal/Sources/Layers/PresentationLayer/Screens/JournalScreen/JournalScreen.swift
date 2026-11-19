@@ -57,6 +57,7 @@ struct JournalScreen: View {
                 if !noteFocus.isActive { axis }
             }
             .animation(.snappy(duration: 0.3), value: noteFocus.isActive)
+            .noteFormatBar(noteFocus)
             .task { await viewModel.observe() }
     }
 }

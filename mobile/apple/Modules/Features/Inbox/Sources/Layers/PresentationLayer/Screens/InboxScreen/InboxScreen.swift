@@ -30,6 +30,7 @@ struct InboxScreen: View {
                 }
             }
             .environment(\.inboxNoteFocus, noteFocus)
+            .noteFormatBar(noteFocus)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(InboxIdentifiers.screen)
             .task { await viewModel.observe() }

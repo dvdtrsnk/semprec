@@ -1,7 +1,7 @@
 import CoreKit
 
 /// Where the cursor or selection of the edited block is, in UTF-16 units of its text, and the formats there; the
-/// accessory bar shows them and acts on them.
+/// format bar shows them and acts on them.
 struct NoteSelection: Equatable {
 
     var blockId: String
