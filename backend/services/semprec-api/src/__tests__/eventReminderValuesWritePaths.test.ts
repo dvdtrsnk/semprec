@@ -85,12 +85,12 @@ type Transport = (typeof TRANSPORTS)[number];
 
 /** A label, the field named, and the reminder values of the write. */
 const REFUSALS: Array<[string, string, Record<string, unknown>]> = [
-  ["alertMinutes 7", "alertMinutes", { alertMinutes: 7 }],
+  ["alertMinutes 40321, beyond four weeks", "alertMinutes", { alertMinutes: 40_321 }],
   ["alertMinutes -5", "alertMinutes", { alertMinutes: -5 }],
   ["alertMinutes 15.5", "alertMinutes", { alertMinutes: 15.5 }],
   ["alertMinutes as the string 15", "alertMinutes", { alertMinutes: "15" }],
   ["alertMinutes true", "alertMinutes", { alertMinutes: true }],
-  ["travelMinutes 20", "travelMinutes", { travelMinutes: 20 }],
+  ["travelMinutes 1441, beyond a day", "travelMinutes", { travelMinutes: 1441 }],
   ["travelMinutes 0", "travelMinutes", { travelMinutes: 0 }],
   ["travelMinutes 30.5", "travelMinutes", { travelMinutes: 30.5 }],
   ["travelMinutes as the string 30", "travelMinutes", { travelMinutes: "30" }],
@@ -104,6 +104,7 @@ const PASSES: Array<[string, Record<string, unknown>]> = [
   ["alertMinutes 15 and travelMinutes 60", { alertMinutes: 15, travelMinutes: 60 }],
   ["alertMinutes 60", { alertMinutes: 60 }],
   ["alertMinutes 1440", { alertMinutes: 1440 }],
+  ["a custom alertMinutes 7 and travelMinutes 20", { alertMinutes: 7, travelMinutes: 20 }],
   ["null for both keys", { alertMinutes: null, travelMinutes: null }],
 ];
 
@@ -135,7 +136,7 @@ async function storeLegacy(itemId: string, legacy: Record<string, unknown>): Pro
   expect(result.rowCount).toBe(1);
 }
 
-describe("Events reminder values are judged alike through REST, the agent gateway and MCP (issue #1714)", () => {
+describe("Events reminder values are judged alike through REST, the agent gateway and MCP", () => {
   let server: Server;
   let mcpServer: Server;
   let baseUrl: string;
@@ -381,16 +382,16 @@ describe("Events reminder values are judged alike through REST, the agent gatewa
     }
   });
 
-  it("accepts a patch of only name on an Event whose stored values are outside the allowed sets", async () => {
+  it("accepts a patch of only name on an Event whose stored values are outside the allowed ranges", async () => {
     for (const path of TRANSPORTS) {
       const item = await createVia(path, { name: `Legacy ${path}`, date: "2026-10-16" });
-      await storeLegacy(item.id, { alertMinutes: 7, travelMinutes: 20 });
+      await storeLegacy(item.id, { alertMinutes: -7, travelMinutes: 0 });
       const patched = await patchVia(path, item, { name: `Renamed ${path}` });
-      expect(patched.properties).toMatchObject({ name: `Renamed ${path}`, alertMinutes: 7, travelMinutes: 20 });
+      expect(patched.properties).toMatchObject({ name: `Renamed ${path}`, alertMinutes: -7, travelMinutes: 0 });
       expect((await stored(item.id)).properties).toMatchObject({
         name: `Renamed ${path}`,
-        alertMinutes: 7,
-        travelMinutes: 20,
+        alertMinutes: -7,
+        travelMinutes: 0,
       });
     }
   });

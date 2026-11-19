@@ -2,8 +2,10 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The fields of the new item sheet. An event has a place and a calendar and may end; a task has a day and maybe a
-/// time.
+/// The fields of the new item sheet, laid out as the system Calendar lays out a new event and a new reminder. An
+/// event has a bar in its calendar's colour beside its title and its time, then its place, its calendar, alert and
+/// travel time, and its notes and link. A task has its notes under its title, its day and time, its repeat and a
+/// flag.
 struct NewItemFormView: View {
 
     // MARK: - Dependencies
@@ -14,155 +16,128 @@ struct NewItemFormView: View {
 
     // MARK: - Body
     var body: some View {
-        Form {
-            if let failure {
-                Section {
-                    Label {
-                        Text(failure)
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                    }
-                    .foregroundStyle(Theme.Colors.destructive)
-                    .accessibilityIdentifier(CalendarSheetIdentifiers.newItemFailure)
+        ScrollView {
+            VStack(spacing: Theme.Spacing.medium) {
+                if let failure {
+                    Label { Text(failure) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
+                        .foregroundStyle(Theme.Colors.destructive)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(NewItemCard.rowPadding)
+                        .newItemCard()
+                        .accessibilityIdentifier(CalendarSheetIdentifiers.newItemFailure)
+                }
+                if isEvent {
+                    eventFields
+                } else {
+                    taskFields
                 }
             }
-            titleSection
-            scheduleSection
-            if form.kind == .event {
-                placeSection
-                if !calendars.isEmpty {
-                    optionsSection
-                }
-            }
+            .padding(.horizontal, Theme.Spacing.medium)
+            .padding(.vertical, Theme.Spacing.small)
+            .frame(maxWidth: Theme.Layout.formWidth + 120)
+            .frame(maxWidth: .infinity)
         }
-        .formStyle(.grouped)
+        .scrollDismissesKeyboard(.interactively)
+        .background(Theme.Colors.groupedBackground)
+        .onChange(of: form.kind) { form.fitRepeatToKind() }
     }
 }
 
-// MARK: - Subviews
+// MARK: - Event
 private extension NewItemFormView {
 
     var isEvent: Bool {
         form.kind == .event
     }
 
-    var titleSection: some View {
-        Section {
-            TextField(text: $form.title, prompt: Text("newItem.name.prompt", tableName: "Sheets", bundle: .module)) {
-                if isEvent {
-                    Text("newItem.name.event", tableName: "Sheets", bundle: .module)
-                } else {
-                    Text("newItem.name.task", tableName: "Sheets", bundle: .module)
+    @ViewBuilder var eventFields: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Capsule()
+                .fill(chosenColor)
+                .frame(width: 5)
+                .accessibilityHidden(true)
+            VStack(spacing: Theme.Spacing.medium) {
+                titleField
+                    .padding(.horizontal, NewItemCard.rowPadding + 4)
+                    .frame(minHeight: Theme.Layout.rowHeight + 10)
+                    .newItemCard()
+                NewItemEventSchedule(form: $form)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        VStack(spacing: Theme.Spacing.small) {
+            NewItemHeading(key: "newItem.place")
+            iconField("location", key: "newItem.place.prompt", text: $form.place)
+                .newItemCard()
+                .accessibilityIdentifier(CalendarSheetIdentifiers.newItemPlace)
+        }
+        VStack(spacing: Theme.Spacing.small) {
+            NewItemHeading(key: "newItem.options")
+            if !calendars.isEmpty {
+                calendarRow.newItemCard()
+            }
+            VStack(spacing: 0) {
+                NewItemRow(systemImage: "bell", key: "newItem.alert") {
+                    NewItemDurationMenu(
+                        minutes: $form.alertMinutes,
+                        presets: form.timed ? NewItemOptions.timedAlerts : NewItemOptions.allDayAlerts,
+                        range: NewItemOptions.alertRange,
+                        name: { NewItemOptions.alertName($0, allDay: !form.timed) },
+                        customTitle: "newItem.alert",
+                        identifier: CalendarSheetIdentifiers.newItemAlert
+                    )
+                }
+                if form.timed {
+                    NewItemDivider(inset: NewItemCard.rowPadding + NewItemCard.iconWidth + 12)
+                    NewItemRow(systemImage: "car.fill", key: "newItem.travel") {
+                        NewItemDurationMenu(
+                            minutes: $form.travelMinutes,
+                            presets: NewItemOptions.travels,
+                            range: NewItemOptions.travelRange,
+                            name: NewItemOptions.travelName,
+                            customTitle: "newItem.travel",
+                            identifier: CalendarSheetIdentifiers.newItemTravel
+                        )
+                    }
                 }
             }
-            .font(.title3.weight(.semibold))
-            .accessibilityIdentifier(CalendarSheetIdentifiers.newItemTitle)
+            .newItemCard()
+        }
+        VStack(spacing: Theme.Spacing.small) {
+            NewItemHeading(key: "newItem.details")
+            VStack(spacing: 0) {
+                iconField("text.alignleft", key: "newItem.notes", text: $form.notes, multiline: true)
+                    .accessibilityIdentifier(CalendarSheetIdentifiers.newItemNotes)
+                NewItemDivider(inset: NewItemCard.rowPadding + NewItemCard.iconWidth + 12)
+                iconField("link", key: "newItem.url", text: $form.url)
+                    .accessibilityIdentifier(CalendarSheetIdentifiers.newItemUrl)
+            }
+            .newItemCard()
         }
     }
 
-    var scheduleSection: some View {
-        Section {
-            DatePicker(selection: day, displayedComponents: .date) {
-                Label {
-                    Text("newItem.date", tableName: "Sheets", bundle: .module)
-                } icon: {
-                    Image(systemName: "calendar")
-                }
-            }
-            .accessibilityIdentifier(CalendarSheetIdentifiers.newItemDate)
-            Toggle(isOn: $form.timed) {
-                Label {
-                    Text("newItem.time", tableName: "Sheets", bundle: .module)
-                } icon: {
-                    Image(systemName: "clock")
-                }
-            }
-            .accessibilityIdentifier(CalendarSheetIdentifiers.newItemTimed)
-            if form.timed {
-                DatePicker(selection: start, displayedComponents: .hourAndMinute) {
-                    Text("newItem.start", tableName: "Sheets", bundle: .module)
-                }
-                .accessibilityIdentifier(CalendarSheetIdentifiers.newItemStart)
-                if isEvent {
-                    endRows
-                }
-            }
-        } header: {
-            Text("newItem.schedule", tableName: "Sheets", bundle: .module)
-        }
-    }
-
-    @ViewBuilder var endRows: some View {
-        Toggle(isOn: $form.hasEnd) {
-            Text("newItem.end", tableName: "Sheets", bundle: .module)
-        }
-        .accessibilityIdentifier(CalendarSheetIdentifiers.newItemHasEnd)
-        if form.hasEnd {
-            DatePicker(selection: end, displayedComponents: .hourAndMinute) {
-                Text("newItem.end", tableName: "Sheets", bundle: .module)
-            }
-            .labelsHidden()
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .accessibilityIdentifier(CalendarSheetIdentifiers.newItemEnd)
-        }
-    }
-
-    var placeSection: some View {
-        Section {
-            TextField(text: $form.place, prompt: Text("newItem.place.prompt", tableName: "Sheets", bundle: .module)) {
-                Text("newItem.place", tableName: "Sheets", bundle: .module)
-            }
-            .accessibilityIdentifier(CalendarSheetIdentifiers.newItemPlace)
-        } header: {
-            Text("newItem.place", tableName: "Sheets", bundle: .module)
-        }
-    }
-
-    var optionsSection: some View {
-        Section {
-            Picker(selection: calendar) {
-                ForEach(calendars) { choice in
-                    Text(choice.name).tag(choice.id)
-                }
-            } label: {
-                // A menu draws its items' symbols in one colour, so the chosen calendar's colour sits by the label.
-                Label {
+    var calendarRow: some View {
+        NewItemRow(systemImage: "calendar", key: "newItem.calendar") {
+            HStack(spacing: 6) {
+                Circle().fill(chosenColor).frame(width: 12, height: 12)
+                Picker(selection: calendar) {
+                    ForEach(calendars) { choice in
+                        Text(choice.name).tag(choice.id)
+                    }
+                } label: {
                     Text("newItem.calendar", tableName: "Sheets", bundle: .module)
-                } icon: {
-                    Image(systemName: "circle.fill")
-                        .foregroundStyle(chosenColor)
                 }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(.secondary)
             }
-            .accessibilityIdentifier(CalendarSheetIdentifiers.newItemCalendar)
-        } header: {
-            Text("newItem.options", tableName: "Sheets", bundle: .module)
         }
+        .accessibilityIdentifier(CalendarSheetIdentifiers.newItemCalendar)
     }
 
     var chosenColor: Color {
         let chosen = calendars.first { $0.id == calendar.wrappedValue }
         return chosen.flatMap { Color(hex: $0.color) } ?? Theme.Colors.accent
-    }
-
-    var day: Binding<Date> {
-        Binding(
-            get: { NewItemForm.date(ofDay: form.day) },
-            set: { form.day = NewItemForm.day(of: $0) }
-        )
-    }
-
-    var start: Binding<Date> {
-        Binding(
-            get: { NewItemForm.time(minutes: form.startMinutes) },
-            set: { form.moveStart(to: NewItemForm.minutes(of: $0)) }
-        )
-    }
-
-    var end: Binding<Date> {
-        Binding(
-            get: { NewItemForm.time(minutes: form.endMinutes) },
-            set: { form.endMinutes = NewItemForm.minutes(of: $0) }
-        )
     }
 
     /// The chosen calendar; until the person picks one, the default calendar (or the first) shows as chosen.
@@ -177,10 +152,95 @@ private extension NewItemFormView {
     }
 }
 
+// MARK: - Task
+private extension NewItemFormView {
+
+    @ViewBuilder var taskFields: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+            titleField
+            TextField(
+                text: $form.notes,
+                prompt: Text("newItem.notes", tableName: "Sheets", bundle: .module),
+                axis: .vertical
+            ) {
+                Text("newItem.notes", tableName: "Sheets", bundle: .module)
+            }
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier(CalendarSheetIdentifiers.newItemNotes)
+        }
+        .padding(.horizontal, NewItemCard.rowPadding + 4)
+        .padding(.vertical, NewItemCard.rowPadding)
+        .newItemCard()
+        VStack(spacing: Theme.Spacing.small) {
+            NewItemHeading(key: "newItem.schedule")
+            NewItemTaskSchedule(form: $form)
+        }
+        NewItemRow(systemImage: "repeat", key: "newItem.repeat") {
+            NewItemRepeatMenu(repeatRule: $form.repeatRule, choices: NewItemOptions.taskRepeats)
+        }
+        .newItemCard()
+        NewItemRow(systemImage: "flag.fill", key: "newItem.flag", tint: .orange) {
+            Toggle(isOn: $form.flagged) { Text("newItem.flag", tableName: "Sheets", bundle: .module) }
+                .labelsHidden()
+                .accessibilityIdentifier(CalendarSheetIdentifiers.newItemFlag)
+        }
+        .newItemCard()
+    }
+}
+
+// MARK: - Fields
+private extension NewItemFormView {
+
+    var titleField: some View {
+        TextField(text: $form.title, prompt: Text("newItem.name.prompt", tableName: "Sheets", bundle: .module)) {
+            if isEvent {
+                Text("newItem.name.event", tableName: "Sheets", bundle: .module)
+            } else {
+                Text("newItem.name.task", tableName: "Sheets", bundle: .module)
+            }
+        }
+        .font(.title2.weight(.semibold))
+        .accessibilityIdentifier(CalendarSheetIdentifiers.newItemTitle)
+    }
+
+    /// A text field in its own card row, a grey symbol before it.
+    func iconField(
+        _ systemImage: String, key: LocalizedStringKey, text: Binding<String>, multiline: Bool = false
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: NewItemCard.iconWidth)
+            TextField(
+                text: text,
+                prompt: Text(key, tableName: "Sheets", bundle: .module),
+                axis: multiline ? .vertical : .horizontal
+            ) {
+                Text(key, tableName: "Sheets", bundle: .module)
+            }
+            .lineLimit(multiline ? 1...8 : 1...1)
+        }
+        .padding(.horizontal, NewItemCard.rowPadding)
+        .padding(.vertical, multiline ? 12 : 0)
+        .frame(minHeight: Theme.Layout.rowHeight + 8)
+    }
+}
+
 // MARK: - Preview
 #Preview("Event") {
     @Previewable @State var form = NewItemForm(day: "2026-10-16")
     NavigationStack {
         NewItemFormView(form: $form, calendars: NewItemState.preview.calendars, failure: nil)
+    }
+}
+
+#Preview("Task") {
+    @Previewable @State var form = {
+        var form = NewItemForm(day: "2026-10-16")
+        form.kind = .task
+        return form
+    }()
+    NavigationStack {
+        NewItemFormView(form: $form, calendars: [], failure: nil)
     }
 }

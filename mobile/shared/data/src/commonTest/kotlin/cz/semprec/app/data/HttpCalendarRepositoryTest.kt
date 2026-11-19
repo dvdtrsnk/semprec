@@ -7,6 +7,7 @@ import cz.semprec.app.domain.CalendarChanges
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntry
 import cz.semprec.app.domain.CalendarEntryKind
+import cz.semprec.app.domain.CalendarRepeat
 import cz.semprec.app.domain.CalendarSchedule
 import cz.semprec.app.domain.CalendarWindow
 import cz.semprec.app.domain.ClockTime
@@ -28,6 +29,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -371,6 +374,80 @@ class HttpCalendarRepositoryTest {
         assertTrue("place" !in properties)
         assertTrue("endDate" !in properties)
         assertTrue(requests.none { it.method == HttpMethod.Put })
+    }
+
+    @Test fun `a new event sends its notes url alert travel time end day and repeat rule`() = runTest {
+        val cases = listOf(
+            CalendarRepeat.DAILY to """{"kind":"weekdays","days":["mon","tue","wed","thu","fri","sat","sun"]}""",
+            CalendarRepeat.WEEKDAYS to """{"kind":"weekdays","days":["mon","tue","wed","thu","fri"]}""",
+            CalendarRepeat.WEEKLY to """{"kind":"weekdays","days":["fri"]}""",
+            CalendarRepeat.MONTHLY to """{"kind":"monthDates","dates":[${DAY.day}]}""",
+        )
+        for ((repeat, rule) in cases) {
+            requests.clear()
+            bodies.clear()
+            val draft = NewCalendarItem(
+                CalendarEntryKind.EVENT,
+                "Trip",
+                CalendarSchedule(DAY, DAY.plusDays(2), ClockTime(600), ClockTime(540)),
+                null,
+                null,
+                notes = "Bring the map",
+                url = "https://example.com",
+                alertMinutes = 25,
+                travelMinutes = 45,
+                repeat = repeat,
+            )
+            repository { reads(it) }.create(draft)
+            val create = requests.indexOfFirst { it.path() == "/api/databases/db-ev/items" }
+            val properties = sent(create)["properties"]!!.jsonObject
+            assertEquals("Bring the map", properties["description"]?.jsonPrimitive?.content)
+            assertEquals("https://example.com", properties["url"]?.jsonPrimitive?.content)
+            assertEquals(25, properties["alertMinutes"]?.jsonPrimitive?.int)
+            assertEquals(45, properties["travelMinutes"]?.jsonPrimitive?.int)
+            assertEquals(DAY.plusDays(2).toString(), properties["endDate"]?.jsonPrimitive?.content)
+            assertEquals(Json.parseToJsonElement(rule), properties["recurrence"])
+        }
+    }
+
+    @Test fun `a new task sends its notes and flag and sets its repeat preset afterwards`() = runTest {
+        val draft = NewCalendarItem(
+            CalendarEntryKind.TASK,
+            "Water plants",
+            CalendarSchedule(DAY, null, null, null),
+            null,
+            null,
+            notes = "Balcony",
+            repeat = CalendarRepeat.WEEKDAYS,
+            flagged = true,
+        )
+        val result = repository { reads(it) }.create(draft)
+        assertEquals(RepositoryResult.Content("new1"), result)
+        val create = requests.indexOfFirst { it.path() == "/api/databases/db-task/items" }
+        val properties = sent(create)["properties"]!!.jsonObject
+        assertEquals("Balcony", properties["description"]?.jsonPrimitive?.content)
+        assertEquals(true, properties["flagged"]?.jsonPrimitive?.boolean)
+        assertTrue("recurrence" !in properties)
+        val repeat = requests.last()
+        assertEquals(HttpMethod.Put, repeat.method)
+        assertEquals("/api/tasks/new1/recurrence", repeat.path())
+        assertEquals("weekdays", sent(requests.lastIndex)["preset"]?.jsonPrimitive?.content)
+        assertEquals(1, changes.revision.value)
+    }
+
+    @Test fun `a task whose repeat the server refuses fails and does not report a change`() = runTest {
+        val draft = NewCalendarItem(
+            CalendarEntryKind.TASK,
+            "Water plants",
+            CalendarSchedule(DAY, null, null, null),
+            null,
+            null,
+            repeat = CalendarRepeat.DAILY,
+        )
+        val refused =
+            repository { if (it.method == HttpMethod.Put) json("{}", HttpStatusCode.BadRequest) else reads(it) }
+        assertEquals(FailureKind.REJECTED, assertIs<RepositoryResult.Failure>(refused.create(draft)).kind)
+        assertEquals(0, changes.revision.value)
     }
 
     @Test fun `a refused creation or link fails and a missing database is not found`() = runTest {

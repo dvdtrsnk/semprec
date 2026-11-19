@@ -2,7 +2,8 @@ import CoreKit
 import Foundation
 
 /// What the new item form holds while the person types: native view state that becomes a `NewItemDraft` when the
-/// form is submitted. Times are minutes of the day.
+/// form is submitted. Times are minutes of the day. An event always ends; `endDay` is its last day, `day` itself
+/// unless it lasts several days. A task has a day and maybe a time, no end.
 struct NewItemForm: Equatable {
 
     // MARK: - Constants
@@ -20,27 +21,44 @@ struct NewItemForm: Equatable {
     var startMinutes: Int
     var hasEnd = true
     var endMinutes: Int
+    var endDay: String
     var place = ""
     /// Empty for the default calendar.
     var calendarId = ""
+    var notes = ""
+    var url = ""
+    /// Minutes before the start an event alerts, `nil` for no alert.
+    var alertMinutes: Int?
+    /// Minutes of travel before an event, `nil` for none.
+    var travelMinutes: Int?
+    var repeatRule: NewItemRepeat = .never
+    var flagged = false
 
     // MARK: - Init
     /// A form for `day` that starts at the next full hour after `now` and lasts an hour.
     init(day: String, now: Date = Date(), calendar: Calendar = .current) {
         self.day = day
+        endDay = day
         let parts = calendar.dateComponents([.hour], from: now)
         startMinutes = min(((parts.hour ?? 0) + 1) * Self.hour, Self.latestDefaultStart)
         endMinutes = startMinutes + Self.hour
     }
 
     // MARK: - Methods
-    /// A title is the one value the form needs before it can be submitted.
+    /// A title, and for a timed event an end after its start.
     var canSubmit: Bool {
-        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !endsBeforeStart
     }
 
-    /// The values handed to the shared ViewModel. A task has no end, place or calendar; an event without a time has
-    /// no end either.
+    /// Whether a timed event's end comes before or at its start, which the form shows struck through.
+    var endsBeforeStart: Bool {
+        guard kind == .event else { return false }
+        if endDay != day { return endDay < day }
+        return timed && endMinutes <= startMinutes
+    }
+
+    /// The values handed to the shared ViewModel. A task has no end, place, calendar, link, alert or travel time; an
+    /// event without a time has no end time either.
     var draft: NewItemDraft {
         let isEvent = kind == .event
         return NewItemDraft(
@@ -52,7 +70,14 @@ struct NewItemForm: Equatable {
             hasEnd: isEvent && timed && hasEnd,
             endMinutes: endMinutes,
             place: isEvent ? place.trimmingCharacters(in: .whitespacesAndNewlines) : "",
-            calendarId: isEvent ? calendarId : ""
+            calendarId: isEvent ? calendarId : "",
+            endDay: isEvent && endDay != day ? endDay : "",
+            notes: notes.trimmingCharacters(in: .whitespacesAndNewlines),
+            url: isEvent ? url.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            alertMinutes: isEvent ? alertMinutes : nil,
+            travelMinutes: isEvent ? travelMinutes : nil,
+            repeatRule: repeatRule,
+            flagged: !isEvent && flagged
         )
     }
 
@@ -61,6 +86,20 @@ struct NewItemForm: Equatable {
         let duration = max(endMinutes - startMinutes, Self.hour)
         startMinutes = minutes
         endMinutes = min(minutes + duration, Self.latestEnd)
+    }
+
+    /// Moves the first day and keeps the length, so the last day follows.
+    mutating func moveDay(to newDay: String, calendar: Calendar = .current) {
+        let length = Self.days(from: day, to: endDay, calendar: calendar)
+        day = newDay
+        let first = Self.date(ofDay: newDay, calendar: calendar)
+        let last = calendar.date(byAdding: .day, value: max(length, 0), to: first)
+        endDay = last.map { Self.day(of: $0, calendar: calendar) } ?? newDay
+    }
+
+    /// A repeat an event cannot keep, every year, becomes no repeat when a task becomes an event.
+    mutating func fitRepeatToKind() {
+        if kind == .event, !NewItemOptions.eventRepeats.contains(repeatRule) { repeatRule = .never }
     }
 }
 
@@ -87,6 +126,13 @@ extension NewItemForm {
     static func time(minutes: Int, calendar: Calendar = .current) -> Date {
         let components = DateComponents(year: 2001, month: 1, day: 1, hour: minutes / hour, minute: minutes % hour)
         return calendar.date(from: components) ?? Date()
+    }
+
+    /// How many days `end` is after `start`.
+    static func days(from start: String, to end: String, calendar: Calendar = .current) -> Int {
+        let first = date(ofDay: start, calendar: calendar)
+        let last = date(ofDay: end, calendar: calendar)
+        return calendar.dateComponents([.day], from: first, to: last).day ?? 0
     }
 
     /// The minutes after local midnight of `date`.

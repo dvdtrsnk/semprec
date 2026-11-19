@@ -475,7 +475,7 @@ describe("enqueueRemindersResync and the reminders write hooks (issue gh-1879)",
     const event = await chokePoint(tenant).create(EVENTS_MODULE_ID, EVENT);
     await clearJobs();
 
-    await expect(chokePoint(tenant).patch(EVENTS_MODULE_ID, event.id, { alertMinutes: 7 })).rejects.toMatchObject({
+    await expect(chokePoint(tenant).patch(EVENTS_MODULE_ID, event.id, { alertMinutes: -5 })).rejects.toMatchObject({
       status: 400,
     });
     await expect(

@@ -5,6 +5,7 @@ import cz.semprec.app.domain.CalendarChanges
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntry
 import cz.semprec.app.domain.CalendarEntryKind
+import cz.semprec.app.domain.CalendarRepeat
 import cz.semprec.app.domain.CalendarRepository
 import cz.semprec.app.domain.CalendarSchedule
 import cz.semprec.app.domain.CalendarTimeline
@@ -13,6 +14,7 @@ import cz.semprec.app.domain.NewCalendarItem
 import cz.semprec.app.domain.RepositoryResult
 import io.ktor.http.HttpMethod
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -121,12 +123,24 @@ class HttpCalendarRepository(
                 } else {
                     api.send(HttpMethod.Put, "/api/items/${created.value.id}/relations/calendar/$calendar").ignoreBody()
                 }
-                when (linked) {
-                    is RepositoryResult.Failure -> linked
+                val repeated = if (linked is RepositoryResult.Content) repeatTask(created.value.id, draft) else linked
+                when (repeated) {
+                    is RepositoryResult.Failure -> repeated
                     is RepositoryResult.Content -> RepositoryResult.Content(created.value.id).alsoChanged()
                 }
             }
         }
+    }
+
+    /**
+     * Sets the repetition of a new task (`PUT /api/tasks/:id/recurrence`), which lives beside the task rather than in
+     * its properties; an event carries its rule in its properties instead.
+     */
+    private suspend fun repeatTask(taskId: String, draft: NewCalendarItem): RepositoryResult<Unit> {
+        val preset = draft.repeat.taskPreset
+        if (draft.kind != CalendarEntryKind.TASK || preset == null) return RepositoryResult.Content(Unit)
+        val body = ApiJson.encodeToString(buildJsonObject { put("preset", JsonPrimitive(preset)) })
+        return api.send(HttpMethod.Put, "/api/tasks/$taskId/recurrence", body = body).ignoreBody()
     }
 
     /**
@@ -176,8 +190,51 @@ private fun NewCalendarItem.toProperties(): JsonObject = buildJsonObject {
     put("date", JsonPrimitive(schedule.date.toString()))
     schedule.timeFrom?.let { put("timeFrom", JsonPrimitive(it.toString())) }
     schedule.timeTo?.let { put("timeTo", JsonPrimitive(it.toString())) }
+    notes?.let { put("description", JsonPrimitive(it)) }
     if (kind == CalendarEntryKind.EVENT) {
         schedule.endDate?.let { put("endDate", JsonPrimitive(it.toString())) }
         place?.let { put("place", JsonPrimitive(it)) }
+        url?.let { put("url", JsonPrimitive(it)) }
+        alertMinutes?.let { put("alertMinutes", JsonPrimitive(it)) }
+        travelMinutes?.let { put("travelMinutes", JsonPrimitive(it)) }
+        eventRecurrence(repeat, schedule.date)?.let { put("recurrence", it) }
+    } else if (flagged) {
+        put("flagged", JsonPrimitive(true))
     }
 }
+
+private val ISO_WEEKDAYS = listOf("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+/**
+ * The fixed rule an event repeats by, from its first [day]: every weekday, Monday to Friday, its own weekday or its
+ * day of the month. An event never repeats yearly; the rules leave that out.
+ */
+private fun eventRecurrence(repeat: CalendarRepeat, day: CalendarDay): JsonObject? {
+    fun weekdays(days: List<String>) = buildJsonObject {
+        put("kind", JsonPrimitive("weekdays"))
+        put("days", JsonArray(days.map(::JsonPrimitive)))
+    }
+    return when (repeat) {
+        CalendarRepeat.NEVER, CalendarRepeat.YEARLY -> null
+        CalendarRepeat.DAILY -> weekdays(ISO_WEEKDAYS)
+        CalendarRepeat.WEEKDAYS -> weekdays(ISO_WEEKDAYS.take(WORKING_DAYS))
+        CalendarRepeat.WEEKLY -> weekdays(listOf(ISO_WEEKDAYS[day.isoDayOfWeek - 1]))
+        CalendarRepeat.MONTHLY -> buildJsonObject {
+            put("kind", JsonPrimitive("monthDates"))
+            put("dates", JsonArray(listOf(JsonPrimitive(day.day))))
+        }
+    }
+}
+
+private const val WORKING_DAYS = 5
+
+/** The server's preset for a repeating task, `null` for one that does not repeat. */
+private val CalendarRepeat.taskPreset: String?
+    get() = when (this) {
+        CalendarRepeat.NEVER -> null
+        CalendarRepeat.DAILY -> "daily"
+        CalendarRepeat.WEEKDAYS -> "weekdays"
+        CalendarRepeat.WEEKLY -> "weekly"
+        CalendarRepeat.MONTHLY -> "monthly"
+        CalendarRepeat.YEARLY -> "yearly"
+    }

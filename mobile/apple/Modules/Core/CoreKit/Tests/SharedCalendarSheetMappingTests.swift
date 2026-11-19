@@ -192,6 +192,30 @@ final class SharedCalendarSheetMappingTests: XCTestCase {
             ))) as? SharedSDK.NewItemActionCreate
         )
         XCTAssertEqual(event.kind, .event)
+        XCTAssertNil(event.alertMinutes)
+        XCTAssertNil(event.travelMinutes)
+        XCTAssertEqual(event.repeat, .never)
         XCTAssertEqual(Model.effect(SharedSDK.NewItemEffectCreated(itemId: "new1")), .created(itemId: "new1"))
+    }
+
+    func testNewItemOptionsMap() throws {
+        typealias Model = SharedNewItemScreenModel
+        let draft = NewItemDraft(
+            kind: .event, title: "Trip", day: "2026-10-17", timed: true, startMinutes: 600, hasEnd: true,
+            endMinutes: 540, place: "", calendarId: "", endDay: "2026-10-19", notes: "Map", url: "https://x.cz",
+            alertMinutes: 25, travelMinutes: 45, repeatRule: .weekly, flagged: true
+        )
+        let create = try XCTUnwrap(Model.action(.create(draft)) as? SharedSDK.NewItemActionCreate)
+        XCTAssertEqual([create.endDay, create.notes, create.url], ["2026-10-19", "Map", "https://x.cz"])
+        XCTAssertEqual(create.alertMinutes?.intValue, 25)
+        XCTAssertEqual(create.travelMinutes?.intValue, 45)
+        XCTAssertTrue(create.flagged)
+        let repeats: [(CoreKit.NewItemRepeat, SharedSDK.NewItemRepeat)] = [
+            (.never, .never), (.daily, .daily), (.weekdays, .weekdays), (.weekly, .weekly), (.monthly, .monthly),
+            (.yearly, .yearly)
+        ]
+        for (swift, kotlin) in repeats {
+            XCTAssertEqual(swift.shared, kotlin)
+        }
     }
 }
