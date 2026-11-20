@@ -88,10 +88,12 @@ private extension NoteBlockSlot {
             }
         }
         .padding(.trailing, presentation.selecting ? Theme.Spacing.small : 0)
-        .background(
-            presentation.isSelected ? Theme.Colors.accent.opacity(0.14) : .clear,
-            in: .rect(cornerRadius: 10)
-        )
+        // Selected blocks next to each other keep a hairline gap between their backgrounds.
+        .background {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(presentation.isSelected ? Theme.Colors.accent.opacity(0.14) : .clear)
+                .padding(.vertical, 1)
+        }
         .background(Theme.Colors.groupedBackground.opacity(presentation.swipe == nil ? 0 : 1))
         .animation(.snappy(duration: 0.15), value: presentation.isSelected)
         .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
