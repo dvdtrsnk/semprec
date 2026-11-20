@@ -40,6 +40,7 @@ struct AppScene: View {
         let selectedTab = $selectedTab
         SessionGate(viewModel: SessionViewModel(model: composition.models.makeSession())) {
             Self.tabs(composition, rootNavigator: rootNavigator, selectedTab: selectedTab)
+                .modifier(LiveUpdates(models: composition.models))
         } signedOut: {
             AuthScreenFactory.login(makeModel: { composition.models.makeLogin() })
                 .task { await composition.notifications?.signedOut() }

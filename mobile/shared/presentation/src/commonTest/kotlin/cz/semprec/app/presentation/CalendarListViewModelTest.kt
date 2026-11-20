@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarCancellationImpact
 import cz.semprec.app.domain.RepositoryResult
+import cz.semprec.app.domain.SyncChanges
+import cz.semprec.app.domain.SyncTopic
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -18,6 +21,7 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class CalendarListViewModelTest : MainDispatcherTest() {
     private val catalog = FakeCatalogRepository()
+    private val sync = SyncChanges()
 
     private fun viewModel() =
         CalendarViewModelFactory(
@@ -25,6 +29,7 @@ class CalendarListViewModelTest : MainDispatcherTest() {
             catalog,
             FakeInvitationRepository(),
             catalog.changes,
+            sync = sync,
         ).calendarListViewModel()
 
     private fun TestScope.loaded(): CalendarListViewModel = viewModel().also { runCurrent() }
@@ -232,6 +237,30 @@ class CalendarListViewModelTest : MainDispatcherTest() {
         assertEquals(3, vm.state.value.calendars.size)
         vm.close()
     }
+
+    @Test fun `a calendar change the server reports reloads the list unless a write is under way`() =
+        runTest(dispatcher) {
+            val vm = loaded()
+            catalog.calendars = catalog.calendars.filter { it.id != "work" }
+            sync.raise(setOf(SyncTopic.INVITATIONS, SyncTopic.MAIL_ACCOUNTS))
+            runCurrent()
+            assertEquals(4, vm.state.value.calendars.size)
+            sync.raise(setOf(SyncTopic.CALENDAR))
+            runCurrent()
+            assertEquals(3, vm.state.value.calendars.size)
+
+            val gate = CompletableDeferred<Unit>()
+            catalog.writeGate = gate
+            act(vm, CalendarListAction.Change.ToggleHidden("personal"))
+            sync.raise(setOf(SyncTopic.CALENDAR))
+            runCurrent()
+            assertEquals(2, catalog.calls.count { it == "list" })
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals(listOf("list", "list", "edit personal null null null true", "list"), catalog.calls.take(4))
+            assertFalse(vm.state.value.busy)
+            vm.close()
+        }
 
     @Test fun `closing ignores actions and clearing the store closes it too`() = runTest(dispatcher) {
         val store = ViewModelStore()

@@ -12,6 +12,7 @@ import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.needsAnswer
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 private fun initialInvitationsState() = InvitationsState(
@@ -28,11 +29,13 @@ private fun initialInvitationsState() = InvitationsState(
 /**
  * The invitations: the ones that wait for an answer under New, the answered ones under Done. The first load opens
  * the tab that has something in it. An answer is sent and the list is read again, so an accepted invitation moves
- * to Done with the status the server stored, and the calendar shows its event.
+ * to Done with the status the server stored, and the calendar shows its event. A change the server reports
+ * ([serverChanges]) reads the list again unless a read or an answer is under way.
  */
 class InvitationsViewModel internal constructor(
     private val repository: InvitationRepository,
     private val answer: AnswerInvitation,
+    serverChanges: Flow<Unit>,
 ) : ScreenViewModel<InvitationsState, InvitationsAction, Nothing>(initialInvitationsState()) {
     private var invitations: List<CalendarInvitation> = emptyList()
     private var loadedOnce = false
@@ -40,6 +43,7 @@ class InvitationsViewModel internal constructor(
 
     init {
         load()
+        reloadOnChanges(serverChanges) { if (job?.isActive != true) load() }
     }
 
     override fun onAction(action: InvitationsAction) {

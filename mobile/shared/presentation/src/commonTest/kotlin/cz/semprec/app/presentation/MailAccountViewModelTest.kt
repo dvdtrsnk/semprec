@@ -3,6 +3,8 @@ package cz.semprec.app.presentation
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.SyncChanges
+import cz.semprec.app.domain.SyncTopic
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.advanceTimeBy
@@ -16,8 +18,13 @@ import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MailAccountViewModelTest : MainDispatcherTest() {
+    private val sync = SyncChanges()
+
     private fun viewModel(mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository()) =
-        MailViewModelFactory(ScriptedMailRepository(), ScriptedMailDraftRepository(), mailboxes).accountViewModel("m1")
+        MailViewModelFactory(ScriptedMailRepository(), ScriptedMailDraftRepository(), mailboxes, sync = sync)
+            .accountViewModel("m1")
+
+    private fun mailChanged() = sync.raise(setOf(SyncTopic.MAIL_ACCOUNTS))
 
     @Test fun `shows the account with what its sync did`() = runTest(dispatcher) {
         val boxes = ScriptedMailboxRepository(
@@ -37,7 +44,7 @@ class MailAccountViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `a syncing account follows the server's status and keeps a name changed meanwhile`() =
+    @Test fun `a mail change the server reports reads the status again and keeps a name changed meanwhile`() =
         runTest(dispatcher) {
             val boxes = ScriptedMailboxRepository(
                 one = MailCall(
@@ -53,23 +60,26 @@ class MailAccountViewModelTest : MainDispatcherTest() {
             assertEquals(10, vm.state.value.account?.syncedMessageCount)
             vm.onAction(MailAccountAction.Rename("Work"))
             runCurrent()
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertEquals(1, boxes.one.count)
 
-            advanceTimeBy(10_001)
+            sync.raise(setOf(SyncTopic.CALENDAR))
+            runCurrent()
+            assertEquals(1, boxes.one.count)
+            mailChanged()
             runCurrent()
             assertEquals(10, vm.state.value.account?.syncedMessageCount)
             assertEquals(MailAccountPhase.CONTENT, vm.state.value.phase)
-            advanceTimeBy(10_001)
+            mailChanged()
             runCurrent()
             assertEquals(20, vm.state.value.account?.syncedMessageCount)
             assertEquals("2026-10-19T08:12:00.000Z", vm.state.value.account?.lastSuccessfulSyncAt)
             assertEquals("Work", vm.state.value.account?.name)
-            advanceTimeBy(10_001)
+            mailChanged()
             runCurrent()
             assertEquals(MailAccountStatus.OK, vm.state.value.account?.status)
             assertEquals("Work", vm.state.value.account?.name)
-
-            advanceTimeBy(60_000)
-            runCurrent()
             assertEquals(4, boxes.one.count)
             vm.close()
         }

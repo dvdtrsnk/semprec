@@ -5,6 +5,8 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.SyncChanges
+import cz.semprec.app.domain.SyncTopic
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.advanceTimeBy
@@ -18,8 +20,11 @@ import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MailAccountsViewModelTest : MainDispatcherTest() {
+    private val sync = SyncChanges()
+
     private fun viewModel(mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository()) =
-        MailViewModelFactory(ScriptedMailRepository(), ScriptedMailDraftRepository(), mailboxes).accountsViewModel()
+        MailViewModelFactory(ScriptedMailRepository(), ScriptedMailDraftRepository(), mailboxes, sync = sync)
+            .accountsViewModel()
 
     private fun icloud(address: String = "me@icloud.com", password: String = "pass") =
         MailAccountsAction.Connect(MailConnectKind.ICLOUD, address, password, "", "")
@@ -43,7 +48,7 @@ class MailAccountsViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `an account that syncs is read again until the server is done`() = runTest(dispatcher) {
+    @Test fun `a mail change the server reports reads the list again and a timer does not`() = runTest(dispatcher) {
         val boxes = ScriptedMailboxRepository(
             list = MailCall(
                 mailContent(listOf(mailAccount("a", MailSyncStatus.NEVER))),
@@ -54,20 +59,27 @@ class MailAccountsViewModelTest : MainDispatcherTest() {
         val vm = viewModel(boxes)
         runCurrent()
         assertEquals(MailAccountStatus.SYNCING, vm.state.value.accounts.single().status)
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertEquals(1, boxes.list.count)
 
-        advanceTimeBy(10_001)
+        sync.raise(setOf(SyncTopic.CALENDAR, SyncTopic.INVITATIONS))
+        runCurrent()
+        assertEquals(1, boxes.list.count)
+        sync.raise(setOf(SyncTopic.MAIL_ACCOUNTS))
         runCurrent()
         assertEquals(2, boxes.list.count)
         assertEquals(MailAccountStatus.SYNCING, vm.state.value.accounts.single().status)
-        advanceTimeBy(10_001)
+        assertFalse(vm.state.value.refreshing)
+        sync.raise(setOf(SyncTopic.MAIL_ACCOUNTS))
         runCurrent()
         assertEquals(3, boxes.list.count)
         assertEquals(MailAccountStatus.OK, vm.state.value.accounts.single().status)
 
-        advanceTimeBy(60_000)
+        vm.close()
+        sync.raise(setOf(SyncTopic.MAIL_ACCOUNTS))
         runCurrent()
         assertEquals(3, boxes.list.count)
-        vm.close()
     }
 
     @Test fun `failures are an error and retry recovers and a failed refresh keeps the list`() = runTest(dispatcher) {

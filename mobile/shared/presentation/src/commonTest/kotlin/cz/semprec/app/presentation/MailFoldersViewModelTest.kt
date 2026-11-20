@@ -3,6 +3,8 @@ package cz.semprec.app.presentation
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.SyncChanges
+import cz.semprec.app.domain.SyncTopic
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.advanceTimeBy
@@ -19,7 +21,9 @@ class MailFoldersViewModelTest : MainDispatcherTest() {
     private fun viewModel(
         mail: ScriptedMailRepository = ScriptedMailRepository(),
         mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository(),
-    ) = MailViewModelFactory(mail, ScriptedMailDraftRepository(), mailboxes).foldersViewModel()
+    ) = MailViewModelFactory(mail, ScriptedMailDraftRepository(), mailboxes, sync = sync).foldersViewModel()
+
+    private val sync = SyncChanges()
 
     @Test fun `shows the smart boxes and every account with its folders`() = runTest(dispatcher) {
         val vm = viewModel()
@@ -60,7 +64,7 @@ class MailFoldersViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `an account that syncs is read again with its folders until the server is done`() =
+    @Test fun `the screen is read again with its folders when the server reports a mail change`() =
         runTest(dispatcher) {
             val mailboxes = ScriptedMailboxRepository(
                 list = MailCall(
@@ -71,16 +75,18 @@ class MailFoldersViewModelTest : MainDispatcherTest() {
             val vm = viewModel(mailboxes = mailboxes)
             runCurrent()
             assertEquals(MailAccountStatus.SYNCING, vm.state.value.accounts.single().status)
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertEquals(1, mailboxes.list.count)
 
-            advanceTimeBy(10_001)
+            sync.raise(setOf(SyncTopic.CALENDAR))
+            runCurrent()
+            assertEquals(1, mailboxes.list.count)
+            sync.raise(setOf(SyncTopic.MAIL_ACCOUNTS))
             runCurrent()
             assertEquals(2, mailboxes.list.count)
             assertEquals(2, mailboxes.folders.count)
             assertEquals(MailAccountStatus.OK, vm.state.value.accounts.single().status)
-
-            advanceTimeBy(60_000)
-            runCurrent()
-            assertEquals(2, mailboxes.list.count)
             vm.close()
         }
 

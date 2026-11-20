@@ -23,6 +23,7 @@ import cz.semprec.app.domain.InvitationStatus
 import cz.semprec.app.domain.NewCalendarItem
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.SleepNightEntry
+import kotlinx.coroutines.CompletableDeferred
 
 val DAY_ZERO = CalendarDay(2026, 10, 16)
 
@@ -173,6 +174,8 @@ class FakeCatalogRepository(val changes: CalendarChanges = CalendarChanges()) : 
     var writeResult: RepositoryResult<Unit> = RepositoryResult.Content(Unit)
     var impact: RepositoryResult<CalendarCancellationImpact> =
         RepositoryResult.Content(CalendarCancellationImpact(3, 2, 1))
+    /** When set, every write waits for it before it answers. */
+    var writeGate: CompletableDeferred<Unit>? = null
 
     override suspend fun calendars(): RepositoryResult<List<CalendarInfo>> {
         calls += "list"
@@ -205,7 +208,8 @@ class FakeCatalogRepository(val changes: CalendarChanges = CalendarChanges()) : 
         return write()
     }
 
-    private fun write(): RepositoryResult<Unit> {
+    private suspend fun write(): RepositoryResult<Unit> {
+        writeGate?.await()
         if (writeResult is RepositoryResult.Content) changes.changed()
         return writeResult
     }
@@ -220,6 +224,8 @@ class FakeInvitationRepository(val changes: CalendarChanges = CalendarChanges())
     )
     var listResult: RepositoryResult<List<CalendarInvitation>>? = null
     var respondResult: RepositoryResult<Unit> = RepositoryResult.Content(Unit)
+    /** When set, an answer waits for it before it answers. */
+    var respondGate: CompletableDeferred<Unit>? = null
 
     override suspend fun invitations(): RepositoryResult<List<CalendarInvitation>> {
         calls += "list"
@@ -228,6 +234,7 @@ class FakeInvitationRepository(val changes: CalendarChanges = CalendarChanges())
 
     override suspend fun respond(invitationId: String, answer: InvitationAnswer): RepositoryResult<Unit> {
         calls += "respond $invitationId $answer"
+        respondGate?.await()
         val answered = respondResult
         if (answered is RepositoryResult.Content) {
             items = items.map { if (it.id == invitationId) it.copy(status = answer.status()) else it }

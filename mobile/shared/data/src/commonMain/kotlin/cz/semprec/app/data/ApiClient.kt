@@ -5,6 +5,9 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.timeout
+import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
 import io.ktor.client.request.request
@@ -18,20 +21,50 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.close
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val REQUEST_TIMEOUT_MILLIS = 30_000L
 private const val CONNECT_TIMEOUT_MILLIS = 15_000L
 // A recording of an hour is tens of megabytes; its upload gets far longer than a JSON call.
 private const val UPLOAD_TIMEOUT_MILLIS = 600_000L
 private const val DEFAULT_MEDIA_TYPE = "application/octet-stream"
+// How long a socket may take to open, and how long its closing handshake may take when the caller ends it.
+private const val SOCKET_HANDSHAKE_TIMEOUT_MILLIS = 15_000L
+private const val SOCKET_CLOSE_TIMEOUT_MILLIS = 2_000L
+
+/** How a WebSocket that [ApiClient.openSocket] opened ended. */
+sealed interface SocketEnd {
+    /** The server closed it with [code], or the connection ended without a close frame (`null`). */
+    data class Closed(val code: Short?) : SocketEnd
+
+    /** It could not be opened, or the connection failed while it was open. */
+    data object Failed : SocketEnd
+}
 
 /** The raw bytes of a request body and the media type they are sent as. */
 class RawBody(val mimeType: String, val bytes: ByteArray)
 
 /**
  * The only code that opens a connection to a Semprec server. It sends JSON, attaches the bearer token when it has
- * one, and turns every status or transport problem into a [FailureKind]; cancellation is rethrown, never mapped.
+ * one, and turns every status or transport problem into a [FailureKind]; cancellation is rethrown, never mapped. It
+ * also opens the sync WebSocket ([openSocket]), whose end is a [SocketEnd] value in the same way.
  */
 class ApiClient internal constructor(engine: HttpClientEngine?) {
     /** A client on the platform's default engine. */
@@ -126,6 +159,68 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
         ApiBytesResponse.Failure(FailureKind.UNAVAILABLE, null)
     }
 
+    /**
+     * Opens the WebSocket [path] of [serverUrl] (`https://host` becomes `wss://host`) with the bearer [token] and runs
+     * [session] on it until it returns, then reports how the socket ended. The handshake is bounded. When the caller
+     * is cancelled, the socket sends a normal close frame and waits, bounded, for the server's answer before the
+     * cancellation is rethrown.
+     */
+    suspend fun openSocket(
+        serverUrl: String,
+        path: String,
+        token: String,
+        session: suspend (DefaultClientWebSocketSession) -> Unit,
+    ): SocketEnd {
+        val stopping = CompletableDeferred<Unit>()
+        // Outside the caller's job: cancelling the caller would otherwise tear the connection down before the close
+        // frame is out. A supervisor, so that nothing the socket does can fail the client itself.
+        val running = http.async(SupervisorJob(http.coroutineContext[Job])) {
+            runSocket(socketUrl(serverUrl, path), token, session, stopping)
+        }
+        return try {
+            running.await()
+        } catch (cancelled: CancellationException) {
+            stopping.complete(Unit)
+            withContext(NonCancellable) {
+                if (withTimeoutOrNull(SOCKET_CLOSE_TIMEOUT_MILLIS * 2) { running.join() } == null) running.cancel()
+            }
+            throw cancelled
+        }
+    }
+
+    private suspend fun runSocket(
+        url: String,
+        token: String,
+        session: suspend (DefaultClientWebSocketSession) -> Unit,
+        stopping: Deferred<Unit>,
+    ): SocketEnd = try {
+        var end: SocketEnd = SocketEnd.Failed
+        coroutineScope {
+            val handshake = launch {
+                delay(SOCKET_HANDSHAKE_TIMEOUT_MILLIS)
+                throw SocketHandshakeTimeout()
+            }
+            http.webSocket(url, request = { header(HttpHeaders.Authorization, "Bearer $token") }) {
+                handshake.cancel()
+                val reading = launch { session(this@webSocket) }
+                val stopped = select {
+                    reading.onJoin { false }
+                    stopping.onAwait { true }
+                }
+                if (stopped) reading.cancelAndJoin()
+                if (stopped) close(CloseReason(CloseReason.Codes.NORMAL, "client closed"))
+                end = SocketEnd.Closed(withTimeoutOrNull(SOCKET_CLOSE_TIMEOUT_MILLIS) { closeReason.await() }?.code)
+            }
+        }
+        end
+    } catch (_: CancellationException) {
+        // The connection cancelled the session, unless this coroutine itself was cancelled.
+        currentCoroutineContext().ensureActive()
+        SocketEnd.Failed
+    } catch (_: Exception) {
+        SocketEnd.Failed
+    }
+
     private fun HttpRequestBuilder.headers(token: String?) {
         header(HttpHeaders.Accept, ContentType.Application.Json.toString())
         if (token != null) header(HttpHeaders.Authorization, "Bearer $token")
@@ -134,12 +229,23 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
     private companion object {
         val configuration: io.ktor.client.HttpClientConfig<*>.() -> Unit = {
             expectSuccess = false
+            install(WebSockets)
             install(HttpTimeout) {
                 requestTimeoutMillis = REQUEST_TIMEOUT_MILLIS
                 connectTimeoutMillis = CONNECT_TIMEOUT_MILLIS
             }
         }
     }
+}
+
+/** The server did not complete a WebSocket handshake in time. */
+private class SocketHandshakeTimeout : Exception("WebSocket handshake timed out")
+
+/** The WebSocket URL of [path] on [serverUrl]: `https` becomes `wss` and `http` becomes `ws`. */
+internal fun socketUrl(serverUrl: String, path: String): String = when {
+    serverUrl.startsWith("https://") -> "wss://" + serverUrl.removePrefix("https://") + path
+    serverUrl.startsWith("http://") -> "ws://" + serverUrl.removePrefix("http://") + path
+    else -> serverUrl + path
 }
 
 /** The failure a status maps to, or `null` for a success. */

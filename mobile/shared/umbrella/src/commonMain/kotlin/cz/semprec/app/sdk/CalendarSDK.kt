@@ -6,6 +6,7 @@ import cz.semprec.app.data.HttpCalendarCatalogRepository
 import cz.semprec.app.data.HttpCalendarRepository
 import cz.semprec.app.data.HttpInvitationRepository
 import cz.semprec.app.domain.CalendarChanges
+import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.presentation.CalendarAgendaViewModel
 import cz.semprec.app.presentation.CalendarAgendaViewModelFactory
 import cz.semprec.app.presentation.CalendarListViewModel
@@ -16,10 +17,10 @@ import cz.semprec.app.presentation.NewCalendarItemViewModel
 
 /**
  * The calendar part of [HomeSDK]. Its ViewModels share one change counter, so a calendar hidden, an invitation
- * answered or an item created in one of them is read by the others. Every call creates a new ViewModel that the
- * caller owns.
+ * answered or an item created in one of them is read by the others, and they follow the changes the server reports
+ * through [sync]. Every call creates a new ViewModel that the caller owns.
  */
-class CalendarSDK internal constructor(api: AuthenticatedApi) {
+class CalendarSDK internal constructor(api: AuthenticatedApi, sync: SyncChanges) {
     private val changes = CalendarChanges()
     private val viewModels = CalendarViewModelFactory(
         HttpCalendarRepository(api, changes),
@@ -27,6 +28,7 @@ class CalendarSDK internal constructor(api: AuthenticatedApi) {
         HttpInvitationRepository(api, changes),
         changes,
         api.changes.events,
+        sync,
     )
     private val agenda = CalendarAgendaViewModelFactory(HttpCalendarAgendaRepository(api), api.changes.events)
 

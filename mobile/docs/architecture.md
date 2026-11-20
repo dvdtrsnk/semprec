@@ -365,6 +365,29 @@ process over `HttpPushRepository` (`shared/data`: `POST /api/push-subscriptions`
   stack. The target waits in `AppNotifications` until a signed-in scene takes it,
   and `NavigationContext.whenShown(_:route:)` waits for the Calendar stack to register.
 
+## Live updates
+
+Each window follows what the server changes through one `WS /api/sync` connection,
+`SyncSocket` (`shared/data`), on the window's `AuthenticatedApi`: the stored server and
+bearer token, and a close with 4401 signs the window out as a `401` does. It reconnects
+after a drop with the web client's backoff (1 s floor, ceiling doubling to 30 s,
+jittered) and raises every topic once after each successful connect. `item` and
+`relation` frames raise the `SyncTopic` of their database's canonical key (from
+`GET /api/schema`, read on each connect): `calendars`, `events` and `tasks` raise
+`CALENDAR`, `invitations` raises `INVITATIONS`, `mailboxes`, `folders` and `emails`
+raise `MAIL_ACCOUNTS`. `notification` frames raise by kind: `calendar_invitation`
+raises `INVITATIONS`, `mail_sync_error` and `mail_sync_stalled` raise `MAIL_ACCOUNTS`.
+Frames within 300 ms of each other raise once. The topics are revisions of
+`SyncChanges` (`shared/domain`), which `HomeSDK` shares with `CalendarSDK` and
+`MailSDK`: the calendar reloads on `CALENDAR` and `INVITATIONS`, the calendars sheet on
+`CALENDAR`, the invitations on `INVITATIONS`, and the mailboxes, the accounts and an
+account on `MAIL_ACCOUNTS`, each quietly and not while its own read or write runs.
+
+`HomeSDK.sync` starts and stops the socket. On Apple the app's `LiveUpdates` modifier
+on the signed-in tabs of each scene calls `ScreenModelFactory.startLiveUpdates()`
+whenever the scene's `scenePhase` is not `.background` and `stopLiveUpdates()` when it
+becomes `.background` or the tabs disappear. The Android app starts no socket.
+
 ## Copy and localization
 
 Shared state carries typed values only (phases, `FailureKind`, ordinals and ids),
@@ -568,4 +591,5 @@ it holds the steps. Following the Settings feature, a new feature touches:
 - [`docs/adr/2026-10-24-shared-screen-viewmodel-lifecycle-and-native-hosting.md`](../../docs/adr/2026-10-24-shared-screen-viewmodel-lifecycle-and-native-hosting.md)
 - [`docs/adr/2026-10-24-app-owned-mobile-navigation-through-feature-routers.md`](../../docs/adr/2026-10-24-app-owned-mobile-navigation-through-feature-routers.md)
 - [`docs/adr/2026-10-24-mobile-copy-localized-natively-from-typed-state.md`](../../docs/adr/2026-10-24-mobile-copy-localized-natively-from-typed-state.md)
+- [`docs/adr/2026-11-20-mobile-screens-follow-the-sync-socket.md`](../../docs/adr/2026-11-20-mobile-screens-follow-the-sync-socket.md)
 - [`docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`](../../docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md)

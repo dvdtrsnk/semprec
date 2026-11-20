@@ -41,6 +41,14 @@ public final class SharedScreenModelFactory {
 // MARK: - Protocol conformance
 extension SharedScreenModelFactory: ScreenModelFactory {
 
+    public func startLiveUpdates() {
+        sdk.sync.start()
+    }
+
+    public func stopLiveUpdates() {
+        sdk.sync.stop()
+    }
+
     public func makeSession() -> any SessionScreenModel {
         SharedSessionScreenModel(sdk.sessionViewModel())
     }

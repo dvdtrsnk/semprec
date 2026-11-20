@@ -8,8 +8,8 @@ import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailboxRepository
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 private val ADDRESS = Regex("^[^\\s@,]+@[^\\s@,]+$")
@@ -17,16 +17,20 @@ private val ADDRESS = Regex("^[^\\s@,]+@[^\\s@,]+$")
 /**
  * The connected mailboxes and the form that connects one with an address and a password. Connecting is one request:
  * the server checks the login on its mail servers before it saves anything. A connected mailbox reloads the list.
- * While an account syncs on the server the list is read again, so its status follows the server's.
+ * A change of the mail data the server reports ([serverChanges]) reads the list again unless a read is under way, so
+ * the status of an account that syncs follows the server's.
  */
 class MailAccountsViewModel internal constructor(
     private val mailboxes: MailboxRepository,
+    serverChanges: Flow<Unit>,
 ) : ScreenViewModel<MailAccountsState, MailAccountsAction, MailAccountsEffect>(MailAccountsState()) {
     private var loadJob: Job? = null
-    private var pollJob: Job? = null
 
     init {
         load(showWait = true)
+        reloadOnChanges(serverChanges) {
+            if (loadJob?.isActive != true) load(showWait = state.value.phase != MailAccountsPhase.CONTENT)
+        }
     }
 
     override fun onAction(action: MailAccountsAction) {
@@ -47,16 +51,6 @@ class MailAccountsViewModel internal constructor(
             val result = mailAttempt { mailboxes.mailboxes() }
             ensureActive()
             update { it.after(result) }
-            pollWhileSyncing()
-        }
-    }
-
-    private fun pollWhileSyncing() {
-        pollJob?.cancel()
-        if (state.value.accounts.none { it.status == MailAccountStatus.SYNCING }) return
-        pollJob = viewModelScope.launch {
-            delay(MAIL_SYNC_POLL_MILLIS)
-            if (loadJob?.isActive != true) load(showWait = false)
         }
     }
 

@@ -4,6 +4,7 @@ import cz.semprec.app.data.AuthenticatedApi
 import cz.semprec.app.data.HttpMailDraftRepository
 import cz.semprec.app.data.HttpMailRepository
 import cz.semprec.app.data.HttpMailboxRepository
+import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.presentation.MailAccountViewModel
 import cz.semprec.app.presentation.MailAccountsViewModel
 import cz.semprec.app.presentation.MailComposeStart
@@ -16,12 +17,13 @@ import cz.semprec.app.presentation.MailViewModelFactory
 
 /** The mail screens; [HomeSDK.mail] hands it out. */
 class MailSDK internal constructor(private val factory: MailViewModelFactory) {
-    internal constructor(api: AuthenticatedApi) : this(
+    internal constructor(api: AuthenticatedApi, sync: SyncChanges) : this(
         MailViewModelFactory(
             HttpMailRepository(api),
             HttpMailDraftRepository(api),
             HttpMailboxRepository(api),
             api.changes.events,
+            sync,
         ),
     )
 

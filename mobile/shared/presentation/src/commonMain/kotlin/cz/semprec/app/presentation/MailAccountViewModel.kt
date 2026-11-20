@@ -6,8 +6,8 @@ import cz.semprec.app.domain.MailRemovalImpact
 import cz.semprec.app.domain.MailboxRepository
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 private const val MIN_CONNECTIONS = 1
@@ -16,18 +16,20 @@ private const val MAX_CONNECTIONS = 15
 /**
  * One mailbox: its name and connection limit, which the person may change, and its removal. A removal first reads what
  * it would hide and waits for the person's answer; nothing is removed before that. A change that the server refuses
- * puts the old value back and raises [MailAccountState.actionFailed]. While the server syncs the mailbox its status is
- * read again, and only the status fields change, so a name being edited stays as it is.
+ * puts the old value back and raises [MailAccountState.actionFailed]. A change of the mail data the server reports
+ * ([serverChanges]) reads the mailbox again, and only its status fields change, so a name being edited stays as it is.
  */
 class MailAccountViewModel internal constructor(
     private val mailboxId: String,
     private val mailboxes: MailboxRepository,
+    serverChanges: Flow<Unit>,
 ) : ScreenViewModel<MailAccountState, MailAccountAction, MailAccountEffect>(MailAccountState()) {
     private var loadJob: Job? = null
     private var statusJob: Job? = null
 
     init {
         load()
+        reloadOnChanges(serverChanges, ::readStatus)
     }
 
     override fun onAction(action: MailAccountAction) {
@@ -61,26 +63,17 @@ class MailAccountViewModel internal constructor(
                     null -> it.copy(phase = MailAccountPhase.ERROR, failure = null)
                 }
             }
-            followSyncStatus()
         }
     }
 
-    /** A failed read changes nothing; the next one tries again. */
-    private fun followSyncStatus() {
-        statusJob?.cancel()
-        if (state.value.account?.status != MailAccountStatus.SYNCING) return
+    /** Reads the status of a shown mailbox again; a failed read changes nothing, and the next change tries again. */
+    private fun readStatus() {
+        if (state.value.phase != MailAccountPhase.CONTENT || statusJob?.isActive == true) return
         statusJob = viewModelScope.launch {
-            var syncing = true
-            while (syncing) {
-                delay(MAIL_SYNC_POLL_MILLIS)
-                val read = mailAttempt { mailboxes.mailbox(mailboxId) }
-                val fresh = (read as? RepositoryResult.Content)?.value?.toDetail()
-                ensureActive()
-                if (fresh != null) {
-                    update { it.copy(account = it.account?.withStatusOf(fresh)) }
-                    syncing = fresh.status == MailAccountStatus.SYNCING
-                }
-            }
+            val read = mailAttempt { mailboxes.mailbox(mailboxId) }
+            val fresh = (read as? RepositoryResult.Content)?.value?.toDetail()
+            ensureActive()
+            if (fresh != null) update { it.copy(account = it.account?.withStatusOf(fresh)) }
         }
     }
 

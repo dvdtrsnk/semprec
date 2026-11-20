@@ -11,6 +11,7 @@ import cz.semprec.app.domain.EditCalendars
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 /** The colours a calendar can take, in the order the sheet shows them. */
@@ -43,12 +44,14 @@ private fun initialListState() = CalendarListState(
 /**
  * The calendars sheet: which calendars show, their colours and notifications, and adding and removing calendars.
  * Every change is written at once and the list is read again, so the sheet shows what the server has; a calendar the
- * server refuses to change is not changed here either. Deleting asks the server what it would cancel first.
+ * server refuses to change is not changed here either. Deleting asks the server what it would cancel first. A change
+ * the server reports ([serverChanges]) reads the list again unless a read or a write of the sheet is under way.
  */
 class CalendarListViewModel internal constructor(
     private val repository: CalendarCatalogRepository,
     private val edits: EditCalendars,
     private val changes: CalendarChanges,
+    serverChanges: Flow<Unit>,
 ) : ScreenViewModel<CalendarListState, CalendarListAction, CalendarListEffect>(initialListState()) {
     private var infos: List<CalendarInfo> = emptyList()
     private var job: Job? = null
@@ -56,6 +59,7 @@ class CalendarListViewModel internal constructor(
 
     init {
         load()
+        reloadOnChanges(serverChanges) { if (job?.isActive != true) load() }
         viewModelScope.launch {
             changes.revision.collect { revision ->
                 if (revision != seenRevision) {

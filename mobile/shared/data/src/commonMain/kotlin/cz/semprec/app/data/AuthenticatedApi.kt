@@ -4,6 +4,7 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.ItemChanges
+import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 
@@ -59,8 +60,23 @@ class AuthenticatedApi(
         return response
     }
 
+    /**
+     * Opens the WebSocket [path] with the stored session and runs [session] on it (see [ApiClient.openSocket]), or
+     * returns `null` without opening anything when nobody is signed in. A socket the server closes because it revoked
+     * the session ([SESSION_REVOKED_CLOSE_CODE]) runs [onSessionRejected], as a `401` does.
+     */
+    suspend fun openSocket(path: String, session: suspend (DefaultClientWebSocketSession) -> Unit): SocketEnd? {
+        val stored = storage.load() ?: return null
+        val end = client.openSocket(stored.serverUrl, path, stored.token, session)
+        if (end is SocketEnd.Closed && end.code == SESSION_REVOKED_CLOSE_CODE) onSessionRejected()
+        return end
+    }
+
     internal companion object {
         const val UNAUTHORIZED_STATUS = 401
+
+        /** The close code of `WS /api/sync` for a revoked session, outside the range the protocol reserves. */
+        const val SESSION_REVOKED_CLOSE_CODE: Short = 4401
 
         /**
          * Whether a successful [method] on [path] changed what a screen shows. Reads are not changes, nor are the

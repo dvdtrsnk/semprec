@@ -20,6 +20,7 @@ import cz.semprec.app.data.HttpOverviewRepository
 import cz.semprec.app.data.HttpPushRepository
 import cz.semprec.app.data.HttpSearchRepository
 import cz.semprec.app.data.InMemoryPlaceholderRepository
+import cz.semprec.app.data.SyncSocket
 import cz.semprec.app.data.WorkData
 import cz.semprec.app.domain.InMemoryRecentSearches
 import cz.semprec.app.domain.LoadOverview
@@ -27,6 +28,7 @@ import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
 import cz.semprec.app.domain.RevokePushSubscription
 import cz.semprec.app.domain.SearchEverything
+import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.presentation.CollectionTarget
 import cz.semprec.app.presentation.CollectionViewModel
 import cz.semprec.app.presentation.CollectionViewModelFactory
@@ -45,6 +47,9 @@ import cz.semprec.app.presentation.SettingsViewModel
 import cz.semprec.app.presentation.TasksStart
 import cz.semprec.app.presentation.TasksViewModel
 import cz.semprec.app.presentation.WorkViewModelFactory
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * Native SDK and composition root of the screens. Its owner decides which screens share its data:
@@ -58,6 +63,9 @@ import cz.semprec.app.presentation.WorkViewModelFactory
  * it with the process. [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
  * microphone and speaker; the defaults have neither. [pushSubscriptions] holds the id of this device's push
  * subscription, which [DevicePushSDK] registers; signing out revokes it before the server ends the session.
+ *
+ * The sync socket of the window ([sync]) tells the calendar, invitation and mailbox screens of this SDK when the
+ * server changed what they show.
  */
 class HomeSDK(
     sessionStorage: SessionStorage = InMemorySessionStorage(),
@@ -74,6 +82,11 @@ class HomeSDK(
     private val viewModels =
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
     private val collectionReads = HttpCollectionReads(auth.api)
+    private val syncChanges = SyncChanges()
+
+    /** The sync socket of this window. */
+    val sync: SyncSDK =
+        SyncSDK(SyncSocket(auth.api, syncChanges, CoroutineScope(SupervisorJob() + Dispatchers.Default)))
 
     /** The profile and the account screens below it. */
     val account: AccountSDK = AccountSDK.create(auth.api, auth, collectionReads)
@@ -123,7 +136,7 @@ class HomeSDK(
         workViewModels.itemDetailsViewModel(kind, itemId)
 
     /** The mail screens: the thread list, a thread, writing a message, the mailboxes and the accounts. */
-    val mail: MailSDK = MailSDK(auth.api)
+    val mail: MailSDK = MailSDK(auth.api, syncChanges)
 
     fun homeViewModel(): HomeViewModel = viewModels.homeViewModel()
 
@@ -149,7 +162,7 @@ class HomeSDK(
     val sleep: SleepSDK = SleepSDK(auth.api)
 
     /** The calendar, its calendars list, its invitations and the new item form. */
-    val calendar: CalendarSDK = CalendarSDK(auth.api)
+    val calendar: CalendarSDK = CalendarSDK(auth.api, syncChanges)
 
     /** The assistant: the chat and its history, the status of Semp, runs, approvals, a project's agent and the bubble. */
     val semp: SempSDK = SempSDK(auth.api)

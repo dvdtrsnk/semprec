@@ -6,6 +6,9 @@ import cz.semprec.app.domain.CalendarInvitation
 import cz.semprec.app.domain.InvitationRepository
 import cz.semprec.app.domain.InvitationStatus
 import cz.semprec.app.domain.RepositoryResult
+import cz.semprec.app.domain.SyncChanges
+import cz.semprec.app.domain.SyncTopic
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -19,10 +22,16 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class InvitationsViewModelTest : MainDispatcherTest() {
     private val repository = FakeInvitationRepository()
+    private val sync = SyncChanges()
 
     private fun viewModel() =
-        CalendarViewModelFactory(FakeCalendarRepository(), FakeCatalogRepository(), repository, repository.changes)
-            .invitationsViewModel()
+        CalendarViewModelFactory(
+            FakeCalendarRepository(),
+            FakeCatalogRepository(),
+            repository,
+            repository.changes,
+            sync = sync,
+        ).invitationsViewModel()
 
     private fun TestScope.loaded(): InvitationsViewModel = viewModel().also { runCurrent() }
 
@@ -118,6 +127,32 @@ class InvitationsViewModelTest : MainDispatcherTest() {
         repository.listResult = null
         act(vm, InvitationsAction.Retry)
         assertEquals(InvitationsPhase.CONTENT, vm.state.value.phase)
+        vm.close()
+    }
+
+    @Test fun `an invitation the server reports is listed unless an answer is under way`() = runTest(dispatcher) {
+        val vm = loaded()
+        repository.items = repository.items + invitation("i4")
+        sync.raise(setOf(SyncTopic.CALENDAR, SyncTopic.MAIL_ACCOUNTS))
+        runCurrent()
+        assertEquals(2, vm.state.value.pending)
+        sync.raise(setOf(SyncTopic.INVITATIONS))
+        runCurrent()
+        assertEquals(3, vm.state.value.pending)
+        assertEquals(listOf("i1", "i2", "i4"), vm.state.value.items.map { it.id })
+
+        val gate = CompletableDeferred<Unit>()
+        repository.respondGate = gate
+        act(vm, InvitationsAction.Answer("i1", InvitationReply.ACCEPT))
+        sync.raise(setOf(SyncTopic.INVITATIONS))
+        runCurrent()
+        assertEquals("i1", vm.state.value.answering)
+        assertEquals(2, repository.calls.count { it == "list" })
+        gate.complete(Unit)
+        runCurrent()
+        assertNull(vm.state.value.answering)
+        assertEquals(3, repository.calls.count { it == "list" })
+        assertEquals(2, vm.state.value.pending)
         vm.close()
     }
 
