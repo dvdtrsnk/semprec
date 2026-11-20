@@ -1,0 +1,41 @@
+{
+  "kind": "calendar#calendarList",
+  "etag": "\"p33k9vbbv4ejr40g\"",
+  "nextSyncToken": "CMCZ3uzQnJEDEhBtZUBleGFtcGxlLnRlc3Q=",
+  "items": [
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"1763640000000000\"",
+      "id": "me@example.test",
+      "summary": "me@example.test",
+      "timeZone": "Europe/Prague",
+      "colorId": "14",
+      "backgroundColor": "#9fe1e7",
+      "foregroundColor": "#000000",
+      "selected": true,
+      "accessRole": "owner",
+      "defaultReminders": [
+        { "method": "email", "minutes": 30 },
+        { "method": "popup", "minutes": 10 }
+      ],
+      "conferenceProperties": { "allowedConferenceSolutionTypes": ["hangoutsMeet"] },
+      "primary": true
+    },
+    {
+      "kind": "calendar#calendarListEntry",
+      "etag": "\"1763640000000001\"",
+      "id": "cs.czech#holiday@group.v.calendar.google.com",
+      "summary": "Holidays in Czechia",
+      "summaryOverride": "Czech holidays",
+      "description": "Holidays and Observances in Czechia",
+      "timeZone": "Europe/Prague",
+      "colorId": "8",
+      "backgroundColor": "#16a765",
+      "foregroundColor": "#000000",
+      "selected": true,
+      "accessRole": "reader",
+      "defaultReminders": [],
+      "conferenceProperties": { "allowedConferenceSolutionTypes": ["hangoutsMeet"] }
+    }
+  ]
+}

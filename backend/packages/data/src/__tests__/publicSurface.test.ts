@@ -971,6 +971,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "setAgentRunMcpClientName",
   "setDocUpdateHook",
   "setEventInvitationDelivery",
+  "setGoogleCalendarSyncRuntime",
   "setHeartbeatEnabled",
   "setInboxCardsInvalidationHook",
   "setInvalidationHook",

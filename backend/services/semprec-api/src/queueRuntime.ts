@@ -10,6 +10,7 @@ import {
   mergeModuleTaskListForAffinity,
   resolveTaskAffinitySets,
   setEventInvitationDelivery,
+  setGoogleCalendarSyncRuntime,
   setInvitationReplyDelivery,
   setThreadProjectTriageRuntime,
   setThreadTaskPeopleDelivery,
@@ -43,8 +44,9 @@ export interface ApiQueueRuntime {
  * Module tasks that need composition-root dependencies get them through bindings set before the
  * runner starts and cleared in `stop()`: the calendar invitation and reply senders
  * (`setEventInvitationDelivery`, `setInvitationReplyDelivery`, over the mail transports), the
- * thread project triage (`setThreadProjectTriageRuntime`) and the thread task people sync
- * (`setThreadTaskPeopleDelivery`). The same transports are handed to `createApiCoreTaskList`, so an
+ * thread project triage (`setThreadProjectTriageRuntime`), the thread task people sync
+ * (`setThreadTaskPeopleDelivery`) and the Google calendar sync, over the Gmail OAuth client
+ * (`setGoogleCalendarSyncRuntime`). The same transports are handed to `createApiCoreTaskList`, so an
  * approved agent mail send goes through them.
  */
 export async function createApiQueueRuntime(
@@ -89,6 +91,7 @@ export async function createApiQueueRuntime(
   setInvitationReplyDelivery({ pool, transports: mailTransports });
   setThreadProjectTriageRuntime({ pool, gateway: aiGateway });
   setThreadTaskPeopleDelivery({ pool });
+  setGoogleCalendarSyncRuntime("clientId" in gmail ? { pool, ...gmail } : null);
   let runner: Awaited<ReturnType<typeof runWorker>>;
   try {
     runner = await runWorker({
@@ -102,6 +105,7 @@ export async function createApiQueueRuntime(
     setInvitationReplyDelivery(null);
     setThreadProjectTriageRuntime(null);
     setThreadTaskPeopleDelivery(null);
+    setGoogleCalendarSyncRuntime(null);
     throw error;
   }
 
@@ -113,6 +117,7 @@ export async function createApiQueueRuntime(
         setInvitationReplyDelivery(null);
         setThreadProjectTriageRuntime(null);
         setThreadTaskPeopleDelivery(null);
+        setGoogleCalendarSyncRuntime(null);
       });
       return stopped;
     },

@@ -1,0 +1,65 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p32vrmrsl4bpj40g\"",
+  "summary": "me@example.test",
+  "updated": "2026-11-19T08:12:41.137Z",
+  "timeZone": "Europe/Prague",
+  "accessRole": "owner",
+  "defaultReminders": [
+    { "method": "email", "minutes": 30 },
+    { "method": "popup", "minutes": 10 }
+  ],
+  "nextPageToken": "CigKGjBvNjN2Z2Q5aWFvZWprZWJ1cTZsaWw3NGI0GAEggIDA",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234567000\"",
+      "id": "conf2026",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=Y29uZjIwMjY",
+      "created": "2026-10-01T10:00:00.000Z",
+      "updated": "2026-10-01T10:00:00.000Z",
+      "summary": "Conference",
+      "location": "Brno",
+      "creator": { "email": "me@example.test", "self": true },
+      "organizer": { "email": "me@example.test", "self": true },
+      "start": { "date": "2026-12-07" },
+      "end": { "date": "2026-12-10" },
+      "transparency": "transparent",
+      "iCalUID": "conf2026@google.com",
+      "sequence": 0,
+      "reminders": { "useDefault": false },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234568000\"",
+      "id": "standup",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=c3RhbmR1cA",
+      "created": "2026-11-01T10:00:00.000Z",
+      "updated": "2026-11-10T10:00:00.000Z",
+      "summary": "Standup",
+      "description": "Daily sync, New York office",
+      "creator": { "email": "boss@example.test", "displayName": "Boss" },
+      "organizer": { "email": "boss@example.test", "displayName": "Boss" },
+      "start": { "dateTime": "2026-11-18T15:00:00+01:00", "timeZone": "America/New_York" },
+      "end": { "dateTime": "2026-11-18T15:30:00+01:00", "timeZone": "America/New_York" },
+      "recurrence": [
+        "RRULE:FREQ=WEEKLY;BYDAY=WE;COUNT=10",
+        "EXDATE;TZID=America/New_York:20261202T090000",
+        "RDATE;TZID=America/New_York:20261205T090000"
+      ],
+      "iCalUID": "standup@google.com",
+      "sequence": 2,
+      "attendees": [
+        { "email": "boss@example.test", "displayName": "Boss", "organizer": true, "responseStatus": "accepted" },
+        { "email": "me@example.test", "self": true, "responseStatus": "needsAction" },
+        { "email": "guest@example.test", "optional": true, "responseStatus": "tentative" }
+      ],
+      "guestsCanModify": false,
+      "reminders": { "useDefault": true },
+      "eventType": "default"
+    }
+  ]
+}

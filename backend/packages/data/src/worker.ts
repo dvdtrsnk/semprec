@@ -215,7 +215,8 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: async () => {
       await handleCalendarAccountSyncSweepTask(pool);
     },
-    // The adapters are this package's own (`calendar/sync/adapters/`), so nothing is injected here.
+    // The adapters are this package's own (`calendar/sync/adapters/`); the Google one takes its OAuth client from
+    // `setGoogleCalendarSyncRuntime`, which the composition root calls.
     [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC]: async (payload, helpers) => {
       await handleCalendarAccountSyncTask(pool, payload, { jobId: helpers.job.id });
     },

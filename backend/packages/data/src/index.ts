@@ -642,6 +642,10 @@ export {
 } from "./calendar/eventInvitationJob.js";
 export { setInvitationReplyDelivery, type InvitationReplyDelivery } from "./calendar/invitationReplyJob.js";
 export {
+  setGoogleCalendarSyncRuntime,
+  type GoogleCalendarSyncRuntime,
+} from "./calendar/sync/adapters/google/googleCalendarAdapter.js";
+export {
   eventRecurrenceOccursOn,
   parseEventRecurrenceRule,
   type EventRecurrenceRule,
