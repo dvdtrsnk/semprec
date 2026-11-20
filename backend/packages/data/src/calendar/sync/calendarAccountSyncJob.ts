@@ -7,6 +7,7 @@ import { z } from "zod";
 import { getTenantUserId } from "../../auth/usersStore.js";
 import { getItemById } from "../../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../../credentials/externalCredentialsStore.js";
+import { getMailServerSettings } from "../../mail/mailServerSettingsStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { NotFoundError, ConflictError } from "../../errors.js";
 import type { CustomRouteResult, RouteParams } from "../../customRoute.js";
@@ -128,6 +129,7 @@ export async function handleCalendarAccountSyncTask(
           .map((value) => value.trim())
           .find(Boolean) ?? null,
       tracked: await listSyncedAccountCalendars(client, ids, accountItemId),
+      serverSettings: await getMailServerSettings(client, accountItemId),
       window: syncWindow(zone, new Date()),
     };
   });
@@ -153,6 +155,10 @@ export async function handleCalendarAccountSyncTask(
       syncMode: prologue.syncMode,
       primaryAddress: prologue.primaryAddress,
       credential,
+      serverSettings: prologue.serverSettings && {
+        username: prologue.serverSettings.username,
+        caldavUrl: prologue.serverSettings.caldavUrl,
+      },
     });
     const cursors = new Map(prologue.tracked.map((calendar) => [calendar.remoteId, calendar]));
     const fetched: FetchedCalendar[] = [];

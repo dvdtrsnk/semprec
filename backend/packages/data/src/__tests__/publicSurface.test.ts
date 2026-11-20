@@ -1053,6 +1053,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "validateSempMessageRefs",
   "validateTranscriptSegmentRef",
   "validateTranscriptSegmentRefs",
+  "verifyCalDavServer",
   "verifyMailCredentials",
   "verifyPassword",
   "verifySessionToken",

@@ -45,6 +45,12 @@ import {
   MailServerUnreachableError,
   MailTlsFailedError,
 } from "../mail/providerTypes.js";
+import type { VerifyCalDavServerInput } from "../calendar/sync/adapters/caldav/caldavConnectVerification.js";
+import {
+  CalDavAuthFailedError,
+  CalDavServerInvalidError,
+  CalDavServerUnreachableError,
+} from "../calendar/sync/adapters/caldav/caldavErrors.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
@@ -63,6 +69,7 @@ const PASSWORD = `pw-sentinel-${randomUUID()}`;
 const ADDRESS = "owner@example.test";
 const IMAP_HOST = "imap.example.test";
 const SMTP_HOST = "smtp.example.test";
+const CALDAV_URL = "https://caldav.example.test/dav/";
 
 const ICLOUD_BODY = { provider: "icloud", address: ADDRESS, password: PASSWORD };
 const GENERIC_BODY = {
@@ -98,14 +105,20 @@ const PRODUCTION_VERIFICATION: MailboxPasswordRouteDependencies = {
 interface AcceptingVerifier {
   dependencies: MailboxPasswordRouteDependencies;
   calls: VerifyMailCredentialsInput[];
+  calDavCalls: VerifyCalDavServerInput[];
 }
 
 function acceptingVerifier(): AcceptingVerifier {
   const calls: VerifyMailCredentialsInput[] = [];
+  const calDavCalls: VerifyCalDavServerInput[] = [];
   return {
     calls,
+    calDavCalls,
     dependencies: {
       mailServerClients: {
+        verifyCalDav: async (input) => {
+          calDavCalls.push(input);
+        },
         verifyPassword: async (input) => {
           calls.push(input);
           if (input.imapHost === undefined || input.smtpHost === undefined) return ICLOUD_SETTINGS;
@@ -449,6 +462,11 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       ["a local name as SMTP host", { ...GENERIC_BODY, smtpHost: "localhost" }, "smtpHost"],
       ["an IMAP host with a NUL character", { ...GENERIC_BODY, imapHost: "imap\u0000.example.test" }, "imapHost"],
       ["an SMTP host with an unpaired surrogate", { ...GENERIC_BODY, smtpHost: "smtp\ud800.example.test" }, "smtpHost"],
+      ["a CalDAV address for iCloud", { ...ICLOUD_BODY, caldavUrl: CALDAV_URL }, "caldavUrl"],
+      ["a CalDAV address that is not a string", { ...GENERIC_BODY, caldavUrl: 5 }, "caldavUrl"],
+      ["a plain http CalDAV address", { ...GENERIC_BODY, caldavUrl: "http://caldav.example.test/" }, "caldavUrl"],
+      ["a CalDAV address on an IP address", { ...GENERIC_BODY, caldavUrl: "https://10.0.0.1/dav/" }, "caldavUrl"],
+      ["a CalDAV address on a local name", { ...GENERIC_BODY, caldavUrl: "https://cal.local/dav/" }, "caldavUrl"],
     ])("refuses %s with validation_failed before any server is contacted", async (_name, body, field) => {
       const verifier = acceptingVerifier();
 
@@ -459,6 +477,7 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       expect(error.details).toEqual(field === undefined ? undefined : { field });
       expect(errorText(error)).not.toContain(PASSWORD);
       expect(verifier.calls).toEqual([]);
+      expect(verifier.calDavCalls).toEqual([]);
       expect(await mailboxRows()).toEqual(NOTHING);
     });
   });
@@ -485,7 +504,7 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       const id = answer.item.id;
       expect(await mailboxRows()).toEqual(oneWholeMailbox(id));
       expect(await storedMailbox(id)).toEqual({
-        settings: { mailboxItemId: id, ...ICLOUD_SETTINGS, username: "Owner@Example.test" },
+        settings: { mailboxItemId: id, ...ICLOUD_SETTINGS, username: "Owner@Example.test", caldavUrl: null },
         syncMode: "imap",
         providerAccountAddress: ADDRESS,
         credentialTypes: ["app_password"],
@@ -519,12 +538,70 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
           imap: { host: IMAP_HOST, port: 993, security: "tls" },
           smtp: { host: SMTP_HOST, port: 465, security: "tls" },
           username: "login-name",
+          caldavUrl: null,
         },
         syncMode: "imap",
         providerAccountAddress: ADDRESS,
         credentialTypes: ["plain_password"],
         password: PASSWORD,
       });
+    });
+
+    it("verifies a generic account's CalDAV address with its login and stores the address", async () => {
+      const verifier = acceptingVerifier();
+
+      const answer = await connect(
+        { ...GENERIC_BODY, username: "login-name", caldavUrl: " https://CalDAV.Example.test/dav/ " },
+        { dependencies: verifier.dependencies },
+      );
+
+      expect(answer.status).toBe(201);
+      expect(verifier.calls).toHaveLength(1);
+      expect(verifier.calDavCalls).toEqual([{ caldavUrl: CALDAV_URL, username: "login-name", password: PASSWORD }]);
+      expect((await storedMailbox(answer.item.id)).settings?.caldavUrl).toBe(CALDAV_URL);
+    });
+
+    it("does not contact a CalDAV server for a body without a CalDAV address", async () => {
+      const verifier = acceptingVerifier();
+
+      const answer = await connect(GENERIC_BODY, { dependencies: verifier.dependencies });
+
+      expect(verifier.calDavCalls).toEqual([]);
+      expect((await storedMailbox(answer.item.id)).settings?.caldavUrl).toBeNull();
+    });
+
+    it.each([
+      ["caldav_auth_failed", new CalDavAuthFailedError()],
+      ["caldav_server_unreachable", new CalDavServerUnreachableError()],
+      ["caldav_server_invalid", new CalDavServerInvalidError()],
+    ])("answers a CalDAV verification's %s refusal with 400 and stores nothing", async (code, refusal) => {
+      const verifier = acceptingVerifier();
+      const logged = recordLogCalls();
+
+      const error = await rejectionOf(
+        connect(
+          { ...GENERIC_BODY, caldavUrl: CALDAV_URL },
+          {
+            dependencies: {
+              mailServerClients: {
+                ...verifier.dependencies.mailServerClients,
+                verifyCalDav: () => Promise.reject(refusal),
+              },
+            },
+          },
+        ),
+      );
+
+      expect(error).toBeInstanceOf(ChokePointError);
+      if (!(error instanceof ChokePointError)) throw new Error("expected a ChokePointError");
+      expect({ status: error.status, code: error.code, message: error.message }).toEqual({
+        status: 400,
+        code,
+        message: refusal.message,
+      });
+      expect(errorText(error)).not.toContain(PASSWORD);
+      expect(logged()).not.toContain(PASSWORD);
+      expect(await mailboxRows()).toEqual(NOTHING);
     });
 
     it("stores an address and a user name with a character outside the Basic Multilingual Plane as they were sent", async () => {
@@ -563,6 +640,7 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
         imap: { host: IMAP_HOST, port: 143, security: "starttls" },
         smtp: { host: SMTP_HOST, port: 465, security: "tls" },
         username: ADDRESS,
+        caldavUrl: null,
       });
       // Both protocols log in with the address, because the request names no user name.
       expect(imap.mock.calls.map(([settings, credential]) => [settings.username, credential.password])).toEqual([
@@ -736,6 +814,32 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
         expect(await mailboxRows()).toEqual(NOTHING);
       },
     );
+
+    it("fails a body with a CalDAV address without the CalDAV verification before any login is verified", async () => {
+      const verifier = acceptingVerifier();
+      const attempts = recordingThrottle();
+
+      const error = await rejectionOf(
+        connect(
+          { ...GENERIC_BODY, caldavUrl: CALDAV_URL },
+          {
+            dependencies: {
+              mailServerClients: { verifyPassword: verifier.dependencies.mailServerClients?.verifyPassword },
+            },
+            throttle: attempts.throttle,
+          },
+        ),
+      );
+
+      expect(error).not.toBeInstanceOf(ChokePointError);
+      if (!(error instanceof Error)) throw new Error("expected an Error");
+      expect(error.message).toBe(
+        'custom route dependency "mailServerClients.verifyCalDav" is not configured by the composition root',
+      );
+      expect(verifier.calls).toEqual([]);
+      expect(attempts.attempts).toEqual([]);
+      expect(await mailboxRows()).toEqual(NOTHING);
+    });
 
     it("still answers a body it refuses with validation_failed", async () => {
       const error = await rejectionOf(

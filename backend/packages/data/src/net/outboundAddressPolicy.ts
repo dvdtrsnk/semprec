@@ -244,7 +244,8 @@ function toUndiciInit(init: RequestInit | undefined, dispatcher: UndiciAgent): U
     headers: Object.fromEntries(new Headers(init?.headers).entries()),
     body,
     signal: init?.signal,
-    redirect: "error",
+    // `manual` hands a 3xx back to a caller that vets and requests the target itself; anything else refuses it.
+    redirect: init?.redirect === "manual" ? "manual" : "error",
     dispatcher,
   };
 }
@@ -258,7 +259,10 @@ function toGlobalResponse(response: UndiciResponse): Response {
 }
 
 export interface OutboundHttp {
-  /** Requests through the policy's pinned lookup; refuses a denied protocol or IP-literal host, and refuses redirects. */
+  /**
+   * Requests through the policy's pinned lookup; refuses a denied protocol or IP-literal host. A redirect is refused,
+   * unless the request asks for `redirect: "manual"`, which returns the 3xx response unfollowed.
+   */
   readonly fetch: FetchLike;
   /** For libraries that take an `https.Agent` (web-push). */
   readonly httpsAgent: https.Agent;

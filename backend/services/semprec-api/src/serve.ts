@@ -15,6 +15,7 @@ import {
   resolveModuleRuleKinds,
   startProcessHeartbeat,
   startTenantDeactivationListener,
+  verifyCalDavServer,
   verifyMailCredentials,
   type InviteMailer,
   type PasswordResetMailer,
@@ -82,8 +83,8 @@ function optionalOAuthClient(idKey: string, secretKey: string): CustomRouteOAuth
 const mailLiveSyncControl = createMailLiveSyncControl();
 
 const customRouteDependencies: CustomRouteDependencies = {
-  // The password connect route verifies a login only through this member.
-  mailServerClients: { verifyPassword: verifyMailCredentials },
+  // The password connect route verifies a login only through these members.
+  mailServerClients: { verifyPassword: verifyMailCredentials, verifyCalDav: verifyCalDavServer },
   oauth: {
     gmail: optionalOAuthClient("GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"),
     msGraph: optionalOAuthClient("MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET"),

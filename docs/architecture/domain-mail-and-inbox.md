@@ -48,6 +48,8 @@ described elsewhere and only referenced here:
 
 - IMAP/SMTP settings live in `mail_account_server_settings` (`mail/mailServerSettingsStore.ts`); the password
   stays in `external_credentials`. Database CHECK constraints repeat the port, security and all-or-none rules.
+- A generic account may also store `caldav_url`, the start of its calendar discovery: an `https:` URL on the
+  default port without userinfo whose host follows the host rules below (`normalizeCalDavUrl`, ≤ 2048 chars).
 - The port must be one of 993, 143, 465, 587 (`MAIL_SERVER_PORTS`); security is `tls` or `starttls`.
 - The host must be a lower-cased DNS name (≤ 253 chars). IP literals in any notation, `localhost` and names
   ending in `.localhost`, `.local` or `.internal` are refused. This is an input contract only.
@@ -72,7 +74,9 @@ described elsewhere and only referenced here:
 `POST /api/mail/mailboxes` (`mail/mailboxPasswordRouteHandlers.ts`) connects an iCloud or generic IMAP mailbox.
 
 - Order: validate body → duplicate rule (`mailboxHoldsAddress`, READ COMMITTED read, 409
-  `provider_account_already_connected`) → throttle → `verifyMailCredentials` outside any transaction →
+  `provider_account_already_connected`) → throttle → `verifyMailCredentials` outside any transaction → for a
+  generic body with `caldavUrl`, the `verifyCalDav` member (`verifyCalDavServer`, CalDAV discovery to the calendar
+  home with the same login; 400 `caldav_auth_failed`, `caldav_server_unreachable` or `caldav_server_invalid`) →
   `createPasswordMailbox` in one READ COMMITTED transaction that re-reads the duplicate rule before writing.
 - An address is held when `mail_account_sync_state.provider_account_address` records it or any Mailboxes
   item's `addresses` list names it (trashed mailboxes count). The partial unique index

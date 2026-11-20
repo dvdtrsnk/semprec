@@ -202,6 +202,26 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   (`adapters/index.ts`) has one factory per sync mode: `imap` CalDAV, `gmail_api` Google, `graph_api` Graph. Its answer
   is validated and bounded (`parseRemoteCalendars`, `parseCalendarChanges`) before anything is written; a refused
   answer is the provider error `invalidResponse`.
+- **CalDAV** (`adapters/caldav/`, sync mode `imap`: iCloud and generic accounts). The protocol is `tsdav`'s request
+  builders and multistatus parser; every `tsdav` call gets the session fetch of `caldavHttp.ts`, built on
+  `createOutboundHttp()`: the stored user name and password as Basic credentials, 20 s per request, a 10 MiB body cap,
+  at most three redirects each vetted by the outbound policy, and a refused address and an unreachable server both
+  `providerUnavailable` with one message. Discovery starts at `https://caldav.icloud.com/` for iCloud, else at the
+  account's `caldav_url` (`mail_account_server_settings`) or `https://<address domain>/.well-known/caldav`:
+  `current-user-principal`, `calendar-home-set`, then the home's calendar collections that hold VEVENTs (remote id
+  the collection path, `readOnly` without `write`, `write-content` or `all` privilege, Apple colours as `#RRGGBB`).
+  A fetch with a sync token uses sync-collection; a deletion or a changed series in the delta, an expired token or a
+  server refusing the report makes it a full fetch (calendar-query of the window's ETags, then calendar-multiget in
+  batches of 50), because sync-collection names addresses only and an override that vanished cannot be named. Without
+  a token the ctag decides: unchanged is no change, changed a full fetch. Events are read and written with `ical.js`
+  (`caldavIcal.ts`): the remote id is the UID, an override's `["<uid>","<recurrence id>"]`; times are wall clock in
+  the IANA zone of the `TZID` (vendor prefixes stripped; a zone only a VTIMEZONE defines is converted to `UTC`);
+  the first display alarm before the start is `alertMinutes`. A write edits only the properties whose modelled value
+  changed in the resource as the server has it now, adds a generated VTIMEZONE for a zone the resource lacks, and is
+  conditional (`If-None-Match: *` to create, `If-Match` to replace or delete); a 412 or an ETag other than the
+  stored one is `CalendarSyncEventConflictError`, not a provider error. Deleting an override cancels the occurrence
+  in its series' resource. The password connect route verifies a body's `caldavUrl` by the same discovery
+  (`caldav_auth_failed`, `caldav_server_unreachable`, `caldav_server_invalid`).
 - **Pass** (`calendarAccountSyncJob.ts`, task `calendarAccountSync`, key `calendar-account-sync:<accountId>`, 3
   attempts, `api`). A short read transaction reads the account, its sync mode and grant, the tracked calendars (those
   with a `calendar_remote_state` row) and the window; an account that is gone, trashed, has Calendars off or whose

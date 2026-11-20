@@ -16,7 +16,7 @@ import {
 import { writeMailboxAddresses } from "./mailboxAddresses.js";
 import type { VerifiedMailServerSettings, VerifyMailCredentialsInput } from "./mailCredentialVerification.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
-import { normalizeMailServerHost, upsertMailServerSettings } from "./mailServerSettingsStore.js";
+import { normalizeCalDavUrl, normalizeMailServerHost, upsertMailServerSettings } from "./mailServerSettingsStore.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import {
@@ -26,6 +26,10 @@ import {
   MailTlsFailedError,
 } from "./providerTypes.js";
 import type { RouteBody, RouteUser } from "../customRoute.js";
+import {
+  isCalDavVerificationRefusal,
+  type VerifyCalDavServerInput,
+} from "../calendar/sync/adapters/caldav/caldavConnectVerification.js";
 
 /** Gmail and Outlook sign in through OAuth instead. */
 const PASSWORD_MAILBOX_PROVIDERS = ["icloud", "generic"] as const;
@@ -59,6 +63,8 @@ const connectBodySchema = z
     // Validated by `normalizeMailServerHost`.
     imapHost: z.string().optional(),
     smtpHost: z.string().optional(),
+    // Validated by `normalizeCalDavUrl`.
+    caldavUrl: z.string().optional(),
     username: z
       .string()
       .max(MAX_USERNAME_LENGTH)
@@ -75,6 +81,8 @@ interface ConnectRequest {
   password: string;
   /** `null` for iCloud, whose hosts `verifyMailCredentials` fixes. */
   hosts: { imapHost: string; smtpHost: string } | null;
+  /** A generic account's CalDAV address; `null` when its calendars are found from its domain or it is iCloud. */
+  caldavUrl: string | null;
 }
 
 /** No refusal message repeats a value of the body. */
@@ -83,11 +91,11 @@ function parseConnectRequest(body: unknown): ConnectRequest {
   if (!parsed.success) {
     const field = parsed.error.issues[0]?.path[0];
     throw new ValidationError(
-      "The body must hold 'provider', 'address' and 'password', and may hold 'username', 'imapHost' and 'smtpHost'",
+      "The body must hold 'provider', 'address' and 'password', and may hold 'username', 'imapHost', 'smtpHost' and 'caldavUrl'",
       typeof field === "string" ? { field } : undefined,
     );
   }
-  const { provider, address, password, imapHost, smtpHost } = parsed.data;
+  const { provider, address, password, imapHost, smtpHost, caldavUrl } = parsed.data;
   const username = parsed.data.username ?? address;
   if (provider === "icloud") {
     if (imapHost !== undefined) {
@@ -96,7 +104,10 @@ function parseConnectRequest(body: unknown): ConnectRequest {
     if (smtpHost !== undefined) {
       throw new ValidationError("smtpHost is not accepted for an iCloud mailbox", { field: "smtpHost" });
     }
-    return { provider, address, username, password, hosts: null };
+    if (caldavUrl !== undefined) {
+      throw new ValidationError("caldavUrl is not accepted for an iCloud mailbox", { field: "caldavUrl" });
+    }
+    return { provider, address, username, password, hosts: null, caldavUrl: null };
   }
   return {
     provider,
@@ -107,6 +118,7 @@ function parseConnectRequest(body: unknown): ConnectRequest {
       imapHost: normalizeMailServerHost(imapHost, "imapHost"),
       smtpHost: normalizeMailServerHost(smtpHost, "smtpHost"),
     },
+    caldavUrl: caldavUrl === undefined ? null : normalizeCalDavUrl(caldavUrl),
   };
 }
 
@@ -185,6 +197,7 @@ async function createPasswordMailbox(client: PoolClient, mailbox: NewPasswordMai
     imap: mailbox.verified.imap,
     smtp: mailbox.verified.smtp,
     username: request.username,
+    caldavUrl: request.caldavUrl,
   });
   await ensureMailAccountSyncState(client, { itemId: created.id, syncMode: "imap" });
   await recordProviderAccountAddress(client, created.id, request.address);
@@ -195,6 +208,7 @@ async function createPasswordMailbox(client: PoolClient, mailbox: NewPasswordMai
 }
 
 type VerifyPassword = (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
+type VerifyCalDav = (input: VerifyCalDavServerInput) => Promise<void>;
 
 type VerificationAttempt = { granted: true } | { granted: false; retryAfterSeconds: number };
 
@@ -206,6 +220,7 @@ interface VerificationThrottle {
 export interface MailboxPasswordRouteDependencies {
   mailServerClients?: {
     verifyPassword?: VerifyPassword;
+    verifyCalDav?: VerifyCalDav;
   };
   throttle?: VerificationThrottle;
 }
@@ -219,6 +234,17 @@ function requireVerifyPassword(dependencies: MailboxPasswordRouteDependencies): 
     );
   }
   return verifyPassword;
+}
+
+/** Fails like `requireVerifyPassword`; only a request with a CalDAV address needs it. */
+function requireVerifyCalDav(dependencies: MailboxPasswordRouteDependencies): VerifyCalDav {
+  const verifyCalDav = dependencies.mailServerClients?.verifyCalDav;
+  if (!verifyCalDav) {
+    throw new Error(
+      'custom route dependency "mailServerClients.verifyCalDav" is not configured by the composition root',
+    );
+  }
+  return verifyCalDav;
 }
 
 /** Fails like `requireVerifyPassword`, so the route never verifies a login it cannot count. */
@@ -237,7 +263,8 @@ function requireThrottle(dependencies: MailboxPasswordRouteDependencies): Verifi
  * 1. One transaction reads the duplicate rule (409 `provider_account_already_connected`).
  * 2. The attempt is counted per user (429 `rate_limited`); earlier refusals are not counted, and a counted
  *    attempt stays counted.
- * 3. Outside any transaction the login is verified on both protocols; a refusal answers 400 with its code.
+ * 3. Outside any transaction the login is verified on both protocols, and on CalDAV when the body names a CalDAV
+ *    address; a refusal answers 400 with its code.
  * 4. One transaction rereads the duplicate rule and writes the mailbox; a race answers 409 and rolls back
  *    everything.
  *
@@ -248,6 +275,7 @@ export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencie
     const request = parseConnectRequest(ctx.body);
     // Read per request: a mount without a member must still start.
     const verifyPassword = requireVerifyPassword(dependencies);
+    const verifyCalDav = request.caldavUrl === null ? null : requireVerifyCalDav(dependencies);
     const throttle = requireThrottle(dependencies);
     const name = defaultMailboxName(request.provider, request.address);
 
@@ -274,6 +302,14 @@ export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencie
     } catch (error) {
       if (isVerificationRefusal(error)) throw new ChokePointError(400, error.code, error.message);
       throw error;
+    }
+    if (verifyCalDav !== null && request.caldavUrl !== null) {
+      try {
+        await verifyCalDav({ caldavUrl: request.caldavUrl, username: request.username, password: request.password });
+      } catch (error) {
+        if (isCalDavVerificationRefusal(error)) throw new ChokePointError(400, error.code, error.message);
+        throw error;
+      }
     }
 
     const item = await withTransaction(pool, (client) =>

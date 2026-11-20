@@ -372,6 +372,10 @@ export {
   type VerifyMailCredentialsInput,
   type VerifiedMailServerSettings,
 } from "./mail/mailCredentialVerification.js";
+export {
+  verifyCalDavServer,
+  type VerifyCalDavServerInput,
+} from "./calendar/sync/adapters/caldav/caldavConnectVerification.js";
 export { isImapConnectionLimitError } from "./mail/imapFlowClient.js";
 export type { ImapMailClient } from "./mail/imapReconcile.js";
 export {

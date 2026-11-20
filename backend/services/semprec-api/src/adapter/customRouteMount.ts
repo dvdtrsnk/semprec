@@ -4,6 +4,7 @@ import type {
   HeartbeatRuleKindRegistry,
   MailSendAdapterFactory,
   VerifiedMailServerSettings,
+  VerifyCalDavServerInput,
   VerifyMailCredentialsInput,
 } from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
@@ -32,6 +33,12 @@ export interface MailServerClients {
    * connect route with a configuration error.
    */
   verifyPassword?: (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
+  /**
+   * Resolves when the login finds a calendar home at the CalDAV address. The password connect
+   * route calls it only for a body with `caldavUrl`; a mount without it fails such a request with
+   * a configuration error.
+   */
+  verifyCalDav?: (input: VerifyCalDavServerInput) => Promise<void>;
   /**
    * `createDispatcher` builds them from `oauth`, `outboundHttp` and its blob storage when the
    * container carries none.

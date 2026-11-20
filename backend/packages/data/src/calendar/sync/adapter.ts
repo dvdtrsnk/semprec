@@ -129,6 +129,8 @@ export interface CalendarSyncAccount {
   syncMode: SyncMode;
   primaryAddress: string | null;
   credential: string;
+  /** The login name and CalDAV address of a password account (`mail_account_server_settings`); `null` without a row. */
+  serverSettings: { username: string; caldavUrl: string | null } | null;
 }
 
 export type CalendarSyncAdapterFactory = (account: CalendarSyncAccount) => CalendarSyncAdapter;
