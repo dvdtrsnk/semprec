@@ -35,6 +35,9 @@ internal class NotePageStore(
     private var saved = ""
     private var origin = NoteSource.NONE
 
+    /** Whether the server holds no block of the page yet: it shows its blocks only once a write put them there. */
+    private var serverBlank = true
+
     /** Counts what changed the blocks or their version, so a read answering after any of it is not applied. */
     private var generation = 0
     private val writes = Mutex()
@@ -91,7 +94,10 @@ internal class NotePageStore(
         host.scope.launch { persist(ensurePage = false) }
     }
 
-    /** Writes every change and makes sure the page exists; its item id, or `null` when that failed. */
+    /**
+     * Writes every change and makes sure the page exists and the server holds the blocks shown; its item id, or
+     * `null` when that failed.
+     */
     suspend fun persisted(): String? {
         waitJob?.cancel()
         return if (persist(ensurePage = true)) itemId else null
@@ -113,6 +119,7 @@ internal class NotePageStore(
         generation++
         itemId = snapshot.itemId
         etag = snapshot.etag
+        serverBlank = snapshot.markdown.isBlank()
         val read = NoteDocument.parse(snapshot.markdown, newId)
         blocks = read.blocks
         origin = read.source
@@ -138,7 +145,8 @@ internal class NotePageStore(
                 saved = markdown
                 true
             }
-            markdown == saved && (itemId != null || !ensurePage) -> true
+            // A page nobody wrote on shows one empty block the server does not hold; a subpage operation needs it there.
+            markdown == saved && !(ensurePage && (itemId == null || serverBlank)) -> true
             else -> write(markdown)
         }
     }
@@ -158,6 +166,7 @@ internal class NotePageStore(
                     generation++
                     etag = written.etag
                     saved = markdown
+                    serverBlank = markdown.isBlank()
                     host.update {
                         it.copy(saving = NoteDocument.markdown(blocks, origin) != saved, lastEditedAt = settings.now())
                     }

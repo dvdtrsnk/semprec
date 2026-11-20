@@ -5,6 +5,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -74,6 +75,18 @@ class NoteEditorEditingTest : NoteEditorTest() {
             assertEquals(false, vm.state.value.working)
             vm.close()
         }
+
+    @Test fun `the only block of a page nobody wrote on becomes a subpage`() = runTest(dispatcher) {
+        pages.put("p2", "")
+        val vm = loaded(NoteEditorSource.Page("p2", titleEditable = true))
+        val received = effects(vm)
+        vm.onAction(NoteEditorAction.MakeSubpage(vm.block(0).id))
+        runCurrent()
+        assertNull(vm.state.value.problem)
+        assertEquals(NoteEditorBlockType.PAGE, vm.block(0).type)
+        assertEquals(listOf<NoteEditorEffect>(NoteEditorEffect.OpenPage("made-0", "", focusTitle = true)), received)
+        vm.close()
+    }
 
     @Test fun `copies of a subpage and of text land after the last chosen block`() = runTest(dispatcher) {
         pages.put("p1", "[Trip](semprec://page/t1)\n\nPack\n\nEnd")

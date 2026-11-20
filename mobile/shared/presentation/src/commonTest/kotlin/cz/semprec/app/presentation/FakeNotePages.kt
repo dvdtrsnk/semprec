@@ -14,6 +14,7 @@ import kotlinx.coroutines.CompletableDeferred
 /**
  * A server of pages kept as Markdown with a version each. A replacement quoting an old version is a conflict, a
  * subpage made from a block turns it into a page block, and a copied subpage gets its block right after the original.
+ * A page never written holds no blocks, as on the server, which leaves the empty block a blank page reads as out.
  */
 class FakeNotePages : NotePageRepository {
     val markdown = mutableMapOf<String, String>()
@@ -67,7 +68,7 @@ class FakeNotePages : NotePageRepository {
         }
 
     override suspend fun info(itemId: String): RepositoryResult<NotePageInfo> = answer("info $itemId") {
-        val count = blocks(itemId).size
+        val count = if (markdown[itemId].isNullOrBlank()) 0 else blocks(itemId).size
         NotePageInfo("Title of $itemId", List(count) { "s$it" }, "2026-11-01T10:00:00Z")
     }
 
