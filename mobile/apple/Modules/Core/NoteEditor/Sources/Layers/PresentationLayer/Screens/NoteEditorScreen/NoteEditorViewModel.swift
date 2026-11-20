@@ -99,6 +99,14 @@ final class NoteEditorViewModel: ObservableObject {
         send(.flush)
     }
 
+    /// The editor goes away: ends editing and writes whatever waits, a change made outside typing (a block deleted,
+    /// moved or ticked) as well as typed text.
+    func finish() {
+        editingBlockId = nil
+        pendingMark = nil
+        send(.flush)
+    }
+
     /// Moves the cursor into the previous (`upward`) or next block that is not a page block, at its end or start.
     func leave(_ blockId: String, upward: Bool) {
         let blocks = state.blocks

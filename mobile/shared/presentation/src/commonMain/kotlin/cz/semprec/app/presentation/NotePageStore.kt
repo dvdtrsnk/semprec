@@ -6,9 +6,14 @@ import cz.semprec.app.domain.PageWrite
 import cz.semprec.app.domain.note.NoteBlock
 import cz.semprec.app.domain.note.NoteDocument
 import cz.semprec.app.domain.note.NoteSource
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -18,6 +23,9 @@ import kotlinx.coroutines.sync.withLock
  * without one until its first change. A change is written after a pause in typing, one write at a time, against the
  * version the page was read with; a page changed elsewhere meanwhile is read again and the local change dropped.
  * Only the blocks a change touched are written anew; the others keep the Markdown lines they were read from.
+ *
+ * Writes run in a scope of their own, which closing the ViewModel does not cancel: a write already sent finishes, and
+ * a change still waiting for its pause when the ViewModel closes is written then.
  */
 internal class NotePageStore(
     private val host: FlowHost<NoteEditorState, NoteEditorEffect>,
@@ -41,8 +49,13 @@ internal class NotePageStore(
     /** Counts what changed the blocks or their version, so a read answering after any of it is not applied. */
     private var generation = 0
     private val writes = Mutex()
+    private val writer = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var loadJob: Job? = null
     private var waitJob: Job? = null
+
+    init {
+        host.scope.coroutineContext.job.invokeOnCompletion { writer.launch { persist(ensurePage = false) } }
+    }
 
     fun load() {
         loadJob?.cancel()
@@ -84,14 +97,14 @@ internal class NotePageStore(
             delay(settings.saveDelayMillis)
             // Typing cancels only the pause: a write already sent may have reached the server, and its new version
             // must be kept.
-            host.scope.launch { persist(ensurePage = false) }
+            writer.launch { persist(ensurePage = false) }
         }
     }
 
     /** Writes a waiting change at once. */
     fun flush() {
         waitJob?.cancel()
-        host.scope.launch { persist(ensurePage = false) }
+        writer.launch { persist(ensurePage = false) }
     }
 
     /**
@@ -100,7 +113,7 @@ internal class NotePageStore(
      */
     suspend fun persisted(): String? {
         waitJob?.cancel()
-        return if (persist(ensurePage = true)) itemId else null
+        return if (writer.async { persist(ensurePage = true) }.await()) itemId else null
     }
 
     /** Reads the page again after the server changed it; `false` when that failed. */

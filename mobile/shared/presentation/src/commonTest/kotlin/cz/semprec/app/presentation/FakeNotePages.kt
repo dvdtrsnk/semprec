@@ -25,6 +25,9 @@ class FakeNotePages : NotePageRepository {
     /** When set, a replacement is written at once but answered only once it completes, as a slow server does. */
     var replaceGate: CompletableDeferred<Unit>? = null
 
+    /** When set, a replacement waits for it before it reaches the page, as a request still on its way does. */
+    var replaceHold: CompletableDeferred<Unit>? = null
+
     /** When set, a read takes the page at once but answers only once it completes, as a slow server does. */
     var readGate: CompletableDeferred<Unit>? = null
 
@@ -52,6 +55,7 @@ class FakeNotePages : NotePageRepository {
     }
 
     override suspend fun replace(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite> {
+        replaceHold?.await()
         val written = replaced(itemId, markdown, etag)
         replaceGate?.await()
         return written

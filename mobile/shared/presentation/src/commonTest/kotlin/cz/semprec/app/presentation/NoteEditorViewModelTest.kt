@@ -186,6 +186,30 @@ class NoteEditorViewModelTest : NoteEditorTest() {
         vm.close()
     }
 
+    @Test fun `a change still waiting for its pause is written when the editor closes`() = runTest(dispatcher) {
+        val vm = loaded()
+        vm.onAction(NoteEditorAction.Delete(listOf(vm.block(1).id)))
+        advanceTimeBy(100)
+        vm.close()
+        runCurrent()
+        assertEquals("# Plan\n\n- one\n- two", pages.markdown["p1"])
+    }
+
+    @Test fun `a write still on its way when the editor closes reaches the page`() = runTest(dispatcher) {
+        val vm = loaded()
+        val hold = CompletableDeferred<Unit>()
+        pages.replaceHold = hold
+        vm.onAction(NoteEditorAction.SetType(listOf(vm.block(2).id), NoteEditorBlockType.TODO))
+        vm.onAction(NoteEditorAction.ToggleDone(vm.block(2).id))
+        vm.onAction(NoteEditorAction.Flush)
+        runCurrent()
+        vm.close()
+        hold.complete(Unit)
+        runCurrent()
+        assertEquals("# Plan\n\nFirst idea\n\n- [x] one\n- two", pages.markdown["p1"])
+        assertEquals(1, pages.calls.count { it.startsWith("replace") })
+    }
+
     @Test fun `a read again that answers after a newer write is not shown`() = runTest(dispatcher) {
         val vm = loaded()
         val gate = CompletableDeferred<Unit>()

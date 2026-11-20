@@ -51,7 +51,7 @@ struct NoteEditorScreen: View {
                 if hasAppeared { viewModel.send(.refresh) }
                 hasAppeared = true
             }
-            .onDisappear { viewModel.endEditing() }
+            .onDisappear { viewModel.finish() }
             .onChange(of: viewModel.editingBlockId) { _, id in
                 focus.isEditing = id != nil
                 reveal(id)

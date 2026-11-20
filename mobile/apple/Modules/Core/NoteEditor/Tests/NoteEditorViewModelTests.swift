@@ -63,4 +63,24 @@ final class NoteEditorViewModelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.state.blocks.first?.runs, [NoteEditorRun("ch")])
     }
+
+    func testFinishingWritesWhatWaitsAlsoWhenNoBlockIsEdited() {
+        let model = ScriptedNoteEditorScreenModel(
+            state: NoteEditorState(phase: .content, blocks: [NoteEditorBlock(id: "a", type: .text)])
+        )
+        let viewModel = NoteEditorViewModel(
+            variant: .full,
+            model: model,
+            router: NoSubpagesRouter(),
+            onTextChanged: { _ in }
+        )
+        viewModel.edit(.delete(blockIds: ["a"]))
+        viewModel.endEditing()
+        XCTAssertEqual(model.actions, [.blocks(.delete(blockIds: ["a"]))])
+
+        viewModel.finish()
+
+        XCTAssertEqual(model.actions, [.blocks(.delete(blockIds: ["a"])), .flush])
+        XCTAssertNil(viewModel.editingBlockId)
+    }
 }
