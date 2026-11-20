@@ -4,8 +4,10 @@ import cz.semprec.app.core.AppPlatform
 import cz.semprec.app.core.AudioPlayer
 import cz.semprec.app.core.AudioRecorder
 import cz.semprec.app.core.DeviceInfo
+import cz.semprec.app.core.InMemoryPushSubscriptionStorage
 import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.ItemKind
+import cz.semprec.app.core.PushSubscriptionStorage
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.UnavailableAudioPlayer
 import cz.semprec.app.core.UnavailableAudioRecorder
@@ -15,6 +17,7 @@ import cz.semprec.app.data.HttpCollectionReads
 import cz.semprec.app.data.HttpCollectionWrites
 import cz.semprec.app.data.HttpInboxRepository
 import cz.semprec.app.data.HttpOverviewRepository
+import cz.semprec.app.data.HttpPushRepository
 import cz.semprec.app.data.HttpSearchRepository
 import cz.semprec.app.data.InMemoryPlaceholderRepository
 import cz.semprec.app.data.WorkData
@@ -22,6 +25,7 @@ import cz.semprec.app.domain.InMemoryRecentSearches
 import cz.semprec.app.domain.LoadOverview
 import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
+import cz.semprec.app.domain.RevokePushSubscription
 import cz.semprec.app.domain.SearchEverything
 import cz.semprec.app.presentation.CollectionTarget
 import cz.semprec.app.presentation.CollectionViewModel
@@ -52,7 +56,8 @@ import cz.semprec.app.presentation.WorkViewModelFactory
  *
  * [sessionStorage] is where the signed-in session survives a restart (the Keychain on Apple); the default forgets
  * it with the process. [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
- * microphone and speaker; the defaults have neither.
+ * microphone and speaker; the defaults have neither. [pushSubscriptions] holds the id of this device's push
+ * subscription, which [DevicePushSDK] registers; signing out revokes it before the server ends the session.
  */
 class HomeSDK(
     sessionStorage: SessionStorage = InMemorySessionStorage(),
@@ -60,9 +65,12 @@ class HomeSDK(
         DeviceInfo(AppPlatform.IOS, "00000000-0000-4000-8000-000000000000", "Device", "iphone", "0", "0"),
     recorder: AudioRecorder = UnavailableAudioRecorder(),
     player: AudioPlayer = UnavailableAudioPlayer(),
+    pushSubscriptions: PushSubscriptionStorage = InMemoryPushSubscriptionStorage(),
 ) {
     private val repository = InMemoryPlaceholderRepository()
-    private val auth = HttpAuthRepository(ApiClient(), sessionStorage, device)
+    private val auth = HttpAuthRepository(ApiClient(), sessionStorage, device) { ending ->
+        RevokePushSubscription(HttpPushRepository(ending), pushSubscriptions)()
+    }
     private val viewModels =
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
     private val collectionReads = HttpCollectionReads(auth.api)

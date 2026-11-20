@@ -9,6 +9,7 @@ import cz.semprec.app.domain.AccountNotificationRepository
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -186,6 +187,51 @@ class NotificationSettingsViewModelTest : MainDispatcherTest() {
         assertEquals(AccountProblemsLevel.CRITICAL, second.state.value.choices?.problemsLevel)
         assertEquals(Failed(FailureKind.REJECTED), second.state.value.writeFailure)
         second.close()
+    }
+
+    @Test fun `turning a notification on asks for the permission once per change and turning off never does`() =
+        runTest(dispatcher) {
+            val vm = viewModel(ScriptedPrefs())
+            val effects = mutableListOf<NotificationSettingsEffect>()
+            val collector = launch { vm.effects.collect { effects += it } }
+            runCurrent()
+            vm.onAction(NotificationSettingsAction.Set(AccountNotificationSwitch.BADGE_INBOX, on = true))
+            runCurrent()
+            assertEquals(listOf<NotificationSettingsEffect>(NotificationSettingsEffect.RequestPermission), effects)
+            vm.onAction(NotificationSettingsAction.Set(AccountNotificationSwitch.INVITES, on = false))
+            vm.onAction(NotificationSettingsAction.SetProblemsLevel(AccountProblemsLevel.ALL))
+            runCurrent()
+            assertEquals(1, effects.size, "turning off and raising a level that was on ask nothing")
+            collector.cancel()
+            vm.close()
+
+            val quiet = STORED.copy(problemsLevel = AccountProblemsLevel.OFF)
+            val fromOff = viewModel(
+                ScriptedPrefs(
+                    load = listOf({ RepositoryResult.Content(quiet) }),
+                    write = { RepositoryResult.Content(quiet) },
+                ),
+            )
+            val asked = mutableListOf<NotificationSettingsEffect>()
+            val second = launch { fromOff.effects.collect { asked += it } }
+            runCurrent()
+            fromOff.onAction(NotificationSettingsAction.SetProblemsLevel(AccountProblemsLevel.CRITICAL))
+            runCurrent()
+            assertEquals(listOf<NotificationSettingsEffect>(NotificationSettingsEffect.RequestPermission), asked)
+            second.cancel()
+            fromOff.close()
+        }
+
+    @Test fun `a switch that is already on asks for nothing`() = runTest(dispatcher) {
+        val vm = viewModel(ScriptedPrefs())
+        val effects = mutableListOf<NotificationSettingsEffect>()
+        val collector = launch { vm.effects.collect { effects += it } }
+        runCurrent()
+        vm.onAction(NotificationSettingsAction.Set(AccountNotificationSwitch.APPROVALS, on = true))
+        runCurrent()
+        assertTrue(effects.isEmpty())
+        collector.cancel()
+        vm.close()
     }
 
     @Test fun `closing cancels the load and ignores later actions and clearing the store does the same`() =

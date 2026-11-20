@@ -35,3 +35,8 @@ sealed interface NotificationSettingsAction {
 
     data object DismissFailure : NotificationSettingsAction
 }
+
+sealed interface NotificationSettingsEffect {
+    /** The person turned a notification on; the app asks for the permission to notify unless it was answered. */
+    data object RequestPermission : NotificationSettingsEffect
+}

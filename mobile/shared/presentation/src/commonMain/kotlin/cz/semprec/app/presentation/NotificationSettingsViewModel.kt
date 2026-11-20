@@ -11,11 +11,14 @@ import kotlinx.coroutines.launch
 
 /**
  * The notification settings. A change shows at once and is taken back when the server refuses it, so the switches
- * never disagree with the server for longer than a request.
+ * never disagree with the server for longer than a request. Turning something on asks the app for the permission to
+ * notify ([NotificationSettingsEffect.RequestPermission]); the system asks the person only the first time.
  */
 class NotificationSettingsViewModel internal constructor(
     private val repository: AccountNotificationRepository,
-) : ScreenViewModel<NotificationSettingsState, NotificationSettingsAction, Nothing>(NotificationSettingsState()) {
+) : ScreenViewModel<NotificationSettingsState, NotificationSettingsAction, NotificationSettingsEffect>(
+    NotificationSettingsState(),
+) {
     private var loadJob: Job? = null
 
     init {
@@ -52,6 +55,7 @@ class NotificationSettingsViewModel internal constructor(
         val before = state.value.choices ?: return
         if (before.isOn(switch) == on) return
         update { it.copy(choices = before.with(switch, on), writeFailure = null) }
+        if (on) emit(NotificationSettingsEffect.RequestPermission)
         viewModelScope.launch {
             val result = answer { repository.setSwitch(switch, on) }
             ensureActive()
@@ -69,6 +73,7 @@ class NotificationSettingsViewModel internal constructor(
         val before = state.value.choices ?: return
         if (before.problemsLevel == level) return
         update { it.copy(choices = before.copy(problemsLevel = level), writeFailure = null) }
+        if (before.problemsLevel == AccountProblemsLevel.OFF) emit(NotificationSettingsEffect.RequestPermission)
         viewModelScope.launch {
             val result = answer { repository.setProblemsLevel(level) }
             ensureActive()
