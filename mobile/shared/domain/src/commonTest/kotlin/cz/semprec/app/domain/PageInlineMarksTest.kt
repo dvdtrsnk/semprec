@@ -39,6 +39,20 @@ class PageInlineMarksTest {
         assertEquals(null, InlineColor.fromKey("teal"))
     }
 
+    @Test fun `an unknown color key inside a known one clears that color as the web reads it`() {
+        assertEquals(
+            listOf(InlineRun("a", color = InlineColor.RED), InlineRun("b"), InlineRun("c", highlight = InlineColor.BLUE)),
+            PageInlineParser.parse(
+                "<span data-color=\"red\">a<span data-color=\"teal\">b</span></span>" +
+                    "<mark data-color=\"blue\">c</mark>",
+            ),
+        )
+        assertEquals(
+            listOf(InlineRun("a", highlight = InlineColor.GREEN), InlineRun("b")),
+            PageInlineParser.parse("<mark data-color=\"green\">a<mark data-color=\"teal\">b</mark></mark>"),
+        )
+    }
+
     @Test fun `all marks nested are written outermost first`() {
         val all = InlineRun(
             "all",

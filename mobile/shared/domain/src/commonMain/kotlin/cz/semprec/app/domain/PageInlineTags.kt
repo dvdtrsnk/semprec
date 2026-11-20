@@ -12,7 +12,8 @@ internal class InlineTag(val length: Int, val apply: (InlineRun) -> InlineRun)
  * The HTML tags the inline Markdown carries formatting in: `<strong>`/`<b>`, `<em>`/`<i>`, `<u>`, `<s>`/`<del>`,
  * `<span data-color="…">` for text color and `<mark data-color="…">` for highlight (either quote). A tag switches
  * its format on or off wherever it stands, so tags read the same in any nesting order. A color key this app does not
- * know is dropped: its tag is read but changes nothing.
+ * know is dropped as `shared/block-model` drops it: its tag is read and the text after it has no color of that kind,
+ * not the color of a tag around it.
  */
 internal object PageInlineTags {
     fun at(source: String, index: Int): InlineTag? {
@@ -25,7 +26,7 @@ internal object PageInlineTags {
             }
             open != null -> InlineTag(open.value.length) { run ->
                 val key = open.groupValues.drop(2).firstOrNull { it.isNotEmpty() }.orEmpty()
-                InlineColor.fromKey(key)?.let { withColor(run, open.groupValues[1], it) } ?: run
+                withColor(run, open.groupValues[1], InlineColor.fromKey(key))
             }
             close != null -> InlineTag(close.value.length) { withColor(it, close.groupValues[1], null) }
             else -> null
