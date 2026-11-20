@@ -20,6 +20,7 @@ class CalendarTodayNavigationTest : MainDispatcherTest() {
                 FakeCatalogRepository(),
                 FakeInvitationRepository(),
                 repository.changes,
+                ScriptedInternetAccountRepository(),
             ).calendarViewModel("2026-10-16")
             runCurrent()
             val cases = listOf(

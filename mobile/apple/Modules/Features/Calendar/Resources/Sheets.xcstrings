@@ -1,6 +1,134 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "calendars.account.status.consent" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chybí oprávnění ke kalendářům"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Needs calendar permission"
+          }
+        }
+      }
+    },
+    "calendars.account.status.error" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chyba synchronizace"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync failed"
+          }
+        }
+      }
+    },
+    "calendars.account.status.off" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalendáře vypnuty"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendars off"
+          }
+        }
+      }
+    },
+    "calendars.account.status.ok" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synchronizováno"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synced"
+          }
+        }
+      }
+    },
+    "calendars.account.status.pending" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spouští se"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starting"
+          }
+        }
+      }
+    },
+    "calendars.account.status.reauth" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Znovu se přihlaste v Nastavení"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in again in Settings"
+          }
+        }
+      }
+    },
+    "calendars.account.status.syncing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synchronizuje se"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Syncing"
+          }
+        }
+      }
+    },
+    "calendars.account.unnamed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Internetový účet"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Internet account"
+          }
+        }
+      }
+    },
     "calendars.add" : {
       "localizations" : {
         "cs" : {
@@ -369,6 +497,38 @@
         }
       }
     },
+    "calendars.detail.hint.account" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Název a barva se mění jen v Semprecu, poskytovatel si ponechá své. Kalendář zmizí s odebráním účtu nebo vypnutím jeho kalendářů."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The name and color change only in Semprec; the provider keeps its own. The calendar goes when its account is removed or its calendars are turned off."
+          }
+        }
+      }
+    },
+    "calendars.detail.hint.accountReadOnly" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento kalendář je jen pro čtení: jeho události tu nelze měnit a nové do něj přidat nejde. Název a barva se mění jen v Semprecu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This calendar is read-only: its events cannot be changed here and new events cannot be added to it. The name and color change only in Semprec."
+          }
+        }
+      }
+    },
     "calendars.detail.hint.birthdays" : {
       "localizations" : {
         "cs" : {
@@ -497,6 +657,38 @@
         }
       }
     },
+    "calendars.detail.remoteColor" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Barva od poskytovatele"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Provider's color"
+          }
+        }
+      }
+    },
+    "calendars.detail.remoteName" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "U poskytovatele se jmenuje „%@“."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Called “%@” at the provider."
+          }
+        }
+      }
+    },
     "calendars.done" : {
       "localizations" : {
         "cs" : {
@@ -621,6 +813,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Set up sleep and alarm"
+          }
+        }
+      }
+    },
+    "calendars.readOnly" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jen pro čtení"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read only"
           }
         }
       }

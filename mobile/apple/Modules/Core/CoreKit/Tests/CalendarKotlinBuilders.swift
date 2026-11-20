@@ -88,7 +88,16 @@ enum CalendarKotlin {
     ) -> SharedSDK.CalendarRow {
         SharedSDK.CalendarRow(
             id: "c1", name: "Work", color: "#007AFF", hidden: true, notify: false, group: group,
-            systemKey: systemKey, isDefault: true, canRename: false, canDelete: true
+            systemKey: systemKey, isDefault: true, canRename: false, canDelete: true, accountId: nil, readOnly: false,
+            remoteName: nil, remoteColor: nil, usesRemoteColor: false
+        )
+    }
+
+    static func accountRow() -> SharedSDK.CalendarRow {
+        SharedSDK.CalendarRow(
+            id: "g1", name: "Family", color: "#0B8043", hidden: false, notify: true, group: .account,
+            systemKey: nil, isDefault: false, canRename: true, canDelete: false, accountId: "m1", readOnly: true,
+            remoteName: "Rodina", remoteColor: "#16A765", usesRemoteColor: true
         )
     }
 
@@ -100,6 +109,10 @@ enum CalendarKotlin {
             phase: phase,
             failure: failure,
             calendars: [row()],
+            accounts: [
+                SharedSDK.CalendarAccountSection(id: "m1", name: "Gmail", provider: "gmail", status: .needsConsent),
+                SharedSDK.CalendarAccountSection(id: "", name: nil, provider: nil, status: nil)
+            ],
             swatches: [SharedSDK.CalendarSwatch(key: "red", hex: "#FF3B30")],
             detailId: "c1",
             impact: SharedSDK.CalendarImpact(calendarId: "c1", eventCount: 4, recipientCount: 2, cancellationCount: 1),

@@ -16,7 +16,13 @@ internal data class CalendarStoredItem(
     val id: String,
     val properties: JsonObject = JsonObject(emptyMap()),
     val version: String,
+    /** The targets of each relation the query asked to expand, by relation key; empty when none was asked for. */
+    val relations: Map<String, List<CalendarRelationTarget>> = emptyMap(),
 )
+
+/** An item a relation points to, reduced to its id. */
+@Serializable
+internal data class CalendarRelationTarget(val id: String)
 
 @Serializable
 internal data class CalendarItemList(val items: List<CalendarStoredItem>)

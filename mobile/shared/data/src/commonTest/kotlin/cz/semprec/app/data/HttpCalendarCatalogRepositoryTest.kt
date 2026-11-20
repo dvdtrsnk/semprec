@@ -25,6 +25,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -53,6 +54,22 @@ private const val INVITATIONS =
         """"kind":"sharedCalendarNotice"}},""" +
         """{"id":"i4","version":"7","properties":{"title":"Odd","status":"strange"}},{"id":"i5",""" +
         """"version":"7","properties":{"status":"pending"}}]}"""
+
+/**
+ * Account calendars: one with only the provider's name and colour, one renamed and recoloured here and read-only, one
+ * whose account the server did not name and with no colour at all, and one without any name, which is not shown.
+ * An own calendar's stray remote fields are ignored.
+ */
+private const val ACCOUNT_CALENDARS =
+    """{"items":[{"id":"g1","version":"1","properties":{"kind":"account","name":null,"color":null,""" +
+        """"remoteName":"Family","remoteColor":"#0B8043","readOnly":false},"relations":{"account":[{"id":"m1"}]}},""" +
+        """{"id":"g2","version":"1","properties":{"kind":"account","name":"Holidays","color":"#FF3B30",""" +
+        """"remoteName":"Svátky","remoteColor":"#16A765","readOnly":true},"relations":{"account":[{"id":"m1"}]}},""" +
+        """{"id":"g3","version":"1","properties":{"kind":"account","remoteName":"Work"},""" +
+        """"relations":{"account":[]}},""" +
+        """{"id":"g4","version":"1","properties":{"kind":"account","remoteColor":"#0B8043"}},""" +
+        """{"id":"own","version":"1","properties":{"name":"Mine","color":"#007AFF","remoteName":"x",""" +
+        """"readOnly":true},"relations":{"account":[]}}]}"""
 
 class HttpCalendarCatalogRepositoryTest {
     private val requests = mutableListOf<HttpRequestData>()
@@ -96,6 +113,54 @@ class HttpCalendarCatalogRepositoryTest {
         assertEquals("tasks", calendars[1].systemKey)
         assertEquals(true, calendars[2].isDefault)
         assertEquals(true, calendars[0].notify)
+    }
+
+    @Test fun `the calendars are queried with the account of each synced calendar`() = runTest {
+        HttpCalendarCatalogRepository(api(), changes).calendars()
+        val query = requests.indexOfFirst { it.url.encodedPath == "/api/databases/db-cal/query" }
+        assertEquals(
+            Json.parseToJsonElement("""{"include":{"relations":{"account":[]}}}"""),
+            Json.parseToJsonElement(bodies[query]),
+        )
+    }
+
+    @Test fun `an account calendar shows the provider name and colour unless the person set their own`() = runTest {
+        handler = { request ->
+            if (request.url.encodedPath == "/api/databases/db-cal/query") json(ACCOUNT_CALENDARS) else reads(request)
+        }
+        val result = HttpCalendarCatalogRepository(api(), changes).calendars()
+        val calendars = assertIs<RepositoryResult.Content<List<CalendarInfo>>>(result).value.associateBy { it.id }
+        assertEquals(setOf("g1", "g2", "g3", "own"), calendars.keys)
+
+        val remote = calendars.getValue("g1")
+        assertEquals(CalendarKind.ACCOUNT, remote.kind)
+        assertEquals("m1", remote.accountId)
+        assertEquals("Family" to "#0B8043", remote.name to remote.color)
+        assertEquals(true, remote.usesRemoteColor)
+        assertEquals(false, remote.readOnly)
+
+        // Recoloured and renamed here: the next sync changes only the provider's values, which stay apart.
+        val recoloured = calendars.getValue("g2")
+        assertEquals("Holidays" to "#FF3B30", recoloured.name to recoloured.color)
+        assertEquals("Svátky" to "#16A765", recoloured.remoteName to recoloured.remoteColor)
+        assertEquals(false, recoloured.usesRemoteColor)
+        assertEquals(true, recoloured.readOnly)
+
+        val colourless = calendars.getValue("g3")
+        assertEquals("#8E8E93", colourless.color)
+        assertEquals(null, colourless.accountId)
+
+        val own = calendars.getValue("own")
+        assertEquals(CalendarKind.OWN, own.kind)
+        val accountFields = listOf(own.accountId, own.remoteName, own.remoteColor, own.readOnly)
+        assertEquals(listOf(null, null, null, false), accountFields)
+    }
+
+    @Test fun `going back to the provider colour clears the colour set here`() = runTest {
+        val account = info(CalendarKind.ACCOUNT)
+        HttpCalendarCatalogRepository(api(), changes).edit(account, CalendarEdit(useRemoteColor = true))
+        val properties = sent(0)["properties"]?.jsonObject
+        assertEquals<Map<String, Any>?>(mapOf("color" to JsonNull), properties)
     }
 
     @Test fun `the version a calendar is listed with is what its edit sends and not its updatedAt`() = runTest {

@@ -6,7 +6,6 @@ import cz.semprec.app.domain.CalendarCatalogRepository
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntryKind
 import cz.semprec.app.domain.CalendarInfo
-import cz.semprec.app.domain.CalendarKind
 import cz.semprec.app.domain.CalendarRepeat
 import cz.semprec.app.domain.CalendarSchedule
 import cz.semprec.app.domain.ClockTime
@@ -33,7 +32,8 @@ enum class NewItemRepeat { NEVER, DAILY, WEEKDAYS, WEEKLY, MONTHLY, YEARLY }
 data class NewItemCalendar(val id: String, val name: String, val color: String, val isDefault: Boolean)
 
 /**
- * The new item sheet. [calendars] are the calendars of the person, [defaultDay] the day the sheet was opened for.
+ * The new item sheet. [calendars] are the calendars a new event can be put on: the own ones and the writable ones of
+ * internet accounts. [defaultDay] is the day the sheet was opened for.
  * [failure] explains [NewItemPhase.FAILED]: [FailureKind.REJECTED] is a form the server or the rules refused (no
  * title, an end before the start).
  */
@@ -117,7 +117,7 @@ class NewCalendarItemViewModel internal constructor(
                 when (result) {
                     is RepositoryResult.Content -> it.copy(
                         phase = NewItemPhase.EDITING,
-                        calendars = result.value.filter { it.kind == CalendarKind.OWN }.map { it.toChoice() },
+                        calendars = result.value.filter { it.takesNewEvents }.map { it.toChoice() },
                     )
                     // The form still works without the list: the server puts the event on the default calendar.
                     is RepositoryResult.Failure -> it.copy(phase = NewItemPhase.EDITING)

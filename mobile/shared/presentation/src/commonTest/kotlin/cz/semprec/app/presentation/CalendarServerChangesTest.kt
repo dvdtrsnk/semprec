@@ -31,6 +31,7 @@ class CalendarServerChangesTest : MainDispatcherTest() {
             FakeCatalogRepository(),
             FakeInvitationRepository(),
             repository.changes,
+            ScriptedInternetAccountRepository(),
             sync = sync,
         ).calendarViewModel("2026-10-16")
         runCurrent()
@@ -56,4 +57,36 @@ class CalendarServerChangesTest : MainDispatcherTest() {
         runCurrent()
         assertEquals(3, windowReads())
     }
+
+    @Test fun `opening the calendar asks once a minute for the accounts to sync, and server changes never do`() =
+        runTest(dispatcher) {
+            val accounts = ScriptedInternetAccountRepository(
+                list = MailCall(mailContent(listOf(internetAccount("m1", calendars = true), internetAccount("m2")))),
+            )
+            val factory = CalendarViewModelFactory(
+                repository,
+                FakeCatalogRepository(),
+                FakeInvitationRepository(),
+                repository.changes,
+                accounts,
+                sync = sync,
+            )
+            val vm = factory.calendarViewModel("2026-10-16")
+            runCurrent()
+            assertEquals(listOf("m1"), accounts.syncs.asked)
+
+            sync.raise(setOf(SyncTopic.CALENDAR))
+            runCurrent()
+            vm.onAction(CalendarAction.Navigation.Refresh)
+            runCurrent()
+            // The list of the same calendar shares the pause.
+            val list = factory.calendarListViewModel()
+            list.onAction(CalendarListAction.Refresh)
+            runCurrent()
+            assertEquals(listOf("m1"), accounts.syncs.asked)
+            assertEquals(1, accounts.list.count)
+            assertEquals(3, windowReads())
+            vm.close()
+            list.close()
+        }
 }

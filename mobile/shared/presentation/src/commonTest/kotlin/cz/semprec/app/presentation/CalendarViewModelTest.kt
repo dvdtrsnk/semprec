@@ -35,8 +35,13 @@ class CalendarViewModelTest : MainDispatcherTest() {
     private val repository = FakeCalendarRepository()
 
     private fun viewModel(day: String = "2026-10-16") =
-        CalendarViewModelFactory(repository, FakeCatalogRepository(), FakeInvitationRepository(), repository.changes)
-            .calendarViewModel(day)
+        CalendarViewModelFactory(
+            repository,
+            FakeCatalogRepository(),
+            FakeInvitationRepository(),
+            repository.changes,
+            ScriptedInternetAccountRepository(),
+        ).calendarViewModel(day)
 
     private fun serve(vararg entries: cz.semprec.app.domain.CalendarEntry, pending: Int = 0) {
         repository.onWindow = { _, _ ->
@@ -646,6 +651,7 @@ class CalendarViewModelTest : MainDispatcherTest() {
             FakeCatalogRepository(),
             FakeInvitationRepository(),
             repository.changes,
+            ScriptedInternetAccountRepository(),
             changes,
         ).calendarViewModel("2026-10-16")
 

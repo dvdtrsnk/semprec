@@ -91,6 +91,21 @@ fun calendarInfo(
     isDefault: Boolean = false,
 ) = CalendarInfo(id, "Calendar $id", color, true, hidden, isDefault, kind, systemKey, "v-$id")
 
+/** A calendar of the internet account [accountId] with the provider's name and colour, unless [color] was set here. */
+fun accountCalendar(
+    id: String,
+    accountId: String?,
+    readOnly: Boolean = false,
+    color: String? = null,
+) = calendarInfo(id, color ?: "#0B8043", kind = CalendarKind.ACCOUNT).copy(
+    name = "Remote $id",
+    accountId = accountId,
+    readOnly = readOnly,
+    remoteName = "Remote $id",
+    remoteColor = "#0B8043",
+    usesRemoteColor = color == null,
+)
+
 fun window(
     entries: List<CalendarEntry>,
     calendars: List<CalendarInfo> = listOf(calendarInfo("work")),
@@ -183,7 +198,8 @@ class FakeCatalogRepository(val changes: CalendarChanges = CalendarChanges()) : 
     }
 
     override suspend fun edit(calendar: CalendarInfo, change: CalendarEdit): RepositoryResult<Unit> {
-        calls += "edit ${calendar.id} ${change.name} ${change.color} ${change.notify} ${change.hidden}"
+        calls += "edit ${calendar.id} ${change.name} ${change.color} ${change.notify} ${change.hidden}" +
+            if (change.useRemoteColor) " remoteColor" else ""
         return write()
     }
 

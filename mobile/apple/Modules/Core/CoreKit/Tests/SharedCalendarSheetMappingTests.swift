@@ -28,6 +28,13 @@ final class SharedCalendarSheetMappingTests: XCTestCase {
                 isDefault: true, canRename: false, canDelete: true
             )]
         )
+        XCTAssertEqual(
+            state.accounts,
+            [
+                CoreKit.CalendarAccountSection(id: "m1", name: "Gmail", provider: "gmail", status: .needsConsent),
+                CoreKit.CalendarAccountSection(id: "")
+            ]
+        )
         XCTAssertEqual(state.swatches, [CoreKit.CalendarSwatch(key: "red", hex: "#FF3B30")])
         XCTAssertEqual(state.detailId, "c1")
         XCTAssertEqual(
@@ -40,16 +47,33 @@ final class SharedCalendarSheetMappingTests: XCTestCase {
     }
 
     func testCalendarGroupsMapOneToOne() {
-        let groups: [SharedSDK.CalendarGroup] = [.own, .system, .subscription]
-        XCTAssertEqual(groups.map { CoreKit.CalendarGroup($0) }, [.own, .system, .subscription])
+        let groups: [SharedSDK.CalendarGroup] = [.own, .system, .subscription, .account]
+        XCTAssertEqual(groups.map { CoreKit.CalendarGroup($0) }, [.own, .system, .subscription, .account])
+    }
+
+    func testAnAccountRowMapsItsAccountAndProviderValues() {
+        XCTAssertEqual(
+            CoreKit.CalendarRow(CalendarKotlin.accountRow()),
+            CoreKit.CalendarRow(
+                id: "g1", name: "Family", color: "#0B8043", hidden: false, notify: true, group: .account,
+                systemKey: nil, isDefault: false, canRename: true, canDelete: false, accountId: "m1", readOnly: true,
+                remoteName: "Rodina", remoteColor: "#16A765", usesRemoteColor: true
+            )
+        )
     }
 
     func testListActionsMapEveryCase() throws {
         typealias Model = SharedCalendarListScreenModel
         XCTAssertTrue(Model.action(.retry) is SharedSDK.CalendarListActionRetry)
+        XCTAssertTrue(Model.action(.refresh) is SharedSDK.CalendarListActionRefresh)
         XCTAssertEqual(
             (
-                Model.action(.toggleHidden(calendarId: "a")) as? SharedSDK.CalendarListActionChangeToggleHidden
+                Model.change(.useRemoteColor(calendarId: "g")) as? SharedSDK.CalendarListActionChangeUseRemoteColor
+            )?.calendarId, "g"
+        )
+        XCTAssertEqual(
+            (
+                Model.action(.change(.toggleHidden(calendarId: "a"))) as? SharedSDK.CalendarListActionChangeToggleHidden
             )?.calendarId, "a"
         )
         XCTAssertEqual((Model.action(.setAllHidden(true)) as? SharedSDK.CalendarListActionSetAllHidden)?.hidden, true)
@@ -59,15 +83,15 @@ final class SharedCalendarSheetMappingTests: XCTestCase {
         )
         XCTAssertTrue(Model.action(.closeDetail) is SharedSDK.CalendarListActionCloseDetail)
         let rename = try XCTUnwrap(
-            Model.action(.rename(calendarId: "c", name: "N")) as? SharedSDK.CalendarListActionChangeRename
+            Model.change(.rename(calendarId: "c", name: "N")) as? SharedSDK.CalendarListActionChangeRename
         )
         XCTAssertEqual([rename.calendarId, rename.name], ["c", "N"])
         let color = try XCTUnwrap(
-            Model.action(.setColor(calendarId: "d", color: "#000000")) as? SharedSDK.CalendarListActionChangeSetColor
+            Model.change(.setColor(calendarId: "d", color: "#000000")) as? SharedSDK.CalendarListActionChangeSetColor
         )
         XCTAssertEqual([color.calendarId, color.color], ["d", "#000000"])
         let notify = try XCTUnwrap(
-            Model.action(.setNotify(calendarId: "e", notify: false)) as? SharedSDK.CalendarListActionChangeSetNotify
+            Model.change(.setNotify(calendarId: "e", notify: false)) as? SharedSDK.CalendarListActionChangeSetNotify
         )
         XCTAssertEqual(notify.calendarId, "e")
         XCTAssertFalse(notify.notify)

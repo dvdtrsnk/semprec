@@ -24,6 +24,15 @@ enum CalendarSheetIdentifiers {
     /// A colour of the detail page, by the swatch's key.
     static func calendarColor(_ key: String) -> String { "calendars.color.\(key)" }
 
+    /// The provider's colour on the detail page of an account calendar.
+    static let calendarsRemoteColor = "calendars.color.remote"
+
+    /// The lock of a read-only calendar's row, by the calendar's id.
+    static func calendarReadOnly(_ id: String) -> String { "calendars.readOnly.\(id)" }
+
+    /// The header of an internet account's calendars, by the account's id.
+    static func calendarAccount(_ id: String) -> String { "calendars.account.\(id)" }
+
     // MARK: - Invitations
     static let invitationsScreen = "invitations.screen"
     static let invitationsDone = "invitations.done"

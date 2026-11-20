@@ -32,10 +32,12 @@ final class CalendarListViewModelTests: XCTestCase {
         let router = SheetsRouterSpy()
         let viewModel = CalendarListViewModel(model: model, router: router)
         let actions: [CalendarListAction] = [
-            .toggleHidden(calendarId: "work"), .setAllHidden(true), .openDetail(calendarId: "work"), .closeDetail,
-            .rename(calendarId: "work", name: "Job"), .setColor(calendarId: "work", color: "#FF3B30"),
-            .setNotify(calendarId: "work", notify: false), .add(name: "New"), .requestDelete(calendarId: "work"),
-            .confirmDelete, .cancelDelete, .openSleep, .dismissProblem
+            .change(.toggleHidden(calendarId: "work")), .setAllHidden(true), .openDetail(calendarId: "work"),
+            .closeDetail, .change(.rename(calendarId: "work", name: "Job")),
+            .change(.setColor(calendarId: "work", color: "#FF3B30")),
+            .change(.setNotify(calendarId: "work", notify: false)),
+            .change(.useRemoteColor(calendarId: "family")), .add(name: "New"),
+            .requestDelete(calendarId: "work"), .confirmDelete, .cancelDelete, .openSleep, .dismissProblem, .refresh
         ]
         viewModel.retry()
         actions.forEach(viewModel.send)

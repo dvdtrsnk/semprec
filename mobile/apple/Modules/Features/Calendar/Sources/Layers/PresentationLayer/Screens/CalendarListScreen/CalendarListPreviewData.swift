@@ -37,6 +37,31 @@ extension CalendarListState {
         CalendarListState(phase: .content, calendars: previewCalendars, swatches: previewSwatches)
     }
 
+    /// The own calendars and those of a Google account, one renamed and recoloured here, one read-only.
+    static var previewAccounts: CalendarListState {
+        let accountCalendars = [
+            CalendarRow(
+                id: "family", name: "Family", color: "#16A765", group: .account, canDelete: false, accountId: "m1",
+                remoteName: "Family", remoteColor: "#16A765", usesRemoteColor: true
+            ),
+            CalendarRow(
+                id: "team", name: "Tým", color: "#FF9500", group: .account, canDelete: false, accountId: "m1",
+                remoteName: "Team", remoteColor: "#4986E7"
+            ),
+            CalendarRow(
+                id: "czech", name: "Svátky v Česku", color: "#16A765", group: .account, canDelete: false,
+                accountId: "m1", readOnly: true, remoteName: "Svátky v Česku", remoteColor: "#16A765",
+                usesRemoteColor: true
+            )
+        ]
+        return CalendarListState(
+            phase: .content,
+            calendars: Array(previewCalendars.prefix(2)) + accountCalendars,
+            accounts: [CalendarAccountSection(id: "m1", name: "david@gmail.com", provider: "gmail", status: .ok)],
+            swatches: previewSwatches
+        )
+    }
+
     static var previewDetail: CalendarListState {
         CalendarListState(phase: .content, calendars: previewCalendars, swatches: previewSwatches, detailId: "work")
     }

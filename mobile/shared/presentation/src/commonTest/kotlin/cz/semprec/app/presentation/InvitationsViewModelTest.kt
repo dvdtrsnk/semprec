@@ -30,6 +30,7 @@ class InvitationsViewModelTest : MainDispatcherTest() {
             FakeCatalogRepository(),
             repository,
             repository.changes,
+            ScriptedInternetAccountRepository(),
             sync = sync,
         ).invitationsViewModel()
 
@@ -175,6 +176,7 @@ class InvitationsViewModelTest : MainDispatcherTest() {
             FakeCatalogRepository(),
             failing,
             repository.changes,
+            ScriptedInternetAccountRepository(),
         ).invitationsViewModel()
         runCurrent()
         assertEquals(InvitationsPhase.ERROR, vm.state.value.phase)

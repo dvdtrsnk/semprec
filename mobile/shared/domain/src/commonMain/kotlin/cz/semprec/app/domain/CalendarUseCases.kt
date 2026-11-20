@@ -115,12 +115,18 @@ private fun NewCalendarItem.optionsFit(): Boolean {
     }
 }
 
-/** The calendars and the rules for changing them: a name is never empty, only an own calendar is renamed. */
+/**
+ * The calendars and the rules for changing them: a name is never empty, only an own calendar or one of an internet
+ * account is renamed (the account's only here, not at the provider), and only an account calendar goes back to the
+ * provider's colour.
+ */
 class EditCalendars(private val repository: CalendarCatalogRepository) {
     suspend fun edit(calendar: CalendarInfo, change: CalendarEdit): RepositoryResult<Unit> {
         val name = change.name?.trim()
-        val renamesWrongly = name != null && (name.isEmpty() || calendar.kind != CalendarKind.OWN)
-        return if (renamesWrongly) {
+        val renamable = calendar.kind == CalendarKind.OWN || calendar.kind == CalendarKind.ACCOUNT
+        val renamesWrongly = name != null && (name.isEmpty() || !renamable)
+        val resetsWrongly = change.useRemoteColor && calendar.kind != CalendarKind.ACCOUNT
+        return if (renamesWrongly || resetsWrongly) {
             RepositoryResult.Failure(FailureKind.REJECTED)
         } else {
             repository.edit(calendar, change.copy(name = name))
@@ -130,7 +136,7 @@ class EditCalendars(private val repository: CalendarCatalogRepository) {
     suspend fun create(name: String, color: String): RepositoryResult<String> =
         if (name.isBlank()) RepositoryResult.Failure(FailureKind.REJECTED) else repository.create(name.trim(), color)
 
-    /** Only an own calendar that is not the default one can be deleted. */
+    /** Only an own calendar that is not the default one can be deleted; an account calendar goes with its account. */
     suspend fun delete(calendar: CalendarInfo): RepositoryResult<Unit> =
         if (calendar.kind == CalendarKind.OWN && !calendar.isDefault) {
             repository.delete(calendar.id)

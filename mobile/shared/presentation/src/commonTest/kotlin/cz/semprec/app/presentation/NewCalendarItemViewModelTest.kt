@@ -21,8 +21,13 @@ class NewCalendarItemViewModelTest : MainDispatcherTest() {
     private val catalog = FakeCatalogRepository()
 
     private fun viewModel(source: CalendarCatalogRepository = catalog) =
-        CalendarViewModelFactory(repository, source, FakeInvitationRepository(), repository.changes)
-            .newCalendarItemViewModel("2026-10-17")
+        CalendarViewModelFactory(
+            repository,
+            source,
+            FakeInvitationRepository(),
+            repository.changes,
+            ScriptedInternetAccountRepository(),
+        ).newCalendarItemViewModel("2026-10-17")
 
     private fun TestScope.loaded(): NewCalendarItemViewModel = viewModel().also { runCurrent() }
 
@@ -50,6 +55,15 @@ class NewCalendarItemViewModelTest : MainDispatcherTest() {
         assertEquals(NewItemPhase.EDITING, vm.state.value.phase)
         assertEquals(listOf("personal", "work"), vm.state.value.calendars.map { it.id })
         assertTrue(vm.state.value.calendars.first().isDefault)
+        vm.close()
+    }
+
+    @Test fun `offers the writable account calendars but not the read-only ones`() = runTest(dispatcher) {
+        catalog.calendars += listOf(accountCalendar("g1", "m1"), accountCalendar("g2", "m1", readOnly = true))
+        val vm = viewModel()
+        runCurrent()
+        assertEquals(listOf("personal", "work", "g1"), vm.state.value.calendars.map { it.id })
+        assertEquals("#0B8043", vm.state.value.calendars.last().color)
         vm.close()
     }
 

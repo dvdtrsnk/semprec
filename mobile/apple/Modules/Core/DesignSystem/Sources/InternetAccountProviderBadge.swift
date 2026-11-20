@@ -1,14 +1,21 @@
 import SwiftUI
 
-/// The letter and color of a provider, as the avatar of its accounts; `provider` is the stored key.
-struct InternetAccountProviderBadge: View {
+/// The letter and color of a provider, as the avatar of its accounts; `provider` is the stored key (`gmail`,
+/// `outlook`, `icloud`, `imap`). The account screens and the calendars of the accounts show the same one.
+public struct InternetAccountProviderBadge: View {
 
     // MARK: - Dependencies
-    let provider: String?
-    var size: CGFloat = 36
+    private let provider: String?
+    private let size: CGFloat
+
+    // MARK: - Init
+    public init(provider: String?, size: CGFloat = 36) {
+        self.provider = provider
+        self.size = size
+    }
 
     // MARK: - Body
-    var body: some View {
+    public var body: some View {
         Text(verbatim: letter)
             .font(.system(size: size * 0.45, weight: .semibold))
             .foregroundStyle(.white)

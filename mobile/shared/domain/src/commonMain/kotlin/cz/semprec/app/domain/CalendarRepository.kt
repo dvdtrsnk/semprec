@@ -21,6 +21,11 @@ class CalendarChanges {
 /**
  * A calendar of the tenant: the container of events, or one Semprec fills itself (tasks, birthdays, sleep). [version]
  * is the token an edit sends as `ifVersion`.
+ *
+ * A calendar of an internet account ([CalendarKind.ACCOUNT]) belongs to [accountId] and carries the name and colour
+ * the provider gives it ([remoteName], [remoteColor]). [name] and [color] are what the person set here, or the
+ * provider's when nothing was set; [usesRemoteColor] says the colour is the provider's. A [readOnly] calendar takes no
+ * new events.
  */
 data class CalendarInfo(
     val id: String,
@@ -32,20 +37,36 @@ data class CalendarInfo(
     val kind: CalendarKind,
     val systemKey: String?,
     val version: String,
-)
+    val accountId: String? = null,
+    val readOnly: Boolean = false,
+    val remoteName: String? = null,
+    val remoteColor: String? = null,
+    val usesRemoteColor: Boolean = false,
+) {
+    /** Whether a new event can be put on it: an own calendar, or a writable one of an internet account. */
+    val takesNewEvents: Boolean
+        get() = kind == CalendarKind.OWN || (kind == CalendarKind.ACCOUNT && !readOnly)
+}
 
-/** Where a calendar comes from: made by the person, filled by Semprec, or a subscription to a feed. */
-enum class CalendarKind { OWN, SYSTEM, SUBSCRIPTION }
+/**
+ * Where a calendar comes from: made by the person, filled by Semprec, a subscription to a feed, or synced from an
+ * internet account.
+ */
+enum class CalendarKind { OWN, SYSTEM, SUBSCRIPTION, ACCOUNT }
 
 /** What deleting a calendar cancels: its events, the people who were invited and the cancellations sent. */
 data class CalendarCancellationImpact(val eventCount: Int, val recipientCount: Int, val cancellationCount: Int)
 
-/** The fields of a calendar a person may change. */
+/**
+ * The fields of a calendar a person may change; a `null` field stays as it is. [useRemoteColor] clears the colour set
+ * here, so an account calendar shows the provider's colour again.
+ */
 data class CalendarEdit(
     val name: String? = null,
     val color: String? = null,
     val notify: Boolean? = null,
     val hidden: Boolean? = null,
+    val useRemoteColor: Boolean = false,
 )
 
 /** What the timeline of a window is shown with: the entries, the calendars they belong to and the new invitations. */
