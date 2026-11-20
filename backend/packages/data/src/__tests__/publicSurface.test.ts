@@ -972,6 +972,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "setDocUpdateHook",
   "setEventInvitationDelivery",
   "setGoogleCalendarSyncRuntime",
+  "setGraphCalendarSyncRuntime",
   "setHeartbeatEnabled",
   "setInboxCardsInvalidationHook",
   "setInvalidationHook",

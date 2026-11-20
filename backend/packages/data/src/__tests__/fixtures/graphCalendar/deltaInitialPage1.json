@@ -1,0 +1,49 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(event)",
+  "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/calendars/AAMkCal-work/calendarView/delta?$skiptoken=page-2",
+  "value": [
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAHAQ==\"",
+      "id": "AAMkEv-review",
+      "type": "singleInstance",
+      "seriesMasterId": null,
+      "subject": "Quarterly review",
+      "body": { "contentType": "text", "content": "Agenda attached\r\n" },
+      "isAllDay": false,
+      "isCancelled": false,
+      "isReminderOn": true,
+      "reminderMinutesBeforeStart": 15,
+      "originalStartTimeZone": "Central Europe Standard Time",
+      "originalEndTimeZone": "Central Europe Standard Time",
+      "start": { "dateTime": "2026-11-20T13:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-20T14:30:00.0000000", "timeZone": "UTC" },
+      "location": { "displayName": "Room 4", "locationType": "default" },
+      "onlineMeeting": { "joinUrl": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc" },
+      "attendees": [
+        {
+          "type": "required",
+          "status": { "response": "tentativelyAccepted", "time": "2026-11-10T10:00:00Z" },
+          "emailAddress": { "name": "Alex Doe", "address": "alex@example.test" }
+        },
+        {
+          "type": "optional",
+          "status": { "response": "none", "time": "0001-01-01T00:00:00Z" },
+          "emailAddress": { "name": "Sam Roe", "address": "sam@example.test" }
+        }
+      ],
+      "organizer": { "emailAddress": { "name": "Me", "address": "me@example.test" } }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAGtA==\"",
+      "id": "AAMkSeries-standup-occ-1102",
+      "type": "occurrence",
+      "seriesMasterId": "AAMkSeries-standup",
+      "subject": "Standup",
+      "isAllDay": false,
+      "isCancelled": false,
+      "originalStart": "2026-11-02T08:00:00Z",
+      "start": { "dateTime": "2026-11-02T08:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-02T08:15:00.0000000", "timeZone": "UTC" }
+    }
+  ]
+}

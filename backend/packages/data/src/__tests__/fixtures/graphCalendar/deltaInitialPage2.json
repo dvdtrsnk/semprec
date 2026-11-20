@@ -1,0 +1,79 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(event)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/AAMkCal-work/calendarView/delta?$deltatoken=token-1",
+  "value": [
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAGtQ==\"",
+      "id": "AAMkSeries-standup-exc-1104",
+      "type": "exception",
+      "seriesMasterId": "AAMkSeries-standup",
+      "subject": "Standup (moved)",
+      "isAllDay": false,
+      "isCancelled": false,
+      "originalStart": "2026-11-04T08:00:00Z",
+      "start": { "dateTime": "2026-11-04T09:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-04T09:15:00.0000000", "timeZone": "UTC" }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAHAg==\"",
+      "id": "AAMkEv-trip",
+      "type": "singleInstance",
+      "subject": "Ski trip",
+      "body": { "contentType": "text", "content": "" },
+      "isAllDay": true,
+      "isCancelled": false,
+      "isReminderOn": false,
+      "reminderMinutesBeforeStart": 1080,
+      "originalStartTimeZone": "Central Europe Standard Time",
+      "start": { "dateTime": "2026-12-10T00:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-12-13T00:00:00.0000000", "timeZone": "UTC" },
+      "location": { "displayName": "" },
+      "attendees": [],
+      "organizer": { "emailAddress": { "name": "Me", "address": "me@example.test" } }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAHAw==\"",
+      "id": "AAMkEv-christmas",
+      "type": "singleInstance",
+      "subject": "Christmas Eve",
+      "isAllDay": true,
+      "isCancelled": false,
+      "originalStartTimeZone": "Central Europe Standard Time",
+      "start": { "dateTime": "2026-12-23T23:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-12-24T23:00:00.0000000", "timeZone": "UTC" }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAHBA==\"",
+      "id": "AAMkEv-party",
+      "type": "singleInstance",
+      "subject": "Party",
+      "isAllDay": false,
+      "isCancelled": false,
+      "originalStartTimeZone": "Central Europe Standard Time",
+      "start": { "dateTime": "2026-11-27T20:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-27T23:00:00.0000000", "timeZone": "UTC" }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAHBQ==\"",
+      "id": "AAMkEv-call",
+      "type": "singleInstance",
+      "subject": "Call",
+      "isAllDay": false,
+      "isCancelled": false,
+      "originalStartTimeZone": "Customized Time Zone",
+      "start": { "dateTime": "2026-11-25T16:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-25T16:30:00.0000000", "timeZone": "UTC" }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAHBg==\"",
+      "id": "AAMkEv-cancelled",
+      "type": "singleInstance",
+      "subject": "Canceled: Vendor demo",
+      "isAllDay": false,
+      "isCancelled": true,
+      "originalStartTimeZone": "Central Europe Standard Time",
+      "start": { "dateTime": "2026-11-26T09:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-26T10:00:00.0000000", "timeZone": "UTC" }
+    }
+  ]
+}

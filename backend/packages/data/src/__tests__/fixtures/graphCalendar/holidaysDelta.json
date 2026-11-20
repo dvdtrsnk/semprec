@@ -1,0 +1,17 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(event)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/AAMkCal-holidays/calendarView/delta?$deltatoken=holidays-1",
+  "value": [
+    {
+      "@odata.etag": "W/\"aGVsbG8=\"",
+      "id": "AAMkEv-newyear",
+      "type": "singleInstance",
+      "subject": "New Year's Day",
+      "isAllDay": true,
+      "isCancelled": false,
+      "originalStartTimeZone": "UTC",
+      "start": { "dateTime": "2027-01-01T00:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2027-01-02T00:00:00.0000000", "timeZone": "UTC" }
+    }
+  ]
+}

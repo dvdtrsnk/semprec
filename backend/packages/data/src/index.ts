@@ -372,10 +372,6 @@ export {
   type VerifyMailCredentialsInput,
   type VerifiedMailServerSettings,
 } from "./mail/mailCredentialVerification.js";
-export {
-  verifyCalDavServer,
-  type VerifyCalDavServerInput,
-} from "./calendar/sync/adapters/caldav/caldavConnectVerification.js";
 export { isImapConnectionLimitError } from "./mail/imapFlowClient.js";
 export type { ImapMailClient } from "./mail/imapReconcile.js";
 export {
@@ -641,10 +637,7 @@ export {
   type EventInvitationSnapshot,
 } from "./calendar/eventInvitationJob.js";
 export { setInvitationReplyDelivery, type InvitationReplyDelivery } from "./calendar/invitationReplyJob.js";
-export {
-  setGoogleCalendarSyncRuntime,
-  type GoogleCalendarSyncRuntime,
-} from "./calendar/sync/adapters/google/googleCalendarAdapter.js";
+export * from "./calendar/sync/adapters/composition.js";
 export {
   eventRecurrenceOccursOn,
   parseEventRecurrenceRule,

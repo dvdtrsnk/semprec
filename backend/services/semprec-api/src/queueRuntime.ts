@@ -11,6 +11,7 @@ import {
   resolveTaskAffinitySets,
   setEventInvitationDelivery,
   setGoogleCalendarSyncRuntime,
+  setGraphCalendarSyncRuntime,
   setInvitationReplyDelivery,
   setThreadProjectTriageRuntime,
   setThreadTaskPeopleDelivery,
@@ -45,9 +46,10 @@ export interface ApiQueueRuntime {
  * runner starts and cleared in `stop()`: the calendar invitation and reply senders
  * (`setEventInvitationDelivery`, `setInvitationReplyDelivery`, over the mail transports), the
  * thread project triage (`setThreadProjectTriageRuntime`), the thread task people sync
- * (`setThreadTaskPeopleDelivery`) and the Google calendar sync, over the Gmail OAuth client
- * (`setGoogleCalendarSyncRuntime`). The same transports are handed to `createApiCoreTaskList`, so an
- * approved agent mail send goes through them.
+ * (`setThreadTaskPeopleDelivery`), the Google calendar sync, over the Gmail OAuth client
+ * (`setGoogleCalendarSyncRuntime`), and the Microsoft calendar sync's token refresh
+ * (`setGraphCalendarSyncRuntime`, only with the Graph OAuth client configured). The same transports are handed to
+ * `createApiCoreTaskList`, so an approved agent mail send goes through them.
  */
 export async function createApiQueueRuntime(
   pool: Pool,
@@ -92,6 +94,7 @@ export async function createApiQueueRuntime(
   setThreadProjectTriageRuntime({ pool, gateway: aiGateway });
   setThreadTaskPeopleDelivery({ pool });
   setGoogleCalendarSyncRuntime("clientId" in gmail ? { pool, ...gmail } : null);
+  setGraphCalendarSyncRuntime("clientId" in graph ? { pool, ...graph } : null);
   let runner: Awaited<ReturnType<typeof runWorker>>;
   try {
     runner = await runWorker({
@@ -106,6 +109,7 @@ export async function createApiQueueRuntime(
     setThreadProjectTriageRuntime(null);
     setThreadTaskPeopleDelivery(null);
     setGoogleCalendarSyncRuntime(null);
+    setGraphCalendarSyncRuntime(null);
     throw error;
   }
 
@@ -118,6 +122,7 @@ export async function createApiQueueRuntime(
         setThreadProjectTriageRuntime(null);
         setThreadTaskPeopleDelivery(null);
         setGoogleCalendarSyncRuntime(null);
+        setGraphCalendarSyncRuntime(null);
       });
       return stopped;
     },
