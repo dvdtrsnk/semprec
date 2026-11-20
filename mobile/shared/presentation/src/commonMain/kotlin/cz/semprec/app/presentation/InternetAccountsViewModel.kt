@@ -115,7 +115,8 @@ class InternetAccountsViewModel internal constructor(
 
     private fun signInAgain(accountId: String) {
         val account = state.value.accounts.firstOrNull { it.id == accountId }
-        if (account == null || !account.canSignInAgain || state.value.connecting || state.value.signingIn) return
+        val busy = state.value.connecting || state.value.signingIn
+        if (account == null || !account.canSignInAgain || busy) return
         if (account.provider in BROWSER_PROVIDERS) {
             reauthorizing = true
             browser.start { accounts.startReauthorization(accountId, emptySet()) }

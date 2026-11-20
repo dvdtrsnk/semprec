@@ -92,10 +92,12 @@ class InternetAccountViewModel internal constructor(
             InternetAccountAction.SyncNow -> syncNow()
             is InternetAccountAction.Removal -> removal(action)
             InternetAccountAction.DismissFailure -> update { it.copy(actionFailed = false, signInFailure = null) }
-            InternetAccountAction.SignIn.Again -> signInAgain()
-            is InternetAccountAction.SignIn -> browser.handle(action, state.value.account) { services ->
-                accounts.startReauthorization(accountId, services)
-            }
+            is InternetAccountAction.SignIn -> browser.handle(
+                step = action,
+                account = state.value.account,
+                reauthorize = { services -> accounts.startReauthorization(accountId, services) },
+                withPassword = { account -> password.open(accountId, account.address, account.provider) },
+            )
             is InternetAccountAction.PasswordSignIn -> password.handle(action.step)
         }
     }
@@ -115,17 +117,6 @@ class InternetAccountViewModel internal constructor(
                     null -> it.copy(phase = InternetAccountPhase.ERROR, failure = null)
                 }
             }
-        }
-    }
-
-    /** Signs the account in again in a browser or with a password, while the screen offers it. */
-    private fun signInAgain() {
-        val account = state.value.account
-        if (account == null || !account.canSignInAgain || state.value.signingIn) return
-        if (account.signsInInBrowser) {
-            browser.start { accounts.startReauthorization(accountId, emptySet()) }
-        } else {
-            password.open(accountId, account.address, account.provider)
         }
     }
 
@@ -264,17 +255,21 @@ class InternetAccountViewModel internal constructor(
 }
 
 /**
- * Asks for calendar access only while the screen offers it, and reports how the browser ended; [reauthorize] asks the
- * server for the provider's page. [InternetAccountAction.SignIn.Again] is decided before, as it may not be a browser
- * sign-in.
+ * Starts a sign-in only while the screen offers it, and reports how the browser ended: signing in again is a browser
+ * sign-in for a browser account, whose page [reauthorize] asks the server for, and [withPassword] otherwise.
  */
 private fun BrowserSignInFlow.handle(
     step: InternetAccountAction.SignIn,
     account: InternetAccountDetail?,
     reauthorize: suspend (Set<InternetService>) -> RepositoryResult<OAuthSignIn>,
+    withPassword: (InternetAccountDetail) -> Unit,
 ) {
     when (step) {
-        InternetAccountAction.SignIn.Again -> Unit
+        InternetAccountAction.SignIn.Again -> when {
+            account?.canSignInAgain != true -> Unit
+            account.signsInInBrowser -> start { reauthorize(emptySet()) }
+            else -> withPassword(account)
+        }
         InternetAccountAction.SignIn.AllowCalendarAccess -> if (account?.canAllowCalendarAccess == true) {
             start { reauthorize(setOf(InternetService.MAIL, InternetService.CALENDARS)) }
         }

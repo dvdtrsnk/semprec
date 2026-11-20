@@ -167,6 +167,8 @@ class HttpMailboxRepositoryTest {
         assertEquals(30_000L, list)
     }
 
+    private val rejected = RepositoryResult.Failure(FailureKind.REJECTED)
+
     /** Each answer of the server and what the password routes make of it. */
     private val refusals = listOf<Triple<HttpStatusCode, String, RepositoryResult<MailConnectOutcome>>>(
         Triple(HttpStatusCode.BadRequest, errorBody("mail_auth_failed"), refused(MailConnectRefusal.WRONG_CREDENTIALS)),
@@ -207,10 +209,10 @@ class HttpMailboxRepositoryTest {
             refused(MailConnectRefusal.WRONG_CREDENTIALS),
         ),
         // Anything else keeps the kind the status maps to.
-        Triple(HttpStatusCode.BadRequest, errorBody("validation_failed"), RepositoryResult.Failure(FailureKind.REJECTED)),
-        Triple(HttpStatusCode.Conflict, errorBody("mailbox_not_password"), RepositoryResult.Failure(FailureKind.REJECTED)),
-        Triple(HttpStatusCode.BadRequest, "not json", RepositoryResult.Failure(FailureKind.REJECTED)),
-        Triple(HttpStatusCode.BadRequest, """{"error":"text"}""", RepositoryResult.Failure(FailureKind.REJECTED)),
+        Triple(HttpStatusCode.BadRequest, errorBody("validation_failed"), rejected),
+        Triple(HttpStatusCode.Conflict, errorBody("mailbox_not_password"), rejected),
+        Triple(HttpStatusCode.BadRequest, "not json", rejected),
+        Triple(HttpStatusCode.BadRequest, """{"error":"text"}""", rejected),
         Triple(HttpStatusCode.NotFound, errorBody("not_found"), RepositoryResult.Failure(FailureKind.NOT_FOUND)),
         Triple(HttpStatusCode.BadGateway, "", RepositoryResult.Failure(FailureKind.UNAVAILABLE)),
     )
