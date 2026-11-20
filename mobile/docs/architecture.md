@@ -389,6 +389,15 @@ on the signed-in tabs of each scene calls `ScreenModelFactory.startLiveUpdates()
 whenever the scene's `scenePhase` is not `.background` and `stopLiveUpdates()` when it
 becomes `.background` or the tabs disappear. The Android app starts no socket.
 
+The socket brings what the server synced; asking the server to sync the calendars of
+the internet accounts is `SyncAccountCalendars` (`shared/domain`). It sends
+`POST /api/accounts/:id/calendars/sync` for every account with Calendars on, at most
+once a minute for all the calendar ViewModels of one `CalendarSDK`, and ignores the
+answers: a failed sync shows as the account's calendar status. The calendar asks when
+it opens and on each `Refresh` (the app back in front, the screen shown again), the
+calendars sheet when it is pulled to refresh. A `CALENDAR` change never asks, so a sync
+that changes something does not cause the next one.
+
 ## Copy and localization
 
 Shared state carries typed values only (phases, `FailureKind`, ordinals and ids),
