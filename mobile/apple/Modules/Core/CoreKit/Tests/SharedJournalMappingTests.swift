@@ -26,6 +26,15 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertEqual(state.weeks, [])
     }
 
+    func testStateMapsTheShownPeriodOrItsAbsence() {
+        XCTAssertNil(SharedJournalScreenModel.state(JournalKotlin.state(.loading)).shown)
+        let shown = SharedSDK.JournalSelection(kind: .day, start: "2026-10-15")
+        XCTAssertEqual(
+            SharedJournalScreenModel.state(JournalKotlin.state(.content, shown: shown)).shown,
+            CoreKit.JournalSelection(kind: .day, start: "2026-10-15")
+        )
+    }
+
     // MARK: - Content
     func testStateMapsThePageAndItsBlocks() {
         let ref = SharedSDK.JournalPageRef(kind: .day, period: "2026-10-16")

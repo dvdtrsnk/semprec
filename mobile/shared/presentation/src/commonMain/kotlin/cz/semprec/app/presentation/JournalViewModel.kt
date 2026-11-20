@@ -108,20 +108,21 @@ class JournalViewModel internal constructor(
             }
             ensureActive()
             when (result) {
-                is RepositoryResult.Content -> show(result.value)
+                is RepositoryResult.Content -> show(result.value, selection)
                 is RepositoryResult.Failure -> update { failed(it, result.kind) }
                 null -> update { failed(it, null) }
             }
         }
     }
 
-    private fun show(page: JournalPeriodPage) {
+    private fun show(page: JournalPeriodPage, selection: JournalSelection) {
         val ref = JournalPageRef(page.period.type.toKind(), page.period.key)
         val own = if (page.period.type == JournalPeriodType.MONTH) null else pageState(ref, page.markdown)
         update {
             it.copy(
                 phase = JournalPhase.CONTENT,
                 failure = null,
+                shown = selection,
                 today = page.today.toString(),
                 axis = axisFor(it.selection, page.today.toString()),
                 page = own,
@@ -157,6 +158,7 @@ private fun axisFor(
 
 private fun loading(state: JournalState) = state.copy(
     phase = JournalPhase.LOADING,
+    shown = null,
     failure = null,
     axis = axisFor(state.selection, state.today),
     page = null,

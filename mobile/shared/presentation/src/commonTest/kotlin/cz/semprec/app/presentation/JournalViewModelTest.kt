@@ -238,9 +238,11 @@ class JournalViewModelTest : MainDispatcherTest() {
         assertEquals("OLD", waiting.page?.blocks?.single()?.runs?.single()?.text)
         assertEquals("2026-10-17", waiting.selection.start)
         assertEquals("2026-10-17", waiting.axis.last().cells.single { it.current }.start)
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-16"), waiting.shown)
         gate.complete(Unit)
         runCurrent()
         assertEquals("NEW", vm.state.value.page?.blocks?.single()?.runs?.single()?.text)
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-17"), vm.state.value.shown)
         vm.close()
     }
 
@@ -254,9 +256,11 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
         runCurrent()
         assertEquals(JournalPhase.LOADING, vm.state.value.phase)
+        assertNull(vm.state.value.shown)
         gate.complete(Unit)
         runCurrent()
         assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-17"), vm.state.value.shown)
         vm.close()
     }
 

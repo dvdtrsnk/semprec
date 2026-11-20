@@ -185,7 +185,7 @@ private extension JournalScreen {
     var page: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
             header
-            switch viewModel.state.selection.kind {
+            switch shownPeriod.kind {
             case .day: dayContent
             case .month: monthContent
             case .quarter, .year, .week: periodNote
@@ -199,7 +199,7 @@ private extension JournalScreen {
 
     /// What the longer periods are, under the bar; a day's heading says all in the bar.
     @ViewBuilder var header: some View {
-        if viewModel.state.selection.kind != .day {
+        if shownPeriod.kind != .day {
             Text(subtitle)
                 .font(.subheadline)
                 .foregroundStyle(Theme.Colors.secondaryText)
@@ -243,7 +243,7 @@ private extension JournalScreen {
     @ViewBuilder var inboxSection: some View {
         let items = viewModel.state.inbox
         // Today always has the Inbox, because that is where something new is written down.
-        let isToday = viewModel.state.selection.start == viewModel.state.today
+        let isToday = shownPeriod.start == viewModel.state.today
         if !items.isEmpty || isToday {
             section(Text("journal.inbox", bundle: .module), count: items.count, trailing: {
                 Button(action: viewModel.openInbox) {
@@ -329,16 +329,18 @@ private extension JournalScreen {
 // MARK: - Titles
 private extension JournalScreen {
 
-    var selection: JournalSelection { viewModel.state.selection }
+    /// The period the cards belong to: while a new selection loads, still the one shown before, so its content keeps
+    /// its own layout and subtitle.
+    var shownPeriod: JournalSelection { viewModel.state.shown ?? viewModel.state.selection }
 
     var subtitle: String {
-        switch selection.kind {
+        switch shownPeriod.kind {
         case .day, .week:
-            let year = JournalDates.year(selection.start)
-            let key = selection.start == viewModel.state.today ? "journal.subtitle.dayToday" : "journal.subtitle.day"
+            let year = JournalDates.year(shownPeriod.start)
+            let key = shownPeriod.start == viewModel.state.today ? "journal.subtitle.dayToday" : "journal.subtitle.day"
             return String(format: String(localized: String.LocalizationValue(key), bundle: .module), year)
         case .month: return String(localized: "journal.subtitle.month", bundle: .module)
-        case .quarter: return JournalDates.quarterSpan(start: selection.start)
+        case .quarter: return JournalDates.quarterSpan(start: shownPeriod.start)
         case .year: return String(localized: "journal.subtitle.year", bundle: .module)
         }
     }

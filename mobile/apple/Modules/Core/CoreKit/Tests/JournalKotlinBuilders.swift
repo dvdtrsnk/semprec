@@ -32,7 +32,8 @@ enum JournalKotlin {
         events: [SharedSDK.JournalEventState] = [],
         birthdays: [SharedSDK.JournalBirthdayState] = [],
         inbox: [SharedSDK.JournalInboxState] = [],
-        axis: [SharedSDK.JournalAxisRowState] = []
+        axis: [SharedSDK.JournalAxisRowState] = [],
+        shown: SharedSDK.JournalSelection? = nil
     ) -> SharedSDK.JournalState {
         SharedSDK.JournalState(
             phase: phase,
@@ -44,7 +45,8 @@ enum JournalKotlin {
             weeks: weeks,
             events: events,
             birthdays: birthdays,
-            inbox: inbox
+            inbox: inbox,
+            shown: shown
         )
     }
 

@@ -197,6 +197,9 @@ public struct JournalState: Equatable, Sendable {
     public var events: [JournalEvent]
     public var birthdays: [JournalBirthday]
     public var inbox: [JournalInboxItem]
+    /// The period the page, weeks, events and Inbox belong to: right after a new selection still the previous one,
+    /// until the new period arrives. `nil` while nothing is shown.
+    public var shown: JournalSelection?
 
     public init(
         phase: JournalPhase,
@@ -207,7 +210,8 @@ public struct JournalState: Equatable, Sendable {
         weeks: [JournalWeek] = [],
         events: [JournalEvent] = [],
         birthdays: [JournalBirthday] = [],
-        inbox: [JournalInboxItem] = []
+        inbox: [JournalInboxItem] = [],
+        shown: JournalSelection? = nil
     ) {
         self.phase = phase
         self.selection = selection
@@ -218,6 +222,7 @@ public struct JournalState: Equatable, Sendable {
         self.events = events
         self.birthdays = birthdays
         self.inbox = inbox
+        self.shown = shown
     }
 }
 
