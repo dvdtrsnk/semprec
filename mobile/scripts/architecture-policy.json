@@ -23,7 +23,7 @@
     "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
   },
   "apple": {
-    "systemModules": ["AVFoundation", "Combine", "CoreGraphics", "Foundation", "ImageIO", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "XCTest"],
+    "systemModules": ["AVFoundation", "Combine", "CoreGraphics", "CoreHaptics", "Foundation", "ImageIO", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "XCTest"],
     "externalModules": ["FactoryKit", "NavigatorUI"],
     "kotlinFrameworkTarget": "CoreKit",
     "targets": {

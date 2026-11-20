@@ -49,7 +49,7 @@ struct SempBubbleScreen: View {
             }
         }
         .task { await viewModel.observe() }
-        .sensoryFeedback(.impact, trigger: drag.armed)
+        .haptic(.standard, trigger: drag.armed)
         .sensoryFeedback(.success, trigger: viewModel.state.toast)
     }
 }

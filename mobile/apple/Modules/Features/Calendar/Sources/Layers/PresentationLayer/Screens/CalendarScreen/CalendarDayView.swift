@@ -1,4 +1,5 @@
 import CoreKit
+import DesignSystem
 import SwiftUI
 
 /// One day: the timeline, which scrolls on under a glass header of the week strip, the date and the row of all-day
@@ -57,7 +58,7 @@ struct CalendarDayView: View {
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { headerHeight = $0 })
             }
         }
-        .sensoryFeedback(.impact(weight: .light), trigger: dayTicks)
+        .haptic(.standard, trigger: dayTicks)
         .onChange(of: state.selectedDay) { old, new in
             // The chosen day is dropped when the shared state reaches it, or moves somewhere a turn towards it
             // would not pass through.

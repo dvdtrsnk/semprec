@@ -38,8 +38,8 @@ struct AppearanceScreen: View {
         .background(Theme.Colors.groupedBackground)
         .navigationTitle(Text("appearance.title", bundle: .module))
         .inlineNavigationTitle()
-        .sensoryFeedback(.selection, trigger: scheme)
-        .sensoryFeedback(.selection, trigger: accent)
+        .haptic(.standard, trigger: scheme)
+        .haptic(.standard, trigger: accent)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccountIdentifiers.appearance)
     }
