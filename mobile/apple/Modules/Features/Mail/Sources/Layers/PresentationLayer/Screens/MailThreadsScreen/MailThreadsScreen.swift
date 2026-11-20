@@ -26,7 +26,7 @@ struct MailThreadsScreen: View {
         content
             .navigationTitle(Text(verbatim: title ?? String(localized: "mail.title", bundle: .module)))
             .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
+                PlainToolbarItemGroup(placement: .primaryAction) {
                     Button { viewModel.send(.open(.openFolders)) } label: {
                         Label { Text("mail.folders", bundle: .module) } icon: { Image(systemName: "folder") }
                     }

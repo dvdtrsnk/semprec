@@ -26,7 +26,7 @@ struct AreaScreen: View {
             .navigationTitle(Text(viewModel.state.name))
             .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                PlainToolbarItem(placement: .primaryAction) {
                     Button { showsSettings = true } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel(Text("area.settings", bundle: .module))
                         .accessibilityIdentifier(AreasIdentifiers.settings)

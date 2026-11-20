@@ -18,13 +18,21 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertEqual(SharedJournalScreenModel.state(JournalKotlin.state(.error)).phase, .failure(nil))
     }
 
-    func testStateMapsSelectionTodayAndFlags() {
-        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content, saving: true))
+    func testStateMapsSelectionAndToday() {
+        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content))
         XCTAssertEqual(state.selection, CoreKit.JournalSelection(kind: .month, start: "2026-10-01"))
         XCTAssertEqual(state.today, "2026-10-16")
-        XCTAssertTrue(state.saving)
         XCTAssertNil(state.page)
         XCTAssertEqual(state.weeks, [])
+    }
+
+    func testStateMapsTheShownPeriodOrItsAbsence() {
+        XCTAssertNil(SharedJournalScreenModel.state(JournalKotlin.state(.loading)).shown)
+        let shown = SharedSDK.JournalSelection(kind: .day, start: "2026-10-15")
+        XCTAssertEqual(
+            SharedJournalScreenModel.state(JournalKotlin.state(.content, shown: shown)).shown,
+            CoreKit.JournalSelection(kind: .day, start: "2026-10-15")
+        )
     }
 
     // MARK: - Content
@@ -87,24 +95,5 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertNil(event.startMinutes)
         XCTAssertNil(event.endMinutes)
         XCTAssertTrue(event.allDay)
-    }
-
-    // MARK: - Edit problems
-    func testEditProblemsMapWithTheirFailure() {
-        XCTAssertNil(SharedJournalScreenModel.state(JournalKotlin.state(.content)).editProblem)
-        XCTAssertEqual(
-            SharedJournalScreenModel.state(JournalKotlin.state(.content, editProblem: .stale)).editProblem,
-            .stale
-        )
-        XCTAssertEqual(
-            SharedJournalScreenModel.state(
-                JournalKotlin.state(.content, editProblem: .failed, editFailure: .rejected)
-            ).editProblem,
-            .failed(.rejected)
-        )
-        XCTAssertEqual(
-            SharedJournalScreenModel.state(JournalKotlin.state(.content, editProblem: .failed)).editProblem,
-            .failed(nil)
-        )
     }
 }

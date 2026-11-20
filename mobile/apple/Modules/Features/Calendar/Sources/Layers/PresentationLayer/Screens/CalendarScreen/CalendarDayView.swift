@@ -1,4 +1,5 @@
 import CoreKit
+import DesignSystem
 import SwiftUI
 
 /// One day: the timeline, which scrolls on under a glass header of the week strip, the date and the row of all-day
@@ -57,7 +58,8 @@ struct CalendarDayView: View {
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { headerHeight = $0 })
             }
         }
-        .sensoryFeedback(.impact(weight: .light), trigger: dayTicks)
+        // A new day ticks as moving a selected row to another place does in a note.
+        .sensoryFeedback(.selection, trigger: dayTicks)
         .onChange(of: state.selectedDay) { old, new in
             // The chosen day is dropped when the shared state reaches it, or moves somewhere a turn towards it
             // would not pass through.
@@ -66,7 +68,11 @@ struct CalendarDayView: View {
             if new == tickedDay || isTurningWeek { return }
             tick(for: new)
         }
-        .onChange(of: todayRequests) { chosenDay = nil }
+        .onChange(of: todayRequests) {
+            chosenDay = nil
+            // Today plays its own haptic where it is asked for; the day it brings does not tick again.
+            if state.selectedDay != state.today { tickedDay = state.today }
+        }
         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { topBarsHeight = $0 })
         .coordinateSpace(.calendarDay)
         .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }

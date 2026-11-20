@@ -316,6 +316,7 @@ function copyBlockInput(block: PageBlock): NewBlockInput {
     indent: block.indent,
     text: block.text,
     ...(block.type === "todo" ? { done: block.done } : {}),
+    ...(block.toggle ? { toggle: true } : {}),
   };
 }
 

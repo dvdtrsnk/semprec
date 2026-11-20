@@ -14,6 +14,11 @@ public enum AccountScreenFactory {
         ProfileScreen(viewModel: ProfileViewModel(model: makeModel(), router: router))
     }
 
+    /// The look of the app on this device, which needs no shared model.
+    public static func appearance() -> some View {
+        AppearanceScreen()
+    }
+
     public static func devices(makeModel: @escaping @MainActor () -> any DevicesScreenModel) -> some View {
         DevicesScreen(viewModel: DevicesViewModel(model: makeModel()))
     }

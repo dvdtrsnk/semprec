@@ -273,22 +273,6 @@
         }
       }
     },
-    "details.description" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Popis"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Description"
-          }
-        }
-      }
-    },
     "details.done" : {
       "localizations" : {
         "cs" : {

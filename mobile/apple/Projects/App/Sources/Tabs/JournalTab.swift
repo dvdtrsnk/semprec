@@ -10,6 +10,7 @@ enum JournalTab {
         JournalScreenFactory.journal(
             makeModel: { composition.models.makeJournal(initialDay: $0) },
             makeCapture: { composition.models.makeInboxCapture() },
+            makeNote: { composition.models.makeNoteEditor(source: $0) },
             router: composition.journalRouter
         )
     }

@@ -34,7 +34,7 @@ struct TrashScreen: View {
         .navigationTitle(Text("trash.title", bundle: .module))
         .inlineNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            PlainToolbarItem(placement: .primaryAction) {
                 Button { viewModel.toggleSelecting() } label: {
                     Text(viewModel.state.selecting ? "trash.done" : "trash.select", bundle: .module)
                 }

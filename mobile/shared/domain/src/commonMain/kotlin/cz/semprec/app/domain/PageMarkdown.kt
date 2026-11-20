@@ -15,7 +15,7 @@ private val NUMBER_LINE = Regex("^\\d+\\.(?: +([\\s\\S]*))?$")
 private val QUOTE_LINE = Regex("^> ?([\\s\\S]*)$")
 
 /** What one `semprec:block` comment says; only the fields the comment carries are set. */
-private data class CommentFields(val type: String? = null, val indent: Int? = null)
+private data class CommentFields(val type: String? = null, val indent: Int? = null, val toggle: Boolean = false)
 
 /** What one content line says before a pending comment is applied. */
 private data class LineParse(
@@ -28,7 +28,8 @@ private data class LineParse(
 
 /**
  * The canonical Markdown of a page (docs/adr/2026-11-01-canonical-block-markdown-*.md) read into [PageBlock]s.
- * One non-empty line is one block, and a `semprec:block` comment line applies to the line after it. This is a
+ * One non-empty line is one block, and a `semprec:block` comment line applies to the line after it: its `type=toggle`
+ * makes a plain line a toggle, and its `toggle=true` makes a heading a toggle heading. This is a
  * port of `parseMarkdown` of `shared/block-model`, without block ids: the page API addresses a block by its place.
  */
 object PageMarkdown {
@@ -68,14 +69,17 @@ object PageMarkdown {
             lastLine = line,
             hasComment = true,
             preservedType = preserved,
+            toggle = fields.toggle && PageMarkdownWriter.isHeading(type),
         )
     }
 
     private fun contentBlock(line: String, comment: CommentFields?, firstLine: Int, lastLine: Int): PageBlock {
         val parsed = parseLine(line)
         val preserved = comment?.type?.takeIf { parsed.type == PageBlockType.TEXT && blockTypeOf(it) == null }
+        val toggle = parsed.type == PageBlockType.TEXT && comment?.type?.let(::blockTypeOf) == PageBlockType.TOGGLE
+        val type = if (toggle) PageBlockType.TOGGLE else parsed.type
         return PageBlock(
-            type = parsed.type,
+            type = type,
             indent = parsed.listIndent ?: comment?.indent ?: 0,
             done = parsed.done,
             runs = parsed.runs,
@@ -84,6 +88,7 @@ object PageMarkdown {
             lastLine = lastLine,
             hasComment = comment != null,
             preservedType = preserved,
+            toggle = comment?.toggle == true && PageMarkdownWriter.isHeading(type),
         )
     }
 
@@ -134,6 +139,7 @@ object PageMarkdown {
     private fun parseComment(body: String): CommentFields {
         var type: String? = null
         var indent: Int? = null
+        var toggle = false
         for (field in COMMENT_FIELD.findAll(body)) {
             val (key, value) = field.destructured
             if (key == "type" && (value == "\"\"" || COMMENT_TYPE.matches(value))) {
@@ -142,8 +148,9 @@ object PageMarkdown {
             if (key == "indent" && value.all { it in '0'..'9' }) {
                 indent = (value.toIntOrNull() ?: MAX_INDENT).coerceIn(0, MAX_INDENT)
             }
+            if (key == "toggle" && value == "true") toggle = true
         }
-        return CommentFields(type, indent)
+        return CommentFields(type, indent, toggle)
     }
 
     private fun decodeUtf16Escapes(encoded: String): String =
@@ -159,6 +166,7 @@ object PageMarkdown {
         "todo" -> PageBlockType.TODO
         "quote" -> PageBlockType.QUOTE
         "page" -> PageBlockType.PAGE
+        "toggle" -> PageBlockType.TOGGLE
         else -> null
     }
 }

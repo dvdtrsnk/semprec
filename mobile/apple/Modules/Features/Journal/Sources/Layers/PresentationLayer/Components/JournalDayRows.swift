@@ -12,15 +12,16 @@ struct JournalEventRow: View {
     // MARK: - Body
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: Theme.Spacing.small) {
-                Circle().fill(color).frame(width: 10, height: 10)
+            HStack(spacing: 14) {
+                Circle().fill(color).frame(width: 12, height: 12)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(event.title).foregroundStyle(.primary)
-                    Text(meta).font(.footnote).foregroundStyle(Theme.Colors.secondaryText)
+                    Text(event.title).font(.body.weight(.semibold)).foregroundStyle(.primary)
+                    Text(meta).font(.subheadline).foregroundStyle(Theme.Colors.secondaryText)
                 }
                 Spacer(minLength: Theme.Spacing.small)
-                Text(time).font(.subheadline).monospacedDigit().foregroundStyle(Theme.Colors.secondaryText)
+                Text(time).font(.body).monospacedDigit().foregroundStyle(Theme.Colors.secondaryText)
             }
+            .padding(.vertical, 2)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)

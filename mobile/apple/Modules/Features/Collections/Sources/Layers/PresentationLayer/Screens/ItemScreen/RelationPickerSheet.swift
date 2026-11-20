@@ -22,7 +22,7 @@ struct RelationPickerSheet: View {
                 .onSubmit(of: .search) { send(.picker(.search(query))) }
                 .onChange(of: query) { _, text in send(.picker(.search(text))) }
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    PlainToolbarItem(placement: .cancellationAction) {
                         Button { send(.picker(.close)) } label: { Text("picker.cancel", bundle: .module) }
                     }
                 }

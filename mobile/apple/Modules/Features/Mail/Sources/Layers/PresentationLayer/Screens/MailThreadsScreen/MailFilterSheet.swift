@@ -21,7 +21,7 @@ struct MailFilterSheet: View {
                 .navigationTitle(Text("mail.filter.title", bundle: .module))
                 .inlineNavigationTitle()
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    PlainToolbarItem(placement: .cancellationAction) {
                         Button { send(.clearContext) } label: { Text("mail.filter.clear", bundle: .module) }
                             .disabled(state.areaId == nil && state.projectId == nil)
                             .accessibilityIdentifier(MailIdentifiers.filterClear)

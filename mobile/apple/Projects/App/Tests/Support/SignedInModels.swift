@@ -29,9 +29,7 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeJournal(initialDay: String) -> any JournalScreenModel { real.makeJournal(initialDay: initialDay) }
 
-    func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel {
-        real.makeJournalSubpage(itemId: itemId)
-    }
+    func makeNoteEditor(source: NoteEditorSource) -> any NoteEditorScreenModel { real.makeNoteEditor(source: source) }
 
     func makeInboxCapture() -> any InboxCaptureScreenModel { real.makeInboxCapture() }
 
@@ -62,8 +60,6 @@ final class SignedInModels: ScreenModelFactory {
     // MARK: - Areas
     func makeArea(areaId: String) -> any AreaScreenModel { real.makeArea(areaId: areaId) }
 
-    // MARK: - Notes
-    func makeNotes(itemId: String) -> any NotesScreenModel { real.makeNotes(itemId: itemId) }
     func makeInbox() -> any InboxScreenModel { real.makeInbox() }
     // MARK: - Mail
     func makeMailThreads(start: MailListStart) -> any MailThreadsScreenModel { real.makeMailThreads(start: start) }

@@ -30,7 +30,7 @@ struct MailComposeScreen: View {
                 .navigationTitle(Text(verbatim: title))
                 .inlineNavigationTitle()
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    PlainToolbarItem(placement: .cancellationAction) {
                         Button { viewModel.send(.cancel) } label: {
                             Label { Text("mail.compose.cancel", bundle: .module) } icon: { Image(systemName: "xmark") }
                         }

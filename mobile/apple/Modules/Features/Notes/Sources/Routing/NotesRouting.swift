@@ -4,19 +4,7 @@ import CoreKit
 @MainActor
 public protocol NotesRouting: AnyObject {
 
-    /// The page of a subpage block.
-    func showPage(itemId: String)
-
-    /// The page of `itemId` as one Markdown text, in the editor of the item.
-    func showAsText(itemId: String)
-}
-
-/// A router for previews: it opens nothing.
-@MainActor
-final class PreviewNotesRouter: NotesRouting {
-
-    // MARK: - Protocol conformance
-    func showPage(itemId: String) {}
-
-    func showAsText(itemId: String) {}
+    /// The subpage `itemId` under the pages of `trail`, outermost first; `focusTitle` when it was just made from an
+    /// empty block.
+    func showPage(itemId: String, trail: [String], focusTitle: Bool)
 }

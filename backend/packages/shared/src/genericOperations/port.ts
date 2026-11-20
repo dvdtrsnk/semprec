@@ -151,7 +151,16 @@ export interface PageSummary {
   docId: string | null;
   kind: "page";
   title: string;
-  blocks: Array<{ id: string; type: string; indent: number; done: boolean; text: string; pageId?: string }>;
+  blocks: Array<{
+    id: string;
+    type: string;
+    indent: number;
+    done: boolean;
+    /** A toggle heading; false on every type but `h1`-`h3`. */
+    toggle: boolean;
+    text: string;
+    pageId?: string;
+  }>;
   blockCount: number;
   subpageCount: number;
   headings: Array<{ id: string; type: string; text: string }>;

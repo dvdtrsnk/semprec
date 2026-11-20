@@ -1,9 +1,7 @@
 package cz.semprec.app.presentation
 
-import cz.semprec.app.domain.EditJournalPage
 import cz.semprec.app.domain.InboxCaptureRepository
 import cz.semprec.app.domain.JournalRepository
-import cz.semprec.app.domain.LoadJournalPage
 import cz.semprec.app.domain.LoadJournalPeriod
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -23,11 +21,7 @@ class JournalViewModelFactory(
 ) {
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). [initialDay] is `YYYY-MM-DD`. */
     fun journalViewModel(initialDay: String): JournalViewModel =
-        JournalViewModel(initialDay, LoadJournalPeriod(repository), EditJournalPage(repository), changes)
-
-    /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). */
-    fun journalSubpageViewModel(itemId: String): JournalSubpageViewModel =
-        JournalSubpageViewModel(itemId, LoadJournalPage(repository), EditJournalPage(repository))
+        JournalViewModel(initialDay, LoadJournalPeriod(repository), changes)
 
     /** One new ViewModel per call; the caller owns it. The capture row of the diary's Inbox. */
     fun inboxCaptureViewModel(): InboxCaptureViewModel = InboxCaptureViewModel(captures)

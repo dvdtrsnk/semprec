@@ -70,8 +70,10 @@ extension SharedScreenModelFactory: ScreenModelFactory {
         SharedJournalScreenModel(sdk.journal.journalViewModel(initialDay: initialDay))
     }
 
-    public func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel {
-        SharedJournalSubpageScreenModel(sdk.journal.journalSubpageViewModel(itemId: itemId))
+    public func makeNoteEditor(source: NoteEditorSource) -> any NoteEditorScreenModel {
+        SharedNoteEditorScreenModel(
+            sdk.noteEditor.noteEditorViewModel(source: SharedNoteEditorScreenModel.source(source))
+        )
     }
 
     public func makeInboxCapture() -> any InboxCaptureScreenModel {

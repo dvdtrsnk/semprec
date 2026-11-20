@@ -3,6 +3,8 @@ import DesignSystem
 import SwiftUI
 
 // MARK: - Cell
+/// One period on the axis: the selection on a glass capsule tinted in the deep accent, the day, month, quarter and
+/// year of today's date in gold, weekends greyed.
 struct JournalAxisCellLabel: View {
 
     // MARK: - Dependencies
@@ -10,33 +12,39 @@ struct JournalAxisCellLabel: View {
 
     // MARK: - Body
     var body: some View {
-        VStack(spacing: 0) {
-            if cell.kind == .day {
-                Text(JournalDates.weekdayShort(cell.weekday)).font(.caption2).foregroundStyle(subColor)
-            }
-            Text(cell.title).font(font).fontWeight(emphasized ? .bold : .medium).foregroundStyle(color)
+        Text(cell.title)
+            .font(font)
+            .fontWeight(emphasized ? .bold : .semibold)
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(width: cell.kind.width - Self.gap, height: cell.kind.height - Self.gap)
+            .background { pill }
+            .padding(Self.gap / 2)
+            .contentShape(.capsule)
+    }
+
+    /// Only the selected period sits on a capsule of liquid glass tinted in the accent; the others are bare text.
+    @ViewBuilder private var pill: some View {
+        if cell.current {
+            Color.clear
+                .glassEffect(.regular.tint(Theme.Colors.appAccent.opacity(0.85)), in: .capsule)
+                .shadow(color: Theme.Colors.appAccent.opacity(0.3), radius: 6, y: 3)
         }
-        .frame(width: cell.kind.width - 4, height: cell.kind.height - 4)
-        .background(cell.current ? fill : .clear, in: .rect(cornerRadius: 10))
-        .overlay {
-            if cell.onPath && !cell.current {
-                RoundedRectangle(cornerRadius: 10).strokeBorder(cell.today ? Color.orange : ring, lineWidth: 1.5)
-            }
-        }
-        .padding(2)
-        .contentShape(.rect)
     }
 
     private var emphasized: Bool { cell.current || cell.today }
     private var weekend: Bool { cell.kind == .day && cell.weekday > 5 }
+    /// The periods that hold today's date, the day, its month, quarter and year, are in gold whatever is selected.
     private var color: Color {
-        if cell.today { return .orange }
+        if cell.current { return .white }
+        if cell.today { return JournalColors.gold }
         return weekend ? Theme.Colors.secondaryText : .primary
     }
-    private var subColor: Color { cell.today ? .orange : Theme.Colors.secondaryText }
-    private var fill: Color { cell.today ? Color.orange.opacity(0.15) : Color.secondary.opacity(0.15) }
-    private var ring: Color { Color.secondary.opacity(0.5) }
-    private var font: Font { cell.kind == .year ? .body : .subheadline }
+    private var font: Font { cell.kind == .year ? .title3 : .subheadline }
+
+    /// The space between two neighbouring pills.
+    private static let gap: CGFloat = 6
 }
 
 // MARK: - Labels
@@ -48,7 +56,7 @@ extension JournalAxisCell {
         case .year: String(year)
         case .quarter: "Q\(quarter) \(String(format: "%02d", year % 100))"
         case .month: "\(JournalDates.monthShort(month)) \(String(format: "%02d", year % 100))"
-        case .day, .week: String(format: "%02d", day)
+        case .day, .week: "\(JournalDates.weekdayShort(weekday)) \(day)"
         }
     }
 
@@ -83,16 +91,16 @@ extension JournalPeriodKind {
         switch self {
         case .year: 92
         case .quarter: 74
-        case .month: 62
-        case .week, .day: 38
+        case .month: 64
+        case .week, .day: 62
         }
     }
 
     var height: CGFloat {
         switch self {
-        case .year: 34
-        case .quarter, .month, .week: 28
-        case .day: 42
+        case .year: 38
+        case .quarter, .month, .week: 32
+        case .day: 36
         }
     }
 
@@ -105,10 +113,5 @@ extension JournalPeriodKind {
         case .week: 7
         case .day: 1
         }
-    }
-
-    /// How many days one point of the row stands for: dragging a row by a point moves the axis this far.
-    var daysPerPoint: Double {
-        typicalSpan / Double(width)
     }
 }

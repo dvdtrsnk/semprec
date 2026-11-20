@@ -134,6 +134,7 @@ export function identifyBlocks(parsed: readonly ParsedBlock[], ids: readonly str
         type: block.type,
         indent: block.indent,
         ...(block.done === undefined ? {} : { done: block.done }),
+        ...(block.toggle === undefined ? {} : { toggle: block.toggle }),
         ...(block.text === undefined ? {} : { text: block.text }),
         ...(block.pageId === undefined ? {} : { pageId: block.pageId }),
       },

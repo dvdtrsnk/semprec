@@ -64,7 +64,7 @@ private extension NewItemScreen {
     }
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
+        PlainToolbarItem(placement: .cancellationAction) {
             Button { dismiss() } label: {
                 Label {
                     Text("newItem.cancel", tableName: "Sheets", bundle: .module)

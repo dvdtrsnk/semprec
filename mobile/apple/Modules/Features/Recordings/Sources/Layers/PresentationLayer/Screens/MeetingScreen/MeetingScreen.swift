@@ -34,7 +34,7 @@ struct MeetingScreen: View {
             .inlineNavigationTitle()
             .navigationBarBackButtonHidden(recorder.state.busy)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                PlainToolbarItem(placement: .primaryAction) {
                     Button { viewModel.send(.openDetails) } label: { Text("meeting.edit", bundle: .module) }
                         .disabled(viewModel.state.phase != .content)
                         .accessibilityIdentifier(RecordingsIdentifiers.edit)

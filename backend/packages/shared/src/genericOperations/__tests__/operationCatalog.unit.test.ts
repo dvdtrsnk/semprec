@@ -531,6 +531,7 @@ describe("page.convertToBlock input (issue #1876)", () => {
       "number",
       "todo",
       "quote",
+      "toggle",
     ]);
     for (const type of schemas.PAGE_CONVERT_TARGET_TYPES) {
       expect(schema.safeParse({ ...valid, type }).success, type).toBe(true);

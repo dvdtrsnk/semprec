@@ -10,9 +10,8 @@ let project = Project(
             "NotesFeature",
             dependencies: [
                 .project(target: "CoreKit", path: "../../Core/CoreKit"),
-                .project(target: "DesignSystem", path: "../../Core/DesignSystem"),
-            ],
-            resources: ["Resources/**"]
+                .project(target: "NoteEditor", path: "../../Core/NoteEditor"),
+            ]
         ),
         SemprecProject.tests(
             "NotesFeatureTests",

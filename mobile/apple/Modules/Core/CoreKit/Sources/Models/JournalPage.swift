@@ -10,7 +10,7 @@ public enum JournalPeriodKind: Equatable, Hashable, Sendable {
     case day
 }
 
-/// Which page a change is for: the period it belongs to, named by its canonical key (`2026-Q4`, `2026-W42`).
+/// Which page of the diary: the period it belongs to, named by its canonical key (`2026-Q4`, `2026-W42`).
 public struct JournalPageRef: Equatable, Hashable, Sendable {
 
     public let kind: JournalPeriodKind
@@ -54,7 +54,7 @@ public struct JournalRun: Equatable, Sendable {
     }
 }
 
-/// One block of a page. `index` is its place in the page, which a change names; `ordinal` is the number of a
+/// One block of a page. `index` is its place in the page; `ordinal` is the number of a
 /// numbered item within its list and 0 for other blocks. A `.page` block carries its caption in `runs`.
 public struct JournalBlock: Equatable, Sendable, Identifiable {
 
@@ -99,13 +99,4 @@ public struct JournalPage: Equatable, Sendable {
         self.ref = ref
         self.blocks = blocks
     }
-}
-
-/// Why the last change to a page did not go through.
-public enum JournalEditProblem: Equatable, Sendable {
-
-    /// The page changed on the server since it was read; reloading shows what is there now.
-    case stale
-    /// The write failed; `nil` is an unexpected failure with no typed reason.
-    case failed(FailureKind?)
 }

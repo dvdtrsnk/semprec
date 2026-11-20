@@ -6,38 +6,6 @@ import XCTest
 
 final class JournalFormattingTests: XCTestCase {
 
-    // MARK: - Styled text
-    func testRunsBecomeFormattingWithoutSyntax() {
-        let runs = [
-            JournalRun(text: "Plain "),
-            JournalRun(text: "bold", bold: true),
-            JournalRun(text: " "),
-            JournalRun(text: "both", bold: true, italic: true),
-            JournalRun(text: " "),
-            JournalRun(text: "code", code: true)
-        ]
-        let styled = runs.styled
-        XCTAssertEqual(String(styled.characters), "Plain bold both code")
-        let intents = styled.runs.map { $0.inlinePresentationIntent }
-        XCTAssertEqual(intents, [
-            nil, .stronglyEmphasized, nil, [.stronglyEmphasized, .emphasized], nil, .code
-        ])
-    }
-
-    func testOnlyWebAndMailLinksAreLinks() {
-        let runs = [
-            JournalRun(text: "web", link: "https://example.com/a"),
-            JournalRun(text: "mail", link: "mailto:a@example.com"),
-            JournalRun(text: "item", link: "semprec://items/3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10")
-        ]
-        let links = runs.styled.runs.map { $0.link?.absoluteString }
-        XCTAssertEqual(links, ["https://example.com/a", "mailto:a@example.com", nil])
-    }
-
-    func testNoRunsAreEmptyText() {
-        XCTAssertEqual(String([JournalRun]().styled.characters), "")
-    }
-
     // MARK: - Colors
     func testHexColorsAreReadAndBadOnesRefused() {
         XCTAssertNotNil(Color(hex: "#007AFF"))
@@ -110,8 +78,6 @@ final class JournalFormattingTests: XCTestCase {
         XCTAssertEqual(message("journal.title"), "Deník")
         XCTAssertEqual(message("journal.today"), "Dnes")
         XCTAssertEqual(message("journal.events.none"), "Žádné události")
-        XCTAssertEqual(message("journal.placeholder.day"), "Jak se dnes máš?")
-        XCTAssertEqual(message("journal.placeholder.week"), "Co tě tento týden čeká…")
         XCTAssertEqual(message("journal.week"), "Týden %lld")
         XCTAssertEqual(message("journal.subtitle.month"), "Týdny v měsíci")
     }

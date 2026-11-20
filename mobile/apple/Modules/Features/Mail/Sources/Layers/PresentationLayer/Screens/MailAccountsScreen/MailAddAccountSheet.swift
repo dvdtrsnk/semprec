@@ -56,7 +56,7 @@ struct MailAddAccountSheet: View {
             .navigationTitle(Text("mail.accounts.add", bundle: .module))
             .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                PlainToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: { Text("mail.accounts.add.cancel", bundle: .module) }
                 }
                 ToolbarItem(placement: .confirmationAction) {

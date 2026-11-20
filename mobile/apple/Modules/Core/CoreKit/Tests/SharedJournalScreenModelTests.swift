@@ -44,9 +44,8 @@ final class SharedJournalScreenModelTests: XCTestCase {
         let model = isolatedFactory().makeJournal(initialDay: "2026-10-14")
         model.send(.openEvent(id: "e1"))
         model.send(.openInbox)
-        model.send(.openPage(pageId: "p", title: "T"))
-        let received = await effects(of: model, count: 3)
-        XCTAssertEqual(received, [.openEvent(id: "e1"), .openInbox, .openPage(pageId: "p", title: "T")])
+        let received = await effects(of: model, count: 2)
+        XCTAssertEqual(received, [.openEvent(id: "e1"), .openInbox])
         let again = await effects(of: model, count: 1, timeout: 0.3)
         XCTAssertEqual(again, [], "A delivered effect must not be delivered again")
     }
@@ -59,29 +58,6 @@ final class SharedJournalScreenModelTests: XCTestCase {
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())
         XCTAssertFalse(lease.isClosed)
-        model = nil
-        XCTAssertTrue(lease.isClosed)
-        let finished = await finishes(effects, within: 5)
-        XCTAssertTrue(finished)
-    }
-
-    @MainActor
-    func testASubpageWithoutASessionEndsUnauthorizedAndDeliversItsEffect() async {
-        let model = isolatedFactory().makeJournalSubpage(itemId: "jv1")
-        let failed = await waitForState(model) { $0.phase == .failure(.unauthorized) }
-        XCTAssertNotNil(failed)
-        model.send(.openPage(pageId: "jv2", title: "Deeper"))
-        let received = await effects(of: model, count: 1)
-        XCTAssertEqual(received, [.openPage(pageId: "jv2", title: "Deeper")])
-    }
-
-    @MainActor
-    func testReleasingTheSubpageBridgeClosesTheKotlinViewModel() async throws {
-        var model: SharedJournalSubpageScreenModel? = try XCTUnwrap(
-            isolatedFactory().makeJournalSubpage(itemId: "jv1") as? SharedJournalSubpageScreenModel
-        )
-        let lease = try XCTUnwrap(model?.lease)
-        let effects = try XCTUnwrap(model?.effects())
         model = nil
         XCTAssertTrue(lease.isClosed)
         let finished = await finishes(effects, within: 5)

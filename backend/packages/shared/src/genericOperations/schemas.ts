@@ -733,7 +733,17 @@ export const PageRenameInputSchema = z.object({ pageItemId: canonicalUuid, title
 export type PageRenameInput = z.infer<typeof PageRenameInputSchema>;
 
 /** Every block type of the block model except `page`. */
-export const PAGE_CONVERT_TARGET_TYPES = ["text", "h1", "h2", "h3", "bullet", "number", "todo", "quote"] as const;
+export const PAGE_CONVERT_TARGET_TYPES = [
+  "text",
+  "h1",
+  "h2",
+  "h3",
+  "bullet",
+  "number",
+  "todo",
+  "quote",
+  "toggle",
+] as const;
 export type PageConvertTargetType = (typeof PAGE_CONVERT_TARGET_TYPES)[number];
 
 /**

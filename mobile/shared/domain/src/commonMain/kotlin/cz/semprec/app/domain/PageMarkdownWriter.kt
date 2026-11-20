@@ -3,6 +3,7 @@ package cz.semprec.app.domain
 private const val ENCODE_RADIX = 16
 private const val ENCODE_WIDTH = 4
 private val LIST_TYPES = setOf(PageBlockType.BULLET, PageBlockType.NUMBER, PageBlockType.TODO)
+private val HEADING_TYPES = setOf(PageBlockType.H1, PageBlockType.H2, PageBlockType.H3)
 private val ENCODE_SAFE = Regex("[A-Za-z0-9._:~-]")
 private val NUMBER_START = Regex("^(\\d+)\\.(?: |$)")
 private val LIST_START = Regex("^[-+](?: |$)")
@@ -10,6 +11,9 @@ private val LIST_START = Regex("^[-+](?: |$)")
 /** The lines the canonical Markdown has for one block, for a block the person edited or added. */
 object PageMarkdownWriter {
     fun isList(type: PageBlockType): Boolean = type in LIST_TYPES
+
+    /** Whether [type] is a heading, the only type that can be a toggle heading ([PageBlock.toggle]). */
+    fun isHeading(type: PageBlockType): Boolean = type in HEADING_TYPES
 
     /** The content line of [block], without a comment line. Empty for an empty text block. */
     fun contentLine(block: PageBlock): String {
@@ -24,13 +28,18 @@ object PageMarkdownWriter {
             PageBlockType.NUMBER -> indentPrefix + withMarker("1.", content)
             PageBlockType.TODO -> indentPrefix + withMarker(if (block.done) "- [x]" else "- [ ]", content)
             PageBlockType.QUOTE -> withMarker(">", content)
-            PageBlockType.TEXT -> escapeLineStart(content)
+            PageBlockType.TEXT, PageBlockType.TOGGLE -> escapeLineStart(content)
         }
     }
 
-    /** Whether a block must carry a `semprec:block` comment for its content line to read back as it is. */
+    /**
+     * Whether a block must carry a `semprec:block` comment for its content line to read back as it is. A toggle and
+     * a toggle heading always do: their content line alone reads as text and as a plain heading.
+     */
     fun needsComment(block: PageBlock, line: String): Boolean =
         block.preservedType != null ||
+            block.type == PageBlockType.TOGGLE ||
+            isToggleHeading(block) ||
             (!isList(block.type) && block.indent != 0) ||
             (line.isEmpty() && block.type != PageBlockType.PAGE)
 
@@ -38,8 +47,11 @@ object PageMarkdownWriter {
     fun commentLine(block: PageBlock): String {
         val typeKey = block.preservedType?.let { if (it.isEmpty()) "\"\"" else encodeField(it) }
             ?: block.type.name.lowercase()
-        return "<!-- semprec:block type=$typeKey indent=${block.indent} -->"
+        val toggle = if (isToggleHeading(block)) " toggle=true" else ""
+        return "<!-- semprec:block type=$typeKey indent=${block.indent}$toggle -->"
     }
+
+    private fun isToggleHeading(block: PageBlock): Boolean = block.toggle && isHeading(block.type)
 
     /** All lines of a new block: its comment when it needs one, then its content line. */
     fun blockLines(block: PageBlock): List<String> {

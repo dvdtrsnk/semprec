@@ -39,6 +39,8 @@ struct CalendarScreen: View {
             .navigationTitle(Text(verbatim: ""))
             .inlineNavigationTitle()
             .toolbar { toolbar }
+            // Today answers as starting to select rows does in a note: a soft impact.
+            .sensoryFeedback(.impact(flexibility: .soft), trigger: todayRequests)
             .safeAreaInset(edge: .bottom) {
                 if viewModel.state.phase == .content {
                     CalendarBottomBar(
@@ -151,7 +153,7 @@ private extension CalendarScreen {
     }
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
+        PlainToolbarItem(placement: .navigation) {
             if let back = backLabel {
                 // The arrow and the month or year it goes to, as a navigation back button shows them; a toolbar
                 // would reduce a `Label` to its icon.
@@ -169,13 +171,13 @@ private extension CalendarScreen {
                 .accessibilityIdentifier(CalendarIdentifiers.back)
             }
         }
-        ToolbarItem(placement: .primaryAction) {
+        PlainToolbarItem(placement: .primaryAction) {
             Button { viewModel.open(.agenda(day: viewModel.state.selectedDay)) } label: {
                 Label { Text("calendar.agenda", bundle: .module) } icon: { Image(systemName: "list.bullet") }
             }
             .accessibilityIdentifier(CalendarIdentifiers.agenda)
         }
-        ToolbarItem(placement: .primaryAction) {
+        PlainToolbarItem(placement: .primaryAction) {
             Button { viewModel.open(.newItem(day: viewModel.state.selectedDay)) } label: {
                 Label { Text("calendar.new", bundle: .module) } icon: { Image(systemName: "plus") }
             }

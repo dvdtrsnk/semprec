@@ -106,7 +106,7 @@ private extension SleepScreen {
     }
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
+        PlainToolbarItem(placement: .cancellationAction) {
             if state.isRoot {
                 Button { dismiss() } label: {
                     Label { Text("sleep.close", bundle: .module) } icon: { Image(systemName: "xmark") }

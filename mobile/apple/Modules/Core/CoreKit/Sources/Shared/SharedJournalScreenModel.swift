@@ -56,8 +56,7 @@ extension SharedJournalScreenModel {
             events: state.events.map(JournalEvent.init),
             birthdays: state.birthdays.map(JournalBirthday.init),
             inbox: state.inbox.map(JournalInboxItem.init),
-            saving: state.saving,
-            editProblem: JournalEditProblem(state.editProblem, failure: state.editFailure)
+            shown: state.shown.map(JournalSelection.init)
         )
     }
 
@@ -69,14 +68,6 @@ extension SharedJournalScreenModel {
         case .showAxisAround(let day): SharedSDK.JournalActionShowAxisAround(day: day)
         case .openEvent(let id): SharedSDK.JournalActionOpenEvent(id: id)
         case .openInbox: SharedSDK.JournalActionOpenInbox.shared
-        case .openPage(let pageId, let title): SharedSDK.JournalActionOpenPage(pageId: pageId, title: title)
-        case .setText(let page, let index, let text):
-            SharedSDK.JournalActionSetText(page: page.shared, index: Int32(index), text: text)
-        case .toggleDone(let page, let index):
-            SharedSDK.JournalActionToggleDone(page: page.shared, index: Int32(index))
-        case .addBlock(let page, let kind, let text):
-            SharedSDK.JournalActionAddBlock(page: page.shared, kind: kind.shared, text: text)
-        case .dismissProblem: SharedSDK.JournalActionDismissProblem.shared
         }
     }
 
@@ -84,7 +75,6 @@ extension SharedJournalScreenModel {
         switch onEnum(of: effect) {
         case .openEvent(let openEvent): .openEvent(id: openEvent.id)
         case .openInbox: .openInbox
-        case .openPage(let openPage): .openPage(pageId: openPage.pageId, title: openPage.title)
         }
     }
 }

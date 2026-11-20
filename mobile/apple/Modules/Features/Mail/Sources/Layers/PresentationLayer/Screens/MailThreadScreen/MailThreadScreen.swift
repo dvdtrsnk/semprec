@@ -104,7 +104,7 @@ private extension MailThreadScreen {
     }
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
+        PlainToolbarItemGroup(placement: .primaryAction) {
             Button { viewModel.send(.toggleFlag) } label: {
                 Label {
                     Text(viewModel.state.flagged ? "mail.unflag" : "mail.flag", bundle: .module)

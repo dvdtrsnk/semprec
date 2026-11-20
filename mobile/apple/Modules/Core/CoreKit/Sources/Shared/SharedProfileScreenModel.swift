@@ -112,6 +112,7 @@ extension SharedProfileScreenModel {
         case .trash: .trash
         case .sempStatus: .sempStatus
         case .mailAccounts: .mailAccounts
+        case .appearance: .appearance
         }
     }
 
@@ -123,6 +124,7 @@ extension SharedProfileScreenModel {
         case .trash: .trash
         case .sempStatus: .sempStatus
         case .mailAccounts: .mailAccounts
+        case .appearance: .appearance
         }
     }
 }

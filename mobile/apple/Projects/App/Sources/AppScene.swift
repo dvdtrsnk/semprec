@@ -120,8 +120,8 @@ private extension AppScene {
             )
         case .area(let areaId, let tab):
             AreaDestination(areaId: areaId, tab: tab, composition: composition)
-        case .notes(let itemId, let tab):
-            NotesDestination(itemId: itemId, tab: tab, composition: composition)
+        case .notes(let itemId, let tab, let trail, let focusTitle):
+            NotesDestination(itemId: itemId, tab: tab, trail: trail, focusTitle: focusTitle, composition: composition)
         case .inbox(let tab):
             InboxDestination(tab: tab, composition: composition)
         case .recordings, .transcript, .meeting:
@@ -142,8 +142,6 @@ private extension AppScene {
             SleepDestination(destination: destination, composition: composition)
         case .calendars, .invitations, .newItem, .calendarAgenda:
             calendarView(destination, composition: composition)
-        case .journalPage(let itemId, let title):
-            JournalSubpageScreen(itemId: itemId, title: title, composition: composition)
         case .mailList, .mailThread, .mailFolders, .mailCompose, .mailAccounts, .mailAccount:
             mailView(destination, composition: composition)
         }

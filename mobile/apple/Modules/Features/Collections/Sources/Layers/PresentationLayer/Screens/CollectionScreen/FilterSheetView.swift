@@ -18,7 +18,7 @@ struct FilterSheetView: View {
                 .navigationTitle(Text("filter.title", bundle: .module))
                 .inlineNavigationTitle()
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    PlainToolbarItem(placement: .cancellationAction) {
                         Button(role: .destructive) { send(.filter(.clearAll)) } label: {
                             Text("filter.clear", bundle: .module)
                         }

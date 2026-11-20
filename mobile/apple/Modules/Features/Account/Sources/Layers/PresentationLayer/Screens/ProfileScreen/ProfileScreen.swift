@@ -155,6 +155,10 @@ private extension ProfileScreen {
             .listRowButton()
             .disabled(viewModel.state.resetPhase == .sending || viewModel.state.email == nil)
             .accessibilityIdentifier(AccountIdentifiers.profilePassword)
+            row(.appearance, ProfileTile(symbol: "paintpalette.fill", color: .pink), title: "profile.row.appearance",
+                value: nil,
+                subtitle: nil
+            )
             row(.devices, ProfileTile(symbol: "laptopcomputer.and.iphone", color: .teal), title: "profile.row.devices",
                 value: viewModel.state.figures.map { String($0.activeSessions) },
                 subtitle: nil
@@ -275,6 +279,7 @@ private extension ProfileScreen {
         case .trash: "trash"
         case .sempStatus: "sempStatus"
         case .mailAccounts: "mailAccounts"
+        case .appearance: "appearance"
         }
     }
 }

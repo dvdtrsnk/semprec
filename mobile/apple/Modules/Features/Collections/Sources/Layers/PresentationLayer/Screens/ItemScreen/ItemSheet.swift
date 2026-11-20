@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// The detail of an item as a sheet: a navigation stack of its own around the item screen and the system close button.
@@ -13,7 +14,7 @@ struct ItemSheet<Content: View>: View {
         NavigationStack {
             content()
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    PlainToolbarItem(placement: .cancellationAction) {
                         Button(role: .close) { dismiss() }
                             .accessibilityIdentifier(CollectionsIdentifiers.closeItem)
                     }

@@ -19,20 +19,8 @@ internal fun JournalPeriodType.toKind(): JournalPeriodKind = when (this) {
     JournalPeriodType.DAY -> JournalPeriodKind.DAY
 }
 
-internal fun JournalBlockKind.toType(): PageBlockType = when (this) {
-    JournalBlockKind.TEXT -> PageBlockType.TEXT
-    JournalBlockKind.H1 -> PageBlockType.H1
-    JournalBlockKind.H2 -> PageBlockType.H2
-    JournalBlockKind.H3 -> PageBlockType.H3
-    JournalBlockKind.BULLET -> PageBlockType.BULLET
-    JournalBlockKind.NUMBER -> PageBlockType.NUMBER
-    JournalBlockKind.TODO -> PageBlockType.TODO
-    JournalBlockKind.QUOTE -> PageBlockType.QUOTE
-    JournalBlockKind.PAGE -> PageBlockType.PAGE
-}
-
 internal fun PageBlockType.toKind(): JournalBlockKind = when (this) {
-    PageBlockType.TEXT -> JournalBlockKind.TEXT
+    PageBlockType.TEXT, PageBlockType.TOGGLE -> JournalBlockKind.TEXT
     PageBlockType.H1 -> JournalBlockKind.H1
     PageBlockType.H2 -> JournalBlockKind.H2
     PageBlockType.H3 -> JournalBlockKind.H3

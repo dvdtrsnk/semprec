@@ -49,6 +49,8 @@ extension ProfileSheet {
             AccountScreenFactory.aiUsage { models.makeAiUsage() }
         case .trash:
             AccountScreenFactory.trash { models.makeTrash() }
+        case .appearance:
+            AccountScreenFactory.appearance()
         case .sempStatus, .mailAccounts:
             // The router closes the sheet and opens these on the Overview stack; they are never pushed here.
             EmptyView()

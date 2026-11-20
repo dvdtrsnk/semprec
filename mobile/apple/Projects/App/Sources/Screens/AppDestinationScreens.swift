@@ -50,22 +50,6 @@ struct NewItemSheet: View {
     }
 }
 
-/// A subpage of the diary; `title` is the caption of the link that opened it.
-struct JournalSubpageScreen: View {
-
-    let itemId: String
-    let title: String
-    let composition: AppComposition
-
-    var body: some View {
-        JournalScreenFactory.subpage(
-            title: title,
-            makeModel: { composition.models.makeJournalSubpage(itemId: itemId) },
-            router: composition.journalRouter
-        )
-    }
-}
-
 /// One area, on the stack of `tab`.
 struct AreaDestination: View {
 
@@ -87,12 +71,19 @@ struct NotesDestination: View {
 
     let itemId: String
     let tab: AppTab
+    /// The titles of the pages above a subpage, outermost first; empty for a page of its own.
+    let trail: [String]
+    let focusTitle: Bool
     let composition: AppComposition
 
     var body: some View {
-        NotesScreenFactory.notes(
-            itemId: itemId,
-            makeModel: { composition.models.makeNotes(itemId: itemId) },
+        // A subpage's title is its block in the parent page, which renaming changes.
+        NotesScreenFactory.page(
+            trail: trail,
+            focusTitle: focusTitle,
+            makeModel: {
+                composition.models.makeNoteEditor(source: .page(itemId: itemId, titleEditable: !trail.isEmpty))
+            },
             router: composition.notesRouter(in: tab)
         )
     }
@@ -107,6 +98,7 @@ struct InboxDestination: View {
     var body: some View {
         InboxScreenFactory.inbox(
             makeModel: { composition.models.makeInbox() },
+            makeNote: { composition.models.makeNoteEditor(source: $0) },
             router: composition.inboxRouter(in: tab)
         )
     }

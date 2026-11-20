@@ -377,6 +377,17 @@ describe("setType", () => {
     setType(doc, ["t"], "todo");
     expect(readPageBlocks(doc)[0]?.done).toBe(false);
   });
+
+  it("keeps toggle when a toggle heading changes level and drops it on any other type", () => {
+    const doc = docWith({ id: "h", type: "h1", toggle: true, text: "Section" });
+    setType(doc, ["h"], "h3");
+    expect(readPageBlocks(doc)[0]).toMatchObject({ type: "h3", toggle: true });
+    setType(doc, ["h"], "toggle");
+    expect(readPageBlocks(doc)[0]).toMatchObject({ type: "toggle", toggle: false });
+    expect(getBlocksMap(doc).get("h")?.has("toggle")).toBe(false);
+    setType(doc, ["h"], "h2");
+    expect(readPageBlocks(doc)[0]).toMatchObject({ type: "h2", toggle: false });
+  });
 });
 
 describe("convertBlocksToPages", () => {
@@ -405,12 +416,22 @@ describe("convertBlocksToPages", () => {
 
     expect(updates).toHaveLength(1);
     expect(readPageBlocks(doc)).toEqual([
-      { id: "a", type: "text", indent: 0, done: false, text: [{ insert: "Alpha" }], pageId: null, synthetic: false },
+      {
+        id: "a",
+        type: "text",
+        indent: 0,
+        done: false,
+        toggle: false,
+        text: [{ insert: "Alpha" }],
+        pageId: null,
+        synthetic: false,
+      },
       {
         id: "b",
         type: "page",
         indent: 2,
         done: false,
+        toggle: false,
         text: [{ insert: "Bold and link" }],
         pageId: "page-of-b",
         synthetic: false,
@@ -420,6 +441,7 @@ describe("convertBlocksToPages", () => {
         type: "page",
         indent: 0,
         done: false,
+        toggle: false,
         text: [{ insert: "Gamma" }],
         pageId: "page-of-c",
         synthetic: false,
@@ -488,6 +510,21 @@ describe("duplicateBlocks", () => {
     expect(blocks[3]?.text).toEqual([{ insert: "A", attributes: { code: true } }]);
     expect(blocks[4]).toMatchObject({ type: "todo", done: true, text: [{ insert: "C" }] });
     expect(new Set(blocks.map((block) => block.id)).size).toBe(5);
+  });
+
+  it("copies a toggle heading, a toggle block and the new inline marks", () => {
+    const text = [
+      { insert: "x", attributes: { strike: true, underline: true, color: "red", highlight: "blue" } },
+    ] as const;
+    const doc = docWith(
+      { id: "h", type: "h2", toggle: true, text: "Section" },
+      { id: "g", type: "toggle", indent: 1, text: [...text] },
+    );
+    const copies = duplicateBlocks(doc, ["h", "g"]);
+    const blocks = readPageBlocks(doc);
+    expect(blocks.map((block) => block.id)).toEqual(["h", "g", ...copies]);
+    expect(blocks[2]).toMatchObject({ type: "h2", toggle: true, text: [{ insert: "Section" }] });
+    expect(blocks[3]).toMatchObject({ type: "toggle", indent: 1, toggle: false, text });
   });
 
   it("refuses page blocks", () => {

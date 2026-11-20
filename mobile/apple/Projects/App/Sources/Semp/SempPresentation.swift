@@ -25,12 +25,17 @@ private struct SempOverlayModifier: ViewModifier {
     let composition: AppComposition
     @ObservedObject var presenter: SempChatPresenter
     @Namespace private var zoom
+    /// Set while a panel at the bottom of the scene asks the bubble to step aside.
+    @State private var bubbleHidden = false
 
     // MARK: - Body
     /// The bubble stays under the chat while it is open, so that the chat can zoom back into it.
     func body(content: Content) -> some View {
         content
             .environment(\.dropTargets, composition.dropTargets)
+            .onPreferenceChange(FloatingControlsHiddenKey.self) { hidden in
+                MainActor.assumeIsolated { bubbleHidden = hidden }
+            }
             .overlay {
                 SempScreenFactory.bubble(
                     makeModel: { composition.models.makeSempBubble() },
@@ -39,6 +44,7 @@ private struct SempOverlayModifier: ViewModifier {
                     zoom: zoom,
                     open: { presenter.present(.latest) }
                 )
+                .stepsAside(bubbleHidden)
             }
             .fullScreenCoverOrSheet(isPresented: $presenter.isPresented) {
                 SempChatHost(presenter: presenter, composition: composition).zoomingOutOfBubble(in: zoom)
@@ -57,11 +63,15 @@ private struct SempSheetBubbleModifier: ViewModifier {
     let enabled: Bool
     @State private var registry = DropTargetRegistry()
     @Namespace private var zoom
+    @State private var bubbleHidden = false
 
     // MARK: - Body
     func body(content: Content) -> some View {
         content
             .environment(\.dropTargets, enabled ? registry : nil)
+            .onPreferenceChange(FloatingControlsHiddenKey.self) { hidden in
+                MainActor.assumeIsolated { bubbleHidden = hidden }
+            }
             .overlay {
                 if enabled {
                     SempScreenFactory.bubble(
@@ -71,6 +81,7 @@ private struct SempSheetBubbleModifier: ViewModifier {
                         zoom: zoom,
                         open: { presenter.present(.latest) }
                     )
+                    .stepsAside(bubbleHidden)
                 }
             }
             .fullScreenCoverOrSheet(isPresented: sheetChat) {
@@ -81,6 +92,17 @@ private struct SempSheetBubbleModifier: ViewModifier {
     /// The chat presented from the sheet; a destination that is no sheet leaves it to the scene.
     private var sheetChat: Binding<Bool> {
         Binding(get: { enabled && presenter.isPresented }, set: { presenter.isPresented = $0 })
+    }
+}
+
+// MARK: - Stepping aside
+private extension View {
+
+    /// The bubble faded out and not touchable while a panel takes the bottom of the scene.
+    func stepsAside(_ hidden: Bool) -> some View {
+        opacity(hidden ? 0 : 1)
+            .allowsHitTesting(!hidden)
+            .animation(.snappy(duration: 0.2), value: hidden)
     }
 }
 

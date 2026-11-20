@@ -19,7 +19,7 @@ struct SempChatsScreen: View {
         content
             .navigationTitle(Text("semp.chats.title", bundle: .module))
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                PlainToolbarItem(placement: .primaryAction) {
                     Button { viewModel.send(.openNewChat) } label: { Image(systemName: "square.and.pencil") }
                         .accessibilityLabel(Text("semp.newChat.open", bundle: .module))
                         .accessibilityIdentifier(SempIdentifiers.newChat)

@@ -12,7 +12,6 @@ final class SharedJournalActionMappingTests: XCTestCase {
         XCTAssertTrue(SharedJournalScreenModel.action(.retry) is SharedSDK.JournalActionRetry)
         XCTAssertTrue(SharedJournalScreenModel.action(.goToday) is SharedSDK.JournalActionGoToday)
         XCTAssertTrue(SharedJournalScreenModel.action(.openInbox) is SharedSDK.JournalActionOpenInbox)
-        XCTAssertTrue(SharedJournalScreenModel.action(.dismissProblem) is SharedSDK.JournalActionDismissProblem)
     }
 
     func testNavigationActionsCarryTheirArguments() throws {
@@ -31,31 +30,6 @@ final class SharedJournalActionMappingTests: XCTestCase {
                 as? SharedSDK.JournalActionShowAxisAround
         )
         XCTAssertEqual(around.day, "2029-03-10")
-        let page = try XCTUnwrap(
-            SharedJournalScreenModel.action(.openPage(pageId: "p", title: "T")) as? SharedSDK.JournalActionOpenPage
-        )
-        XCTAssertEqual([page.pageId, page.title], ["p", "T"])
-    }
-
-    func testEditActionsCarryThePageAndTheChange() throws {
-        let ref = CoreKit.JournalPageRef(kind: .week, period: "2026-W42")
-        let text = try XCTUnwrap(
-            SharedJournalScreenModel.action(.setText(page: ref, index: 3, text: "x"))
-                as? SharedSDK.JournalActionSetText
-        )
-        XCTAssertEqual([text.page.period, text.text], ["2026-W42", "x"])
-        XCTAssertEqual(text.index, 3)
-        XCTAssertEqual(text.page.kind, .week)
-        let toggle = try XCTUnwrap(
-            SharedJournalScreenModel.action(.toggleDone(page: ref, index: 4)) as? SharedSDK.JournalActionToggleDone
-        )
-        XCTAssertEqual(toggle.index, 4)
-        let add = try XCTUnwrap(
-            SharedJournalScreenModel.action(.addBlock(page: ref, kind: .quote, text: "q"))
-                as? SharedSDK.JournalActionAddBlock
-        )
-        XCTAssertEqual(add.kind, .quote)
-        XCTAssertEqual(add.text, "q")
     }
 
     func testEffectsMapEveryCase() {
@@ -64,79 +38,6 @@ final class SharedJournalActionMappingTests: XCTestCase {
             .openEvent(id: "e")
         )
         XCTAssertEqual(SharedJournalScreenModel.effect(SharedSDK.JournalEffectOpenInbox.shared), .openInbox)
-        XCTAssertEqual(
-            SharedJournalScreenModel.effect(SharedSDK.JournalEffectOpenPage(pageId: "p", title: "T")),
-            .openPage(pageId: "p", title: "T")
-        )
-    }
-
-    // MARK: - Subpage
-    func testSubpageStateMapsEveryPhaseAndItsBlocks() {
-        let block = JournalKotlin.block(
-            index: 0, kind: .page, runs: [JournalKotlin.run("Deeper")], pageId: "jv2"
-        )
-        let content = SharedJournalSubpageScreenModel.state(
-            JournalKotlin.subpageState(.content, blocks: [block], saving: true)
-        )
-        XCTAssertEqual(content.phase, .content)
-        XCTAssertTrue(content.saving)
-        XCTAssertEqual(content.blocks.first?.kind, .page)
-        XCTAssertEqual(content.blocks.first?.pageId, "jv2")
-        XCTAssertEqual(content.blocks.first?.plainText, "Deeper")
-        XCTAssertEqual(SharedJournalSubpageScreenModel.state(JournalKotlin.subpageState(.loading)).phase, .loading)
-        XCTAssertEqual(
-            SharedJournalSubpageScreenModel.state(JournalKotlin.subpageState(.error, failure: .notFound)).phase,
-            .failure(.notFound)
-        )
-        XCTAssertEqual(
-            SharedJournalSubpageScreenModel.state(JournalKotlin.subpageState(.error)).phase,
-            .failure(nil)
-        )
-    }
-
-    func testSubpageEditProblemsMapWithTheirFailure() {
-        XCTAssertEqual(
-            SharedJournalSubpageScreenModel.state(JournalKotlin.subpageState(.content, editProblem: .stale))
-                .editProblem,
-            .stale
-        )
-        XCTAssertEqual(
-            SharedJournalSubpageScreenModel.state(
-                JournalKotlin.subpageState(.content, editProblem: .failed, editFailure: .unavailable)
-            ).editProblem,
-            .failed(.unavailable)
-        )
-    }
-
-    func testSubpageActionsAndEffectsMapEveryCase() throws {
-        XCTAssertTrue(SharedJournalSubpageScreenModel.action(.retry) is SharedSDK.JournalSubpageActionRetry)
-        XCTAssertTrue(
-            SharedJournalSubpageScreenModel.action(.dismissProblem) is SharedSDK.JournalSubpageActionDismissProblem
-        )
-        let text = try XCTUnwrap(
-            SharedJournalSubpageScreenModel.action(.setText(index: 1, text: "x"))
-                as? SharedSDK.JournalSubpageActionSetText
-        )
-        XCTAssertEqual(text.index, 1)
-        XCTAssertEqual(text.text, "x")
-        let toggle = try XCTUnwrap(
-            SharedJournalSubpageScreenModel.action(.toggleDone(index: 2)) as? SharedSDK.JournalSubpageActionToggleDone
-        )
-        XCTAssertEqual(toggle.index, 2)
-        let add = try XCTUnwrap(
-            SharedJournalSubpageScreenModel.action(.addBlock(kind: .heading3, text: "h"))
-                as? SharedSDK.JournalSubpageActionAddBlock
-        )
-        XCTAssertEqual(add.kind, .h3)
-        let page = try XCTUnwrap(
-            SharedJournalSubpageScreenModel.action(.openPage(pageId: "p", title: "T"))
-                as? SharedSDK.JournalSubpageActionOpenPage
-        )
-        XCTAssertEqual([page.pageId, page.title], ["p", "T"])
-        XCTAssertEqual(
-            SharedJournalSubpageScreenModel.effect(SharedSDK.JournalSubpageEffectOpenPage(pageId: "p", title: "T")),
-            .openPage(pageId: "p", title: "T")
-        )
     }
 
     // MARK: - Values
@@ -150,14 +51,13 @@ final class SharedJournalActionMappingTests: XCTestCase {
         }
     }
 
-    func testBlockKindsMapBothWays() {
+    func testBlockKindsMapFromKotlin() {
         let pairs: [(SharedSDK.JournalBlockKind, CoreKit.JournalBlockKind)] = [
             (.text, .text), (.h1, .heading1), (.h2, .heading2), (.h3, .heading3), (.bullet, .bullet),
             (.number, .number), (.todo, .todo), (.quote, .quote), (.page, .page)
         ]
         for (shared, native) in pairs {
             XCTAssertEqual(CoreKit.JournalBlockKind(shared), native)
-            XCTAssertEqual(native.shared, shared)
         }
     }
 

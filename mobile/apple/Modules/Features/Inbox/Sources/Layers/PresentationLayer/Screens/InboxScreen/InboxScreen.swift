@@ -1,5 +1,6 @@
 import CoreKit
 import DesignSystem
+import NoteEditor
 import SwiftUI
 
 /// The Inbox: the cards Semp and the captures wait on, one on top of the other. The person approves a card, edits it
@@ -8,6 +9,8 @@ struct InboxScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: InboxViewModel
+    /// Set while a card's page content is edited or its blocks are selected; the check then ends that.
+    @StateObject private var noteFocus = NoteEditorFocus()
 
     // MARK: - Init
     init(viewModel: @autoclosure @escaping () -> InboxViewModel) {
@@ -21,7 +24,13 @@ struct InboxScreen: View {
             .navigationTitle(Text("inbox.title", bundle: .module))
             .navigationSubtitle(subtitle)
             .inlineNavigationTitle()
-            .toolbar { ToolbarItem(placement: .primaryAction) { undoButton } }
+            .toolbar {
+                PlainToolbarItem(placement: .primaryAction) {
+                    if noteFocus.isActive { NoteFocusDoneButton(focus: noteFocus) } else { undoButton }
+                }
+            }
+            .environment(\.inboxNoteFocus, noteFocus)
+            .noteFormatBar(noteFocus)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(InboxIdentifiers.screen)
             .task { await viewModel.observe() }

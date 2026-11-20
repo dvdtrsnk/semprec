@@ -9,6 +9,8 @@ public enum AccountPage: Equatable, Hashable, Sendable, CaseIterable {
     case trash
     case sempStatus
     case mailAccounts
+    /// The look of the app on this device: light, dark or the system's, and its accent colour.
+    case appearance
 }
 
 public enum ProfilePhase: Equatable, Sendable {
