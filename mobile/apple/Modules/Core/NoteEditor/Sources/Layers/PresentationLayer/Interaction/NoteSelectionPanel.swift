@@ -2,8 +2,9 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The panel of selection mode, in Liquid Glass where the tab bar was: how many blocks are selected, select all or
-/// none, and what can be done with them in a row that scrolls sideways when it does not fit.
+/// The panel of selection mode, in Liquid Glass and as high as the tab bar whose place it takes: one row of what can be
+/// done with the selected blocks, scrolling sideways when it does not fit, starting with selecting all or none, whose
+/// icon carries how many blocks are selected.
 struct NoteSelectionPanel: View {
 
     // MARK: - Dependencies
@@ -11,20 +12,10 @@ struct NoteSelectionPanel: View {
 
     // MARK: - Body
     var body: some View {
-        VStack(spacing: Theme.Spacing.small) {
-            HStack {
-                Text(String(format: String(localized: "noteEditor.selection.count", bundle: .module), actions.count))
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Button(action: actions.selectAll) {
-                    Text(selectAllTitle, bundle: .module).font(.subheadline.weight(.medium))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.Colors.accent)
-            }
-            .padding(.horizontal, Theme.Spacing.medium)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                selectAll
+                Group {
                     tool("noteEditor.bar.style", "paragraphsign", action: actions.style)
                     ForEach(NoteBulkEdit.allCases, id: \.self) { bulk in
                         tool(bulk.title, bulk.systemImage, role: bulk == .delete ? .destructive : nil) {
@@ -32,12 +23,12 @@ struct NoteSelectionPanel: View {
                         }
                     }
                 }
-                .padding(.horizontal, Theme.Spacing.small)
+                .disabled(actions.count < 1)
             }
-            .disabled(actions.count < 1)
+            .padding(.horizontal, Theme.Spacing.small)
         }
-        .padding(.vertical, 12)
-        .glassEffect(.regular, in: .rect(cornerRadius: 28))
+        .frame(height: 62)
+        .glassEffect(.regular, in: .capsule)
         .padding(.horizontal, Theme.Spacing.medium)
         .padding(.bottom, Theme.Spacing.small)
         .hidesFloatingControls()
@@ -107,8 +98,27 @@ enum NoteBulkEdit: Equatable, CaseIterable {
 // MARK: - Subviews
 private extension NoteSelectionPanel {
 
-    var selectAllTitle: LocalizedStringKey {
-        actions.allSelected ? "noteEditor.selection.none" : "noteEditor.selection.all"
+    var selectAll: some View {
+        tool(
+            actions.allSelected ? "noteEditor.selection.none" : "noteEditor.selection.all",
+            actions.allSelected ? "circle.dashed" : "checkmark.circle",
+            action: actions.selectAll
+        )
+        .overlay(alignment: .top) {
+            Text(verbatim: "\(actions.count)")
+                .font(.caption2.weight(.bold).monospacedDigit())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .frame(minWidth: 16, minHeight: 16)
+                .background(Theme.Colors.accent, in: .capsule)
+                .offset(x: 14, y: 2)
+                .accessibilityHidden(true)
+        }
+        .accessibilityValue(Text(countText))
+    }
+
+    var countText: String {
+        String(format: String(localized: "noteEditor.selection.count", bundle: .module), actions.count)
     }
 
     func tool(
@@ -118,17 +128,17 @@ private extension NoteSelectionPanel {
         action: @escaping () -> Void
     ) -> some View {
         Button(role: role, action: action) {
-            VStack(spacing: 4) {
+            VStack(spacing: 3) {
                 Image(systemName: systemImage)
-                    .font(.title3)
-                    .frame(height: 26)
+                    .font(.body.weight(.medium))
+                    .frame(height: 22)
                 Text(title, bundle: .module)
-                    .font(.caption)
+                    .font(.caption2.weight(.medium))
                     .lineLimit(1)
                     .fixedSize()
             }
-            .frame(minWidth: 72, minHeight: 52)
-            .padding(.horizontal, 4)
+            .frame(minWidth: 64, minHeight: 50)
+            .padding(.horizontal, 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
