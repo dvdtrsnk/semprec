@@ -1662,8 +1662,8 @@ const cases: Record<string, TaskCase> = {
       await inTenant(tenant, () =>
         pool.query(
           `INSERT INTO mail_oauth_states
-             (id, user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, expires_at)
-           VALUES ($1, $2, 'gmail', $3, $4, $5, now() - interval '1 minute')`,
+             (id, user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, expires_at, services)
+           VALUES ($1, $2, 'gmail', $3, $4, $5, now() - interval '1 minute', '{mail}')`,
           [stateId, tenant.userId, randomUUID(), Buffer.from("ciphertext"), Buffer.from("nonce")],
         ),
       );

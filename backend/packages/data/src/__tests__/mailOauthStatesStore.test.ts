@@ -9,7 +9,13 @@ import { openSecret } from "@semprec/credentials";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { getOrCreateTenantDataKey } from "../credentials/tenantKeysStore.js";
 import { withTransaction } from "../db/pool.js";
-import { consumeMailOauthState, createMailOauthState } from "../mail/mailOauthStatesStore.js";
+import {
+  consumeMailOauthState,
+  createMailOauthState,
+  resolveMailOauthRedirectUrl,
+  type MailOauthRedirectTarget,
+} from "../mail/mailOauthStatesStore.js";
+import type { MailAccountService } from "../mail/oauthServiceScopes.js";
 import { handleMailOauthStatesSweepTask } from "../mail/mailOauthStatesSweep.js";
 import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
@@ -36,9 +42,22 @@ async function createUser(tenantId: string): Promise<string> {
   return rows[0]!.id;
 }
 
-function create(tenantId: string, userId: string, provider: "gmail" | "outlook" = "gmail") {
+function create(
+  tenantId: string,
+  userId: string,
+  provider: "gmail" | "outlook" = "gmail",
+  options: { services?: MailAccountService[]; redirectTarget?: MailOauthRedirectTarget | null } = {},
+) {
   return runInTenant(tenantId, () =>
-    withTransaction(pool, (client) => createMailOauthState(client, { userId, provider, mailboxItemId: null })),
+    withTransaction(pool, (client) =>
+      createMailOauthState(client, {
+        userId,
+        provider,
+        mailboxItemId: null,
+        services: options.services ?? ["mail"],
+        redirectTarget: options.redirectTarget ?? null,
+      }),
+    ),
   );
 }
 
@@ -81,14 +100,14 @@ describe("mail OAuth states (issue #1483)", () => {
     userA = await createUser(tenantA);
   });
 
-  it("returns provider, mailbox id and verifier once, and sets used_at", async () => {
-    const { state, codeChallenge } = await create(tenantA, userA, "outlook");
+  it("returns provider, mailbox id, services and verifier once, and sets used_at", async () => {
+    const { state, codeChallenge } = await create(tenantA, userA, "outlook", { services: ["mail", "calendars"] });
     const row = (await rowFor(state))!;
     expect(row.used_at).toBeNull();
     expect(row.expires_at.getTime() - row.created_at.getTime()).toBe(10 * 60 * 1000);
 
     const consumed = await consume(tenantA, state, userA);
-    expect(consumed).toMatchObject({ provider: "outlook", mailboxItemId: null });
+    expect(consumed).toMatchObject({ provider: "outlook", mailboxItemId: null, services: ["mail", "calendars"] });
     expect(createHash("sha256").update(consumed!.codeVerifier).digest("base64url")).toBe(codeChallenge);
     expect((await rowFor(state))!.used_at).not.toBeNull();
   });
@@ -98,7 +117,13 @@ describe("mail OAuth states (issue #1483)", () => {
     const created = await runInTenant(tenantA, () =>
       withTransaction(pool, async (client) => {
         await insertItemsWithIds(client, [mailboxItemId]);
-        return createMailOauthState(client, { userId: userA, provider: "gmail", mailboxItemId });
+        return createMailOauthState(client, {
+          userId: userA,
+          provider: "gmail",
+          mailboxItemId,
+          services: ["mail"],
+          redirectTarget: null,
+        });
       }),
     );
     const consumed = await consume(tenantA, created.state, userA);
@@ -335,5 +360,109 @@ describe("mail OAuth states (issue #1483)", () => {
     expect(await rowFor(states.usedOldB!)).toBeUndefined();
     expect(await rowFor(states.liveA!)).toBeDefined();
     expect(await rowFor(states.usedRecentB!)).toBeDefined();
+  });
+  describe("route_mail_oauth_state and the callback's redirect", () => {
+    it("is a SECURITY DEFINER function of semprec_router with a pinned search_path, run by semprec_data only", async () => {
+      const { rows } = await adminPool.query<{
+        secdef: boolean;
+        owner: string;
+        config: string[] | null;
+        data: boolean;
+        side: boolean;
+        pub: boolean;
+      }>(
+        `SELECT p.prosecdef AS secdef, pg_get_userbyid(p.proowner) AS owner, p.proconfig AS config,
+                has_function_privilege('semprec_data', 'route_mail_oauth_state(text)', 'EXECUTE') AS data,
+                has_function_privilege('semprec_side', 'route_mail_oauth_state(text)', 'EXECUTE') AS side,
+                has_function_privilege('public', 'route_mail_oauth_state(text)', 'EXECUTE') AS pub
+           FROM pg_proc p WHERE p.proname = 'route_mail_oauth_state'`,
+      );
+      expect(rows).toEqual([
+        {
+          secdef: true,
+          owner: "semprec_router",
+          config: ["search_path=pg_catalog, public, pg_temp"],
+          data: true,
+          side: false,
+          pub: false,
+        },
+      ]);
+    });
+
+    it("limits semprec_router to SELECT on the four columns it reads", async () => {
+      const columns = ["tenant_id", "state_hash", "used_at", "expires_at", "redirect_target", "user_id", "services"];
+      const { rows } = await adminPool.query<{ table_select: boolean; columns: boolean[] }>(
+        `SELECT has_table_privilege('semprec_router', 'mail_oauth_states', 'SELECT') AS table_select,
+                array(SELECT has_column_privilege('semprec_router', 'mail_oauth_states', c, 'SELECT')
+                        FROM unnest($1::text[]) WITH ORDINALITY AS t(c, n) ORDER BY n) AS columns`,
+        [columns],
+      );
+      expect(rows[0]).toEqual({ table_select: false, columns: [true, true, true, true, false, false, false] });
+    });
+
+    it("answers the app's URL for an open app state of any tenant, from no tenant scope, and null for every other state", async () => {
+      const userB = await createUser(tenantB);
+      const appA = await create(tenantA, userA, "gmail", { redirectTarget: "app" });
+      const appB = await create(tenantB, userB, "outlook", { redirectTarget: "app" });
+      const plain = await create(tenantA, userA);
+      const used = await create(tenantA, userA, "gmail", { redirectTarget: "app" });
+      await consume(tenantA, used.state, userA);
+      const expired = await create(tenantB, userB, "gmail", { redirectTarget: "app" });
+      await adminPool.query("UPDATE mail_oauth_states SET expires_at = now() - interval '1 second' WHERE id = $1", [
+        (await rowFor(expired.state))!.id,
+      ]);
+
+      const resolved: Record<string, string | null> = {};
+      for (const [name, state] of Object.entries({
+        appA: appA.state,
+        appB: appB.state,
+        plain: plain.state,
+        used: used.state,
+        expired: expired.state,
+        unknown: "unknown-state",
+      })) {
+        resolved[name] = await resolveMailOauthRedirectUrl(pool, state);
+      }
+
+      expect(resolved).toEqual({
+        appA: "semprec://oauth",
+        appB: "semprec://oauth",
+        plain: null,
+        used: null,
+        expired: null,
+        unknown: null,
+      });
+      // Only reads: both app states can still be completed by their owners.
+      expect(await consume(tenantA, appA.state, userA)).not.toBeNull();
+      expect(await consume(tenantB, appB.state, userB)).not.toBeNull();
+    });
+
+    it("answers null for a state hash open in two tenants", async () => {
+      const userB = await createUser(tenantB);
+      const appA = await create(tenantA, userA, "gmail", { redirectTarget: "app" });
+      const appB = await create(tenantB, userB, "gmail", { redirectTarget: "app" });
+      // Two tenants cannot draw the same random state; the superuser copies the hash to produce the case.
+      await adminPool.query("UPDATE mail_oauth_states SET state_hash = $1 WHERE id = $2", [
+        createHash("sha256").update(appA.state).digest("hex"),
+        (await rowFor(appB.state))!.id,
+      ]);
+
+      expect(await resolveMailOauthRedirectUrl(pool, appA.state)).toBeNull();
+    });
+
+    it("refuses a state row whose services or redirect target are outside the known values", async () => {
+      const { state } = await create(tenantA, userA);
+      const id = (await rowFor(state))!.id;
+      for (const [sql, constraint] of [
+        ["UPDATE mail_oauth_states SET services = '{}' WHERE id = $1", "mail_oauth_states_services_check"],
+        ["UPDATE mail_oauth_states SET services = '{mail,contacts}' WHERE id = $1", "mail_oauth_states_services_check"],
+        [
+          "UPDATE mail_oauth_states SET redirect_target = 'web' WHERE id = $1",
+          "mail_oauth_states_redirect_target_check",
+        ],
+      ] as const) {
+        await expect(adminPool.query(sql, [id])).rejects.toMatchObject({ code: "23514", constraint });
+      }
+    });
   });
 });

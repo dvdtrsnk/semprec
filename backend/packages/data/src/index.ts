@@ -924,6 +924,7 @@ export {
   createMailOauthCompleteRouteHandler,
   createMailOauthStartRouteHandler,
 } from "./mail/mailOauthRouteHandlers.js";
+export { resolveMailOauthRedirectUrl } from "./mail/mailOauthStatesStore.js";
 export { createMailboxPasswordConnectRouteHandler } from "./mail/mailboxPasswordRouteHandlers.js";
 export { createMailSummaryRouteHandler } from "./mail/mailSummary.js";
 export { createMailFolderListRouteHandler } from "./mail/mailFolderList.js";

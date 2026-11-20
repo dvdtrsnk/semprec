@@ -169,6 +169,22 @@ export interface AuthorizationCodeTokens {
   accessToken: string;
   expiresAt: Date;
   refreshToken: string;
+  /** The response's space-separated `scope`; `null` when it has none. */
+  grantedScopes: string[] | null;
+}
+
+/** Far above the handful of scopes a sign-in asks for; bounds what one response can store. */
+const MAX_GRANTED_SCOPES = 64;
+const MAX_SCOPE_LENGTH = 512;
+
+function parseGrantedScopes(value: unknown): string[] | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw new Error("OAuth code exchange response has a non-string scope");
+  const scopes = [...new Set(value.split(/\s+/).filter((scope) => scope.length > 0))];
+  if (scopes.length > MAX_GRANTED_SCOPES || scopes.some((scope) => scope.length > MAX_SCOPE_LENGTH)) {
+    throw new Error("OAuth code exchange response has a scope above the size limit");
+  }
+  return scopes;
 }
 
 const PROVIDER_ERROR_CODES = new Set([
@@ -340,6 +356,7 @@ export async function exchangeAuthorizationCode(
     accessToken: json.access_token,
     expiresAt: new Date(Date.now() + json.expires_in * 1000),
     refreshToken: json.refresh_token,
+    grantedScopes: parseGrantedScopes(json.scope),
   };
 }
 

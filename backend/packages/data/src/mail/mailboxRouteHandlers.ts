@@ -6,6 +6,7 @@ import { defaultSyncModeForProvider, MAIL_SYNC_FAILURE_KINDS, SYNC_MODES } from 
 import { imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
 import { listAutonomousSendProjects } from "./mailAutonomousSendRouteHandlers.js";
 import { areCalendarsEnabled, isMailEnabled } from "./mailboxServiceHooks.js";
+import { calendarStatusOf } from "./oauthServiceScopes.js";
 import type { RouteParams } from "../customRoute.js";
 
 const mailboxRow = z.object({
@@ -17,12 +18,13 @@ const mailboxRow = z.object({
   initial_sync_completed_at: z.date().nullable(),
   last_failure_kind: z.enum(MAIL_SYNC_FAILURE_KINDS).nullable(),
   synced_message_count: z.number().int().nullable(),
+  granted_scopes: z.array(z.string()).nullable(),
 });
 
 async function readMailboxes(client: PoolClient, id: string | null) {
   const result = await client.query<Record<string, unknown>>(
     `SELECT i.id, i.properties, s.sync_mode, s.last_successful_sync_at, s.failing_since,
-            s.initial_sync_completed_at, s.last_failure_kind,
+            s.initial_sync_completed_at, s.last_failure_kind, s.granted_scopes,
             -- Counted only while the first sync runs, to show its progress; a synced mailbox costs no count.
             CASE WHEN s.initial_sync_completed_at IS NULL THEN
               (SELECT count(*)::int FROM mail_message_meta m
@@ -52,6 +54,7 @@ async function readMailboxes(client: PoolClient, id: string | null) {
     const storedStatus = z.enum(["ok", "error", "never", "needsReauthorization"]).nullish().parse(p.syncStatus);
     const syncStatus = storedStatus ?? (row.initial_sync_completed_at === null ? "never" : null);
     const defaultLimit = imapConnectionLimitForProvider(provider ?? undefined);
+    const calendarsEnabled = areCalendarsEnabled(p);
     return {
       id: row.id,
       name: typeof p.name === "string" ? p.name : "",
@@ -59,7 +62,8 @@ async function readMailboxes(client: PoolClient, id: string | null) {
       primaryAddress: addresses[0] ?? null,
       addresses,
       mailEnabled: isMailEnabled(p),
-      calendarsEnabled: areCalendarsEnabled(p),
+      calendarsEnabled,
+      calendarStatus: calendarStatusOf({ calendarsEnabled, syncMode, grantedScopes: row.granted_scopes }),
       syncMode,
       syncStatus,
       initialSyncInProgress: row.initial_sync_completed_at === null,

@@ -161,6 +161,22 @@ export async function lockMailAccountSyncState(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/**
+ * Replaces the scopes the provider granted with the account's current OAuth credential, as its token response
+ * reported them.
+ */
+export async function recordGrantedOauthScopes(
+  client: Queryable,
+  itemId: string,
+  grantedScopes: readonly string[],
+): Promise<void> {
+  const result = await client.query("UPDATE mail_account_sync_state SET granted_scopes = $2 WHERE item_id = $1", [
+    itemId,
+    [...grantedScopes],
+  ]);
+  requireAffectedRows(result, `granted OAuth scopes for item ${itemId}`);
+}
+
 /** Returns whether a row existed; a never-connected mailbox has none. */
 export async function deleteMailAccountSyncState(client: Queryable, itemId: string): Promise<boolean> {
   const result = await client.query("DELETE FROM mail_account_sync_state WHERE item_id = $1", [itemId]);

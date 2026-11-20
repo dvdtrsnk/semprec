@@ -1,5 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { sendJson } from "./adapter/http.js";
+import type { Pool } from "pg";
+import { resolveMailOauthRedirectUrl } from "@semprec/data";
+import { NO_STORE, sendJson } from "./adapter/http.js";
+import { logger } from "./logger.js";
 
 /** Matches the redirect URI `mail/mailOauthRouteHandlers.ts` builds. */
 export const MAIL_OAUTH_CALLBACK_PATH = "/api/mail/oauth/callback";
@@ -21,36 +24,68 @@ function refuse(res: ServerResponse): void {
   sendJson(res, 400, { error: { code: "validation_failed" } }, RESPONSE_HEADERS);
 }
 
+type CallbackAnswer = { state: string; code: string } | { state: string; providerError: string };
+
+/** The query after validation, or `null` for a request answered 400. */
+function parseCallback(req: IncomingMessage): CallbackAnswer | null {
+  const query = new URL(req.url ?? "/", "http://localhost").searchParams;
+  const state = query.get("state");
+  if (state === null || !STATE_PATTERN.test(state)) return null;
+  const providerError = query.get("error");
+  if (providerError !== null) {
+    return PROVIDER_ERROR_PATTERN.test(providerError) ? { state, providerError } : null;
+  }
+  const code = query.get("code");
+  if (code === null || code.length === 0 || code.length > MAX_CODE_LENGTH) return null;
+  return { state, code };
+}
+
 /**
- * Public by design: the browser arrives from the provider. The handler takes no pool, reads no
- * cookie or `Authorization`, writes and logs nothing. It answers `{ state, code }`, which the app
- * hands to the authenticated `POST /api/mail/mailboxes/oauth/complete`, where the state is verified
- * against the signed-in user. A provider error (e.g. cancelled consent) answers `{ state,
- * providerError }`; the app then starts a new sign-in and the unused state expires. A malformed
- * `state` or `error`, or neither `error` nor a bounded `code`, is 400 `validation_failed`.
+ * Public by design: the browser arrives from the provider. The handler reads no cookie or `Authorization`, writes and
+ * logs nothing but a failure's name. It answers `{ state, code }`, which the app hands to the authenticated
+ * `POST /api/mail/mailboxes/oauth/complete`, where the state is verified against the signed-in user. A provider error
+ * (e.g. cancelled consent) answers `{ state, providerError }`; the app then starts a new sign-in and the unused state
+ * expires. A malformed `state` or `error`, or neither `error` nor a bounded `code`, is 400 `validation_failed` before
+ * any database read.
+ *
+ * When the open state names a redirect target (`redirectTarget: "app"` at start), the same values go to that target
+ * as a 302 instead: `semprec://oauth?state=…&code=…`, or `…&error=…`. The target URL comes from the stored state
+ * only (`resolveMailOauthRedirectUrl`), never from the request.
  */
-export function createMailOauthCallbackRequestListener() {
-  return function handleRequest(req: IncomingMessage, res: ServerResponse): void {
-    const query = new URL(req.url ?? "/", "http://localhost").searchParams;
-    const state = query.get("state");
-    if (state === null || !STATE_PATTERN.test(state)) {
+export function createMailOauthCallbackRequestListener(pool: Pool) {
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const answer = parseCallback(req);
+    if (answer === null) {
       refuse(res);
       return;
     }
-    const providerError = query.get("error");
-    if (providerError !== null) {
-      if (!PROVIDER_ERROR_PATTERN.test(providerError)) {
-        refuse(res);
+    const redirectUrl = await resolveMailOauthRedirectUrl(pool, answer.state);
+    if (redirectUrl === null) {
+      sendJson(res, 200, answer, RESPONSE_HEADERS);
+      return;
+    }
+    const location = new URL(redirectUrl);
+    location.search = new URLSearchParams(
+      "code" in answer
+        ? { state: answer.state, code: answer.code }
+        : { state: answer.state, error: answer.providerError },
+    ).toString();
+    res.writeHead(302, { ...RESPONSE_HEADERS, Location: location.toString(), "Cache-Control": NO_STORE });
+    res.end();
+  }
+
+  /** Confines a failed state lookup to a 500 for this request instead of an unhandled rejection. */
+  return function handleRequestSafely(req: IncomingMessage, res: ServerResponse): void {
+    handleRequest(req, res).catch((err: unknown) => {
+      // The error's message can carry database or connection text; its name and code cannot.
+      const name = err instanceof Error ? err.name : typeof err;
+      const code = err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : undefined;
+      logger.error({ errorName: name, errorCode: code }, "Mail OAuth callback failed");
+      if (res.headersSent) {
+        res.end();
         return;
       }
-      sendJson(res, 200, { state, providerError }, RESPONSE_HEADERS);
-      return;
-    }
-    const code = query.get("code");
-    if (code === null || code.length === 0 || code.length > MAX_CODE_LENGTH) {
-      refuse(res);
-      return;
-    }
-    sendJson(res, 200, { state, code }, RESPONSE_HEADERS);
+      sendJson(res, 500, { error: { code: "internal_error" } }, RESPONSE_HEADERS);
+    });
   };
 }

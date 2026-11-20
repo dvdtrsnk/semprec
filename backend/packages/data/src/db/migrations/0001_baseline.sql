@@ -223,6 +223,19 @@ ALTER FUNCTION public.route_graph_subscription(subscription_id text) OWNER TO se
 REVOKE ALL ON FUNCTION public.route_graph_subscription(subscription_id text) FROM PUBLIC;
 GRANT ALL ON FUNCTION public.route_graph_subscription(subscription_id text) TO semprec_data;
 
+CREATE FUNCTION public.route_mail_oauth_state(state_hash text) RETURNS TABLE(tenant_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+  SELECT s.tenant_id FROM public.mail_oauth_states s
+  WHERE s.state_hash = route_mail_oauth_state.state_hash AND s.used_at IS NULL AND s.expires_at > now()
+$$;
+
+ALTER FUNCTION public.route_mail_oauth_state(state_hash text) OWNER TO semprec_router;
+
+REVOKE ALL ON FUNCTION public.route_mail_oauth_state(state_hash text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.route_mail_oauth_state(state_hash text) TO semprec_data;
+
 CREATE FUNCTION public.task_recurrence_due_for_rollover(mode text, rule jsonb, occurrence date, anchor date, today date) RETURNS boolean
     LANGUAGE plpgsql IMMUTABLE
     SET search_path TO 'pg_catalog'
@@ -1582,6 +1595,7 @@ CREATE TABLE public.mail_account_sync_state (
     last_failure_kind text,
     provider_account_address text,
     sync_paused_at timestamp with time zone,
+    granted_scopes text[],
     CONSTRAINT mail_account_sync_state_last_failure_kind_check CHECK ((last_failure_kind = ANY (ARRAY['reauthorization'::text, 'connectionLimit'::text, 'other'::text]))),
     CONSTRAINT mail_account_sync_state_sync_mode_check CHECK ((sync_mode = ANY (ARRAY['imap'::text, 'gmail_api'::text, 'graph_api'::text])))
 );
@@ -1843,7 +1857,11 @@ CREATE TABLE public.mail_oauth_states (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone DEFAULT (now() + '00:10:00'::interval) NOT NULL,
     used_at timestamp with time zone,
-    CONSTRAINT mail_oauth_states_provider_check CHECK ((provider = ANY (ARRAY['gmail'::text, 'outlook'::text])))
+    services text[] NOT NULL,
+    redirect_target text,
+    CONSTRAINT mail_oauth_states_provider_check CHECK ((provider = ANY (ARRAY['gmail'::text, 'outlook'::text]))),
+    CONSTRAINT mail_oauth_states_services_check CHECK (((cardinality(services) > 0) AND (services <@ ARRAY['mail'::text, 'calendars'::text]))),
+    CONSTRAINT mail_oauth_states_redirect_target_check CHECK ((redirect_target = 'app'::text))
 );
 
 COMMENT ON TABLE public.mail_oauth_states IS 'semprec:tenancy=tenant';
@@ -1859,7 +1877,18 @@ CREATE INDEX mail_oauth_states_tenant_mailbox_idx ON public.mail_oauth_states US
 
 CREATE INDEX mail_oauth_states_user_idx ON public.mail_oauth_states USING btree (user_id);
 
+-- For route_mail_oauth_state, which looks a state up before any tenant is known.
+CREATE INDEX mail_oauth_states_state_hash_idx ON public.mail_oauth_states USING btree (state_hash);
+
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_oauth_states TO semprec_side;
+
+GRANT SELECT(tenant_id) ON TABLE public.mail_oauth_states TO semprec_router;
+
+GRANT SELECT(state_hash) ON TABLE public.mail_oauth_states TO semprec_router;
+
+GRANT SELECT(used_at) ON TABLE public.mail_oauth_states TO semprec_router;
+
+GRANT SELECT(expires_at) ON TABLE public.mail_oauth_states TO semprec_router;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_thread_aliases

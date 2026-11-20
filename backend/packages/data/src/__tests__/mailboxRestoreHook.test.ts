@@ -487,7 +487,11 @@ async function reauthorize(
 ): Promise<{ answer: { status: number; body: unknown }; restarted: string[] }> {
   const identity = { user: { id: userId } };
   const started = await runInTenant(tenant, () =>
-    createMailboxReauthorizeRouteHandler(runtime, { oauth: OAUTH })({ identity, params: { id: mailboxItemId } }),
+    createMailboxReauthorizeRouteHandler(runtime, { oauth: OAUTH })({
+      identity,
+      params: { id: mailboxItemId },
+      body: {},
+    }),
   );
   const { authorizeUrl } = z.object({ authorizeUrl: z.string() }).parse(started.body);
   const state = new URL(authorizeUrl).searchParams.get("state");

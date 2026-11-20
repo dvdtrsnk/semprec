@@ -95,6 +95,31 @@ described elsewhere and only referenced here:
 
 `POST /api/mail/mailboxes/oauth/complete` (`mail/mailOauthRouteHandlers.ts`); states in `mail_oauth_states`.
 
+- Scopes per service (`mail/oauthServiceScopes.ts`): Mail asks Gmail `gmail.modify`, `gmail.send` and Microsoft
+  `Mail.ReadWrite`, `Mail.Send`, `offline_access`, `User.Read`; Calendars adds Google
+  `https://www.googleapis.com/auth/calendar` and Microsoft `Calendars.ReadWrite`. The mail scopes are part of every
+  sign-in: the account identity is read through them, and a reauthorization replaces the one credential mail sync
+  uses. Google is asked with `prompt=consent`, so its consent screen lists every scope asked for.
+- `POST /api/mail/mailboxes/oauth/start` takes `{ provider, services?, redirectTarget? }`; `services` defaults to
+  `["mail"]` and must include `mail` for a new account. The new mailbox's `calendarsEnabled` is whether `calendars`
+  was asked for. `POST /api/mail/mailboxes/:id/reauthorize` takes `{ services?, redirectTarget? }` and asks for the
+  mail scopes, the calendar scope when Calendars is switched on, and whatever `services` adds. The state row stores
+  the asked-for `services` and the `redirect_target`.
+- The token response's space-separated `scope` is stored per account in `mail_account_sync_state.granted_scopes`
+  (`recordGrantedOauthScopes`) on connect and reauthorization, replacing the previous grant; a response without
+  `scope` granted what was asked for (RFC 6749 §5.1). A Google user can leave the calendar box unchecked, so the
+  stored grant, not the request, decides.
+- `calendarStatus` on the mailbox rows (`calendarStatusOf`): `off` while Calendars is off; `needsConsent` for a
+  `gmail_api`/`graph_api` account whose granted scopes lack the calendar scope (Graph's resource-qualified names in
+  any case count); `pending` otherwise. Switching Calendars on writes nothing else; the client then reauthorizes
+  with `services: ["mail", "calendars"]`.
+- `GET /api/mail/oauth/callback` (public, `services/semprec-api/src/mailOauthCallbackHandler.ts`) validates the
+  query first, then `resolveMailOauthRedirectUrl` looks the state up: `route_mail_oauth_state` names the tenant of an
+  open (unused, unexpired) state by its hash, and the target is read inside that tenant. For `redirectTarget: "app"`
+  it answers 302 to `semprec://oauth?state=…&code=…` (or `&error=…`); the URL comes only from the stored state. Any
+  other state, unknown, used or expired ones included, gets the JSON echo `{ state, code }` /
+  `{ state, providerError }`. The callback reads only and writes nothing.
+
 1. `consumeMailOauthState` marks the state used (guarded single `UPDATE`) and commits **before** the provider
    call. A state admits exactly one exchange; every later failure leaves it used and the user restarts.
 2. Code exchange and account/alias lookups run outside any transaction.

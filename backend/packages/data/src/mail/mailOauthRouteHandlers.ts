@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
-import { NEW_MAILBOX_SERVICE_SWITCHES } from "./mailboxServiceHooks.js";
+import { areCalendarsEnabled, NEW_MAILBOX_SERVICE_SWITCHES } from "./mailboxServiceHooks.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
@@ -18,6 +18,7 @@ import {
   lockMailAccountSyncState,
   ProviderAccountAlreadyConnectedError,
   recordGmailWatchEmailAddress,
+  recordGrantedOauthScopes,
   recordProviderAccountAddress,
   type MailAccountSyncStateRow,
 } from "./mailAccountSyncStateStore.js";
@@ -27,9 +28,11 @@ import {
   consumeMailOauthState,
   createMailOauthState,
   MAIL_OAUTH_PROVIDERS,
+  MAIL_OAUTH_REDIRECT_TARGETS,
   type CreatedMailOauthState,
   type MailOauthProvider,
 } from "./mailOauthStatesStore.js";
+import { MAIL_ACCOUNT_SERVICES, oauthScopesForServices, type MailAccountService } from "./oauthServiceScopes.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import {
@@ -56,8 +59,6 @@ interface MailOauthProviderSettings {
   mailboxName: string;
   authorizeUrl: string;
   tokenUrl: string;
-  /** The least that reading, triage, drafting and sending need. */
-  scopes: readonly string[];
   authorizeParams: Readonly<Record<string, string>>;
 }
 
@@ -66,8 +67,6 @@ const PROVIDER_SETTINGS: Record<MailOauthProvider, MailOauthProviderSettings> = 
     mailboxName: "Gmail",
     authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: GOOGLE_TOKEN_URL,
-    // `gmail.modify` includes read access.
-    scopes: ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.send"],
     // `offline` asks for a refresh token; `consent` makes Google return one again on a repeated sign-in.
     authorizeParams: { access_type: "offline", prompt: "consent" },
   },
@@ -76,8 +75,6 @@ const PROVIDER_SETTINGS: Record<MailOauthProvider, MailOauthProviderSettings> = 
     // `/common` accepts work or school accounts and personal Microsoft accounts.
     authorizeUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
     tokenUrl: MICROSOFT_TOKEN_URL,
-    // `User.Read` is what lets `GET /me` answer; without it Graph answers 403.
-    scopes: ["Mail.ReadWrite", "Mail.Send", "offline_access", "User.Read"],
     authorizeParams: {},
   },
 };
@@ -116,6 +113,7 @@ function buildAuthorizeUrl(
   provider: MailOauthProvider,
   clientId: string,
   redirectUri: string,
+  services: readonly MailAccountService[],
   created: CreatedMailOauthState,
 ): string {
   const settings = PROVIDER_SETTINGS[provider];
@@ -124,7 +122,7 @@ function buildAuthorizeUrl(
     response_type: "code",
     client_id: clientId,
     redirect_uri: redirectUri,
-    scope: settings.scopes.join(" "),
+    scope: oauthScopesForServices(provider, services).join(" "),
     state: created.state,
     code_challenge: created.codeChallenge,
     code_challenge_method: "S256",
@@ -133,21 +131,69 @@ function buildAuthorizeUrl(
   return url.toString();
 }
 
-const startBodySchema = z.object({ provider: z.enum(MAIL_OAUTH_PROVIDERS) }).strict();
+const servicesSchema = z.array(z.enum(MAIL_ACCOUNT_SERVICES)).min(1).max(MAIL_ACCOUNT_SERVICES.length);
+const redirectTargetSchema = z.enum(MAIL_OAUTH_REDIRECT_TARGETS);
 
-/** `POST /api/mail/mailboxes/oauth/start`. The PKCE verifier stays sealed in the state row. */
+/** The first field a refused body names; a missing, unknown or misshapen `provider` and an unknown key name `fallback`. */
+function refusedField(error: z.ZodError, fields: readonly string[], fallback: string): string {
+  const field = error.issues[0]?.path[0];
+  return typeof field === "string" && fields.includes(field) ? field : fallback;
+}
+
+/** In `MAIL_ACCOUNT_SERVICES` order, without repeats. */
+function serviceSet(services: Iterable<MailAccountService>): MailAccountService[] {
+  const wanted = new Set(services);
+  return MAIL_ACCOUNT_SERVICES.filter((service) => wanted.has(service));
+}
+
+const SERVICES_MESSAGE = "'services' must be a non-empty list of 'mail' and 'calendars'";
+const REDIRECT_TARGET_MESSAGE = "'redirectTarget' must be 'app'";
+
+const startBodySchema = z
+  .object({
+    provider: z.enum(MAIL_OAUTH_PROVIDERS),
+    services: servicesSchema.optional(),
+    redirectTarget: redirectTargetSchema.optional(),
+  })
+  .strict();
+
+/**
+ * `POST /api/mail/mailboxes/oauth/start`. The PKCE verifier stays sealed in the state row. `services` (default
+ * `["mail"]`) must include `mail`: a new account is connected through its mail identity and starts with Mail on.
+ */
 export function createMailOauthStartRouteHandler(pool: Pool, dependencies: MailOauthRouteDependencies) {
   return async (ctx: RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const body = startBodySchema.safeParse(ctx.body);
     if (!body.success) {
-      throw new ValidationError("'provider' must be 'gmail' or 'outlook'", { field: "provider" });
+      const field = refusedField(body.error, ["services", "redirectTarget"], "provider");
+      throw new ValidationError(
+        field === "provider"
+          ? "'provider' must be 'gmail' or 'outlook'"
+          : field === "services"
+            ? SERVICES_MESSAGE
+            : REDIRECT_TARGET_MESSAGE,
+        { field },
+      );
     }
     const { provider } = body.data;
+    const services = serviceSet(body.data.services ?? ["mail"]);
+    if (!services.includes("mail")) {
+      throw new ValidationError("'services' must include 'mail' for a new account", { field: "services" });
+    }
     const { client, redirectUri } = requireOauthClient(dependencies, provider);
     const created = await withTransaction(pool, (transaction) =>
-      createMailOauthState(transaction, { userId: ctx.identity.user.id, provider, mailboxItemId: null }),
+      createMailOauthState(transaction, {
+        userId: ctx.identity.user.id,
+        provider,
+        mailboxItemId: null,
+        services,
+        redirectTarget: body.data.redirectTarget ?? null,
+      }),
     );
-    return { status: 200, body: { authorizeUrl: buildAuthorizeUrl(provider, client.clientId, redirectUri, created) } };
+    return {
+      status: 200,
+      body: { authorizeUrl: buildAuthorizeUrl(provider, client.clientId, redirectUri, services, created) },
+    };
   };
 }
 
@@ -184,15 +230,33 @@ function reauthorizationProvider(
 /** A malformed id names no mailbox, so it gets the same 404 as an unknown one. */
 const mailboxIdSchema = z.uuid();
 
+const reauthorizeBodySchema = z
+  .object({ services: servicesSchema.optional(), redirectTarget: redirectTargetSchema.optional() })
+  .strict();
+
 /**
  * `POST /api/mail/mailboxes/:id/reauthorize`: answers an authorization URL for a one-time state carrying the mailbox
- * id. The sync state row is read unlocked, so this refusal is only an early answer; the completion decides again under
- * the row lock. Locking it here, after the Mailboxes item, would invert the lock order of the completion and sync job.
+ * id. It asks for the services switched on for the mailbox together with the body's `services`, the mail scopes
+ * always among them. The sync state row is read unlocked, so this refusal is only an early answer; the completion
+ * decides again under the row lock. Locking it here, after the Mailboxes item, would invert the lock order of the
+ * completion and sync job.
  */
 export function createMailboxReauthorizeRouteHandler(pool: Pool, dependencies: MailOauthRouteDependencies) {
-  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const mailboxId = mailboxIdSchema.safeParse(ctx.params.id);
     if (!mailboxId.success) throw new NotFoundError("Mailbox not found");
+    const body = reauthorizeBodySchema.safeParse(ctx.body);
+    if (!body.success) {
+      const field = refusedField(body.error, ["services", "redirectTarget"], "body");
+      throw new ValidationError(
+        field === "services"
+          ? SERVICES_MESSAGE
+          : field === "redirectTarget"
+            ? REDIRECT_TARGET_MESSAGE
+            : "The body may hold only 'services' and 'redirectTarget'",
+        { field },
+      );
+    }
     const authorizeUrl = await withTransaction(pool, async (transaction) => {
       const mailbox = await liveMailbox(transaction, mailboxId.data, true);
       if (mailbox === null) throw new NotFoundError("Mailbox not found");
@@ -205,12 +269,20 @@ export function createMailboxReauthorizeRouteHandler(pool: Pool, dependencies: M
         );
       }
       const { client, redirectUri } = requireOauthClient(dependencies, provider);
+      // Mail is always asked for (see `oauthScopesForServices`), whether it is switched on or not.
+      const services = serviceSet([
+        "mail",
+        ...(areCalendarsEnabled(mailbox.properties) ? (["calendars"] as const) : []),
+        ...(body.data.services ?? []),
+      ]);
       const created = await createMailOauthState(transaction, {
         userId: ctx.identity.user.id,
         provider,
         mailboxItemId: mailboxId.data,
+        services,
+        redirectTarget: body.data.redirectTarget ?? null,
       });
-      return buildAuthorizeUrl(provider, client.clientId, redirectUri, created);
+      return buildAuthorizeUrl(provider, client.clientId, redirectUri, services, created);
     });
     return { status: 200, body: { authorizeUrl } };
   };
@@ -334,6 +406,8 @@ interface NewMailbox {
   provider: MailOauthProvider;
   identity: ProviderIdentity;
   refreshToken: string;
+  grantedScopes: readonly string[];
+  services: readonly MailAccountService[];
   userId: string;
 }
 
@@ -351,6 +425,7 @@ async function createConnectedMailbox(client: PoolClient, mailbox: NewMailbox): 
         name: PROVIDER_SETTINGS[mailbox.provider].mailboxName,
         provider: mailbox.provider,
         ...NEW_MAILBOX_SERVICE_SWITCHES,
+        calendarsEnabled: mailbox.services.includes("calendars"),
       },
     },
     { actingUserId: mailbox.userId, writer: { writerKind: "user" } },
@@ -370,6 +445,7 @@ async function createConnectedMailbox(client: PoolClient, mailbox: NewMailbox): 
     itemId: item.id,
     syncMode: defaultSyncModeForProvider(mailbox.provider),
   });
+  await recordGrantedOauthScopes(client, item.id, mailbox.grantedScopes);
   await recordProviderAccountAddress(client, item.id, mailbox.identity.address);
   if (mailbox.provider === "gmail") {
     await recordGmailWatchEmailAddress(client, item.id, mailbox.identity.address);
@@ -391,12 +467,14 @@ interface Reauthorization {
   provider: MailOauthProvider;
   address: string;
   refreshToken: string;
+  grantedScopes: readonly string[];
 }
 
 /**
- * Replaces an existing mailbox's refresh token and queues its sync, checking `reauthorizationProvider` and the
- * signed-in address under this transaction's locks. The sync state row is locked before the Mailboxes item, the order
- * the sync job takes them; an unseeded mailbox gets its sync state row here, before either lock.
+ * Replaces an existing mailbox's refresh token and its recorded granted scopes and queues its sync, checking
+ * `reauthorizationProvider` and the signed-in address under this transaction's locks. The sync state row is locked
+ * before the Mailboxes item, the order the sync job takes them; an unseeded mailbox gets its sync state row here,
+ * before either lock.
  */
 async function replaceMailboxCredential(client: PoolClient, reauthorization: Reauthorization): Promise<void> {
   const { mailboxItemId, provider } = reauthorization;
@@ -424,6 +502,7 @@ async function replaceMailboxCredential(client: PoolClient, reauthorization: Rea
     credentialType: "oauth2_refresh_token",
     plaintext: reauthorization.refreshToken,
   });
+  await recordGrantedOauthScopes(client, mailboxItemId, reauthorization.grantedScopes);
   await enqueueMailAccountSync(client, mailboxItemId);
 }
 
@@ -451,9 +530,9 @@ const completeBodySchema = z
  *    The state stays consumed whatever follows.
  * 2. Outside any transaction, exchange the code and fetch the account's addresses. `invalid_grant` is a 400; anything
  *    else but required admin consent propagates as a generic 500.
- * 3. Write the mailbox; a duplicate provider address is decided by the unique index and answered 409 with the other
- *    mailbox's id. For a reauthorization state, `replaceMailboxCredential` runs instead, and after the commit the
- *    live-sync root restarts the hosted lifecycle so it reads the new token.
+ * 3. Write the mailbox with the granted scopes; a duplicate provider address is decided by the unique index and
+ *    answered 409 with the other mailbox's id. For a reauthorization state, `replaceMailboxCredential` runs instead,
+ *    and after the commit the live-sync root restarts the hosted lifecycle so it reads the new token.
  * No token, code or verifier is logged or returned.
  */
 export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: MailOauthRouteDependencies) {
@@ -504,6 +583,8 @@ export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: Ma
       }
       throw error;
     }
+    // A token response without `scope` granted exactly what was asked for (RFC 6749 §5.1).
+    const grantedScopes = tokens.grantedScopes ?? oauthScopesForServices(provider, consumed.services);
     const identity =
       provider === "gmail"
         ? await fetchGmailIdentity(fetchImpl, tokens.accessToken)
@@ -518,6 +599,7 @@ export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: Ma
             provider,
             address: identity.address,
             refreshToken: tokens.refreshToken,
+            grantedScopes,
           }),
         );
       } catch (error) {
@@ -532,7 +614,14 @@ export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: Ma
     let mailboxId: string;
     try {
       mailboxId = await withTransaction(pool, (transaction) =>
-        createConnectedMailbox(transaction, { provider, identity, refreshToken: tokens.refreshToken, userId }),
+        createConnectedMailbox(transaction, {
+          provider,
+          identity,
+          refreshToken: tokens.refreshToken,
+          grantedScopes,
+          services: consumed.services,
+          userId,
+        }),
       );
     } catch (error) {
       if (!(error instanceof ProviderAccountAlreadyConnectedError)) throw error;

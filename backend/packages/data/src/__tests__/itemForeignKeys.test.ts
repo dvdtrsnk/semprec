@@ -234,8 +234,9 @@ const KEYS: ItemKey[] = [
     behaviour: "cascade",
     insert: (c, id, s) =>
       c.query(
-        `INSERT INTO mail_oauth_states (user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, mailbox_item_id)
-         VALUES ($1, 'gmail', $2, '\\x00', '\\x00', $3)`,
+        `INSERT INTO mail_oauth_states
+           (user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, mailbox_item_id, services)
+         VALUES ($1, 'gmail', $2, '\\x00', '\\x00', $3, '{mail}')`,
         [s.userId, randomUUID(), id],
       ),
   },

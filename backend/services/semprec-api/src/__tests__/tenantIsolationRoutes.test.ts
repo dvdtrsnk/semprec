@@ -2872,8 +2872,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(afterOwn).toHaveLength(1);
     expect(afterOwn[0]?.used_at).not.toBeNull();
   },
-  // The public callback reads no row, so A's state is handed on like a random value and stays
-  // unused.
+  // The public callback only reads the redirect target of an open state, and A's state names none,
+  // so it is handed on like a random value and stays unused.
   "mail oauth callback": async () => {
     const stateOfA = await startMailOauth(a.member);
     await leavesAUnchanged(async () => {

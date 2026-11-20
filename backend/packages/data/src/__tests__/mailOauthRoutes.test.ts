@@ -30,6 +30,7 @@ import {
   recordProviderAccountAddress,
 } from "../mail/mailAccountSyncStateStore.js";
 import { createMailLiveSyncRoot, type MailLiveSyncLifecycleFactory } from "../mail/mailLiveSyncRoot.js";
+import { createMailboxListRouteHandler } from "../mail/mailboxRouteHandlers.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import {
   createMailboxReauthorizeRouteHandler,
@@ -1216,15 +1217,16 @@ function reauthorizeResult(
   mailboxId: string,
   who: Caller = caller,
   dependencies: MailOauthRouteDependencies = { oauth: OAUTH },
+  body: unknown = {},
 ): Promise<{ status: number; body: unknown }> {
   const handler = createMailboxReauthorizeRouteHandler(runtime, dependencies);
   return runInTenant(who.tenantId, () =>
-    handler({ identity: { user: { id: who.userId } }, params: { id: mailboxId } }),
+    handler({ identity: { user: { id: who.userId } }, params: { id: mailboxId }, body }),
   );
 }
 
-async function reauthorize(mailboxId: string, who: Caller = caller): Promise<URL> {
-  const result = await reauthorizeResult(mailboxId, who);
+async function reauthorize(mailboxId: string, who: Caller = caller, body: unknown = {}): Promise<URL> {
+  const result = await reauthorizeResult(mailboxId, who, { oauth: OAUTH }, body);
   expect(result.status).toBe(200);
   return new URL(startBody.parse(result.body).authorizeUrl);
 }
@@ -1675,7 +1677,13 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
       // The reauthorize route refuses this mailbox with 400. Its sync state row can still be seeded
       // after the route read none, so the completion has to refuse the state on its own.
       const { state } = await inTenant(caller.tenantId, (client) =>
-        createMailOauthState(client, { userId: caller.userId, provider: "gmail", mailboxItemId: mailboxId }),
+        createMailOauthState(client, {
+          userId: caller.userId,
+          provider: "gmail",
+          mailboxItemId: mailboxId,
+          services: ["mail"],
+          redirectTarget: null,
+        }),
       );
 
       // The mailbox records no provider account address, so the signing-in one would be accepted.
@@ -1693,7 +1701,13 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
       const mailboxId = await existingMailbox(caller.tenantId);
       await relabel(caller.tenantId, mailboxId, "outlook");
       const { state } = await inTenant(caller.tenantId, (client) =>
-        createMailOauthState(client, { userId: caller.userId, provider: "outlook", mailboxItemId: mailboxId }),
+        createMailOauthState(client, {
+          userId: caller.userId,
+          provider: "outlook",
+          mailboxItemId: mailboxId,
+          services: ["mail"],
+          redirectTarget: null,
+        }),
       );
       const before = await storedMailbox(caller.tenantId, mailboxId);
       // The address the mailbox records, so the account check alone would let the token through.
@@ -1722,7 +1736,13 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
       // foreign key refuses it exactly like an unknown id.
       await expect(
         inTenant(caller.tenantId, (client) =>
-          createMailOauthState(client, { userId: caller.userId, provider: "gmail", mailboxItemId: foreign }),
+          createMailOauthState(client, {
+            userId: caller.userId,
+            provider: "gmail",
+            mailboxItemId: foreign,
+            services: ["mail"],
+            redirectTarget: null,
+          }),
         ),
       ).rejects.toMatchObject({ code: "23503", constraint: "mail_oauth_states_mailbox_item_id_tenant_fkey" });
 
@@ -1735,7 +1755,13 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
       const { state } = await inTenant(caller.tenantId, async (client) => {
         // The state's item must exist (foreign key), so it names an item of a non-mailbox database.
         await insertItemsWithIds(client, [unknown]);
-        return createMailOauthState(client, { userId: caller.userId, provider: "gmail", mailboxItemId: unknown });
+        return createMailOauthState(client, {
+          userId: caller.userId,
+          provider: "gmail",
+          mailboxItemId: unknown,
+          services: ["mail"],
+          redirectTarget: null,
+        });
       });
 
       await expectStaleState(state, unknown);
@@ -2175,5 +2201,331 @@ describe("mail account sync state store: connect flow additions", () => {
     );
     expect(unknown.message).toContain("to affect at least one row");
     expect(await watchAddress()).toBe("watch@gmail.com");
+  });
+});
+
+const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.send"];
+const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar";
+const GRAPH_MAIL_SCOPES = ["Mail.ReadWrite", "Mail.Send", "offline_access", "User.Read"];
+
+/** A token response that reports its granted scopes, as Google and Microsoft do. */
+function tokensGranting(scope: string, refreshToken: string = SECRETS.refreshToken): ProviderRoute {
+  return () =>
+    json({
+      access_token: SECRETS.accessToken,
+      expires_in: 3600,
+      refresh_token: refreshToken,
+      scope,
+      token_type: "Bearer",
+    });
+}
+
+function startWith(body: Record<string, unknown>, who: Caller = caller): Promise<{ status: number; body: unknown }> {
+  const handler = createMailOauthStartRouteHandler(runtime, { oauth: OAUTH });
+  return runInTenant(who.tenantId, () => handler({ identity: { user: { id: who.userId } }, body }));
+}
+
+async function startedUrl(body: Record<string, unknown>): Promise<URL> {
+  const result = await startWith(body);
+  expect(result.status).toBe(200);
+  return new URL(startBody.parse(result.body).authorizeUrl);
+}
+
+async function stateOptions(state: string): Promise<{ services: string[]; redirect_target: string | null }> {
+  const { rows } = await admin.query<{ services: string[]; redirect_target: string | null }>(
+    "SELECT services, redirect_target FROM mail_oauth_states WHERE state_hash = $1",
+    [createHash("sha256").update(state, "utf8").digest("hex")],
+  );
+  const row = rows[0];
+  if (!row) throw new Error("no state row");
+  return row;
+}
+
+const mailboxRowSchema = z.object({
+  id: z.uuid(),
+  mailEnabled: z.boolean(),
+  calendarsEnabled: z.boolean(),
+  calendarStatus: z.enum(["off", "needsConsent", "pending"]),
+});
+
+async function mailboxRow(mailboxId: string): Promise<z.infer<typeof mailboxRowSchema>> {
+  const list = await runInTenant(caller.tenantId, () => createMailboxListRouteHandler(runtime)());
+  const rows = z.object({ mailboxes: z.array(mailboxRowSchema.loose()) }).parse(list.body).mailboxes;
+  const row = rows.find((candidate) => candidate.id === mailboxId);
+  if (!row) throw new Error("the mailbox is not listed");
+  return mailboxRowSchema.parse(row);
+}
+
+async function mailSyncOf(mailboxId: string): Promise<{ grantedScopes: string[] | null; paused: boolean }> {
+  return inTenant(caller.tenantId, async (client) => {
+    const { rows } = await client.query<{ granted_scopes: string[] | null; paused: boolean }>(
+      "SELECT granted_scopes, sync_paused_at IS NOT NULL AS paused FROM mail_account_sync_state WHERE item_id = $1",
+      [mailboxId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("no sync state row");
+    return { grantedScopes: row.granted_scopes, paused: row.paused };
+  });
+}
+
+async function queuedJobs(): Promise<Array<{ task: string; key: string }>> {
+  const { rows } = await admin.query<{ task: string; key: string }>(
+    "SELECT task_identifier AS task, key FROM graphile_worker.jobs ORDER BY key",
+  );
+  return rows;
+}
+
+function switchCalendars(mailboxId: string, on: boolean): Promise<void> {
+  return inTenant(caller.tenantId, async (client) => {
+    const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+    await updateItemWithClient(
+      client,
+      { databaseId: mailboxesDatabaseId, itemId: mailboxId, propertiesPatch: { calendarsEnabled: on } },
+      { actingUserId: caller.userId, writer: { writerKind: "user" } },
+    );
+  });
+}
+
+/** Connects a Google account through start and complete; the provider grants `granted`. */
+async function connectGoogle(services: string[], granted: string): Promise<string> {
+  const url = await startedUrl({ provider: "gmail", services });
+  const provider = fakeProvider(googleRoutes({ [GOOGLE_TOKEN_URL]: tokensGranting(granted) }));
+  const result = await complete({ state: stateOf(url), code: SECRETS.code }, provider);
+  expect(result.status).toBe(201);
+  return completeBody.parse(result.body).mailboxId;
+}
+
+describe("OAuth scopes per service", () => {
+  it.each<[string, Record<string, unknown>, "gmail" | "outlook", string[], string[]]>([
+    ["Gmail without services", { provider: "gmail" }, "gmail", ["mail"], GMAIL_SCOPES],
+    [
+      "Gmail with Mail and Calendars",
+      { provider: "gmail", services: ["calendars", "mail"] },
+      "gmail",
+      ["mail", "calendars"],
+      [...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE],
+    ],
+    [
+      "Outlook with Mail and Calendars",
+      { provider: "outlook", services: ["mail", "calendars"] },
+      "outlook",
+      ["mail", "calendars"],
+      [...GRAPH_MAIL_SCOPES, "Calendars.ReadWrite"],
+    ],
+  ])(
+    "start for %s asks for those scopes and stores the services in the state",
+    async (_name, body, provider, services, scopes) => {
+      const url = await startedUrl(body);
+
+      expect(`${url.origin}${url.pathname}`).toBe(AUTHORIZE[provider].endpoint);
+      expect(url.searchParams.get("scope")).toBe(scopes.join(" "));
+      // Google keeps showing its consent screen, which lists every scope asked for.
+      if (provider === "gmail") expect(url.searchParams.get("prompt")).toBe("consent");
+      expect(await stateOptions(stateOf(url))).toEqual({ services, redirect_target: null });
+    },
+  );
+
+  it("stores redirectTarget app in the state", async () => {
+    const url = await startedUrl({ provider: "outlook", redirectTarget: "app" });
+
+    expect(await stateOptions(stateOf(url))).toEqual({ services: ["mail"], redirect_target: "app" });
+  });
+
+  it.each<[string, Record<string, unknown>, string]>([
+    ["no service", { provider: "gmail", services: [] }, "services"],
+    ["an unknown service", { provider: "gmail", services: ["mail", "contacts"] }, "services"],
+    ["services that are no list", { provider: "gmail", services: "mail" }, "services"],
+    ["Calendars without Mail", { provider: "gmail", services: ["calendars"] }, "services"],
+    ["an unknown redirect target", { provider: "gmail", redirectTarget: "https://evil.example" }, "redirectTarget"],
+  ])("start refuses %s with 400 validation_failed and stores no state", async (_name, body, field) => {
+    const error = await caught(startWith(body));
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field } });
+    expect(await stateCount()).toBe(0);
+  });
+
+  it("connects a Google account with Mail and Calendars: Calendars on, the granted scopes stored, calendar status pending", async () => {
+    const granted = [...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE];
+
+    const mailboxId = await connectGoogle(["mail", "calendars"], ` ${granted.join(" ")}  openid`);
+
+    expect(await mailSyncOf(mailboxId)).toEqual({ grantedScopes: [...granted, "openid"], paused: false });
+    expect(await mailboxRow(mailboxId)).toEqual({
+      id: mailboxId,
+      mailEnabled: true,
+      calendarsEnabled: true,
+      calendarStatus: "pending",
+    });
+  });
+
+  it("keeps Calendars on but needing consent when the user leaves the calendar scope unchecked on Google's screen", async () => {
+    const mailboxId = await connectGoogle(["mail", "calendars"], GMAIL_SCOPES.join(" "));
+
+    expect(await mailSyncOf(mailboxId)).toEqual({ grantedScopes: GMAIL_SCOPES, paused: false });
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: true, calendarStatus: "needsConsent" });
+  });
+
+  it("records the requested scopes when the token response names none (RFC 6749 §5.1)", async () => {
+    const url = await startedUrl({ provider: "outlook", services: ["mail", "calendars"] });
+    const provider = fakeProvider(microsoftRoutes({ mail: "work.user@contoso.com" }));
+
+    const result = await complete({ state: stateOf(url), code: SECRETS.code }, provider);
+
+    const { mailboxId } = completeBody.parse(result.body);
+    expect(await mailSyncOf(mailboxId)).toEqual({
+      grantedScopes: [...GRAPH_MAIL_SCOPES, "Calendars.ReadWrite"],
+      paused: false,
+    });
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarStatus: "pending" });
+  });
+
+  it("reads Microsoft's resource-qualified granted scopes in any letter case", async () => {
+    const url = await startedUrl({ provider: "outlook", services: ["mail", "calendars"] });
+    const granted =
+      "https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send " +
+      "https://graph.microsoft.com/User.Read https://graph.microsoft.com/calendars.readwrite";
+    const provider = fakeProvider({
+      ...microsoftRoutes({ mail: "work.user@contoso.com" }),
+      [MICROSOFT_TOKEN_URL]: tokensGranting(granted),
+    });
+
+    const { mailboxId } = completeBody.parse(
+      (await complete({ state: stateOf(url), code: SECRETS.code }, provider)).body,
+    );
+
+    expect(await mailSyncOf(mailboxId)).toEqual({ grantedScopes: granted.split(" "), paused: false });
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarStatus: "pending" });
+  });
+
+  it("creates nothing when the token response's scope is not a string", async () => {
+    const url = await startedUrl({ provider: "gmail" });
+    const provider = fakeProvider(
+      googleRoutes({
+        [GOOGLE_TOKEN_URL]: () =>
+          json({ access_token: SECRETS.accessToken, expires_in: 3600, refresh_token: SECRETS.refreshToken, scope: 7 }),
+      }),
+    );
+
+    const error = await caught(complete({ state: stateOf(url), code: SECRETS.code }, provider));
+
+    expect(error).not.toBeInstanceOf(ChokePointError);
+    expect(error.message).toBe("OAuth code exchange response has a non-string scope");
+    expect(await connected()).toEqual(NOTHING);
+  });
+
+  it("switching Calendars on for a mail-only Google account keeps it on, needing consent, and leaves mail sync alone", async () => {
+    const mailboxId = await connectGoogle(["mail"], GMAIL_SCOPES.join(" "));
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: false, calendarStatus: "off" });
+    const jobsBefore = await queuedJobs();
+    expect(jobsBefore).toEqual([{ task: "mailAccountSync", key: `mail-account-sync:${mailboxId}` }]);
+
+    await switchCalendars(mailboxId, true);
+
+    expect(await mailboxRow(mailboxId)).toEqual({
+      id: mailboxId,
+      mailEnabled: true,
+      calendarsEnabled: true,
+      calendarStatus: "needsConsent",
+    });
+    expect(await mailSyncOf(mailboxId)).toEqual({ grantedScopes: GMAIL_SCOPES, paused: false });
+    expect(await queuedJobs()).toEqual(jobsBefore);
+    expect(await storedRefreshToken(caller.tenantId, mailboxId)).toBe(SECRETS.refreshToken);
+
+    await switchCalendars(mailboxId, false);
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: false, calendarStatus: "off" });
+  });
+
+  it("reports an IMAP account with Calendars on as pending: it needs no OAuth consent", async () => {
+    const mailboxId = await passwordMailbox(caller.tenantId);
+
+    await switchCalendars(mailboxId, true);
+
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: true, calendarStatus: "pending" });
+  });
+
+  it("reauthorization with Mail and Calendars replaces the credential and the granted scopes, and the calendar status leaves needsConsent", async () => {
+    const mailboxId = await connectGoogle(["mail"], GMAIL_SCOPES.join(" "));
+    await switchCalendars(mailboxId, true);
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarStatus: "needsConsent" });
+
+    const url = await reauthorize(mailboxId, caller, { services: ["mail", "calendars"], redirectTarget: "app" });
+    expect(url.searchParams.get("scope")).toBe([...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE].join(" "));
+    expect(await stateOptions(stateOf(url))).toEqual({ services: ["mail", "calendars"], redirect_target: "app" });
+    const granted = [...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE];
+    const provider = fakeProvider({
+      ...googleAccount(GOOGLE_ACCOUNT),
+      [GOOGLE_TOKEN_URL]: tokensGranting(granted.join(" "), "SENTINEL-CALENDAR-REFRESH-TOKEN"),
+    });
+    const liveSync = liveSyncSpy();
+
+    const result = await completeReauthorization(stateOf(url), provider, liveSync.control);
+
+    expect(result).toEqual({ status: 200, body: { mailboxId } });
+    expect(await storedRefreshToken(caller.tenantId, mailboxId)).toBe("SENTINEL-CALENDAR-REFRESH-TOKEN");
+    expect(await mailSyncOf(mailboxId)).toEqual({ grantedScopes: granted, paused: false });
+    expect(await mailboxRow(mailboxId)).toEqual({
+      id: mailboxId,
+      mailEnabled: true,
+      calendarsEnabled: true,
+      calendarStatus: "pending",
+    });
+    expect(liveSync.restarted).toEqual([mailboxId]);
+  });
+
+  it.each<[string, boolean, Record<string, unknown>, string[]]>([
+    ["a mail-only mailbox without services", false, {}, GMAIL_SCOPES],
+    ["a mailbox with Calendars on, without services", true, {}, [...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE]],
+    [
+      "a mailbox asked only for Calendars",
+      false,
+      { services: ["calendars"] },
+      [...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE],
+    ],
+  ])(
+    "reauthorization of %s asks for the mail scopes and every switched-on or requested service",
+    async (_name, calendarsOn, body, scopes) => {
+      const mailboxId = await existingMailbox(caller.tenantId);
+      if (calendarsOn) await switchCalendars(mailboxId, true);
+
+      const url = await reauthorize(mailboxId, caller, body);
+
+      expect(url.searchParams.get("scope")).toBe(scopes.join(" "));
+    },
+  );
+
+  it.each<[string, unknown, string]>([
+    ["an unknown service", { services: ["contacts"] }, "services"],
+    ["an empty services list", { services: [] }, "services"],
+    ["an unknown redirect target", { redirectTarget: "web" }, "redirectTarget"],
+    ["an unknown key", { provider: "outlook" }, "body"],
+    ["a body that is no object", null, "body"],
+  ])("reauthorization refuses %s with 400 validation_failed and stores no state", async (_name, body, field) => {
+    const mailboxId = await existingMailbox(caller.tenantId);
+
+    const error = await caught(reauthorizeResult(mailboxId, caller, { oauth: OAUTH }, body));
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field } });
+    expect(await stateCount()).toBe(0);
+  });
+
+  it("answers mail_reauth_wrong_account for another address asking for Calendars, and keeps the credential and the granted scopes", async () => {
+    const mailboxId = await connectGoogle(["mail"], GMAIL_SCOPES.join(" "));
+    await switchCalendars(mailboxId, true);
+    const url = await reauthorize(mailboxId, caller, { services: ["mail", "calendars"] });
+    const provider = fakeProvider({
+      ...googleAccount("someone.else@gmail.com"),
+      [GOOGLE_TOKEN_URL]: tokensGranting([...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE].join(" "), "SENTINEL-OTHER-TOKEN"),
+    });
+    const liveSync = liveSyncSpy();
+
+    const error = await caught(completeReauthorization(stateOf(url), provider, liveSync.control));
+
+    expectWrongAccount(error);
+    expect(await storedRefreshToken(caller.tenantId, mailboxId)).toBe(SECRETS.refreshToken);
+    expect(await mailSyncOf(mailboxId)).toEqual({ grantedScopes: GMAIL_SCOPES, paused: false });
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarStatus: "needsConsent" });
+    expect(liveSync.restarted).toEqual([]);
   });
 });
