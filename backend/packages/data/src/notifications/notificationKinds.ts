@@ -16,11 +16,14 @@ export const NOTIFICATION_KINDS = [
   "agent_guidance_drift_resolved",
   "semp_problem",
   "calendar_invitation",
+  "calendar_event_added",
+  "calendar_event_changed",
+  "calendar_event_cancelled",
 ] as const;
 
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
-export const NOTIFICATION_CATEGORIES = ["approvals", "invites", "reminders", "problems"] as const;
+export const NOTIFICATION_CATEGORIES = ["approvals", "invites", "reminders", "calendarChanges", "problems"] as const;
 
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 
@@ -30,7 +33,7 @@ export type NotificationSeverity = (typeof NOTIFICATION_SEVERITIES)[number];
 
 /** `push` is false for `info` and for problem kinds whose raised `semp_problem` is pushed instead. */
 export type NotificationKindPolicy =
-  | { category: "approvals" | "invites" | "reminders"; push: boolean }
+  | { category: "approvals" | "invites" | "reminders" | "calendarChanges"; push: boolean }
   | { category: "problems"; severity: NotificationSeverity; push: boolean };
 
 /** Severity comes from each notification's `payload.severity`. */
@@ -45,6 +48,9 @@ export const NOTIFICATION_KIND_POLICY: Record<NotificationKind, NotificationKind
   approval_pending: { category: "approvals", push: true },
   semp_problem: { category: "problems", severity: "payload", push: true },
   calendar_invitation: { category: "invites", push: true },
+  calendar_event_added: { category: "calendarChanges", push: true },
+  calendar_event_changed: { category: "calendarChanges", push: true },
+  calendar_event_cancelled: { category: "calendarChanges", push: true },
   // Stored for the in-app list only; the Semp problem they raise is what gets pushed.
   mail_sync_error: { category: "problems", severity: "critical", push: false },
   mail_sync_stalled: { category: "problems", severity: "critical", push: false },

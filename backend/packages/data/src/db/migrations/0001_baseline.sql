@@ -2054,6 +2054,7 @@ CREATE TABLE public.notification_preferences (
     badge_approvals boolean DEFAULT true NOT NULL,
     badge_invites boolean DEFAULT true NOT NULL,
     badge_inbox boolean DEFAULT false NOT NULL,
+    calendar_changes boolean DEFAULT true NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT notification_preferences_problems_level_check CHECK ((problems_level = ANY (ARRAY['off'::text, 'critical'::text, 'all'::text])))
 );
@@ -2084,7 +2085,7 @@ CREATE TABLE public.notifications (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     resolved_at timestamp with time zone,
     body text,
-    CONSTRAINT notifications_kind_check CHECK ((kind = ANY (ARRAY['approval_pending'::text, 'agent_run_error'::text, 'heartbeat_error'::text, 'automation_error'::text, 'mail_sync_error'::text, 'process_stale'::text, 'queue_backlog'::text, 'mail_sync_stalled'::text, 'backup_restore_failed'::text, 'agent_guidance_drift'::text, 'agent_guidance_drift_resolved'::text, 'semp_problem'::text, 'calendar_invitation'::text])))
+    CONSTRAINT notifications_kind_check CHECK ((kind = ANY (ARRAY['approval_pending'::text, 'agent_run_error'::text, 'heartbeat_error'::text, 'automation_error'::text, 'mail_sync_error'::text, 'process_stale'::text, 'queue_backlog'::text, 'mail_sync_stalled'::text, 'backup_restore_failed'::text, 'agent_guidance_drift'::text, 'agent_guidance_drift_resolved'::text, 'semp_problem'::text, 'calendar_invitation'::text, 'calendar_event_added'::text, 'calendar_event_changed'::text, 'calendar_event_cancelled'::text])))
 );
 
 COMMENT ON TABLE public.notifications IS 'semprec:tenancy=tenant';

@@ -1,6 +1,7 @@
 // Applies what an adapter fetched for one internet account in one transaction: account calendars created, updated or
 // untracked, Events created, updated or trashed by their remote id, the remote state and cursors stored, and the
-// account's sync state set to `ok`. Every item write goes through the choke point as `CALENDAR_SYNC_WRITER`.
+// account's sync state set to `ok`, and the provider's changes notified. Every item write goes through the choke point
+// as `CALENDAR_SYNC_WRITER`.
 import { isDeepStrictEqual } from "node:util";
 import type { PoolClient } from "pg";
 import { z } from "zod";
@@ -29,6 +30,12 @@ import {
   type RemoteEventFields,
 } from "./adapter.js";
 import { lockCalendarAccountSync } from "./calendarAccountSyncGuard.js";
+import {
+  NOTIFIED_EVENT_FIELD_KEYS,
+  notifyCalendarChanges,
+  type CalendarChangeNotice,
+  type NotifiedCalendar,
+} from "./calendarChangeNotifications.js";
 import { enqueueCalendarAccountCleanup } from "./calendarAccountSyncEnqueue.js";
 import {
   deleteCalendarRemoteStates,
@@ -262,6 +269,21 @@ function sameTracked(stored: readonly StoredAccountCalendar[], tracked: TrackedC
   return isDeepStrictEqual(trackedCalendarsSnapshot(stored), tracked);
 }
 
+/** The account's addresses, one per line in `Mailboxes.addresses`. */
+function accountAddresses(properties: Record<string, unknown>): string[] {
+  const { addresses } = properties;
+  if (typeof addresses !== "string") return [];
+  return addresses
+    .split(/[\n,\r]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function textProperty(properties: Record<string, unknown>, key: string): string | null {
+  const value = properties[key];
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
 function refusedField(error: ValidationError): string | null {
   const details: unknown = error.details;
   if (typeof details !== "object" || details === null || !("field" in details)) return null;
@@ -279,6 +301,10 @@ function refusedField(error: ValidationError): string | null {
  * Events. An Event whose snapshot equals the fetched one writes nothing; one whose address alone changed updates only
  * its remote state. Each Event is written in a savepoint: an Event rule refusing a value (`ValidationError`) skips that
  * Event, which keeps no remote state and is offered again by a later full fetch.
+ *
+ * Except in the account's initial sync, the Events added, cancelled, or changed in title, time or place in a calendar
+ * that was tracked before this pass and has `notify` on are notified in the same transaction. A change that leaves
+ * those fields as the Event already had them locally (the echo of a local edit) is not news.
  */
 export async function applyCalendarSync(
   client: PoolClient,
@@ -295,7 +321,9 @@ export async function applyCalendarSync(
 
   const storedByRemoteId = new Map(stored.map((calendar) => [calendar.remoteId, calendar]));
   const queueAffinity = createActionQueueAffinity();
-  const targets: Array<FetchedCalendar & { calendarItemId: string }> = [];
+  const targets: Array<FetchedCalendar & { calendarItemId: string; notify: boolean }> = [];
+  const notifiedCalendars: NotifiedCalendar[] = [];
+  const accountName = textProperty(account.properties, "name") ?? "";
   for (const { calendar, changes } of input.fetched) {
     const existing = storedByRemoteId.get(calendar.remoteId);
     const remote = { remoteName: calendar.name, remoteColor: calendar.color, readOnly: calendar.readOnly };
@@ -317,7 +345,14 @@ export async function applyCalendarSync(
           },
         );
       }
-      targets.push({ calendar, changes, calendarItemId: existing.calendarItemId });
+      const notify = !initialSync && existing.properties.notify === true;
+      if (notify) {
+        notifiedCalendars.push({
+          calendarItemId: existing.calendarItemId,
+          name: textProperty(existing.properties, "name") ?? calendar.name ?? accountName,
+        });
+      }
+      targets.push({ calendar, changes, calendarItemId: existing.calendarItemId, notify });
       continue;
     }
     const created = await createItemWithClient(
@@ -347,7 +382,8 @@ export async function applyCalendarSync(
       { ownerProcess: CALENDAR_MODULE_ID },
       CALENDAR_SYNC_WRITER,
     );
-    targets.push({ calendar, changes, calendarItemId: created.id });
+    // A calendar new to this pass is in its own first sync: its Events are not news.
+    targets.push({ calendar, changes, calendarItemId: created.id, notify: false });
   }
   const listed = new Set(input.fetched.map(({ calendar }) => calendar.remoteId));
   const vanished = stored
@@ -361,8 +397,9 @@ export async function applyCalendarSync(
   const added: SyncedEventChange[] = [];
   const changed: SyncedEventChange[] = [];
   const cancelled: SyncedEventChange[] = [];
+  const notices: CalendarChangeNotice[] = [];
   let skippedEvents = 0;
-  for (const { calendar, changes, calendarItemId } of targets) {
+  for (const { calendar, changes, calendarItemId, notify } of targets) {
     const storedEvents = new Map(
       (await listEventRemoteStates(client, calendarItemId)).map((event) => [event.remoteId, event]),
     );
@@ -382,6 +419,15 @@ export async function applyCalendarSync(
           writer: CALENDAR_SYNC_WRITER,
         });
         cancelled.push({ eventItemId: event.eventItemId, calendarItemId, remoteId });
+        if (notify) {
+          notices.push({
+            kind: "cancelled",
+            eventItemId: event.eventItemId,
+            calendarItemId,
+            snapshot: event.baseSnapshot,
+            etag: event.etag,
+          });
+        }
       }
       released.push(event.eventItemId);
       storedEvents.delete(remoteId);
@@ -402,6 +448,7 @@ export async function applyCalendarSync(
         existing: storedEvents.get(event.remoteId),
         seriesItemId: event.seriesRemoteId === null ? null : (itemIdByRemoteId.get(event.seriesRemoteId) ?? undefined),
         queueAffinity,
+        notify,
       });
       if (outcome.kind === "skipped") {
         skippedEvents += 1;
@@ -411,6 +458,15 @@ export async function applyCalendarSync(
       const change = { eventItemId: outcome.eventItemId, calendarItemId, remoteId: event.remoteId };
       if (outcome.kind === "created") added.push(change);
       if (outcome.kind === "updated") changed.push(change);
+      if (notify && (outcome.kind === "created" || (outcome.kind === "updated" && outcome.news))) {
+        notices.push({
+          kind: outcome.kind === "created" ? "added" : "changed",
+          eventItemId: outcome.eventItemId,
+          calendarItemId,
+          snapshot: snapshotOf(event),
+          etag: event.etag,
+        });
+      }
     }
     await upsertCalendarRemoteState(client, {
       calendarItemId,
@@ -421,12 +477,22 @@ export async function applyCalendarSync(
     });
   }
 
+  await notifyCalendarChanges(client, {
+    accountItemId,
+    calendars: notifiedCalendars,
+    ownAddresses: accountAddresses(account.properties),
+    notices,
+  });
   await recordCalendarSyncSuccess(client, accountItemId);
   await resolveProblem(client, { dedupeKey: calendarProblemKey(accountItemId), resolutionKind: "recovered" });
   return { kind: "applied", initialSync, added, changed, cancelled, skippedEvents };
 }
 
-type EventOutcome = { kind: "created" | "updated" | "unchanged"; eventItemId: string } | { kind: "skipped" };
+type EventOutcome =
+  | { kind: "created" | "unchanged"; eventItemId: string }
+  /** `news`: the provider changed a notified field to a value the Event did not already have. */
+  | { kind: "updated"; eventItemId: string; news: boolean }
+  | { kind: "skipped" };
 
 async function applyEvent(
   client: PoolClient,
@@ -438,9 +504,11 @@ async function applyEvent(
     /** `null` for a master; `undefined` for an override whose series is not stored. */
     seriesItemId: string | null | undefined;
     queueAffinity: ReturnType<typeof createActionQueueAffinity>;
+    /** Whether a change of this Event may be notified, which needs the Event's values before the write. */
+    notify: boolean;
   },
 ): Promise<EventOutcome> {
-  const { ids, calendarItemId, event, existing, seriesItemId, queueAffinity } = input;
+  const { ids, calendarItemId, event, existing, seriesItemId, queueAffinity, notify } = input;
   const log = { calendarItemId, eventItemId: existing?.eventItemId };
   if (seriesItemId === undefined) {
     logger.warn(log, "Calendar sync skipped an override whose series is not stored");
@@ -467,6 +535,12 @@ async function applyEvent(
     return await withSavepoint(client, async (): Promise<EventOutcome> => {
       if (existing) {
         const patch = providerChanges(event.fields, snapshotFields(existing.baseSnapshot), seriesItemId !== null);
+        const notified = notify ? NOTIFIED_EVENT_FIELD_KEYS.filter((key) => Object.hasOwn(patch, key)) : [];
+        let news = false;
+        if (notified.length > 0) {
+          const before = await getItemById(client, ids.eventsDatabaseId, existing.eventItemId);
+          news = notified.some((key) => !isDeepStrictEqual(before?.properties[key] ?? null, patch[key]));
+        }
         if (Object.keys(patch).length > 0) {
           await updateItemWithClient(
             client,
@@ -475,10 +549,9 @@ async function applyEvent(
           );
         }
         await upsertEventRemoteState(client, { ...remoteState, eventItemId: existing.eventItemId });
-        return {
-          kind: Object.keys(patch).length > 0 ? "updated" : "unchanged",
-          eventItemId: existing.eventItemId,
-        };
+        return Object.keys(patch).length > 0
+          ? { kind: "updated", eventItemId: existing.eventItemId, news }
+          : { kind: "unchanged", eventItemId: existing.eventItemId };
       }
       const created = await createEventInCalendar(
         client,

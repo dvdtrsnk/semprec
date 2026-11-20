@@ -222,6 +222,15 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   provider fields and `seriesId` and no `systemOwnerProcess`; calendar writes pass `systemOwnerProcess: "calendar"`.
   The cursors, `ok` state and the resolution of the account's problem commit with the writes. The result lists the
   Events added, changed and cancelled and whether this was the account's initial sync, for notifications.
+- **Change notifications** (`calendarChangeNotifications.ts`), written in the apply's transaction. Outside the
+  account's initial sync, the Events added, cancelled, or changed in `name`, date, time, `timeZone` or `place` in a
+  calendar that was tracked before the pass and has `notify` on become `calendar_event_added`, `calendar_event_changed`
+  or `calendar_event_cancelled` (category `calendarChanges`, preference `calendarChanges`), one per Event, or one
+  `calendar_event_changed` summary per calendar when a pass has more than three. A change that leaves those fields as
+  the Event already had them locally (the echo of a local edit) is not notified. The copy names the organizer unless
+  it is one of the account's addresses or has no name. The dedupe instance is the kind plus the provider's etag (else
+  a hash of the snapshot), so a replay writes nothing new. The APNs payload carries `event_id` (not for a summary)
+  and `calendar_id`.
 - **Status.** `calendar_account_sync_state` (`status` `ok` | `error` | `never` | `needsReauthorization` |
   `needsConsent`, `last_successful_sync_at`, `failing_since`, `last_error_code`, `initial_sync_completed_at`,
   `manual_sync_requested_at`). `calendarStatusOf` derives the rows' `calendarStatus`: `off` with Calendars off,

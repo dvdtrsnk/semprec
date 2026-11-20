@@ -19,6 +19,7 @@ const BOOLEAN_FIELDS = [
   "badgeApprovals",
   "badgeInvites",
   "badgeInbox",
+  "calendarChanges",
 ] as const;
 type BooleanField = (typeof BOOLEAN_FIELDS)[number];
 

@@ -992,11 +992,13 @@ describe("pushInterruptionLevelFor (issue #1443)", () => {
     badgeApprovals: true,
     badgeInvites: true,
     badgeInbox: false,
+    calendarChanges: true,
     updatedAt: null,
   };
   const approvals: NotificationKindPolicy = { category: "approvals", push: true };
   const invites: NotificationKindPolicy = { category: "invites", push: true };
   const reminders: NotificationKindPolicy = { category: "reminders", push: true };
+  const calendarChanges: NotificationKindPolicy = { category: "calendarChanges", push: true };
   const critical: NotificationKindPolicy = { category: "problems", severity: "critical", push: true };
   const warning: NotificationKindPolicy = { category: "problems", severity: "warning", push: true };
   const info: NotificationKindPolicy = { category: "problems", severity: "info", push: false };
@@ -1006,11 +1008,13 @@ describe("pushInterruptionLevelFor (issue #1443)", () => {
     expect(pushInterruptionLevelFor(approvals, { ...defaults, approvals: false })).toBeNull();
   });
 
-  it("follows the invites and reminders switches and sends them active", () => {
+  it("follows the invites, reminders and calendar changes switches and sends them active", () => {
     expect(pushInterruptionLevelFor(invites, defaults)).toBe("active");
     expect(pushInterruptionLevelFor(invites, { ...defaults, invites: false })).toBeNull();
     expect(pushInterruptionLevelFor(reminders, defaults)).toBe("active");
     expect(pushInterruptionLevelFor(reminders, { ...defaults, reminders: false })).toBeNull();
+    expect(pushInterruptionLevelFor(calendarChanges, defaults)).toBe("active");
+    expect(pushInterruptionLevelFor(calendarChanges, { ...defaults, calendarChanges: false })).toBeNull();
   });
 
   it("never pushes an info policy, whatever the problems level", () => {
