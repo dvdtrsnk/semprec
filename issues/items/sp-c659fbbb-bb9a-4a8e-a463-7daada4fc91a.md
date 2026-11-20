@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-c659fbbb-bb9a-4a8e-a463-7daada4fc91a"
 title: "[internet-accounts 04/18] Store event time zones and full recurrence for synced events"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["spec:approved"]
 parent: "sp-85e6cbc4-7de7-4385-81a9-a493c421b817"
 assignees: []
 milestone: null
 createdAt: "2026-11-20T15:00:25.886Z"
-updatedAt: "2026-11-20T15:00:45.335Z"
-closedAt: null
+updatedAt: "2026-11-20T17:05:48.727Z"
+closedAt: "2026-11-20T17:05:48.727Z"
 source: null
 approval: {"specSha256":"64771a63e781b61df3c8ed21a1b7c02de6a95e9787d63f944f9d90a1a0ae848f","source":"repository","actor":"dvdtrsnk via thr_g256fb7y6m: plan and decisions approved in chat 2026-11-20","at":"2026-11-20T15:00:45.335Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"259c0092a0328111adce49366fc5f7301216a38e","at":"2026-11-20T17:05:48.727Z"}
 ---
 **Blocked by:** sp-e7c79cd9-5f81-44db-a341-1c79fb277418
 **Model tier:** high
