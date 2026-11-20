@@ -45,6 +45,27 @@ class NoteDocumentTest {
         assertEquals("Some bold and italic and code and a link\nnext line", blocks[1].plainText)
     }
 
+    @Test fun `only changed blocks are written anew and the others keep the lines they were read from`() {
+        val teal = "Mind the <span data-color=\"teal\">teal</span> note"
+        val markdown = listOf(teal, "", "Second", "", "3. third", "4. fourth").joinToString("\n")
+        val read = NoteDocument.parse(markdown, TestIds().newId)
+        assertEquals(markdown, NoteDocument.markdown(read.blocks, read.source))
+        val edited = NoteStructure.setRuns(read.blocks, read.blocks[1].id, listOf(InlineRun("Second edited")))
+        assertEquals(
+            listOf(teal, "", "Second edited", "", "3. third", "4. fourth").joinToString("\n"),
+            NoteDocument.markdown(edited, read.source),
+        )
+        val moved = NoteStructure.move(edited, setOf(read.blocks[0].id), edited.size, 0)
+        assertEquals(teal, NoteDocument.markdown(moved, read.source).lines().last())
+        val retyped = NoteStructure.setRuns(read.blocks, read.blocks[0].id, listOf(InlineRun("Plain")))
+        assertEquals("Plain", NoteDocument.markdown(retyped, read.source).lines().first())
+        val copied = NoteStructure.duplicate(read.blocks, setOf(read.blocks[0].id)) { "copy" }
+        assertEquals(
+            listOf(teal, "", "Mind the teal note"),
+            NoteDocument.markdown(copied, read.source).lines().take(3),
+        )
+    }
+
     @Test fun `words are counted over every block`() {
         val blocks = listOf(block("a", "Hello  world"), block("b", "  "), block("c", "one\ntwo"))
         assertEquals(4, NoteDocument.wordCount(blocks))

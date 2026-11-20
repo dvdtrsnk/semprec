@@ -186,6 +186,15 @@ class NoteEditorViewModelTest : NoteEditorTest() {
         vm.close()
     }
 
+    @Test fun `a block keeps what this app cannot show when another block is edited`() = runTest(dispatcher) {
+        val teal = "Mind the <span data-color=\"teal\">teal</span> note"
+        pages.put("p1", "$teal\n\nSecond")
+        val vm = loaded()
+        typed(vm, 1, "Second edited")
+        assertEquals("$teal\n\nSecond edited", pages.markdown["p1"])
+        vm.close()
+    }
+
     @Test fun `a Journal period without a page is created only by its first change`() = runTest(dispatcher) {
         journal.onPeriod = { content(periodPage(it, markdown = null, itemId = null)) }
         journal.onEnsure = {

@@ -40,12 +40,45 @@ data class NoteCaret(val blockId: String, val offset: Int)
 /** The blocks after an edit and where the cursor goes; a `null` [caret] ends editing. */
 data class NoteChange(val blocks: List<NoteBlock>, val caret: NoteCaret?)
 
+/**
+ * The Markdown lines each block of a read note came from. [NoteDocument.markdown] writes a block that no edit changed
+ * with these lines, so what this app does not model (a color key it does not know, a list number) stays as the
+ * server wrote it, and only changed blocks are written anew.
+ */
+class NoteSource internal constructor(private val kept: Map<String, Pair<NoteBlock, List<String>>>) {
+
+    /** The lines [block] was read from, or `null` when it was changed, added or never read. */
+    internal fun linesOf(block: NoteBlock): List<String>? = kept[block.id]?.takeIf { it.first == block }?.second
+
+    companion object {
+        /** No block read: every block is written from its model. */
+        val NONE = NoteSource(emptyMap())
+    }
+}
+
+/** A note read from its Markdown: the normalized [blocks] and the lines they came from. */
+data class NoteRead(val blocks: List<NoteBlock>, val source: NoteSource)
+
 /** Reading, normalizing and writing a note's blocks. Reading writes nothing back. */
 object NoteDocument {
 
     /** The blocks of the canonical Markdown [markdown], normalized; never empty. */
-    fun read(markdown: String, newId: () -> String): List<NoteBlock> =
-        normalize(PageMarkdown.parse(markdown).map { it.toNoteBlock(newId()) }, newId)
+    fun read(markdown: String, newId: () -> String): List<NoteBlock> = parse(markdown, newId).blocks
+
+    /**
+     * The blocks of [markdown] as [read] gives them, with the lines of each block that normalizing left as it was
+     * (a block normalizing changed has to be written anew).
+     */
+    fun parse(markdown: String, newId: () -> String): NoteRead {
+        val lines = markdown.split("\n").map { it.removeSuffix("\r") }
+        val parsed = PageMarkdown.parse(markdown)
+        val read = parsed.map { it.toNoteBlock(newId()) }
+        val blocks = normalize(read, newId)
+        val kept = parsed.indices
+            .filter { read[it] == blocks.getOrNull(it) }
+            .associate { read[it].id to (read[it] to lines.subList(parsed[it].firstLine, parsed[it].lastLine + 1)) }
+        return NoteRead(blocks, NoteSource(kept))
+    }
 
     /**
      * The blocks as the editor may hold them: at least one block, indents within 0 to [NOTE_MAX_INDENT], `done` only
@@ -66,14 +99,16 @@ object NoteDocument {
         return fitted.ifEmpty { listOf(NoteBlock(newId(), PageBlockType.TEXT)) }
     }
 
-    /** The canonical Markdown of [blocks]: a blank line between blocks, none between list items in a row. */
-    fun markdown(blocks: List<NoteBlock>): String {
+    /**
+     * The canonical Markdown of [blocks]: a blank line between blocks, none between list items in a row. A block
+     * [source] read and no edit changed keeps the lines it was read from; every other block is written from its model.
+     */
+    fun markdown(blocks: List<NoteBlock>, source: NoteSource = NoteSource.NONE): String {
         val lines = mutableListOf<String>()
         var previousWasList = false
         for (block in blocks) {
-            val page = block.toPageBlock()
             if (lines.isNotEmpty() && !(block.isList && previousWasList)) lines += ""
-            lines += PageMarkdownWriter.blockLines(page)
+            lines += source.linesOf(block) ?: PageMarkdownWriter.blockLines(block.toPageBlock())
             previousWasList = block.isList
         }
         return lines.joinToString("\n")

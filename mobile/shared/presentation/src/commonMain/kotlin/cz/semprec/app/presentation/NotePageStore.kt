@@ -5,6 +5,7 @@ import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.PageWrite
 import cz.semprec.app.domain.note.NoteBlock
 import cz.semprec.app.domain.note.NoteDocument
+import cz.semprec.app.domain.note.NoteSource
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -16,6 +17,7 @@ import kotlinx.coroutines.sync.withLock
  * The blocks of the note and their page on the server. Reading never writes: a Journal period without a page stays
  * without one until its first change. A change is written after a pause in typing, one write at a time, against the
  * version the page was read with; a page changed elsewhere meanwhile is read again and the local change dropped.
+ * Only the blocks a change touched are written anew; the others keep the Markdown lines they were read from.
  */
 internal class NotePageStore(
     private val host: FlowHost<NoteEditorState, NoteEditorEffect>,
@@ -31,6 +33,7 @@ internal class NotePageStore(
         private set
     private var etag: String? = null
     private var saved = ""
+    private var origin = NoteSource.NONE
     private val writes = Mutex()
     private var loadJob: Job? = null
     private var waitJob: Job? = null
@@ -63,7 +66,7 @@ internal class NotePageStore(
     /** Shows [next] and writes it after the pause. */
     fun change(next: List<NoteBlock>) {
         blocks = next
-        val pending = NoteDocument.markdown(next) != saved
+        val pending = NoteDocument.markdown(next, origin) != saved
         host.update { it.copy(blocks = next.toEditor(), wordCount = NoteDocument.wordCount(next), saving = pending) }
         waitJob?.cancel()
         waitJob = host.scope.launch {
@@ -101,8 +104,10 @@ internal class NotePageStore(
     private fun apply(snapshot: NoteSnapshot) {
         itemId = snapshot.itemId
         etag = snapshot.etag
-        blocks = NoteDocument.read(snapshot.markdown, newId)
-        saved = NoteDocument.markdown(blocks)
+        val read = NoteDocument.parse(snapshot.markdown, newId)
+        blocks = read.blocks
+        origin = read.source
+        saved = NoteDocument.markdown(blocks, origin)
         host.update {
             it.copy(
                 phase = NoteEditorPhase.CONTENT,
@@ -117,7 +122,7 @@ internal class NotePageStore(
     }
 
     private suspend fun persist(ensurePage: Boolean): Boolean = writes.withLock {
-        val markdown = NoteDocument.markdown(blocks)
+        val markdown = NoteDocument.markdown(blocks, origin)
         when {
             source is NoteEditorSource.Text -> {
                 if (markdown != saved) host.emit(NoteEditorEffect.TextChanged(markdown))
@@ -144,7 +149,7 @@ internal class NotePageStore(
                     etag = written.etag
                     saved = markdown
                     host.update {
-                        it.copy(saving = NoteDocument.markdown(blocks) != saved, lastEditedAt = settings.now())
+                        it.copy(saving = NoteDocument.markdown(blocks, origin) != saved, lastEditedAt = settings.now())
                     }
                     true
                 }
