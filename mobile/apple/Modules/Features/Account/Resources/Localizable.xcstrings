@@ -545,6 +545,22 @@
         }
       }
     },
+    "internetAccount.allowCalendars" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Povolit přístup ke kalendářům"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow calendar access"
+          }
+        }
+      }
+    },
     "internetAccount.always" : {
       "localizations" : {
         "cs" : {
@@ -662,13 +678,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kalendáře potřebují k účtu oprávnění. Povol ho novým přihlášením na webu."
+            "value" : "Kalendáře potřebují tvé oprávnění ke kalendářům účtu."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Calendars need permission to the account. Sign in to it again on the web to allow it."
+            "value" : "Calendars need your permission to the account's calendars."
           }
         }
       }
@@ -929,6 +945,22 @@
         }
       }
     },
+    "internetAccount.reauth.signIn" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet se nesynchronizuje, dokud se k němu znovu nepřihlásíš. Nic se neztratí."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The account does not sync until you sign in to it again. Nothing is lost."
+          }
+        }
+      }
+    },
     "internetAccount.reauth.since" : {
       "localizations" : {
         "cs" : {
@@ -1105,6 +1137,22 @@
         }
       }
     },
+    "internetAccount.signInAgain" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Znovu přihlásit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in again"
+          }
+        }
+      }
+    },
     "internetAccount.sync" : {
       "localizations" : {
         "cs" : {
@@ -1233,6 +1281,22 @@
         }
       }
     },
+    "internetAccounts.add.error.declined" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přihlášení se nedokončilo. Zkus to znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The sign-in was not completed. Try again."
+          }
+        }
+      }
+    },
     "internetAccounts.add.error.invalid" : {
       "localizations" : {
         "cs" : {
@@ -1325,22 +1389,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "IMAP server"
-          }
-        }
-      }
-    },
-    "internetAccounts.add.oauthLater" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Přihlášení ke Googlu a Microsoftu přijde v příští aktualizaci aplikace."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Signing in to Google and Microsoft comes in the next update of the app."
           }
         }
       }
@@ -1453,6 +1501,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "IMAP and SMTP, optionally CalDAV"
+          }
+        }
+      }
+    },
+    "internetAccounts.add.signIn.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přihlásíš se na stránce poskytovatele. Pošta se synchronizuje vždy, Kalendáře můžeš zapnout nebo vypnout i později v účtu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "You sign in on the provider's page. Mail always syncs; you can also switch Calendars on or off later in the account."
+          }
+        }
+      }
+    },
+    "internetAccounts.add.signIn.submit" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přihlásit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in"
           }
         }
       }

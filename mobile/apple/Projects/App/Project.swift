@@ -26,6 +26,14 @@ let project = Project(
                 "CFBundleName": "$(PRODUCT_NAME)",
                 "CFBundlePackageType": "$(PRODUCT_BUNDLE_PACKAGE_TYPE)",
                 "CFBundleShortVersionString": "$(MARKETING_VERSION)",
+                // The scheme a browser sign-in returns to (`semprec://oauth`), caught by the sign-in's own session;
+                // the app reads no URL it is opened with.
+                "CFBundleURLTypes": [
+                    [
+                        "CFBundleURLName": "$(PRODUCT_BUNDLE_IDENTIFIER).oauth",
+                        "CFBundleURLSchemes": ["semprec"],
+                    ],
+                ],
                 "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
                 "LSApplicationCategoryType": "public.app-category.productivity",
                 "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",

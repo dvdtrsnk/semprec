@@ -61,7 +61,9 @@ extension SharedInternetAccountScreenModel {
                     attachmentsKept: Int($0.attachmentsKept)
                 )
             },
-            actionFailed: state.actionFailed
+            actionFailed: state.actionFailed,
+            signingIn: state.signingIn,
+            signInFailure: state.signInFailure.map(InternetConnectFailure.init)
         )
     }
 
@@ -80,6 +82,17 @@ extension SharedInternetAccountScreenModel {
         case .cancelRemoval: SharedSDK.InternetAccountActionRemovalCancel.shared
         case .confirmRemoval: SharedSDK.InternetAccountActionRemovalConfirm.shared
         case .dismissFailure: SharedSDK.InternetAccountActionDismissFailure.shared
+        case .signIn(let step): signIn(step)
+        }
+    }
+
+    private static func signIn(_ step: InternetAccountSignIn) -> any SharedSDK.InternetAccountActionSignIn {
+        switch step {
+        case .again: SharedSDK.InternetAccountActionSignInAgain.shared
+        case .allowCalendarAccess: SharedSDK.InternetAccountActionSignInAllowCalendarAccess.shared
+        case .returned(let url): SharedSDK.InternetAccountActionSignInReturned(callbackUrl: url)
+        case .cancelled: SharedSDK.InternetAccountActionSignInCancelled.shared
+        case .failed: SharedSDK.InternetAccountActionSignInFailed.shared
         }
     }
 
@@ -87,6 +100,7 @@ extension SharedInternetAccountScreenModel {
         switch onEnum(of: effect) {
         case .removed: .removed
         case .calendarsTurnedOn: .calendarsTurnedOn
+        case .openSignIn(let open): .openSignIn(url: open.url)
         }
     }
 
@@ -123,7 +137,10 @@ extension SharedInternetAccountScreenModel {
             connectionLimit: Int(account.connectionLimit),
             connectionLimitApplies: account.connectionLimitApplies,
             autonomousSendProjectCount: Int(account.autonomousSendProjectCount),
-            syncedMessageCount: account.syncedMessageCount?.intValue
+            syncedMessageCount: account.syncedMessageCount?.intValue,
+            signsInInBrowser: account.signsInInBrowser,
+            canSignInAgain: account.canSignInAgain,
+            canAllowCalendarAccess: account.canAllowCalendarAccess
         )
     }
 }

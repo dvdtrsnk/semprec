@@ -3,9 +3,11 @@ package cz.semprec.app.presentation
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarSyncStatus
+import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailAccount
 import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.OAuthOutcome
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.domain.SyncTopic
@@ -386,6 +388,143 @@ class InternetAccountViewModelTest : MainDispatcherTest() {
         assertEquals(0, off.syncs.count)
         withoutCalendars.close()
         vm.close()
+    }
+
+    @Test fun `an account that must sign in again does so in the browser and is read again`() = runTest(dispatcher) {
+        val accounts = ScriptedInternetAccountRepository(
+            one = MailCall(
+                mailContent(internetAccount(status = MailSyncStatus.NEEDS_REAUTHORIZATION)),
+                mailContent(internetAccount()),
+            ),
+        )
+        val vm = viewModel(accounts)
+        val effects = collectEffects(vm)
+        runCurrent()
+        assertEquals(true, vm.state.value.account?.canSignInAgain)
+        assertEquals(false, vm.state.value.account?.canAllowCalendarAccess)
+
+        vm.onAction(InternetAccountAction.SignIn.Again)
+        assertTrue(vm.state.value.signingIn)
+        vm.onAction(InternetAccountAction.SignIn.Again)
+        runCurrent()
+        assertEquals(listOf("m1" to emptySet<InternetService>()), accounts.reauthorizations.asked)
+        assertEquals(
+            listOf<InternetAccountEffect>(InternetAccountEffect.OpenSignIn(OAUTH_SIGN_IN.authorizeUrl)),
+            effects,
+        )
+
+        vm.onAction(InternetAccountAction.SignIn.Returned(OAUTH_CALLBACK))
+        runCurrent()
+        assertEquals(listOf(OAUTH_SIGN_IN to OAUTH_CALLBACK), accounts.finishes.asked)
+        assertFalse(vm.state.value.signingIn)
+        assertNull(vm.state.value.signInFailure)
+        assertEquals(InternetServiceStatus.OK, vm.state.value.account?.mail)
+        assertEquals(false, vm.state.value.account?.canSignInAgain)
+        vm.close()
+    }
+
+    @Test fun `allowing calendar access asks for calendars and turns the calendar status to the server's`() =
+        runTest(dispatcher) {
+            val accounts = ScriptedInternetAccountRepository(
+                one = MailCall(
+                    mailContent(internetAccount(calendars = true, calendarStatus = CalendarSyncStatus.NEEDS_CONSENT)),
+                    mailContent(internetAccount(calendars = true, calendarStatus = CalendarSyncStatus.NEVER)),
+                ),
+            )
+            val vm = viewModel(accounts)
+            runCurrent()
+            assertEquals(true, vm.state.value.account?.canAllowCalendarAccess)
+            assertEquals(false, vm.state.value.account?.canSignInAgain)
+
+            vm.onAction(InternetAccountAction.SignIn.AllowCalendarAccess)
+            runCurrent()
+            vm.onAction(InternetAccountAction.SignIn.Returned(OAUTH_CALLBACK))
+            runCurrent()
+            assertEquals(
+                listOf("m1" to setOf(InternetService.MAIL, InternetService.CALENDARS)),
+                accounts.reauthorizations.asked,
+            )
+            assertEquals(InternetServiceStatus.SYNCING, vm.state.value.account?.calendars)
+            assertEquals(false, vm.state.value.account?.canAllowCalendarAccess)
+            vm.close()
+        }
+
+    @Test fun `signing in again is offered only to a browser account that needs it`() = runTest(dispatcher) {
+        val cases = listOf(
+            // Nothing to fix.
+            internetAccount(calendars = true),
+            // A password account signs in again with its password, not in a browser.
+            internetAccount(
+                status = MailSyncStatus.NEEDS_REAUTHORIZATION,
+                calendars = true,
+                calendarStatus = CalendarSyncStatus.NEEDS_CONSENT,
+                provider = "icloud",
+            ),
+        )
+        for (account in cases) {
+            val accounts = ScriptedInternetAccountRepository(one = MailCall(mailContent(account)))
+            val vm = viewModel(accounts)
+            runCurrent()
+            assertEquals(false, vm.state.value.account?.canSignInAgain)
+            assertEquals(false, vm.state.value.account?.canAllowCalendarAccess)
+            vm.onAction(InternetAccountAction.SignIn.Again)
+            vm.onAction(InternetAccountAction.SignIn.AllowCalendarAccess)
+            runCurrent()
+            assertFalse(vm.state.value.signingIn)
+            assertEquals(0, accounts.reauthorizations.count)
+            vm.close()
+        }
+    }
+
+    @Test fun `a cancelled sign-in changes nothing and one that fails says why`() = runTest(dispatcher) {
+        fun needsSignIn() = MailCall<String, InternetAccount>(
+            mailContent(internetAccount(status = MailSyncStatus.NEEDS_REAUTHORIZATION)),
+        )
+        val cases = listOf<Triple<ScriptedInternetAccountRepository, InternetAccountAction, InternetConnectFailure?>>(
+            Triple(
+                ScriptedInternetAccountRepository(one = needsSignIn()),
+                InternetAccountAction.SignIn.Cancelled,
+                null,
+            ),
+            Triple(
+                ScriptedInternetAccountRepository(one = needsSignIn()),
+                InternetAccountAction.SignIn.Failed,
+                InternetConnectFailure.UNEXPECTED,
+            ),
+            Triple(
+                ScriptedInternetAccountRepository(
+                    one = needsSignIn(),
+                    finishes = MailCall(mailContent(OAuthOutcome.Declined)),
+                ),
+                InternetAccountAction.SignIn.Returned(OAUTH_CALLBACK),
+                InternetConnectFailure.DECLINED,
+            ),
+            Triple(
+                ScriptedInternetAccountRepository(
+                    one = needsSignIn(),
+                    // Another account than this one, or a code the provider no longer accepts.
+                    finishes = MailCall(mailFailure(FailureKind.REJECTED)),
+                ),
+                InternetAccountAction.SignIn.Returned(OAUTH_CALLBACK),
+                InternetConnectFailure.REFUSED,
+            ),
+        )
+        for ((accounts, end, failure) in cases) {
+            val vm = viewModel(accounts)
+            runCurrent()
+            val reads = accounts.one.count
+            vm.onAction(InternetAccountAction.SignIn.Again)
+            runCurrent()
+            vm.onAction(end)
+            runCurrent()
+            assertFalse(vm.state.value.signingIn)
+            assertEquals(failure, vm.state.value.signInFailure)
+            assertEquals(reads, accounts.one.count)
+            assertEquals(InternetServiceStatus.NEEDS_REAUTHORIZATION, vm.state.value.account?.mail)
+            vm.onAction(InternetAccountAction.DismissFailure)
+            assertNull(vm.state.value.signInFailure)
+            vm.close()
+        }
     }
 
     @Test fun `close cancels in flight work and a closed ViewModel ignores actions`() = runTest(dispatcher) {

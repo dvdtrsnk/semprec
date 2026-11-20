@@ -29,6 +29,9 @@ import cz.semprec.app.domain.MailThreadPage
 import cz.semprec.app.domain.MailThreadQuery
 import cz.semprec.app.domain.MailThreadSummary
 import cz.semprec.app.domain.MailboxRepository
+import cz.semprec.app.domain.OAuthOutcome
+import cz.semprec.app.domain.OAuthProvider
+import cz.semprec.app.domain.OAuthSignIn
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -149,6 +152,12 @@ internal class ScriptedInternetAccountRepository(
     val one: MailCall<String, InternetAccount> = MailCall(mailContent(internetAccount())),
     val services: MailCall<Triple<String, InternetService, Boolean>, Unit> = MailCall(mailContent(Unit)),
     val syncs: MailCall<String, Unit> = MailCall(mailContent(Unit)),
+    val signIns: MailCall<Pair<OAuthProvider, Set<InternetService>>, OAuthSignIn> =
+        MailCall(mailContent(OAUTH_SIGN_IN)),
+    val reauthorizations: MailCall<Pair<String, Set<InternetService>>, OAuthSignIn> =
+        MailCall(mailContent(OAUTH_SIGN_IN)),
+    val finishes: MailCall<Pair<OAuthSignIn, String>, OAuthOutcome> =
+        MailCall(mailContent(OAuthOutcome.Connected("m1"))),
 ) : InternetAccountRepository {
     override suspend fun accounts() = list.answer(Unit)
 
@@ -158,7 +167,20 @@ internal class ScriptedInternetAccountRepository(
         services.answer(Triple(accountId, service, enabled))
 
     override suspend fun syncCalendars(accountId: String) = syncs.answer(accountId)
+
+    override suspend fun startSignIn(provider: OAuthProvider, services: Set<InternetService>) =
+        signIns.answer(provider to services)
+
+    override suspend fun startReauthorization(accountId: String, services: Set<InternetService>) =
+        reauthorizations.answer(accountId to services)
+
+    override suspend fun finishSignIn(signIn: OAuthSignIn, callbackUrl: String) =
+        finishes.answer(signIn to callbackUrl)
 }
+
+internal val OAUTH_SIGN_IN = OAuthSignIn("https://accounts.google.com/o/oauth2/v2/auth?state=s1", "s1")
+
+internal const val OAUTH_CALLBACK = "semprec://oauth?state=s1&code=c1"
 
 internal fun internetAccount(
     id: String = "m1",
@@ -168,7 +190,13 @@ internal fun internetAccount(
     calendarStatus: CalendarSyncStatus = if (calendars) CalendarSyncStatus.PENDING else CalendarSyncStatus.OFF,
     initial: Boolean = false,
     limitApplies: Boolean = true,
-) = InternetAccount(mailAccount(id, status, initial, limitApplies), mail, calendars, calendarStatus)
+    provider: String = "gmail",
+) = InternetAccount(
+    mailAccount(id, status, initial, limitApplies).copy(provider = provider),
+    mail,
+    calendars,
+    calendarStatus,
+)
 
 internal fun mailThread(
     id: String = "t1",

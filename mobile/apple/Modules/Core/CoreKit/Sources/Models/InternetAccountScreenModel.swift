@@ -26,7 +26,9 @@ public struct InternetAccountRemovalImpact: Equatable, Sendable {
 }
 
 /// One internet account. `mailEnabled` and `calendarsEnabled` are its switches, `mail` and `calendars` what each
-/// service is doing. `connectionLimitApplies` is true for an account whose mail syncs over IMAP.
+/// service is doing. `connectionLimitApplies` is true for an account whose mail syncs over IMAP. `signsInInBrowser`
+/// is true for a Google or Microsoft account; `canSignInAgain` and `canAllowCalendarAccess` say whether the screen
+/// offers to sign it in again or to allow calendar access.
 public struct InternetAccountDetail: Equatable, Sendable {
 
     public let id: String
@@ -45,6 +47,9 @@ public struct InternetAccountDetail: Equatable, Sendable {
     public let autonomousSendProjectCount: Int
     /// The messages downloaded so far while the first mail sync runs.
     public let syncedMessageCount: Int?
+    public let signsInInBrowser: Bool
+    public let canSignInAgain: Bool
+    public let canAllowCalendarAccess: Bool
 
     public init(
         id: String,
@@ -61,7 +66,10 @@ public struct InternetAccountDetail: Equatable, Sendable {
         connectionLimit: Int,
         connectionLimitApplies: Bool,
         autonomousSendProjectCount: Int,
-        syncedMessageCount: Int? = nil
+        syncedMessageCount: Int? = nil,
+        signsInInBrowser: Bool = false,
+        canSignInAgain: Bool = false,
+        canAllowCalendarAccess: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -78,6 +86,9 @@ public struct InternetAccountDetail: Equatable, Sendable {
         self.connectionLimitApplies = connectionLimitApplies
         self.autonomousSendProjectCount = autonomousSendProjectCount
         self.syncedMessageCount = syncedMessageCount
+        self.signsInInBrowser = signsInInBrowser
+        self.canSignInAgain = canSignInAgain
+        self.canAllowCalendarAccess = canAllowCalendarAccess
     }
 }
 
@@ -89,7 +100,8 @@ public enum InternetAccountPhase: Equatable, Sendable {
 }
 
 /// `confirmingOff` is the service whose switching off waits for the person's answer; `syncRequested` is true while
-/// the request to sync the calendars now is under way.
+/// the request to sync the calendars now is under way. `signingIn` is true from the start of a browser sign-in until
+/// the browser came back and the server answered; `signInFailure` says why the last one did not succeed.
 public struct InternetAccountState: Equatable, Sendable {
 
     public var phase: InternetAccountPhase
@@ -99,6 +111,8 @@ public struct InternetAccountState: Equatable, Sendable {
     public var removal: InternetAccountRemovalPhase
     public var impact: InternetAccountRemovalImpact?
     public var actionFailed: Bool
+    public var signingIn: Bool
+    public var signInFailure: InternetConnectFailure?
 
     public init(
         phase: InternetAccountPhase = .loading,
@@ -107,7 +121,9 @@ public struct InternetAccountState: Equatable, Sendable {
         syncRequested: Bool = false,
         removal: InternetAccountRemovalPhase = .idle,
         impact: InternetAccountRemovalImpact? = nil,
-        actionFailed: Bool = false
+        actionFailed: Bool = false,
+        signingIn: Bool = false,
+        signInFailure: InternetConnectFailure? = nil
     ) {
         self.phase = phase
         self.account = account
@@ -116,6 +132,8 @@ public struct InternetAccountState: Equatable, Sendable {
         self.removal = removal
         self.impact = impact
         self.actionFailed = actionFailed
+        self.signingIn = signingIn
+        self.signInFailure = signInFailure
     }
 }
 
@@ -134,7 +152,24 @@ public enum InternetAccountAction: Equatable, Sendable {
     case requestRemoval
     case cancelRemoval
     case confirmRemoval
+    /// Dismisses `actionFailed` and `signInFailure`.
     case dismissFailure
+    case signIn(InternetAccountSignIn)
+}
+
+/// A step of signing an account in again in a browser.
+public enum InternetAccountSignIn: Equatable, Sendable {
+
+    /// Signs the account in again; only while `canSignInAgain`.
+    case again
+    /// Asks the provider for calendar access; only while `canAllowCalendarAccess`.
+    case allowCalendarAccess
+    /// The browser came back to `semprec://oauth` at `callbackUrl`.
+    case returned(callbackUrl: String)
+    /// The person closed the browser before it came back.
+    case cancelled
+    /// The browser could not be shown or ended in an error of its own.
+    case failed
 }
 
 public enum InternetAccountEffect: Equatable, Sendable {
@@ -143,6 +178,9 @@ public enum InternetAccountEffect: Equatable, Sendable {
     case removed
     /// Calendars was switched on; the app asks for the permission to notify about calendar changes.
     case calendarsTurnedOn
+    /// Opens `url`, the provider's sign-in page, in a browser session that ends at `semprec://oauth`; the app reports
+    /// how it ended with `signIn(.returned)`, `signIn(.cancelled)` or `signIn(.failed)`.
+    case openSignIn(url: String)
 }
 
 public typealias InternetAccountScreenModel =

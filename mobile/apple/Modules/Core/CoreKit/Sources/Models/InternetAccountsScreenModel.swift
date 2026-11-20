@@ -54,13 +54,22 @@ public enum InternetPasswordProvider: Equatable, Sendable {
     case other
 }
 
-/// Why an account was not connected: the input is incomplete, the server refused it, or it could not be reached.
+/// The accounts that sign in in a browser.
+public enum InternetOAuthProvider: Equatable, Sendable {
+
+    case google
+    case microsoft
+}
+
+/// Why an account was not connected or signed in: the input is incomplete, the server refused it, it could not be
+/// reached, or, for a browser sign-in, the provider declined it (for example because the person did not allow access).
 public enum InternetConnectFailure: Equatable, Sendable {
 
     case invalidInput
     case refused
     case unavailable
     case unexpected
+    case declined
 }
 
 public enum InternetAccountsPhase: Equatable, Sendable {
@@ -70,6 +79,8 @@ public enum InternetAccountsPhase: Equatable, Sendable {
     case failure(FailureKind?)
 }
 
+/// `connecting` is true while an account is being connected, a browser sign-in included, from its start until the
+/// browser came back and the server answered.
 public struct InternetAccountsState: Equatable, Sendable {
 
     public var phase: InternetAccountsPhase
@@ -109,6 +120,14 @@ public enum InternetAccountsAction: Equatable, Sendable {
         caldavUrl: String
     )
     case dismissConnectFailure
+    /// Starts the browser sign-in of a new account that syncs mail and, when `calendars`, its calendars.
+    case startSignIn(provider: InternetOAuthProvider, calendars: Bool)
+    /// The browser came back to `semprec://oauth` at `callbackUrl`.
+    case signInReturned(callbackUrl: String)
+    /// The person closed the browser before it came back.
+    case signInCancelled
+    /// The browser could not be shown or ended in an error of its own.
+    case signInFailed
 }
 
 public enum InternetAccountsEffect: Equatable, Sendable {
@@ -116,6 +135,9 @@ public enum InternetAccountsEffect: Equatable, Sendable {
     case openAccount(accountId: String)
     /// An account was connected and the list shows it; the form closes.
     case connected
+    /// Opens `url`, the provider's sign-in page, in a browser session that ends at `semprec://oauth`; the app reports
+    /// how it ended with `signInReturned`, `signInCancelled` or `signInFailed`.
+    case openSignIn(url: String)
 }
 
 public typealias InternetAccountsScreenModel =

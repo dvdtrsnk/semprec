@@ -3,7 +3,8 @@ import DesignSystem
 import SwiftUI
 
 /// The internet accounts, each with what its Mail and Calendars are doing. A row opens the account; the add button
-/// opens the sheet that asks for the provider and then connects an iCloud or another account with a password.
+/// opens the sheet that asks for the provider and then connects an iCloud or another account with a password, or signs
+/// a Google or Microsoft account in in a browser.
 struct InternetAccountsScreen: View {
 
     // MARK: - Dependencies
@@ -22,7 +23,7 @@ struct InternetAccountsScreen: View {
         content
             .navigationTitle(Text("internetAccounts.title", bundle: .module))
             .sheet(isPresented: $adding) {
-                AddInternetAccountSheet(state: viewModel.state, send: viewModel.send)
+                AddInternetAccountSheet(state: viewModel.state, send: viewModel.send, signIn: viewModel.signIn)
             }
             .onChange(of: viewModel.connections) { adding = false }
             .accessibilityElement(children: .contain)

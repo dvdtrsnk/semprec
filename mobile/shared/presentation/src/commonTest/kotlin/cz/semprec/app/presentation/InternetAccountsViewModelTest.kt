@@ -3,9 +3,12 @@ package cz.semprec.app.presentation
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarSyncStatus
+import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.OAuthOutcome
+import cz.semprec.app.domain.OAuthProvider
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.domain.SyncTopic
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -296,6 +299,122 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
         assertTrue(models.none { it.state.value.connecting })
         assertTrue(effects.all { it.isEmpty() })
         models.forEach { it.close() }
+    }
+
+    @Test fun `a browser sign-in asks for the chosen services opens the page and connects with what came back`() =
+        runTest(dispatcher) {
+            val cases = listOf(
+                InternetAccountsAction.SignIn.Start(InternetOAuthProvider.GOOGLE, calendars = true) to
+                    (OAuthProvider.GOOGLE to setOf(InternetService.MAIL, InternetService.CALENDARS)),
+                InternetAccountsAction.SignIn.Start(InternetOAuthProvider.MICROSOFT, calendars = false) to
+                    (OAuthProvider.MICROSOFT to setOf(InternetService.MAIL)),
+            )
+            for ((start, asked) in cases) {
+                val accounts = ScriptedInternetAccountRepository()
+                val vm = viewModel(accounts)
+                val effects = collectEffects(vm)
+                runCurrent()
+
+                vm.onAction(start)
+                assertTrue(vm.state.value.connecting)
+                vm.onAction(start)
+                runCurrent()
+                assertEquals(listOf(asked), accounts.signIns.asked)
+                assertEquals(
+                    listOf<InternetAccountsEffect>(InternetAccountsEffect.OpenSignIn(OAUTH_SIGN_IN.authorizeUrl)),
+                    effects,
+                )
+                assertTrue(vm.state.value.connecting)
+                assertEquals(1, accounts.list.count)
+
+                vm.onAction(InternetAccountsAction.SignIn.Returned(OAUTH_CALLBACK))
+                vm.onAction(InternetAccountsAction.SignIn.Returned(OAUTH_CALLBACK))
+                runCurrent()
+                assertEquals(listOf(OAUTH_SIGN_IN to OAUTH_CALLBACK), accounts.finishes.asked)
+                assertFalse(vm.state.value.connecting)
+                assertNull(vm.state.value.connectFailure)
+                assertEquals(InternetAccountsEffect.Connected, effects.last())
+                assertEquals(2, accounts.list.count)
+                vm.close()
+            }
+        }
+
+    @Test fun `a cancelled sign-in sends nothing to the server and leaves no failure`() = runTest(dispatcher) {
+        val accounts = ScriptedInternetAccountRepository()
+        val vm = viewModel(accounts)
+        val effects = collectEffects(vm)
+        runCurrent()
+        vm.onAction(InternetAccountsAction.SignIn.Start(InternetOAuthProvider.GOOGLE, calendars = true))
+        runCurrent()
+
+        vm.onAction(InternetAccountsAction.SignIn.Cancelled)
+        runCurrent()
+        assertFalse(vm.state.value.connecting)
+        assertNull(vm.state.value.connectFailure)
+        // A late answer of the browser belongs to no sign-in any more.
+        vm.onAction(InternetAccountsAction.SignIn.Returned(OAUTH_CALLBACK))
+        runCurrent()
+        assertEquals(0, accounts.finishes.count)
+        assertEquals(1, accounts.list.count)
+        assertEquals(
+            listOf<InternetAccountsEffect>(InternetAccountsEffect.OpenSignIn(OAUTH_SIGN_IN.authorizeUrl)),
+            effects,
+        )
+        vm.close()
+    }
+
+    @Test fun `a sign-in that fails says why and connects nothing`() = runTest(dispatcher) {
+        val start = InternetAccountsAction.SignIn.Start(InternetOAuthProvider.GOOGLE, calendars = false)
+        val returned = InternetAccountsAction.SignIn.Returned(OAUTH_CALLBACK)
+        // The repository, how the browser ended (nothing when the sign-in did not start) and the failure shown.
+        val cases = listOf<Triple<ScriptedInternetAccountRepository, InternetAccountsAction?, InternetConnectFailure>>(
+            Triple(
+                ScriptedInternetAccountRepository(signIns = MailCall(mailFailure(FailureKind.UNAVAILABLE))),
+                null,
+                InternetConnectFailure.UNAVAILABLE,
+            ),
+            Triple(
+                ScriptedInternetAccountRepository(signIns = MailCall({ error("unexpected") })),
+                null,
+                InternetConnectFailure.UNEXPECTED,
+            ),
+            Triple(
+                ScriptedInternetAccountRepository(finishes = MailCall(mailContent(OAuthOutcome.Declined))),
+                returned,
+                InternetConnectFailure.DECLINED,
+            ),
+            Triple(
+                ScriptedInternetAccountRepository(finishes = MailCall(mailFailure(FailureKind.REJECTED))),
+                returned,
+                InternetConnectFailure.REFUSED,
+            ),
+            Triple(
+                ScriptedInternetAccountRepository(finishes = MailCall(mailFailure(FailureKind.INVALID_DATA))),
+                returned,
+                InternetConnectFailure.UNEXPECTED,
+            ),
+            Triple(
+                ScriptedInternetAccountRepository(),
+                InternetAccountsAction.SignIn.Failed,
+                InternetConnectFailure.UNEXPECTED,
+            ),
+        )
+        for ((accounts, end, failure) in cases) {
+            val vm = viewModel(accounts)
+            val effects = collectEffects(vm)
+            runCurrent()
+            vm.onAction(start)
+            runCurrent()
+            end?.let(vm::onAction)
+            runCurrent()
+            assertFalse(vm.state.value.connecting)
+            assertEquals(failure, vm.state.value.connectFailure)
+            assertFalse(InternetAccountsEffect.Connected in effects)
+            assertEquals(1, accounts.list.count)
+            vm.onAction(InternetAccountsAction.DismissConnectFailure)
+            assertNull(vm.state.value.connectFailure)
+            vm.close()
+        }
     }
 
     @Test fun `close cancels in flight work and a closed ViewModel ignores actions`() = runTest(dispatcher) {

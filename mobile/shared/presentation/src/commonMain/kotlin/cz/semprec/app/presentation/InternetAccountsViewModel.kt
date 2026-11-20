@@ -5,9 +5,11 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarSyncStatus
 import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetAccountRepository
+import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailboxRepository
+import cz.semprec.app.domain.OAuthProvider
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -18,8 +20,10 @@ private val ADDRESS = Regex("^[^\\s@,]+@[^\\s@,]+$")
 
 /**
  * The internet accounts with what each of their services is doing, and the form that connects one with an address
- * and a password. Connecting is one request: the server checks the login on its mail servers before it saves
- * anything. A connected account reloads the list. A change of the account data the server reports ([serverChanges])
+ * and a password or through a browser sign-in. Connecting with a password is one request: the server checks the login
+ * on its mail servers before it saves anything. A browser sign-in asks the server for the provider's page
+ * ([InternetAccountsEffect.OpenSignIn]) and hands it what the browser returned; the server saves the account only then,
+ * so a sign-in that is cancelled or declined leaves nothing behind. A connected account reloads the list. A change of the account data the server reports ([serverChanges])
  * reads the list again unless a read is under way, so the statuses follow the server's.
  */
 class InternetAccountsViewModel internal constructor(
@@ -28,6 +32,24 @@ class InternetAccountsViewModel internal constructor(
     serverChanges: Flow<Unit>,
 ) : ScreenViewModel<InternetAccountsState, InternetAccountsAction, InternetAccountsEffect>(InternetAccountsState()) {
     private var loadJob: Job? = null
+
+    private val browser = BrowserSignInFlow(
+        scope = viewModelScope,
+        open = { url -> emit(InternetAccountsEffect.OpenSignIn(url)) },
+        finish = accounts::finishSignIn,
+        report = { report ->
+            when (report) {
+                BrowserSignInReport.Started -> update { it.copy(connecting = true, connectFailure = null) }
+                is BrowserSignInReport.Connected -> {
+                    update { it.copy(connecting = false) }
+                    emit(InternetAccountsEffect.Connected)
+                    load(showWait = false)
+                }
+                is BrowserSignInReport.Stopped ->
+                    update { it.copy(connecting = false, connectFailure = report.failure) }
+            }
+        },
+    )
 
     init {
         load(showWait = true)
@@ -44,6 +66,7 @@ class InternetAccountsViewModel internal constructor(
             is InternetAccountsAction.Open -> emit(InternetAccountsEffect.OpenAccount(action.accountId))
             is InternetAccountsAction.Connect -> connect(action)
             InternetAccountsAction.DismissConnectFailure -> update { it.copy(connectFailure = null) }
+            is InternetAccountsAction.SignIn -> signIn(action)
         }
     }
 
@@ -76,6 +99,23 @@ class InternetAccountsViewModel internal constructor(
         } else {
             copy(phase = InternetAccountsPhase.ERROR, failure = kind)
         }
+
+    private fun signIn(step: InternetAccountsAction.SignIn) {
+        when (step) {
+            is InternetAccountsAction.SignIn.Start -> {
+                if (state.value.connecting) return
+                val services = if (step.calendars) {
+                    setOf(InternetService.MAIL, InternetService.CALENDARS)
+                } else {
+                    setOf(InternetService.MAIL)
+                }
+                browser.start { accounts.startSignIn(step.provider.toDomain(), services) }
+            }
+            is InternetAccountsAction.SignIn.Returned -> browser.returned(step.callbackUrl)
+            InternetAccountsAction.SignIn.Cancelled -> browser.closed(failure = null)
+            InternetAccountsAction.SignIn.Failed -> browser.closed(InternetConnectFailure.UNEXPECTED)
+        }
+    }
 
     private fun connect(form: InternetAccountsAction.Connect) {
         if (state.value.connecting) return
@@ -122,10 +162,16 @@ private fun InternetAccountsAction.Connect.toAccount(): MailPasswordAccount? {
     }
 }
 
-private fun RepositoryResult.Failure?.toProblem(): InternetConnectFailure = when (this?.kind) {
+/** Why a connect or a sign-in failed, from what the server answered; `null` is an unexpected failure. */
+internal fun RepositoryResult.Failure?.toProblem(): InternetConnectFailure = when (this?.kind) {
     FailureKind.REJECTED -> InternetConnectFailure.REFUSED
     FailureKind.UNAVAILABLE -> InternetConnectFailure.UNAVAILABLE
     else -> InternetConnectFailure.UNEXPECTED
+}
+
+private fun InternetOAuthProvider.toDomain() = when (this) {
+    InternetOAuthProvider.GOOGLE -> OAuthProvider.GOOGLE
+    InternetOAuthProvider.MICROSOFT -> OAuthProvider.MICROSOFT
 }
 
 internal fun InternetAccount.toItem() = InternetAccountItem(

@@ -5,7 +5,8 @@ import SwiftUI
 /// One internet account: a switch per service (Mail and Calendars) with what each is doing, a calendar sync on
 /// request, its name and the number of connections the server may open, what Semp may do with its mail, and its
 /// removal, which says what it would hide before it asks. Switching a service off asks first, because it removes what
-/// the service synced. Signing in again and granting a permission are done on the web, which the screen says.
+/// the service synced. A Google or Microsoft account signs in again, and allows calendar access, in a browser started
+/// here; another account that must sign in again is told to do so on the web.
 struct InternetAccountScreen: View {
 
     // MARK: - Dependencies
@@ -14,6 +15,8 @@ struct InternetAccountScreen: View {
     // MARK: - State
     @Environment(\.dismiss)
     private var dismiss
+    @Environment(\.webAuthenticationSession)
+    private var webAuthenticationSession
     @State private var name = ""
     @State private var seededFor: String?
 
@@ -32,6 +35,12 @@ struct InternetAccountScreen: View {
                 isPresented: actionFailed,
                 actions: { dismissButton },
                 message: { Text("internetAccount.failure", bundle: .module) }
+            )
+            .alert(
+                Text("profile.failed.title", bundle: .module),
+                isPresented: signInFailed,
+                actions: { dismissButton },
+                message: { Text(viewModel.state.signInFailure?.message ?? "", bundle: .module) }
             )
             .confirmationDialog(
                 Text(offTitle, bundle: .module),
@@ -91,7 +100,7 @@ private extension InternetAccountScreen {
         List {
             Section { header(account) }.listRowBackground(Color.clear)
             services(account)
-            if account.mail == .needsReauthorization { reauthorization(account) }
+            if account.mail == .needsReauthorization || account.canSignInAgain { reauthorization(account) }
             Section {
                 TextField(text: $name) { Text("internetAccount.name", bundle: .module) }
                     .onSubmit { viewModel.send(.rename(name)) }
@@ -133,6 +142,12 @@ private extension InternetAccountScreen {
                 .accessibilityIdentifier(AccountIdentifiers.internetAccountCalendars)
             if account.calendars == .needsConsent {
                 notice("internetAccount.consent")
+                if account.canAllowCalendarAccess {
+                    signInButton("internetAccount.allowCalendars") {
+                        viewModel.allowCalendarAccess(browser: BrowserSignIn(webAuthenticationSession))
+                    }
+                    .accessibilityIdentifier(AccountIdentifiers.internetAccountAllowCalendars)
+                }
             } else if account.calendars == .error {
                 notice("internetAccount.calendarError")
             }
@@ -180,7 +195,23 @@ private extension InternetAccountScreen {
                 }
                 Text(verbatim: reauthorizationText(account)).font(.footnote).foregroundStyle(Theme.Colors.secondaryText)
             }
+            if account.canSignInAgain {
+                signInButton("internetAccount.signInAgain") {
+                    viewModel.signInAgain(browser: BrowserSignIn(webAuthenticationSession))
+                }
+                .accessibilityIdentifier(AccountIdentifiers.internetAccountSignInAgain)
+            }
         }
+    }
+
+    func signInButton(_ title: LocalizedStringKey, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title, bundle: .module)
+                if viewModel.state.signingIn { ProgressView() }
+            }
+        }
+        .disabled(viewModel.state.signingIn)
     }
 
     @ViewBuilder
@@ -240,6 +271,10 @@ private extension InternetAccountScreen {
 
     var actionFailed: Binding<Bool> {
         Binding(get: { viewModel.state.actionFailed }, set: { if !$0 { viewModel.send(.dismissFailure) } })
+    }
+
+    var signInFailed: Binding<Bool> {
+        Binding(get: { viewModel.state.signInFailure != nil }, set: { if !$0 { viewModel.send(.dismissFailure) } })
     }
 
     var confirmingOff: Binding<Bool> {
@@ -304,6 +339,7 @@ private extension InternetAccountScreen {
     }
 
     func reauthorizationText(_ account: InternetAccountDetail) -> String {
+        if account.canSignInAgain { return String(localized: "internetAccount.reauth.signIn", bundle: .module) }
         guard let since = AccountFormat.syncTime(account.failingSince) else {
             return String(localized: "internetAccount.reauth.text", bundle: .module)
         }

@@ -10,6 +10,9 @@ import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailRemovalImpact
 import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.OAuthOutcome
+import cz.semprec.app.domain.OAuthProvider
+import cz.semprec.app.domain.OAuthSignIn
 import cz.semprec.app.domain.RepositoryResult
 import io.ktor.client.plugins.HttpTimeoutCapability
 import io.ktor.client.request.HttpRequestData
@@ -17,6 +20,8 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -291,5 +296,113 @@ class HttpMailboxRepositoryTest {
         val (with, without) = server.bodies.map { Json.parseToJsonElement(it).jsonObject }
         assertEquals("https://dav.firma.cz", with.getValue("caldavUrl").jsonPrimitive.content)
         assertFalse("caldavUrl" in without)
+    }
+
+    private val authorizeUrl = "https://accounts.google.com/o/oauth2/v2/auth?client_id=c&state=st%2B1&scope=a+b"
+
+    private fun oauthRoutes(request: HttpRequestData): Pair<HttpStatusCode, String>? = when (request.url.encodedPath) {
+        "/api/mail/mailboxes/oauth/start", "/api/mail/mailboxes/$BOX/reauthorize" ->
+            ok("""{"authorizeUrl":"$authorizeUrl"}""")
+        "/api/mail/mailboxes/oauth/complete" -> HttpStatusCode.Created to """{"mailboxId":"$BOX"}"""
+        else -> null
+    }
+
+    private fun JsonObject.services() = get("services")?.jsonArray?.map { it.jsonPrimitive.content }
+
+    @Test
+    fun aSignInStartsWithTheProviderMailAlwaysAndTheAppAsTheReturnAndKeepsTheState() = runTest {
+        val server = MailTestServer(::oauthRoutes)
+        val accounts = server.mailboxes()
+
+        val google = accounts.startSignIn(OAuthProvider.GOOGLE, setOf(InternetService.CALENDARS))
+        accounts.startSignIn(OAuthProvider.MICROSOFT, emptySet())
+
+        assertEquals(RepositoryResult.Content(OAuthSignIn(authorizeUrl, "st+1")), google)
+        assertEquals(listOf(HttpMethod.Post, HttpMethod.Post), server.requests.map { it.method })
+        val (first, second) = server.bodies.map { Json.parseToJsonElement(it).jsonObject }
+        assertEquals("gmail", first.getValue("provider").jsonPrimitive.content)
+        assertEquals(listOf("mail", "calendars"), first.services())
+        assertEquals("app", first.getValue("redirectTarget").jsonPrimitive.content)
+        assertEquals("outlook", second.getValue("provider").jsonPrimitive.content)
+        assertEquals(listOf("mail"), second.services())
+    }
+
+    @Test
+    fun aReauthorizationNamesServicesOnlyWhenAskedForMore() = runTest {
+        val server = MailTestServer(::oauthRoutes)
+        val accounts = server.mailboxes()
+
+        accounts.startReauthorization(BOX, emptySet())
+        accounts.startReauthorization(BOX, setOf(InternetService.CALENDARS))
+
+        assertEquals(
+            listOf("/api/mail/mailboxes/$BOX/reauthorize", "/api/mail/mailboxes/$BOX/reauthorize"),
+            server.requests.map { it.url.encodedPath },
+        )
+        val (renew, consent) = server.bodies.map { Json.parseToJsonElement(it).jsonObject }
+        assertNull(renew.services())
+        assertEquals("app", renew.getValue("redirectTarget").jsonPrimitive.content)
+        assertEquals(listOf("mail", "calendars"), consent.services())
+    }
+
+    @Test
+    fun aProviderPageWithoutAStateIsUnreadable() = runTest {
+        val server = MailTestServer { ok("""{"authorizeUrl":"https://accounts.google.com/o/oauth2/v2/auth"}""") }
+
+        assertEquals(
+            RepositoryResult.Failure(FailureKind.INVALID_DATA),
+            server.mailboxes().startSignIn(OAuthProvider.GOOGLE, emptySet()),
+        )
+    }
+
+    @Test
+    fun theCodeTheBrowserBroughtBackCompletesTheSignIn() = runTest {
+        val server = MailTestServer(::oauthRoutes)
+        val signIn = OAuthSignIn(authorizeUrl, "st+1")
+
+        val outcome = server.mailboxes().finishSignIn(signIn, "semprec://oauth?state=st%2B1&code=4%2F0Ab")
+
+        assertEquals(RepositoryResult.Content(OAuthOutcome.Connected(BOX)), outcome)
+        val body = Json.parseToJsonElement(server.bodies.single()).jsonObject
+        assertEquals("/api/mail/mailboxes/oauth/complete", server.requests.single().url.encodedPath)
+        assertEquals("st+1", body.getValue("state").jsonPrimitive.content)
+        assertEquals("4/0Ab", body.getValue("code").jsonPrimitive.content)
+    }
+
+    @Test
+    fun aProviderErrorIsADeclineAndAForeignOrBrokenReturnIsUnreadableAndNeitherIsSent() = runTest {
+        val server = MailTestServer(::oauthRoutes)
+        val accounts = server.mailboxes()
+        val signIn = OAuthSignIn(authorizeUrl, "st+1")
+        val unreadable = listOf(
+            "semprec://oauth?state=other&code=c",
+            "semprec://oauth?code=c",
+            "semprec://oauth?state=st%2B1",
+            "semprec://oauth?state=st%2B1&code=",
+            "semprec://elsewhere?state=st%2B1&code=c",
+            "https://oauth?state=st%2B1&code=c",
+            "not a url",
+        )
+
+        assertEquals(
+            RepositoryResult.Content(OAuthOutcome.Declined),
+            accounts.finishSignIn(signIn, "semprec://oauth?state=st%2B1&error=access_denied"),
+        )
+        for (url in unreadable) {
+            assertEquals(RepositoryResult.Failure(FailureKind.INVALID_DATA), accounts.finishSignIn(signIn, url), url)
+        }
+        assertTrue(server.requests.isEmpty())
+    }
+
+    @Test
+    fun aCodeTheServerRefusesIsARejection() = runTest {
+        val server = MailTestServer {
+            HttpStatusCode.BadRequest to """{"error":{"code":"mail_reauth_wrong_account"}}"""
+        }
+
+        assertEquals(
+            RepositoryResult.Failure(FailureKind.REJECTED),
+            server.mailboxes().finishSignIn(OAuthSignIn(authorizeUrl, "s"), "semprec://oauth?state=s&code=c"),
+        )
     }
 }

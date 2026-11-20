@@ -231,3 +231,11 @@ internal data class MailRemovalImpactDto(
     val threads: Int = 0,
     val attachmentsKept: Int = 0,
 )
+
+/** The answer of `oauth/start` and of `:id/reauthorize`: the provider page the browser opens. */
+@Serializable
+internal data class MailOauthAuthorizeDto(val authorizeUrl: String)
+
+/** The answer of `oauth/complete`: the mailbox that was connected or signed in again. */
+@Serializable
+internal data class MailOauthCompleteDto(val mailboxId: String)

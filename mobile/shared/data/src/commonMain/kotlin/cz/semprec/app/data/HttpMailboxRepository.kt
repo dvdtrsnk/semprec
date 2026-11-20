@@ -1,5 +1,6 @@
 package cz.semprec.app.data
 
+import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetAccountRepository
 import cz.semprec.app.domain.InternetService
@@ -9,20 +10,31 @@ import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailRemovalImpact
 import cz.semprec.app.domain.MailboxRepository
+import cz.semprec.app.domain.OAuthOutcome
+import cz.semprec.app.domain.OAuthProvider
+import cz.semprec.app.domain.OAuthSignIn
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.map
 import cz.semprec.app.domain.then
 import io.ktor.http.HttpMethod
 import io.ktor.http.encodeURLPathPart
+import io.ktor.http.parseUrl
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 private const val MAILBOXES_PATH = "/api/mail/mailboxes"
 private const val NAME_KEY = "name"
 private const val CONNECTION_LIMIT_KEY = "connectionLimit"
 private const val MAIL_ENABLED_KEY = "mailEnabled"
 private const val CALENDARS_ENABLED_KEY = "calendarsEnabled"
+
+/** Where the server sends the browser back after a sign-in that the app started (`redirectTarget: "app"`). */
+private const val OAUTH_CALLBACK_SCHEME = "semprec"
+private const val OAUTH_CALLBACK_HOST = "oauth"
 
 /**
  * The server checks a new mailbox's IMAP and then its SMTP server before it answers, each on up to two ports that may
@@ -34,8 +46,9 @@ private const val CONNECT_TIMEOUT_MILLIS = 200_000L
  * The mailboxes of `/api/mail/mailboxes*`, which are also the internet accounts: the list, one mailbox with its
  * folders, the impact of a removal and the removal itself, and a mailbox connected with a password. A name, a
  * connection limit and the Mail and Calendars switches are ordinary properties of the mailbox item, written through
- * the item API with the version the item has. Gmail and Outlook mailboxes are connected through a browser sign-in,
- * which this repository does not do.
+ * the item API with the version the item has. Gmail and Outlook mailboxes sign in in a browser: this repository
+ * starts the sign-in with the server, which answers the provider page and later sends the browser back to
+ * `semprec://oauth`, and hands the code from there to the server.
  */
 class HttpMailboxRepository internal constructor(
     private val api: AuthenticatedApi,
@@ -113,8 +126,78 @@ class HttpMailboxRepository internal constructor(
     override suspend fun syncCalendars(accountId: String): RepositoryResult<Unit> =
         api.send(HttpMethod.Post, "/api/accounts/${accountId.encodeURLPathPart()}/calendars/sync").ignoreBody()
 
+    override suspend fun startSignIn(
+        provider: OAuthProvider,
+        services: Set<InternetService>,
+    ): RepositoryResult<OAuthSignIn> {
+        val body = buildJsonObject {
+            put(
+                "provider",
+                when (provider) {
+                    OAuthProvider.GOOGLE -> "gmail"
+                    OAuthProvider.MICROSOFT -> "outlook"
+                },
+            )
+            putServices(services + InternetService.MAIL)
+            put("redirectTarget", "app")
+        }
+        return api.send(HttpMethod.Post, "$MAILBOXES_PATH/oauth/start", body = body.toString()).signIn()
+    }
+
+    override suspend fun startReauthorization(
+        accountId: String,
+        services: Set<InternetService>,
+    ): RepositoryResult<OAuthSignIn> {
+        val body = buildJsonObject {
+            if (services.isNotEmpty()) putServices(services + InternetService.MAIL)
+            put("redirectTarget", "app")
+        }
+        return api.send(HttpMethod.Post, "${mailboxPath(accountId)}/reauthorize", body = body.toString()).signIn()
+    }
+
+    override suspend fun finishSignIn(signIn: OAuthSignIn, callbackUrl: String): RepositoryResult<OAuthOutcome> {
+        val parameters = parseUrl(callbackUrl)
+            ?.takeIf { it.protocol.name == OAUTH_CALLBACK_SCHEME && it.host == OAUTH_CALLBACK_HOST }
+            ?.parameters
+            ?.takeIf { it["state"] == signIn.state }
+        val code = parameters?.get("code")?.takeIf { it.isNotEmpty() }
+        return when {
+            parameters == null -> RepositoryResult.Failure(FailureKind.INVALID_DATA)
+            parameters["error"] != null -> RepositoryResult.Content(OAuthOutcome.Declined)
+            code == null -> RepositoryResult.Failure(FailureKind.INVALID_DATA)
+            else -> {
+                val body = buildJsonObject {
+                    put("state", signIn.state)
+                    put("code", code)
+                }
+                api.send(HttpMethod.Post, "$MAILBOXES_PATH/oauth/complete", body = body.toString())
+                    .decode<MailOauthCompleteDto>()
+                    .map { OAuthOutcome.Connected(it.mailboxId) }
+            }
+        }
+    }
+
     private suspend fun patch(mailboxId: String, properties: JsonObject) =
         items.get(mailboxId).then { item -> writes.patch(mailboxId, properties, item.version) }.map { }
 }
 
 private fun mailboxPath(mailboxId: String) = "$MAILBOXES_PATH/${mailboxId.encodeURLPathPart()}"
+
+/** In the order the server lists them; the caller decides whether Mail is among them. */
+private fun JsonObjectBuilder.putServices(services: Set<InternetService>) {
+    putJsonArray("services") {
+        if (InternetService.MAIL in services) add("mail")
+        if (InternetService.CALENDARS in services) add("calendars")
+    }
+}
+
+/** The provider page of a started sign-in, with the state it carries; a page without one is unreadable. */
+private fun ApiResponse.signIn(): RepositoryResult<OAuthSignIn> =
+    decode<MailOauthAuthorizeDto>().then { dto ->
+        val state = parseUrl(dto.authorizeUrl)?.parameters?.get("state")?.takeIf { it.isNotEmpty() }
+        if (state == null) {
+            RepositoryResult.Failure(FailureKind.INVALID_DATA)
+        } else {
+            RepositoryResult.Content(OAuthSignIn(dto.authorizeUrl, state))
+        }
+    }

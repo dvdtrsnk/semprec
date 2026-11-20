@@ -61,7 +61,7 @@ extension SharedInternetAccountsScreenModel {
                 )
             },
             connecting: state.connecting,
-            connectFailure: state.connectFailure.map(connectFailure)
+            connectFailure: state.connectFailure.map(InternetConnectFailure.init)
         )
     }
 
@@ -80,6 +80,11 @@ extension SharedInternetAccountsScreenModel {
                 caldavUrl: caldavUrl
             )
         case .dismissConnectFailure: SharedSDK.InternetAccountsActionDismissConnectFailure.shared
+        case .startSignIn(let provider, let calendars):
+            SharedSDK.InternetAccountsActionSignInStart(provider: sharedProvider(provider), calendars: calendars)
+        case .signInReturned(let url): SharedSDK.InternetAccountsActionSignInReturned(callbackUrl: url)
+        case .signInCancelled: SharedSDK.InternetAccountsActionSignInCancelled.shared
+        case .signInFailed: SharedSDK.InternetAccountsActionSignInFailed.shared
         }
     }
 
@@ -87,6 +92,7 @@ extension SharedInternetAccountsScreenModel {
         switch onEnum(of: effect) {
         case .openAccount(let open): .openAccount(accountId: open.accountId)
         case .connected: .connected
+        case .openSignIn(let open): .openSignIn(url: open.url)
         }
     }
 
@@ -105,12 +111,10 @@ extension SharedInternetAccountsScreenModel {
         }
     }
 
-    private static func connectFailure(_ failure: SharedSDK.InternetConnectFailure) -> InternetConnectFailure {
-        switch failure {
-        case .invalidInput: .invalidInput
-        case .refused: .refused
-        case .unavailable: .unavailable
-        case .unexpected: .unexpected
+    private static func sharedProvider(_ provider: InternetOAuthProvider) -> SharedSDK.InternetOAuthProvider {
+        switch provider {
+        case .google: .google
+        case .microsoft: .microsoft
         }
     }
 }

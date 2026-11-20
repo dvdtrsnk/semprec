@@ -26,9 +26,19 @@ data class InternetAccountItem(
 /** The accounts that are connected with an address and a password; Google and Microsoft sign in in a browser. */
 enum class InternetPasswordProvider { ICLOUD, OTHER }
 
-/** Why an account was not connected: the input is incomplete, the server refused it, or it could not be reached. */
-enum class InternetConnectFailure { INVALID_INPUT, REFUSED, UNAVAILABLE, UNEXPECTED }
+/** The accounts that sign in in a browser. */
+enum class InternetOAuthProvider { GOOGLE, MICROSOFT }
 
+/**
+ * Why an account was not connected or signed in: the input is incomplete, the server refused it, it could not be
+ * reached, or, for a browser sign-in, the provider [DECLINED] it (for example because the person did not allow access).
+ */
+enum class InternetConnectFailure { INVALID_INPUT, REFUSED, UNAVAILABLE, UNEXPECTED, DECLINED }
+
+/**
+ * [connecting] is `true` while an account is being connected, a browser sign-in included, from its start until the
+ * browser came back and the server answered.
+ */
 data class InternetAccountsState(
     val phase: InternetAccountsPhase = InternetAccountsPhase.LOADING,
     val failure: FailureKind? = null,
@@ -56,6 +66,15 @@ sealed interface InternetAccountsAction {
         val caldavUrl: String,
     ) : InternetAccountsAction
     data object DismissConnectFailure : InternetAccountsAction
+
+    /** The browser sign-in of a new account; [InternetAccountsEffect.OpenSignIn] says how the app reports back. */
+    sealed interface SignIn : InternetAccountsAction {
+        /** Starts it for an account that syncs mail and, when [calendars], its calendars. */
+        data class Start(val provider: InternetOAuthProvider, val calendars: Boolean) : SignIn
+        data class Returned(val callbackUrl: String) : SignIn
+        data object Cancelled : SignIn
+        data object Failed : SignIn
+    }
 }
 
 sealed interface InternetAccountsEffect {
@@ -63,4 +82,10 @@ sealed interface InternetAccountsEffect {
 
     /** An account was connected and the list shows it; the form closes. */
     data object Connected : InternetAccountsEffect
+
+    /**
+     * Opens [url], the provider's sign-in page, in a browser session that ends at `semprec://oauth`. The app reports
+     * how it ended with `SignIn.Returned`, `SignIn.Cancelled` or `SignIn.Failed`.
+     */
+    data class OpenSignIn(val url: String) : InternetAccountsEffect
 }

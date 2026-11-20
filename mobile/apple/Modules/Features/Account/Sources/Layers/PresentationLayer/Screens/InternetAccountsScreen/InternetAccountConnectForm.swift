@@ -108,18 +108,6 @@ private extension InternetAccountConnectForm {
     }
 }
 
-private extension InternetConnectFailure {
-
-    var message: LocalizedStringKey {
-        switch self {
-        case .invalidInput: "internetAccounts.add.error.invalid"
-        case .refused: "internetAccounts.add.error.refused"
-        case .unavailable: "internetAccounts.add.error.unavailable"
-        case .unexpected: "internetAccounts.add.error.unexpected"
-        }
-    }
-}
-
 // MARK: - Preview
 #Preview {
     NavigationStack {

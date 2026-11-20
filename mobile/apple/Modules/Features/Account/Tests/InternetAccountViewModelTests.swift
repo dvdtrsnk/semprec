@@ -1,3 +1,4 @@
+import AuthenticationServices
 import CoreKit
 import XCTest
 
@@ -32,7 +33,76 @@ final class InternetAccountViewModelTests: XCTestCase {
         XCTAssertEqual(model.actions, [connect, .dismissConnectFailure])
     }
 
+    @MainActor
+    func testTheListOpensTheSignInPageInTheBrowserItStartedWithAndReportsHowItEnded() async throws {
+        let callback = try XCTUnwrap(URL(string: "semprec://oauth?state=s&code=c"))
+        let outcomes: [(BrowserSignIn, InternetAccountsAction)] = [
+            (BrowserSignIn { _ in callback }, .signInReturned(callbackUrl: callback.absoluteString)),
+            (BrowserSignIn { _ in throw ASWebAuthenticationSessionError(.canceledLogin) }, .signInCancelled),
+            (BrowserSignIn { _ in throw ASWebAuthenticationSessionError(.presentationContextInvalid) }, .signInFailed)
+        ]
+        for (browser, end) in outcomes {
+            let model = ScriptedInternetAccountsScreenModel(state: InternetAccountsState())
+            let viewModel = InternetAccountsViewModel(model: model, router: RouterSpy())
+            viewModel.signIn(.google, calendars: true, browser: browser)
+            let observer = Task { await viewModel.observe() }
+            model.emit(.openSignIn(url: "https://accounts.google.com/o/oauth2/v2/auth?state=s"))
+            try await eventually { model.actions.count == 2 }
+            observer.cancel()
+            XCTAssertEqual(model.actions, [.startSignIn(provider: .google, calendars: true), end])
+        }
+    }
+
+    @MainActor
+    func testASignInPageWithoutABrowserOrAnAddressFails() async throws {
+        let model = ScriptedInternetAccountsScreenModel(state: InternetAccountsState())
+        let viewModel = InternetAccountsViewModel(model: model, router: RouterSpy())
+        let observer = Task { await viewModel.observe() }
+        defer { observer.cancel() }
+        model.emit(.openSignIn(url: "https://accounts.google.com"))
+        try await eventually { model.actions == [.signInFailed] }
+        let opened = Opened()
+        let browser = BrowserSignIn { url in
+            opened.urls.append(url)
+            return url
+        }
+        viewModel.signIn(.microsoft, calendars: false, browser: browser)
+        model.emit(.openSignIn(url: ""))
+        try await eventually { model.actions.count == 3 }
+        XCTAssertEqual(model.actions.last, .signInFailed)
+        XCTAssertEqual(opened.urls, [])
+    }
+
     // MARK: - Account
+    @MainActor
+    func testTheAccountSignsInAgainAndAllowsCalendarsInTheBrowserItStartedWith() async throws {
+        let callback = try XCTUnwrap(URL(string: "semprec://oauth?state=s&error=access_denied"))
+        let model = ScriptedInternetAccountScreenModel(state: InternetAccountState())
+        let viewModel = InternetAccountViewModel(model: model, router: RouterSpy())
+        let observer = Task { await viewModel.observe() }
+        defer { observer.cancel() }
+        let opened = Opened()
+        viewModel.signInAgain(
+            browser: BrowserSignIn { url in
+                opened.urls.append(url)
+                return callback
+            }
+        )
+        model.emit(.openSignIn(url: "https://login.microsoftonline.com/a"))
+        try await eventually { model.actions.count == 2 }
+        viewModel.allowCalendarAccess(browser: BrowserSignIn { _ in throw CancellationError() })
+        model.emit(.openSignIn(url: "https://login.microsoftonline.com/b"))
+        try await eventually { model.actions.count == 4 }
+        let expected: [InternetAccountAction] = [
+            .signIn(.again),
+            .signIn(.returned(callbackUrl: callback.absoluteString)),
+            .signIn(.allowCalendarAccess),
+            .signIn(.cancelled)
+        ]
+        XCTAssertEqual(model.actions, expected)
+        XCTAssertEqual(opened.urls.map(\.absoluteString), ["https://login.microsoftonline.com/a"])
+    }
+
     @MainActor
     func testCalendarsSwitchedOnAsksTheRouterForThePermissionToNotify() async throws {
         let router = RouterSpy()
@@ -94,4 +164,11 @@ final class InternetAccountViewModelTests: XCTestCase {
         }
         XCTFail("The condition did not hold in time")
     }
+}
+
+/// The pages a scripted browser was asked to open.
+@MainActor
+private final class Opened {
+
+    var urls: [URL] = []
 }

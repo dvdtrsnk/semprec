@@ -33,3 +33,17 @@ extension InternetAccountService {
         }
     }
 }
+
+// MARK: - Connect failure
+extension InternetConnectFailure {
+
+    init(_ failure: SharedSDK.InternetConnectFailure) {
+        switch failure {
+        case .invalidInput: self = .invalidInput
+        case .refused: self = .refused
+        case .unavailable: self = .unavailable
+        case .unexpected: self = .unexpected
+        case .declined: self = .declined
+        }
+    }
+}

@@ -21,7 +21,7 @@ final class InternetAccountMappingTests: XCTestCase {
         XCTAssertEqual(state.connectFailure, .refused)
         let failures: [(SharedSDK.InternetConnectFailure, CoreKit.InternetConnectFailure)] = [
             (.invalidInput, .invalidInput), (.refused, .refused),
-            (.unavailable, .unavailable), (.unexpected, .unexpected)
+            (.unavailable, .unavailable), (.unexpected, .unexpected), (.declined, .declined)
         ]
         for (kotlin, swift) in failures {
             let state = SharedInternetAccountsScreenModel.state(accountsState(.content, connectFailure: kotlin))
@@ -83,6 +83,39 @@ final class InternetAccountMappingTests: XCTestCase {
             SharedInternetAccountsScreenModel.effect(SharedSDK.InternetAccountsEffectConnected.shared),
             .connected
         )
+        XCTAssertEqual(
+            SharedInternetAccountsScreenModel.effect(SharedSDK.InternetAccountsEffectOpenSignIn(url: "https://g/a")),
+            .openSignIn(url: "https://g/a")
+        )
+    }
+
+    @MainActor
+    func testAccountsMapEachSignInAction() throws {
+        let providers: [(CoreKit.InternetOAuthProvider, SharedSDK.InternetOAuthProvider)] = [
+            (.google, .google), (.microsoft, .microsoft)
+        ]
+        for (provider, kotlin) in providers {
+            for calendars in [true, false] {
+                let start = try XCTUnwrap(
+                    SharedInternetAccountsScreenModel.action(.startSignIn(provider: provider, calendars: calendars))
+                        as? SharedSDK.InternetAccountsActionSignInStart
+                )
+                XCTAssertEqual(start.provider, kotlin)
+                XCTAssertEqual(start.calendars, calendars)
+            }
+        }
+        let returned = try XCTUnwrap(
+            SharedInternetAccountsScreenModel.action(.signInReturned(callbackUrl: "semprec://oauth?state=s&code=c"))
+                as? SharedSDK.InternetAccountsActionSignInReturned
+        )
+        XCTAssertEqual(returned.callbackUrl, "semprec://oauth?state=s&code=c")
+        XCTAssertTrue(
+            SharedInternetAccountsScreenModel.action(.signInCancelled)
+                is SharedSDK.InternetAccountsActionSignInCancelled
+        )
+        XCTAssertTrue(
+            SharedInternetAccountsScreenModel.action(.signInFailed) is SharedSDK.InternetAccountsActionSignInFailed
+        )
     }
 
     // MARK: - Account
@@ -99,7 +132,7 @@ final class InternetAccountMappingTests: XCTestCase {
                 mailEnabled: false, calendarsEnabled: true, mail: .off, calendars: .pending,
                 lastSuccessfulSyncAt: "2026-10-19T08:12:00Z", failingSince: "2026-10-19T09:12:00Z",
                 connectionLimit: 3, connectionLimitApplies: true, autonomousSendProjectCount: 1,
-                syncedMessageCount: 42
+                syncedMessageCount: 42, signsInInBrowser: true, canSignInAgain: false, canAllowCalendarAccess: false
             )
         )
         XCTAssertEqual(state.confirmingOff, .calendars)
@@ -111,6 +144,14 @@ final class InternetAccountMappingTests: XCTestCase {
             CoreKit.InternetAccountRemovalImpact(messages: 120, drafts: 2, threads: 50, attachmentsKept: 7)
         )
         XCTAssertTrue(state.actionFailed)
+        XCTAssertTrue(state.signingIn)
+        XCTAssertEqual(state.signInFailure, .declined)
+        XCTAssertNil(SharedInternetAccountScreenModel.state(accountState(.content, signInFailure: nil)).signInFailure)
+        let offers = SharedInternetAccountScreenModel.state(
+            accountState(.content, mail: .needsReauthorization, calendars: .needsConsent)
+        ).account
+        XCTAssertEqual(offers?.canSignInAgain, true)
+        XCTAssertEqual(offers?.canAllowCalendarAccess, true)
         let phases: [(SharedSDK.InternetAccountRemovalPhase, CoreKit.InternetAccountRemovalPhase)] = [
             (.idle, .idle), (.loadingImpact, .loadingImpact), (.confirming, .confirming), (.removing, .removing)
         ]
@@ -132,7 +173,11 @@ final class InternetAccountMappingTests: XCTestCase {
             (.requestRemoval, SharedSDK.InternetAccountActionRemovalRequest.self),
             (.cancelRemoval, SharedSDK.InternetAccountActionRemovalCancel.self),
             (.confirmRemoval, SharedSDK.InternetAccountActionRemovalConfirm.self),
-            (.dismissFailure, SharedSDK.InternetAccountActionDismissFailure.self)
+            (.dismissFailure, SharedSDK.InternetAccountActionDismissFailure.self),
+            (.signIn(.again), SharedSDK.InternetAccountActionSignInAgain.self),
+            (.signIn(.allowCalendarAccess), SharedSDK.InternetAccountActionSignInAllowCalendarAccess.self),
+            (.signIn(.cancelled), SharedSDK.InternetAccountActionSignInCancelled.self),
+            (.signIn(.failed), SharedSDK.InternetAccountActionSignInFailed.self)
         ]
         for (action, kotlin) in simple {
             XCTAssertTrue(type(of: SharedInternetAccountScreenModel.action(action)) == kotlin, "\(action)")
@@ -152,6 +197,11 @@ final class InternetAccountMappingTests: XCTestCase {
                 as? SharedSDK.InternetAccountActionStepConnectionLimit
         )
         XCTAssertEqual(step.delta, -1)
+        let returned = try XCTUnwrap(
+            SharedInternetAccountScreenModel.action(.signIn(.returned(callbackUrl: "semprec://oauth?state=s&error=e")))
+                as? SharedSDK.InternetAccountActionSignInReturned
+        )
+        XCTAssertEqual(returned.callbackUrl, "semprec://oauth?state=s&error=e")
         XCTAssertEqual(
             SharedInternetAccountScreenModel.effect(SharedSDK.InternetAccountEffectRemoved.shared),
             .removed
@@ -159,6 +209,10 @@ final class InternetAccountMappingTests: XCTestCase {
         XCTAssertEqual(
             SharedInternetAccountScreenModel.effect(SharedSDK.InternetAccountEffectCalendarsTurnedOn.shared),
             .calendarsTurnedOn
+        )
+        XCTAssertEqual(
+            SharedInternetAccountScreenModel.effect(SharedSDK.InternetAccountEffectOpenSignIn(url: "https://g/a")),
+            .openSignIn(url: "https://g/a")
         )
     }
 }
@@ -188,7 +242,10 @@ private extension InternetAccountMappingTests {
         _ phase: SharedSDK.InternetAccountPhase,
         failure: SharedSDK.FailureKind? = nil,
         confirmingOff: SharedSDK.InternetAccountService? = .calendars,
-        removal: SharedSDK.InternetAccountRemovalPhase = .confirming
+        removal: SharedSDK.InternetAccountRemovalPhase = .confirming,
+        signInFailure: SharedSDK.InternetConnectFailure? = .declined,
+        mail: SharedSDK.InternetServiceStatus = .off,
+        calendars: SharedSDK.InternetServiceStatus = .pending
     ) -> SharedSDK.InternetAccountState {
         SharedSDK.InternetAccountState(
             phase: phase,
@@ -201,20 +258,23 @@ private extension InternetAccountMappingTests {
                 syncMode: "imap",
                 mailEnabled: false,
                 calendarsEnabled: true,
-                mail: .off,
-                calendars: .pending,
+                mail: mail,
+                calendars: calendars,
                 lastSuccessfulSyncAt: "2026-10-19T08:12:00Z",
                 failingSince: "2026-10-19T09:12:00Z",
                 connectionLimit: 3,
                 connectionLimitApplies: true,
                 autonomousSendProjectCount: 1,
-                syncedMessageCount: 42
+                syncedMessageCount: 42,
+                signsInInBrowser: true
             ),
             confirmingOff: confirmingOff,
             syncRequested: true,
             removal: removal,
             impact: SharedSDK.InternetAccountRemovalImpact(messages: 120, drafts: 2, threads: 50, attachmentsKept: 7),
-            actionFailed: true
+            actionFailed: true,
+            signingIn: true,
+            signInFailure: signInFailure
         )
     }
 }

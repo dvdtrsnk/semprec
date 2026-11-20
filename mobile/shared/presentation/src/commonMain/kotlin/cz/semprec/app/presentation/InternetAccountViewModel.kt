@@ -6,6 +6,7 @@ import cz.semprec.app.domain.InternetAccountRepository
 import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailRemovalImpact
 import cz.semprec.app.domain.MailboxRepository
+import cz.semprec.app.domain.OAuthSignIn
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -25,6 +26,11 @@ private const val MAX_CONNECTIONS = 15
  * [InternetAccountState.actionFailed]. A written switch reads the account again so that the status is the server's,
  * and Calendars switched on raises [InternetAccountEffect.CalendarsTurnedOn].
  *
+ * A Google or Microsoft account signs in again in a browser when a service no longer accepts its sign-in, and grants
+ * the calendar permission the same way. The server keeps the account's sign-in as it was until the browser came back
+ * and the code was accepted, so a cancelled or declined sign-in changes nothing; an accepted one reads the account
+ * again.
+ *
  * A removal first reads what it would hide and waits for the answer; nothing is removed before that. A change of the
  * account data the server reports ([serverChanges]) reads the account again; the name and the connection limit stay
  * as shown, and the switches too while a switch is being written.
@@ -38,6 +44,23 @@ class InternetAccountViewModel internal constructor(
     private var loadJob: Job? = null
     private var statusJob: Job? = null
     private var switchWrites = 0
+
+    private val browser = BrowserSignInFlow(
+        scope = viewModelScope,
+        open = { url -> emit(InternetAccountEffect.OpenSignIn(url)) },
+        finish = accounts::finishSignIn,
+        report = { report ->
+            when (report) {
+                BrowserSignInReport.Started -> update { it.copy(signingIn = true, signInFailure = null) }
+                is BrowserSignInReport.Connected -> {
+                    update { it.copy(signingIn = false) }
+                    statusJob?.cancel()
+                    readStatus()
+                }
+                is BrowserSignInReport.Stopped -> update { it.copy(signingIn = false, signInFailure = report.failure) }
+            }
+        },
+    )
 
     init {
         load()
@@ -56,7 +79,10 @@ class InternetAccountViewModel internal constructor(
             is InternetAccountAction.StepConnectionLimit -> stepLimit(action.delta)
             InternetAccountAction.SyncNow -> syncNow()
             is InternetAccountAction.Removal -> removal(action)
-            InternetAccountAction.DismissFailure -> update { it.copy(actionFailed = false) }
+            InternetAccountAction.DismissFailure -> update { it.copy(actionFailed = false, signInFailure = null) }
+            is InternetAccountAction.SignIn -> browser.handle(action, state.value.account) { services ->
+                accounts.startReauthorization(accountId, services)
+            }
         }
     }
 
@@ -212,6 +238,23 @@ class InternetAccountViewModel internal constructor(
     }
 }
 
+/** Starts a sign-in only while the screen offers it; [reauthorize] asks the server for the provider's page. */
+private fun BrowserSignInFlow.handle(
+    step: InternetAccountAction.SignIn,
+    account: InternetAccountDetail?,
+    reauthorize: suspend (Set<InternetService>) -> RepositoryResult<OAuthSignIn>,
+) {
+    when (step) {
+        InternetAccountAction.SignIn.Again -> if (account?.canSignInAgain == true) start { reauthorize(emptySet()) }
+        InternetAccountAction.SignIn.AllowCalendarAccess -> if (account?.canAllowCalendarAccess == true) {
+            start { reauthorize(setOf(InternetService.MAIL, InternetService.CALENDARS)) }
+        }
+        is InternetAccountAction.SignIn.Returned -> returned(step.callbackUrl)
+        InternetAccountAction.SignIn.Cancelled -> closed(failure = null)
+        InternetAccountAction.SignIn.Failed -> closed(InternetConnectFailure.UNEXPECTED)
+    }
+}
+
 private fun InternetAccountService.toDomain() = when (this) {
     InternetAccountService.MAIL -> InternetService.MAIL
     InternetAccountService.CALENDARS -> InternetService.CALENDARS
@@ -274,6 +317,10 @@ private fun InternetAccount.toDetail() = InternetAccountDetail(
     connectionLimitApplies = mailbox.connectionLimitApplies,
     autonomousSendProjectCount = mailbox.autonomousSendProjectCount,
     syncedMessageCount = mailbox.syncedMessageCount,
+    signsInInBrowser = mailbox.provider in BROWSER_PROVIDERS,
 )
+
+/** The stored providers whose accounts sign in in a browser. */
+private val BROWSER_PROVIDERS = setOf("gmail", "outlook")
 
 private fun MailRemovalImpact.toImpact() = InternetAccountRemovalImpact(messages, drafts, threads, attachmentsKept)
