@@ -77,12 +77,6 @@ private extension JournalScreen {
 
     var titleRow: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.medium) {
-            Text(title)
-                .font(.system(size: 34, weight: .bold))
-                .tracking(-0.6)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
             Button(action: viewModel.goToday) {
                 Text("journal.today", bundle: .module)
@@ -333,15 +327,6 @@ private extension JournalScreen {
 private extension JournalScreen {
 
     var selection: JournalSelection { viewModel.state.selection }
-
-    var title: String {
-        switch selection.kind {
-        case .day, .week: JournalDates.dayHeading(selection.start)
-        case .month: JournalDates.monthTitle(selection.start)
-        case .quarter: JournalDates.quarterTitle(start: selection.start)
-        case .year: String(JournalDates.year(selection.start))
-        }
-    }
 
     var subtitle: String {
         switch selection.kind {
