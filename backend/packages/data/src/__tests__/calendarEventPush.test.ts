@@ -254,11 +254,17 @@ describe("pushing local changes of synced Events", () => {
 
   it("records nothing for the calendar sync's own writes, nor for an Event outside account calendars", async () => {
     const fake = provider();
-    await syncedAccount(fake);
+    const accountId = await syncedAccount(fake);
     const dinner = await eventOf("dinner");
     expect(await pushState(dinner)).toBeNull();
     await patchEvent(dinner, { place: "Garden" }, CALENDAR_SYNC_WRITER);
     expect(await pushState(dinner)).toBeNull();
+
+    fake.putEvent("family", remoteEvent("lunch", { fields: remoteFields({ name: "Lunch", date: "2026-11-28" }) }));
+    await runPass(accountId, fake);
+    const lunch = await eventOf("lunch");
+    expect(await pushState(lunch)).toBeNull();
+    expect(await pushJobs(lunch)).toBe(0);
 
     const { eventsDatabaseId } = await ids();
     const own = await runInTenant(tenant, () =>

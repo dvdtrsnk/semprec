@@ -14,7 +14,7 @@ import {
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import type { WriterIdentity } from "../chokePoint/writerKind.js";
+import { SYSTEM_WRITER, type WriterIdentity } from "../chokePoint/writerKind.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -108,7 +108,8 @@ async function lockDefaultCalendar(client: PoolClient, calendarsDatabaseId: stri
  *
  * Only the last case reads the default; a missing default then fails the create after logging
  * `default_calendar_missing`. A missing calendars database or Events `calendar` relation fails every create (the
- * seed creates both). The edge is written as a system write.
+ * seed creates both). The edge is written as a system write, under the creating system process when there is one, so
+ * the calendar sync's own Events do not look like local changes to push.
  */
 export const defaultCalendarCreateHook: ItemCreateHook = async ({
   client,
@@ -140,9 +141,10 @@ export const defaultCalendarCreateHook: ItemCreateHook = async ({
     }
     calendarId = defaultCalendarId;
   }
-  await createRelationWithClient(client, {
-    relationPropertyId: property.id,
-    callerItemId: item.id,
-    targetItemId: calendarId,
-  });
+  await createRelationWithClient(
+    client,
+    { relationPropertyId: property.id, callerItemId: item.id, targetItemId: calendarId },
+    undefined,
+    writer.writerKind === "system" ? writer : SYSTEM_WRITER,
+  );
 };

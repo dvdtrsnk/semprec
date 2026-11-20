@@ -80,26 +80,10 @@ function provider(): FakeCalendarProvider {
   return fake;
 }
 
-/**
- * A pass, then the push jobs it left pending, as the queue would run them: the Events.calendar edge of an Event the
- * pass adds records a push (it is written without the sync's writer), which finds nothing to send.
- */
-async function runPass(accountId: string, fake: FakeCalendarProvider) {
-  const result = await runInTenant(tenant, () =>
+function runPass(accountId: string, fake: FakeCalendarProvider) {
+  return runInTenant(tenant, () =>
     handleCalendarAccountSyncTask(runtime, { accountItemId: accountId }, { adapters: fake.registry() }),
   );
-  const pending = await inTenant(async (client) => {
-    const { rows } = await client.query<{ event_item_id: string }>(
-      "SELECT event_item_id FROM calendar_event_push_state WHERE status = 'pending' ORDER BY event_item_id",
-    );
-    return rows.map((row) => row.event_item_id);
-  });
-  for (const eventItemId of pending) {
-    await runInTenant(tenant, () =>
-      handleCalendarEventPushTask(runtime, { eventItemId }, { adapters: fake.registry() }),
-    );
-  }
-  return result;
 }
 
 /** An account with Calendars on whose initial pass has run over the provider as it is. */
