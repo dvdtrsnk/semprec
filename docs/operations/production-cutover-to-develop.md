@@ -5,8 +5,10 @@ Production moves off the v0.1.x releases built from the hotfix line and onto a r
 procedure is run by the owner. Nothing in it has been run against production. Every statement about
 production below is an expectation the owner confirms before the window, not an observed fact.
 
-**Status: NO-GO.** The owner has not given a go (see [Go/no-go](#gono-go)). The dry run against a
-database built by v0.1.12 also reports a seed delta (see [What is lost](#what-is-lost-or-must-be-redone)).
+**Status: NO-GO.** The owner has not given a go (see [Go/no-go](#gono-go)). Against a database
+built by v0.1.12 the dry run reports no seed delta once the develop seed has reconciled the carried
+tenant, and one carried definition that differs from develop's (`calendars.kind`, see
+[What is lost](#what-is-lost-or-must-be-redone)).
 
 ## Production facts to verify
 
@@ -66,11 +68,15 @@ does:
    baseline's own tenant row and its AI budget and load the carried tables with
    `pg_dump --data-only --load-via-partition-root` (the partitioned `items` lands in develop's
    single `items`; `items.version` takes its default `1`).
-5. Check every foreign key for rows naming a missing parent, run the develop seed (each carried
-   tenant answers `already seeded`) and `verifyTenancyCli`.
+5. Check every foreign key for rows naming a missing parent, run the develop seed and
+   `verifyTenancyCli`. Each carried tenant answers `already seeded`; the seed then reconciles it:
+   it creates the system properties and relation definitions the develop seed defines and the
+   tenant lacks, and reports existing definitions that differ, without changing them
+   ([reconcile](../architecture/migrations-and-seeding.md#reconcile-of-already-seeded-tenants)).
 6. Report items per database (live/trashed) before and after, rows per carried table before and
-   after, and the seed delta: system databases and properties `<name>_ref` has and `<name>_dst`
-   lacks, or the reverse.
+   after the load, the rows the seed added, and the seed delta after the seed: system databases
+   and properties `<name>_ref` has and `<name>_dst` lacks, or the reverse, followed by the
+   differing definitions the seed reported.
 
 ### What is carried
 
@@ -84,37 +90,42 @@ touch.
 
 ### What is lost or must be redone
 
-| Not carried                                                               | Why                                                                 | Consequence                                                                                            |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `external_credentials`                                                    | excluded by the tenant export; the owner decided not to carry them  | every mail account signs in again (see [Reconnect](#reconnect-mail-accounts))                          |
-| `tenant_keys`                                                             | excluded by the export, and its data is not in the main backup dump | a new tenant key is made when the first credential is sealed again                                     |
-| `tenant_exports`                                                          | excluded by the export                                              | the in-app list of earlier exports is empty; their zip files stay in the files directory, unreferenced |
-| `mail_oauth_states`, `idempotent_responses`                               | excluded by the export; short-lived                                 | an OAuth sign-in in flight during the window must be started again                                     |
-| `sessions`, `login_attempts`, `password_reset_tokens`                     | auth state of the old release                                       | every user signs in again; an unused reset link stops working                                          |
-| `process_heartbeats`, `schema_migrations`                                 | belong to the old processes and the old migration ledger            | none                                                                                                   |
-| `module_migrations`, `module_migration_progress`                          | v0.1.x module data-migration machinery; develop has no such tables  | none expected; the dry run prints their row counts                                                     |
-| the `graphile_worker` schema (queued jobs)                                | develop installs its own queue schema                               | queued jobs (sync passes, reminders, exports) are not run; the dry run prints how many were queued     |
-| **seed delta**: system properties develop's seed defines and v0.1.x lacks | the develop seed never upgrades an already seeded tenant            | the features that need them do not work on carried data (below)                                        |
+| Not carried                                                                    | Why                                                                 | Consequence                                                                                            |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `external_credentials`                                                         | excluded by the tenant export; the owner decided not to carry them  | every mail account signs in again (see [Reconnect](#reconnect-mail-accounts))                          |
+| `tenant_keys`                                                                  | excluded by the export, and its data is not in the main backup dump | a new tenant key is made when the first credential is sealed again                                     |
+| `tenant_exports`                                                               | excluded by the export                                              | the in-app list of earlier exports is empty; their zip files stay in the files directory, unreferenced |
+| `mail_oauth_states`, `idempotent_responses`                                    | excluded by the export; short-lived                                 | an OAuth sign-in in flight during the window must be started again                                     |
+| `sessions`, `login_attempts`, `password_reset_tokens`                          | auth state of the old release                                       | every user signs in again; an unused reset link stops working                                          |
+| `process_heartbeats`, `schema_migrations`                                      | belong to the old processes and the old migration ledger            | none                                                                                                   |
+| `module_migrations`, `module_migration_progress`                               | v0.1.x module data-migration machinery; develop has no such tables  | none expected; the dry run prints their row counts                                                     |
+| the `graphile_worker` schema (queued jobs)                                     | develop installs its own queue schema                               | queued jobs (sync passes, reminders, exports) are not run; the dry run prints how many were queued     |
+| **differing definitions**: carried system properties develop defines otherwise | the seed's reconcile only adds what is missing; it changes nothing  | the features that need the develop definition do not work on carried data (below)                      |
 
-Seed delta observed by the dry run on a database built by `v0.1.12` against this branch's build:
+The develop seed adds what an older seed lacks. On a database built by `v0.1.12`, against this
+branch's build, the dry run's seed reconciled the carried tenant with 11 properties and 1 relation
+definition, after which the seed delta is empty:
 
 - `mailboxes`: `mailEnabled` (checkbox), `calendarsEnabled` (checkbox), `calendars` (relation);
-- `calendars`: `account` (relation), `readOnly` (checkbox), `remoteColor` (color), `remoteName` (text);
+- `calendars`: `account` (relation, the other side of `mailboxes.calendars`), `readOnly`
+  (checkbox), `remoteColor` (color), `remoteName` (text);
 - `events`: `exceptionDates` (json), `recurrenceId` (text), `recurrenceRule` (text), `timeZone` (text).
 
-Without them the Mail and Calendars switches of an internet account, calendar sync and recurring
-event round-trips have no properties to write to on carried data. Nothing in develop adds them to an
-existing tenant. **This blocks the go.** The owner decides one of:
+Carried items keep their values; a missing value reads as the seed default (`mailEnabled` on,
+`calendarsEnabled` off, the new Calendar and Event fields empty).
 
-1. a follow-up issue that adds the missing system properties (and the relation definition behind
-   each new relation pair) to every carried tenant, run between the load and the seed, after which
-   the dry run must report no seed delta; or
-2. accept the delta and cut over without the features that need these properties; or
-3. reseed: start production from an empty develop database and re-enter the data by hand (loses
-   everything above).
+Of the seed-delta options (1. an additive reconcile, 2. accept the delta, 3. reseed), option 1 was
+taken; it is the reconcile above.
 
-The delta grows with every system property `develop` adds before the cutover. Rerun the dry run
-with the build of the exact release commit.
+The same run reports one carried definition that differs from develop's and is left unchanged:
+`calendars.kind` (config). v0.1.12 seeded its options `own`, `system`, `subscription`; develop adds
+`account`, and an item write with an option the property does not list is refused. Calendar sync of
+an internet account writes `kind: account`, so it fails on carried data until the option exists.
+**This blocks the go** until the owner decides how the option is added (it is a change of an
+existing definition, which the reconcile does not make).
+
+Every system definition `develop` adds or changes before the cutover changes this list. Rerun the
+dry run with the build of the exact release commit.
 
 ## Procedure
 
@@ -126,7 +137,8 @@ The owner attests each of these in the go/no-go table. An agent cannot.
 - a backup of the production database was taken in the window and restored successfully into a
   scratch cluster (step 1);
 - the dry run of step 3 passed against that backup with the build of the release commit;
-- the seed-delta decision is made, and the dry run reports no delta or the owner accepted it;
+- the dry run reports no seed delta (or the owner accepted it), and every differing definition it
+  lists was reviewed and resolved or accepted;
 - a develop release tag exists and the server's deploy origin can serve it (step 4.6);
 - the rollback in [Rollback](#rollback) was read and its target `v0.1.12` is on disk;
 - users were told about the downtime and that they must sign in and reconnect mail again.
@@ -187,8 +199,9 @@ exec docker exec -i -e PGUSER -e PGPASSWORD -e PGDATABASE -e PGHOST=127.0.0.1 -e
   -w "$PWD" cutover-scratch pg_dump "$@"
 ```
 
-Exit status: `0` PASS, `3` GAP (everything carried and verified, seed delta not empty), `1` FAIL,
-`2` refused or wrong usage. The run drops its four databases at the start and at the end (`--keep`
+Exit status: `0` PASS, `3` GAP (everything carried and verified, seed delta not empty after the
+seed's reconcile), `1` FAIL, `2` refused or wrong usage. Differing definitions are listed but do not
+change the exit status. The run drops its four databases at the start and at the end (`--keep`
 leaves them for inspection), so it can be repeated with the same `--name`.
 
 Read the report. A run is good when:
@@ -198,7 +211,11 @@ Read the report. A run is good when:
 - `foreign keys: every carried row names an existing parent` and `tenancy: verified`;
 - the excluded and dropped rows are the ones in [What is lost](#what-is-lost-or-must-be-redone),
   and the number of sealed credentials matches the accounts to reconnect;
-- the seed delta is empty, or is exactly what the owner accepted.
+- `reconcile created …` lists what the seed added to each carried tenant, and
+  `rows the develop seed added` matches it (`properties`, `relation_definitions`);
+- the seed delta is empty, or is exactly what the owner accepted;
+- every line under `existing definitions that differ from the develop seed` is resolved or
+  accepted.
 
 Remove the container and the work directory afterwards: `docker rm -f cutover-scratch`, `rm -rf "$work"`.
 
@@ -305,7 +322,8 @@ Filled in by the owner. An agent does not fill in or change this table.
 | Production facts 1–12 confirmed                          |        |                   |
 | Backup taken in the window and restored into scratch     |        |                   |
 | Dry run against that backup with the release build       |        |                   |
-| Seed-delta decision (option 1, 2 or 3)                   |        |                   |
+| Seed delta empty after the reconcile (option 1)          |        |                   |
+| Differing definitions resolved or accepted               |        |                   |
 | Release tag deployable from the server's origin          |        |                   |
 | Rollback target `v0.1.12` on disk, procedure read        |        |                   |
 | Users informed (downtime, sign in again, reconnect mail) |        |                   |
@@ -322,11 +340,20 @@ used.
   project relations) plus a user and one sealed-credential row, then dumped as the backup job dumps
   (`--format=custom --exclude-table-data=public.tenant_keys`). The run reported the in-place refusal,
   72 carried tables with equal counts, 29 databases with equal live/trashed counts, no orphaned
-  foreign keys, `already seeded`, `tenancy: verified`, the exclusions above and the seed delta above,
-  and exited 3. With `--emit-dump --allow-seed-delta` it wrote the dump; restoring that with owners
+  foreign keys, `already seeded`, `tenancy: verified`, the exclusions above and, with a seed that
+  did not yet reconcile carried tenants, the 11 missing properties above as the seed delta, and
+  exited 3. With `--emit-dump --allow-seed-delta` it wrote the dump; restoring that with owners
   into a new database and running the develop migrations, seed and tenancy verifier succeeded, the
   router functions kept `semprec_router` as owner, and the develop choke point created an item,
   updated a carried task (version 1 to 2) and listed its relation.
+- With the seed's reconcile: a new dump of the same shape (a `v0.1.12` database filled through its
+  choke point with a user, a project and three related tasks, a person, a mailbox and an event).
+  The run printed `reconcile created 11 properties, 1 relation definitions` and
+  `conflict config calendars.kind`, 72 carried tables with equal counts after the load,
+  `properties 303 -> 314` and `relation_definitions 54 -> 55` as rows the seed added, 28 databases
+  with equal live/trashed counts, `tenancy: verified`, no seed delta, `calendars.kind` under the
+  differing definitions, and exited 0. On the kept `_dst` database a second seed run created
+  nothing, and `runSeedCli.js --strict` exited 1 on the `calendars.kind` conflict.
 - A develop-shaped dump of the same content: in-place migrations ran but the probe reported a column
   the baseline gained since (`mail_account_server_settings.caldav_url`); the carry passed (exit 0).
 - Refusals, each exiting 2 before touching a database: names that do not match the scratch pattern,

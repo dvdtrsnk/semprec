@@ -24,6 +24,15 @@ export async function createTenant(client: PoolClient, status: TenantStatus): Pr
   return requireSingleRow(rows, "tenants insert").id;
 }
 
+/** With an id the caller chose, so it can enter the tenant's scope before the row exists. */
+export async function createTenantWithId(client: PoolClient, id: string, status: TenantStatus): Promise<void> {
+  const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (id, status) VALUES ($1, $2) RETURNING id", [
+    id,
+    status,
+  ]);
+  requireSingleRow(rows, "tenants insert");
+}
+
 /**
  * Via `app_sole_tenant()`. While the single-tenant guard exists a missing sole tenant is an invariant
  * violation, so it is a plain `Error` (500), never a domain error.

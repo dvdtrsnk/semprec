@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createPool } from "../db/pool.js";
-import { formatSeedLine, runSeed } from "../db/runSeed.js";
+import { formatSeedLines, runSeed } from "../db/runSeed.js";
 import { PROJECTS_MODULE_ID } from "../seed/seedSystem.js";
 import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -44,7 +44,9 @@ describe("runSeed (issue #644, per tenant since #1005)", () => {
   it("creates the system databases on an empty database and reports created for the tenant", async () => {
     expect(await databaseRows()).toEqual([]);
 
-    await expect(runSeed(pool)).resolves.toEqual([{ tenantId: getTenantZeroId(), outcome: "created" }]);
+    await expect(runSeed(pool)).resolves.toEqual([
+      { tenantId: getTenantZeroId(), outcome: "created", reconcile: null },
+    ]);
 
     expect(await databaseIdsByModule(SYSTEM_SETTINGS_MODULE_ID)).toHaveLength(1);
     expect(await databaseIdsByModule(PROJECTS_MODULE_ID)).toHaveLength(1);
@@ -56,7 +58,13 @@ describe("runSeed (issue #644, per tenant since #1005)", () => {
     const itemsBefore = await itemCount();
     expect(before.length).toBeGreaterThan(0);
 
-    await expect(runSeed(pool)).resolves.toEqual([{ tenantId: getTenantZeroId(), outcome: "already-provisioned" }]);
+    await expect(runSeed(pool)).resolves.toEqual([
+      {
+        tenantId: getTenantZeroId(),
+        outcome: "already-provisioned",
+        reconcile: { createdProperties: 0, createdRelationDefinitions: 0, conflicts: [] },
+      },
+    ]);
 
     expect(await databaseRows()).toEqual(before);
     expect(await itemCount()).toBe(itemsBefore);
@@ -88,8 +96,8 @@ describe("runSeed (issue #644, per tenant since #1005)", () => {
   it("formats one output line per provisioned tenant", async () => {
     const b = await createTestTenant(adminPool, { status: "provisioning" });
 
-    const first = (await runSeed(pool)).map(formatSeedLine).sort();
-    const second = (await runSeed(pool)).map(formatSeedLine).sort();
+    const first = (await runSeed(pool)).flatMap(formatSeedLines).sort();
+    const second = (await runSeed(pool)).flatMap(formatSeedLines).sort();
 
     expect(first).toEqual(
       [
@@ -98,7 +106,12 @@ describe("runSeed (issue #644, per tenant since #1005)", () => {
       ].sort(),
     );
     expect(second).toEqual(
-      [`seed: tenant ${getTenantZeroId()} already seeded`, `seed: tenant ${b} already seeded`].sort(),
+      [getTenantZeroId(), b]
+        .flatMap((tenantId) => [
+          `seed: tenant ${tenantId} already seeded`,
+          `seed: tenant ${tenantId} reconcile created 0 properties, 0 relation definitions`,
+        ])
+        .sort(),
     );
   });
 });

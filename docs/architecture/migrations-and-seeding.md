@@ -140,6 +140,31 @@ A `provisioning` tenant becomes `active` only after all of it succeeded.
   databases exist. A concurrent seed of the same tenant waits and finds them; other tenants do
   not wait. Any other structural seeding of a tenant takes the same lock first.
 
+### Reconcile of already seeded tenants
+
+The seed creates a tenant's system databases once. A tenant seeded by an older seed (carried
+production data) is brought up to the current seed's definitions by an additive reconcile, which
+`runSeed` runs for every tenant that answered `already-provisioned`:
+
+- The reference is the current seed itself: `readSeedDefinitions` (`seed/seedReconcile.ts`) runs
+  the full system seed for a scratch tenant inside one transaction, reads the property and
+  relation definitions of its system databases and rolls everything back (`readFreshSystemSeed`
+  in `seed/seedSystem.ts`). No definition is written down a second time.
+- System databases are matched by `owner_module_id`, properties by database and key. Every id in
+  a definition's config (database, property, relation definition) is mapped to the tenant's.
+- Additive only: a property the tenant lacks is created with the reference's key, name, type,
+  owner, owner process, lock, initial position and config; a relation definition is created only
+  when all of its sides are missing, with both sides and its cardinality. Nothing existing is
+  changed or removed, no item value is written, and a missing system database is not created.
+- A difference is reported with a fixed tag and keys only (`missingDatabase`, `type`, `owner`,
+  `config`, `relation`, `unmappable`) and left as it is. `runSeedCli.js --strict` exits non-zero
+  when any tenant reports one; without the flag the run succeeds.
+- One transaction per tenant, under the per-tenant seed lock, then
+  `LOCK TABLE properties IN EXCLUSIVE MODE` (as the seed takes it before writing into locked
+  schemas). A failing tenant rolls back alone and is named in the run's `AggregateError`.
+- A definition change that is not additive (a new select option, another type or owner) still
+  needs a forward-only migration or data cutover.
+
 ### Defaults a user may delete
 
 Defaults the user may delete or rename (such as the default Inbox item types in

@@ -25,8 +25,15 @@
 #   <name>_ref      a fresh develop database (migrations and seed), the reference system schema
 #   <name>_dst      a fresh develop baseline the carried tables are loaded into; the counts after
 #
-# Exit status: 0 PASS, 3 GAP (carried and verified, but the develop seed defines system databases or
-# properties the carried data lacks), 1 FAIL, 2 usage or refused target.
+# The develop seed CLI runs on <name>_dst after the load. For each carried tenant, which is already
+# seeded, it creates the system properties and relation definitions the develop seed defines and the
+# tenant lacks, and reports the existing ones whose definition differs. The seed delta is measured
+# after that run.
+#
+# Exit status: 0 PASS, 3 GAP (carried and verified, but after the seed the carried data still lacks
+# system databases or properties the develop seed defines, or has ones it no longer defines),
+# 1 FAIL, 2 usage or refused target. Definitions the seed reports as different are listed and do not
+# change the exit status.
 set -euo pipefail
 
 readonly SCRATCH_PATTERN='^cutover_scratch_[a-z0-9_]{1,30}$'
@@ -512,6 +519,8 @@ SQL
     die "loading the carried rows into $dst failed; nothing was loaded"
   fi
   echo "loaded the carried tables into $dst"
+  # Before the develop seed, which adds definitions to carried tenants.
+  table_counts "$dst" | sort > "$work_dir/dst-table-counts"
 
   local orphans
   orphans="$(foreign_key_orphans "$dst")"
@@ -525,10 +534,11 @@ SQL
 }
 
 seed_and_verify() {
-  section "Develop seed and tenancy verification"
+  section "Develop seed (reconciles carried tenants) and tenancy verification"
   local dst="${scratch_name}_dst"
   if run_cli "$dst" db/runSeedCli.js "$work_dir/dst-seed.log"; then
     grep '^seed:' "$work_dir/dst-seed.log" | sed 's/^/  /' || true
+    { grep '^seed: tenant [^ ]* conflict ' "$work_dir/dst-seed.log" || true; } > "$work_dir/seed-conflicts"
   else
     print_log_tail "$work_dir/dst-seed.log" 5
     finding "the develop seed failed on the carried database"
@@ -568,8 +578,7 @@ report_counts() {
   bad="$(cat "$work_dir/database-mismatches")"
   ((bad == 0)) || finding "$bad database(s) have different item counts after the carry"
 
-  section "Rows per carried table (before -> after)"
-  table_counts "$dst" | sort > "$work_dir/dst-table-counts"
+  section "Rows per carried table (before -> after the load)"
   local table before after differing=0
   while IFS= read -r table; do
     before="$(awk -F'\t' -v t="$table" '$1 == t { print $2 }' "$work_dir/src-table-counts")"
@@ -584,10 +593,22 @@ report_counts() {
   else
     finding "$differing carried table(s) have a different row count"
   fi
+
+  table_counts "$dst" | sort > "$work_dir/dst-seeded-table-counts"
+  local seeded
+  seeded="$(awk -F'\t' '
+    NR == FNR { loaded[$1] = $2; next }
+    ($1 in loaded) && loaded[$1] != $2 { printf "  %-36s %s -> %s\n", $1, loaded[$1], $2 }
+  ' "$work_dir/dst-table-counts" "$work_dir/dst-seeded-table-counts")"
+  if [[ -n "$seeded" ]]; then
+    echo "rows the develop seed added to carried tables (after the load -> after the seed):"
+    echo "$seeded"
+  fi
 }
 
-# What the develop seed would have created that the carried system databases lack: the seed runs
-# once per tenant and skips an already seeded one, so nothing adds these later.
+# What the carried system databases still lack after the develop seed, or still have that it no
+# longer defines: the seed adds missing properties and relation definitions to an already seeded
+# tenant but never creates a missing system database, changes or removes one.
 report_seed_delta() {
   section "Seed delta (develop seed vs. carried system databases)"
   local ref="${scratch_name}_ref"
@@ -616,6 +637,10 @@ report_seed_delta() {
     echo "none: the carried system databases match the develop seed"
   else
     gaps=1
+  fi
+  if [[ -s "$work_dir/seed-conflicts" ]]; then
+    echo "existing definitions that differ from the develop seed (left unchanged; review before the go):"
+    sed -E 's/^seed: tenant ([^ ]*) conflict ([^ ]*) (.*)$/  \3 (\2, tenant \1)/' "$work_dir/seed-conflicts"
   fi
 }
 
