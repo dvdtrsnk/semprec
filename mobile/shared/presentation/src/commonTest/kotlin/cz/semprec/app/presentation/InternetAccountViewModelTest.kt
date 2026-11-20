@@ -248,7 +248,7 @@ class InternetAccountViewModelTest : MainDispatcherTest() {
         second.close()
     }
 
-    @Test fun `switching calendars on writes it and shows it pending then asks for notifications and reads the status`() =
+    @Test fun `switching calendars on writes it and shows it pending then asks for notifications and the status`() =
         runTest(dispatcher) {
             val accounts = ScriptedInternetAccountRepository(
                 one = MailCall(
