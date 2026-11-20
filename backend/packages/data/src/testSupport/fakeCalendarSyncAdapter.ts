@@ -3,10 +3,12 @@
 // Event.
 import {
   CalendarSyncEventConflictError,
+  CalendarSyncWriteUnsupportedError,
   type CalendarChanges,
   type CalendarSyncAdapter,
   type CalendarSyncAdapterRegistry,
   type CalendarSyncCursor,
+  type InvitationResponse,
   type PutRemoteEventInput,
   type RemoteCalendar,
   type RemoteEvent,
@@ -47,7 +49,13 @@ export class FakeCalendarProvider {
   readonly fetches: Array<{ calendarRemoteId: string; cursor: CalendarSyncCursor | null }> = [];
   listCalls = 0;
   /** Every write an adapter made, in order. */
-  readonly writes: Array<{ kind: "put" | "delete" | "get"; calendarRemoteId: string; remoteId: string | null }> = [];
+  readonly writes: Array<{
+    kind: "put" | "delete" | "get" | "respond";
+    calendarRemoteId: string;
+    remoteId: string | null;
+  }> = [];
+  /** Every answer an adapter gave, in order. */
+  readonly responses: Array<{ remoteId: string; response: InvitationResponse; attendeeEmails: readonly string[] }> = [];
   /** Thrown by the next adapter write (`putEvent`, `deleteEvent`), then cleared. */
   failNextWrite: Error | null = null;
 
@@ -111,6 +119,7 @@ export class FakeCalendarProvider {
       },
       putEvent: async (calendar, input) => this.adapterPut(calendar.remoteId, input),
       deleteEvent: async (calendar, ref) => this.adapterDelete(calendar.remoteId, ref),
+      respondToInvitation: async (calendar, ref, answer) => this.adapterRespond(calendar.remoteId, ref, answer),
       getEvent: async (calendar, ref) => {
         this.writes.push({ kind: "get", calendarRemoteId: calendar.remoteId, remoteId: ref.remoteId });
         this.throwPendingFailure();
@@ -153,6 +162,38 @@ export class FakeCalendarProvider {
     stored.tombstones.delete(remoteId);
     this.writes.push({ kind: "put", calendarRemoteId, remoteId });
     return { remoteId, href: null, etag: event.etag };
+  }
+
+  /**
+   * The account's attendee answers: its `selfStatus` when the Event reports one, else the attendee with one of
+   * `attendeeEmails` gets the iCalendar `PARTSTAT`.
+   */
+  private adapterRespond(
+    calendarRemoteId: string,
+    ref: RemoteEventRef,
+    answer: { response: InvitationResponse; attendeeEmails: readonly string[] },
+  ): "answered" | "gone" {
+    this.throwPendingWriteFailure();
+    this.writes.push({ kind: "respond", calendarRemoteId, remoteId: ref.remoteId });
+    const found = this.calendarOf(calendarRemoteId).events.get(ref.remoteId);
+    if (!found) return "gone";
+    const { event } = found;
+    const emails = new Set(answer.attendeeEmails.map((email) => email.toLowerCase()));
+    const own = (email: string | null) => email !== null && emails.has(email.toLowerCase());
+    if (event.selfStatus == null && !event.attendees.some((attendee) => own(attendee.email))) {
+      throw new CalendarSyncWriteUnsupportedError("The account is no attendee of the Event");
+    }
+    this.responses.push({ remoteId: ref.remoteId, response: answer.response, attendeeEmails: answer.attendeeEmails });
+    const partstat = answer.response.toUpperCase();
+    this.putEvent(calendarRemoteId, {
+      ...event,
+      etag: `"r${this.version + 1}"`,
+      ...(event.selfStatus == null ? {} : { selfStatus: answer.response }),
+      attendees: event.attendees.map((attendee) =>
+        event.selfStatus == null && own(attendee.email) ? { ...attendee, status: partstat } : attendee,
+      ),
+    });
+    return "answered";
   }
 
   private adapterDelete(calendarRemoteId: string, ref: RemoteEventRef): void {

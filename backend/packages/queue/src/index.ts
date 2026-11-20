@@ -135,6 +135,9 @@ export const CORE_TASK_NAMES = {
   // Brings a user's or agent's change of an account calendar Event to its provider; job key
   // `calendar-event-push:<eventItemId>`, replaced by every newer change.
   CALENDAR_EVENT_PUSH: "calendarEventPush",
+  // Answers an invitation of a synced Event through the account's provider; job key
+  // `calendar-invitation-respond:<invitationId>`, replaced by a newer answer.
+  CALENDAR_INVITATION_RESPOND: "calendarInvitationRespond",
   // Creates, renews and stops one account's calendar push channels; job key `calendar-push-channels:<accountItemId>`.
   CALENDAR_PUSH_CHANNELS: "calendarPushChannels",
   // Queues that maintenance for every account that has a push channel or could have one.
@@ -204,6 +207,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: "api",
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: "api",
   [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: "api",
+  [CORE_TASK_NAMES.CALENDAR_INVITATION_RESPOND]: "api",
   [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: "api",
   [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP]: "api",
 };
@@ -281,6 +285,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: "system",
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: "tenant",
   [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: "tenant",
+  [CORE_TASK_NAMES.CALENDAR_INVITATION_RESPOND]: "tenant",
   [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: "tenant",
   [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP]: "system",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",

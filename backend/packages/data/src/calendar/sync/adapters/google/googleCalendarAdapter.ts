@@ -15,6 +15,7 @@ import {
   type CalendarSyncAdapter,
   type CalendarSyncCursor,
   type CalendarSyncWindow,
+  type InvitationResponse,
   type PutRemoteEventInput,
   type RemoteCalendar,
   type RemoteEvent,
@@ -272,6 +273,40 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     const master = await this.readEvent(calendar, event.recurringEventId, signal);
     const series = master === null ? null : this.masterEvent(master, context, [], window)?.series;
     return this.overrideEvent(event, context, series ?? null);
+  }
+
+  /**
+   * Patches only the account's attendee (`attendeesOmitted`, so the other attendees stay as they are) with
+   * `sendUpdates=all`, so Google sends the organizer the answer. The attendee is the one Google marks `self`, else
+   * the one with an account address.
+   */
+  async respondToInvitation(
+    calendar: RemoteCalendar,
+    ref: RemoteEventRef,
+    answer: { response: InvitationResponse; attendeeEmails: readonly string[] },
+    signal: AbortSignal,
+  ): Promise<"answered" | "gone"> {
+    const event = await this.readEvent(calendar, ref.remoteId, signal);
+    if (event === null || isCancelled(event)) return "gone";
+    const emails = new Set(answer.attendeeEmails.map((email) => email.toLowerCase()));
+    const attendees = event.attendees ?? [];
+    const own =
+      attendees.find((attendee) => attendee.self === true) ??
+      attendees.find((attendee) => attendee.email !== undefined && emails.has(attendee.email.toLowerCase()));
+    if (own?.email === undefined) {
+      throw new CalendarSyncWriteUnsupportedError("The account is no attendee of the Google event");
+    }
+    const { status } = await this.http.request(
+      {
+        method: "PATCH",
+        path: `${calendarPath(calendar)}/events/${encodeURIComponent(ref.remoteId)}`,
+        query: new URLSearchParams({ sendUpdates: "all" }),
+        body: { attendees: [{ email: own.email, responseStatus: answer.response }], attendeesOmitted: true },
+      },
+      signal,
+      [404, 410],
+    );
+    return status === 200 ? "answered" : "gone";
   }
 
   /** Google's own move: the event keeps its id and series in the other calendar. */

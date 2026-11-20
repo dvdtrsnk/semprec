@@ -21,6 +21,7 @@ import { createEventInCalendar } from "../defaultCalendarCreateHook.js";
 import { EVENT_SERIES_ID_PROPERTY_KEY } from "../eventOccurrenceId.js";
 import { logger } from "../logger.js";
 import { SYNCED_EVENT_PROPERTY_KEYS } from "../syncedEventFields.js";
+import { accountOwnAddresses, reconcileSyncedInvitations, type RestatedEvent } from "./syncedInvitations.js";
 import {
   CalendarSyncProviderError,
   type CalendarChanges,
@@ -111,6 +112,9 @@ const remoteEventSchema = z.strictObject({
   fields: fieldsSchema,
   organizer: participantSchema.nullable(),
   attendees: z.array(participantSchema).max(MAX_PARTICIPANTS),
+  icalUid: nullableShortText.optional(),
+  sequence: z.number().int().nonnegative().nullable().optional(),
+  selfStatus: nullableShortText.optional(),
 });
 
 const changesSchema = z.strictObject({
@@ -215,13 +219,25 @@ export const REMOTE_EVENT_FIELD_KEYS = [
   "alertMinutes",
 ] as const satisfies readonly (keyof RemoteEventFields)[];
 
-/** What `base_snapshot` stores: the provider's fields and participants as last applied. */
-export function snapshotOf(event: Pick<RemoteEvent, "fields" | "seriesRemoteId" | "organizer" | "attendees">) {
+/**
+ * What `base_snapshot` stores: the provider's fields and participants as last applied, with the invitation identity
+ * (`icalUid`, `sequence`, `selfStatus`) the provider reported, so a change of the account's own answer alone is a
+ * change too.
+ */
+export function snapshotOf(
+  event: Pick<
+    RemoteEvent,
+    "fields" | "seriesRemoteId" | "organizer" | "attendees" | "icalUid" | "sequence" | "selfStatus"
+  >,
+) {
   return {
     fields: event.fields,
     seriesRemoteId: event.seriesRemoteId,
     organizer: event.organizer,
     attendees: event.attendees,
+    ...(event.icalUid === undefined ? {} : { icalUid: event.icalUid }),
+    ...(event.sequence === undefined ? {} : { sequence: event.sequence }),
+    ...(event.selfStatus === undefined ? {} : { selfStatus: event.selfStatus }),
   };
 }
 
@@ -271,16 +287,6 @@ function sameTracked(stored: readonly StoredAccountCalendar[], tracked: TrackedC
   return isDeepStrictEqual(trackedCalendarsSnapshot(stored), tracked);
 }
 
-/** The account's addresses, one per line in `Mailboxes.addresses`. */
-function accountAddresses(properties: Record<string, unknown>): string[] {
-  const { addresses } = properties;
-  if (typeof addresses !== "string") return [];
-  return addresses
-    .split(/[\n,\r]+/)
-    .map((value) => value.trim())
-    .filter(Boolean);
-}
-
 function textProperty(properties: Record<string, unknown>, key: string): string | null {
   const value = properties[key];
   return typeof value === "string" && value !== "" ? value : null;
@@ -307,6 +313,10 @@ function refusedField(error: ValidationError): string | null {
  * Except in the account's initial sync, the Events added, cancelled, or changed in title, time or place in a calendar
  * that was tracked before this pass and has `notify` on are notified in the same transaction. A change that leaves
  * those fields as the Event already had them locally (the echo of a local edit) is not news.
+ *
+ * After the Event writes, the Events that invite the account (`syncedInvitations.ts`) get or update their Invitations
+ * row, and an Event the provider deleted cancels its invitation. An Event whose invitation was notified gets no
+ * added or changed notice of its own.
  */
 export async function applyCalendarSync(
   client: PoolClient,
@@ -400,6 +410,8 @@ export async function applyCalendarSync(
   const changed: SyncedEventChange[] = [];
   const cancelled: SyncedEventChange[] = [];
   const notices: CalendarChangeNotice[] = [];
+  /** The Events this pass wrote or whose snapshot changed, which may stand for an invitation. */
+  const restated: RestatedEvent[] = [];
   let skippedEvents = 0;
   const pushesToRequeue = new Set<string>();
   for (const { calendar, changes, calendarItemId, notify } of targets) {
@@ -469,6 +481,9 @@ export async function applyCalendarSync(
         continue;
       }
       itemIdByRemoteId.set(event.remoteId, outcome.eventItemId);
+      if (outcome.kind !== "unchanged" || outcome.restated) {
+        restated.push({ eventItemId: outcome.eventItemId, calendarItemId, event });
+      }
       const change = { eventItemId: outcome.eventItemId, calendarItemId, remoteId: event.remoteId };
       if (outcome.kind === "created") added.push(change);
       if (outcome.kind === "updated") changed.push(change);
@@ -501,11 +516,20 @@ export async function applyCalendarSync(
   }
   for (const eventItemId of [...pushesToRequeue].sort()) await enqueueCalendarEventPush(client, eventItemId);
 
+  const ownAddresses = await accountOwnAddresses(client, accountItemId, account.properties);
+  const invited = await reconcileSyncedInvitations(client, {
+    accountItemId,
+    ownAddresses,
+    initialSync,
+    events: restated,
+    cancelledEventItemIds: cancelled.map((change) => change.eventItemId),
+  });
   await notifyCalendarChanges(client, {
     accountItemId,
     calendars: notifiedCalendars,
-    ownAddresses: accountAddresses(account.properties),
-    notices,
+    ownAddresses,
+    // An invitation's own notification stands for its Event's addition or change.
+    notices: notices.filter((notice) => notice.kind === "cancelled" || !invited.has(notice.eventItemId)),
   });
   await recordCalendarSyncSuccess(client, accountItemId);
   await resolveProblem(client, { dedupeKey: calendarProblemKey(accountItemId), resolutionKind: "recovered" });
@@ -513,7 +537,9 @@ export async function applyCalendarSync(
 }
 
 type EventOutcome =
-  | { kind: "created" | "unchanged"; eventItemId: string }
+  | { kind: "created"; eventItemId: string }
+  /** `restated`: the provider's snapshot changed (participants, an answer) without a field to write. */
+  | { kind: "unchanged"; eventItemId: string; restated: boolean }
   /** A local change of the Event waits for its push, which merges the provider's change in. */
   | { kind: "pendingPush"; eventItemId: string }
   /** `news`: the provider changed a notified field to a value the Event did not already have. */
@@ -554,7 +580,7 @@ async function applyEvent(
     if (existing.href !== event.href || existing.etag !== event.etag) {
       await upsertEventRemoteState(client, { ...remoteState, eventItemId: existing.eventItemId });
     }
-    return { kind: "unchanged", eventItemId: existing.eventItemId };
+    return { kind: "unchanged", eventItemId: existing.eventItemId, restated: false };
   }
   if (existing && (await hasPendingPush(client, ids, existing.eventItemId))) {
     return { kind: "pendingPush", eventItemId: existing.eventItemId };
@@ -580,7 +606,7 @@ async function applyEvent(
         await upsertEventRemoteState(client, { ...remoteState, eventItemId: existing.eventItemId });
         return Object.keys(patch).length > 0
           ? { kind: "updated", eventItemId: existing.eventItemId, news }
-          : { kind: "unchanged", eventItemId: existing.eventItemId };
+          : { kind: "unchanged", eventItemId: existing.eventItemId, restated: true };
       }
       const created = await createEventInCalendar(
         client,

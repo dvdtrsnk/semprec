@@ -1,6 +1,7 @@
 import { handleCalendarSubscriptionSweepTask } from "./calendar/calendarSubscriptionSweep.js";
 import { handleCalendarAccountCleanupTask } from "./calendar/sync/calendarAccountCleanupJob.js";
 import { handleCalendarEventPushTask } from "./calendar/sync/eventPushJob.js";
+import { handleCalendarInvitationRespondTask } from "./calendar/sync/invitationRespondJob.js";
 import {
   handleCalendarPushChannelsSweepTask,
   handleCalendarPushChannelsTask,
@@ -231,6 +232,12 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: async (payload, helpers) => {
       await handleCalendarEventPushTask(pool, payload, { jobId: helpers.job.id });
+    },
+    [CORE_TASK_NAMES.CALENDAR_INVITATION_RESPOND]: async (payload, helpers) => {
+      await handleCalendarInvitationRespondTask(pool, payload, {
+        jobId: helpers.job.id,
+        isFinalAttempt: helpers.job.attempts >= helpers.job.max_attempts,
+      });
     },
     // The OAuth clients and webhook URLs come from `setCalendarPushRuntime`, which the composition root calls.
     [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: async (payload) => {

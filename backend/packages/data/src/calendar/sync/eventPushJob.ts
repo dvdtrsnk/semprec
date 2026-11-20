@@ -36,9 +36,9 @@ import {
   type CalendarSyncAdapterRegistry,
   type CalendarSyncWindow,
   type RemoteCalendar,
+  type RemoteEvent,
   type RemoteEventFields,
   type RemoteEventRef,
-  type RemoteParticipant,
 } from "./adapter.js";
 import { CALENDAR_SYNC_ADAPTERS } from "./adapters/index.js";
 import { lockCalendarAccountSync } from "./calendarAccountSyncGuard.js";
@@ -94,6 +94,9 @@ const participantSchema = z.object({
 const snapshotParticipantsSchema = z.object({
   organizer: participantSchema.nullable().catch(null),
   attendees: z.array(participantSchema).catch([]),
+  icalUid: z.string().nullable().optional().catch(undefined),
+  sequence: z.number().int().nullable().optional().catch(undefined),
+  selfStatus: z.string().nullable().optional().catch(undefined),
 });
 
 export type CalendarEventPushResult =
@@ -118,7 +121,7 @@ export interface CalendarEventPushOptions {
 }
 
 /** An account calendar the sync tracks, with what its adapter is opened with. */
-interface Endpoint {
+export interface Endpoint {
   calendarItemId: string;
   account: CalendarSyncAccountContext;
   remote: RemoteCalendar;
@@ -344,7 +347,11 @@ async function planPush(client: PoolClient, ids: CalendarSyncIds, item: ItemRow,
   };
 }
 
-async function endpointOf(client: PoolClient, ids: CalendarSyncIds, calendarItemId: string): Promise<Endpoint | null> {
+export async function endpointOf(
+  client: PoolClient,
+  ids: CalendarSyncIds,
+  calendarItemId: string,
+): Promise<Endpoint | null> {
   const remote = await getCalendarRemoteState(client, calendarItemId);
   if (remote === null) return null;
   const accountItemId = await getAccountOfCalendar(client, ids, calendarItemId);
@@ -475,11 +482,17 @@ async function storeResult(
   });
 }
 
-function participantsOf(snapshot: Record<string, unknown>): {
-  organizer: RemoteParticipant | null;
-  attendees: RemoteParticipant[];
-} {
-  return snapshotParticipantsSchema.parse(snapshot);
+/** The participants and invitation identity of a stored snapshot, which a push of the fields leaves as they are. */
+function participantsOf(
+  snapshot: Record<string, unknown>,
+): Pick<RemoteEvent, "organizer" | "attendees" | "icalUid" | "sequence" | "selfStatus"> {
+  const { icalUid, sequence, selfStatus, ...participants } = snapshotParticipantsSchema.parse(snapshot);
+  return {
+    ...participants,
+    ...(icalUid === undefined ? {} : { icalUid }),
+    ...(sequence === undefined ? {} : { sequence }),
+    ...(selfStatus === undefined ? {} : { selfStatus }),
+  };
 }
 
 function refOf(stored: StoredRemoteEvent): RemoteEventRef {

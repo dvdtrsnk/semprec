@@ -1402,6 +1402,22 @@ const cases: Record<string, TaskCase> = {
       );
     },
   },
+  [CORE_TASK_NAMES.CALENDAR_INVITATION_RESPOND]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      // No synced Event is linked, so the answer cannot reach a provider and the invitation is pending again.
+      const { invitationId, respondedAt } = await seedAnsweredInvitation(tenant);
+      return { invitationId, response: "accepted", respondedAt };
+    },
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT properties->>'status' AS status FROM items WHERE id = $1",
+        [str(payload, "invitationId")],
+        [{ status: "pending" }],
+      );
+    },
+  },
   [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: {
     tenancy: "tenant",
     async seed(tenant) {

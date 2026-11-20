@@ -7,6 +7,8 @@ import { shiftDays } from "../../../recurrenceExpansion.js";
 import type { RemoteEvent, RemoteEventFields, RemoteParticipant } from "../../adapter.js";
 
 const MAX_PARTICIPANTS = 500;
+/** The sync's apply bound on an id; a longer `iCalUID` is not reported. */
+const MAX_ID_LENGTH = 2048;
 
 const eventTimeSchema = z.object({
   date: z.string().optional(),
@@ -17,6 +19,7 @@ type GoogleEventTime = z.infer<typeof eventTimeSchema>;
 
 const personSchema = z.object({ email: z.string().optional(), displayName: z.string().optional() });
 const attendeeSchema = personSchema.extend({
+  self: z.boolean().optional(),
   optional: z.boolean().optional(),
   resource: z.boolean().optional(),
   responseStatus: z.string().optional(),
@@ -26,6 +29,8 @@ export const googleReminderSchema = z.object({ method: z.string(), minutes: z.nu
 export const googleEventSchema = z.object({
   id: z.string().min(1),
   etag: z.string().optional(),
+  iCalUID: z.string().optional(),
+  sequence: z.number().int().nonnegative().optional(),
   status: z.string().optional(),
   summary: z.string().optional(),
   description: z.string().optional(),
@@ -239,6 +244,9 @@ export function googleRemoteEvent(
     attendees: (event.attendees ?? [])
       .slice(0, MAX_PARTICIPANTS)
       .map((attendee) => participant(attendee, attendeeRole(attendee), attendee.responseStatus ?? null)),
+    icalUid: event.iCalUID !== undefined && event.iCalUID.length <= MAX_ID_LENGTH ? event.iCalUID : null,
+    sequence: event.sequence ?? null,
+    selfStatus: (event.attendees ?? []).find((attendee) => attendee.self === true)?.responseStatus ?? null,
   };
 }
 

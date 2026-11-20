@@ -6,6 +6,7 @@ import type { OutboundAddressPolicy } from "../../../../net/outboundAddressPolic
 import { logger } from "../../../logger.js";
 import {
   CalendarSyncEventConflictError,
+  CalendarSyncWriteUnsupportedError,
   type CalendarChanges,
   type CalendarSyncAccount,
   type CalendarSyncAdapter,
@@ -36,11 +37,14 @@ import {
   parseOverrideRemoteId,
   removeOccurrence,
   serializeNewResource,
+  setAttendeeParticipation,
   updateResource,
   type ParsedResource,
 } from "./caldavIcal.js";
 
 const ICLOUD_CALDAV_URL = "https://caldav.icloud.com/";
+
+const PARTSTATS = { accepted: "ACCEPTED", tentative: "TENTATIVE", declined: "DECLINED" } as const;
 
 /** Where discovery starts: iCloud's root, the account's CalDAV address, or the well-known address of its domain. */
 function caldavStartUrl(input: { provider: string | null; caldavUrl: string | null; address: string }): URL {
@@ -194,6 +198,22 @@ export function createCalDavAdapter(
         const parsed = parseCalendarResource(current.text, { href: current.href.href, etag: current.etag });
         if (parsed === null) throw invalidResponse("The CalDAV resource is unreadable");
         return parsed.events.find((event) => event.remoteId === ref.remoteId) ?? null;
+      }),
+
+    // The attendee's PARTSTAT written to the resource: a server with scheduling (RFC 6638) sends the organizer the
+    // reply itself.
+    respondToInvitation: (_calendar, ref, { response, attendeeEmails }, signal) =>
+      session(signal, async (s) => {
+        const href = eventHref(ref);
+        const current = await fetchResource(s, href);
+        if (current === null) return "gone";
+        const addresses = new Set(attendeeEmails.map((email) => email.toLowerCase()));
+        const text = edited(() => setAttendeeParticipation(current.text, addresses, PARTSTATS[response]));
+        if (text === null)
+          throw new CalendarSyncWriteUnsupportedError("The account is no attendee of the CalDAV Event");
+        const outcome = await replaceResource(s, href, text, current.etag);
+        if (outcome.kind === "conflict") throw new CalendarSyncEventConflictError();
+        return outcome.kind === "gone" ? "gone" : "answered";
       }),
 
     deleteEvent: (_calendar, ref, signal) =>

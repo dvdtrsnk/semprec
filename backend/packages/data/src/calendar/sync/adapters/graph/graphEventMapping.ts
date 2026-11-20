@@ -55,6 +55,9 @@ export const graphEventSchema = z.object({
       }),
     )
     .nullish(),
+  iCalUId: z.string().nullish(),
+  isOrganizer: z.boolean().nullish(),
+  responseStatus: z.object({ response: z.string().nullish() }).nullish(),
   originalStart: z.string().max(64).nullish(),
   originalStartTimeZone: z.string().max(256).nullish(),
   recurrence: graphRecurrenceSchema.nullish(),
@@ -207,6 +210,9 @@ export function remoteEventOf(event: GraphEvent, placement: GraphEventPlacement)
           text(attendee.status?.response, MAX_SHORT_TEXT_LENGTH),
         ),
       ),
+    icalUid: event.iCalUId && event.iCalUId.length <= MAX_SHORT_TEXT_LENGTH ? event.iCalUId : null,
+    // The attendee's own copy reports its answer here; `attendees` there need not.
+    selfStatus: event.isOrganizer === true ? null : text(event.responseStatus?.response, MAX_SHORT_TEXT_LENGTH),
   };
 }
 

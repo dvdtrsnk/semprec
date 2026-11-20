@@ -78,7 +78,19 @@ export interface RemoteEvent {
   fields: RemoteEventFields;
   organizer: RemoteParticipant | null;
   attendees: RemoteParticipant[];
+  /** The iCalendar `UID` (Google `iCalUID`, Graph `iCalUId`), when the provider reports it. */
+  icalUid?: string | null;
+  /** The iCalendar `SEQUENCE`, when the provider reports it (Graph does not). */
+  sequence?: number | null;
+  /**
+   * The account's own participation status as the provider reports it apart from `attendees` (the Google attendee
+   * marked `self`, Graph's `responseStatus`); absent or `null` when the attendee is found by address instead.
+   */
+  selfStatus?: string | null;
 }
+
+/** An answer to an invitation, as the account's attendee gives it at the provider. */
+export type InvitationResponse = "accepted" | "tentative" | "declined";
 
 /**
  * The result of one fetch. With `full`, `upserts` is every Event of the calendar in the window, and a stored Event
@@ -142,6 +154,20 @@ export interface CalendarSyncAdapter {
     event: RemoteEventRef,
     options: { window: CalendarSyncWindow; signal: AbortSignal },
   ): Promise<RemoteEvent | null>;
+  /**
+   * Sets the account's own attendance of the Event (a master or single Event) to `response` and has the provider tell
+   * the organizer: Google patches the attendee's `responseStatus` with `sendUpdates=all`, Graph answers through
+   * `accept` / `tentativelyAccept` / `decline` with `sendResponse`, CalDAV writes the attendee's `PARTSTAT` so the
+   * server schedules the reply. `attendeeEmails` are the account's addresses, for providers that find the attendee
+   * by address. `gone` when the provider no longer has the Event; an Event without the account as an attendee throws
+   * `CalendarSyncWriteUnsupportedError`.
+   */
+  respondToInvitation(
+    calendar: RemoteCalendar,
+    event: RemoteEventRef,
+    answer: { response: InvitationResponse; attendeeEmails: readonly string[] },
+    signal: AbortSignal,
+  ): Promise<"answered" | "gone">;
   /**
    * Moves an Event to another calendar of the account, keeping its identity at the provider. A provider without a
    * move leaves it out, and the caller deletes the Event and creates it in the other calendar.

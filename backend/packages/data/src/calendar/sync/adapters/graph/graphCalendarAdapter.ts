@@ -20,6 +20,7 @@ import {
   type CalendarSyncAdapterFactory,
   type CalendarSyncCursor,
   type CalendarSyncWindow,
+  type InvitationResponse,
   type PutRemoteEventInput,
   type RemoteCalendar,
   type RemoteEvent,
@@ -105,6 +106,12 @@ function windowRange(window: CalendarSyncWindow): string {
   const end = `${shiftDays(window.end, 2)}T00:00:00Z`;
   return `startDateTime=${encodeURIComponent(start)}&endDateTime=${encodeURIComponent(end)}`;
 }
+
+const GRAPH_ANSWER_ACTIONS: Readonly<Record<InvitationResponse, string>> = {
+  accepted: "accept",
+  tentative: "tentativelyAccept",
+  declined: "decline",
+};
 
 function eventPath(id: string): string {
   return `${GRAPH_API_ROOT}/me/events/${encodeURIComponent(id)}`;
@@ -262,6 +269,25 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
       exceptionDates: null,
       recurrenceId: null,
     });
+  }
+
+  /** Microsoft's own answer actions, with `sendResponse` so the organizer gets the answer. */
+  async respondToInvitation(
+    _calendar: RemoteCalendar,
+    ref: RemoteEventRef,
+    answer: { response: InvitationResponse; attendeeEmails: readonly string[] },
+    signal: AbortSignal,
+  ): Promise<"answered" | "gone"> {
+    const response = await this.http.send(
+      {
+        method: "POST",
+        url: `${eventPath(ref.remoteId)}/${GRAPH_ANSWER_ACTIONS[answer.response]}`,
+        body: { sendResponse: true },
+        tolerate: [404],
+      },
+      signal,
+    );
+    return response.status === 404 ? "gone" : "answered";
   }
 
   async deleteEvent(_calendar: RemoteCalendar, event: RemoteEventRef, signal: AbortSignal): Promise<void> {

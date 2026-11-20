@@ -293,7 +293,15 @@ function remoteEvent(
       .map((attendee) => participant(attendee, true))
       .filter(storable)
       .slice(0, MAX_PARTICIPANTS),
+    icalUid: parts.uid,
+    sequence: sequenceOf(component),
   };
+}
+
+/** `SEQUENCE`, when it is a non-negative integer. */
+function sequenceOf(component: ICAL.Component): number | null {
+  const value: unknown = component.getFirstPropertyValue("sequence");
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 /**
@@ -577,6 +585,31 @@ export function updateResource(text: string, fields: RemoteEventFields): { text:
     text: parts.root.toString(),
     remoteId: fields.recurrenceId === null ? parts.uid : overrideRemoteId(parts.uid, fields.recurrenceId),
   };
+}
+
+/**
+ * The resource with the `PARTSTAT` of every `ATTENDEE` with one of `addresses` (lower-case) set to `partstat`, in the
+ * series and each override, and their `RSVP` request dropped; everything else stays as it was. `null` when no
+ * attendee has one of the addresses.
+ */
+export function setAttendeeParticipation(
+  text: string,
+  addresses: ReadonlySet<string>,
+  partstat: "ACCEPTED" | "TENTATIVE" | "DECLINED",
+): string | null {
+  const parts = editableParts(text);
+  const components = parts.master === null ? parts.overrides : [parts.master, ...parts.overrides];
+  let found = false;
+  for (const component of components) {
+    for (const attendee of component.getAllProperties("attendee")) {
+      const { email } = participant(attendee, false);
+      if (email === null || !addresses.has(email.toLowerCase())) continue;
+      attendee.setParameter("partstat", partstat);
+      attendee.removeParameter("rsvp");
+      found = true;
+    }
+  }
+  return found ? parts.root.toString() : null;
 }
 
 /** The resource without the occurrence `recurrenceId`: its override is removed and the series excludes it. */

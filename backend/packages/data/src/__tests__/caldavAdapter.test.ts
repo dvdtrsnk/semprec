@@ -9,6 +9,7 @@ import {
   CalendarSyncEventConflictError,
   CalendarSyncProviderError,
   CalendarSyncReauthorizationRequiredError,
+  CalendarSyncWriteUnsupportedError,
   type CalendarSyncAccount,
   type CalendarSyncAdapter,
   type RemoteCalendar,
@@ -307,6 +308,8 @@ describe("CalDAV adapter against a fake server", () => {
       fields: STANDUP_FIELDS,
       organizer: { email: "boss@example.test", name: "Boss", role: null, status: null },
       attendees: [{ email: "owner@example.test", name: "Owner", role: "REQ-PARTICIPANT", status: "NEEDS-ACTION" }],
+      icalUid: "standup-uid",
+      sequence: null,
     });
     expect(events.get('["standup-uid","2026-11-25T09:00"]')).toMatchObject({
       seriesRemoteId: "standup-uid",
@@ -504,6 +507,45 @@ describe("CalDAV adapter against a fake server", () => {
     const after = byRemoteId((await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() })).upserts);
     expect([...after.keys()]).toEqual(["standup-uid"]);
     expect(after.get("standup-uid")?.fields.exceptionDates).toEqual(["2026-11-25T09:00", "2026-12-02T09:00"]);
+  });
+
+  it("answers an invitation by writing the account attendee's PARTSTAT, conditional on the etag", async () => {
+    const caldav = adapter();
+    const work = await calendarNamed(caldav, "Work");
+    const events = (await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() })).upserts;
+    const standup = eventNamed(events, "Standup");
+    const etagBefore = server.resource("work", "standup.ics")?.etag;
+    const answer = { response: "declined", attendeeEmails: ["OWNER@example.test"] } as const;
+
+    expect(await caldav.respondToInvitation(work, standup, answer, signal())).toBe("answered");
+
+    // Unfolded: iCalendar folds lines longer than 75 octets.
+    const text = (server.resource("work", "standup.ics")?.text ?? "").replaceAll("\r\n ", "");
+    expect(text).toMatch(/ATTENDEE;CN=Owner;ROLE=REQ-PARTICIPANT;PARTSTAT=DECLINED:mailto:owner@example.test/);
+    expect(text).toContain("ORGANIZER;CN=Boss:mailto:boss@example.test");
+    expect(server.resource("work", "standup.ics")?.etag).not.toBe(etagBefore);
+    const reread = await caldav.getEvent(work, { ...standup, etag: null }, { window: WINDOW, signal: signal() });
+    expect(reread?.attendees).toEqual([
+      { email: "owner@example.test", name: "Owner", role: "REQ-PARTICIPANT", status: "DECLINED" },
+    ]);
+
+    const lunch = eventNamed(events, "Lunch");
+    await expect(
+      caldav.respondToInvitation(
+        work,
+        lunch,
+        { response: "accepted", attendeeEmails: ["owner@example.test"] },
+        signal(),
+      ),
+    ).rejects.toBeInstanceOf(CalendarSyncWriteUnsupportedError);
+    server.refuseNextWrite = true;
+    await expect(caldav.respondToInvitation(work, standup, answer, signal())).rejects.toBeInstanceOf(
+      CalendarSyncEventConflictError,
+    );
+    await caldav.deleteEvent(work, lunch, signal());
+    expect(await caldav.respondToInvitation(work, lunch, { response: "accepted", attendeeEmails: [] }, signal())).toBe(
+      "gone",
+    );
   });
 
   it("answers a refused login as needing reauthorization", async () => {

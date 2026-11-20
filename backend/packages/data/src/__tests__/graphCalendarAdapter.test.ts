@@ -199,6 +199,8 @@ describe("Microsoft Graph calendar adapter", () => {
           { email: "alex@example.test", name: "Alex Doe", role: "required", status: "tentativelyAccepted" },
           { email: "sam@example.test", name: "Sam Roe", role: "optional", status: "none" },
         ],
+        icalUid: null,
+        selfStatus: null,
       });
 
       // A removed occurrence (16 Nov, no instance) and a cancelled one (18 Nov) are exceptions of the series.
@@ -641,6 +643,54 @@ describe("Microsoft Graph calendar adapter", () => {
         await adapter.getEvent(WORK, { remoteId: "AAMkSeries-standup-exc-1104", href: null, etag: null }, options),
       ).toMatchObject({ seriesRemoteId: "AAMkSeries-standup", fields: { recurrenceId: "2026-11-04T09:00" } });
       expect(await adapter.getEvent(WORK, { remoteId: "AAMkEv-gone", href: null, etag: null }, options)).toBeNull();
+    });
+
+    it("reads the attendee's own answer and answers through Microsoft's actions with a response to the organizer", async () => {
+      const graph = new FakeGraph({
+        "GET /me/events/AAMkEv-invite": () =>
+          json({
+            id: "AAMkEv-invite",
+            "@odata.etag": 'W/"i1"',
+            type: "singleInstance",
+            iCalUId: "040000008200E00074C5B7101A82E008",
+            isOrganizer: false,
+            responseStatus: { response: "notResponded" },
+            subject: "Design review",
+            start: { dateTime: "2026-11-27T09:00:00", timeZone: "UTC" },
+            end: { dateTime: "2026-11-27T10:00:00", timeZone: "UTC" },
+            organizer: { emailAddress: { name: "Olga", address: "olga@example.test" } },
+          }),
+        "POST /me/events/AAMkEv-invite/accept": () => new Response(null, { status: 202 }),
+        "POST /me/events/AAMkEv-invite/tentativelyAccept": () => new Response(null, { status: 202 }),
+        "POST /me/events/AAMkEv-invite/decline": () => new Response(null, { status: 202 }),
+        "POST /me/events/AAMkEv-gone/accept": () => json({}, 404),
+      });
+      const adapter = adapterOn(graph);
+      const ref = { remoteId: "AAMkEv-invite", href: null, etag: null };
+      expect(await adapter.getEvent(WORK, ref, { window: WINDOW, signal: signal() })).toMatchObject({
+        icalUid: "040000008200E00074C5B7101A82E008",
+        selfStatus: "notResponded",
+      });
+
+      for (const response of ["accepted", "tentative", "declined"] as const) {
+        expect(await adapter.respondToInvitation(WORK, ref, { response, attendeeEmails: [] }, signal())).toBe(
+          "answered",
+        );
+      }
+      const answers = graph.graphRequests().filter((request) => request.method === "POST");
+      expect(answers.map((request) => [request.url.pathname.split("/").pop(), request.body])).toEqual([
+        ["accept", { sendResponse: true }],
+        ["tentativelyAccept", { sendResponse: true }],
+        ["decline", { sendResponse: true }],
+      ]);
+      expect(
+        await adapter.respondToInvitation(
+          WORK,
+          { remoteId: "AAMkEv-gone", href: null, etag: null },
+          { response: "accepted", attendeeEmails: [] },
+          signal(),
+        ),
+      ).toBe("gone");
     });
 
     it("deletes with If-Match, and an Event already gone is deleted", async () => {

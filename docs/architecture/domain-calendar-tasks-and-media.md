@@ -15,8 +15,9 @@ agents, approvals and the AI gateway in [agents-approvals-and-ai.md](agents-appr
 ### Tenancy
 
 - Calendars, Events and invitations are private to their tenant: no cross-tenant reads, writes or calendar sharing.
-- Meetings arrive by email invitation (iMIP, `calendar/invitationIngestAction.ts`); external calendars arrive by ICS
-  subscription (`calendar/subscribedEventsImport.ts`), read-only, and through internet accounts, synced both ways.
+- Meetings arrive by email invitation (iMIP, `calendar/invitationIngestAction.ts`), except for an internet account
+  with Calendars on, whose invitations come from its synced calendars (`calendar/sync/syncedInvitations.ts`) and whose
+  e-mails the iMIP ingest skips; external calendars arrive by ICS subscription (`calendar/subscribedEventsImport.ts`), read-only, and through internet accounts, synced both ways.
   All stay inside one tenant.
 - An internet account's calendar is a Calendars row of `kind` `account` linked to its Mailboxes item by the
   `Calendars.account` ↔ `Mailboxes.calendars` relation (one-to-many). Its remote identity lives in tenant side tables
@@ -261,8 +262,8 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   with its `account` edge, a known one gets changed `remoteName`/`remoteColor`/`readOnly`, one no longer listed loses
   its remote state and the cleanup is queued. Then Events by `(calendar, remote_id)`: a deletion (or, for a full
   fetch, a stored Event of the window not listed) is trashed and its remote state deleted; an Event whose
-  `base_snapshot` (fields, series, organizer, attendees) equals the fetched one writes nothing, and only its remote
-  state when its href or etag changed; otherwise the fields the provider changed since the snapshot are written and
+  `base_snapshot` (fields, series, organizer, attendees, and the iCalendar UID, `SEQUENCE` and the account's own
+  answer where the provider reports them) equals the fetched one writes nothing, and only its remote state when its href or etag changed; otherwise the fields the provider changed since the snapshot are written and
   other fields keep local edits. Overrides follow their series (`seriesId`, `recurrenceId`). Each Event runs in a
   savepoint: a `ValidationError` from an Event rule skips that Event. Event writes pass `allowedSystemKeys` for the
   provider fields and `seriesId` and no `systemOwnerProcess`; calendar writes pass `systemOwnerProcess: "calendar"`.
@@ -303,6 +304,28 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   it is one of the account's addresses or has no name. The dedupe instance is the kind plus the provider's etag (else
   a hash of the snapshot), so a replay writes nothing new. The APNs payload carries `event_id` (not for a summary)
   and `calendar_id`.
+- **Invitations** (`syncedInvitations.ts`, `invitationRespondJob.ts`). In the apply's transaction, after its Event
+  writes, a master or single Event the pass wrote or whose snapshot changed, whose organizer is not one of the
+  account's addresses (`Mailboxes.addresses`, a password account's login name) and in which the account attends with
+  NEEDS-ACTION (the provider's own report: Google's `self` attendee, Graph's `responseStatus`; else the attendee with
+  an account address, no `PARTSTAT` counting as NEEDS-ACTION) gets an Invitations row (`kind` `invite`, `status`
+  `pending`, `uid` the provider's iCalendar UID, `sequence`) linked to the Event, the account and the Event's
+  calendar, under the same `UID` advisory lock as the iMIP ingest. An invitation of that `UID` that an e-mail
+  delivered and no Event holds yet is adopted instead. Its `calendar_invitation` notification is deduped per
+  invitation and `SEQUENCE` (`sequence:<n>`), is not written in the account's initial sync, and replaces the
+  Event's added or changed notice. The invitation's fields follow the Event; NEEDS-ACTION at a higher `SEQUENCE`
+  makes an answered invitation pending and notifies it again; a pending one the account answered at the provider
+  takes that answer. An Event the provider deletes cancels its pending, accepted or tentative invitation (a
+  declined one stays declined, since Graph removes a declined meeting). Answering an invitation whose Event an
+  account calendar holds (`POST /api/calendar/invitations/:id/respond`) writes only the invitation's `status` and
+  `respondedAt` and queues `calendarInvitationRespond` (key `calendar-invitation-respond:<invitation>`, replaced,
+  5 attempts, `api`) in that transaction; the Event is left to the provider, and an Event the provider no longer
+  has answers 409. The job, with no transaction open, calls the adapter's `respondToInvitation`: Google patches the
+  account's attendee `responseStatus` (`attendeesOmitted`, `sendUpdates=all`), Graph posts `accept`,
+  `tentativelyAccept` or `decline` with `sendResponse`, CalDAV writes the attendee's `PARTSTAT` (`If-Match`) for the
+  server's scheduling to reply; no iTIP e-mail is sent. Success queues a pass. An Event the provider no longer has,
+  one without the account as an attendee, or the last failed attempt makes the invitation pending again, while it
+  still holds that answer; a refused credential or grant also records the account's status and Semp problem.
 - **Status.** `calendar_account_sync_state` (`status` `ok` | `error` | `never` | `needsReauthorization` |
   `needsConsent`, `last_successful_sync_at`, `failing_since`, `last_error_code`, `initial_sync_completed_at`,
   `manual_sync_requested_at`). `calendarStatusOf` derives the rows' `calendarStatus`: `off` with Calendars off,

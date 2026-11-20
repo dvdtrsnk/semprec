@@ -32,8 +32,8 @@ export const calendarRespondToInvitationArgsSchema = z
       ),
   })
   .describe(
-    "Answer an incoming calendar invitation. It sends the answer to the organizer by email, so a person approves " +
-      "every call before it runs.",
+    "Answer an incoming calendar invitation. It sends the answer to the organizer, by email or through the " +
+      "internet account's calendar provider, so a person approves every call before it runs.",
   );
 
 export const calendarPlaceTaskInEventArgsSchema = z

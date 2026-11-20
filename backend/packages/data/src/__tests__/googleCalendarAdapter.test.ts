@@ -791,6 +791,56 @@ describe("Google Calendar adapter", () => {
       ]);
     });
 
+    it("answers an invitation by patching only the account's attendee with guest notification", async () => {
+      const meeting = {
+        id: "review",
+        etag: '"e-review-1"',
+        iCalUID: "review@google.com",
+        sequence: 2,
+        status: "confirmed",
+        summary: "Design review",
+        start: { dateTime: "2026-11-27T10:00:00+01:00", timeZone: "Europe/Prague" },
+        end: { dateTime: "2026-11-27T11:00:00+01:00", timeZone: "Europe/Prague" },
+        organizer: { email: "olga@example.test", displayName: "Olga" },
+        attendees: [
+          { email: "olga@example.test", responseStatus: "accepted" },
+          { email: "me.alias@example.test", self: true, responseStatus: "needsAction" },
+        ],
+      };
+      google.on("GET", `/calendars/${PRIMARY}/events/review`, () => ({ status: 200, body: meeting }));
+      google.on("PATCH", `/calendars/${PRIMARY}/events/review`, () => ({
+        status: 200,
+        body: { ...meeting, etag: '"e-review-2"' },
+      }));
+      google.on("GET", `/users/me/calendarList/${PRIMARY}`, () => ({
+        status: 200,
+        body: { timeZone: "Europe/Prague", defaultReminders: [] },
+      }));
+      google.on("GET", `/calendars/${PRIMARY}/events/gone`, () => ({ status: 404 }));
+      const run = adapterIn(await createGoogleAccount(GRANT));
+      const ref = { remoteId: "review", href: null, etag: '"e-review-1"' };
+      const options = { window: { start: "2026-11-01", end: "2026-12-31" }, signal: signal() };
+
+      expect(await run((adapter) => adapter.getEvent(calendar, ref, options))).toMatchObject({
+        icalUid: "review@google.com",
+        sequence: 2,
+        selfStatus: "needsAction",
+      });
+      const answer = { response: "tentative", attendeeEmails: [PRIMARY] } as const;
+      expect(await run((adapter) => adapter.respondToInvitation(calendar, ref, answer, signal()))).toBe("answered");
+      const patch = google.requests.find((request) => request.method === "PATCH");
+      expect(patch?.query.get("sendUpdates")).toBe("all");
+      expect(patch?.body).toEqual({
+        attendees: [{ email: "me.alias@example.test", responseStatus: "tentative" }],
+        attendeesOmitted: true,
+      });
+      expect(
+        await run((adapter) =>
+          adapter.respondToInvitation(calendar, { remoteId: "gone", href: null, etag: null }, answer, signal()),
+        ),
+      ).toBe("gone");
+    });
+
     it("an adapter running in another tenant cannot use the account's credential", async () => {
       const run = adapterIn(await createGoogleAccount(GRANT), foreign);
       await expect(run((adapter) => adapter.listCalendars(signal()))).rejects.toThrow(/No OAuth credential/);
