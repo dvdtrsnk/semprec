@@ -41,7 +41,8 @@ struct NoteEditorScreen: View {
             .sensoryFeedback(.success, trigger: confirmations)
             .haptic(.standard, trigger: interaction.swipe?.step)
             .haptic(.standard, trigger: interaction.menu?.highlighted)
-            .haptic(.gentle, trigger: interaction.drag.map { [$0.target, $0.indent] })
+            .sensoryFeedback(.selection, trigger: interaction.drag.map { [$0.target, $0.indent] })
+            .sensoryFeedback(trigger: NoteSelectionHaptic(interaction)) { old, new in old.feedback(to: new) }
             .haptic(.standard, trigger: interaction.holds)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(NoteEditorIdentifiers.editor)
@@ -282,6 +283,9 @@ private extension NoteEditorScreen {
 
     func edit(_ edit: NoteEditorBlockEdit) {
         if case .makeSubpage = edit, !viewModel.variant.offersSubpages { return }
+        if case .toggleDone(let blockId) = edit, state.blocks.first(where: { $0.id == blockId })?.done == false {
+            confirmations += 1
+        }
         viewModel.edit(withChildren(edit))
         switch edit {
         case .duplicate, .delete, .makeSubpage, .move: confirmations += 1

@@ -213,6 +213,19 @@ final class NoteInteractionTests: XCTestCase {
         )
     }
 
+    func testSelectionModeTapsLightlyOnStartAndTicksOnEachChange() {
+        let interaction = interaction()
+        let idle = NoteSelectionHaptic(interaction)
+        interaction.startSelecting(with: "a")
+        let started = NoteSelectionHaptic(interaction)
+        interaction.toggle("c")
+        let changed = NoteSelectionHaptic(interaction)
+        interaction.stopSelecting()
+        XCTAssertEqual(idle.feedback(to: started), .impact(weight: .light))
+        XCTAssertEqual(started.feedback(to: changed), .selection)
+        XCTAssertNil(changed.feedback(to: NoteSelectionHaptic(interaction)))
+    }
+
     func testAMenuLeftWithoutAChoiceStaysOpenForATap() {
         let interaction = interaction()
         drag(interaction, blocks[0], 200, 0, at: 20)

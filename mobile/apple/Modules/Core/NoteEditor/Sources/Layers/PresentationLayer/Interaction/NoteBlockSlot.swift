@@ -15,7 +15,8 @@ struct NoteSlotPresentation: Equatable {
 
 /// A block's place in the note: the coloured tray a swipe uncovers with its step, a hold that selects the block or,
 /// dragged along the page, moves it (with the rest of the selection when it is selected), and in selection mode the
-/// selection mark and a tap that selects. It reports where the block is laid out.
+/// selection mark and a tap that selects; the block being edited has a handle that moves it. It reports where the
+/// block is laid out.
 struct NoteBlockSlot<Row: View>: View {
 
     // MARK: - Dependencies
@@ -31,6 +32,10 @@ struct NoteBlockSlot<Row: View>: View {
     let onCancelled: @MainActor () -> Void
     let onToggle: @MainActor () -> Void
     @ViewBuilder let row: () -> Row
+
+    // MARK: - State
+    /// Set while the handle of the block being edited is dragged.
+    @State private var isHandleDragged = false
 
     // MARK: - Body
     var body: some View {
@@ -79,13 +84,16 @@ private extension NoteBlockSlot {
 
     var slot: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.small) {
-            row()
-            if presentation.selecting { mark }
-        }
-        .overlay {
-            if presentation.selecting {
-                Color.clear.contentShape(Rectangle()).onTapGesture(perform: onToggle)
+            HStack(alignment: .center, spacing: Theme.Spacing.small) {
+                row()
+                if presentation.selecting { mark }
             }
+            .overlay {
+                if presentation.selecting {
+                    Color.clear.contentShape(Rectangle()).onTapGesture(perform: onToggle)
+                }
+            }
+            if isEditing && !presentation.selecting { handle }
         }
         .padding(.trailing, presentation.selecting ? Theme.Spacing.small : 0)
         // Selected blocks next to each other keep a hairline gap between their backgrounds.
@@ -97,6 +105,32 @@ private extension NoteBlockSlot {
         .background(Theme.Colors.groupedBackground.opacity(presentation.swipe == nil ? 0 : 1))
         .animation(.snappy(duration: 0.15), value: presentation.isSelected)
         .accessibilityAddTraits(presentation.isSelected ? .isSelected : [])
+    }
+
+    /// Three soft lines at the end of the block being edited, which move it as soon as they are dragged, without
+    /// holding first; a tap on them does nothing.
+    var handle: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 2, coordinateSpace: .named(NoteEditorMetrics.space))
+                    .onChanged { value in
+                        if !isHandleDragged {
+                            isHandleDragged = true
+                            onHold()
+                        }
+                        onHoldMoved(value.location)
+                    }
+                    .onEnded { _ in
+                        isHandleDragged = false
+                        // Let go before it moved, the block is neither moved nor selected.
+                        if presentation.isDragged { onHoldEnded() } else { onCancelled() }
+                    }
+            )
+            .accessibilityHidden(true)
     }
 
     /// The mark of selection mode on the right: a soft dot when the block is selected, a ring when not.
