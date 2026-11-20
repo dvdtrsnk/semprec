@@ -3,8 +3,8 @@ import DesignSystem
 import SwiftUI
 
 // MARK: - Cell
-/// One period on the axis: the selection on a glass capsule tinted in the deep accent, the periods that contain it in
-/// gold, weekends greyed and today in the accent colour.
+/// One period on the axis: the selection on a glass capsule tinted in the deep accent, the day, month, quarter and
+/// year of today's date in gold, weekends greyed.
 struct JournalAxisCellLabel: View {
 
     // MARK: - Dependencies
@@ -33,14 +33,12 @@ struct JournalAxisCellLabel: View {
         }
     }
 
-    private var emphasized: Bool { cell.current || isToday || cell.onPath }
+    private var emphasized: Bool { cell.current || cell.today }
     private var weekend: Bool { cell.kind == .day && cell.weekday > 5 }
-    /// Only the day itself marks today; a longer period is marked only on the path of the selection, in gold.
-    private var isToday: Bool { cell.today && cell.kind == .day }
+    /// The periods that hold today's date, the day, its month, quarter and year, are in gold whatever is selected.
     private var color: Color {
         if cell.current { return .white }
-        if isToday { return Theme.Colors.appAccent }
-        if cell.onPath { return JournalColors.gold }
+        if cell.today { return JournalColors.gold }
         return weekend ? Theme.Colors.secondaryText : .primary
     }
     private var font: Font { cell.kind == .year ? .title3 : .subheadline }
