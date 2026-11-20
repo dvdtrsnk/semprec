@@ -1,10 +1,12 @@
 package cz.semprec.app.presentation
 
+import cz.semprec.app.domain.InlineRun
 import cz.semprec.app.domain.note.NoteBlock
 import cz.semprec.app.domain.note.NoteCaret
 import cz.semprec.app.domain.note.NoteChange
 import cz.semprec.app.domain.note.NoteLinks
 import cz.semprec.app.domain.note.NotePaste
+import cz.semprec.app.domain.note.NoteRunStyles
 import cz.semprec.app.domain.note.NoteRuns
 import cz.semprec.app.domain.note.NoteStructure
 import cz.semprec.app.domain.note.NoteTyping
@@ -35,7 +37,15 @@ internal object NoteEditorReducer {
                 NotePaste.paste(blocks, NoteCaret(action.blockId, action.offset), action.text, newId).moved()
             is NoteEditorAction.ToggleMark -> toggleMark(blocks, action)
             is NoteEditorAction.SetLink -> setLink(blocks, action)
-            is NoteEditorAction.ClearFormat -> clearFormat(blocks, action)
+            is NoteEditorAction.ClearFormat -> restyle(blocks, action.blockId) {
+                NoteRunStyles.clear(it, action.start, action.end)
+            }
+            is NoteEditorAction.SetColor -> restyle(blocks, action.blockId) {
+                NoteRunStyles.color(it, action.start, action.end, action.color?.toDomain())
+            }
+            is NoteEditorAction.SetHighlight -> restyle(blocks, action.blockId) {
+                NoteRunStyles.highlight(it, action.start, action.end, action.color?.toDomain())
+            }
             else -> null
         }
 
@@ -44,8 +54,9 @@ internal object NoteEditorReducer {
             // A block becomes a page only through the subpage operation.
             is NoteEditorAction.SetType if action.type == NoteEditorBlockType.PAGE -> NoteReduction(blocks)
             is NoteEditorAction.ToggleType if action.type == NoteEditorBlockType.PAGE -> NoteReduction(blocks)
-            is NoteEditorAction.SetType ->
-                NoteReduction(NoteStructure.setType(blocks, action.blockIds.toSet(), action.type.toDomain()))
+            is NoteEditorAction.SetType -> NoteReduction(
+                NoteStructure.setType(blocks, action.blockIds.toSet(), action.type.toDomain(), action.toggle),
+            )
             is NoteEditorAction.ToggleType ->
                 NoteReduction(NoteStructure.toggleType(blocks, action.blockIds.toSet(), action.type.toDomain()))
             is NoteEditorAction.ShiftIndent ->
@@ -69,12 +80,12 @@ internal object NoteEditorReducer {
         return NoteTyping.applyPrefix(typed, action.blockId)?.moved() ?: NoteReduction(typed)
     }
 
-    private fun clearFormat(blocks: List<NoteBlock>, action: NoteEditorAction.ClearFormat): NoteReduction {
-        val cleared = blocks.map {
-            if (it.id == action.blockId) it.copy(runs = NoteRuns.clear(it.runs, action.start, action.end)) else it
-        }
-        return NoteReduction(cleared)
-    }
+    /** The runs of [blockId] changed by [change]. */
+    private fun restyle(
+        blocks: List<NoteBlock>,
+        blockId: String,
+        change: (List<InlineRun>) -> List<InlineRun>,
+    ) = NoteReduction(blocks.map { if (it.id == blockId) it.copy(runs = change(it.runs)) else it })
 
     private fun toggleMark(blocks: List<NoteBlock>, action: NoteEditorAction.ToggleMark): NoteReduction {
         val block = blocks.firstOrNull { it.id == action.blockId } ?: return NoteReduction(blocks)

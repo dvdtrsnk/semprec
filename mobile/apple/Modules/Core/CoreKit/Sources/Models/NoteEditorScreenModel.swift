@@ -2,12 +2,18 @@ import Foundation
 
 public enum NoteEditorBlockType: Equatable, Hashable, Sendable, CaseIterable {
 
-    case text, heading1, heading2, heading3, bullet, number, todo, quote, page
+    case text, heading1, heading2, heading3, bullet, number, todo, quote, page, toggle
 }
 
 public enum NoteEditorMark: Equatable, Hashable, Sendable, CaseIterable {
 
-    case bold, italic, code
+    case bold, italic, code, strike, underline
+}
+
+/// A colour of text or of its highlight, from the fixed palette of the page model.
+public enum NoteEditorColor: Equatable, Hashable, Sendable, CaseIterable {
+
+    case gray, brown, orange, yellow, green, blue, purple, pink, red
 }
 
 public enum NoteEditorPhase: Equatable, Sendable {
@@ -25,13 +31,31 @@ public struct NoteEditorRun: Equatable, Hashable, Sendable {
     public var italic: Bool
     public var code: Bool
     public var link: String?
+    public var strike: Bool
+    public var underline: Bool
+    public var color: NoteEditorColor?
+    public var highlight: NoteEditorColor?
 
-    public init(_ text: String, bold: Bool = false, italic: Bool = false, code: Bool = false, link: String? = nil) {
+    public init(
+        _ text: String,
+        bold: Bool = false,
+        italic: Bool = false,
+        code: Bool = false,
+        link: String? = nil,
+        strike: Bool = false,
+        underline: Bool = false,
+        color: NoteEditorColor? = nil,
+        highlight: NoteEditorColor? = nil
+    ) {
         self.text = text
         self.bold = bold
         self.italic = italic
         self.code = code
         self.link = link
+        self.strike = strike
+        self.underline = underline
+        self.color = color
+        self.highlight = highlight
     }
 }
 
@@ -52,6 +76,8 @@ public struct NoteEditorBlock: Equatable, Sendable, Identifiable {
     public var runs: [NoteEditorRun]
     public var pageId: String?
     public var marker: NoteEditorMarker?
+    /// A heading that folds the blocks under it.
+    public var toggle: Bool
 
     public init(
         id: String,
@@ -60,7 +86,8 @@ public struct NoteEditorBlock: Equatable, Sendable, Identifiable {
         done: Bool = false,
         runs: [NoteEditorRun] = [],
         pageId: String? = nil,
-        marker: NoteEditorMarker? = nil
+        marker: NoteEditorMarker? = nil,
+        toggle: Bool = false
     ) {
         self.id = id
         self.type = type
@@ -69,6 +96,7 @@ public struct NoteEditorBlock: Equatable, Sendable, Identifiable {
         self.runs = runs
         self.pageId = pageId
         self.marker = marker
+        self.toggle = toggle
     }
 
     public var text: String { runs.map(\.text).joined() }
@@ -162,6 +190,10 @@ public enum NoteEditorTyping: Equatable, Sendable {
     case paste(blockId: String, offset: Int, text: String)
     /// An empty range inside a word formats the word.
     case toggleMark(blockId: String, start: Int, end: Int, mark: NoteEditorMark)
+    /// `nil` gives the stretch the default colour.
+    case setColor(blockId: String, start: Int, end: Int, color: NoteEditorColor?)
+    /// `nil` takes the highlight off.
+    case setHighlight(blockId: String, start: Int, end: Int, color: NoteEditorColor?)
     /// Takes every format and link off the stretch.
     case clearFormat(blockId: String, start: Int, end: Int)
     /// A `nil` address takes the link away.
@@ -171,7 +203,8 @@ public enum NoteEditorTyping: Equatable, Sendable {
 /// What is done to whole blocks, by their ids.
 public enum NoteEditorBlockEdit: Equatable, Sendable {
 
-    case setType(blockIds: [String], type: NoteEditorBlockType)
+    /// A heading with `toggle` folds the blocks under it.
+    case setType(blockIds: [String], type: NoteEditorBlockType, toggle: Bool = false)
     case toggleType(blockIds: [String], type: NoteEditorBlockType)
     case shiftIndent(blockIds: [String], delta: Int)
     case toggleDone(blockId: String)

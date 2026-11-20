@@ -22,11 +22,16 @@ data class NoteBlock(
     val runs: List<InlineRun> = emptyList(),
     val pageId: String? = null,
     val preservedType: String? = null,
+    /** A heading that folds the blocks under it (a toggle heading). */
+    val toggle: Boolean = false,
 ) {
     val plainText: String get() = runs.joinToString("") { it.text }
 
-    /** Whether the block is a list item, which keeps its type when Enter splits it. */
+    /** Whether the block is a list item. */
     val isList: Boolean get() = PageMarkdownWriter.isList(type)
+
+    /** The type a block made by Enter or a pasted line after this one gets: a list item's or a toggle's own. */
+    val nextType: PageBlockType get() = if (isList || type == PageBlockType.TOGGLE) type else PageBlockType.TEXT
 }
 
 /** Where the text cursor is: in [blockId], [offset] UTF-16 units from the start of its text. */
@@ -44,7 +49,7 @@ object NoteDocument {
 
     /**
      * The blocks as the editor may hold them: at least one block, indents within 0 to [NOTE_MAX_INDENT], `done` only
-     * on a to-do, a page id only on a page block and a page block only with a page id.
+     * on a to-do, a page id only on a page block, a page block only with a page id and a toggle only on a heading.
      */
     fun normalize(blocks: List<NoteBlock>, newId: () -> String): List<NoteBlock> {
         val fitted = blocks.map { block ->
@@ -55,6 +60,7 @@ object NoteDocument {
                 indent = block.indent.coerceIn(0, NOTE_MAX_INDENT),
                 done = block.done && type == PageBlockType.TODO,
                 pageId = block.pageId.takeIf { isPage },
+                toggle = block.toggle && PageMarkdownWriter.isHeading(type),
             )
         }
         return fitted.ifEmpty { listOf(NoteBlock(newId(), PageBlockType.TEXT)) }
@@ -84,7 +90,8 @@ object NoteDocument {
     private val WORD_GAP = Regex("\\s+")
 }
 
-private fun PageBlock.toNoteBlock(id: String) = NoteBlock(id, type, indent, done, runs, pageId, preservedType)
+private fun PageBlock.toNoteBlock(id: String) =
+    NoteBlock(id, type, indent, done, runs, pageId, preservedType, toggle = toggle)
 
 private fun NoteBlock.toPageBlock() = PageBlock(
     type = type,
@@ -95,4 +102,5 @@ private fun NoteBlock.toPageBlock() = PageBlock(
     firstLine = 0,
     lastLine = 0,
     preservedType = preservedType,
+    toggle = toggle,
 )

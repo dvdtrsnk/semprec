@@ -14,7 +14,7 @@ enum NoteBlockStyle {
         case .heading2: .title2.bold()
         case .heading3: .title3.weight(.semibold)
         case .quote: .body.italic()
-        case .text, .bullet, .number, .todo, .page: .body
+        case .text, .bullet, .number, .todo, .toggle, .page: .body
         }
     }
 
@@ -32,7 +32,7 @@ enum NoteBlockStyle {
         case .heading1: 14
         case .heading2: 10
         case .heading3: 6
-        case .text, .bullet, .number, .todo, .quote, .page: 2
+        case .text, .bullet, .number, .todo, .toggle, .quote, .page: 2
         }
     }
 
@@ -55,8 +55,18 @@ enum NoteBlockStyle {
         case .bullet: "noteEditor.type.bullet"
         case .number: "noteEditor.type.number"
         case .todo: "noteEditor.type.todo"
+        case .toggle: "noteEditor.type.toggle"
         case .quote: "noteEditor.type.quote"
         case .page: "noteEditor.type.page"
+        }
+    }
+
+    /// The name of a heading that folds what is under it.
+    static func toggleHeadingName(_ type: NoteEditorBlockType) -> LocalizedStringKey {
+        switch type {
+        case .heading1: "noteEditor.type.toggleHeading1"
+        case .heading2: "noteEditor.type.toggleHeading2"
+        default: "noteEditor.type.toggleHeading3"
         }
     }
 }

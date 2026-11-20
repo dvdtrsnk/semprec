@@ -32,8 +32,19 @@ final class NoteTextTests: XCTestCase {
             NoteEditorRun(" link", link: "https://semprec.cz")
         ]
         var text = NoteText.attributed(runs)
-        text.foregroundColor = .red
+        text.foregroundColor = .cyan
         XCTAssertEqual(NoteText.runs(text), runs)
+    }
+
+    func testRunsKeepTheirStrikeUnderlineColorAndHighlight() {
+        let runs = [
+            NoteEditorRun("struck", strike: true),
+            NoteEditorRun(" under", underline: true),
+            NoteEditorRun(" red", color: .red),
+            NoteEditorRun(" marked", highlight: .yellow),
+            NoteEditorRun(" all", bold: true, strike: true, underline: true, color: .blue, highlight: .green)
+        ]
+        XCTAssertEqual(NoteText.runs(NoteText.attributed(runs)), runs)
     }
 
     func testAnEditedBlockReportsBackspaceAtTheStartWhenItsSentinelIsGone() {

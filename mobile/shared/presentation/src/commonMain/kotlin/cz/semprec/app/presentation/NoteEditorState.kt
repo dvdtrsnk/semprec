@@ -2,9 +2,12 @@ package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
 
-enum class NoteEditorBlockType { TEXT, H1, H2, H3, BULLET, NUMBER, TODO, QUOTE, PAGE }
+enum class NoteEditorBlockType { TEXT, H1, H2, H3, BULLET, NUMBER, TODO, QUOTE, PAGE, TOGGLE }
 
-enum class NoteEditorMark { BOLD, ITALIC, CODE }
+enum class NoteEditorMark { BOLD, ITALIC, CODE, STRIKE, UNDERLINE }
+
+/** A colour of text or of its highlight, from the fixed palette of the page model. */
+enum class NoteEditorColor { GRAY, BROWN, ORANGE, YELLOW, GREEN, BLUE, PURPLE, PINK, RED }
 
 enum class NoteEditorPhase { LOADING, CONTENT, ERROR }
 
@@ -15,6 +18,10 @@ data class NoteEditorRun(
     val italic: Boolean = false,
     val code: Boolean = false,
     val link: String? = null,
+    val strike: Boolean = false,
+    val underline: Boolean = false,
+    val color: NoteEditorColor? = null,
+    val highlight: NoteEditorColor? = null,
 )
 
 /** What a block shows in front of its text: a bullet whose glyph follows [level], or a number's [label]. */
@@ -23,7 +30,10 @@ sealed interface NoteEditorMarker {
     data class Number(val label: String) : NoteEditorMarker
 }
 
-/** One block of the note. A [NoteEditorBlockType.PAGE] block has its subpage's title in [runs] and its [pageId]. */
+/**
+ * One block of the note. A [NoteEditorBlockType.PAGE] block has its subpage's title in [runs] and its [pageId]. A
+ * heading with [toggle] and a [NoteEditorBlockType.TOGGLE] block fold the blocks under them with a greater indent.
+ */
 data class NoteEditorBlock(
     val id: String,
     val type: NoteEditorBlockType,
@@ -32,6 +42,7 @@ data class NoteEditorBlock(
     val runs: List<NoteEditorRun>,
     val pageId: String?,
     val marker: NoteEditorMarker?,
+    val toggle: Boolean = false,
 )
 
 /** Where the cursor goes after an edit: [offset] UTF-16 units into the text of [blockId]. */
@@ -81,13 +92,23 @@ sealed interface NoteEditorAction {
     data class ToggleMark(val blockId: String, val start: Int, val end: Int, val mark: NoteEditorMark) :
         NoteEditorAction
 
+    /** Colours the text of [start]..[end] of a block; `null` gives it the default colour. */
+    data class SetColor(val blockId: String, val start: Int, val end: Int, val color: NoteEditorColor?) :
+        NoteEditorAction
+
+    /** Highlights [start]..[end] of a block; `null` takes the highlight off. */
+    data class SetHighlight(val blockId: String, val start: Int, val end: Int, val color: NoteEditorColor?) :
+        NoteEditorAction
+
     /** Takes every format and link off [start]..[end] of a block. */
     data class ClearFormat(val blockId: String, val start: Int, val end: Int) : NoteEditorAction
 
     /** Links [start]..[end] to [address] (a scheme is added when missing), or unlinks with `null`. */
     data class SetLink(val blockId: String, val start: Int, val end: Int, val address: String?) : NoteEditorAction
 
-    data class SetType(val blockIds: List<String>, val type: NoteEditorBlockType) : NoteEditorAction
+    /** Gives blocks [type]; a heading with [toggle] folds the blocks under it. */
+    data class SetType(val blockIds: List<String>, val type: NoteEditorBlockType, val toggle: Boolean = false) :
+        NoteEditorAction
     data class ToggleType(val blockIds: List<String>, val type: NoteEditorBlockType) : NoteEditorAction
     data class ShiftIndent(val blockIds: List<String>, val delta: Int) : NoteEditorAction
     data class ToggleDone(val blockId: String) : NoteEditorAction

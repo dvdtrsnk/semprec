@@ -12,7 +12,7 @@ object NoteTyping {
     /**
      * Enter at [caret]: a page block only ends editing. An empty block steps out (less indent, then text, then a new
      * text block below). At the start of a block with text an empty block goes above it. Anywhere else the block
-     * splits there; the new block keeps a list's type and the indent, is not done, and gets the cursor.
+     * splits there; the new block keeps a list's or a toggle's type and the indent, is not done, and gets the cursor.
      */
     fun enter(blocks: List<NoteBlock>, caret: NoteCaret, newId: () -> String): NoteChange {
         val index = blocks.indexOfFirst { it.id == caret.blockId }
@@ -21,12 +21,12 @@ object NoteTyping {
             block == null || block.type == PageBlockType.PAGE -> NoteChange(blocks, null)
             block.plainText.isEmpty() -> stepOut(blocks, index, newId)
             caret.offset <= 0 -> {
-                val above = NoteBlock(newId(), nextType(block), block.indent)
+                val above = NoteBlock(newId(), block.nextType, block.indent)
                 NoteChange(blocks.inserting(index, above), caret.copy(offset = 0))
             }
             else -> {
                 val (left, right) = NoteRuns.split(block.runs, caret.offset)
-                val below = NoteBlock(newId(), nextType(block), block.indent, runs = right)
+                val below = NoteBlock(newId(), block.nextType, block.indent, runs = right)
                 val updated = blocks.replacing(index, block.copy(runs = left)).inserting(index + 1, below)
                 NoteChange(updated, NoteCaret(below.id, 0))
             }
@@ -45,8 +45,7 @@ object NoteTyping {
         val here = NoteCaret(blockId, 0)
         return when {
             block.indent > 0 -> NoteChange(blocks.replacing(index, block.copy(indent = block.indent - 1)), here)
-            block.type != PageBlockType.TEXT ->
-                NoteChange(blocks.replacing(index, block.copy(type = PageBlockType.TEXT, done = false)), here)
+            block.type != PageBlockType.TEXT -> NoteChange(blocks.replacing(index, block.asText()), here)
             previous == null -> NoteChange(blocks, here)
             previous.type == PageBlockType.PAGE ->
                 if (block.plainText.isEmpty()) removeAfterPage(blocks, index, newId) else NoteChange(blocks, here)
@@ -118,15 +117,12 @@ object NoteTyping {
         "> " to PageBlockType.QUOTE,
     )
 
-    private fun nextType(block: NoteBlock): PageBlockType = if (block.isList) block.type else PageBlockType.TEXT
-
     private fun stepOut(blocks: List<NoteBlock>, index: Int, newId: () -> String): NoteChange {
         val block = blocks[index]
         val here = NoteCaret(block.id, 0)
         return when {
             block.indent > 0 -> NoteChange(blocks.replacing(index, block.copy(indent = block.indent - 1)), here)
-            block.type != PageBlockType.TEXT ->
-                NoteChange(blocks.replacing(index, block.copy(type = PageBlockType.TEXT, done = false)), here)
+            block.type != PageBlockType.TEXT -> NoteChange(blocks.replacing(index, block.asText()), here)
             else -> {
                 val below = NoteBlock(newId(), PageBlockType.TEXT)
                 NoteChange(blocks.inserting(index + 1, below), NoteCaret(below.id, 0))
@@ -141,6 +137,9 @@ object NoteTyping {
         return NoteChange(remaining, target?.let { NoteCaret(it.id, it.plainText.length) })
     }
 }
+
+/** The block as plain text: not done, and no longer a toggle heading. */
+private fun NoteBlock.asText(): NoteBlock = copy(type = PageBlockType.TEXT, done = false, toggle = false)
 
 internal fun <T> List<T>.replacing(index: Int, value: T): List<T> = toMutableList().also { it[index] = value }
 

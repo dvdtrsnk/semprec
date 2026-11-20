@@ -19,11 +19,12 @@ class NoteTypingTest {
         assertEquals(NoteCaret("n1", 0), change.caret)
     }
 
-    @Test fun `enter keeps a list type and the indent and the new to-do is not done`() {
+    @Test fun `enter keeps a list or toggle type and the indent and the new to-do is not done`() {
         val cases = listOf(
             PageBlockType.BULLET to PageBlockType.BULLET,
             PageBlockType.NUMBER to PageBlockType.NUMBER,
             PageBlockType.TODO to PageBlockType.TODO,
+            PageBlockType.TOGGLE to PageBlockType.TOGGLE,
             PageBlockType.H1 to PageBlockType.TEXT,
             PageBlockType.QUOTE to PageBlockType.TEXT,
             PageBlockType.TEXT to PageBlockType.TEXT,
@@ -76,6 +77,13 @@ class NoteTypingTest {
         val change = NoteTyping.backspaceAtStart(blocks, "b", ids.newId)
         assertEquals(listOf("a:h2:1:onetwo"), change.blocks.shape())
         assertEquals(NoteCaret("a", 3), change.caret)
+    }
+
+    @Test fun `backspace at the start of a toggle heading makes plain text`() {
+        val heading = block("a", "Plan", PageBlockType.H1).copy(toggle = true)
+        val changed = NoteTyping.backspaceAtStart(listOf(heading), "a", TestIds().newId).blocks.single()
+        assertEquals(PageBlockType.TEXT, changed.type)
+        assertFalse(changed.toggle)
     }
 
     @Test fun `backspace never writes into a page block`() {

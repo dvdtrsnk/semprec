@@ -192,14 +192,21 @@ private extension NoteBlockEditor {
     func applyPending(_ mark: NoteEditorMark) {
         guard case .insertionPoint(let index) = selection.indices(in: text) else { return }
         var attributes = selection.typingAttributes(in: text)
-        var intent = attributes.inlinePresentationIntent ?? []
-        let flag: InlinePresentationIntent = switch mark {
+        let flag: InlinePresentationIntent? = switch mark {
         case .bold: .stronglyEmphasized
         case .italic: .emphasized
         case .code: .code
+        case .strike, .underline: nil
         }
-        if intent.contains(flag) { intent.remove(flag) } else { intent.insert(flag) }
-        attributes.inlinePresentationIntent = intent.isEmpty ? nil : intent
+        if let flag {
+            var intent = attributes.inlinePresentationIntent ?? []
+            if intent.contains(flag) { intent.remove(flag) } else { intent.insert(flag) }
+            attributes.inlinePresentationIntent = intent.isEmpty ? nil : intent
+        } else if mark == .strike {
+            attributes.strikethroughStyle = attributes.strikethroughStyle == nil ? .single : nil
+        } else {
+            attributes.underlineStyle = attributes.underlineStyle == nil ? .single : nil
+        }
         selection = AttributedTextSelection(insertionPoint: index, typingAttributes: attributes)
     }
 
@@ -215,7 +222,17 @@ private extension NoteBlockEditor {
         if current?.bold == true { marks.insert(.bold) }
         if current?.italic == true { marks.insert(.italic) }
         if current?.code == true { marks.insert(.code) }
-        onSelection(NoteSelection(blockId: block.id, start: start, end: end, marks: marks, link: current?.link))
+        if current?.strike == true { marks.insert(.strike) }
+        if current?.underline == true { marks.insert(.underline) }
+        onSelection(NoteSelection(
+            blockId: block.id,
+            start: start,
+            end: end,
+            marks: marks,
+            link: current?.link,
+            color: current?.color,
+            highlight: current?.highlight
+        ))
     }
 }
 

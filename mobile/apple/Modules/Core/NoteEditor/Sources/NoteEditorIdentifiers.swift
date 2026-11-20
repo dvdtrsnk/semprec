@@ -13,5 +13,6 @@ enum NoteEditorIdentifiers {
 
     static func block(_ id: String) -> String { "noteEditor.block.\(id)" }
     static func checkbox(_ id: String) -> String { "noteEditor.checkbox.\(id)" }
+    static func fold(_ id: String) -> String { "noteEditor.fold.\(id)" }
     static func pageLink(_ id: String) -> String { "noteEditor.page.\(id)" }
 }

@@ -120,6 +120,43 @@ class NoteEditorEditingTest : NoteEditorTest() {
         vm.close()
     }
 
+    @Test fun `a selection takes a colour a highlight an underline and a strike and they are written`() =
+        runTest(dispatcher) {
+            val vm = loaded()
+            val id = vm.block(1).id
+            vm.onAction(NoteEditorAction.SetColor(id, 0, 5, NoteEditorColor.RED))
+            vm.onAction(NoteEditorAction.SetHighlight(id, 0, 5, NoteEditorColor.YELLOW))
+            vm.onAction(NoteEditorAction.ToggleMark(id, 0, 5, NoteEditorMark.UNDERLINE))
+            vm.onAction(NoteEditorAction.ToggleMark(id, 0, 5, NoteEditorMark.STRIKE))
+            val styled = NoteEditorRun(
+                "First",
+                strike = true,
+                underline = true,
+                color = NoteEditorColor.RED,
+                highlight = NoteEditorColor.YELLOW,
+            )
+            assertEquals(listOf(styled, NoteEditorRun(" idea")), vm.block(1).runs)
+            settle()
+            val written = "<span data-color=\"red\"><mark data-color=\"yellow\"><u>~~First~~</u></mark></span> idea"
+            assertTrue(pages.markdown.getValue("p1").contains(written))
+            vm.onAction(NoteEditorAction.SetColor(id, 0, 5, null))
+            assertEquals(null, vm.block(1).runs.first().color)
+            vm.close()
+        }
+
+    @Test fun `a heading becomes a toggle heading and a toggle block keeps no toggle flag`() = runTest(dispatcher) {
+        val vm = loaded()
+        vm.onAction(NoteEditorAction.SetType(listOf(vm.block(0).id), NoteEditorBlockType.H1, toggle = true))
+        assertTrue(vm.block(0).toggle)
+        vm.onAction(NoteEditorAction.SetType(listOf(vm.block(1).id), NoteEditorBlockType.TOGGLE, toggle = true))
+        assertEquals(NoteEditorBlockType.TOGGLE, vm.block(1).type)
+        assertEquals(false, vm.block(1).toggle)
+        settle()
+        val heading = "<!-- semprec:block type=h1 indent=0 toggle=true -->\n# Plan"
+        assertTrue(pages.markdown.getValue("p1").startsWith(heading))
+        vm.close()
+    }
+
     @Test fun `deleting the last block leaves one empty text block`() = runTest(dispatcher) {
         pages.put("p1", "Only")
         val vm = loaded()

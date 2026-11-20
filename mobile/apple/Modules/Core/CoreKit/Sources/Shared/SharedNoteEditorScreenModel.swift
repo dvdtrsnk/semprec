@@ -109,6 +109,14 @@ private extension SharedNoteEditorScreenModel {
             SharedSDK.NoteEditorActionToggleMark(
                 blockId: blockId, start: Int32(start), end: Int32(end), mark: mark.shared
             )
+        case .setColor(let blockId, let start, let end, let color):
+            SharedSDK.NoteEditorActionSetColor(
+                blockId: blockId, start: Int32(start), end: Int32(end), color: color?.shared
+            )
+        case .setHighlight(let blockId, let start, let end, let color):
+            SharedSDK.NoteEditorActionSetHighlight(
+                blockId: blockId, start: Int32(start), end: Int32(end), color: color?.shared
+            )
         case .clearFormat(let blockId, let start, let end):
             SharedSDK.NoteEditorActionClearFormat(blockId: blockId, start: Int32(start), end: Int32(end))
         case .setLink(let blockId, let start, let end, let address):
@@ -118,7 +126,8 @@ private extension SharedNoteEditorScreenModel {
 
     static func blocks(_ action: NoteEditorBlockEdit) -> any SharedSDK.NoteEditorAction {
         switch action {
-        case .setType(let ids, let type): SharedSDK.NoteEditorActionSetType(blockIds: ids, type: type.shared)
+        case .setType(let ids, let type, let toggle):
+            SharedSDK.NoteEditorActionSetType(blockIds: ids, type: type.shared, toggle: toggle)
         case .toggleType(let ids, let type): SharedSDK.NoteEditorActionToggleType(blockIds: ids, type: type.shared)
         case .shiftIndent(let ids, let delta): SharedSDK.NoteEditorActionShiftIndent(blockIds: ids, delta: Int32(delta))
         case .toggleDone(let blockId): SharedSDK.NoteEditorActionToggleDone(blockId: blockId)

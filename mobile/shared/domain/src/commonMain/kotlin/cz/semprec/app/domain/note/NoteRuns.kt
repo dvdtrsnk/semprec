@@ -3,7 +3,7 @@ package cz.semprec.app.domain.note
 import cz.semprec.app.domain.InlineRun
 
 /** An inline format a stretch of text can have. */
-enum class NoteMark { BOLD, ITALIC, CODE }
+enum class NoteMark { BOLD, ITALIC, CODE, STRIKE, UNDERLINE }
 
 /**
  * Formatted text as runs: cutting, joining and formatting stretches of it. Offsets count UTF-16 units of the plain
@@ -54,11 +54,7 @@ object NoteRuns {
     fun link(runs: List<InlineRun>, start: Int, end: Int, href: String?): List<InlineRun> =
         restyle(runs, start, end) { it.copy(link = href) }
 
-    /** [start]..[end] as plain text: no format and no link. */
-    fun clear(runs: List<InlineRun>, start: Int, end: Int): List<InlineRun> =
-        restyle(runs, start, end) { InlineRun(it.text) }
-
-    private fun restyle(
+    internal fun restyle(
         runs: List<InlineRun>,
         start: Int,
         end: Int,
@@ -86,10 +82,14 @@ private fun InlineRun.has(mark: NoteMark): Boolean = when (mark) {
     NoteMark.BOLD -> bold
     NoteMark.ITALIC -> italic
     NoteMark.CODE -> code
+    NoteMark.STRIKE -> strike
+    NoteMark.UNDERLINE -> underline
 }
 
 private fun InlineRun.with(mark: NoteMark, on: Boolean): InlineRun = when (mark) {
     NoteMark.BOLD -> copy(bold = on)
     NoteMark.ITALIC -> copy(italic = on)
     NoteMark.CODE -> copy(code = on)
+    NoteMark.STRIKE -> copy(strike = on)
+    NoteMark.UNDERLINE -> copy(underline = on)
 }

@@ -1,0 +1,52 @@
+import CoreKit
+import XCTest
+
+@testable import NoteEditor
+
+final class NoteFoldingTests: XCTestCase {
+
+    private let blocks = [
+        NoteEditorBlock(id: "t", type: .toggle),
+        NoteEditorBlock(id: "t1", type: .text, indent: 1),
+        NoteEditorBlock(id: "t2", type: .toggle, indent: 1),
+        NoteEditorBlock(id: "t3", type: .bullet, indent: 2),
+        NoteEditorBlock(id: "after", type: .text),
+        NoteEditorBlock(id: "h", type: .heading2, toggle: true),
+        NoteEditorBlock(id: "h1", type: .text),
+        NoteEditorBlock(id: "h2", type: .heading3),
+        NoteEditorBlock(id: "next", type: .heading2),
+        NoteEditorBlock(id: "plain", type: .heading1),
+        NoteEditorBlock(id: "p1", type: .text)
+    ]
+
+    private func visible(_ folded: Set<String>) -> [String] {
+        NoteFolding.visible(blocks, folded: folded).map(\.id)
+    }
+
+    func testAClosedToggleHidesWhatIsIndentedUnderIt() {
+        XCTAssertEqual(visible(["t"]), ["t", "after", "h", "h1", "h2", "next", "plain", "p1"])
+        XCTAssertEqual(visible(["t2"]), ["t", "t1", "t2", "after", "h", "h1", "h2", "next", "plain", "p1"])
+    }
+
+    func testAClosedToggleHeadingHidesUpToTheNextHeadingOfItsLevel() {
+        XCTAssertEqual(visible(["h"]), ["t", "t1", "t2", "t3", "after", "h", "next", "plain", "p1"])
+    }
+
+    func testOnlyAToggleFolds() {
+        XCTAssertEqual(visible(["plain", "after"]), blocks.map(\.id))
+    }
+
+    func testRevealingABlockOpensEveryToggleOverIt() {
+        XCTAssertEqual(NoteFolding.revealing("t3", in: blocks, folded: ["t", "t2", "h"]), ["h"])
+        XCTAssertEqual(NoteFolding.revealing("after", in: blocks, folded: ["t"]), ["t"])
+    }
+
+    func testAToggleHeadingOptionSetsTheHeadingWithItsToggle() {
+        let option = NoteMenuKind.style.options.first { $0.type == .heading1 && $0.toggle }
+        XCTAssertEqual(
+            option?.edits(for: blocks[4]),
+            [.setType(blockIds: ["after"], type: .heading1, toggle: true)]
+        )
+        XCTAssertEqual(NoteMenuKind.list.options.last?.type, .toggle)
+    }
+}

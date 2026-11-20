@@ -20,6 +20,8 @@ struct NoteEditorScreen: View {
     @State private var link: NoteLinkDraft?
     @State private var confirmations = 0
     @State private var hasAppeared = false
+    /// The toggles closed on this device.
+    @State private var folded: Set<String> = []
 
     // MARK: - Init
     /// `viewModel` runs once per editor, when SwiftUI creates the state object.
@@ -50,7 +52,10 @@ struct NoteEditorScreen: View {
                 hasAppeared = true
             }
             .onDisappear { viewModel.endEditing() }
-            .onChange(of: viewModel.editingBlockId) { _, id in focus.isEditing = id != nil }
+            .onChange(of: viewModel.editingBlockId) { _, id in
+                focus.isEditing = id != nil
+                reveal(id)
+            }
             .onChange(of: interaction.selecting) { _, selecting in focus.isSelecting = selecting }
             .onChange(of: formattable) { _, selection in
                 focus.formatting = selection.map { selection in
@@ -128,8 +133,9 @@ private extension NoteEditorScreen {
                 )
             }
             if let problem = state.problem { NoteProblemBanner(problem: problem) { viewModel.send(.dismissProblem) } }
-            ForEach(state.blocks) { block in slot(block) }
+            ForEach(NoteFolding.visible(state.blocks, folded: folded)) { block in slot(block) }
                 .animation(.snappy(duration: 0.3), value: state.blocks.map(\.id))
+                .animation(.snappy(duration: 0.25), value: folded)
             if !interaction.selecting { tapBelow }
         }
         .padding(.horizontal, viewModel.variant == .full ? Theme.Spacing.medium : 0)
@@ -178,6 +184,7 @@ private extension NoteEditorScreen {
             block: block,
             isEditing: viewModel.editingBlockId == block.id,
             isOnlyBlock: state.blocks.count == 1,
+            isFolded: folded.contains(block.id),
             caretTarget: viewModel.caretTarget,
             pendingMark: viewModel.pendingMark?.mark,
             onBeginEditing: { viewModel.beginEditing(block.id, at: $0) },
@@ -185,7 +192,8 @@ private extension NoteEditorScreen {
             onKey: { key(key: $0, block: block) },
             onSelection: { selection = $0 },
             onBlur: { blurred(block.id) },
-            onEdit: { edit($0) }
+            onEdit: { edit($0) },
+            onFold: { fold(block.id) }
         )
     }
 
@@ -245,11 +253,11 @@ private extension NoteEditorScreen {
 
     var styleList: some View {
         let blocks = state.blocks.filter { styledIds?.contains($0.id) == true }
-        let types = Set(blocks.map(\.type))
+        let styles = Set(blocks.map { NoteStyleList.Style(type: $0.type, toggle: $0.toggle) })
         return NoteStyleList(
-            current: types.count == 1 ? types.first : nil,
+            current: styles.count == 1 ? styles.first : nil,
             offersSubpages: viewModel.variant.offersSubpages && blocks.count == 1,
-            onPick: { pick($0, for: blocks.map(\.id)) }
+            onPick: { pick($0, toggle: $1, for: blocks.map(\.id)) }
         )
     }
 }
@@ -287,12 +295,28 @@ private extension NoteEditorScreen {
         }
     }
 
-    func pick(_ type: NoteEditorBlockType, for ids: [String]) {
+    func pick(_ type: NoteEditorBlockType, toggle: Bool, for ids: [String]) {
         if type == .page, let id = ids.first {
             edit(.makeSubpage(blockId: id))
         } else {
-            edit(.setType(blockIds: ids, type: type))
+            edit(.setType(blockIds: ids, type: type, toggle: toggle))
         }
+    }
+
+    /// Opens or closes a toggle; closing it ends the editing of a block it hides.
+    func fold(_ blockId: String) {
+        if folded.remove(blockId) != nil { return }
+        folded.insert(blockId)
+        if let editing = viewModel.editingBlockId,
+           !NoteFolding.visible(state.blocks, folded: folded).contains(where: { $0.id == editing }) {
+            viewModel.endEditing()
+        }
+    }
+
+    /// A block that gets edited is never hidden: the toggles over it open.
+    func reveal(_ blockId: String?) {
+        guard let blockId, !folded.isEmpty else { return }
+        folded = NoteFolding.revealing(blockId, in: state.blocks, folded: folded)
     }
 
     func openLink() {

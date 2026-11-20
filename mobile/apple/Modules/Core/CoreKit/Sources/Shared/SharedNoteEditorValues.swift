@@ -14,6 +14,7 @@ extension NoteEditorBlockType {
         case .todo: self = .todo
         case .quote: self = .quote
         case .page: self = .page
+        case .toggle: self = .toggle
         }
     }
 
@@ -28,6 +29,7 @@ extension NoteEditorBlockType {
         case .todo: .todo
         case .quote: .quote
         case .page: .page
+        case .toggle: .toggle
         }
     }
 }
@@ -40,6 +42,8 @@ extension NoteEditorMark {
         case .bold: self = .bold
         case .italic: self = .italic
         case .code: self = .code
+        case .strike: self = .strike
+        case .underline: self = .underline
         }
     }
 
@@ -48,6 +52,40 @@ extension NoteEditorMark {
         case .bold: .bold
         case .italic: .italic
         case .code: .code
+        case .strike: .strike
+        case .underline: .underline
+        }
+    }
+}
+
+// MARK: - NoteEditorColor
+extension NoteEditorColor {
+
+    init(_ color: SharedSDK.NoteEditorColor) {
+        switch color {
+        case .gray: self = .gray
+        case .brown: self = .brown
+        case .orange: self = .orange
+        case .yellow: self = .yellow
+        case .green: self = .green
+        case .blue: self = .blue
+        case .purple: self = .purple
+        case .pink: self = .pink
+        case .red: self = .red
+        }
+    }
+
+    var shared: SharedSDK.NoteEditorColor {
+        switch self {
+        case .gray: .gray
+        case .brown: .brown
+        case .orange: .orange
+        case .yellow: .yellow
+        case .green: .green
+        case .blue: .blue
+        case .purple: .purple
+        case .pink: .pink
+        case .red: .red
         }
     }
 }
@@ -56,11 +94,31 @@ extension NoteEditorMark {
 extension NoteEditorRun {
 
     init(_ run: SharedSDK.NoteEditorRun) {
-        self.init(run.text, bold: run.bold, italic: run.italic, code: run.code, link: run.link)
+        self.init(
+            run.text,
+            bold: run.bold,
+            italic: run.italic,
+            code: run.code,
+            link: run.link,
+            strike: run.strike,
+            underline: run.underline,
+            color: run.color.map(NoteEditorColor.init),
+            highlight: run.highlight.map(NoteEditorColor.init)
+        )
     }
 
     var shared: SharedSDK.NoteEditorRun {
-        SharedSDK.NoteEditorRun(text: text, bold: bold, italic: italic, code: code, link: link)
+        SharedSDK.NoteEditorRun(
+            text: text,
+            bold: bold,
+            italic: italic,
+            code: code,
+            link: link,
+            strike: strike,
+            underline: underline,
+            color: color?.shared,
+            highlight: highlight?.shared
+        )
     }
 }
 
@@ -75,7 +133,8 @@ extension NoteEditorBlock {
             done: block.done,
             runs: block.runs.map(NoteEditorRun.init),
             pageId: block.pageId,
-            marker: block.marker.map(NoteEditorMarker.init)
+            marker: block.marker.map(NoteEditorMarker.init),
+            toggle: block.toggle
         )
     }
 }

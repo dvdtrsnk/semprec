@@ -2,6 +2,7 @@ package cz.semprec.app.domain.note
 
 import cz.semprec.app.domain.InlineRun
 import cz.semprec.app.domain.PageBlockType
+import cz.semprec.app.domain.PageMarkdownWriter
 
 /**
  * Changes to a note's blocks as a whole: their text, type, indent and place, duplicates and deletion. A page block
@@ -18,12 +19,21 @@ object NoteStructure {
         }
     }
 
-    /** [ids] set to [type], which is not a page; a change of type takes `done` away. Page blocks stay. */
-    fun setType(blocks: List<NoteBlock>, ids: Set<String>, type: PageBlockType): List<NoteBlock> {
+    /**
+     * [ids] set to [type], which is not a page, and a heading folding the blocks under it when [toggle]; a change of
+     * type takes `done` away. Page blocks stay.
+     */
+    fun setType(
+        blocks: List<NoteBlock>,
+        ids: Set<String>,
+        type: PageBlockType,
+        toggle: Boolean = false,
+    ): List<NoteBlock> {
         require(type != PageBlockType.PAGE) { "A block becomes a page only through the subpage operation" }
+        val folds = toggle && PageMarkdownWriter.isHeading(type)
         return blocks.map {
-            val changes = it.id in ids && it.type != PageBlockType.PAGE && it.type != type
-            if (changes) it.copy(type = type, done = false) else it
+            val changes = it.id in ids && it.type != PageBlockType.PAGE && (it.type != type || it.toggle != folds)
+            if (changes) it.copy(type = type, done = it.done && it.type == type, toggle = folds) else it
         }
     }
 

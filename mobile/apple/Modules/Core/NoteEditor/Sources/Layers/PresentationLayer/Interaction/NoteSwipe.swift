@@ -82,16 +82,21 @@ enum NoteSwipeStep: Equatable {
     }
 }
 
-/// One choice of a swipe menu: the type it sets; the block keeps its indent.
+/// One choice of a swipe menu: the type it sets, and for a heading whether it folds what is under it; the block keeps
+/// its indent.
 struct NoteMenuOption: Equatable, Identifiable {
 
     let id: Int
     let title: LocalizedStringKey
     let type: NoteEditorBlockType
+    var toggle = false
+
+    /// Whether the option folds what is under the block: a toggle, or a toggle heading.
+    var folds: Bool { toggle || type == .toggle }
 
     /// The edits that give `block` this option's type.
     func edits(for block: NoteEditorBlock) -> [NoteEditorBlockEdit] {
-        [.setType(blockIds: [block.id], type: type)]
+        [.setType(blockIds: [block.id], type: type, toggle: toggle)]
     }
 }
 
@@ -108,7 +113,8 @@ enum NoteMenuKind: Equatable {
                 NoteMenuOption(id: 0, title: "noteEditor.menu.list.none", type: .text),
                 NoteMenuOption(id: 1, title: "noteEditor.menu.list.bullet", type: .bullet),
                 NoteMenuOption(id: 2, title: "noteEditor.menu.list.number", type: .number),
-                NoteMenuOption(id: 3, title: "noteEditor.type.todo", type: .todo)
+                NoteMenuOption(id: 3, title: "noteEditor.type.todo", type: .todo),
+                NoteMenuOption(id: 4, title: "noteEditor.type.toggle", type: .toggle)
             ]
         case .style:
             [
@@ -116,7 +122,10 @@ enum NoteMenuKind: Equatable {
                 NoteMenuOption(id: 1, title: "noteEditor.type.heading1", type: .heading1),
                 NoteMenuOption(id: 2, title: "noteEditor.type.heading2", type: .heading2),
                 NoteMenuOption(id: 3, title: "noteEditor.type.heading3", type: .heading3),
-                NoteMenuOption(id: 4, title: "noteEditor.type.quote", type: .quote)
+                NoteMenuOption(id: 4, title: "noteEditor.type.toggleHeading1", type: .heading1, toggle: true),
+                NoteMenuOption(id: 5, title: "noteEditor.type.toggleHeading2", type: .heading2, toggle: true),
+                NoteMenuOption(id: 6, title: "noteEditor.type.toggleHeading3", type: .heading3, toggle: true),
+                NoteMenuOption(id: 7, title: "noteEditor.type.quote", type: .quote)
             ]
         }
     }

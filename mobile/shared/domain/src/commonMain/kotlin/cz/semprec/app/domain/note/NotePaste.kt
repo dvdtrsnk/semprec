@@ -34,7 +34,7 @@ object NotePaste {
         val block = blocks[index]
         val (left, right) = NoteRuns.split(block.runs, offset)
         val first = block.copy(runs = NoteRuns.concat(left, plainRuns(lines.first())))
-        val inherited = if (block.isList) block.type else PageBlockType.TEXT
+        val inherited = block.nextType
         val pasted = lines.drop(1).map { line -> lineBlock(line, inherited, block.indent, newId) }
         val lastPasted = pasted.last()
         val tail = lastPasted.copy(runs = NoteRuns.concat(lastPasted.runs, right))

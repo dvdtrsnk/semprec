@@ -9,6 +9,8 @@ struct NoteSelection: Equatable {
     var end: Int
     var marks: Set<NoteEditorMark>
     var link: String?
+    var color: NoteEditorColor?
+    var highlight: NoteEditorColor?
 
     var isEmpty: Bool { start == end }
 }

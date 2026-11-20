@@ -3,13 +3,16 @@ import DesignSystem
 import SwiftUI
 
 /// What stands in front of a block's text: a bullet that changes with its level (filled circle, circle, square), a
-/// number like "1.1.", a checkbox that a tap checks, or a page's document icon. A quote has its bar instead
+/// number like "1.1.", a checkbox that a tap checks, a toggle's arrow that a tap opens or closes, or a page's document
+/// icon. A quote has its bar instead
 /// (`NoteQuoteBar`).
 struct NoteBlockMarker: View {
 
     // MARK: - Dependencies
     let block: NoteEditorBlock
+    let isFolded: Bool
     let onToggleDone: () -> Void
+    let onFold: () -> Void
 
     // MARK: - Body
     var body: some View {
@@ -24,6 +27,36 @@ struct NoteBlockMarker: View {
 private extension NoteBlockMarker {
 
     @ViewBuilder var content: some View {
+        if NoteFolding.folds(block) {
+            arrow
+        } else {
+            typeMarker
+        }
+    }
+
+    /// The arrow sits in the middle of the block's first line, whatever its size.
+    var arrow: some View {
+        Text(verbatim: "M")
+            .hidden()
+            .overlay {
+                Button(action: onFold) {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(Theme.Colors.secondaryText)
+                        .rotationEffect(.degrees(isFolded ? 0 : 90))
+                        .animation(.snappy(duration: 0.2), value: isFolded)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    Text(isFolded ? "noteEditor.toggle.open" : "noteEditor.toggle.close", bundle: .module)
+                )
+                .accessibilityIdentifier(NoteEditorIdentifiers.fold(block.id))
+            }
+    }
+
+    @ViewBuilder var typeMarker: some View {
         switch block.type {
         case .todo:
             Button(action: onToggleDone) {

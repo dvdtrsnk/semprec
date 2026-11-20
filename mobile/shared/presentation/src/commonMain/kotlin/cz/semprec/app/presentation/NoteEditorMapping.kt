@@ -1,5 +1,6 @@
 package cz.semprec.app.presentation
 
+import cz.semprec.app.domain.InlineColor
 import cz.semprec.app.domain.InlineRun
 import cz.semprec.app.domain.PageBlockType
 import cz.semprec.app.domain.note.NoteBlock
@@ -7,9 +8,33 @@ import cz.semprec.app.domain.note.NoteMark
 import cz.semprec.app.domain.note.NoteMarker
 import cz.semprec.app.domain.note.NoteMarkers
 
-internal fun NoteEditorRun.toDomain() = InlineRun(text, bold, italic, code, link)
+internal fun NoteEditorRun.toDomain() = InlineRun(
+    text = text,
+    bold = bold,
+    italic = italic,
+    code = code,
+    link = link,
+    strike = strike,
+    underline = underline,
+    color = color?.toDomain(),
+    highlight = highlight?.toDomain(),
+)
 
-internal fun InlineRun.toEditor() = NoteEditorRun(text, bold, italic, code, link)
+internal fun InlineRun.toEditor() = NoteEditorRun(
+    text = text,
+    bold = bold,
+    italic = italic,
+    code = code,
+    link = link,
+    strike = strike,
+    underline = underline,
+    color = color?.toEditor(),
+    highlight = highlight?.toEditor(),
+)
+
+internal fun NoteEditorColor.toDomain(): InlineColor = InlineColor.valueOf(name)
+
+internal fun InlineColor.toEditor(): NoteEditorColor = NoteEditorColor.valueOf(name)
 
 internal fun NoteEditorBlockType.toDomain(): PageBlockType = PageBlockType.valueOf(name)
 
@@ -24,6 +49,7 @@ internal fun List<NoteBlock>.toEditor(): List<NoteEditorBlock> = zip(NoteMarkers
         done = block.done,
         runs = block.runs.map { it.toEditor() },
         pageId = block.pageId,
+        toggle = block.toggle,
         marker = when (marker) {
             is NoteMarker.Bullet -> NoteEditorMarker.Bullet(marker.level)
             is NoteMarker.Number -> NoteEditorMarker.Number(marker.label)

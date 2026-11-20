@@ -75,18 +75,23 @@ private extension NoteSwipeMenuView {
     }
 
     func isCurrent(_ option: NoteMenuOption) -> Bool {
-        option.type == block.type
+        option.type == block.type && option.toggle == block.toggle
     }
 }
 
 /// A menu option shown as the block it makes: a heading in its size, a quote with its bar, a list item with its
-/// bullet, number or checkbox.
+/// bullet, number or checkbox, a toggle with its arrow.
 struct NoteMenuOptionLabel: View {
 
     let option: NoteMenuOption
 
     var body: some View {
         HStack(spacing: 6) {
+            if option.folds {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Theme.Colors.secondaryText)
+            }
             switch option.type {
             case .bullet:
                 Text(verbatim: "●").font(.system(size: 9))

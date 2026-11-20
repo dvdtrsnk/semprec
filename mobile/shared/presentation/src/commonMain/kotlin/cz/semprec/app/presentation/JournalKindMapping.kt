@@ -20,7 +20,7 @@ internal fun JournalPeriodType.toKind(): JournalPeriodKind = when (this) {
 }
 
 internal fun PageBlockType.toKind(): JournalBlockKind = when (this) {
-    PageBlockType.TEXT -> JournalBlockKind.TEXT
+    PageBlockType.TEXT, PageBlockType.TOGGLE -> JournalBlockKind.TEXT
     PageBlockType.H1 -> JournalBlockKind.H1
     PageBlockType.H2 -> JournalBlockKind.H2
     PageBlockType.H3 -> JournalBlockKind.H3

@@ -2,14 +2,15 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// One block: its marker, its text (edited in place, or shown with a tap that starts editing under the finger) or its
-/// subpage link, indented by its level.
+/// One block: its marker or toggle arrow, its text (edited in place, or shown with a tap that starts editing under the
+/// finger) or its subpage link, indented by its level.
 struct NoteBlockRow: View {
 
     // MARK: - Dependencies
     let block: NoteEditorBlock
     let isEditing: Bool
     let isOnlyBlock: Bool
+    let isFolded: Bool
     let caretTarget: NoteCaretTarget?
     let pendingMark: NoteEditorMark?
     let onBeginEditing: (Int) -> Void
@@ -18,12 +19,18 @@ struct NoteBlockRow: View {
     let onSelection: (NoteSelection) -> Void
     let onBlur: () -> Void
     let onEdit: (NoteEditorBlockEdit) -> Void
+    let onFold: () -> Void
 
     // MARK: - Body
     var body: some View {
         HStack(alignment: .top, spacing: 2) {
             if hasMarker {
-                NoteBlockMarker(block: block) { onEdit(.toggleDone(blockId: block.id)) }
+                NoteBlockMarker(
+                    block: block,
+                    isFolded: isFolded,
+                    onToggleDone: { onEdit(.toggleDone(blockId: block.id)) },
+                    onFold: onFold
+                )
             }
             if block.type == .quote {
                 NoteQuoteBar().padding(.vertical, NoteEditorMetrics.editorInset.height)
@@ -42,7 +49,7 @@ struct NoteBlockRow: View {
 private extension NoteBlockRow {
 
     var hasMarker: Bool {
-        block.marker != nil || block.type == .todo || block.type == .page
+        block.marker != nil || block.type == .todo || block.type == .page || NoteFolding.folds(block)
     }
 
     var placeholder: LocalizedStringKey? {

@@ -39,7 +39,7 @@ class NoteRunsTest {
 
     @Test fun `clearing a stretch takes its formats and its link off and leaves the rest`() {
         val linked = NoteRuns.link(runs, 6, 16, "https://x.cz")
-        val cleared = NoteRuns.clear(linked, 3, 12)
+        val cleared = NoteRunStyles.clear(linked, 3, 12)
         assertEquals(
             listOf(InlineRun("Hello bold w"), InlineRun("orld", link = "https://x.cz")),
             cleared,

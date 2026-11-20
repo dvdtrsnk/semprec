@@ -2,14 +2,20 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The styles a block can take, by group: text (headings and plain text), lists and blocks. A page is made only by
-/// the subpage operation, and only where the note offers subpages; a page block keeps its type.
+/// The styles a block can take, by group: text (headings and plain text), lists, toggle headings and blocks. A page is
+/// made only by the subpage operation, and only where the note offers subpages; a page block keeps its type.
 struct NoteStyleList: View {
 
+    /// A block type, and for a heading whether it folds what is under it.
+    struct Style: Hashable {
+        let type: NoteEditorBlockType
+        var toggle = false
+    }
+
     // MARK: - Dependencies
-    let current: NoteEditorBlockType?
+    let current: Style?
     let offersSubpages: Bool
-    let onPick: (NoteEditorBlockType) -> Void
+    let onPick: (NoteEditorBlockType, Bool) -> Void
 
     @Environment(\.dismiss)
     private var dismiss
@@ -18,9 +24,13 @@ struct NoteStyleList: View {
     var body: some View {
         NavigationStack {
             List {
-                group("noteEditor.style.text", [.heading1, .heading2, .heading3, .text])
-                group("noteEditor.style.lists", [.bullet, .number, .todo])
-                group("noteEditor.style.blocks", offersSubpages ? [.quote, .page] : [.quote])
+                group("noteEditor.style.text", [.heading1, .heading2, .heading3, .text].map { Style(type: $0) })
+                group("noteEditor.style.lists", [.bullet, .number, .todo, .toggle].map { Style(type: $0) })
+                group(
+                    "noteEditor.style.toggles",
+                    [.heading1, .heading2, .heading3].map { Style(type: $0, toggle: true) }
+                )
+                group("noteEditor.style.blocks", (offersSubpages ? [.quote, .page] : [.quote]).map { Style(type: $0) })
             }
             .navigationTitle(Text("noteEditor.bar.style", bundle: .module))
             .inlineNavigationTitle()
@@ -37,27 +47,36 @@ struct NoteStyleList: View {
 // MARK: - Subviews
 private extension NoteStyleList {
 
-    func group(_ title: LocalizedStringKey, _ types: [NoteEditorBlockType]) -> some View {
+    func group(_ title: LocalizedStringKey, _ styles: [Style]) -> some View {
         Section {
-            ForEach(types, id: \.self) { type in
+            ForEach(styles, id: \.self) { style in
                 Button {
-                    onPick(type)
+                    onPick(style.type, style.toggle)
                     dismiss()
                 } label: {
-                    HStack {
-                        Text(NoteBlockStyle.typeName(type), bundle: .module)
-                            .font(type == .text ? .body : NoteBlockStyle.font(type))
+                    HStack(spacing: 6) {
+                        if style.toggle || style.type == .toggle {
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(Theme.Colors.secondaryText)
+                        }
+                        Text(name(style), bundle: .module)
+                            .font(style.type == .text ? .body : NoteBlockStyle.font(style.type))
                         Spacer()
-                        if type == current {
+                        if style == current {
                             Image(systemName: "checkmark").foregroundStyle(Theme.Colors.accent)
                         }
                     }
                 }
                 .listRowButton()
-                .disabled(current == .page)
+                .disabled(current?.type == .page)
             }
         } header: {
             Text(title, bundle: .module)
         }
+    }
+
+    func name(_ style: Style) -> LocalizedStringKey {
+        style.toggle ? NoteBlockStyle.toggleHeadingName(style.type) : NoteBlockStyle.typeName(style.type)
     }
 }
