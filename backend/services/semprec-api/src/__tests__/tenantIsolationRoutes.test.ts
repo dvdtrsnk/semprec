@@ -4089,6 +4089,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     );
     expect(generic.status, generic.text).toBe(403);
   },
+  // B's request naming A's account answers like a random id, queues nothing for A and does not debounce A's own.
+  "calendar account sync": async () => {
+    const switchOn = (tenant: TenantFixture) =>
+      runInTenant(tenant.tenantId, async () => {
+        const mailboxesDatabaseId = await databaseIdFor(tenant.tenantId, "mailboxes");
+        await createChokePoint(pool).updateItem({
+          databaseId: mailboxesDatabaseId,
+          itemId: tenant.mailboxItemId,
+          propertiesPatch: { calendarsEnabled: true },
+        });
+      });
+    await switchOn(a);
+    await switchOn(b);
+    const sync = (id: string | undefined): Request => POST(`/api/accounts/${id}/calendars/sync`, {});
+
+    await expectForeign404(b.member, [a.mailboxItemId], ([id]) => sync(id));
+    expect(await sendOk(b.member, sync(b.mailboxItemId))).toBe(JSON.stringify({ id: b.mailboxItemId, queued: true }));
+    expect(await sendOk(a.member, sync(a.mailboxItemId))).toBe(JSON.stringify({ id: a.mailboxItemId, queued: true }));
+  },
   // A's calendar holds more of everything than B's, so a leaked count would show in B's answer.
   "calendar cancellation impact": async () => {
     const seed = async (tenant: TenantFixture, eventCount: number): Promise<{ calendarId: string; ids: string[] }> => {

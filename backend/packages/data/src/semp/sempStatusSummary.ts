@@ -3,7 +3,10 @@ import { readSempStatusReport } from "./sempStatusReport.js";
 
 /** What Semp cannot do while a banner problem is active; an unlisted kind falls back to its category's key. */
 const IMPACT_KEYS = {
-  mail: { fallback: "mailNotSyncing", kinds: { mailSyncError: "mailNotSyncing" } },
+  mail: {
+    fallback: "mailNotSyncing",
+    kinds: { mailSyncError: "mailNotSyncing", calendarSyncError: "calendarsNotSyncing" },
+  },
   agents: {
     fallback: "agentsNotRunning",
     kinds: {

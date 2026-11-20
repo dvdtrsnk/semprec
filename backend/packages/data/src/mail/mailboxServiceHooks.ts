@@ -1,7 +1,10 @@
-// The Mail switch of an internet account (a Mailboxes item): switching `mailEnabled` off pauses the account's mail
-// sync and queues the removal of its mail, switching it on resumes the sync. `calendarsEnabled` has no effect here.
+// The service switches of an internet account (a Mailboxes item). Switching `mailEnabled` off pauses the account's mail
+// sync and queues the removal of its mail, switching it on resumes the sync. Switching `calendarsEnabled` on queues a
+// calendar sync pass; switching it off stops the calendar sync and queues the removal of the account's calendars.
 import { currentTenantScope } from "@semprec/shared";
-import type { ItemUpdateHook, ItemUpdatePreLockHook } from "../chokePoint/hooks.js";
+import { lockCalendarAccountSync } from "../calendar/sync/calendarAccountSyncGuard.js";
+import { startCalendarAccountSync, stopCalendarAccountSync } from "../calendar/sync/calendarAccountSyncLifecycle.js";
+import type { ItemCreateHook, ItemUpdateHook, ItemUpdatePreLockHook } from "../chokePoint/hooks.js";
 import { runAfterCommit } from "../db/pool.js";
 import type { DatabaseRow } from "../types.js";
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
@@ -50,9 +53,10 @@ function isMailboxesDatabase(database: DatabaseRow): boolean {
 }
 
 /**
- * Takes the mailbox's sync guard (at most `MAILBOX_REMOVAL_SYNC_WAIT_MS`, then 409 `mailbox_sync_busy`) and then its
- * sync state row before the update locks the Mailboxes item: the order of a removal, so neither a pass nor a removal
- * of this mailbox runs while the switch changes.
+ * Before the update locks the Mailboxes item, in this order: for `mailEnabled` the mailbox's sync guard, for
+ * `calendarsEnabled` the account's calendar sync guard (each at most `MAILBOX_REMOVAL_SYNC_WAIT_MS`, then 409
+ * `mailbox_sync_busy` / `calendar_sync_busy`), then for `mailEnabled` its sync state row. That is the order of a
+ * removal, so no mail pass, calendar apply or removal of this account runs while a switch changes.
  */
 export const mailboxServiceItemUpdatePreLockHook: ItemUpdatePreLockHook = async ({
   client,
@@ -60,22 +64,47 @@ export const mailboxServiceItemUpdatePreLockHook: ItemUpdatePreLockHook = async 
   itemId,
   patch,
 }) => {
-  if (!isMailboxesDatabase(database) || !Object.hasOwn(patch, "mailEnabled")) return;
-  await lockMailboxSync(client, itemId, { maxWaitMs: MAILBOX_REMOVAL_SYNC_WAIT_MS });
-  await lockMailAccountSyncState(client, itemId);
+  if (!isMailboxesDatabase(database)) return;
+  const mail = Object.hasOwn(patch, "mailEnabled");
+  if (mail) await lockMailboxSync(client, itemId, { maxWaitMs: MAILBOX_REMOVAL_SYNC_WAIT_MS });
+  if (Object.hasOwn(patch, "calendarsEnabled")) {
+    await lockCalendarAccountSync(client, itemId, { maxWaitMs: MAILBOX_REMOVAL_SYNC_WAIT_MS });
+  }
+  if (mail) await lockMailAccountSyncState(client, itemId);
+};
+
+/** A new account with Calendars on gets its first calendar sync pass queued. */
+export const mailboxServiceItemCreateHook: ItemCreateHook = async ({ client, database, item, properties }) => {
+  if (!isMailboxesDatabase(database) || !areCalendarsEnabled(properties)) return;
+  await startCalendarAccountSync(client, item.id);
 };
 
 /**
- * Decides by the locked sync state row, not by the previous value, so a repeated write changes nothing.
+ * Calendars on queues a pass; off stops the calendar sync (`stopCalendarAccountSync`). Both decide by the written
+ * value, and repeating either changes nothing more.
+ */
+const calendarsSwitchHook: ItemUpdateHook = async ({ client, item, propertiesPatch }) => {
+  if (!Object.hasOwn(propertiesPatch, "calendarsEnabled")) return;
+  if (areCalendarsEnabled(propertiesPatch)) await startCalendarAccountSync(client, item.id);
+  else await stopCalendarAccountSync(client, item.id);
+};
+
+/**
+ * Mail decides by the locked sync state row, not by the previous value, so a repeated write changes nothing.
  *
  * Off: pauses the sync state (seeding a row for a never-connected mailbox), deletes the folder sync states, resolves
  * the mailbox's sync problem, queues the mail-off removal of the account's Emails, Folders and emptied threads, and
  * after the commit stops its live sync. The item, credential, server settings and sync mode stay.
  *
  * On: clears the pause and queues `mailAccountSync`; discovery hosts the live sync again on its next pass.
+ *
+ * A patch of `calendarsEnabled` is handled first, by the Calendars switch above.
  */
-export const mailboxServiceItemUpdateHook: ItemUpdateHook = async ({ client, database, item, propertiesPatch }) => {
-  if (!isMailboxesDatabase(database) || !Object.hasOwn(propertiesPatch, "mailEnabled")) return;
+export const mailboxServiceItemUpdateHook: ItemUpdateHook = async (context) => {
+  const { client, database, item, propertiesPatch } = context;
+  if (!isMailboxesDatabase(database)) return;
+  await calendarsSwitchHook(context);
+  if (!Object.hasOwn(propertiesPatch, "mailEnabled")) return;
   if (isMailEnabled(propertiesPatch)) {
     if (await resumeMailAccountSync(client, item.id)) await enqueueMailAccountSync(client, item.id);
     return;

@@ -26,6 +26,7 @@ const problemSchema = z.object({
 });
 const kinds = new Set([
   "mailSyncError",
+  "calendarSyncError",
   "agentHeartbeat",
   "agentRun",
   "reply",
@@ -319,7 +320,8 @@ async function readSempStatus<Extra>(
           return renderLabel(`status.${kind}.${catalogField}`, replacements);
         };
         const actions: StatusAction[] = [];
-        if (kind === "mailSyncError") actions.push({ kind: "reauthMailbox", target: problem.source_id });
+        if (kind === "mailSyncError" || kind === "calendarSyncError")
+          actions.push({ kind: "reauthMailbox", target: problem.source_id });
         if (kind === "reply" && message)
           actions.push(
             { kind: "retryPrompt", target: message.id },

@@ -161,6 +161,20 @@ export async function lockMailAccountSyncState(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/** The account's sync mode and recorded OAuth grant; `null` for a mailbox that never connected. */
+export async function getMailAccountGrant(
+  client: Queryable,
+  itemId: string,
+): Promise<{ syncMode: SyncMode; grantedScopes: string[] | null } | null> {
+  const { rows } = await client.query<{ sync_mode: string; granted_scopes: string[] | null }>(
+    "SELECT sync_mode, granted_scopes FROM mail_account_sync_state WHERE item_id = $1",
+    [itemId],
+  );
+  const row = rows[0];
+  if (row === undefined) return null;
+  return { syncMode: assertKnownValue(SYNC_MODES, row.sync_mode, "sync mode"), grantedScopes: row.granted_scopes };
+}
+
 /**
  * Replaces the scopes the provider granted with the account's current OAuth credential, as its token response
  * reported them.

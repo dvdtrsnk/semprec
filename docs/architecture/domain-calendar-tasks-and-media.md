@@ -191,6 +191,61 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
 - Days are computed in the series' zone and converted to tenant wall clock; at most 100 entries per series and 20,000
   rule periods per iteration. Occurrence ids are `<row id>@<date>`.
 
+### Internet account calendar sync
+
+Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calendar_remote_state` and
+`event_remote_state` (`calendarSyncStore.ts` is their only writer) and the only writer as `CALENDAR_SYNC_WRITER`.
+
+- **Adapters.** `adapter.ts` is the contract: `listCalendars`, `fetchChanges(calendar, cursor, { window })` →
+  `{ full, upserts, deletions, nextSyncState }`, `putEvent`, `deleteEvent`, each honouring the pass's deadline signal
+  (5 min for the whole pass). An adapter does network only and holds no database client. The registry
+  (`adapters/index.ts`) has one factory per sync mode: `imap` CalDAV, `gmail_api` Google, `graph_api` Graph. Its answer
+  is validated and bounded (`parseRemoteCalendars`, `parseCalendarChanges`) before anything is written; a refused
+  answer is the provider error `invalidResponse`.
+- **Pass** (`calendarAccountSyncJob.ts`, task `calendarAccountSync`, key `calendar-account-sync:<accountId>`, 3
+  attempts, `api`). A short read transaction reads the account, its sync mode and grant, the tracked calendars (those
+  with a `calendar_remote_state` row) and the window; an account that is gone, trashed, has Calendars off or whose
+  OAuth grant lacks the calendar scope is skipped. Then, with no transaction open, the credential is decrypted
+  (`calendar_sync` in `credential_access_log`) and every calendar fetched. A calendar without a cursor is fetched in
+  full for one year back to two years ahead (tenant zone); later fetches are incremental.
+- **Apply** (`calendarSyncApply.ts`), one transaction: the account's calendar sync guard (`calendarAccountSyncGuard.ts`,
+  advisory lock `calendar-account-sync:v1:<tenant>:<account>`, at most 5 s, then the pass is skipped), the account and
+  its tracked calendars re-read (Calendars off or gone: skipped; tracked calendars or cursors changed since the
+  fetch: the fetch is discarded). Calendars first: a new remote calendar becomes a Calendars row of `kind` `account`
+  with its `account` edge, a known one gets changed `remoteName`/`remoteColor`/`readOnly`, one no longer listed loses
+  its remote state and the cleanup is queued. Then Events by `(calendar, remote_id)`: a deletion (or, for a full
+  fetch, a stored Event of the window not listed) is trashed and its remote state deleted; an Event whose
+  `base_snapshot` (fields, series, organizer, attendees) equals the fetched one writes nothing, and only its remote
+  state when its href or etag changed; otherwise the fields the provider changed since the snapshot are written and
+  other fields keep local edits. Overrides follow their series (`seriesId`, `recurrenceId`). Each Event runs in a
+  savepoint: a `ValidationError` from an Event rule skips that Event. Event writes pass `allowedSystemKeys` for the
+  provider fields and `seriesId` and no `systemOwnerProcess`; calendar writes pass `systemOwnerProcess: "calendar"`.
+  The cursors, `ok` state and the resolution of the account's problem commit with the writes. The result lists the
+  Events added, changed and cancelled and whether this was the account's initial sync, for notifications.
+- **Status.** `calendar_account_sync_state` (`status` `ok` | `error` | `never` | `needsReauthorization` |
+  `needsConsent`, `last_successful_sync_at`, `failing_since`, `last_error_code`, `initial_sync_completed_at`,
+  `manual_sync_requested_at`). `calendarStatusOf` derives the rows' `calendarStatus`: `off` with Calendars off,
+  `needsConsent` while the OAuth grant lacks the calendar scope, else the stored status (`never` without a row). A
+  failed pass records, under the guard and only while Calendars is on, `needsReauthorization` for a refused credential
+  (or none stored), `needsConsent` for a refused calendar grant, otherwise `error` with the provider's code, `timeout`
+  or `unexpected`, and raises the account's Semp problem `calendarSyncError` (`calendar:<account>`, category `mail`,
+  critical for the first two). Calendars and Events stay as they were. Only `error` is rethrown for the queue's retry.
+- **Triggers.** An account created with Calendars on or switched on queues a pass; the sweep
+  `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, not `ok`, or
+  last synced 4 min ago or more; `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued }`, 404 for another
+  tenant's or an unknown id, 409 `calendars_disabled`) queues one at most every 60 s per account, decided by a
+  conditional upsert of `manual_sync_requested_at` under the account row's share lock.
+- **Off and removal** (`calendarAccountSyncLifecycle.ts`). Switching Calendars off (`mail/mailboxServiceHooks.ts`) or
+  removing the account (`removeMailbox`) deletes the state row and every `calendar_remote_state` row of the account,
+  resolves the problem as `sourceDeleted` and queues `calendarAccountCleanup` (key
+  `calendar-account-cleanup:<account>`). Untracked calendars are no longer touched by a pass. The cleanup trashes, per
+  committed chunk under the guard, the live Events of the account's untracked calendars with their remote state, then
+  each calendar. Switching Calendars on again syncs the account anew into new calendars.
+- **Lock order.** The Calendars switch: calendar sync guard (at most 15 s, then 409 `calendar_sync_busy`) before the
+  Mailboxes row; with a Mail switch in the same write, mailbox sync guard → calendar sync guard → mail sync state row
+  → Mailboxes row, the order a removal takes them in. The apply: guard → state row → calendar rows → Event rows. A
+  cleanup chunk: guard → Event rows → calendar row.
+
 ### Reminders and resync pushes
 
 - `enqueueRemindersResync` (`calendar/remindersResync.ts`) and `enqueueSleepResync` (`sleep/sleepResync.ts`) enqueue one

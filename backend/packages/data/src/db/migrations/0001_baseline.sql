@@ -876,6 +876,32 @@ CREATE UNIQUE INDEX blobs_tenant_id_id_uq ON public.blobs USING btree (tenant_id
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.blobs TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
+-- calendar_account_sync_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- The calendar side of an internet account (a Mailboxes item): the outcome of its last calendar sync pass. Written by
+-- the calendar sync and the manual sync route while Calendars is on; deleted when Calendars is switched off or the
+-- account is removed.
+CREATE TABLE public.calendar_account_sync_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    account_item_id uuid NOT NULL,
+    status text DEFAULT 'never'::text NOT NULL,
+    last_successful_sync_at timestamp with time zone,
+    failing_since timestamp with time zone,
+    last_error_code text,
+    initial_sync_completed_at timestamp with time zone,
+    manual_sync_requested_at timestamp with time zone,
+    CONSTRAINT calendar_account_sync_state_status_check CHECK ((status = ANY (ARRAY['ok'::text, 'error'::text, 'never'::text, 'needsReauthorization'::text, 'needsConsent'::text])))
+);
+
+COMMENT ON TABLE public.calendar_account_sync_state IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_account_sync_state
+    ADD CONSTRAINT calendar_account_sync_state_pkey PRIMARY KEY (tenant_id, account_item_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_account_sync_state TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
 -- calendar_feed_state
 -- ----------------------------------------------------------------------------------------------------
 
@@ -3117,6 +3143,9 @@ ALTER TABLE ONLY public.approval_requests
 ALTER TABLE ONLY public.blobs
     ADD CONSTRAINT blobs_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
+ALTER TABLE ONLY public.calendar_account_sync_state
+    ADD CONSTRAINT calendar_account_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3546,6 +3575,9 @@ ALTER TABLE ONLY public.views
 ALTER TABLE ONLY public.agent_database_grants
     ADD CONSTRAINT agent_database_grants_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.calendar_account_sync_state
+    ADD CONSTRAINT calendar_account_sync_state_account_item_id_tenant_fkey FOREIGN KEY (tenant_id, account_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
@@ -3730,6 +3762,12 @@ ALTER TABLE public.blobs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.blobs AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.blobs USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_account_sync_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_account_sync_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_account_sync_state USING (true) WITH CHECK (true);
 
 ALTER TABLE public.calendar_feed_state ENABLE ROW LEVEL SECURITY;
 

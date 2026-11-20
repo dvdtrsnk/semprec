@@ -21,7 +21,9 @@ described elsewhere and only referenced here:
   service switches. Unset reads as the default, Mail on and Calendars off (`isMailEnabled`,
   `areCalendarsEnabled` in `mail/mailboxServiceHooks.ts`); the connect flows write both explicitly. Both
   appear in the `GET /api/mail/mailboxes` and `/:id` rows. Both services may be off; the account keeps its
-  sign-in until it is removed. `calendarsEnabled` has no effect in the mail module.
+  sign-in until it is removed. `calendarsEnabled` drives the account's calendar sync, whose lifecycle the
+  same hooks start and stop (see the calendar sync in
+  [domain-calendar-tasks-and-media.md](domain-calendar-tasks-and-media.md#internet-account-calendar-sync)).
 - `mail_account_sync_state.sync_paused_at` is what the mail lifecycle reads: set, the account has Mail off.
   The sync pass (prologue and again under the guard), the sweep (`listAccountsDueForSync`), live-sync
   discovery and the mail-sync heartbeat expectation skip a paused account; `sendDraftEmail` refuses it.
@@ -111,8 +113,9 @@ described elsewhere and only referenced here:
   stored grant, not the request, decides.
 - `calendarStatus` on the mailbox rows (`calendarStatusOf`): `off` while Calendars is off; `needsConsent` for a
   `gmail_api`/`graph_api` account whose granted scopes lack the calendar scope (Graph's resource-qualified names in
-  any case count); `pending` otherwise. Switching Calendars on writes nothing else; the client then reauthorizes
-  with `services: ["mail", "calendars"]`.
+  any case count); otherwise the stored status of the account's calendar sync (`never` before its first pass).
+  Switching Calendars on queues a calendar sync pass; for an OAuth account without the calendar scope the client
+  then reauthorizes with `services: ["mail", "calendars"]`.
 - `GET /api/mail/oauth/callback` (public, `services/semprec-api/src/mailOauthCallbackHandler.ts`) validates the
   query first, then `resolveMailOauthRedirectUrl` looks the state up: `route_mail_oauth_state` names the tenant of an
   open (unused, unexpired) state by its hash, and the target is read inside that tenant. For `redirectTarget: "app"`
@@ -355,10 +358,11 @@ described elsewhere and only referenced here:
   `mailboxDeleteHook` refuses a `user`/`agent` trash of a system Mailboxes item (403 `forbidden`); the
   matching `mailboxDeleteApprovalGuard` (`registerItemDeleteApprovalGuard`) refuses an agent's `item.delete`
   before it is queued. A delete hook that refuses by rule must register such a guard.
-- Removal is one READ COMMITTED transaction: sync guard (≤ 15 s, `MAILBOX_REMOVAL_SYNC_WAIT_MS`) → sync state
-  row → Mailboxes item → read cleanup input into memory (`readMailboxRemovalCleanupInput`) → `syncStatus =
-  needsReauthorization` → trash item as system writer → delete credential, sync state, folder sync states,
-  server settings → enqueue `mailboxRemoval`. Deletes matching no row are fine.
+- Removal is one READ COMMITTED transaction: sync guard (≤ 15 s, `MAILBOX_REMOVAL_SYNC_WAIT_MS`) → calendar
+  sync guard (same bound) → sync state row → Mailboxes item → read cleanup input into memory
+  (`readMailboxRemovalCleanupInput`) → `syncStatus = needsReauthorization` → trash item as system writer →
+  delete credential, sync state, folder sync states, server settings → enqueue `mailboxRemoval` → stop the
+  calendar sync (`stopCalendarAccountSync`). Deletes matching no row are fine.
 - `mailboxRemoval` job (`mail/mailboxRemovalJob.ts`, lane `mailbox-removal:<tenant>`): chunks of ≤ 100 rows,
   Emails then Folders (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`), each chunk locks the Mailboxes item `FOR SHARE`
   (`lockItemTrashEpoch`) and trashes with `deletedAtExact` = the mailbox's `deleted_at`; a live mailbox ends it.
@@ -501,7 +505,8 @@ streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential ve
 
 - Sync pass / removal: mailbox sync guard → mail-thread guard → Gmail folder-state guard → state/folder/item rows.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
-- Mail switch: mailbox sync guard → sync state row → Mailboxes item. Mail-off chunk: mail-thread guard → sync
+- Service switch / removal: mailbox sync guard (Mail) → calendar sync guard (Calendars) → sync state row (Mail)
+  → Mailboxes item. Mail-off chunk: mail-thread guard → sync
   state row (share) → Mailboxes item (share) → member rows.
 - Send claim: sync state row (share) → Emails item → `mail_drafts` row → mail-thread guard.
 - Merge: thread guard → both Threads items (UUID order) → definition reservations (id order) → edges.

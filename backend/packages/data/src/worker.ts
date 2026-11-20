@@ -1,4 +1,9 @@
 import { handleCalendarSubscriptionSweepTask } from "./calendar/calendarSubscriptionSweep.js";
+import { handleCalendarAccountCleanupTask } from "./calendar/sync/calendarAccountCleanupJob.js";
+import {
+  handleCalendarAccountSyncSweepTask,
+  handleCalendarAccountSyncTask,
+} from "./calendar/sync/calendarAccountSyncJob.js";
 import { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
@@ -111,6 +116,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 0 1 * * * ${CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP}
 5 4 * * * ${CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP}
 25 * * * * ${CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP}
+*/5 * * * * ${CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP}
 `;
 
 /**
@@ -205,6 +211,16 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP]: async () => {
       await handleCalendarSubscriptionSweepTask(pool);
+    },
+    [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: async () => {
+      await handleCalendarAccountSyncSweepTask(pool);
+    },
+    // The adapters are this package's own (`calendar/sync/adapters/`), so nothing is injected here.
+    [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC]: async (payload, helpers) => {
+      await handleCalendarAccountSyncTask(pool, payload, { jobId: helpers.job.id });
+    },
+    [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: async (payload) => {
+      await handleCalendarAccountCleanupTask(pool, payload);
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {
       await handleMailAccountSyncSweepTask(pool);

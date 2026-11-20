@@ -2245,7 +2245,7 @@ const mailboxRowSchema = z.object({
   id: z.uuid(),
   mailEnabled: z.boolean(),
   calendarsEnabled: z.boolean(),
-  calendarStatus: z.enum(["off", "needsConsent", "pending"]),
+  calendarStatus: z.enum(["off", "needsConsent", "never", "ok", "error", "needsReauthorization"]),
 });
 
 async function mailboxRow(mailboxId: string): Promise<z.infer<typeof mailboxRowSchema>> {
@@ -2345,7 +2345,7 @@ describe("OAuth scopes per service", () => {
     expect(await stateCount()).toBe(0);
   });
 
-  it("connects a Google account with Mail and Calendars: Calendars on, the granted scopes stored, calendar status pending", async () => {
+  it("connects a Google account with Mail and Calendars: Calendars on, the granted scopes stored, calendar status never (not synced yet)", async () => {
     const granted = [...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE];
 
     const mailboxId = await connectGoogle(["mail", "calendars"], ` ${granted.join(" ")}  openid`);
@@ -2355,7 +2355,7 @@ describe("OAuth scopes per service", () => {
       id: mailboxId,
       mailEnabled: true,
       calendarsEnabled: true,
-      calendarStatus: "pending",
+      calendarStatus: "never",
     });
   });
 
@@ -2377,7 +2377,7 @@ describe("OAuth scopes per service", () => {
       grantedScopes: [...GRAPH_MAIL_SCOPES, "Calendars.ReadWrite"],
       paused: false,
     });
-    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarStatus: "pending" });
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarStatus: "never" });
   });
 
   it("reads Microsoft's resource-qualified granted scopes in any letter case", async () => {
@@ -2395,7 +2395,7 @@ describe("OAuth scopes per service", () => {
     );
 
     expect(await mailSyncOf(mailboxId)).toEqual({ grantedScopes: granted.split(" "), paused: false });
-    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarStatus: "pending" });
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarStatus: "never" });
   });
 
   it("creates nothing when the token response's scope is not a string", async () => {
@@ -2414,7 +2414,7 @@ describe("OAuth scopes per service", () => {
     expect(await connected()).toEqual(NOTHING);
   });
 
-  it("switching Calendars on for a mail-only Google account keeps it on, needing consent, and leaves mail sync alone", async () => {
+  it("switching Calendars on for a mail-only Google account keeps it on, needing consent, leaves mail sync alone and queues a calendar pass", async () => {
     const mailboxId = await connectGoogle(["mail"], GMAIL_SCOPES.join(" "));
     expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: false, calendarStatus: "off" });
     const jobsBefore = await queuedJobs();
@@ -2429,19 +2429,22 @@ describe("OAuth scopes per service", () => {
       calendarStatus: "needsConsent",
     });
     expect(await mailSyncOf(mailboxId)).toEqual({ grantedScopes: GMAIL_SCOPES, paused: false });
-    expect(await queuedJobs()).toEqual(jobsBefore);
+    expect(await queuedJobs()).toEqual([
+      { task: "calendarAccountSync", key: `calendar-account-sync:${mailboxId}` },
+      ...jobsBefore,
+    ]);
     expect(await storedRefreshToken(caller.tenantId, mailboxId)).toBe(SECRETS.refreshToken);
 
     await switchCalendars(mailboxId, false);
     expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: false, calendarStatus: "off" });
   });
 
-  it("reports an IMAP account with Calendars on as pending: it needs no OAuth consent", async () => {
+  it("reports an IMAP account with Calendars on as never synced: it needs no OAuth consent", async () => {
     const mailboxId = await passwordMailbox(caller.tenantId);
 
     await switchCalendars(mailboxId, true);
 
-    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: true, calendarStatus: "pending" });
+    expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: true, calendarStatus: "never" });
   });
 
   it("reauthorization with Mail and Calendars replaces the credential and the granted scopes, and the calendar status leaves needsConsent", async () => {
@@ -2468,7 +2471,7 @@ describe("OAuth scopes per service", () => {
       id: mailboxId,
       mailEnabled: true,
       calendarsEnabled: true,
-      calendarStatus: "pending",
+      calendarStatus: "never",
     });
     expect(liveSync.restarted).toEqual([mailboxId]);
   });

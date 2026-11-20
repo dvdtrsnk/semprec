@@ -50,4 +50,12 @@ export const CALENDAR_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "calendar account sync",
+    method: "POST",
+    path: `/api/accounts/${EXAMPLE_ID}/calendars/sync`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

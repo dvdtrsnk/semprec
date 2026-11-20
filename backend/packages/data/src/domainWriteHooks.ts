@@ -19,7 +19,11 @@ import {
   mailboxConnectionLimitCreateHook,
   mailboxConnectionLimitUpdateHook,
 } from "./mail/mailboxConnectionLimitHook.js";
-import { mailboxServiceItemUpdateHook, mailboxServiceItemUpdatePreLockHook } from "./mail/mailboxServiceHooks.js";
+import {
+  mailboxServiceItemCreateHook,
+  mailboxServiceItemUpdateHook,
+  mailboxServiceItemUpdatePreLockHook,
+} from "./mail/mailboxServiceHooks.js";
 import { sanitizeMailHtml } from "./mail/htmlSanitize.js";
 import { EMAILS_MODULE_ID, MAILBOXES_MODULE_ID } from "./seed/emailModuleKeys.js";
 import { registerItemReadProjection } from "./chokePoint/hooks.js";
@@ -276,7 +280,8 @@ const itemUpdatePreLockHooks: readonly (readonly [string, ItemUpdatePreLockHook]
   [CALENDARS_MODULE_ID, calendarItemUpdatePreLockHook],
   // Lock order: the night's lock before the exception's row, as the PUT does.
   [SLEEP_NIGHTS_MODULE_ID, sleepNightUpdatePreLockHook],
-  // Lock order: the mailbox's sync guard and sync state row before the Mailboxes row, as a removal takes them.
+  // Lock order: the mailbox's sync guard, the calendar sync guard and the sync state row before the Mailboxes row, as
+  // a removal takes them.
   [MAILBOXES_MODULE_ID, mailboxServiceItemUpdatePreLockHook],
   // Lock order: an Event's account calendar before the Event's row, as a calendar trash takes them.
   [EVENTS_MODULE_ID, accountCalendarEventUpdatePreLockHook],
@@ -320,6 +325,8 @@ const itemCreateHooks: readonly ItemCreateHook[] = [
   inboxItemCreateHook,
   inboxTypeItemCreateHook,
   mailboxConnectionLimitCreateHook,
+  // An account created with Calendars on queues its first calendar sync pass.
+  mailboxServiceItemCreateHook,
   areaItemCreateHook,
   // A company created with a `web` feeds the resolver rules like an update of its `web`.
   linkRuleItemCreateHook,

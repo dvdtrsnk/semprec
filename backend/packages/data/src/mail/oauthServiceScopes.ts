@@ -1,3 +1,4 @@
+import type { CalendarSyncStatus } from "../calendar/sync/calendarSyncStore.js";
 import type { SyncMode } from "./mailAccountSyncStateStore.js";
 import type { MailOauthProvider } from "./mailOauthStatesStore.js";
 
@@ -50,21 +51,28 @@ function oauthProviderOfSyncMode(syncMode: SyncMode): MailOauthProvider | null {
 }
 
 /**
- * The calendar side of an internet account as clients see it: `off` while Calendars is switched off, `needsConsent`
- * for an OAuth account whose recorded grant lacks the calendar scope (an account that never recorded one included),
- * `pending` otherwise.
+ * Whether an account's credential grants calendar access: always for `imap` (password sign-in); for an OAuth account
+ * when its recorded grant includes the calendar scope (an account that never recorded one lacks it).
  */
-export type CalendarStatus = "off" | "needsConsent" | "pending";
+export function hasCalendarConsent(account: { syncMode: SyncMode; grantedScopes: readonly string[] | null }): boolean {
+  const provider = oauthProviderOfSyncMode(account.syncMode);
+  if (provider === null) return true;
+  return grantsAll(provider, account.grantedScopes ?? [], SERVICE_SCOPES[provider].calendars);
+}
+
+/**
+ * The calendar side of an internet account as clients see it: `off` while Calendars is switched off, `needsConsent`
+ * while the grant lacks calendar access, otherwise the stored status of its calendar sync (`never` without one).
+ */
+export type CalendarStatus = "off" | CalendarSyncStatus;
 
 export function calendarStatusOf(account: {
   calendarsEnabled: boolean;
   syncMode: SyncMode;
   grantedScopes: readonly string[] | null;
+  syncStatus: CalendarSyncStatus | null;
 }): CalendarStatus {
   if (!account.calendarsEnabled) return "off";
-  const provider = oauthProviderOfSyncMode(account.syncMode);
-  if (provider === null) return "pending";
-  return grantsAll(provider, account.grantedScopes ?? [], SERVICE_SCOPES[provider].calendars)
-    ? "pending"
-    : "needsConsent";
+  if (!hasCalendarConsent(account)) return "needsConsent";
+  return account.syncStatus ?? "never";
 }
