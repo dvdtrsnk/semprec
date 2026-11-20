@@ -11,7 +11,12 @@ import kotlinx.serialization.serializer
 sealed interface ApiResponse {
     /** [etag] is the `ETag` header of the answer, quoted as the server sent it, or `null` when it sent none. */
     data class Success(val status: Int, val body: String, val etag: String? = null) : ApiResponse
-    data class Failure(val kind: FailureKind, val status: Int?) : ApiResponse
+
+    /**
+     * [status] is `null` when no answer arrived. [body] is the raw body of an error answer, for the routes that read
+     * its error code; `null` when there was no answer.
+     */
+    data class Failure(val kind: FailureKind, val status: Int?, val body: String? = null) : ApiResponse
 }
 
 /** What a binary download answered: the bytes with their media type, or the expected failure it maps to. */

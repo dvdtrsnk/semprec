@@ -3,9 +3,9 @@ import CoreKit
 import Foundation
 
 /// Thin adapter between the internet accounts screen and its shared screen model: republishes the state, forwards
-/// intents, maps each effect to the router, and shows the provider's page of a browser sign-in in the browser the
-/// sign-in was started with, reporting back how it ended. It owns the model; releasing it closes the shared ViewModel
-/// behind the model.
+/// intents, maps each effect to the router, and shows the provider's page of a browser sign-in (of a new account or of
+/// a listed one signing in again) in the browser the sign-in was started with, reporting back how it ended. It owns
+/// the model; releasing it closes the shared ViewModel behind the model.
 @MainActor
 final class InternetAccountsViewModel: ObservableObject {
 
@@ -44,6 +44,12 @@ final class InternetAccountsViewModel: ObservableObject {
     func signIn(_ provider: InternetOAuthProvider, calendars: Bool, browser: BrowserSignIn) {
         self.browser = browser
         model.send(.startSignIn(provider: provider, calendars: calendars))
+    }
+
+    /// Signs a listed account in again: a Google or Microsoft account in `browser`, another one with its password.
+    func signInAgain(accountId: String, browser: BrowserSignIn) {
+        self.browser = browser
+        model.send(.signInAgain(accountId: accountId))
     }
 
     /// Reloads in place and returns once the list is no longer refreshing, which is what ends a pull to refresh.

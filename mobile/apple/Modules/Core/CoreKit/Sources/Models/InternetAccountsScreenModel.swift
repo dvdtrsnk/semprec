@@ -20,7 +20,9 @@ public enum InternetAccountService: Equatable, Sendable {
     case calendars
 }
 
-/// A row of the accounts list; `provider` is the stored key (`gmail`, `outlook`, `icloud`, `imap`).
+/// A row of the accounts list; `provider` is the stored key (`gmail`, `outlook`, `icloud`, `generic`).
+/// `canSignInAgain` is true when a service no longer accepts the account's sign-in and the app can sign it in again:
+/// in a browser for Google and Microsoft, with a password for iCloud and other accounts.
 public struct InternetAccountItem: Equatable, Sendable, Identifiable {
 
     public let id: String
@@ -29,6 +31,7 @@ public struct InternetAccountItem: Equatable, Sendable, Identifiable {
     public let provider: String?
     public let mail: InternetServiceStatus
     public let calendars: InternetServiceStatus
+    public let canSignInAgain: Bool
 
     public init(
         id: String,
@@ -36,7 +39,8 @@ public struct InternetAccountItem: Equatable, Sendable, Identifiable {
         address: String?,
         provider: String?,
         mail: InternetServiceStatus,
-        calendars: InternetServiceStatus
+        calendars: InternetServiceStatus,
+        canSignInAgain: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -44,6 +48,7 @@ public struct InternetAccountItem: Equatable, Sendable, Identifiable {
         self.provider = provider
         self.mail = mail
         self.calendars = calendars
+        self.canSignInAgain = canSignInAgain
     }
 }
 
@@ -61,8 +66,9 @@ public enum InternetOAuthProvider: Equatable, Sendable {
     case microsoft
 }
 
-/// Why an account was not connected or signed in: the input is incomplete, the server refused it, it could not be
-/// reached, or, for a browser sign-in, the provider declined it (for example because the person did not allow access).
+/// Why an account was not connected or signed in: the input is incomplete, the server refused it for a reason it did
+/// not name, it could not be reached, or, for a browser sign-in, the provider declined it (for example because the
+/// person did not allow access). A password login the server checked names its reason.
 public enum InternetConnectFailure: Equatable, Sendable {
 
     case invalidInput
@@ -70,6 +76,57 @@ public enum InternetConnectFailure: Equatable, Sendable {
     case unavailable
     case unexpected
     case declined
+    /// The user name or the password is wrong.
+    case wrongCredentials
+    /// An iCloud account needs an app-specific password.
+    case appPasswordRequired
+    /// The mail server could not be reached.
+    case serverUnreachable
+    /// The secure connection to the mail server failed.
+    case tlsFailed
+    /// The CalDAV server refused the login.
+    case caldavRefused
+    /// The CalDAV server could not be reached or is not one.
+    case caldavUnreachable
+    /// Another account already holds the address.
+    case alreadyConnected
+    /// Too many attempts; try again later.
+    case rateLimited
+}
+
+/// Signing a password account in again: `accountId` with its `address`, `icloud` for an iCloud account (which needs
+/// an app-specific password). `submitting` is true while the server checks the login, and `failure` says why the last
+/// attempt did not succeed.
+public struct InternetPasswordSignIn: Equatable, Sendable {
+
+    public let accountId: String
+    public let address: String?
+    public let icloud: Bool
+    public let submitting: Bool
+    public let failure: InternetConnectFailure?
+
+    public init(
+        accountId: String,
+        address: String?,
+        icloud: Bool,
+        submitting: Bool = false,
+        failure: InternetConnectFailure? = nil
+    ) {
+        self.accountId = accountId
+        self.address = address
+        self.icloud = icloud
+        self.submitting = submitting
+        self.failure = failure
+    }
+}
+
+/// A step of a password sign-in.
+public enum InternetPasswordSignInStep: Equatable, Sendable {
+
+    /// Sends `password` and `username`; a blank `username` keeps the user name the server has.
+    case submit(password: String, username: String)
+    /// Closes the sign-in; ignored while the server checks the login.
+    case cancel
 }
 
 public enum InternetAccountsPhase: Equatable, Sendable {
@@ -80,7 +137,10 @@ public enum InternetAccountsPhase: Equatable, Sendable {
 }
 
 /// `connecting` is true while an account is being connected, a browser sign-in included, from its start until the
-/// browser came back and the server answered.
+/// browser came back and the server answered. `existingAccountId` is the listed account that already holds the
+/// address of a connect refused as `alreadyConnected`. `signingIn` is true while a listed account signs in again in a
+/// browser, and `signInFailure` says why the last one did not succeed; `passwordSignIn` is the password sign-in of a
+/// listed account, while it is open.
 public struct InternetAccountsState: Equatable, Sendable {
 
     public var phase: InternetAccountsPhase
@@ -88,19 +148,31 @@ public struct InternetAccountsState: Equatable, Sendable {
     public var accounts: [InternetAccountItem]
     public var connecting: Bool
     public var connectFailure: InternetConnectFailure?
+    public var existingAccountId: String?
+    public var signingIn: Bool
+    public var signInFailure: InternetConnectFailure?
+    public var passwordSignIn: InternetPasswordSignIn?
 
     public init(
         phase: InternetAccountsPhase = .loading,
         refreshing: Bool = false,
         accounts: [InternetAccountItem] = [],
         connecting: Bool = false,
-        connectFailure: InternetConnectFailure? = nil
+        connectFailure: InternetConnectFailure? = nil,
+        existingAccountId: String? = nil,
+        signingIn: Bool = false,
+        signInFailure: InternetConnectFailure? = nil,
+        passwordSignIn: InternetPasswordSignIn? = nil
     ) {
         self.phase = phase
         self.refreshing = refreshing
         self.accounts = accounts
         self.connecting = connecting
         self.connectFailure = connectFailure
+        self.existingAccountId = existingAccountId
+        self.signingIn = signingIn
+        self.signInFailure = signInFailure
+        self.passwordSignIn = passwordSignIn
     }
 }
 
@@ -119,7 +191,16 @@ public enum InternetAccountsAction: Equatable, Sendable {
         smtpHost: String,
         caldavUrl: String
     )
+    /// Dismisses `connectFailure` and `existingAccountId`.
     case dismissConnectFailure
+    /// Opens `existingAccountId`.
+    case openExisting
+    /// Signs a listed account in again while `canSignInAgain`: a Google or Microsoft account in a browser (reported
+    /// back like a new sign-in), another account with a password (`passwordSignIn`, continued with `passwordSignIn`).
+    case signInAgain(accountId: String)
+    case passwordSignIn(InternetPasswordSignInStep)
+    /// Dismisses `signInFailure`.
+    case dismissSignInFailure
     /// Starts the browser sign-in of a new account that syncs mail and, when `calendars`, its calendars.
     case startSignIn(provider: InternetOAuthProvider, calendars: Bool)
     /// The browser came back to `semprec://oauth` at `callbackUrl`.
@@ -133,7 +214,7 @@ public enum InternetAccountsAction: Equatable, Sendable {
 public enum InternetAccountsEffect: Equatable, Sendable {
 
     case openAccount(accountId: String)
-    /// An account was connected and the list shows it; the form closes.
+    /// A new account was connected and the list shows it; the form closes.
     case connected
     /// Opens `url`, the provider's sign-in page, in a browser session that ends at `semprec://oauth`; the app reports
     /// how it ended with `signInReturned`, `signInCancelled` or `signInFailed`.

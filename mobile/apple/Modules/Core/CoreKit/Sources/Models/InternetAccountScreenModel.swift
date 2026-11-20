@@ -28,7 +28,7 @@ public struct InternetAccountRemovalImpact: Equatable, Sendable {
 /// One internet account. `mailEnabled` and `calendarsEnabled` are its switches, `mail` and `calendars` what each
 /// service is doing. `connectionLimitApplies` is true for an account whose mail syncs over IMAP. `signsInInBrowser`
 /// is true for a Google or Microsoft account; `canSignInAgain` and `canAllowCalendarAccess` say whether the screen
-/// offers to sign it in again or to allow calendar access.
+/// offers to sign it in again (in a browser, or with a password for another account) or to allow calendar access.
 public struct InternetAccountDetail: Equatable, Sendable {
 
     public let id: String
@@ -102,6 +102,7 @@ public enum InternetAccountPhase: Equatable, Sendable {
 /// `confirmingOff` is the service whose switching off waits for the person's answer; `syncRequested` is true while
 /// the request to sync the calendars now is under way. `signingIn` is true from the start of a browser sign-in until
 /// the browser came back and the server answered; `signInFailure` says why the last one did not succeed.
+/// `passwordSignIn` is the password sign-in, while it is open.
 public struct InternetAccountState: Equatable, Sendable {
 
     public var phase: InternetAccountPhase
@@ -113,6 +114,7 @@ public struct InternetAccountState: Equatable, Sendable {
     public var actionFailed: Bool
     public var signingIn: Bool
     public var signInFailure: InternetConnectFailure?
+    public var passwordSignIn: InternetPasswordSignIn?
 
     public init(
         phase: InternetAccountPhase = .loading,
@@ -123,7 +125,8 @@ public struct InternetAccountState: Equatable, Sendable {
         impact: InternetAccountRemovalImpact? = nil,
         actionFailed: Bool = false,
         signingIn: Bool = false,
-        signInFailure: InternetConnectFailure? = nil
+        signInFailure: InternetConnectFailure? = nil,
+        passwordSignIn: InternetPasswordSignIn? = nil
     ) {
         self.phase = phase
         self.account = account
@@ -134,6 +137,7 @@ public struct InternetAccountState: Equatable, Sendable {
         self.actionFailed = actionFailed
         self.signingIn = signingIn
         self.signInFailure = signInFailure
+        self.passwordSignIn = passwordSignIn
     }
 }
 
@@ -155,12 +159,13 @@ public enum InternetAccountAction: Equatable, Sendable {
     /// Dismisses `actionFailed` and `signInFailure`.
     case dismissFailure
     case signIn(InternetAccountSignIn)
+    case passwordSignIn(InternetPasswordSignInStep)
 }
 
-/// A step of signing an account in again in a browser.
+/// A step of signing an account in again.
 public enum InternetAccountSignIn: Equatable, Sendable {
 
-    /// Signs the account in again; only while `canSignInAgain`.
+    /// Signs the account in again, in a browser or with a password (`passwordSignIn`); only while `canSignInAgain`.
     case again
     /// Asks the provider for calendar access; only while `canAllowCalendarAccess`.
     case allowCalendarAccess

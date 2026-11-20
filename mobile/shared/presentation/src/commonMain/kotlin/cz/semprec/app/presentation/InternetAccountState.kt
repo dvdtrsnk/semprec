@@ -14,7 +14,8 @@ data class InternetAccountRemovalImpact(val messages: Int, val drafts: Int, val 
  * One internet account. [mailEnabled] and [calendarsEnabled] are its switches, [mail] and [calendars] what each
  * service is doing. [connectionLimitApplies] is `true` for an account whose mail syncs over IMAP, where the limit
  * matters. [signsInInBrowser] is `true` for a Google or Microsoft account, which signs in again and grants
- * permissions in a browser from the app.
+ * permissions in a browser from the app; [signsInWithPassword] is `true` for an iCloud or another password account,
+ * which signs in again with its password.
  */
 data class InternetAccountDetail(
     val id: String,
@@ -34,10 +35,15 @@ data class InternetAccountDetail(
     /** The messages downloaded so far while the first mail sync runs. */
     val syncedMessageCount: Int? = null,
     val signsInInBrowser: Boolean = false,
+    val signsInWithPassword: Boolean = false,
 ) {
-    /** Whether the screen offers to sign in again: a browser account whose sign-in a service no longer accepts. */
+    /**
+     * Whether the screen offers to sign in again: an account whose sign-in a service no longer accepts, signed in
+     * again in a browser ([signsInInBrowser]) or with a password ([signsInWithPassword]).
+     */
     val canSignInAgain: Boolean
-        get() = signsInInBrowser && InternetServiceStatus.NEEDS_REAUTHORIZATION in listOf(mail, calendars)
+        get() = (signsInInBrowser || signsInWithPassword) &&
+            InternetServiceStatus.NEEDS_REAUTHORIZATION in listOf(mail, calendars)
 
     /** Whether the screen offers to allow calendar access: a browser account whose calendars lack the permission. */
     val canAllowCalendarAccess: Boolean
@@ -48,7 +54,7 @@ data class InternetAccountDetail(
  * [confirmingOff] is the service whose switching off waits for the person's answer, because it removes what the
  * service synced. [syncRequested] is `true` while the request to sync the calendars now is under way. [signingIn] is
  * `true` from the start of a browser sign-in until the browser came back and the server answered, and
- * [signInFailure] says why the last one did not succeed.
+ * [signInFailure] says why the last one did not succeed. [passwordSignIn] is the password sign-in, while it is open.
  */
 data class InternetAccountState(
     val phase: InternetAccountPhase = InternetAccountPhase.LOADING,
@@ -61,6 +67,7 @@ data class InternetAccountState(
     val actionFailed: Boolean = false,
     val signingIn: Boolean = false,
     val signInFailure: InternetConnectFailure? = null,
+    val passwordSignIn: InternetPasswordSignIn? = null,
 )
 
 sealed interface InternetAccountAction {
@@ -89,9 +96,10 @@ sealed interface InternetAccountAction {
     data object DismissFailure : InternetAccountAction
 
     /**
-     * Signing the account in again in a browser: [Again] while [InternetAccountDetail.canSignInAgain],
-     * [AllowCalendarAccess] while [InternetAccountDetail.canAllowCalendarAccess]; [InternetAccountEffect.OpenSignIn]
-     * says how the app reports back.
+     * Signing the account in again: [Again] while [InternetAccountDetail.canSignInAgain], in a browser for a browser
+     * account and with a password ([InternetAccountState.passwordSignIn], continued with [PasswordSignIn]) for another;
+     * [AllowCalendarAccess] while [InternetAccountDetail.canAllowCalendarAccess]. [InternetAccountEffect.OpenSignIn]
+     * says how the app reports back from a browser.
      */
     sealed interface SignIn : InternetAccountAction {
         data object Again : SignIn
@@ -100,6 +108,8 @@ sealed interface InternetAccountAction {
         data object Cancelled : SignIn
         data object Failed : SignIn
     }
+
+    data class PasswordSignIn(val step: InternetPasswordSignInStep) : InternetAccountAction
 }
 
 sealed interface InternetAccountEffect {

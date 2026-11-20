@@ -6,7 +6,8 @@ import SwiftUI
 /// request, its name and the number of connections the server may open, what Semp may do with its mail, and its
 /// removal, which says what it would hide before it asks. Switching a service off asks first, because it removes what
 /// the service synced. A Google or Microsoft account signs in again, and allows calendar access, in a browser started
-/// here; another account that must sign in again is told to do so on the web.
+/// here; an iCloud or another password account signs in again in a sheet that asks for its password. An account the
+/// app cannot sign in again is told to do so on the web.
 struct InternetAccountScreen: View {
 
     // MARK: - Dependencies
@@ -72,6 +73,11 @@ struct InternetAccountScreen: View {
                 },
                 message: { Text(verbatim: impactText) }
             )
+            .sheet(isPresented: passwordSignInShown) {
+                if let signIn = viewModel.state.passwordSignIn {
+                    PasswordSignInSheet(signIn: signIn) { viewModel.send(.passwordSignIn($0)) }
+                }
+            }
             .onChange(of: viewModel.closeRequests) { dismiss() }
             .onChange(of: viewModel.state.account?.name, initial: true) { _, new in
                 if let new, seededFor != new { name = new; seededFor = new }
@@ -271,6 +277,13 @@ private extension InternetAccountScreen {
 
     var actionFailed: Binding<Bool> {
         Binding(get: { viewModel.state.actionFailed }, set: { if !$0 { viewModel.send(.dismissFailure) } })
+    }
+
+    var passwordSignInShown: Binding<Bool> {
+        Binding(
+            get: { viewModel.state.passwordSignIn != nil },
+            set: { if !$0, viewModel.state.passwordSignIn != nil { viewModel.send(.passwordSignIn(.cancel)) } }
+        )
     }
 
     var signInFailed: Binding<Bool> {

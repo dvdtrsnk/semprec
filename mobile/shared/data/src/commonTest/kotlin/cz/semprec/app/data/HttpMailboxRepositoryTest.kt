@@ -5,6 +5,8 @@ import cz.semprec.app.domain.CalendarSyncStatus
 import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailAccount
+import cz.semprec.app.domain.MailConnectOutcome
+import cz.semprec.app.domain.MailConnectRefusal
 import cz.semprec.app.domain.MailFolder
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
@@ -129,7 +131,7 @@ class HttpMailboxRepositoryTest {
             MailPasswordAccount(MailPasswordProvider.ICLOUD, "me@icloud.com", "app-pass", null, null),
         )
 
-        assertEquals(RepositoryResult.Content(Unit), answer)
+        assertEquals(RepositoryResult.Content(MailConnectOutcome.Connected), answer)
         val body = Json.parseToJsonElement(server.bodies.single()).jsonObject
         assertEquals(setOf("provider", "address", "password"), body.keys)
         assertEquals("icloud", body.getValue("provider").jsonPrimitive.content)
@@ -165,12 +167,93 @@ class HttpMailboxRepositoryTest {
         assertEquals(30_000L, list)
     }
 
-    @Test
-    fun aLoginTheServerRefusesIsARejection() = runTest {
-        val server = MailTestServer { HttpStatusCode.BadRequest to """{"error":{"code":"mail_auth_failed"}}""" }
-        val account = MailPasswordAccount(MailPasswordProvider.ICLOUD, "me@icloud.com", "bad", null, null)
+    /** Each answer of the server and what the password routes make of it. */
+    private val refusals = listOf<Triple<HttpStatusCode, String, RepositoryResult<MailConnectOutcome>>>(
+        Triple(HttpStatusCode.BadRequest, errorBody("mail_auth_failed"), refused(MailConnectRefusal.WRONG_CREDENTIALS)),
+        Triple(
+            HttpStatusCode.BadRequest,
+            errorBody("mail_app_password_required"),
+            refused(MailConnectRefusal.APP_PASSWORD_REQUIRED),
+        ),
+        Triple(
+            HttpStatusCode.BadRequest,
+            errorBody("mail_server_unreachable"),
+            refused(MailConnectRefusal.SERVER_UNREACHABLE),
+        ),
+        Triple(HttpStatusCode.BadRequest, errorBody("mail_tls_failed"), refused(MailConnectRefusal.TLS_FAILED)),
+        Triple(HttpStatusCode.BadRequest, errorBody("caldav_auth_failed"), refused(MailConnectRefusal.CALDAV_REFUSED)),
+        Triple(
+            HttpStatusCode.BadRequest,
+            errorBody("caldav_server_unreachable"),
+            refused(MailConnectRefusal.CALDAV_UNREACHABLE),
+        ),
+        Triple(
+            HttpStatusCode.BadRequest,
+            errorBody("caldav_server_invalid"),
+            refused(MailConnectRefusal.CALDAV_UNREACHABLE),
+        ),
+        Triple(
+            HttpStatusCode.Conflict,
+            errorBody("provider_account_already_connected"),
+            refused(MailConnectRefusal.ALREADY_CONNECTED),
+        ),
+        Triple(HttpStatusCode.TooManyRequests, errorBody("rate_limited"), refused(MailConnectRefusal.RATE_LIMITED)),
+        // A 429 says rate limited even without a body the app can read.
+        Triple(HttpStatusCode.TooManyRequests, "", refused(MailConnectRefusal.RATE_LIMITED)),
+        // The code at the top level of the body is read too.
+        Triple(
+            HttpStatusCode.BadRequest,
+            """{"code":"mail_auth_failed"}""",
+            refused(MailConnectRefusal.WRONG_CREDENTIALS),
+        ),
+        // Anything else keeps the kind the status maps to.
+        Triple(HttpStatusCode.BadRequest, errorBody("validation_failed"), RepositoryResult.Failure(FailureKind.REJECTED)),
+        Triple(HttpStatusCode.Conflict, errorBody("mailbox_not_password"), RepositoryResult.Failure(FailureKind.REJECTED)),
+        Triple(HttpStatusCode.BadRequest, "not json", RepositoryResult.Failure(FailureKind.REJECTED)),
+        Triple(HttpStatusCode.BadRequest, """{"error":"text"}""", RepositoryResult.Failure(FailureKind.REJECTED)),
+        Triple(HttpStatusCode.NotFound, errorBody("not_found"), RepositoryResult.Failure(FailureKind.NOT_FOUND)),
+        Triple(HttpStatusCode.BadGateway, "", RepositoryResult.Failure(FailureKind.UNAVAILABLE)),
+    )
 
-        assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), server.mailboxes().connect(account))
+    private fun errorBody(code: String) = """{"error":{"code":"$code","message":"m"}}"""
+
+    private fun refused(reason: MailConnectRefusal): RepositoryResult<MailConnectOutcome> =
+        RepositoryResult.Content(MailConnectOutcome.Refused(reason))
+
+    @Test
+    fun aLoginTheServerRefusesNamesItsReason() = runTest {
+        val account = MailPasswordAccount(MailPasswordProvider.ICLOUD, "me@icloud.com", "bad", null, null)
+        for ((status, body, expected) in refusals) {
+            val server = MailTestServer { status to body }
+
+            assertEquals(expected, server.mailboxes().connect(account), "$status $body")
+            assertEquals(expected, server.mailboxes().updatePassword(BOX, "bad", null), "$status $body")
+        }
+    }
+
+    @Test
+    fun aPasswordSignInAgainPutsThePasswordAndAGivenUserName() = runTest {
+        val server = MailTestServer { ok("""{"item":{"id":"$BOX"}}""") }
+        val mailboxes = server.mailboxes()
+
+        assertEquals(RepositoryResult.Content(MailConnectOutcome.Connected), mailboxes.updatePassword(BOX, "pw", null))
+        assertEquals(
+            RepositoryResult.Content(MailConnectOutcome.Connected),
+            mailboxes.updatePassword(BOX, "pw", "me@firma.cz"),
+        )
+
+        assertEquals(listOf(HttpMethod.Put, HttpMethod.Put), server.requests.map { it.method })
+        assertEquals(
+            listOf("/api/mail/mailboxes/$BOX/password", "/api/mail/mailboxes/$BOX/password"),
+            server.requests.map { it.url.encodedPath },
+        )
+        val (kept, given) = server.bodies.map { Json.parseToJsonElement(it).jsonObject }
+        assertEquals(setOf("password"), kept.keys)
+        assertEquals("pw", kept.getValue("password").jsonPrimitive.content)
+        assertEquals("me@firma.cz", given.getValue("username").jsonPrimitive.content)
+        // The server checks the login on the mail servers before it answers, as for a new mailbox.
+        val bound = server.requests.first().getCapabilityOrNull(HttpTimeoutCapability)?.requestTimeoutMillis
+        assertTrue(bound != null && bound >= 180_000L)
     }
 
     @Test

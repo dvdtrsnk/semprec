@@ -945,6 +945,38 @@
         }
       }
     },
+    "internetAccount.passwordSignIn.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server heslo ověří, než ho uloží. Uživatelské jméno nech prázdné, pokud se nemění."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The server checks the password before it keeps it. Leave the user name empty to keep the one it has."
+          }
+        }
+      }
+    },
+    "internetAccount.passwordSignIn.username" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uživatelské jméno (nepovinné)"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "User name (optional)"
+          }
+        }
+      }
+    },
     "internetAccount.reauth.signIn" : {
       "localizations" : {
         "cs" : {
@@ -1281,6 +1313,70 @@
         }
       }
     },
+    "internetAccounts.add.error.alreadyConnected" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tenhle účet už je připojený."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This account is already connected."
+          }
+        }
+      }
+    },
+    "internetAccounts.add.error.appPasswordRequired" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCloud potřebuje heslo pro aplikace, ne heslo k Apple účtu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCloud needs an app-specific password, not your Apple Account password."
+          }
+        }
+      }
+    },
+    "internetAccounts.add.error.caldavRefused" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalendářový server (CalDAV) přihlášení odmítl."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The calendar server (CalDAV) refused the login."
+          }
+        }
+      }
+    },
+    "internetAccounts.add.error.caldavUnreachable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na zadané adrese se nepodařilo najít kalendářový server (CalDAV)."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No calendar server (CalDAV) was found at that address."
+          }
+        }
+      }
+    },
     "internetAccounts.add.error.declined" : {
       "localizations" : {
         "cs" : {
@@ -1313,18 +1409,66 @@
         }
       }
     },
-    "internetAccounts.add.error.refused" : {
+    "internetAccounts.add.error.rateLimited" : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Server přihlášení odmítl, nebo je tenhle účet už připojený."
+            "value" : "Příliš mnoho pokusů. Chvíli počkej a zkus to znovu."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The server refused the login, or this account is already connected."
+            "value" : "Too many attempts. Wait a while and try again."
+          }
+        }
+      }
+    },
+    "internetAccounts.add.error.refused" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server přihlášení odmítl."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The server refused the login."
+          }
+        }
+      }
+    },
+    "internetAccounts.add.error.serverUnreachable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server se nepodařilo zastihnout. Zkontroluj jeho adresu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server could not be reached. Check its address."
+          }
+        }
+      }
+    },
+    "internetAccounts.add.error.tlsFailed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "S poštovním serverem se nepodařilo navázat zabezpečené spojení."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A secure connection to the mail server could not be made."
           }
         }
       }
@@ -1361,6 +1505,22 @@
         }
       }
     },
+    "internetAccounts.add.error.wrongCredentials" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uživatelské jméno nebo heslo nesouhlasí."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The user name or password is wrong."
+          }
+        }
+      }
+    },
     "internetAccounts.add.icloudHint" : {
       "localizations" : {
         "cs" : {
@@ -1389,6 +1549,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "IMAP server"
+          }
+        }
+      }
+    },
+    "internetAccounts.add.openExisting" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevřít účet"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open the account"
           }
         }
       }

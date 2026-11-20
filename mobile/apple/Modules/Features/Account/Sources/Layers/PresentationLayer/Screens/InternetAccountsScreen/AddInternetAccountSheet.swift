@@ -13,6 +13,8 @@ struct AddInternetAccountSheet: View {
     let state: InternetAccountsState
     let send: (InternetAccountsAction) -> Void
     let signIn: (InternetOAuthProvider, Bool, BrowserSignIn) -> Void
+    /// Closes the sheet and opens the listed account that already holds the address of a refused connect.
+    let openExisting: () -> Void
 
     // MARK: - State
     @Environment(\.dismiss)
@@ -33,7 +35,7 @@ struct AddInternetAccountSheet: View {
             .navigationTitle(Text("internetAccounts.add.title", bundle: .module))
             .inlineNavigationTitle()
             .navigationDestination(for: InternetPasswordProvider.self) { provider in
-                InternetAccountConnectForm(provider: provider, state: state, send: send)
+                InternetAccountConnectForm(provider: provider, state: state, send: send, openExisting: openExisting)
             }
             .navigationDestination(for: InternetOAuthProvider.self) { provider in
                 InternetAccountSignInForm(provider: provider, state: state, signIn: signIn)
@@ -82,5 +84,10 @@ private extension AddInternetAccountSheet {
 
 // MARK: - Preview
 #Preview {
-    AddInternetAccountSheet(state: InternetAccountsState(phase: .content), send: { _ in }, signIn: { _, _, _ in })
+    AddInternetAccountSheet(
+        state: InternetAccountsState(phase: .content),
+        send: { _ in },
+        signIn: { _, _, _ in },
+        openExisting: {}
+    )
 }

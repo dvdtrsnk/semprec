@@ -57,11 +57,16 @@ extension SharedInternetAccountsScreenModel {
                     address: $0.address,
                     provider: $0.provider,
                     mail: InternetServiceStatus($0.mail),
-                    calendars: InternetServiceStatus($0.calendars)
+                    calendars: InternetServiceStatus($0.calendars),
+                    canSignInAgain: $0.canSignInAgain
                 )
             },
             connecting: state.connecting,
-            connectFailure: state.connectFailure.map(InternetConnectFailure.init)
+            connectFailure: state.connectFailure.map(InternetConnectFailure.init),
+            existingAccountId: state.existingAccountId,
+            signingIn: state.signingIn,
+            signInFailure: state.signInFailure.map(InternetConnectFailure.init),
+            passwordSignIn: state.passwordSignIn.map(InternetPasswordSignIn.init)
         )
     }
 
@@ -80,6 +85,10 @@ extension SharedInternetAccountsScreenModel {
                 caldavUrl: caldavUrl
             )
         case .dismissConnectFailure: SharedSDK.InternetAccountsActionDismissConnectFailure.shared
+        case .openExisting: SharedSDK.InternetAccountsActionOpenExisting.shared
+        case .signInAgain(let id): SharedSDK.InternetAccountsActionSignInAgain(accountId: id)
+        case .passwordSignIn(let step): SharedSDK.InternetAccountsActionPasswordSignIn(step: step.shared)
+        case .dismissSignInFailure: SharedSDK.InternetAccountsActionDismissSignInFailure.shared
         case .startSignIn(let provider, let calendars):
             SharedSDK.InternetAccountsActionSignInStart(provider: sharedProvider(provider), calendars: calendars)
         case .signInReturned(let url): SharedSDK.InternetAccountsActionSignInReturned(callbackUrl: url)

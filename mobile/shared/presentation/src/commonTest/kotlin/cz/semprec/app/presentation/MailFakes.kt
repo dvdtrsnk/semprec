@@ -7,6 +7,7 @@ import cz.semprec.app.domain.InternetAccountRepository
 import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailAccount
 import cz.semprec.app.domain.MailAddress
+import cz.semprec.app.domain.MailConnectOutcome
 import cz.semprec.app.domain.MailContact
 import cz.semprec.app.domain.MailDraft
 import cz.semprec.app.domain.MailDraftFields
@@ -126,7 +127,9 @@ internal class ScriptedMailboxRepository(
         MailCall(mailContent(listOf(MailFolder("f1", "Inbox", "inbox", 3, 40)))),
     val impact: MailCall<String, MailRemovalImpact> = MailCall(mailContent(MailRemovalImpact(120, 2, 50, 7))),
     val remove: MailCall<String, Unit> = MailCall(mailContent(Unit)),
-    val connect: MailCall<MailPasswordAccount, Unit> = MailCall(mailContent(Unit)),
+    val connect: MailCall<MailPasswordAccount, MailConnectOutcome> = MailCall(mailContent(MailConnectOutcome.Connected)),
+    val passwords: MailCall<Triple<String, String, String?>, MailConnectOutcome> =
+        MailCall(mailContent(MailConnectOutcome.Connected)),
     val rename: MailCall<Pair<String, String>, Unit> = MailCall(mailContent(Unit)),
     val limit: MailCall<Pair<String, Int>, Unit> = MailCall(mailContent(Unit)),
 ) : MailboxRepository {
@@ -141,6 +144,9 @@ internal class ScriptedMailboxRepository(
     override suspend fun remove(mailboxId: String) = remove.answer(mailboxId)
 
     override suspend fun connect(account: MailPasswordAccount) = connect.answer(account)
+
+    override suspend fun updatePassword(mailboxId: String, password: String, username: String?) =
+        passwords.answer(Triple(mailboxId, password, username))
 
     override suspend fun rename(mailboxId: String, name: String) = rename.answer(mailboxId to name)
 

@@ -14,20 +14,27 @@ final class InternetAccountMappingTests: XCTestCase {
         XCTAssertEqual(SharedInternetAccountsScreenModel.state(accountsState(.error)).phase, .failure(nil))
         let state = SharedInternetAccountsScreenModel.state(accountsState(.content, connectFailure: .refused))
         let item = CoreKit.InternetAccountItem(
-            id: "m1", name: "Gmail", address: nil, provider: "gmail", mail: .ok, calendars: .needsConsent
+            id: "m1", name: "Gmail", address: nil, provider: "gmail", mail: .ok, calendars: .needsConsent,
+            canSignInAgain: true
         )
         XCTAssertEqual(state.accounts, [item])
         XCTAssertTrue(state.connecting)
         XCTAssertEqual(state.connectFailure, .refused)
-        let failures: [(SharedSDK.InternetConnectFailure, CoreKit.InternetConnectFailure)] = [
-            (.invalidInput, .invalidInput), (.refused, .refused),
-            (.unavailable, .unavailable), (.unexpected, .unexpected), (.declined, .declined)
-        ]
-        for (kotlin, swift) in failures {
-            let state = SharedInternetAccountsScreenModel.state(accountsState(.content, connectFailure: kotlin))
-            XCTAssertEqual(state.connectFailure, swift)
-        }
-        XCTAssertNil(SharedInternetAccountsScreenModel.state(accountsState(.content)).connectFailure)
+        XCTAssertEqual(state.existingAccountId, "m1")
+        XCTAssertTrue(state.signingIn)
+        XCTAssertEqual(state.signInFailure, .declined)
+        XCTAssertEqual(
+            state.passwordSignIn,
+            CoreKit.InternetPasswordSignIn(
+                accountId: "m1", address: "me@icloud.com", icloud: true, submitting: true, failure: .rateLimited
+            )
+        )
+        let empty = SharedInternetAccountsScreenModel.state(accountsState(.content, signedIn: false))
+        XCTAssertNil(empty.connectFailure)
+        XCTAssertNil(empty.existingAccountId)
+        XCTAssertNil(empty.signInFailure)
+        XCTAssertNil(empty.passwordSignIn)
+        XCTAssertFalse(empty.signingIn)
     }
 
     func testEveryServiceStatusAndServiceMaps() {
@@ -147,6 +154,15 @@ final class InternetAccountMappingTests: XCTestCase {
         XCTAssertTrue(state.signingIn)
         XCTAssertEqual(state.signInFailure, .declined)
         XCTAssertNil(SharedInternetAccountScreenModel.state(accountState(.content, signInFailure: nil)).signInFailure)
+        XCTAssertEqual(
+            state.passwordSignIn,
+            CoreKit.InternetPasswordSignIn(accountId: "m1", address: "me@gmail.com", icloud: false, failure: .tlsFailed)
+        )
+        let password = SharedInternetAccountScreenModel.state(
+            accountState(.content, mail: .needsReauthorization, browser: false)
+        ).account
+        XCTAssertEqual(password?.canSignInAgain, true)
+        XCTAssertEqual(password?.signsInInBrowser, false)
         let offers = SharedInternetAccountScreenModel.state(
             accountState(.content, mail: .needsReauthorization, calendars: .needsConsent)
         ).account
@@ -222,7 +238,8 @@ private extension InternetAccountMappingTests {
 
     func accountsState(
         _ phase: SharedSDK.InternetAccountsPhase,
-        connectFailure: SharedSDK.InternetConnectFailure? = nil
+        connectFailure: SharedSDK.InternetConnectFailure? = nil,
+        signedIn: Bool = true
     ) -> SharedSDK.InternetAccountsState {
         SharedSDK.InternetAccountsState(
             phase: phase,
@@ -230,11 +247,20 @@ private extension InternetAccountMappingTests {
             refreshing: false,
             accounts: [
                 SharedSDK.InternetAccountItem(
-                    id: "m1", name: "Gmail", address: nil, provider: "gmail", mail: .ok, calendars: .needsConsent
+                    id: "m1", name: "Gmail", address: nil, provider: "gmail", mail: .ok, calendars: .needsConsent,
+                    canSignInAgain: true
                 )
             ],
             connecting: true,
-            connectFailure: connectFailure
+            connectFailure: connectFailure,
+            existingAccountId: signedIn ? "m1" : nil,
+            signingIn: signedIn,
+            signInFailure: signedIn ? .declined : nil,
+            passwordSignIn: signedIn
+                ? SharedSDK.InternetPasswordSignIn(
+                    accountId: "m1", address: "me@icloud.com", icloud: true, submitting: true, failure: .rateLimited
+                )
+                : nil
         )
     }
 
@@ -245,7 +271,8 @@ private extension InternetAccountMappingTests {
         removal: SharedSDK.InternetAccountRemovalPhase = .confirming,
         signInFailure: SharedSDK.InternetConnectFailure? = .declined,
         mail: SharedSDK.InternetServiceStatus = .off,
-        calendars: SharedSDK.InternetServiceStatus = .pending
+        calendars: SharedSDK.InternetServiceStatus = .pending,
+        browser: Bool = true
     ) -> SharedSDK.InternetAccountState {
         SharedSDK.InternetAccountState(
             phase: phase,
@@ -266,7 +293,8 @@ private extension InternetAccountMappingTests {
                 connectionLimitApplies: true,
                 autonomousSendProjectCount: 1,
                 syncedMessageCount: 42,
-                signsInInBrowser: true
+                signsInInBrowser: browser,
+                signsInWithPassword: !browser
             ),
             confirmingOff: confirmingOff,
             syncRequested: true,
@@ -274,7 +302,10 @@ private extension InternetAccountMappingTests {
             impact: SharedSDK.InternetAccountRemovalImpact(messages: 120, drafts: 2, threads: 50, attachmentsKept: 7),
             actionFailed: true,
             signingIn: true,
-            signInFailure: signInFailure
+            signInFailure: signInFailure,
+            passwordSignIn: SharedSDK.InternetPasswordSignIn(
+                accountId: "m1", address: "me@gmail.com", icloud: false, submitting: false, failure: .tlsFailed
+            )
         )
     }
 }

@@ -57,7 +57,18 @@ interface MailboxRepository {
 
     suspend fun remove(mailboxId: String): RepositoryResult<Unit>
 
-    suspend fun connect(account: MailPasswordAccount): RepositoryResult<Unit>
+    /** Connects a mailbox once the server checked the login; a login it refused is [MailConnectOutcome.Refused]. */
+    suspend fun connect(account: MailPasswordAccount): RepositoryResult<MailConnectOutcome>
+
+    /**
+     * Signs a password mailbox in again with [password] and, when not `null`, [username]; `null` keeps the stored user
+     * name. The server checks the login first, as for [connect].
+     */
+    suspend fun updatePassword(
+        mailboxId: String,
+        password: String,
+        username: String?,
+    ): RepositoryResult<MailConnectOutcome>
 
     suspend fun rename(mailboxId: String, name: String): RepositoryResult<Unit>
 

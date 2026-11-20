@@ -6,6 +6,8 @@ import cz.semprec.app.domain.CalendarSyncStatus
 import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailAccount
+import cz.semprec.app.domain.MailConnectOutcome
+import cz.semprec.app.domain.MailConnectRefusal
 import cz.semprec.app.domain.MailSyncStatus
 import cz.semprec.app.domain.OAuthOutcome
 import cz.semprec.app.domain.RepositoryResult
@@ -36,6 +38,9 @@ class InternetAccountViewModelTest : MainDispatcherTest() {
         viewModel(ScriptedMailboxRepository(), accounts)
 
     private fun mailChanged() = sync.raise(setOf(SyncTopic.MAIL_ACCOUNTS))
+
+    private fun needsSignIn(provider: String) =
+        internetAccount(status = MailSyncStatus.NEEDS_REAUTHORIZATION, provider = provider)
 
     @Test fun `shows the account with what its sync did`() = runTest(dispatcher) {
         val boxes = ScriptedInternetAccountRepository(
@@ -449,31 +454,125 @@ class InternetAccountViewModelTest : MainDispatcherTest() {
             vm.close()
         }
 
-    @Test fun `signing in again is offered only to a browser account that needs it`() = runTest(dispatcher) {
-        val cases = listOf(
-            // Nothing to fix.
-            internetAccount(calendars = true),
-            // A password account signs in again with its password, not in a browser.
-            internetAccount(
-                status = MailSyncStatus.NEEDS_REAUTHORIZATION,
-                calendars = true,
-                calendarStatus = CalendarSyncStatus.NEEDS_CONSENT,
-                provider = "icloud",
-            ),
+    @Test fun `signing in again is offered only to an account that needs it and whose provider the app knows`() =
+        runTest(dispatcher) {
+            val cases = listOf(
+                // Nothing to fix.
+                internetAccount(calendars = true),
+                internetAccount(provider = "icloud"),
+                // A provider the app cannot sign in again.
+                internetAccount(status = MailSyncStatus.NEEDS_REAUTHORIZATION, provider = "exchange"),
+            )
+            for (account in cases) {
+                val boxes = ScriptedMailboxRepository()
+                val accounts = ScriptedInternetAccountRepository(one = MailCall(mailContent(account)))
+                val vm = viewModel(boxes, accounts)
+                runCurrent()
+                assertEquals(false, vm.state.value.account?.canSignInAgain)
+                assertEquals(false, vm.state.value.account?.canAllowCalendarAccess)
+                vm.onAction(InternetAccountAction.SignIn.Again)
+                vm.onAction(InternetAccountAction.SignIn.AllowCalendarAccess)
+                runCurrent()
+                assertFalse(vm.state.value.signingIn)
+                assertNull(vm.state.value.passwordSignIn)
+                assertEquals(0, accounts.reauthorizations.count)
+                vm.close()
+            }
+        }
+
+    @Test fun `a password account that must sign in again does so with its password and is read again`() =
+        runTest(dispatcher) {
+            // Mail of a generic account whose credential is missing, and calendars of an iCloud account.
+            val cases = listOf(
+                internetAccount(status = MailSyncStatus.NEEDS_REAUTHORIZATION, provider = "generic"),
+                internetAccount(
+                    calendars = true,
+                    calendarStatus = CalendarSyncStatus.NEEDS_REAUTHORIZATION,
+                    provider = "icloud",
+                ),
+            )
+            for (account in cases) {
+                val icloud = account.mailbox.provider == "icloud"
+                val signedIn = account.copy(
+                    mailbox = account.mailbox.copy(syncStatus = MailSyncStatus.OK),
+                    calendarStatus = CalendarSyncStatus.OK,
+                )
+                val boxes = ScriptedMailboxRepository()
+                val accounts = ScriptedInternetAccountRepository(
+                    one = MailCall(mailContent(account), mailContent(signedIn)),
+                )
+                val vm = viewModel(boxes, accounts)
+                val effects = collectEffects(vm)
+                runCurrent()
+                assertEquals(true, vm.state.value.account?.canSignInAgain)
+                assertEquals(false, vm.state.value.account?.signsInInBrowser)
+
+                vm.onAction(InternetAccountAction.SignIn.Again)
+                assertEquals(InternetPasswordSignIn("m1", "me@gmail.com", icloud), vm.state.value.passwordSignIn)
+                vm.onAction(InternetAccountAction.PasswordSignIn(InternetPasswordSignInStep.Submit("secret", " me ")))
+                assertEquals(true, vm.state.value.passwordSignIn?.submitting)
+                vm.onAction(InternetAccountAction.PasswordSignIn(InternetPasswordSignInStep.Submit("secret", "")))
+                vm.onAction(InternetAccountAction.PasswordSignIn(InternetPasswordSignInStep.Cancel))
+                runCurrent()
+
+                assertEquals(listOf(Triple<String, String, String?>("m1", "secret", "me")), boxes.passwords.asked)
+                assertNull(vm.state.value.passwordSignIn)
+                assertEquals(2, accounts.one.count)
+                assertEquals(false, vm.state.value.account?.canSignInAgain)
+                assertEquals(0, accounts.reauthorizations.count)
+                assertTrue(effects.isEmpty())
+                vm.close()
+            }
+        }
+
+    @Test fun `a password sign-in the server refuses stays open with its reason`() = runTest(dispatcher) {
+        val cases = listOf<Pair<ScriptedStep<MailConnectOutcome>, InternetConnectFailure>>(
+            mailContent<MailConnectOutcome>(MailConnectOutcome.Refused(MailConnectRefusal.WRONG_CREDENTIALS)) to
+                InternetConnectFailure.WRONG_CREDENTIALS,
+            mailContent<MailConnectOutcome>(MailConnectOutcome.Refused(MailConnectRefusal.APP_PASSWORD_REQUIRED)) to
+                InternetConnectFailure.APP_PASSWORD_REQUIRED,
+            mailContent<MailConnectOutcome>(MailConnectOutcome.Refused(MailConnectRefusal.RATE_LIMITED)) to
+                InternetConnectFailure.RATE_LIMITED,
+            // An OAuth mailbox (`mailbox_not_password`) or any other refusal without a known code.
+            mailFailure<MailConnectOutcome>(FailureKind.REJECTED) to InternetConnectFailure.REFUSED,
+            mailFailure<MailConnectOutcome>(FailureKind.UNAVAILABLE) to InternetConnectFailure.UNAVAILABLE,
+            crashes<MailConnectOutcome>() to InternetConnectFailure.UNEXPECTED,
         )
-        for (account in cases) {
-            val accounts = ScriptedInternetAccountRepository(one = MailCall(mailContent(account)))
-            val vm = viewModel(accounts)
+        for ((answer, failure) in cases) {
+            val boxes = ScriptedMailboxRepository(passwords = MailCall(answer))
+            val accounts = ScriptedInternetAccountRepository(
+                one = MailCall(mailContent(needsSignIn("icloud"))),
+            )
+            val vm = viewModel(boxes, accounts)
             runCurrent()
-            assertEquals(false, vm.state.value.account?.canSignInAgain)
-            assertEquals(false, vm.state.value.account?.canAllowCalendarAccess)
             vm.onAction(InternetAccountAction.SignIn.Again)
-            vm.onAction(InternetAccountAction.SignIn.AllowCalendarAccess)
+            vm.onAction(InternetAccountAction.PasswordSignIn(InternetPasswordSignInStep.Submit("secret", "")))
             runCurrent()
-            assertFalse(vm.state.value.signingIn)
-            assertEquals(0, accounts.reauthorizations.count)
+            assertEquals(listOf(Triple<String, String, String?>("m1", "secret", null)), boxes.passwords.asked)
+            assertEquals(
+                InternetPasswordSignIn("m1", "me@gmail.com", icloud = true, failure = failure),
+                vm.state.value.passwordSignIn,
+            )
+            assertEquals(1, accounts.one.count)
+            vm.onAction(InternetAccountAction.PasswordSignIn(InternetPasswordSignInStep.Cancel))
+            assertNull(vm.state.value.passwordSignIn)
             vm.close()
         }
+    }
+
+    @Test fun `a password sign-in without a password says so and sends nothing`() = runTest(dispatcher) {
+        val boxes = ScriptedMailboxRepository()
+        val accounts = ScriptedInternetAccountRepository(
+            one = MailCall(mailContent(needsSignIn("generic"))),
+        )
+        val vm = viewModel(boxes, accounts)
+        runCurrent()
+        vm.onAction(InternetAccountAction.SignIn.Again)
+        vm.onAction(InternetAccountAction.PasswordSignIn(InternetPasswordSignInStep.Submit("", "me")))
+        runCurrent()
+        assertEquals(InternetConnectFailure.INVALID_INPUT, vm.state.value.passwordSignIn?.failure)
+        assertEquals(0, boxes.passwords.count)
+        vm.close()
     }
 
     @Test fun `a cancelled sign-in changes nothing and one that fails says why`() = runTest(dispatcher) {

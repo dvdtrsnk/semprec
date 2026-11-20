@@ -63,7 +63,8 @@ extension SharedInternetAccountScreenModel {
             },
             actionFailed: state.actionFailed,
             signingIn: state.signingIn,
-            signInFailure: state.signInFailure.map(InternetConnectFailure.init)
+            signInFailure: state.signInFailure.map(InternetConnectFailure.init),
+            passwordSignIn: state.passwordSignIn.map(InternetPasswordSignIn.init)
         )
     }
 
@@ -83,6 +84,7 @@ extension SharedInternetAccountScreenModel {
         case .confirmRemoval: SharedSDK.InternetAccountActionRemovalConfirm.shared
         case .dismissFailure: SharedSDK.InternetAccountActionDismissFailure.shared
         case .signIn(let step): signIn(step)
+        case .passwordSignIn(let step): SharedSDK.InternetAccountActionPasswordSignIn(step: step.shared)
         }
     }
 

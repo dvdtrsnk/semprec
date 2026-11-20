@@ -4,13 +4,15 @@ import SwiftUI
 
 /// The form that connects an account with an address and a password: iCloud with an app-specific password, or
 /// another account with its IMAP and SMTP servers and, when its provider names one, its CalDAV server. The CalDAV
-/// server is sent only when it is filled in.
+/// server is sent only when it is filled in. A connect refused because the address is already connected offers to
+/// open that account.
 struct InternetAccountConnectForm: View {
 
     // MARK: - Dependencies
     let provider: InternetPasswordProvider
     let state: InternetAccountsState
     let send: (InternetAccountsAction) -> Void
+    let openExisting: () -> Void
 
     // MARK: - State
     @State private var address = ""
@@ -41,6 +43,12 @@ struct InternetAccountConnectForm: View {
                 }
             } footer: {
                 footer
+            }
+            if state.existingAccountId != nil {
+                Section {
+                    Button(action: openExisting) { Text("internetAccounts.add.openExisting", bundle: .module) }
+                        .accessibilityIdentifier(AccountIdentifiers.addOpenExisting)
+                }
             }
         }
         .formStyle(.grouped)
@@ -113,8 +121,9 @@ private extension InternetAccountConnectForm {
     NavigationStack {
         InternetAccountConnectForm(
             provider: .other,
-            state: InternetAccountsState(phase: .content, connectFailure: .refused),
-            send: { _ in }
+            state: InternetAccountsState(phase: .content, connectFailure: .alreadyConnected, existingAccountId: "a1"),
+            send: { _ in },
+            openExisting: {}
         )
     }
 }

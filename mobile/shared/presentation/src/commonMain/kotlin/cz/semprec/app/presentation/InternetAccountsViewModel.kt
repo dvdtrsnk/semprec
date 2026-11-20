@@ -6,6 +6,8 @@ import cz.semprec.app.domain.CalendarSyncStatus
 import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetAccountRepository
 import cz.semprec.app.domain.InternetService
+import cz.semprec.app.domain.MailConnectOutcome
+import cz.semprec.app.domain.MailConnectRefusal
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailboxRepository
@@ -23,8 +25,14 @@ private val ADDRESS = Regex("^[^\\s@,]+@[^\\s@,]+$")
  * and a password or through a browser sign-in. Connecting with a password is one request: the server checks the login
  * on its mail servers before it saves anything. A browser sign-in asks the server for the provider's page
  * ([InternetAccountsEffect.OpenSignIn]) and hands it what the browser returned; the server saves the account only then,
- * so a sign-in that is cancelled or declined leaves nothing behind. A connected account reloads the list. A change of the account data the server reports ([serverChanges])
- * reads the list again unless a read is under way, so the statuses follow the server's.
+ * so a sign-in that is cancelled or declined leaves nothing behind. A connected account reloads the list. A connect
+ * the server refuses names its reason; one refused because the address is already connected names the listed account
+ * that holds it.
+ *
+ * A listed account that no longer signs in signs in again from its row: a Google or Microsoft account in a browser, an
+ * iCloud or another account with its password, which the server checks before it keeps it. Either reloads the list
+ * once the server accepted it. A change of the account data the server reports ([serverChanges]) reads the list again
+ * unless a read is under way, so the statuses follow the server's.
  */
 class InternetAccountsViewModel internal constructor(
     private val accounts: InternetAccountRepository,
@@ -33,22 +41,22 @@ class InternetAccountsViewModel internal constructor(
 ) : ScreenViewModel<InternetAccountsState, InternetAccountsAction, InternetAccountsEffect>(InternetAccountsState()) {
     private var loadJob: Job? = null
 
+    /** Whether the running browser sign-in signs a listed account in again rather than connecting a new one. */
+    private var reauthorizing = false
+
     private val browser = BrowserSignInFlow(
         scope = viewModelScope,
         open = { url -> emit(InternetAccountsEffect.OpenSignIn(url)) },
         finish = accounts::finishSignIn,
-        report = { report ->
-            when (report) {
-                BrowserSignInReport.Started -> update { it.copy(connecting = true, connectFailure = null) }
-                is BrowserSignInReport.Connected -> {
-                    update { it.copy(connecting = false) }
-                    emit(InternetAccountsEffect.Connected)
-                    load(showWait = false)
-                }
-                is BrowserSignInReport.Stopped ->
-                    update { it.copy(connecting = false, connectFailure = report.failure) }
-            }
-        },
+        report = { report -> if (reauthorizing) reportSignInAgain(report) else reportSignIn(report) },
+    )
+
+    private val password = PasswordSignInFlow(
+        scope = viewModelScope,
+        mailboxes = mailboxes,
+        read = { state.value.passwordSignIn },
+        write = { signIn -> update { it.copy(passwordSignIn = signIn) } },
+        signedIn = { load(showWait = false) },
     )
 
     init {
@@ -65,8 +73,54 @@ class InternetAccountsViewModel internal constructor(
             InternetAccountsAction.Refresh -> load(showWait = state.value.phase != InternetAccountsPhase.CONTENT)
             is InternetAccountsAction.Open -> emit(InternetAccountsEffect.OpenAccount(action.accountId))
             is InternetAccountsAction.Connect -> connect(action)
-            InternetAccountsAction.DismissConnectFailure -> update { it.copy(connectFailure = null) }
+            InternetAccountsAction.DismissConnectFailure ->
+                update { it.copy(connectFailure = null, existingAccountId = null) }
+            InternetAccountsAction.OpenExisting -> state.value.existingAccountId?.let {
+                update { current -> current.copy(connectFailure = null, existingAccountId = null) }
+                emit(InternetAccountsEffect.OpenAccount(it))
+            }
             is InternetAccountsAction.SignIn -> signIn(action)
+            is InternetAccountsAction.SignInAgain -> signInAgain(action.accountId)
+            is InternetAccountsAction.PasswordSignIn -> password.handle(action.step)
+            InternetAccountsAction.DismissSignInFailure -> update { it.copy(signInFailure = null) }
+        }
+    }
+
+    private fun reportSignIn(report: BrowserSignInReport) {
+        when (report) {
+            BrowserSignInReport.Started -> update { it.copy(connecting = true, connectFailure = null) }
+            is BrowserSignInReport.Connected -> {
+                update { it.copy(connecting = false) }
+                emit(InternetAccountsEffect.Connected)
+                load(showWait = false)
+            }
+            is BrowserSignInReport.Stopped -> update { it.copy(connecting = false, connectFailure = report.failure) }
+        }
+    }
+
+    private fun reportSignInAgain(report: BrowserSignInReport) {
+        when (report) {
+            BrowserSignInReport.Started -> update { it.copy(signingIn = true, signInFailure = null) }
+            is BrowserSignInReport.Connected -> {
+                reauthorizing = false
+                update { it.copy(signingIn = false) }
+                load(showWait = false)
+            }
+            is BrowserSignInReport.Stopped -> {
+                reauthorizing = false
+                update { it.copy(signingIn = false, signInFailure = report.failure) }
+            }
+        }
+    }
+
+    private fun signInAgain(accountId: String) {
+        val account = state.value.accounts.firstOrNull { it.id == accountId }
+        if (account == null || !account.canSignInAgain || state.value.connecting || state.value.signingIn) return
+        if (account.provider in BROWSER_PROVIDERS) {
+            reauthorizing = true
+            browser.start { accounts.startReauthorization(accountId, emptySet()) }
+        } else {
+            password.open(accountId, account.address, account.provider)
         }
     }
 
@@ -103,7 +157,7 @@ class InternetAccountsViewModel internal constructor(
     private fun signIn(step: InternetAccountsAction.SignIn) {
         when (step) {
             is InternetAccountsAction.SignIn.Start -> {
-                if (state.value.connecting) return
+                if (state.value.connecting || state.value.signingIn) return
                 val services = if (step.calendars) {
                     setOf(InternetService.MAIL, InternetService.CALENDARS)
                 } else {
@@ -124,17 +178,31 @@ class InternetAccountsViewModel internal constructor(
             update { it.copy(connectFailure = InternetConnectFailure.INVALID_INPUT) }
             return
         }
-        update { it.copy(connecting = true, connectFailure = null) }
+        update { it.copy(connecting = true, connectFailure = null, existingAccountId = null) }
         viewModelScope.launch {
             val result = mailAttempt { mailboxes.connect(account) }
             ensureActive()
-            if (result is RepositoryResult.Content) {
-                update { it.copy(connecting = false) }
-                emit(InternetAccountsEffect.Connected)
-                load(showWait = false)
-            } else {
-                val problem = (result as? RepositoryResult.Failure).toProblem()
-                update { it.copy(connecting = false, connectFailure = problem) }
+            when (val outcome = (result as? RepositoryResult.Content)?.value) {
+                MailConnectOutcome.Connected -> {
+                    update { it.copy(connecting = false) }
+                    emit(InternetAccountsEffect.Connected)
+                    load(showWait = false)
+                }
+                is MailConnectOutcome.Refused -> update {
+                    val existing = it.accounts.firstOrNull { listed ->
+                        listed.address.equals(account.address, ignoreCase = true)
+                    }
+                    val alreadyConnected = outcome.reason == MailConnectRefusal.ALREADY_CONNECTED
+                    it.copy(
+                        connecting = false,
+                        connectFailure = outcome.reason.toFailure(),
+                        existingAccountId = existing?.id.takeIf { alreadyConnected },
+                    )
+                }
+                null -> {
+                    val problem = (result as? RepositoryResult.Failure).toProblem()
+                    update { it.copy(connecting = false, connectFailure = problem) }
+                }
             }
         }
     }
@@ -174,14 +242,27 @@ private fun InternetOAuthProvider.toDomain() = when (this) {
     InternetOAuthProvider.MICROSOFT -> OAuthProvider.MICROSOFT
 }
 
-internal fun InternetAccount.toItem() = InternetAccountItem(
-    id = mailbox.id,
-    name = mailbox.name,
-    address = mailbox.primaryAddress,
-    provider = mailbox.provider,
-    mail = mailService(),
-    calendars = calendarService(),
-)
+/** The stored providers whose accounts sign in in a browser. */
+internal val BROWSER_PROVIDERS = setOf("gmail", "outlook")
+
+/** The stored providers whose accounts sign in with an address and a password. */
+internal val PASSWORD_PROVIDERS = setOf("icloud", "generic")
+
+internal fun InternetAccount.toItem(): InternetAccountItem {
+    val mail = mailService()
+    val calendars = calendarService()
+    val provider = mailbox.provider
+    return InternetAccountItem(
+        id = mailbox.id,
+        name = mailbox.name,
+        address = mailbox.primaryAddress,
+        provider = provider,
+        mail = mail,
+        calendars = calendars,
+        canSignInAgain = (provider in BROWSER_PROVIDERS || provider in PASSWORD_PROVIDERS) &&
+            InternetServiceStatus.NEEDS_REAUTHORIZATION in listOf(mail, calendars),
+    )
+}
 
 /** Off while the switch is off; otherwise what the mail sync last reported. */
 internal fun InternetAccount.mailService(): InternetServiceStatus =

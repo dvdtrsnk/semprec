@@ -239,3 +239,13 @@ internal data class MailOauthAuthorizeDto(val authorizeUrl: String)
 /** The answer of `oauth/complete`: the mailbox that was connected or signed in again. */
 @Serializable
 internal data class MailOauthCompleteDto(val mailboxId: String)
+
+/**
+ * The error answer of a route that refuses with a code: `{ "error": { "code" } }`, as the server writes it; a code at
+ * the top level is read as well.
+ */
+@Serializable
+internal data class ApiErrorDto(val error: ApiErrorCodeDto? = null, val code: String? = null)
+
+@Serializable
+internal data class ApiErrorCodeDto(val code: String? = null)

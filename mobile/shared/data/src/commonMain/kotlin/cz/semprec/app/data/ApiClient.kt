@@ -105,7 +105,7 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
         if (failure == null) {
             ApiResponse.Success(response.status.value, response.bodyAsText(), response.headers[HttpHeaders.ETag])
         } else {
-            ApiResponse.Failure(failure, response.status.value)
+            ApiResponse.Failure(failure, response.status.value, response.bodyAsText())
         }
     } catch (cancelled: CancellationException) {
         throw cancelled

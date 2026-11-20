@@ -73,6 +73,56 @@ final class InternetAccountViewModelTests: XCTestCase {
         XCTAssertEqual(opened.urls, [])
     }
 
+    @MainActor
+    func testTheListSignsAnAccountInAgainInTheBrowserItStartedWith() async throws {
+        let callback = try XCTUnwrap(URL(string: "semprec://oauth?state=s&code=c"))
+        let model = ScriptedInternetAccountsScreenModel(state: InternetAccountsState())
+        let viewModel = InternetAccountsViewModel(model: model, router: RouterSpy())
+        let observer = Task { await viewModel.observe() }
+        defer { observer.cancel() }
+        let opened = Opened()
+        viewModel.signInAgain(
+            accountId: "m1",
+            browser: BrowserSignIn { url in
+                opened.urls.append(url)
+                return callback
+            }
+        )
+        model.emit(.openSignIn(url: "https://accounts.google.com/a"))
+        try await eventually { model.actions.count == 2 }
+        XCTAssertEqual(
+            model.actions,
+            [.signInAgain(accountId: "m1"), .signInReturned(callbackUrl: callback.absoluteString)]
+        )
+        XCTAssertEqual(opened.urls.map(\.absoluteString), ["https://accounts.google.com/a"])
+    }
+
+    @MainActor
+    func testTheListForwardsThePasswordSignInAndOpeningTheExistingAccount() {
+        let model = ScriptedInternetAccountsScreenModel(state: InternetAccountsState())
+        let viewModel = InternetAccountsViewModel(model: model, router: RouterSpy())
+        let actions: [InternetAccountsAction] = [
+            .passwordSignIn(.submit(password: "pw", username: "")),
+            .passwordSignIn(.cancel),
+            .openExisting,
+            .dismissSignInFailure
+        ]
+        actions.forEach(viewModel.send)
+        XCTAssertEqual(model.actions, actions)
+    }
+
+    @MainActor
+    func testTheAccountForwardsThePasswordSignIn() {
+        let model = ScriptedInternetAccountScreenModel(state: InternetAccountState())
+        let viewModel = InternetAccountViewModel(model: model, router: RouterSpy())
+        let actions: [InternetAccountAction] = [
+            .passwordSignIn(.submit(password: "pw", username: "me@firma.cz")),
+            .passwordSignIn(.cancel)
+        ]
+        actions.forEach(viewModel.send)
+        XCTAssertEqual(model.actions, actions)
+    }
+
     // MARK: - Account
     @MainActor
     func testTheAccountSignsInAgainAndAllowsCalendarsInTheBrowserItStartedWith() async throws {

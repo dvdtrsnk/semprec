@@ -3,7 +3,10 @@ package cz.semprec.app.presentation
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarSyncStatus
+import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetService
+import cz.semprec.app.domain.MailConnectOutcome
+import cz.semprec.app.domain.MailConnectRefusal
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailSyncStatus
@@ -37,8 +40,17 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
     private fun icloud(address: String = "me@icloud.com", password: String = "pass") =
         InternetAccountsAction.Connect(InternetPasswordProvider.ICLOUD, address, password, "", "", "")
 
-    private fun item(id: String, mail: InternetServiceStatus, calendars: InternetServiceStatus) =
-        InternetAccountItem(id, "Gmail", "me@gmail.com", "gmail", mail, calendars)
+    private fun item(
+        id: String,
+        mail: InternetServiceStatus,
+        calendars: InternetServiceStatus,
+        canSignInAgain: Boolean = false,
+    ) = InternetAccountItem(id, "Gmail", "me@gmail.com", "gmail", mail, calendars, canSignInAgain)
+
+    private fun listing(vararg accounts: InternetAccount) =
+        ScriptedInternetAccountRepository(
+            list = MailCall(mailContent(accounts.toList()), mailContent(accounts.toList())),
+        )
 
     @Test fun `lists the accounts with the status of each service`() = runTest(dispatcher) {
         val accounts = ScriptedInternetAccountRepository(
@@ -80,12 +92,12 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
         assertEquals(
             listOf(
                 item("a", InternetServiceStatus.OK, InternetServiceStatus.OFF),
-                item("b", InternetServiceStatus.NEEDS_REAUTHORIZATION, InternetServiceStatus.PENDING),
+                item("b", InternetServiceStatus.NEEDS_REAUTHORIZATION, InternetServiceStatus.PENDING, true),
                 item("c", InternetServiceStatus.OFF, InternetServiceStatus.OK),
                 item("d", InternetServiceStatus.SYNCING, InternetServiceStatus.NEEDS_CONSENT),
                 item("e", InternetServiceStatus.ERROR, InternetServiceStatus.SYNCING),
                 item("f", InternetServiceStatus.OK, InternetServiceStatus.ERROR),
-                item("g", InternetServiceStatus.OK, InternetServiceStatus.NEEDS_REAUTHORIZATION),
+                item("g", InternetServiceStatus.OK, InternetServiceStatus.NEEDS_REAUTHORIZATION, true),
                 item("h", InternetServiceStatus.OK, InternetServiceStatus.OFF),
                 item("i", InternetServiceStatus.OK, InternetServiceStatus.PENDING),
             ),
@@ -300,6 +312,177 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
         assertTrue(effects.all { it.isEmpty() })
         models.forEach { it.close() }
     }
+
+    @Test fun `every refusal the server names shows its own failure and keeps the form`() = runTest(dispatcher) {
+        val cases = mapOf(
+            MailConnectRefusal.WRONG_CREDENTIALS to InternetConnectFailure.WRONG_CREDENTIALS,
+            MailConnectRefusal.APP_PASSWORD_REQUIRED to InternetConnectFailure.APP_PASSWORD_REQUIRED,
+            MailConnectRefusal.SERVER_UNREACHABLE to InternetConnectFailure.SERVER_UNREACHABLE,
+            MailConnectRefusal.TLS_FAILED to InternetConnectFailure.TLS_FAILED,
+            MailConnectRefusal.CALDAV_REFUSED to InternetConnectFailure.CALDAV_REFUSED,
+            MailConnectRefusal.CALDAV_UNREACHABLE to InternetConnectFailure.CALDAV_UNREACHABLE,
+            MailConnectRefusal.ALREADY_CONNECTED to InternetConnectFailure.ALREADY_CONNECTED,
+            MailConnectRefusal.RATE_LIMITED to InternetConnectFailure.RATE_LIMITED,
+        )
+        assertEquals(MailConnectRefusal.entries.toSet(), cases.keys)
+        for ((refusal, failure) in cases) {
+            val outcome: MailConnectOutcome = MailConnectOutcome.Refused(refusal)
+            val accounts = ScriptedInternetAccountRepository()
+            val vm = viewModel(ScriptedMailboxRepository(connect = MailCall(mailContent(outcome))), accounts)
+            val effects = collectEffects(vm)
+            runCurrent()
+            vm.onAction(icloud())
+            runCurrent()
+            assertEquals(failure, vm.state.value.connectFailure)
+            assertFalse(vm.state.value.connecting)
+            // The listed account holds another address.
+            assertNull(vm.state.value.existingAccountId)
+            assertTrue(effects.isEmpty())
+            assertEquals(1, accounts.list.count)
+            vm.close()
+        }
+    }
+
+    @Test fun `a connect refused as already connected names the listed account and opens it`() = runTest(dispatcher) {
+        val listed = internetAccount("a").let {
+            it.copy(mailbox = it.mailbox.copy(primaryAddress = "Me@iCloud.com", provider = "icloud"))
+        }
+        val already: MailConnectOutcome = MailConnectOutcome.Refused(MailConnectRefusal.ALREADY_CONNECTED)
+        val boxes = ScriptedMailboxRepository(connect = MailCall(mailContent(already)))
+        val vm = viewModel(boxes, ScriptedInternetAccountRepository(list = MailCall(mailContent(listOf(listed)))))
+        val effects = collectEffects(vm)
+        runCurrent()
+        vm.onAction(icloud("me@icloud.com"))
+        runCurrent()
+        assertEquals(InternetConnectFailure.ALREADY_CONNECTED, vm.state.value.connectFailure)
+        assertEquals("a", vm.state.value.existingAccountId)
+
+        vm.onAction(InternetAccountsAction.OpenExisting)
+        runCurrent()
+        assertEquals(listOf<InternetAccountsEffect>(InternetAccountsEffect.OpenAccount("a")), effects)
+        assertNull(vm.state.value.connectFailure)
+        assertNull(vm.state.value.existingAccountId)
+        vm.onAction(InternetAccountsAction.OpenExisting)
+        runCurrent()
+        assertEquals(1, effects.size)
+        vm.close()
+    }
+
+    @Test fun `the accounts whose sign-in a service no longer accepts can sign in again`() = runTest(dispatcher) {
+        val cases = listOf(
+            internetAccount("gmail", MailSyncStatus.NEEDS_REAUTHORIZATION, provider = "gmail") to true,
+            internetAccount("outlook", MailSyncStatus.NEEDS_REAUTHORIZATION, provider = "outlook") to true,
+            internetAccount("icloud", MailSyncStatus.NEEDS_REAUTHORIZATION, provider = "icloud") to true,
+            internetAccount(
+                "generic",
+                calendars = true,
+                calendarStatus = CalendarSyncStatus.NEEDS_REAUTHORIZATION,
+                provider = "generic",
+            ) to true,
+            internetAccount("unknown", MailSyncStatus.NEEDS_REAUTHORIZATION, provider = "exchange") to false,
+            internetAccount("error", MailSyncStatus.ERROR, provider = "icloud") to false,
+            // Mail switched off shows off, whatever the server still holds.
+            internetAccount("off", MailSyncStatus.NEEDS_REAUTHORIZATION, mail = false, provider = "icloud") to false,
+        )
+        val vm = viewModel(listing(*cases.map { it.first }.toTypedArray()))
+        runCurrent()
+        assertEquals(cases.map { it.second }, vm.state.value.accounts.map { it.canSignInAgain })
+        vm.close()
+    }
+
+    @Test fun `a listed browser account signs in again in a browser and the list loads again`() = runTest(dispatcher) {
+        val accounts = listing(
+            internetAccount("a", MailSyncStatus.NEEDS_REAUTHORIZATION, provider = "outlook"),
+            internetAccount("b"),
+        )
+        val vm = viewModel(accounts)
+        val effects = collectEffects(vm)
+        runCurrent()
+        vm.onAction(InternetAccountsAction.SignInAgain("b"))
+        runCurrent()
+        assertEquals(0, accounts.reauthorizations.count)
+
+        vm.onAction(InternetAccountsAction.SignInAgain("a"))
+        assertTrue(vm.state.value.signingIn)
+        assertFalse(vm.state.value.connecting)
+        vm.onAction(InternetAccountsAction.SignInAgain("a"))
+        vm.onAction(InternetAccountsAction.SignIn.Start(InternetOAuthProvider.GOOGLE, calendars = false))
+        runCurrent()
+        assertEquals(listOf("a" to emptySet<InternetService>()), accounts.reauthorizations.asked)
+        assertEquals(0, accounts.signIns.count)
+
+        vm.onAction(InternetAccountsAction.SignIn.Returned(OAUTH_CALLBACK))
+        runCurrent()
+        assertEquals(listOf(OAUTH_SIGN_IN to OAUTH_CALLBACK), accounts.finishes.asked)
+        assertFalse(vm.state.value.signingIn)
+        assertNull(vm.state.value.signInFailure)
+        assertEquals(2, accounts.list.count)
+        // Signing in again connects no new account, so the add form has nothing to close.
+        assertEquals(
+            listOf<InternetAccountsEffect>(InternetAccountsEffect.OpenSignIn(OAUTH_SIGN_IN.authorizeUrl)),
+            effects,
+        )
+        vm.close()
+    }
+
+    @Test fun `a listed browser account that fails to sign in again says why`() = runTest(dispatcher) {
+        val accounts = ScriptedInternetAccountRepository(
+            list = MailCall(mailContent(listOf(internetAccount("a", MailSyncStatus.NEEDS_REAUTHORIZATION)))),
+            finishes = MailCall(mailContent(OAuthOutcome.Declined)),
+        )
+        val vm = viewModel(accounts)
+        runCurrent()
+        vm.onAction(InternetAccountsAction.SignInAgain("a"))
+        runCurrent()
+        vm.onAction(InternetAccountsAction.SignIn.Returned(OAUTH_CALLBACK))
+        runCurrent()
+        assertEquals(InternetConnectFailure.DECLINED, vm.state.value.signInFailure)
+        assertNull(vm.state.value.connectFailure)
+        assertFalse(vm.state.value.signingIn)
+        assertEquals(1, accounts.list.count)
+        vm.onAction(InternetAccountsAction.DismissSignInFailure)
+        assertNull(vm.state.value.signInFailure)
+        vm.close()
+    }
+
+    @Test fun `a listed password account signs in again with its password and the list loads again`() =
+        runTest(dispatcher) {
+            val listed = internetAccount("a", MailSyncStatus.NEEDS_REAUTHORIZATION, provider = "icloud")
+            val accounts = listing(listed)
+            val refused: MailConnectOutcome = MailConnectOutcome.Refused(MailConnectRefusal.APP_PASSWORD_REQUIRED)
+            val boxes = ScriptedMailboxRepository(
+                passwords = MailCall(mailContent(refused), mailContent(MailConnectOutcome.Connected)),
+            )
+            val vm = viewModel(boxes, accounts)
+            val effects = collectEffects(vm)
+            runCurrent()
+
+            vm.onAction(InternetAccountsAction.SignInAgain("a"))
+            assertEquals(InternetPasswordSignIn("a", "me@gmail.com", icloud = true), vm.state.value.passwordSignIn)
+            vm.onAction(InternetAccountsAction.PasswordSignIn(InternetPasswordSignInStep.Submit("account-pass", "")))
+            runCurrent()
+            assertEquals(InternetConnectFailure.APP_PASSWORD_REQUIRED, vm.state.value.passwordSignIn?.failure)
+            assertEquals(1, accounts.list.count)
+
+            vm.onAction(InternetAccountsAction.PasswordSignIn(InternetPasswordSignInStep.Submit("app-pass", "")))
+            assertEquals(
+                InternetPasswordSignIn("a", "me@gmail.com", icloud = true, submitting = true),
+                vm.state.value.passwordSignIn,
+            )
+            runCurrent()
+            assertEquals(
+                listOf<Triple<String, String, String?>>(
+                    Triple("a", "account-pass", null),
+                    Triple("a", "app-pass", null),
+                ),
+                boxes.passwords.asked,
+            )
+            assertNull(vm.state.value.passwordSignIn)
+            assertEquals(2, accounts.list.count)
+            assertEquals(0, accounts.reauthorizations.count)
+            assertTrue(effects.isEmpty())
+            vm.close()
+        }
 
     @Test fun `a browser sign-in asks for the chosen services opens the page and connects with what came back`() =
         runTest(dispatcher) {

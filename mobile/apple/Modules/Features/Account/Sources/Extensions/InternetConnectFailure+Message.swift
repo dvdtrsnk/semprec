@@ -12,6 +12,14 @@ extension InternetConnectFailure {
         case .unavailable: "internetAccounts.add.error.unavailable"
         case .unexpected: "internetAccounts.add.error.unexpected"
         case .declined: "internetAccounts.add.error.declined"
+        case .wrongCredentials: "internetAccounts.add.error.wrongCredentials"
+        case .appPasswordRequired: "internetAccounts.add.error.appPasswordRequired"
+        case .serverUnreachable: "internetAccounts.add.error.serverUnreachable"
+        case .tlsFailed: "internetAccounts.add.error.tlsFailed"
+        case .caldavRefused: "internetAccounts.add.error.caldavRefused"
+        case .caldavUnreachable: "internetAccounts.add.error.caldavUnreachable"
+        case .alreadyConnected: "internetAccounts.add.error.alreadyConnected"
+        case .rateLimited: "internetAccounts.add.error.rateLimited"
         }
     }
 }

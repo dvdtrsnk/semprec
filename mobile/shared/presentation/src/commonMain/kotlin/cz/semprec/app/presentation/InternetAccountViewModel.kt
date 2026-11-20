@@ -29,7 +29,8 @@ private const val MAX_CONNECTIONS = 15
  * A Google or Microsoft account signs in again in a browser when a service no longer accepts its sign-in, and grants
  * the calendar permission the same way. The server keeps the account's sign-in as it was until the browser came back
  * and the code was accepted, so a cancelled or declined sign-in changes nothing; an accepted one reads the account
- * again.
+ * again. An iCloud or another password account signs in again with its password, which the server checks before it
+ * keeps it; a refused one stays open with the reason, an accepted one reads the account again.
  *
  * A removal first reads what it would hide and waits for the answer; nothing is removed before that. A change of the
  * account data the server reports ([serverChanges]) reads the account again; the name and the connection limit stay
@@ -62,6 +63,17 @@ class InternetAccountViewModel internal constructor(
         },
     )
 
+    private val password = PasswordSignInFlow(
+        scope = viewModelScope,
+        mailboxes = mailboxes,
+        read = { state.value.passwordSignIn },
+        write = { signIn -> update { it.copy(passwordSignIn = signIn) } },
+        signedIn = {
+            statusJob?.cancel()
+            readStatus()
+        },
+    )
+
     init {
         load()
         reloadOnChanges(serverChanges, ::readStatus)
@@ -80,9 +92,11 @@ class InternetAccountViewModel internal constructor(
             InternetAccountAction.SyncNow -> syncNow()
             is InternetAccountAction.Removal -> removal(action)
             InternetAccountAction.DismissFailure -> update { it.copy(actionFailed = false, signInFailure = null) }
+            InternetAccountAction.SignIn.Again -> signInAgain()
             is InternetAccountAction.SignIn -> browser.handle(action, state.value.account) { services ->
                 accounts.startReauthorization(accountId, services)
             }
+            is InternetAccountAction.PasswordSignIn -> password.handle(action.step)
         }
     }
 
@@ -101,6 +115,17 @@ class InternetAccountViewModel internal constructor(
                     null -> it.copy(phase = InternetAccountPhase.ERROR, failure = null)
                 }
             }
+        }
+    }
+
+    /** Signs the account in again in a browser or with a password, while the screen offers it. */
+    private fun signInAgain() {
+        val account = state.value.account
+        if (account == null || !account.canSignInAgain || state.value.signingIn) return
+        if (account.signsInInBrowser) {
+            browser.start { accounts.startReauthorization(accountId, emptySet()) }
+        } else {
+            password.open(accountId, account.address, account.provider)
         }
     }
 
@@ -238,14 +263,18 @@ class InternetAccountViewModel internal constructor(
     }
 }
 
-/** Starts a sign-in only while the screen offers it; [reauthorize] asks the server for the provider's page. */
+/**
+ * Asks for calendar access only while the screen offers it, and reports how the browser ended; [reauthorize] asks the
+ * server for the provider's page. [InternetAccountAction.SignIn.Again] is decided before, as it may not be a browser
+ * sign-in.
+ */
 private fun BrowserSignInFlow.handle(
     step: InternetAccountAction.SignIn,
     account: InternetAccountDetail?,
     reauthorize: suspend (Set<InternetService>) -> RepositoryResult<OAuthSignIn>,
 ) {
     when (step) {
-        InternetAccountAction.SignIn.Again -> if (account?.canSignInAgain == true) start { reauthorize(emptySet()) }
+        InternetAccountAction.SignIn.Again -> Unit
         InternetAccountAction.SignIn.AllowCalendarAccess -> if (account?.canAllowCalendarAccess == true) {
             start { reauthorize(setOf(InternetService.MAIL, InternetService.CALENDARS)) }
         }
@@ -318,9 +347,7 @@ private fun InternetAccount.toDetail() = InternetAccountDetail(
     autonomousSendProjectCount = mailbox.autonomousSendProjectCount,
     syncedMessageCount = mailbox.syncedMessageCount,
     signsInInBrowser = mailbox.provider in BROWSER_PROVIDERS,
+    signsInWithPassword = mailbox.provider in PASSWORD_PROVIDERS,
 )
-
-/** The stored providers whose accounts sign in in a browser. */
-private val BROWSER_PROVIDERS = setOf("gmail", "outlook")
 
 private fun MailRemovalImpact.toImpact() = InternetAccountRemovalImpact(messages, drafts, threads, attachmentsKept)

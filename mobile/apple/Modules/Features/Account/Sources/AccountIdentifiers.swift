@@ -47,6 +47,8 @@ enum AccountIdentifiers {
     static let addSmtp = "internetAccounts.addSheet.smtp"
     static let addCaldav = "internetAccounts.addSheet.caldav"
     static let addSubmit = "internetAccounts.addSheet.submit"
+    static let addOpenExisting = "internetAccounts.addSheet.openExisting"
+    static let internetAccountSignInAgainPrefix = "internetAccounts.signInAgain."
 
     static let internetAccountScreen = "internetAccount.screen"
     static let internetAccountName = "internetAccount.name"
@@ -58,4 +60,8 @@ enum AccountIdentifiers {
     static let internetAccountConfirmOff = "internetAccount.confirmOff"
     static let internetAccountRemove = "internetAccount.remove"
     static let internetAccountConfirmRemove = "internetAccount.confirmRemove"
+    static let passwordSignInSheet = "internetAccount.passwordSignIn"
+    static let passwordSignInPassword = "internetAccount.passwordSignIn.password"
+    static let passwordSignInUsername = "internetAccount.passwordSignIn.username"
+    static let passwordSignInSubmit = "internetAccount.passwordSignIn.submit"
 }

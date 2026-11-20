@@ -5,6 +5,8 @@ import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetAccountRepository
 import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailAccount
+import cz.semprec.app.domain.MailConnectOutcome
+import cz.semprec.app.domain.MailConnectRefusal
 import cz.semprec.app.domain.MailFolder
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
@@ -19,6 +21,7 @@ import cz.semprec.app.domain.then
 import io.ktor.http.HttpMethod
 import io.ktor.http.encodeURLPathPart
 import io.ktor.http.parseUrl
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
@@ -37,18 +40,19 @@ private const val OAUTH_CALLBACK_SCHEME = "semprec"
 private const val OAUTH_CALLBACK_HOST = "oauth"
 
 /**
- * The server checks a new mailbox's IMAP and then its SMTP server before it answers, each on up to two ports that may
- * each take 45 s to time out, so the request waits for that instead of reporting the Semprec server unreachable.
+ * The server checks a mailbox's IMAP and then its SMTP server before it connects it or signs it in again, each on up
+ * to two ports that may each take 45 s to time out, so the request waits for that instead of reporting the Semprec
+ * server unreachable.
  */
 private const val CONNECT_TIMEOUT_MILLIS = 200_000L
 
 /**
  * The mailboxes of `/api/mail/mailboxes*`, which are also the internet accounts: the list, one mailbox with its
- * folders, the impact of a removal and the removal itself, and a mailbox connected with a password. A name, a
- * connection limit and the Mail and Calendars switches are ordinary properties of the mailbox item, written through
- * the item API with the version the item has. Gmail and Outlook mailboxes sign in in a browser: this repository
- * starts the sign-in with the server, which answers the provider page and later sends the browser back to
- * `semprec://oauth`, and hands the code from there to the server.
+ * folders, the impact of a removal and the removal itself, and a mailbox connected or signed in again with a
+ * password. A name, a connection limit and the Mail and Calendars switches are ordinary properties of the mailbox
+ * item, written through the item API with the version the item has. Gmail and Outlook mailboxes sign in in a
+ * browser: this repository starts the sign-in with the server, which answers the provider page and later sends the
+ * browser back to `semprec://oauth`, and hands the code from there to the server.
  */
 class HttpMailboxRepository internal constructor(
     private val api: AuthenticatedApi,
@@ -75,7 +79,7 @@ class HttpMailboxRepository internal constructor(
     override suspend fun remove(mailboxId: String): RepositoryResult<Unit> =
         api.send(HttpMethod.Delete, mailboxPath(mailboxId)).ignoreBody()
 
-    override suspend fun connect(account: MailPasswordAccount): RepositoryResult<Unit> {
+    override suspend fun connect(account: MailPasswordAccount): RepositoryResult<MailConnectOutcome> {
         val body = buildJsonObject {
             put(
                 "provider",
@@ -95,7 +99,24 @@ class HttpMailboxRepository internal constructor(
             MAILBOXES_PATH,
             body = body.toString(),
             requestTimeoutMillis = CONNECT_TIMEOUT_MILLIS,
-        ).ignoreBody()
+        ).connectOutcome()
+    }
+
+    override suspend fun updatePassword(
+        mailboxId: String,
+        password: String,
+        username: String?,
+    ): RepositoryResult<MailConnectOutcome> {
+        val body = buildJsonObject {
+            put("password", password)
+            username?.let { put("username", it) }
+        }
+        return api.send(
+            HttpMethod.Put,
+            "${mailboxPath(mailboxId)}/password",
+            body = body.toString(),
+            requestTimeoutMillis = CONNECT_TIMEOUT_MILLIS,
+        ).connectOutcome()
     }
 
     override suspend fun rename(mailboxId: String, name: String): RepositoryResult<Unit> =
@@ -182,6 +203,50 @@ class HttpMailboxRepository internal constructor(
 }
 
 private fun mailboxPath(mailboxId: String) = "$MAILBOXES_PATH/${mailboxId.encodeURLPathPart()}"
+
+private const val TOO_MANY_REQUESTS = 429
+
+/** The refusal codes of the password routes, as the server names them. */
+private val REFUSALS = mapOf(
+    "mail_auth_failed" to MailConnectRefusal.WRONG_CREDENTIALS,
+    "mail_app_password_required" to MailConnectRefusal.APP_PASSWORD_REQUIRED,
+    "mail_server_unreachable" to MailConnectRefusal.SERVER_UNREACHABLE,
+    "mail_tls_failed" to MailConnectRefusal.TLS_FAILED,
+    "caldav_auth_failed" to MailConnectRefusal.CALDAV_REFUSED,
+    "caldav_server_unreachable" to MailConnectRefusal.CALDAV_UNREACHABLE,
+    "caldav_server_invalid" to MailConnectRefusal.CALDAV_UNREACHABLE,
+    "provider_account_already_connected" to MailConnectRefusal.ALREADY_CONNECTED,
+    "rate_limited" to MailConnectRefusal.RATE_LIMITED,
+)
+
+/**
+ * The answer of a checked password login: a success connected it, a refusal with a known code (or a `429`, which
+ * these routes answer only when rate limited) is [MailConnectOutcome.Refused], and any other failure stays its
+ * [FailureKind].
+ */
+private fun ApiResponse.connectOutcome(): RepositoryResult<MailConnectOutcome> = when (this) {
+    is ApiResponse.Success -> RepositoryResult.Content(MailConnectOutcome.Connected)
+    is ApiResponse.Failure -> {
+        val refusal = REFUSALS[errorCode()] ?: MailConnectRefusal.RATE_LIMITED.takeIf { status == TOO_MANY_REQUESTS }
+        if (refusal == null) {
+            RepositoryResult.Failure(kind)
+        } else {
+            RepositoryResult.Content(MailConnectOutcome.Refused(refusal))
+        }
+    }
+}
+
+/** The code of an error answer, or `null` when its body is missing or not an error document. */
+private fun ApiResponse.Failure.errorCode(): String? {
+    val text = body ?: return null
+    return try {
+        ApiJson.decodeFromString(ApiErrorDto.serializer(), text).let { it.error?.code ?: it.code }
+    } catch (_: SerializationException) {
+        null
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+}
 
 /** In the order the server lists them; the caller decides whether Mail is among them. */
 private fun JsonObjectBuilder.putServices(services: Set<InternetService>) {
