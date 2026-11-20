@@ -68,6 +68,7 @@ extension SharedNotificationSettingsScreenModel {
             approvals: choices.approvals,
             invites: choices.invites,
             reminders: choices.reminders,
+            calendarChanges: choices.calendarChanges,
             problemsLevel: level(choices.problemsLevel),
             problemsSummary: choices.problemsSummary,
             badgeApprovals: choices.badgeApprovals,
@@ -97,6 +98,7 @@ extension SharedNotificationSettingsScreenModel {
         case .approvals: .approvals
         case .invites: .invites
         case .reminders: .reminders
+        case .calendarChanges: .calendarChanges
         case .problemsSummary: .problemsSummary
         case .badgeApprovals: .badgeApprovals
         case .badgeInvites: .badgeInvites

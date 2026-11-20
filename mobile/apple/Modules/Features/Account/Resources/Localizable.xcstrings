@@ -1889,6 +1889,38 @@
         }
       }
     },
+    "notifications.calendarChanges" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Změny v kalendářích"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendar changes"
+          }
+        }
+      }
+    },
+    "notifications.calendarChanges.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Když někdo jiný přidá, změní nebo zruší událost ve vašich kalendářích"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When someone else adds, changes or cancels an event in your calendars"
+          }
+        }
+      }
+    },
     "notifications.failed" : {
       "localizations" : {
         "cs" : {

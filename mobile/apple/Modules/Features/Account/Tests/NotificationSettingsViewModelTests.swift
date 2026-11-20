@@ -25,11 +25,18 @@ final class NotificationSettingsViewModelTests: XCTestCase {
         let viewModel = NotificationSettingsViewModel(model: model, router: RouterSpy())
         viewModel.retry()
         viewModel.set(.badgeInbox, enabled: true)
+        viewModel.set(.calendarChanges, enabled: true)
         viewModel.setProblemsLevel(.all)
         viewModel.dismissFailure()
         XCTAssertEqual(
             model.actions,
-            [.retry, .set(.badgeInbox, enabled: true), .setProblemsLevel(.all), .dismissFailure]
+            [
+                .retry,
+                .set(.badgeInbox, enabled: true),
+                .set(.calendarChanges, enabled: true),
+                .setProblemsLevel(.all),
+                .dismissFailure
+            ]
         )
     }
 
@@ -67,6 +74,7 @@ final class NotificationSettingsViewModelTests: XCTestCase {
             approvals: false,
             invites: false,
             reminders: false,
+            calendarChanges: false,
             problemsSummary: false,
             badgeApprovals: false,
             badgeInvites: false,
@@ -77,6 +85,9 @@ final class NotificationSettingsViewModelTests: XCTestCase {
         }
         choices.badgeInvites = true
         XCTAssertEqual(AccountNotificationSwitch.allCases.filter(choices.isOn), [.badgeInvites])
+        choices.badgeInvites = false
+        choices.calendarChanges = true
+        XCTAssertEqual(AccountNotificationSwitch.allCases.filter(choices.isOn), [.calendarChanges])
     }
 
     // MARK: - Helpers

@@ -11,6 +11,7 @@ data class NotificationChoices(
     val approvals: Boolean,
     val invites: Boolean,
     val reminders: Boolean,
+    val calendarChanges: Boolean,
     val problemsLevel: AccountProblemsLevel,
     val problemsSummary: Boolean,
     val badgeApprovals: Boolean,

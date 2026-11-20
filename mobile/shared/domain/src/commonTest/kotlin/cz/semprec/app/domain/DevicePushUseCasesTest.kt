@@ -16,6 +16,7 @@ private val ALL_ON = AccountNotificationPrefs(
     approvals = true,
     invites = true,
     reminders = true,
+    calendarChanges = true,
     problemsLevel = AccountProblemsLevel.CRITICAL,
     problemsSummary = true,
     badgeApprovals = true,

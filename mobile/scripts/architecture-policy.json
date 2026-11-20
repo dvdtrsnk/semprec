@@ -758,6 +758,8 @@
         "notifications.invites.hint",
         "notifications.reminders",
         "notifications.reminders.hint",
+        "notifications.calendarChanges",
+        "notifications.calendarChanges.hint",
         "notifications.problems",
         "notifications.level.off",
         "notifications.level.critical",

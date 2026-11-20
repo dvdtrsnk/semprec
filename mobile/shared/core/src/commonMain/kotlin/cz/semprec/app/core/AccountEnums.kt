@@ -14,6 +14,7 @@ enum class AccountNotificationSwitch {
     APPROVALS,
     INVITES,
     REMINDERS,
+    CALENDAR_CHANGES,
     PROBLEMS_SUMMARY,
     BADGE_APPROVALS,
     BADGE_INVITES,

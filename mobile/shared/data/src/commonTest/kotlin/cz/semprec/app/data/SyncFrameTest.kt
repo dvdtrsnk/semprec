@@ -22,6 +22,10 @@ class SyncFrameTest {
         assertEquals(SyncFrame.DatabaseChanged(DB), parseSyncFrame(relation))
         assertEquals(SyncFrame.DatabaseChanged(DB), parseSyncFrame(keyedRelation))
         assertEquals(SyncFrame.Notified("calendar_invitation"), parseSyncFrame(notification))
+        assertEquals(
+            SyncFrame.Notified("calendar_event_changed"),
+            parseSyncFrame(notification.replace("calendar_invitation", "calendar_event_changed")),
+        )
     }
 
     @Test fun `frames outside the followed catalog or with a broken field are dropped`() {
@@ -60,6 +64,9 @@ class SyncFrameTest {
             SyncFrame.DatabaseChanged("n") to emptySet(),
             SyncFrame.DatabaseChanged("unknown") to emptySet(),
             SyncFrame.Notified("calendar_invitation") to setOf(SyncTopic.INVITATIONS),
+            SyncFrame.Notified("calendar_event_added") to calendar,
+            SyncFrame.Notified("calendar_event_changed") to calendar,
+            SyncFrame.Notified("calendar_event_cancelled") to calendar,
             SyncFrame.Notified("mail_sync_error") to mail,
             SyncFrame.Notified("mail_sync_stalled") to mail,
             SyncFrame.Notified("approval_pending") to emptySet(),

@@ -14,7 +14,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
-private const val PREFS = """{"approvals":true,"invites":false,"reminders":true,"problemsLevel":"all",
+private const val PREFS = """{"approvals":true,"invites":false,"reminders":true,"calendarChanges":false,
+    "problemsLevel":"all",
     "problemsSummary":false,"badgeApprovals":true,"badgeInvites":false,"badgeInbox":true,
     "updatedAt":"2026-10-21T10:00:00Z"}"""
 
@@ -33,7 +34,7 @@ class HttpAccountNotificationRepositoryTest {
         assertEquals(HttpMethod.Get, recorder.requests.single().method)
         assertEquals("/api/notification-preferences", recorder.requests.single().url.encodedPath)
         assertEquals(
-            AccountNotificationPrefs(true, false, true, AccountProblemsLevel.ALL, false, true, false, true),
+            AccountNotificationPrefs(true, false, true, false, AccountProblemsLevel.ALL, false, true, false, true),
             prefs,
         )
     }
@@ -51,11 +52,19 @@ class HttpAccountNotificationRepositoryTest {
     }
 
     @Test
+    fun calendarChangesAreOnWhenTheServerLeavesThemOut() = runTest {
+        val prefs = assertIs<RepositoryResult.Content<AccountNotificationPrefs>>(runTestRead("{}")).value
+
+        assertEquals(true, prefs.calendarChanges)
+    }
+
+    @Test
     fun eachSwitchIsPatchedUnderItsOwnName() = runTest {
         val names = mapOf(
             AccountNotificationSwitch.APPROVALS to "approvals",
             AccountNotificationSwitch.INVITES to "invites",
             AccountNotificationSwitch.REMINDERS to "reminders",
+            AccountNotificationSwitch.CALENDAR_CHANGES to "calendarChanges",
             AccountNotificationSwitch.PROBLEMS_SUMMARY to "problemsSummary",
             AccountNotificationSwitch.BADGE_APPROVALS to "badgeApprovals",
             AccountNotificationSwitch.BADGE_INVITES to "badgeInvites",

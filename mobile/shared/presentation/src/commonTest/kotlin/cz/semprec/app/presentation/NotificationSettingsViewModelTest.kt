@@ -21,6 +21,7 @@ private val STORED = AccountNotificationPrefs(
     approvals = true,
     invites = true,
     reminders = true,
+    calendarChanges = true,
     problemsLevel = AccountProblemsLevel.CRITICAL,
     problemsSummary = true,
     badgeApprovals = true,
@@ -32,6 +33,7 @@ private val CHOICES = NotificationChoices(
     approvals = true,
     invites = true,
     reminders = true,
+    calendarChanges = true,
     problemsLevel = AccountProblemsLevel.CRITICAL,
     problemsSummary = true,
     badgeApprovals = true,
@@ -125,6 +127,7 @@ class NotificationSettingsViewModelTest : MainDispatcherTest() {
             AccountNotificationSwitch.APPROVALS to { it.approvals },
             AccountNotificationSwitch.INVITES to { it.invites },
             AccountNotificationSwitch.REMINDERS to { it.reminders },
+            AccountNotificationSwitch.CALENDAR_CHANGES to { it.calendarChanges },
             AccountNotificationSwitch.PROBLEMS_SUMMARY to { it.problemsSummary },
             AccountNotificationSwitch.BADGE_APPROVALS to { it.badgeApprovals },
             AccountNotificationSwitch.BADGE_INVITES to { it.badgeInvites },
@@ -221,6 +224,27 @@ class NotificationSettingsViewModelTest : MainDispatcherTest() {
             second.cancel()
             fromOff.close()
         }
+
+    @Test fun `turning calendar changes on is sent as its switch and asks for the permission`() = runTest(dispatcher) {
+        val quiet = STORED.copy(calendarChanges = false)
+        val prefs = ScriptedPrefs(
+            load = listOf({ RepositoryResult.Content(quiet) }),
+            write = { RepositoryResult.Content(STORED) },
+        )
+        val vm = viewModel(prefs)
+        val effects = mutableListOf<NotificationSettingsEffect>()
+        val collector = launch { vm.effects.collect { effects += it } }
+        runCurrent()
+        assertEquals(false, vm.state.value.choices?.calendarChanges)
+        vm.onAction(NotificationSettingsAction.Set(AccountNotificationSwitch.CALENDAR_CHANGES, on = true))
+        assertEquals(true, vm.state.value.choices?.calendarChanges)
+        runCurrent()
+        assertEquals(listOf(AccountNotificationSwitch.CALENDAR_CHANGES to true), prefs.switches)
+        assertEquals(listOf<NotificationSettingsEffect>(NotificationSettingsEffect.RequestPermission), effects)
+        assertEquals(CHOICES, vm.state.value.choices)
+        collector.cancel()
+        vm.close()
+    }
 
     @Test fun `a switch that is already on asks for nothing`() = runTest(dispatcher) {
         val vm = viewModel(ScriptedPrefs())

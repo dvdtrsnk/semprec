@@ -31,6 +31,9 @@ private val TOPICS_BY_DATABASE_KEY: Map<String, Set<SyncTopic>> = mapOf(
 /** The notification kinds of the server whose arrival each topic follows. */
 private val TOPICS_BY_NOTIFICATION_KIND: Map<String, Set<SyncTopic>> = mapOf(
     "calendar_invitation" to setOf(SyncTopic.INVITATIONS),
+    "calendar_event_added" to setOf(SyncTopic.CALENDAR),
+    "calendar_event_changed" to setOf(SyncTopic.CALENDAR),
+    "calendar_event_cancelled" to setOf(SyncTopic.CALENDAR),
     "mail_sync_error" to setOf(SyncTopic.MAIL_ACCOUNTS),
     "mail_sync_stalled" to setOf(SyncTopic.MAIL_ACCOUNTS),
 )

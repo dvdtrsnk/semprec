@@ -24,6 +24,7 @@ private val PREFS = AccountNotificationPrefs(
     approvals = true,
     invites = true,
     reminders = true,
+    calendarChanges = true,
     problemsLevel = AccountProblemsLevel.CRITICAL,
     problemsSummary = true,
     badgeApprovals = true,

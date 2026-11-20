@@ -94,6 +94,7 @@ private fun NotificationChoices.isOn(switch: AccountNotificationSwitch): Boolean
     AccountNotificationSwitch.APPROVALS -> approvals
     AccountNotificationSwitch.INVITES -> invites
     AccountNotificationSwitch.REMINDERS -> reminders
+    AccountNotificationSwitch.CALENDAR_CHANGES -> calendarChanges
     AccountNotificationSwitch.PROBLEMS_SUMMARY -> problemsSummary
     AccountNotificationSwitch.BADGE_APPROVALS -> badgeApprovals
     AccountNotificationSwitch.BADGE_INVITES -> badgeInvites
@@ -105,6 +106,7 @@ private fun NotificationChoices.with(switch: AccountNotificationSwitch, on: Bool
         AccountNotificationSwitch.APPROVALS -> copy(approvals = on)
         AccountNotificationSwitch.INVITES -> copy(invites = on)
         AccountNotificationSwitch.REMINDERS -> copy(reminders = on)
+        AccountNotificationSwitch.CALENDAR_CHANGES -> copy(calendarChanges = on)
         AccountNotificationSwitch.PROBLEMS_SUMMARY -> copy(problemsSummary = on)
         AccountNotificationSwitch.BADGE_APPROVALS -> copy(badgeApprovals = on)
         AccountNotificationSwitch.BADGE_INVITES -> copy(badgeInvites = on)
@@ -112,5 +114,13 @@ private fun NotificationChoices.with(switch: AccountNotificationSwitch, on: Bool
     }
 
 private fun AccountNotificationPrefs.toChoices() = NotificationChoices(
-    approvals, invites, reminders, problemsLevel, problemsSummary, badgeApprovals, badgeInvites, badgeInbox,
+    approvals,
+    invites,
+    reminders,
+    calendarChanges,
+    problemsLevel,
+    problemsSummary,
+    badgeApprovals,
+    badgeInvites,
+    badgeInbox,
 )
