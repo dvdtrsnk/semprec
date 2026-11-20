@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRecurrenceRule, recurrenceDates, type RecurrenceRule } from "../subscribedEventRecurrence.js";
+import { parseRecurrenceRule, recurrenceDates, type RecurrenceRule } from "../recurrenceExpansion.js";
 
 function rule(text: string): RecurrenceRule {
   const parsed = parseRecurrenceRule(text);

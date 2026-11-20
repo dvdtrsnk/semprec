@@ -8,8 +8,7 @@ import { MAX_OCCURRENCES_PER_SERIES } from "./eventOccurrences.js";
 import { readTime } from "./eventTime.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
-import { expandSubscribedSeries, type SubscribedOccurrence } from "./subscribedEventOccurrences.js";
-import { parseRecurrenceRule } from "./subscribedEventRecurrence.js";
+import { expandRecurringSeries, parseRecurrenceRule, type RecurringOccurrence } from "./recurrenceExpansion.js";
 import { effectiveTo, type Schedule, type StoredRow } from "./timelineRead.js";
 import type { CalendarTimelineContext, CalendarTimelineItem } from "./timelineSources.js";
 
@@ -144,12 +143,12 @@ interface ScheduledRow extends ReadSchedule {
 function occurrencesOf(
   { row, schedule, starts, ends, recurrence }: ScheduledRow & { recurrence: StoredRecurrence },
   context: CalendarTimelineContext,
-): { occurrences: SubscribedOccurrence[]; expanded: boolean } {
+): { occurrences: Pick<RecurringOccurrence, "schedule" | "originalStart">[]; expanded: boolean } {
   const rule = parseRecurrenceRule(recurrence.ruleText);
   const expansion =
     rule === null
       ? null
-      : expandSubscribedSeries(
+      : expandRecurringSeries(
           {
             startsAt: starts,
             endsAt: ends,

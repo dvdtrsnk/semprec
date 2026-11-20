@@ -1,5 +1,8 @@
-// The RRULE subset subscribed events are expanded with. Pure, on calendar days only; time zones, exceptions and
-// overrides are applied by `subscribedEventOccurrences.ts`.
+// The RRULE subset that subscribed events and synced Events are expanded with, and the expansion of a series in its
+// own zone into tenant wall-clock occurrences. Pure; exceptions and overrides are applied by each caller.
+import { DateTime, IANAZone } from "luxon";
+import { instantToWallClock, wallClockToInstant, type WallClock } from "../calendarTime.js";
+import type { Schedule } from "./timelineRead.js";
 
 export type RecurrenceFrequency = "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY";
 
@@ -296,4 +299,129 @@ export function recurrenceDates(
     }
   }
   return found;
+}
+
+/** Both times are tenant wall-clock values. */
+export interface RecurringSeries {
+  startsAt: WallClock;
+  endsAt: WallClock | null;
+  allDay: boolean;
+  /** `null` for a floating time, read as the tenant's wall clock. */
+  timeZone: string | null;
+  rule: RecurrenceRule;
+}
+
+export interface RecurringOccurrence {
+  schedule: Schedule;
+  /** Tenant-zone start before any override moved it; what a subscribed feed's `EXDATE` and `RECURRENCE-ID` name. */
+  originalStart: string;
+  /** The same start in the series' zone (`00:00` for an all-day series); what a synced Event's exceptions name. */
+  originalLocalStart: WallClock;
+}
+
+export function wallClockKey(wall: WallClock): string {
+  return `${wall.date}T${wall.time}`;
+}
+
+export function shiftDays(date: string, days: number): string {
+  const shifted = DateTime.fromISO(date, { zone: "utc" }).plus({ days }).toISODate();
+  if (shifted === null) throw new RangeError(`The date ${date} shifted by ${days} days is not a date`);
+  return shifted;
+}
+
+/** A date-only `UNTIL`, and any `UNTIL` of an all-day series, allows the whole of that day. */
+function untilKey(until: RecurrenceUntil | null, eventZone: string, allDay: boolean): string | null {
+  if (until === null) return null;
+  if (until.time === null || allDay) return `${until.date}T23:59`;
+  if (!until.utc) return `${until.date}T${until.time}`;
+  const local = DateTime.fromISO(`${until.date}T${until.time}`, { zone: "utc" }).setZone(eventZone);
+  return local.toFormat("yyyy-MM-dd'T'HH:mm");
+}
+
+/** The days of the series in its own zone within `window` (inclusive); `start` is the series' start there. */
+export function recurrenceDatesInZone(
+  rule: RecurrenceRule,
+  start: WallClock,
+  allDay: boolean,
+  zone: string,
+  window: { from: string; to: string },
+): string[] {
+  return recurrenceDates(
+    rule,
+    allDay ? { date: start.date, time: "00:00" } : start,
+    untilKey(rule.until, zone, allDay),
+    window,
+  );
+}
+
+/**
+ * `range` is inclusive, in the tenant's zone. A timed event keeps its length in elapsed time. Returns `null` for an
+ * unknown `timeZone`, so the caller can show the event once instead.
+ */
+export function expandRecurringSeries(
+  series: RecurringSeries,
+  range: { from: string; to: string },
+  tenantZone: string,
+): RecurringOccurrence[] | null {
+  const eventZone = series.timeZone ?? tenantZone;
+  // `IANAZone` takes only a zone name: luxon's own parser would also take `system` and fixed offsets.
+  if (!IANAZone.isValidZone(eventZone)) return null;
+  const { startsAt, endsAt } = series;
+
+  if (series.allDay) {
+    const length =
+      endsAt === null
+        ? 0
+        : Math.round(
+            DateTime.fromISO(endsAt.date, { zone: "utc" }).diff(
+              DateTime.fromISO(startsAt.date, { zone: "utc" }),
+              "days",
+            ).days,
+          );
+    const days = recurrenceDates(
+      series.rule,
+      { date: startsAt.date, time: "00:00" },
+      untilKey(series.rule.until, eventZone, true),
+      { from: shiftDays(range.from, -length), to: range.to },
+    );
+    return days
+      .map((date): RecurringOccurrence => {
+        const lastDay = shiftDays(date, length);
+        return {
+          originalStart: `${date}T00:00`,
+          originalLocalStart: { date, time: "00:00" },
+          schedule: { date, endDate: length > 0 ? lastDay : null, timeFrom: null, timeTo: null },
+        };
+      })
+      .filter(({ schedule }) => (schedule.endDate ?? schedule.date) >= range.from && schedule.date <= range.to);
+  }
+
+  const startInstant = wallClockToInstant(startsAt.date, startsAt.time, tenantZone);
+  const elapsed =
+    endsAt === null
+      ? null
+      : wallClockToInstant(endsAt.date, endsAt.time, tenantZone).toMillis() - startInstant.toMillis();
+  const local = instantToWallClock(startInstant.toJSDate(), eventZone);
+  // A local start can fall a day away from its tenant start, so the search takes a day more on each side, and as many
+  // days before `range.from` as the event is long.
+  const lengthDays = elapsed === null ? 0 : Math.ceil(elapsed / MS_PER_DAY);
+  const days = recurrenceDates(series.rule, local, untilKey(series.rule.until, eventZone, false), {
+    from: shiftDays(range.from, -(lengthDays + 1)),
+    to: shiftDays(range.to, 1),
+  });
+  const occurrences: RecurringOccurrence[] = [];
+  for (const day of days) {
+    const instant = wallClockToInstant(day, local.time, eventZone);
+    const start = instantToWallClock(instant.toJSDate(), tenantZone);
+    const end =
+      elapsed === null ? null : instantToWallClock(instant.plus({ milliseconds: elapsed }).toJSDate(), tenantZone);
+    const endDate = end !== null && end.date > start.date ? end.date : null;
+    if ((endDate ?? start.date) < range.from || start.date > range.to) continue;
+    occurrences.push({
+      originalStart: wallClockKey(start),
+      originalLocalStart: { date: day, time: local.time },
+      schedule: { date: start.date, endDate, timeFrom: start.time, timeTo: end?.time ?? null },
+    });
+  }
+  return occurrences;
 }

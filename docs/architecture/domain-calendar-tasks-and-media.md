@@ -89,6 +89,23 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
 - The invitation delivery job reads its pool and transports from a binding the API queue runtime sets
   (`setEventInvitationDelivery`, `calendar/eventInvitationJob.ts`); see [Adjacent rules](#adjacent-rules).
 
+### Event times and zones
+
+- An Event's `date`, `timeFrom`, `endDate` and `timeTo` are wall-clock values in its `timeZone` (an IANA name);
+  without one, in the tenant's zone (`getCalendarClock`). All-day days are not zoned.
+- `timeZone`, `recurrenceRule`, `exceptionDates` and `recurrenceId` are the provider fields of a synced Event:
+  system-owned with no owner process (the sync writes them together with `seriesId`, and an Events pre-write
+  transform clears the raw rule), written only by `CALENDAR_SYNC_WRITER`. `calendar/syncedEventFields.ts` refuses
+  any other writer naming them (`403 owner_violation`), except the calendar module's own two writes below, and
+  judges the values for every writer (`400 validation_failed`): a valid IANA zone (no fixed offsets), non-blank
+  RRULE text, a list of local starts, a local start; a raw rule never next to `recurrence` or on an occurrence item,
+  `recurrenceId` only on one. A local start is `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` in the Event's zone.
+- Readers convert to the tenant's wall clock before they compare or show anything (`scheduleInTenantZone`, applied
+  by `toTimelineItems`): the timeline and its consumers (agenda, agent tool) and the reminders feed. Their candidate
+  reads take one day more on each side for a zoned Event and filter the converted days. A stored zone that is no
+  IANA name leaves the row out with a log line (`property: timeZone`).
+- A user write of the time fields stores the values as sent, in the Event's zone.
+
 ### Recurrence model (Tasks and Events)
 
 - A series is one rule plus one template. Only occurrences with state of their own (done, wontDo, missed, moved,
@@ -97,7 +114,7 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   is addressed as `<seriesId>@<occurrenceDate>`.
 - Editing a series updates the template and its open, unedited occurrences; done/wontDo/missed occurrences keep their
   values. Deleting a series keeps completed occurrences as history.
-- Dates and times are wall-clock values compared as text; a DST change moves nothing.
+- Dates and times are wall-clock values (an Event's in its zone) compared as text; a DST change there moves nothing.
 
 ### Event series and occurrences
 
@@ -113,6 +130,20 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   creates at most one item per occurrence. `POST /api/events/series/:seriesId/occurrences/:date` is idempotent (201
   then 200).
 - Cancelling an occurrence is trashing its item; readers treat a trashed occurrence item as cancelled.
+- A synced series may carry a raw `recurrenceRule` (RRULE text) and its `exceptionDates` instead of `recurrence`.
+  It is expanded by `expandRecurringSeries` (`calendar/recurrenceExpansion.ts`, shared with subscribed events) in
+  the series' zone, without the starts `exceptionDates` names; a rule outside the supported subset, or a zone that
+  cannot be read, shows the series row once. Rule days and `occurrenceDate` are days in the series' zone; virtual
+  ids are `<seriesId>@<that day>`.
+- An override is an occurrence item of a synced series: `seriesId` plus `recurrenceId`, the original start it
+  replaces (a day names that day's occurrence, a date-time the occurrence starting then). It replaces its occurrence
+  live or trashed, wherever its own days are. The sync stores provider overrides; materializing an occurrence of a
+  series with a raw rule, or of any series in an account calendar, creates one, copying `timeZone` and naming
+  `recurrenceId` (a date-time for a timed series), admitted by the create hook only inside
+  `withOverrideMaterialization`. A raw-rule date that the rule skips or excludes is `400 validation_failed`.
+- Editing rules (`syncedRecurrenceTransform`): a `recurrence` edit of an Event with a raw rule clears
+  `recurrenceRule` and `exceptionDates` in the same write, so the sync serializes the simple rule; edits that do not
+  name `recurrence` keep the raw rule. A user cannot edit the raw rule itself.
 
 ### Next occurrence date
 
@@ -134,9 +165,10 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   with the default calendar id, and caches nothing. The route bounds the range to 93 days.
 - Entry kinds:
   - stored Events/Tasks (`CalendarTimelineItem`);
-  - Event series expanded by `expandEventOccurrences` (`calendar/eventOccurrences.ts`): virtual entries
-    (`readOnly: true`, `overridden: false`) for rule dates without an item, real items (`overridden: true`) placed by
-    their own dates, trashed items give nothing; at most 100 entries per series;
+  - Event series (a `recurrence` rule or a raw `recurrenceRule`) expanded by `expandEventOccurrences`
+    (`calendar/eventOccurrences.ts`): virtual entries (`readOnly: true`, `overridden: false`) for rule dates without
+    an item, real items (`overridden: true`) placed by their own dates, trashed items give nothing; at most 100
+    entries per series;
   - derived entries (birthdays, holidays) with a non-item id and `readOnly: true`;
   - sleep nights: id `sleep:<night>`, `readOnly: false` (edited through the sleep module, never `/api/items`);
   - subscribed events: stored rows of `subscribedEvents`, `readOnly: true`, told apart by `databaseId`.
@@ -153,8 +185,8 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
 
 - A master row stores `recurrenceRule` (RRULE text), `exceptionDates`; an override row stores `recurrenceId`. Rows are
   identified by `(calendar, uid, recurrenceId)`.
-- Series are expanded on read in the subscribed source (`calendar/subscribedEventRecurrence.ts`,
-  `calendar/subscribedEventOccurrences.ts`); nothing of an occurrence is stored. Supported parts: `FREQ`, `INTERVAL`,
+- Series are expanded on read in the subscribed source by the shared `calendar/recurrenceExpansion.ts`; nothing of
+  an occurrence is stored. Supported parts: `FREQ`, `INTERVAL`,
   `COUNT`, `UNTIL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`; anything else is shown once and counted as `unsupportedRules`.
 - Days are computed in the series' zone and converted to tenant wall clock; at most 100 entries per series and 20,000
   rule periods per iteration. Occurrence ids are `<row id>@<date>`.
@@ -165,8 +197,10 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   debounced job per tenant (`reminders-resync:<tenantId>` / `sleep-resync:<tenantId>`, `jobKeyMode: "replace"`, run
   time +30 s) on the write's own client, from hooks registered last (`calendar/remindersResyncHooks.ts`,
   `sleep/sleepWriteHooks.ts`).
+- The reminders feed (`GET /api/calendar/reminders`, `calendar/remindersFeedRouteHandler.ts`) lists stored rows and
+  the occurrences of raw-rule series; the virtual occurrences of a `recurrence` series are not listed.
 - Reminders hooks fire on a value change of `date`, `endDate`, `timeFrom`, `alertMinutes`, `travelMinutes`,
-  `notifications`, `status` on Events/Tasks (judged against the hook context's `previous`), on calendar `notify`, on
+  `notifications`, `status`, `timeZone`, `recurrenceRule`, `exceptionDates` on Events/Tasks (judged against the hook context's `previous`), on calendar `notify`, on
   tenant `timezone`, and on trash/restore. Defaults and transform-set `null`s on create are not changes.
 - Payload is `{ tenantId }` only; the handler checks it against the envelope tenant and sends a silent APNs push to
   active `ios` registrations, writing no `notifications` rows.

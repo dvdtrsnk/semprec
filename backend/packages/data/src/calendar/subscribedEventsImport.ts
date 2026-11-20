@@ -18,7 +18,7 @@ import type { CalendarFeedInput } from "./calendarSubscriptionSweep.js";
 import type { PropertyRow } from "../types.js";
 import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
 import { logger } from "./logger.js";
-import { parseRecurrenceRule } from "./subscribedEventRecurrence.js";
+import { parseRecurrenceRule } from "./recurrenceExpansion.js";
 
 const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
 

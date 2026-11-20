@@ -10,10 +10,12 @@ import { EVENTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { taskDisplayDay } from "../tasks/taskDisplayDay.js";
 import { TASK_DISPLAY_DAY_SQL } from "../tasks/taskDisplayDaySql.js";
 import { EVENT_SERIES_ID_PROPERTY_KEY } from "./eventOccurrenceId.js";
-import { readEventSeries } from "./eventSeries.js";
+import { isEventSeriesRow } from "./eventSeries.js";
 import { readTime } from "./eventTime.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
+import { shiftDays } from "./recurrenceExpansion.js";
+import { readEventTimeZone, scheduleInTenantZone } from "./syncedEventFields.js";
 import { attachTaskInEventState } from "./timelineTaskInEvent.js";
 import {
   CALENDAR_TIMELINE_SOURCES,
@@ -37,18 +39,22 @@ const DAY_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$";
 
 /**
  * Stored days are compared as text, never cast, so an unreadable value cannot fail the statement. A row whose days
- * do not start with a date is always a candidate, so `readSchedule` can log it.
+ * do not start with a date is always a candidate, so `readSchedule` can log it. An Event with its own `timeZone` can
+ * be stored a day away from the tenant day it is shown on, so its days are compared with `$5`..`$6`, a day wider.
  */
 const EVENT_CANDIDATES_SQL = `
   SELECT i.id, i.properties, i.updated_at, i.version
     FROM items i
    CROSS JOIN LATERAL (SELECT left(i.properties->>'date', 10) AS first_day,
-                              left(i.properties->>'endDate', 10) AS last_day) days
+                              left(i.properties->>'endDate', 10) AS last_day,
+                              jsonb_typeof(i.properties->'timeZone') = 'string' AS zoned) days
    WHERE i.database_id = $1 AND i.deleted_at IS NULL
      AND i.properties->>'date' <> ''
      AND (days.first_day !~ $4
           OR days.last_day !~ $4
-          OR (days.first_day COLLATE "C" <= $3 AND coalesce(days.last_day, days.first_day) COLLATE "C" >= $2))`;
+          OR (days.first_day COLLATE "C" <= $3 AND coalesce(days.last_day, days.first_day) COLLATE "C" >= $2)
+          OR (days.zoned IS TRUE
+              AND days.first_day COLLATE "C" <= $6 AND coalesce(days.last_day, days.first_day) COLLATE "C" >= $5))`;
 
 /** Selected like `EVENT_CANDIDATES_SQL`, by the Task's display day. `seriesFilter` is a condition on row `i`. */
 function taskCandidatesSql(seriesFilter: string): string {
@@ -100,6 +106,27 @@ export function readSchedule(
   const timeTo = readTime(properties.timeTo, "timeTo");
   if (timeTo === undefined) return { invalidKey: "timeTo" };
   return { date, endDate, timeFrom, timeTo };
+}
+
+/**
+ * `readSchedule` as the tenant's wall clock: an Event with its own `timeZone` is converted from that zone. Returns
+ * the first invalid key instead of a schedule.
+ */
+function readZonedSchedule(
+  kind: CalendarTimelineItem["kind"],
+  properties: Record<string, unknown>,
+  tenantZone: string,
+): Schedule | { invalidKey: ScheduleKey | "timeZone" } {
+  const schedule = readSchedule(kind, properties);
+  if ("invalidKey" in schedule || kind !== "event") return schedule;
+  const zone = readEventTimeZone(properties);
+  if (zone === undefined) return { invalidKey: "timeZone" };
+  return scheduleInTenantZone(schedule, zone, tenantZone);
+}
+
+/** Inclusive; the days of a schedule overlap `from`..`to`. */
+export function overlapsRange(schedule: Pick<Schedule, "date" | "endDate">, from: string, to: string): boolean {
+  return schedule.date <= to && (schedule.endDate ?? schedule.date) >= from;
 }
 
 /**
@@ -246,15 +273,15 @@ export async function toTimelineItems(
 ): Promise<CalendarTimelineItem[]> {
   const scheduled: { row: StoredRow; schedule: Schedule }[] = [];
   for (const row of rows) {
-    const schedule = readSchedule(kind, row.properties);
-    if ("invalidKey" in schedule) {
+    const read = readZonedSchedule(kind, row.properties, context.timezone);
+    if ("invalidKey" in read) {
       logger.warn(
-        { itemId: row.id, databaseId, property: schedule.invalidKey },
+        { itemId: row.id, databaseId, property: read.invalidKey },
         "Calendar timeline left out an item with an invalid stored value",
       );
       continue;
     }
-    scheduled.push({ row, schedule });
+    scheduled.push({ row, schedule: read });
   }
 
   const edges = await readEdges(
@@ -332,11 +359,15 @@ export async function readEventTimelineItems(
     context.from,
     context.to,
     DAY_PATTERN,
+    shiftDays(context.from, -1),
+    shiftDays(context.to, 1),
   ]);
   const stored = rows.filter(
-    (row) => row.properties[EVENT_SERIES_ID_PROPERTY_KEY] == null && readEventSeries(row.properties) === null,
+    (row) => row.properties[EVENT_SERIES_ID_PROPERTY_KEY] == null && !isEventSeriesRow(row.properties),
   );
-  const items = await toTimelineItems(client, "event", events.id, stored, context);
+  const items = (await toTimelineItems(client, "event", events.id, stored, context)).filter((item) =>
+    overlapsRange(item, context.from, context.to),
+  );
   const transcripts = await readEventTranscripts(
     client,
     events.id,

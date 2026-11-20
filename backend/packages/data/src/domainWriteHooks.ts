@@ -100,6 +100,12 @@ import {
 import { eventValidationItemCreateHook, eventValidationItemUpdateHook } from "./calendar/eventValidationHook.js";
 import { eventRecurrenceItemCreateHook, eventRecurrenceItemUpdateHook } from "./calendar/eventRecurrenceHook.js";
 import {
+  prepareSyncedRecurrence,
+  syncedEventItemCreateHook,
+  syncedEventItemUpdateHook,
+  syncedRecurrenceTransform,
+} from "./calendar/syncedEventFields.js";
+import {
   eventReminderValuesItemCreateHook,
   eventReminderValuesItemUpdateHook,
 } from "./calendar/eventReminderValuesHook.js";
@@ -252,6 +258,8 @@ const itemPreWriteTransforms: readonly (readonly [string, ItemPreWriteTransform,
   // Events: the time transform first, so the iCalendar sequence compares normalized times.
   [EVENTS_MODULE_ID, eventTimePreWriteTransform, prepareEventTime],
   [EVENTS_MODULE_ID, eventIcalIdentityTransform, prepareEventIcalIdentity],
+  // A `recurrence` edit of a synced series clears its raw rule, before the next occurrence day reads the rule.
+  [EVENTS_MODULE_ID, syncedRecurrenceTransform, prepareSyncedRecurrence],
   // The next occurrence day of a recurring Event, after the time transform normalized it.
   [EVENTS_MODULE_ID, nextOccurrenceDateTransform, prepareNextOccurrenceDate],
   // A calendar subscription's `subscriptionUrl` is normalized and judged before the row is written.
@@ -297,6 +305,7 @@ const itemCreateHooks: readonly ItemCreateHook[] = [
   // Events: the date and time rules judge what the transforms stored.
   eventValidationItemCreateHook,
   eventRecurrenceItemCreateHook,
+  syncedEventItemCreateHook,
   blobReferenceItemCreateHook,
   mcpServerItemCreateHook,
   // After the blob reference hook.
@@ -339,6 +348,7 @@ const itemUpdateHooks: readonly ItemUpdateHook[] = [
   nextOccurrenceSeriesItemUpdateHook,
   eventValidationItemUpdateHook,
   eventRecurrenceItemUpdateHook,
+  syncedEventItemUpdateHook,
   blobReferenceItemUpdateHook,
   mcpServerItemUpdateHook,
   recipePhotoWriteHook,

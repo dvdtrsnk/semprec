@@ -518,6 +518,10 @@ describe("item search create/update hooks", () => {
           if (descriptor.key === "events" && property.key === "seriesId") continue;
           // An event's iCalendar UID is a system identifier, not searchable text (asserted below).
           if (descriptor.key === "events" && property.key === "icalUid") continue;
+          // A synced Event's zone, raw rule and original start are provider identifiers, not searchable text.
+          if (descriptor.key === "events" && ["timeZone", "recurrenceRule", "recurrenceId"].includes(property.key)) {
+            continue;
+          }
           expect(descriptor.searchFields).toContain(property.key);
         }
       }
@@ -527,6 +531,9 @@ describe("item search create/update hooks", () => {
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("icalUid");
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("seriesId");
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("occurrenceDate");
+      for (const key of ["timeZone", "recurrenceRule", "recurrenceId"]) {
+        expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain(key);
+      }
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("emails");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("phones");
       for (const [key, fields] of Object.entries({
